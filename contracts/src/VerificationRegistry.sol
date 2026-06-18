@@ -72,9 +72,15 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
 
     IIssuerRegistry public immutable issuerRegistry;
     IDogTagSBT public immutable sbt;
-    IConsentKeyReg public immutable consentKeys;
     IRootIndex public immutable rootIndex;
     IPoseidon6 public immutable poseidon6;
+
+    // Consent-key registry is SWAPPABLE (set in the constructor, then timelock-rotated): the original
+    // immutable forced a full VR redeploy to point at a fixed ConsentKeyRegistry. Now it can be rotated
+    // via the same 2-day timelock as the verifier, without a redeploy.
+    IConsentKeyReg public consentKeys;
+    IConsentKeyReg public pendingConsentKeys;
+    uint256 public consentKeysEta;
 
     IGroth16Verifier public zkVerifier;
     IGroth16Verifier public pendingZkVerifier;
@@ -93,6 +99,8 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
     );
     event ZkVerifierProposed(address indexed verifier, uint256 eta);
     event ZkVerifierUpdated(address indexed verifier);
+    event ConsentKeysProposed(address indexed consentKeys, uint256 eta);
+    event ConsentKeysUpdated(address indexed consentKeys);
 
     constructor(address ir, address sbt_, address zk, address ck, address ridx, address pos6, address admin)
         EIP712("DogTag", "1")
@@ -199,5 +207,21 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
         zkVerifier = pendingZkVerifier;
         pendingZkVerifier = IGroth16Verifier(address(0));
         emit ZkVerifierUpdated(address(zkVerifier));
+    }
+
+    /// @notice Real timelock on the consent-key registry swap (mirrors the verifier swap): propose,
+    /// then execute after ZK_TIMELOCK. Root-cause fix for the old immutable `consentKeys`.
+    function proposeConsentKeys(address ck) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        pendingConsentKeys = IConsentKeyReg(ck);
+        consentKeysEta = block.timestamp + ZK_TIMELOCK;
+        emit ConsentKeysProposed(ck, consentKeysEta);
+    }
+
+    function executeConsentKeys() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(address(pendingConsentKeys) != address(0), "none");
+        require(block.timestamp >= consentKeysEta, "timelock");
+        consentKeys = pendingConsentKeys;
+        pendingConsentKeys = IConsentKeyReg(address(0));
+        emit ConsentKeysUpdated(address(consentKeys));
     }
 }

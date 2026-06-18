@@ -31,4 +31,22 @@ contract ConsentKeyRegistry is EIP712 {
         bindNonce[msg.sender] = nonce + 1;
         emit ConsentKeyBound(msg.sender, babyJubPubKeyHash, nonce);
     }
+
+    /// @notice Gasless/meta-tx bind: ANY caller (a relayer) may submit a bind on `wallet`'s behalf,
+    /// provided `wallet` signed the EIP-712 BindConsentKey(hash, wallet, nonce) digest. Same struct,
+    /// same domain, same per-wallet replay nonce as `bindConsentKey` — only the signer is decoupled
+    /// from `msg.sender`. The recovered ECDSA signer must equal `wallet`, so no third party can bind
+    /// a key the wallet didn't authorize.
+    /// @param wallet The secp256k1 wallet that authorized (and is bound to) the consent key.
+    /// @param babyJubPubKeyHash Poseidon(Ax, Ay) of the per-pet BabyJubjub consent pubkey (§11.9(j)).
+    /// @param ecdsaSig EIP-712 signature by `wallet` over BindConsentKey(hash, wallet, nonce).
+    function bindConsentKeyFor(address wallet, bytes32 babyJubPubKeyHash, bytes calldata ecdsaSig) external {
+        require(wallet != address(0), "zero wallet");
+        uint256 nonce = bindNonce[wallet];
+        bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(BIND_TYPEHASH, babyJubPubKeyHash, wallet, nonce)));
+        require(ECDSA.recover(digest, ecdsaSig) == wallet, "bad sig");
+        keyOf[wallet] = babyJubPubKeyHash;
+        bindNonce[wallet] = nonce + 1;
+        emit ConsentKeyBound(wallet, babyJubPubKeyHash, nonce);
+    }
 }
