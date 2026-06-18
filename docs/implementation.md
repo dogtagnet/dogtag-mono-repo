@@ -1019,13 +1019,16 @@ GOOGLE_CLIENT_ID=...  GOOGLE_CLIENT_SECRET=...
 
 ## 8. Contract deploy & verify (Foundry → ROAX)
 
+> Already executed: the set is **deployed live on ROAX (chainId 135)** with the ZK verifier wired —
+> see `contracts/deployments/roax.json` and `docs/DEPLOY.md`. ROAX requires **legacy gas** (use `--legacy`).
+
 `contracts/foundry.toml`: `evm_version = "paris"`, pinned `solc`. (research/03)
 ```bash
 # liveness pre-check (RPC was 502 at design time)
 cast chain-id --rpc-url https://devrpc.roax.net    # expect 135
 
 forge script script/Deploy.s.sol:Deploy --rpc-url https://devrpc.roax.net \
-  --chain 135 --private-key $PRIVATE_KEY --broadcast -vvvv   # add --legacy if no EIP-1559
+  --chain 135 --private-key $PRIVATE_KEY --broadcast -vvvv --legacy   # ROAX needs legacy gas
 
 forge verify-contract --rpc-url https://devrpc.roax.net \
   --verifier blockscout --verifier-url https://explorer.roax.net/api/ \

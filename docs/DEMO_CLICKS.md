@@ -1,7 +1,12 @@
-# DogTag — literal click-through (testnet demo)
+# DogTag — literal click-through (LIVE on ROAX)
 
-The exact buttons to press, in order. The demo buttons fill every form, and all passwords are
-prefilled, so the operator **types nothing** — just click. (Testnet only.)
+The exact buttons to press, in order, against the **live ROAX deployment** (chainId 135). The demo
+buttons fill every form, and all passwords are prefilled, so the operator **types nothing** — just
+click. (Testnet only.) For the full runbook + phone networking + gotchas see **[DEMO.md](./DEMO.md)**.
+
+Boot first: `scripts/demo-up.sh` (or with a public tunnel on corporate Wi-Fi:
+`VET_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh` — see DEMO.md §6).
+Automated equivalent of the whole flow: `scripts/e2e-smoke.sh` (7 steps, all PASS on ROAX).
 
 Portals: **admin** http://localhost:39741 · **vet** http://localhost:41873 · **groomer** http://localhost:43617
 Demo passwords (prefilled): operator `operator`, admin `admin`. Record type everywhere: **VACCINATION**.
@@ -60,13 +65,16 @@ Setup is a linear wizard; each step auto-advances on success.
 
 ---
 
-## D. Phone (DogTag app) — scan → import → verified on-chain
+## D. Phone (DogTag app) — scan → import → verified on-chain → view fields
 
 1. Open **Scan** (Home `+` or Verify tab) → scan the vet's QR.
 2. Watch **Anchoring… → Verified on-chain ✓**. The record lands under the pet.
+3. **Tap the imported credential** → the detail view decodes **every Merkle leaf** and shows the field
+   values + the on-chain root/issuer/verdict (Android + iOS).
 
-> Phone can't reach `localhost` — set the app server base to this Mac's LAN IP and set
-> `DEPLOYMENT_URL=http://<LAN-IP>:41874` in demo-up.sh's vet env. See docs/DEMO.md.
+> Phone can't reach `localhost`. Same Wi-Fi: set the app server base to this Mac's LAN IP (demo-up.sh
+> already sets the QR host to it via `LAN_IP`/`DEPLOYMENT_URL`). Corporate/VPN Wi-Fi: boot with
+> `VET_PUBLIC_URL=https://<sub>.trycloudflare.com`. Full details: docs/DEMO.md §6.
 
 ---
 

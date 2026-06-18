@@ -7,11 +7,46 @@ verified three ways — cryptographic **integrity** + on-chain **status** + DNS-
 OpenAttestation-style design, **implemented from scratch** with a JSON-free, language-agnostic
 (circom/TS/Rust/Solidity) canonicalization on one pinned circomlib BN254 Poseidon.
 
+## Status: LIVE on ROAX (chainId 135)
+The full system is **built and DEPLOYED LIVE** to the ROAX testnet, and the **end-to-end demo runs on
+a real Android device** (issue → QR → scan → import → verify on-chain → view decoded fields). The ZK
+proof-of-verification path is **live** (Groth16Verifier wired into the VerificationRegistry). Live
+contract addresses are in **[`contracts/deployments/roax.json`](contracts/deployments/roax.json)** — see
+the table below.
+
+**Run the live demo:** **[`docs/DEMO.md`](docs/DEMO.md)** (runbook) + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)**
+(literal, type-nothing click-through). Automated verification: `scripts/e2e-smoke.sh` (7 steps, all PASS on ROAX).
+
+## Live ROAX addresses (chainId 135)
+Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.json).
+
+| Contract | Address |
+|---|---|
+| IssuerRegistry | `0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c` |
+| DogTagSBT | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
+| DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
+| DogTagIssuerImpl (clone impl) | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
+| ConsentKeyRegistry | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
+| Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
+| **VerificationRegistry** (ZK-wired) | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` |
+| Groth16Verifier | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
+| admin / deployer | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
+| demo clone — VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
+| demo clone — DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |
+
+> The original VerificationRegistry was deployed with `zkVerifier = 0`; for the testnet the registry was
+> **redeployed** pointing at the live Groth16Verifier (`VerificationRegistry_zk0_legacy`
+> `0xb4FbbDb5…` is the retired zk=0 instance). In production the verifier is wired via the registry's
+> 2-day `setZkVerifier` timelock instead — see [`docs/DEPLOY.md`](docs/DEPLOY.md). The testnet ZK trusted
+> setup (3 contributions + beacon) is recorded in [`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md).
+
 ## Start here
+- **[`docs/DEMO.md`](docs/DEMO.md)** + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)** — run the LIVE demo.
 - **[`docs/architecture.md`](docs/architecture.md)** — system + smart-contract architecture (§13 = normative audit remediations).
 - **[`docs/implementation.md`](docs/implementation.md)** — per-function pseudocode, contract bodies, endpoints, Docker, deploy (§11 = normative corrected code).
 - **[`docs/BUILD_PROMPT.md`](docs/BUILD_PROMPT.md)** — the phased build-out prompt.
-- **[`docs/DEPLOY.md`](docs/DEPLOY.md)** — ROAX deploy runbook (Gate B prechecks, ceremony, Docker bring-up).
+- **[`docs/DEPLOY.md`](docs/DEPLOY.md)** — ROAX deploy runbook (already deployed; Gate B prechecks, ceremony, Docker bring-up).
+- **[`docs/CEREMONY.md`](docs/CEREMONY.md)** / **[`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md)** — ZK trusted-setup (prod runbook + the testnet transcript).
 - **[`docs/DPIA.md`](docs/DPIA.md)** — mandatory Data Protection Impact Assessment.
 - **[`docs/research/`](docs/research)** — research briefs + security audits behind every decision.
 
@@ -89,8 +124,12 @@ Cross-cutting CI guardrails enforce the privacy claims:
 | 6 | Mobile apps (Android + iOS): verify, wallet, consent signing | ✅ Done |
 | 7 | Calendar sync + cross-backend appointments | ✅ Done |
 | 8 | Hardening: per-stack Docker, privacy/parity gates, DEPLOY + DPIA docs | ✅ Done |
+| — | **DEPLOYED LIVE on ROAX (chainId 135)** — contracts live, ZK path wired, demo verified on a real Android device | ✅ Live |
 
-> **Note:** the Docker build files are validated by **syntax** (valid compose YAML + Dockerfiles);
-> they have not been `docker compose up`-run in this environment (the daemon is off). The ZK trusted
-> setup shipped for tests is a **dev** setup — production requires the multi-party ceremony in
+> **Deployment note:** all contracts are **deployed and live on ROAX** (`contracts/deployments/roax.json`),
+> the ZK proof-of-verification path is **wired and live** (Groth16Verifier in the VerificationRegistry),
+> and the end-to-end flow was verified by `scripts/e2e-smoke.sh` (7/7 PASS) **and** a manual Android run.
+> The demo backends run from the in-memory store via `scripts/demo-up.sh` (Docker compose files are also
+> present and validated by syntax). The shipped ZK trusted setup is a **single-operator testnet** run
+> (`docs/CEREMONY_TRANSCRIPT.md`); production requires the multi-party ceremony in `docs/CEREMONY.md` /
 > `docs/DEPLOY.md` §4.

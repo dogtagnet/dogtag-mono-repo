@@ -5,6 +5,28 @@
 > (deploy), §11.8/§11.10 (verification subsystem). **Security gates are blocking** — do not deploy
 > until the Gate B prechecks pass.
 
+> **ALREADY DEPLOYED.** The full contract set is **live on ROAX (chainId 135)** with the **ZK path
+> wired** — addresses below and in `contracts/deployments/roax.json`. This runbook is the reproducible
+> procedure; to just run the live demo see `docs/DEMO.md` / `docs/DEMO_CLICKS.md`.
+>
+> | Contract | Address |
+> |---|---|
+> | IssuerRegistry | `0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c` |
+> | DogTagSBT | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
+> | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
+> | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
+> | ConsentKeyRegistry | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
+> | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
+> | **VerificationRegistry** (ZK-wired) | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` |
+> | Groth16Verifier | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
+> | admin / deployer | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
+> | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
+> | demo clone DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |
+>
+> The first VerificationRegistry was deployed with `zkVerifier = 0` (`VerificationRegistry_zk0_legacy`
+> `0xb4FbbDb5…`, retired). See §3.2 for how the ZK verifier was actually wired (testnet redeploy) vs the
+> production timelock path.
+
 ---
 
 ## 1. Gate B prechecks (BLOCKING)
@@ -36,13 +58,13 @@ cd contracts
 
 # ADMIN = the protocol multisig (becomes DEFAULT_ADMIN of the registries + SBT). Default = broadcaster.
 # ZK_VERIFIER intentionally defaults to address(0): the ECDSA "normal" path needs no verifier, and the
-# Groth16Verifier is wired LATER via the registry timelock (after the trusted-setup ceremony, §4).
+# Groth16Verifier is wired LATER (§3.2) — prod via the registry timelock, testnet via redeploy (done on ROAX).
 export ADMIN=0x<protocol-multisig>
 export PRIVATE_KEY=0x<deployer-key>
 
 forge script script/Deploy.s.sol:Deploy \
   --rpc-url $ROAX_RPC --chain 135 \
-  --private-key $PRIVATE_KEY --broadcast -vvvv   # add --legacy if ROAX rejects EIP-1559
+  --private-key $PRIVATE_KEY --broadcast -vvvv --legacy   # ROAX needs LEGACY gas (EIP-1559 txs are accepted but never mined)
 ```
 
 Deployed set (order in `Deploy.s.sol`): `IssuerRegistry` → `DogTagIssuer` (clone impl) →
@@ -64,14 +86,23 @@ forge verify-contract --rpc-url $ROAX_RPC \
    verification** of its `DEPLOYMENT_DOMAIN`. The central admin flow triggers the on-chain
    `whitelistFor(recordType, signer)` — the registry supports **multiple signer addresses per issuer
    entity** (one-to-many). Delist inactive-mode addresses.
-2. **Set the Groth16 verifier — timelocked.** `ZK_VERIFIER` was deployed as `address(0)`. After the
-   ceremony (§4), the protocol admin sets the real `Groth16Verifier` through the **2-day timelock**:
+2. **Wire the Groth16 verifier.** The first registry was deployed with `ZK_VERIFIER = address(0)`
+   (only the normal ECDSA path live; ZK reverts). There are two ways to activate the ZK path:
+
+   **(a) Production — 2-day timelock (the safe, canonical path).** After the ceremony (§4), the protocol
+   admin sets the real `Groth16Verifier` through the registry's **2-day timelock**:
    ```solidity
    VerificationRegistry.proposeZkVerifier(groth16VerifierAddr);   // starts ZK_TIMELOCK = 2 days
    // ... wait >= 2 days ...
    VerificationRegistry.executeZkVerifier();                      // activates it
    ```
-   Until then, only the **normal ECDSA path** is live; the ZK path reverts (no verifier).
+
+   **(b) Testnet — redeploy (what we did on ROAX).** Rather than wait out the 2-day timelock on testnet,
+   the **VerificationRegistry was REDEPLOYED** with the live `Groth16Verifier` (`0x138b4330…`) wired in
+   at construction, so the ZK path is active immediately. The new registry is `0x19C1B5f8…`; the original
+   zk=0 instance is kept as `VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`. The testnet trusted setup
+   (3 contributions + beacon) is recorded in `docs/CEREMONY_TRANSCRIPT.md` (zkey sha256 `45d0b6fb…`); the
+   on-chain wiring + the prod timelock procedure are in `docs/CEREMONY.md`.
 
 ## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
 

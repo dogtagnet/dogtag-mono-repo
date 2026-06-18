@@ -61,6 +61,10 @@ DogTag is a **pet-credentialing ecosystem**. Pet owners hold their pets' identit
 
 ## 2. Network & deployment topology
 
+> Status: the contract set is **deployed live on ROAX (chainId 135)** — addresses in
+> `contracts/deployments/roax.json`; demo runbook in `docs/DEMO.md`. This section remains the normative
+> design.
+
 Every business stack and the admin stack is a self-contained **Docker Compose** project. **Uncommon, non-overlapping host ports** (server already hosts other apps). MongoDB is **never** published to the host — internal to each compose network only.
 
 | Stack | web (SPA/nginx) | api (Rust) | mongo (internal only) |
