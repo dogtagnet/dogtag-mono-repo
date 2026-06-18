@@ -8,3 +8,4 @@ export * from "./flatten.js";
 export * from "./wrap.js";
 export * from "./verify.js";
 export * from "./schema.js";
+export * from "./consent.js";

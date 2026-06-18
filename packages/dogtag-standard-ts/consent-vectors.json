@@ -1,0 +1,76 @@
+{
+  "_comment": "DogTag consent test vectors (impl §11.8/§11.9). TS = reference; dogtag-standard-rs asserts this file. EIP-712 digest = keccak256(0x1901 || domainSeparator || structHash); nullifier = Poseidon(4, dogTagId, purpose mod r, uint160(relayer), uint160(subject), nonce); eddsa message = Poseidon(dogTagId, purpose, relayer, subject, credentialRoot, nonce).",
+  "type_string": "VerificationConsent(uint256 dogTagId,bytes32 recordType,bytes32 purpose,bytes32 credentialRoot,bytes32 challenge,address relayer,address subject,uint256 nonce,uint256 deadline)",
+  "typehash": "0x05fae519c3b52215ea92de783cc4aaebfe323c5038dfcd7f15d4bfe46648f279",
+  "chain_id": "135",
+  "verifying_contract": "0x00000000000000000000000000000000000000a7",
+  "domain_separator": "0x6db166ad1a41c977b5d39b3bf5691381b36b911c464561a514d9d380926aa8fc",
+  "vectors": [
+    {
+      "name": "anchor",
+      "consent": {
+        "dogTagId": "42",
+        "recordType": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "purpose": "0x0000000000000000000000000000000000000000000000000000000000000007",
+        "credentialRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "challenge": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "relayer": "0x1111111111111111111111111111111111111111",
+        "subject": "0x2222222222222222222222222222222222222222",
+        "nonce": "99",
+        "deadline": "0"
+      },
+      "eip712_digest": "0xb6af93d40219ed40c1fa7dd69c01e8b8ec4bff07dd2d44ecd3a18e6e0b591659",
+      "nullifier": "0x055077ae7cbe2e123ad701247450fa222fabe3d3b399bfd40f416da970cfca11",
+      "eddsa_message_dec": "8453154477584343887478389844545598795962583039369853412305694095390935992699"
+    },
+    {
+      "name": "populated",
+      "consent": {
+        "dogTagId": "123456789",
+        "recordType": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "credentialRoot": "0x055077ae7cbe2e123ad701247450fa222fabe3d3b399bfd40f416da970cfca11",
+        "challenge": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "relayer": "0xdededededededededededededededededededede",
+        "subject": "0xbebebebebebebebebebebebebebebebebebebebe",
+        "nonce": "7",
+        "deadline": "1893456000"
+      },
+      "eip712_digest": "0x523782abf2bee6fa730123e300471dc99f0df094a0c2a40075d84765862af1c0",
+      "nullifier": "0x275ff7b05ce1099e00cd4eda807de9ee2966f9f20510c08d9749485881c1420f",
+      "eddsa_message_dec": "20143468346517920186422025748953247344672594099483961180832619205904294324562"
+    },
+    {
+      "name": "big",
+      "consent": {
+        "dogTagId": "1606938044258990275541962092341162602522202993782792835301377",
+        "recordType": "0x0101010101010101010101010101010101010101010101010101010101010101",
+        "purpose": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "credentialRoot": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "challenge": "0x0202020202020202020202020202020202020202020202020202020202020202",
+        "relayer": "0xffffffffffffffffffffffffffffffffffffffff",
+        "subject": "0x0101010101010101010101010101010101010101",
+        "nonce": "57896044618658097711785492504343953926634992332820282019728792003956564819973",
+        "deadline": "18446744073709551615"
+      },
+      "eip712_digest": "0x6a640e0aad4ddaa94f21a67742fa1cfe5b584b54acdb3449be8a96f1573d6f26",
+      "nullifier": "0x0cb39cf3aca0fbf28e41f45446bcf8fdcd99f5d661177af75ca5c609cfac908f",
+      "eddsa_message_dec": "19959563109454687195307645707791133455207664242580193435004653213062626936151"
+    }
+  ],
+  "keyHash": [
+    {
+      "name": "kh_1_2",
+      "Ax": "1",
+      "Ay": "2",
+      "expected": "0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a"
+    },
+    {
+      "name": "kh_large",
+      "Ax": "12345678901234567890123456789012345678901234567890",
+      "Ay": "98765432109876543210987654321098765432109876543210",
+      "expected": "0x1dd60047c600b60b6836d93195da6f75f6c0d78b2bd13f28339bc5d44da4962b"
+    }
+  ],
+  "poseidon_gate_anchor": "0x055077ae7cbe2e123ad701247450fa222fabe3d3b399bfd40f416da970cfca11"
+}

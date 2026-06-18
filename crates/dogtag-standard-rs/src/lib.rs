@@ -22,3 +22,6 @@ pub use leaf::hash_leaf;
 pub use merkle::{build_merkle, merkle_proof, process_proof};
 pub use poseidon::{poseidon as poseidon_hash, DS_BYTES, DS_LEAF, DS_NODE, DS_NULLIFIER};
 pub use types::{DogTagError, TypeTag, TypedScalar};
+
+pub mod consent;
+
