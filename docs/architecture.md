@@ -1,13 +1,20 @@
 # DogTag Ecosystem — Architecture
 
-> Status: v1 design. Source research: [`docs/research/`](./research). Reference UI/data: [`references/`](../references).
+> Status: v4 design (Poseidon-unified credential commitment — single root `R`; issuance + dual-signing + wallet + granular SBT + on-chain proof-of-verification, audit-remediated). Source research: [`docs/research/`](./research) (briefs `01`–`13`, audits `01`–`12`, `CHANGESPEC-v2`/`-v3`/`-v4`). **Normative precedence: §13 overrides §1–§12; highest-numbered §13 sub-section wins (§13.9 = v4.1, latest); `CHANGESPEC-v4` (Poseidon unification) overrides all earlier hash/dual-root wording on conflict.** Reference UI/data: [`references/`](../references).
 > Chain: **ROAX** (EVM, chainId `0x87` = **135**, native gas token **PLASMA**, RPC `https://devrpc.roax.net`, explorer `https://explorer.roax.net` — Blockscout-style). RPC was returning `502` at design time; treat liveness as a deploy-time pre-check.
 
 ---
 
 ## 1. Vision & scope
 
-DogTag is a **pet-credentialing ecosystem**. Pet owners hold their pets' identity, health, service, and travel records in a mobile app. Veterinarians and groomers (and later governments/airlines) run software that **issues and consumes verifiable credentials** about pets. Credentials are **anchored on-chain** (Merkle roots) and **verifiable three ways**: cryptographic integrity, on-chain issuance/revocation status, and **DNS-bound issuer identity** — the OpenAttestation trust triangle, implemented here **from scratch** with a **language-agnostic, JSON-free canonicalization**. A contextual fourth fragment, **on-chain ownership** (`DogTagSBT.ownerOf` == the user's self-custodial wallet), gates the owner's own self-import but is informational for third-party verifiers (§5).
+DogTag is a **pet-credentialing ecosystem**. Pet owners hold their pets' identity, health, service, and travel records in a mobile app. Veterinarians and groomers (and later governments/airlines) run software that **issues and consumes verifiable credentials** about pets. Credentials are **anchored on-chain** as a **single Poseidon Merkle root `R`** (the credential commitment — leaf hash, Merkle tree, and verification nullifier are all Poseidon; §3.3/§3.4) and **verifiable three ways**: cryptographic integrity, on-chain issuance/revocation status, and **DNS-bound issuer identity** — the OpenAttestation trust triangle, implemented here **from scratch** with a **language-agnostic, JSON-free canonicalization**. A contextual fourth fragment, **on-chain ownership** (`DogTagSBT.ownerOf` == the user's self-custodial wallet), gates the owner's own self-import but is informational for third-party verifiers (§5).
+
+### System capabilities
+
+1. **Issue** verifiable credentials (Merkle roots anchored on-chain, DNS-bound issuer).
+2. **Verify** a credential's authenticity (3 pillars + contextual ownership).
+3. **Import / share** records (QR + one-time JWT, off-chain operational data).
+4. **On-chain proof-of-verification** — a verifier (groomer/vet/airline/gov) records on-chain, **with the user's signed consent**, that it validated a credential. Two interchangeable paths: a **normal** path (the credential root is committed on-chain) and a **Groth16 ZK** path (privacy-maximal — proves the verification happened without putting the credential data or root on chain). Verifier capability is gated by a `VERIFY:` whitelist namespace, **separate from issuer roles** (a groomer can verify without being an issuer). See §3.6, §4.3, §4.7, §13.7.
 
 ### 1.1 Products in this monorepo
 
@@ -72,7 +79,9 @@ See `implementation.md` §Docker for the compose files and `.env` schema.
 
 ## 3. The DogTag Open Pet Credential standard (data layer)
 
-This is the **open-sourced, library-agnostic** core. Identical results in TypeScript, Rust, and Solidity. Full rationale: [`research/02-attestation.md`](./research/02-attestation.md), [`research/01-data-standards.md`](./research/01-data-standards.md).
+This is the **open-sourced, library-agnostic** core. Identical results in TypeScript, Rust, and Solidity (and circom — §4.7). Full rationale: [`research/02-attestation.md`](./research/02-attestation.md), [`research/01-data-standards.md`](./research/01-data-standards.md), [`research/13-poseidon-unification.md`](./research/13-poseidon-unification.md).
+
+> **Hash policy (v4 — Poseidon-unified).** The **credential commitment uses Poseidon** over BN254 — the leaf hash, the Merkle tree, and the verification nullifier (so the same root `R` is provable in-circuit). **keccak256 (Ethereum Keccak, padding `0x01`, not NIST SHA3-256 `0x06`) is retained ONLY where the EVM/ECDSA standards mandate it and the value never enters a circuit:** (1) EIP-712/ECDSA signature digests (`_hashTypedDataV4` for normal-path `VerificationConsent` and `DogTagSBT.recover`, `ECDSA.recover`); (2) Ethereum address derivation; (3) pure namespacing keys — `recordType = keccak256(label)`, the `VERIFY:` whitelist keys, and the clone `salt`. Everything that is part of the credential commitment or enters the circuit is Poseidon.
 
 ### 3.1 Wrapped-document shape
 
@@ -122,43 +131,49 @@ A leaf is the tuple `(keyPath, salt, typeTag, value)`:
 }
 ```
 
-### 3.3 Canonical leaf hashing (the algorithm)
+### 3.3 Canonical leaf hashing (the algorithm — Poseidon)
+
+The credential commitment is **Poseidon over BN254 field elements** (not a byte-string hash), because the same leaves must be proven in the Groth16 circuit (§4.7). Poseidon hashes field elements `<254` bits, so byte strings (`keyPath`, `salt`, `value`) are first packed into fields via the injective, length-bound **`fieldOf`/`bytesToField`** map (component-hash approach — circomlib Poseidon arity is compile-time-constant, so we fold limbs through Poseidon rather than raw-absorbing):
 
 ```
-leafHash = keccak256( 0x00                       // domain separator: LEAF
-                    ‖ len(keyPathBytes)  ‖ keyPathBytes
-                    ‖ len(salt=16)       ‖ salt
-                    ‖ uint8(typeTag)
-                    ‖ len(valueBytes)    ‖ valueBytes )
+fieldOf(bytes x) -> field:                      // injective, length-bound, multi-limb
+   b = u64be(len(x)) ‖ x                         // 8-byte big-endian length prefix
+   limbs = split b into 31-byte big-endian limbs (each < 2^248 < p, no wraparound)
+   acc = DS_BYTES; for L in limbs: acc = Poseidon(acc, fieldFromLimb(L))   // domain-sep fold
+   return acc
+fieldOf(scalar uint) -> field: the integer reduced into [0,p)   // 15-digit chip, timestamps, typeTag, addresses(uint160) all fit one field
+
+hashLeaf = Poseidon(DS_LEAF, fieldOf(keyPath), fieldOf(salt16), fieldOf(typeTag), fieldOf(value))   // 5 inputs → circomlib Poseidon width t=6
 ```
 
-- All `len(...)` are `uint32` big-endian. **Length-prefixing every component** kills intra-leaf second-preimage ambiguity.
-- Value encoding rules (deterministic across languages):
+- The 8-byte big-endian length prefix inside `fieldOf` is what kills intra-leaf second-preimage ambiguity (replacing the old per-component `uint32` length prefixes).
+- **`encodeValue` is UNCHANGED** — the NFC normalization, the pinned decimal grammar, the no-float guard, and the mandatory `typeTag` are identical to the prior spec; only the final hashing changes from keccak to Poseidon. Value encoding rules (deterministic across languages), unchanged:
   - `null` → empty bytes.
   - `bool` → `0x00`/`0x01`.
   - `string` → **NFC-normalized** UTF-8 bytes.
   - `integer` → decimal ASCII, **no leading zeros, no `-0`** (arbitrary precision; covers microchip IDs and lot numbers as exact integers — never floats).
   - `decimal` → fixed decimal **string** (e.g. weight `"22.7"`), normalized (no trailing zeros beyond significant, single canonical form). **Native floats are forbidden.**
   - `bytes` → raw bytes.
-- **keccak256** = Ethereum Keccak (padding `0x01`), **not** NIST SHA3-256 (`0x06`). Confirmed in research; this is what Solidity's `keccak256` and OZ `MerkleProof` use.
 
-> Implementations: TS uses `@noble/hashes` `keccak_256`; Rust uses `alloy_primitives::keccak256` (or `tiny-keccak::Keccak::v256`); Solidity uses native `keccak256`. The byte layout above is a hand-rolled length-prefixed concatenation (not `abi.encode`) so it is trivially identical in all three without an ABI codec. (research/02 suggested `abi.encode`; we pin the explicit concat for zero ABI dependency — documented as the normative spec.)
+> Implementations of `fieldOf`/`encodeValue` are byte-identical across TS, Rust, and Solidity; the final Poseidon uses the pinned instantiation in §3.4 (one parameter set, four libraries, CI anchor vector). The `fieldOf` packing is a hand-rolled limb fold (not `abi.encode`) so it is trivially identical in all environments without an ABI codec.
 
-### 3.4 Merkle tree build
+### 3.4 Merkle tree build (Poseidon)
 
 ```
-1. Compute leafHash for every field.
-2. Sort leaf hashes ascending, bytewise. (deterministic order, ignores field order)
+1. Compute hashLeaf (§3.3) for every field.
+2. Sort leaf hashes ascending as integers in [0,p). (deterministic order, ignores field order)
 3. Build bottom-up:
-     parent = keccak256( 0x01 ‖ sortPair(left, right) )   // 0x01 = NODE domain sep
-     sortPair(a,b) = a <= b ? a‖b : b‖a                    // commutative
+     parent = Poseidon( DS_NODE, min(a,b), max(a,b) )      // 3 inputs; commutative
+     a,b compared as integers in [0,p)
    - A lone odd node is PROMOTED unchanged to the next level (never duplicated).
-4. Root of the tree = targetHash for this document.
-   - Single-leaf document: targetHash = that one leaf hash.
+4. Root of the tree = the credential commitment R (== targetHash for this document).
+   - Single-leaf document: R = that one leaf hash.
 ```
 
-- **Commutative `sortPair`** ⇒ proofs are unordered sibling sets; on-chain verification needs no left/right bits and is compatible with OZ `MerkleProof.processProof` semantics (with our domain separators baked into a tiny custom verifier — see §5.4).
-- One comparator everywhere; domain separators (`0x00` leaf / `0x01` node) prevent leaf/node confusion attacks (a hardening OA omits).
+- **Commutative sorted-pair (`min`/`max`)** ⇒ proofs are unordered sibling sets; on-chain verification needs no left/right bits. The in-circuit ordered tree applies the same sortPair+mux so the proven root equals the SDK's `R`. Odd-promotion and the single-leaf root are preserved exactly.
+- **Domain tags** replace the old keccak `0x00`/`0x01` bytes and are used as the **first input slot** (NOT a capacity IV, to stay on the exact circomlib API across all four libs): `DS_LEAF=1`, `DS_NODE=2`, `DS_BYTES=3`, `DS_NULLIFIER=4`. They prevent leaf/node/byte/nullifier-domain confusion.
+
+> **Pinned Poseidon instantiation.** ONE circomlib BN254 parameter set — x⁵ S-box, `R_F=8`, per-`t` `R_P`, seed `"poseidon"`, circomlib MDS/round-constants. **Four pinned libraries:** circom → circomlib `Poseidon`; TS → **`poseidon-lite`**; Rust → **`light-poseidon`** (`new_circom(n)`, Veridise-audited); Solidity → **`poseidon-solidity`** (`PoseidonT3..T7`). **CI MUST assert bit-identical output across all four** against the anchor vector `poseidon([1,2]) = 0x115cc0f5...189a` (circomlibjs has historically drifted — pin + test). Full rationale: [`research/13-poseidon-unification.md`](./research/13-poseidon-unification.md).
 
 ### 3.5 Selective disclosure / obfuscation
 
@@ -166,7 +181,7 @@ To redact a field while keeping the same root: move the field's **leaf hash** in
 
 ### 3.6 Credential schemas (W3C VC 2.0 envelope)
 
-All credentials wrap in **W3C Verifiable Credentials Data Model 2.0**. The envelope is canonicalized exactly per §3.2–§3.4 (keccak256 salted leaves; **we do NOT adopt JSON-LD/RDF canonicalization** — SMART Health Cards / EU DCC lesson: anchor only a hash/root, never RDF-canonicalize). Envelope fields (canonical, per CHANGESPEC §0):
+All credentials wrap in **W3C Verifiable Credentials Data Model 2.0**. The envelope is canonicalized exactly per §3.2–§3.4 (Poseidon salted leaves; **we do NOT adopt JSON-LD/RDF canonicalization** — SMART Health Cards / EU DCC lesson: anchor only a hash/root, never RDF-canonicalize). Envelope fields (canonical, per CHANGESPEC §0):
 
 - `@context`: **URI array** — `["https://www.w3.org/ns/credentials/v2", "<DogTag context URI>"]`. **Human prose never goes in `@context`** — it goes in `description`.
 - `type`: **token array**, e.g. `["VerifiableCredential","RabiesVaccinationCertificate"]`.
@@ -211,6 +226,30 @@ Record types map to the xlsx **Unique Events** (`recordType` on-chain = `keccak2
 
 Full field tables per document type: [`research/01-data-standards.md`](./research/01-data-standards.md).
 
+#### Verification artifacts (proof-of-verification)
+
+A **`Verification`** event (a.k.a. **Presentation**) is a first-class credential-presentation event — it generalizes the xlsx "Credential Presentation Event" rows (e.g. the **Travel Request** / **DOT Airline Form Presentation**). It records, on-chain, that some verifier validated a credential with the user's consent. It is keyed by `purpose = keccak256(label)`, with labels such as `GROOMING_INTAKE`, `TRAVEL_PRESENTATION`, `AIRLINE_CHECKIN`, `VET_INTAKE`. The event itself lives on `VerificationRegistry` (§4.7); the consent that authorizes it is the **`VerificationConsent`** artifact below.
+
+**`VerificationConsent`** — an EIP-712 struct the **user** signs to authorize one verification. The user signs the credential **root** (never the salted cleartext), binding it to the specific `relayer` (verifier wallet) and a one-time `nonce`:
+
+```
+VerificationConsent {
+  uint256 dogTagId;        // the pet
+  bytes32 recordType;      // keccak256(label) of the record being verified
+  bytes32 credentialRoot;  // the single Poseidon credential root R (both paths)
+  address relayer;         // the verifier wallet that may submit (msg.sender on-chain)
+  address subject;         // the user's wallet (= ownerOf(dogTagId))
+  uint256 nonce;
+  uint256 deadline;
+}
+// EIP-712 domain { name:"DogTag", version:"1", chainId:135, verifyingContract: VerificationRegistry }
+```
+
+- **Normal path:** `credentialRoot = R` (the issued Poseidon root); signed by the user's **secp256k1** wallet (ECDSA, EIP-712 — the digest is keccak per the standard). The registry recovers `ECDSA.recover(...) == subject`.
+- **ZK path:** `credentialRoot = R` (the **same** issued Poseidon root, proven in-circuit); signed by the user's **EdDSA-BabyJubjub** consent key (cheap in-circuit), which is pre-bound to `subject` (the secp256k1 wallet) in `ConsentKeyRegistry` (§4.7).
+
+Both paths share one **canonical nullifier** so one consent = one recorded attestation: `nullifier = Poseidon(DS_NULLIFIER, dogTagId, purpose, relayer, subject, nonce)` (pinned Poseidon — §3.4), tracked in a single `consumed` set across both paths.
+
 ---
 
 ## 4. Smart-contract architecture
@@ -225,7 +264,14 @@ IssuerRegistry     — central AccessControl whitelist of issuer signing address
 DogTagIssuer       — per-record-type anchoring contract (implementation, cloned). Issues/revokes
                      bytes32 merkle roots; every write gated by IssuerRegistry.
 DogTagIssuerFactory— deploys DogTagIssuer EIP-1167 clones (one per record type / per business).
+VerificationRegistry— records Verification/Presentation events (normal + Groth16 ZK paths);
+                     shared nullifier set; gated by the VERIFY: whitelist namespace (§4.3, §4.7).
+Groth16Verifier    — snarkjs-generated BN254 verifier for the ZK proof-of-verification path (§4.7).
+ConsentKeyRegistry — binds a user's BabyJubjub consent key → their secp256k1 userWallet
+                     via a one-time on-chain ecrecover (§4.7).
 ```
+
+`DogTagIssuer` needs **no ZK-specific additions** (v4 — Poseidon unification). There is **ONE root `R`** (Poseidon) anchored by `issue(R)`; the circuit proves that same `R`, so the `VerificationRegistry` checks `DogTagIssuer.isValid(R)` **directly** on the public root. The former dual-root machinery — `zkCommit(rKec, rZk)`, the `ZkCommitment` event, the `kecOf[rZk]` mapping, and the `zkIndex`/`cloneOf`/`issuerForAny` lookups — is **deleted** (CHANGESPEC-v4 §2). Issuance adds **zero** on-chain hashing (still just stores a `bytes32`).
 
 ### 4.2 `DogTagSBT` — the pet identity (granular-role lifecycle)
 
@@ -244,7 +290,7 @@ The "DogTag" factory: **issues an on-chain identity per chip/pet** that everyone
 
 **Status model — soft status, NEVER burn** (`DogTagStatus` enum): `Active`, `Lost`, `TransferPending`, `Deceased`, `Revoked`. `Active↔Lost` and `Active↔TransferPending` are reversible; **`Deceased` and `Revoked` are terminal/irreversible**. We do **not** burn on death/revocation — burning would orphan every credential that references `tokenId` and break historical verifiability. `burn` is reserved for the **admin GDPR-erasure path only** (§13). Every transition emits `StatusChanged(tokenId, from, to, by, reason)`.
 
-- `tokenId` (`dogTagId`) = the canonical pet identity; **allocated as a random/sequential non-personal id** — **never** `keccak256(microchip)` (that would anchor a brute-forceable chip hash on-chain — §11.1). All other credentials reference it.
+- `tokenId` (`dogTagId`) = the canonical pet identity; **allocated as a random/sequential non-personal id** — **never any hash of the microchip** (neither `keccak256(microchip)` nor `Poseidon(microchip)` — any hash of a low-entropy chip is brute-forceable on-chain — §11.1). All other credentials reference it.
 - **Owned by the USER's self-custodial wallet** (mobile embedded-MPC/BIP-39 address — §10); soulbound, so ownership can't be silently moved. `ownerOf(dogTagId)` is read at the owner's *self-import* only (§5 contextual ownership). To break cross-pet enumeration, mint each pet to a **fresh per-pet derived address** (§11.1, §13.6).
 - One SBT per microchip (uniqueness enforced off-chain by the central backend before mint).
 
@@ -279,6 +325,8 @@ function isWhitelistedFor(bytes32 recordType, address signer) external view retu
 **Invariant:** the **active signer must be `isWhitelistedFor(recordType, signer)`** for the record being issued.
 
 Onboarding flow (off-chain → on-chain, also triggered on a signing-mode switch — see §6): a new signer address → vet submits `{issuerEntityId, address, mode, recordTypes, USDA#, license#}` to the **central/admin backend** → admin verifies accreditation off-chain → admin calls `whitelistFor(recordType, addr)` per record type → app polls `isWhitelistedFor` until live. Only then can that address issue. Delist inactive-mode addresses to avoid a stale, over-broad whitelist; backend key rotation = a new address to whitelist.
+
+**`VERIFY:` whitelist namespace — verifier capability gated SEPARATELY from issuer roles.** The same per-(key, address) `isWhitelistedFor` machinery scopes who may record a verification: `VerificationRegistry` checks `IssuerRegistry.isWhitelistedFor(keccak256("VERIFY:" || purpose), relayer)`. Because verify-capability lives in its own `VERIFY:`-prefixed key space, a **groomer can be authorized to verify a given `purpose` without holding any issuer role** (and an issuer is not implicitly a verifier). Whitelisting follows the same admin-approval flow above, with `VERIFY:`-namespaced keys.
 
 ### 4.4 `DogTagIssuer` — record anchoring (cloned per record type)
 
@@ -334,14 +382,91 @@ FETCH + VERIFY (mobile scans):
   mobile parses QR → GET https://<vet-host>/records/{recordId}  (Bearer JWT)
   vet API checks JWT (sub==recordId, jti one-time) → returns wrapped doc
   mobile verifies 3 authenticity pillars (all required):
-    integrity: recompute leaves+merkle from data → == targetHash; proof→merkleRoot
+    integrity: recompute Poseidon leaves+merkle from data → == targetHash; proof→merkleRoot (R)
     issuance:  issuer.isValid(merkleRoot) via ROAX RPC (read-only)
     identity:  DNS TXT of issuer.domain lists issuer.documentStore + chainId
   + ownership (CONTEXTUAL — only in the owner's self-import context):
     ownership: DogTagSBT.ownerOf(dogTagId) == userWalletAddress (record imports as "yours" only if you control the on-chain owner)
     NOT_APPLICABLE for third-party verifiers (a groomer/airline is not ownerOf)
   mobile stores credential under the pet, grouped by recordType
+
+VERIFY (on-chain proof-of-verification — decoupled from import; §4.7, §3.6):
+  verifier API → POST /verify/session/start {purpose}
+                 → QR + one-time JWT {relayer=verifierWallet, purpose, challenge, recordType}
+  mobile: user reviews → signs VerificationConsent over the credential ROOT (never salted data):
+            normal: ECDSA (secp256k1) over R
+            ZK:     EdDSA-BabyJubjub over R  (key bound via ConsentKeyRegistry)
+          → POST central /v1/verify/consent → relayed to verifier /verify/consent/submit
+  verifier backend builds proof:
+            NORMAL: reuse 3-pillar verify(...,mode:"third-party") on the disclosed doc; OR
+            ZK:     dogtag-prover-rs builds witness + Groth16 proof (no raw data on chain)
+  verifier submits via the existing dual-signing prepare/confirm (§6.2, hardened §13.6):
+            VerificationRegistry.recordVerification(consent, userSig)              // normal
+            VerificationRegistry.recordVerificationZK(a,b,c, [dogTagId,purpose,relayer,subject,nullifier,keyHash,R])  // ZK
+          → emits Verified(...); consumes the shared nullifier
 ```
+
+> **Import and verification are DECOUPLED.** `/import/pull` (off-chain operational data) stays as-is. The new `/verify/*` is the on-chain attestation: NORMAL mode can compose both (the disclosed doc drives import + attestation); **ZK mode = verification with no data import at all** (the default for sensitive purposes).
+
+### 4.7 Verification contracts & ZK circuit (proof-of-verification)
+
+Records that a verifier validated a credential **with the user's signed consent** (§3.6). Two paths share one `VerificationRegistry`, one `consumed` nullifier set, and the existing issuance/revocation gate. Full detail: [`research/10-zk-groth16.md`](./research/10-zk-groth16.md), [`research/11-consent-attestation.md`](./research/11-consent-attestation.md), [`research/12-verification-integration.md`](./research/12-verification-integration.md). Corrected code in `implementation.md §11.8`.
+
+**`VerificationRegistry`** — custom, **not EAS** (EAS isn't on ROAX, can't express a relayer-bound-in-signature, and has no Groth16 path; we borrow only its EIP-712 delegation *shape*).
+
+```solidity
+mapping(bytes32 => bool) public consumed;            // nullifier -> used (SHARED by both paths)
+bool public restrictToWhitelistedRelayers = true;     // admin toggle: require VERIFY: whitelist
+event Verified(uint256 indexed dogTagId, address indexed relayer, address indexed subject,
+               bytes32 purpose, bytes32 nullifier, uint256 ts);
+
+function recordVerification(VerificationConsent c, bytes userSig) external {          // NORMAL
+    require(block.timestamp <= c.deadline && msg.sender == c.relayer);                 // relayer == caller
+    if (restrictToWhitelistedRelayers)
+        require(registry.isWhitelistedFor(keccak256("VERIFY:"||purpose), msg.sender));
+    require(ECDSA.recover(_hashTypedDataV4(hash(c)), userSig) == c.subject);
+    require(sbt.ownerOf(c.dogTagId) == c.subject);                                     // pet belongs to user
+    require(DogTagIssuer(issuerFor(c.recordType)).isValid(c.credentialRoot));          // R issued & not revoked
+    bytes32 nf = PoseidonT7(DS_NULLIFIER, c.dogTagId, purpose, c.relayer, c.subject, c.nonce); // on-chain pinned Poseidon
+    require(!consumed[nf]); consumed[nf] = true;
+    emit Verified(c.dogTagId, c.relayer, c.subject, purpose, nf, block.timestamp);
+}
+
+function recordVerificationZK(uint[2] a, uint[2][2] b, uint[2] c, uint[7] pub) external {  // ZK
+    // pub = [dogTagId, purpose, relayer, subject, nullifier, keyHash, R]
+    require(uint160(pub[2]) == uint160(uint(msg.sender)));                             // relayer == caller
+    if (restrictToWhitelistedRelayers)
+        require(registry.isWhitelistedFor(keccak256("VERIFY:"||bytes32(pub[1])), msg.sender));
+    for (p in pub) require(p < SNARK_SCALAR_FIELD);                                    // RANGE-CHECK all signals (#358)
+    bytes32 nf = bytes32(pub[4]); require(!consumed[nf]); consumed[nf] = true;         // nullifier is a PUBLIC signal (#383)
+    require(zkVerifier.verifyProof(a, b, c, pub));
+    require(keyOf[address(uint160(pub[3]))] == bytes32(pub[5]));                       // keyHash == ConsentKeyRegistry.keyOf[subject]
+    require(sbt.ownerOf(pub[0]) == address(uint160(pub[3])));                          // ownerOf(dogTagId) == subject
+    address clone = rootIssuer[bytes32(pub[6])]; require(clone != address(0));         // resolve issuing clone FROM the root (§13.9)
+    require(DogTagIssuer(clone).isValid(bytes32(pub[6])));                             // isValid(R) DIRECTLY on the public root
+    emit Verified(pub[0], address(uint160(pub[2])), address(uint160(pub[3])),
+                  bytes32(pub[1]), nf, block.timestamp);
+}
+```
+
+- **Shared nullifier.** `nullifier = Poseidon(DS_NULLIFIER, dogTagId, purpose, relayer, subject, nonce)` (pinned Poseidon — §3.4) — a **public signal** in the ZK path (NEVER derived from proof bytes: Groth16 proofs are malleable, snarkjs #383), recomputed on-chain via `poseidon-solidity` `PoseidonT7` in the normal path. Pinned parity across circom/TS/Rust/Solidity is what makes the single `consumed` set actually prevent cross-path double-attest ⇒ one consent = one attestation.
+- **Range-check every public signal** (`< SNARK_SCALAR_FIELD`) before use (snarkjs #358).
+- **`isValid` re-check** is done by the **registry** directly on the public root `R` — no `rZk → rKec` mapping, no `kecOf`. The circuit proves the leaves hash to the **same `R`** that `issue(R)` anchored.
+- **Relayer pattern.** Plain "relayer submits a signed message" — **no EIP-2771** (a forwarder could spoof `msg.sender`, defeating the relayer binding) and **no ERC-4337** here (AA is reserved for the *owner's* gas-sponsored wallet, §10). The relayer is bound *into* the consent and the public signals.
+
+**`Groth16Verifier`** — snarkjs `zkey export solidityverifier`; BN254; ~211k gas verify, ~240–270k total.
+
+**`ConsentKeyRegistry`** — `bindConsentKey(babyJubPubKey, ecdsaSig)`: `ecrecover` proves the secp256k1 wallet authorizes that BabyJubjub key; `keyOf[wallet]` is the ZK path's `subject`↔consent-key linkage.
+
+**The BN254 Groth16 circuit** (~12–18k constraints, sub-second proving; `ark-circom` + `ark-groth16` in `crates/dogtag-prover-rs/`, rapidsnark only as a documented escape hatch):
+
+- **Public signals (order):** `[ dogTagId, purpose, relayer, subject, nullifier, keyHash, R ]`.
+- **Private:** leaf values/salts/typeTags/keyPath-hashes, the **Poseidon** Merkle path, `consentNonce`, the EdDSA-BabyJubjub signature, the user's BabyJubjub consent pubkey.
+- **Proves:** (a) the private leaves hash to the Poseidon root `R` (the same root anchored by `issue(R)`); (b) the credential's `dogTagId` leaf equals the public `dogTagId`; (c) `subject`'s consent key signed `(dogTagId, purpose, relayer, R, nonce)` (EdDSA, with `subject` bound into the message); (d) `keyHash == Poseidon(Ax, Ay)` of the consent pubkey; (e) `nullifier == Poseidon(DS_NULLIFIER, dogTagId, purpose, relayer, subject, nonce)`. The circuit **does NOT prove `isValid`** — the registry re-checks `isValid(R)` on-chain **directly** on the public root, and binds `keyHash==keyOf[subject]` + `ownerOf(dogTagId)==subject`.
+
+**ONE Poseidon root `R` (v4 — Poseidon unification).** `wrapDocument` computes a **single** Poseidon root `R`; the issuer calls `issue(R)`. The circuit proves that same `R` and the registry checks `isValid(R)` directly — there is no parallel keccak root, no `rZk`, and no `zkCommit`/`kecOf` mapping (CHANGESPEC-v4 §2). The §3 canonicalization standard (now Poseidon) and `isValid` are the single source of truth.
+
+**Trusted setup.** Reuse Hermez / Perpetual Powers of Tau (phase 1) + a **multi-party phase-2 (≥3 contributors) ending in a public random beacon**; publish the transcript, pin the `.zkey` hash, ship it in the prover image. A compromised phase-2 lets a party *forge attestations*, not leak data — and the core three-pillar trust model (§5) does not depend on the ZK setup at all.
 
 ---
 
@@ -349,7 +474,7 @@ FETCH + VERIFY (mobile scans):
 
 A credential's **authenticity** rests on **three pillars** — it is VALID only if all three return VALID and none returns INVALID (OA-style fragment model; each fragment is tri-state `VALID | INVALID | ERROR` — a network/RPC error ≠ forged ≠ valid):
 
-1. **Integrity** — recompute every leaf hash from `data`, union with `privacy.obfuscated`, rebuild the Merkle tree → must equal `signature.targetHash`. Then `processProof(proof, targetHash)` → must equal `signature.merkleRoot`. (Pure, offline, in the SDK.)
+1. **Integrity** — recompute every leaf hash from `data` with the **pinned Poseidon** scheme (§3.3), union with `privacy.obfuscated`, rebuild the **Poseidon** Merkle tree (§3.4) → must equal `signature.targetHash`. Then `processProof(proof, targetHash)` → must equal `signature.merkleRoot` (the credential root `R`). (Pure, offline, in the SDK.)
 2. **Issuance status** — read `DogTagIssuer(issuer.documentStore).isValid(merkleRoot)` over ROAX RPC. Must be `true` (issued, not revoked).
 3. **Identity (DNS)** — resolve `issuer.domain` TXT records over DNS-over-HTTPS; one must read `dogtag net=ethereum chainId=135 addr=<documentStore>` (case-insensitive addr, matching chainId). Binds the human-trusted domain to the contract.
 
@@ -361,7 +486,13 @@ The SDK exposes `verify(wrappedDoc, {rpc, dnsResolver, userWalletAddress?}) → 
 
 ### 5.4 On-chain verifier note
 
-`DogTagIssuer.isValid` only checks the **anchored root**. Merkle-proof checking happens **off-chain** in the SDK (cheaper, and the chain only needs the root). A `MerkleVerifierLib` mirrors the §3.4 domain-separated commutative hash so any contract that wants on-chain proof verification can, but v1 does not require it.
+`DogTagIssuer.isValid` only checks the **anchored root**. Merkle-proof checking happens **off-chain** in the SDK (cheaper, and the chain only needs the root). A `MerkleVerifierLib` mirrors the §3.4 Poseidon (`PoseidonT3`) domain-separated commutative node hash so any contract that wants on-chain proof verification can, but v1 does not require it.
+
+### 5.5 Presentation / verification as a recorded on-chain event
+
+A **verifier** presenting/validating a credential is now a **first-class, recorded on-chain event** — `Verified(...)` on `VerificationRegistry`, authorized by the user's `VerificationConsent` (§3.6, §4.7). This is the proof-of-verification capability; it is what realizes the xlsx Travel Request / DOT Airline presentation rows.
+
+**The mobile-user self-import pipeline above is UNCHANGED.** The three authenticity pillars (integrity / issuance / identity) plus the **contextual ownership** fragment (`ownerOf(dogTagId) == userWalletAddress`, gating only the owner's own self-import) are exactly as in §5.1–§5.4. Proof-of-verification is an **additional, decoupled** leg used by third-party verifiers; it does not alter how a record is imported or how its authenticity is computed.
 
 ---
 
@@ -459,12 +590,14 @@ business: store replica, notify staff
 - `businesses` — registry: `{businessId, type, name, geo, services, apiBaseUrl, domain, documentStores{recordType→addr}, signerAddresses[], hmacKeyId, status}`. **Non-personal discovery data.**
 - `issuer_applications` — pending whitelist requests `{issuerEntityId, address, mode, recordTypes[], USDA#, license#, status}`.
 - `appointments` — **source of truth** `{appointmentId, rev, userId, petId, businessId, state, slot, history[]}`.
+- `verification_records` — proof-of-verification ledger `{dogTagId, relayer, subject, purpose, recordType, path('normal'|'zk'), nullifier, credentialRoot, txHash, ts}` — mirrors the on-chain `Verified` events. **Off-chain consent copies / `ConsentReceipt`s** for verification are kept here (deletable; in the crypto-shred erasure scope — §11/§13.7).
 
 ### 9.2 Business (vet/groomer) DB
 - `keystore_meta` — genesis state, encrypted-seed location, derived accounts (addresses+labels only) — backend signing mode.
 - `records` — issued wrapped documents `{recordId, recordType, dogTagId, wrappedDoc, root, txHash, signingMode, signerAddress, custodian, retention{basis, clock}, status}`. **`custodian` (the practice = legal record owner) is distinct from the pet-`Owner`.**
 - `issuer_signers` — `{issuerEntityId, address, mode('wallet'|'backend'), recordTypes[], whitelistedTxHash, status}` — one issuer entity, many signing addresses (§4.3).
-- `consents` / `consent_receipts` — per-purpose lawful-basis records (mirror of §9.1 for issuer-side processing).
+- `consents` / `consent_receipts` — per-purpose lawful-basis records (mirror of §9.1 for issuer-side processing); includes off-chain `VerificationConsent` receipts for proof-of-verification (deletable, erasure-scoped — §13.7).
+- `verification_records` — verifier-side mirror of recorded `Verified` events `{dogTagId, relayer, subject, purpose, recordType, path, nullifier, credentialRoot, txHash, ts}`.
 - `clients`, `pets_cache` — imported pet profiles/owners (groomer view).
 - `appointments` — **replica** `{appointmentId, rev, state, slot, gcalEventId}`.
 - `gcal_event_map`, `gcal_sync_state` — calendar sync bookkeeping.
@@ -489,6 +622,7 @@ Under **Settings**, like Telegram's TON Space — a low-friction, recoverable, s
 - **Storage = encrypt-then-store:** a hardware key in the **Secure Enclave (iOS) / StrongBox (Android)** encrypts the seed/secret; the ciphertext is stored in normal storage; decryption is **biometric-gated** (the Enclave/Keystore can't hold an arbitrary 256-bit seed directly). Require `biometryCurrentSet`/`setUserAuthenticationRequired` so re-enrolling biometrics invalidates the key; `…ThisDeviceOnly`/no auto-backup.
 - Shows **address + PLASMA balance**, send/receive; connects to external dApps (scan `wc:` URI) via **Reown WalletKit** (both platforms).
 - **The pet's `DogTagSBT` is owned by this wallet's address** (a **fresh per-pet derived address** — §4.2/§13.6). It supplies the **contextual `ownership` fragment** used only at the owner's own self-import (`ownerOf(dogTagId) == myWalletAddress`); third-party verifiers don't use it (§5). Pet claim/transfer and lost-key recovery use **`recover()` (signature-authorized re-bind preserving `tokenId`), not burn-and-remint** (§13.6). v1 prefers **gas sponsorship / AA so owners hold no PLASMA**.
+- **Consent signing (proof-of-verification — §3.6/§4.7).** When a verifier requests a verification, the app shows a consent review screen and signs a `VerificationConsent` over the credential **root** (never salted data): the **normal path** signs with the existing **secp256k1** wallet (ECDSA, EIP-712); the **ZK path** signs with a **derived BabyJubjub consent key** (cheap in-circuit EdDSA). The BabyJubjub key is registered once via **`ConsentKeyRegistry`** (a one-time on-chain `ecrecover` binding it to the secp256k1 wallet). A `consent` module (UniFFI-exported from the shared SDK) handles both signature types on Android and iOS.
 
 ### 10.2 Portal theming — light/dark
 
@@ -510,14 +644,15 @@ The **vet, groomer, and admin web portals** get a real user-switchable **light/d
 
 Full detail: [`research/07-legal-privacy.md`](./research/07-legal-privacy.md). Two load-bearing constraints: (a) **owner PII must NEVER go on-chain**, and (b) a DogTag credential is **evidentiary, not self-authoritative**.
 
-- **No personal data in cleartext or recoverable form on-chain.** On-chain holds only: salted commitments (salts off-chain), revocation/status, non-personal DIDs/keys, timestamps, schema/version, accreditation refs. **A salted hash is itself personal data** (pseudonymisation, not anonymisation — ICO/EDPB), and an **unsalted hash of a low-entropy microchip number (15 digits) is brute-forceable → effectively reversible → personal data on an immutable ledger.** Hence per-field **16-byte random salts are the privacy mechanism, not just anti-forgery.** A globally-replicated ledger is also an independent GDPR Chapter V (cross-border transfer) problem — minimising on-chain personal data minimises on-chain transfer.
-- **The owner's wallet address ↔ pet SBT link IS pseudonymous personal data** and must be treated as such (it is on-chain by design — §4.2/§5). It is in DPIA scope, NOT exempt. Mitigations: **derive a fresh address per pet** (`m/44'/60'/0'/0/{petIndex}`) so an observer can't enumerate one person's whole pet history from a reused address; SBT burn is part of the erasure flow (below); the v2+ upgrade path is account-abstraction (ERC-4337/7702) with sponsored gas. Do **not** claim "nothing personal on-chain" without this qualification — it would not survive a DPIA. `dogTagId` (SBT tokenId) is allocated as a **non-personal** id — never `keccak256(microchip)` (that would anchor a brute-forceable low-entropy hash of the chip).
+- **No personal data in cleartext or recoverable form on-chain.** On-chain holds only: salted commitments (salts off-chain), revocation/status, non-personal DIDs/keys, timestamps, schema/version, accreditation refs. **A salted commitment is itself personal data** (pseudonymisation, not anonymisation — ICO/EDPB), and **any unsalted hash of a low-entropy microchip number (15 digits) is brute-forceable → effectively reversible → personal data on an immutable ledger** — this is **hash-agnostic** (it holds whether the commitment is keccak or Poseidon; the hash function is not the protection). Hence per-field **16-byte random salts are the hiding term — the privacy mechanism, not just anti-forgery.** A globally-replicated ledger is also an independent GDPR Chapter V (cross-border transfer) problem — minimising on-chain personal data minimises on-chain transfer.
+- **The owner's wallet address ↔ pet SBT link IS pseudonymous personal data** and must be treated as such (it is on-chain by design — §4.2/§5). It is in DPIA scope, NOT exempt. Mitigations: **derive a fresh address per pet** (`m/44'/60'/0'/0/{petIndex}`) so an observer can't enumerate one person's whole pet history from a reused address; SBT burn is part of the erasure flow (below); the v2+ upgrade path is account-abstraction (ERC-4337/7702) with sponsored gas. Do **not** claim "nothing personal on-chain" without this qualification — it would not survive a DPIA. `dogTagId` (SBT tokenId) is allocated as a **non-personal** id — never **any hash of the microchip** (neither `keccak256(microchip)` nor `Poseidon(microchip)`; any hash of a low-entropy chip is brute-forceable). It is a random/sequential non-personal id.
 - **Never on-chain (enumerated):** any owner PII (name/address/email/phone), document scans, **service-animal / disability indicators** (GDPR Art. 9 special category; CPRA sensitive PI) — service/assistance attestation data is off-chain only; and unsalted/low-entropy hashes of the microchip code or cert serials.
 - **Right-to-erasure = destroy every copy of every per-field salt + delete the off-chain record + burn the SBT** so the on-chain commitment becomes **unlinkable** and the live `ownerOf → wallet` binding is dropped. The salt (16-byte CSPRNG, 128-bit) is the hiding term — even for low-entropy values an adversary must brute-force 2^128 salts — so destroying the salt unlinks **provided all copies are destroyed**. The weak link is **copy-proliferation**: the salt sits in cleartext in every distributed wrapped-doc `data` (issuer DB, holder device, importer caches, QR copies, backups/oplog). Implement erasure as **crypto-shredding**: encrypt salts/`data` under a per-record DEK at rest and destroy the DEK so all reachable ciphertext copies become undecryptable; copies the protocol can't reach (holder device, third-party importers) are DPIA residual risk. This is **risk-mitigation, NOT a regulator-blessed safe harbour** (CNIL: "close to" erasure; EDPB does not bless key-destruction as automatically satisfying Art. 17). A **DPIA is mandatory**, refreshed on any change to on-chain fields or chain topology; prefer a permissioned network where possible.
 - **CCPA/GDPR delete endpoint (45-day SLA)** wired to the *same* off-chain delete + salt/key-destruction flow.
 - **Consent + retention:** per-purpose `Consent`/`ConsentReceipt` records (lawful basis, withdrawable, timestamped — §9); `retention{basis, clock}` on credentials (default ≥5 yrs US / ≥3 yrs EU where silent).
 - **Evidentiary legal posture + trust tiers:** a DNS-bound, chain-anchored W3C VC proves integrity/timing but carries **no eIDAS Art. 35 / ESIGN presumption** — authority is **extrinsic**, flowing from the accredited issuer (USDA-accredited vet / APHIS / competent authority). Encode `attestationType`, `signatureTrustTier`, `legalEffect` (`evidentiary`), `legalBasisVersion`, `jurisdiction`. The DOT form records that a **self-attestation under 18 U.S.C. §1001 exists** — never "verified disability". Never market the baseline as "legally binding / government-grade".
 - **Record-custodian distinct from owner:** the practice/clinic owns the *record* (legal custodian); the pet-`Owner` has information-access rights — do not conflate (§9).
+- **On-chain proof-of-verification creates behavioral linkage.** Recorded `Verified` events tie `subject` (userWallet) ↔ `dogTagId` ↔ verifier ↔ time — **pseudonymous personal data in DPIA scope**. ZK is the privacy-maximal default; mitigations are normative in **§13.7**.
 
 ---
 
@@ -536,11 +671,12 @@ Three independent audits ([`research/audit-01-contracts.md`](./research/audit-01
 - **M (registry desync)** — `IssuerRegistry` is the single source of truth; no parallel bespoke mapping.
 
 ### 13.2 Canonicalization & Merkle (audit-02) — determinism is mandatory
+- **Poseidon determinism across FOUR environments (v4).** The credential commitment is Poseidon (§3.3/§3.4); determinism now spans **circom / TS / Rust / Solidity** with the **single pinned circomlib BN254 instantiation** and pinned libraries (circomlib / `poseidon-lite` / `light-poseidon` / `poseidon-solidity`). **CI MUST assert bit-identical output across all four** against the anchor vector `poseidon([1,2]) = 0x115cc0f5...189a` (circomlibjs has historically drifted — pin + test). `encodeValue` and the `fieldOf` byte→field packing are byte-identical across all environments.
 - **A1 — `canonicalDecimal` is pinned** to a closed ASCII grammar over the *input string*: `^-?(0|[1-9][0-9]*)(\.[0-9]+)?$`; strip fractional trailing zeros; drop a trailing dot; map `-0→0`; reject exponents/whitespace/`+`. (Covers weight `22.7`, titer `0.5`.)
 - **A2 — typed input at the wrap boundary.** Numbers are **never** taken from a native float. Integers and decimals enter `wrapDocument` as **typed strings** (schema-driven), are carried as strings end-to-end, and `assertNotFloat` is a hard guard. `verify` never re-infers types — it reads the tag from the packed leaf.
 - **A3 — Unicode pinned.** NFC normalization against a **pinned Unicode version** (stated in the SDK), unpaired surrogates rejected, NFC form stored in `data`. **Solidity participates at the node level only** — it never builds a leaf from a raw string.
 - **C1 — invariant:** single-document verification **MUST rebuild the whole tree** and compare to `targetHash`; it must **never** trust `processProof` alone. (`processProof` is inclusion-only; position/shape unbound under commutative+odd-promotion.)
-- **E2 — before enabling batching:** bind subtree size in the node hash — `hashNode = keccak256(0x01 ‖ u32be(subtreeLeafCount) ‖ sortPair(a,b))` — or use ordered proofs for the batch layer. Not needed for single-doc v1, but the format reservation is documented now.
+- **E2 — before enabling batching:** bind subtree size in the node hash — e.g. `hashNode = Poseidon(DS_NODE, subtreeLeafCount, min(a,b), max(a,b))` — or use ordered proofs for the batch layer. Not needed for single-doc v1, but the format reservation is documented now.
 - **D1 — all three authenticity pillars required.** `fragments.integrity` alone proves nothing (an attacker can rewrite `data`+`targetHash` consistently); security rests on **pillar 2 (on-chain root)** + **pillar 3 (DNS)**. `verify` returns `valid` only if integrity + issuance + identity are all VALID (each tri-state `VALID|INVALID|ERROR`). The **`ownership` fragment is contextual, NOT part of the validity gate** (§5): it gates only the owner's self-import (`ownerOf(dogTagId) == userWalletAddress`) and is `NOT_APPLICABLE`/informational for third-party verification — otherwise every legitimate groomer/airline/vet import (none of whom are `ownerOf`) would falsely read INVALID. `obfuscated[]` entries are validated as 32-byte hashes that don't overlap live-leaf hashes; `dogTagId`, `@context[*]`, and `type[*]` are **non-obfuscatable**.
 - **F2a — `flatten`/keyPath grammar is pinned** (load-bearing, since keyPath is hashed): dotted object keys, array indices as `[i]` base-10, reserved characters rejected, empty containers defined; shipped as test vectors.
 - **F2b — packed-value parse splits on the first two colons only** (`salt:tag:value`), since values contain `:` (timestamps). 
@@ -572,7 +708,7 @@ These extend (do not replace) §13.1–§13.4 and the canonical names/enums in C
 
 - **Dual-signing confirm re-verification.** `POST /credentials/confirm` MUST re-verify on-chain — the issuer's `RootIssued(merkleRoot, signer)` event **and** `issuedAt[merkleRoot] != 0` — before flipping a draft to `issued`. A lying/buggy frontend (wallet mode) cannot fake issuance. Merkle/wrapped-doc building is **always server-side, identical in both modes**; `{signingMode, signerAddress}` are audit-only.
 - **`ownerOf` import check.** A record imports as the user's own only if `DogTagSBT.ownerOf(dogTagId) == userWalletAddress`. `ownership` is a **contextual, tri-state fragment** (§5): it gates the owner's self-import but is `NOT_APPLICABLE`/informational for third-party verification (a groomer/airline/vet is not `ownerOf`) — validity for them rests on the three authenticity pillars only. The SBT is **minted to and owned by the user's self-custodial wallet address** (§4.2); ownership changes use **`recover()` (signature-authorized re-bind), not burn-and-remint** — see §13.6.
-- **PII-off-chain rule (qualified).** No recoverable personal data on-chain. Even a salted hash is personal data; an unsalted hash of a low-entropy microchip number is brute-forceable. Per-field 16-byte random **salts are the privacy mechanism**. Service/disability (Art. 9) data is off-chain only. **The wallet-address↔pet SBT link is pseudonymous personal data in DPIA scope** (§11.1) — mitigate with a fresh per-pet address and (v2+) account abstraction; `dogTagId` is non-personal (never `keccak256(microchip)`). Do not ship the unqualified "nothing personal on-chain" wording.
+- **PII-off-chain rule (qualified).** No recoverable personal data on-chain. Even a salted commitment is personal data; **any hash of a low-entropy microchip number is brute-forceable (hash-agnostic — keccak or Poseidon alike)**. Per-field 16-byte random **salts are the hiding term, the privacy mechanism**. Service/disability (Art. 9) data is off-chain only. **The wallet-address↔pet SBT link is pseudonymous personal data in DPIA scope** (§11.1) — mitigate with a fresh per-pet address and (v2+) account abstraction; `dogTagId` is non-personal (never any hash of the microchip — neither `keccak256(microchip)` nor `Poseidon(microchip)`). Do not ship the unqualified "nothing personal on-chain" wording.
 - **Multi-address whitelist.** `IssuerRegistry` supports **multiple signing addresses per issuer entity** (one-to-many). Invariant: the active signer MUST be `isWhitelistedFor(recordType, signer)`. A mode switch / second device / backend key rotation introduces a new address → admin approval queue → `whitelistFor` → poll until live; pre-flight `eth_call` to fail fast; delist inactive-mode addresses to avoid stale over-broad whitelisting.
 - **MPC wallet storage.** Mobile default is an **embedded MPC wallet** (TSS — provider can't sign alone); raw BIP-39 export is advanced-only. Storage is **encrypt-then-store**: seed/secret encrypted by a Secure Enclave (iOS) / StrongBox (Android) hardware key, **biometric-gated**, `…ThisDeviceOnly`, no auto-backup, `biometryCurrentSet`-bound. Never log/serialize the plaintext seed.
 - **Erasure-via-salt-destruction (crypto-shredding) + SBT burn.** The right-to-erasure flow destroys **every reachable copy** of every per-field salt (crypto-shred: per-record DEK destroyed → all ciphertext copies undecryptable), deletes the off-chain record, and **burns the SBT** (drops the live `ownerOf → wallet` link) so the on-chain commitment and ownership binding can no longer be reconstructed. The 128-bit salt is the hiding term (low value-entropy is fine); copy-proliferation is the real risk, so unreachable copies (holder device, third-party importers) are DPIA residual risk. Wired to both GDPR Art. 17 and CCPA §1798.105 (45-day) request paths.
@@ -586,10 +722,48 @@ Source: [`research/09-sbt-lifecycle.md`](./research/09-sbt-lifecycle.md) + audit
 - **Status, not burn.** `DogTagStatus {Active, Lost, TransferPending, Deceased, Revoked}`; `Active↔Lost`/`Active↔TransferPending` reversible, `Deceased`/`Revoked` terminal. **`Deceased` is set by `AUTHORITY_ROLE` or the original issuer — never the owner** (death is reported by an accredited party, often a different vet than the minter). **Never burn for lifecycle** (would orphan referencing credentials); `burn` is admin **GDPR-erasure only**.
 - **Recovery = signature-authorized re-bind, not burn-and-remint** (resolves the audit's Critical unspecified-transfer). `recover()` preserves `tokenId` + `issuerOf` (referencing creds survive), gated by `RECOVERY_ROLE` **+ EIP-712 signature from the destination owner** binding `{dogTagId, newOwner, nonce, deadline, chainId:135, verifyingContract}`. Catastrophic lost-key (no key) → `RECOVERY_ROLE` after off-chain identity proof (does not need the lost key). ERC-6147 guard opt-in only.
 - **Hardened `confirm`.** Derive `signer` from the **transaction** (never the request body); require `tx.to`/`tx.input`/`tx.value:0`/`tx.chainId:135` to equal the prepared draft; pin the emitting contract address for the `RootIssued` log; require `isWhitelistedFor(recordType, signer)` at confirm; wait **N confirmations** (reorg-safe); idempotent on `txHash`.
-- **`dogTagId` is non-personal** (random/sequential) — **forbidden** to be `keccak256(microchip)` (would anchor a brute-forceable chip hash). **Fresh per-pet owner address** to break cross-pet enumeration.
+- **`dogTagId` is non-personal** (random/sequential) — **forbidden** to be any hash of the microchip (neither `keccak256(microchip)` nor `Poseidon(microchip)` — would anchor a brute-forceable chip hash). **Fresh per-pet owner address** to break cross-pet enumeration.
 - **Operator-session auth** guards every issuance/settings/signer route (`prepare`, `confirm`, `/records/*`, `settings/signing-mode`, `issuer/signers`, `import/*`, `calendar/*`); only `GET /records/{id}` (record-JWT) and HMAC cross-backend routes are unauthenticated. Legacy `/records` is retired or operator-gated.
 - **Cross-backend erasure propagation.** A delete-request propagates **central → every business backend** (the vet is the GDPR controller and holds copies); each runs the same crypto-shred. Consent withdrawal wires to retention re-eval → erase.
 - **Funds custody minimized.** Prefer **gas sponsorship / account abstraction (ERC-4337/7702)** so pet owners **never hold PLASMA**; native send/receive omitted from v1. If funds custody is ever added, obtain a money-transmission legal read (parallel to the privacy DPIA).
+
+### 13.7 v3 normative items (privacy of on-chain verification events) — extend §11.1 / §13.5
+
+Source: [`research/11-consent-attestation.md`](./research/11-consent-attestation.md) + [`research/12-verification-integration.md`](./research/12-verification-integration.md). Code in `implementation.md §11.8`.
+
+- **Both proof-of-verification paths publish a permanent behavioral linkage.** A recorded `Verified` event ties `subject` (userWallet) ↔ `dogTagId` ↔ verifier (relayer) ↔ time — i.e. *which user was verified by which business, when*. This is **pseudonymous personal data, in DPIA scope** (NOT exempt). The **mandatory DPIA (§11.1) must be refreshed** to cover the verification-event linkage.
+- **Mitigations (normative):**
+  1. **ZK is the default for sensitive purposes.** The ZK path keeps `recordType` + `credentialRoot` **off chain** — only the tuple `(dogTagId, relayer, subject, purpose)` + nullifier are emitted. The normal path (which commits `credentialRoot` on-chain) is the more-exposing **fallback**, used only when an on-chain root commitment is genuinely required.
+  2. **Fresh per-pet address** as `subject` (§4.2/§11.1) — bounds a verification to one pet, not the person's whole pet portfolio.
+  3. **ZK-v2: publish the `nullifier` *instead of* `subject`.** The interface already carries the nullifier as a public signal; emitting it in place of `subject` is the only variant that **severs the on-chain user-address link** entirely. (v1 publishes `subject`; v2 is the privacy endgame.)
+  4. **Consent receipts kept off-chain and deletable**, inside the existing **crypto-shred erasure scope** (`verification_records`, off-chain `VerificationConsent` copies — §9, §13.5).
+  5. **Prefer a permissioned chain / no public block explorer**, so the linkage is not openly enumerable.
+
+### 13.8 v3.1 normative items (verification-subsystem audit remediations) — code in impl §11.9
+
+Three audits (07 ZK, 08 contracts, 09 systems) found the ZK path **unsound as first specified**. The fixes (full code in `implementation.md §11.9`):
+
+- **Bind `purpose` end-to-end.** `VerificationConsent` gains `purpose` (distinct from `recordType`) **and** `challenge` (session binding); `purpose` is signed, is a circuit public signal, is in the nullifier, keys the `VERIFY:` whitelist, and is the `Verified` event topic. Without it the `VERIFY:` gate collapsed to one global boolean (re-introducing v1's C-2 flaw) and the taxonomy never reached chain. **(STILL NORMATIVE.)**
+- **audit-07 C-1 (zkCommit keccak↔Poseidon binding) — RESOLVED-by-unification.** v4 unifies the credential commitment on Poseidon: there is **ONE root `R`** anchored by `issue(R)` and proven directly by the circuit, so **there is no off-chain keccak↔Poseidon binding left to be unsound**. The originator-gated `zkCommit`, the dual `rKec`/`rZk` leaf computation, and any in-circuit keccak are deleted (CHANGESPEC-v4 §2).
+- **audit-08 C-2 (unbound `issuerForAny`/`kecOf`) — RESOLVED-by-unification.** With a single public root `R`, the registry calls `DogTagIssuer.isValid(R)` **directly**; the `zkIndex`/`cloneOf`/`kecOf`/`issuerForAny` lookups are deleted. (`issuerFor(recordType)` resolution remains for the normal path.)
+- **ZK path binds `subject` — STILL NORMATIVE.** The circuit signs `subject` into the EdDSA message and outputs `keyHash=Poseidon(Ax,Ay)`; the registry requires `keyHash==ConsentKeyRegistry.keyOf[subject]` **and** `ownerOf(dogTagId)==subject` — so a relayer can't attribute a verification to a victim. Full Poseidon tree + constrained `dogTagId` leaf/index.
+- **Pinned Poseidon — STILL NORMATIVE** (circom == TS == Rust == Solidity, CI cross-vectors against `poseidon([1,2])=0x115cc0f5...189a`) so the shared `consumed` nullifier set actually prevents cross-path double-attest. This now also covers the **credential commitment itself** (§3.3/§3.4), not just the nullifier.
+- **Generalized hardened confirm** asserts the `Verified` event + `consumed[nf]` for verify submissions.
+- **Relay hop HMAC-authenticated** (`/verify/consent/submit`), off-chain fail-fast re-added (recover==subject, relayer==activeSigner, one-time challenge), 5-min deadline.
+- **Art. 9:** `SERVICE_ATTESTATION` has no on-chain root and is **NOT verifiable via on-chain proof-of-verification** (rejected at registry + backend); `purpose` labels are non-sensitive (no cleartext Art. 9 leak in `Verified.purpose`).
+- **ZK privacy claim corrected:** server-side proving means the verifier **does** receive the disclosed witness — ZK minimizes **on-chain** exposure (raw data never on chain), *not* exposure to the verifier; on-device proving is the v2 upgrade.
+- **Per-pet BabyJubjub consent key** (don't re-link fresh-per-pet `subject` addresses) with **rotation** (no lost-key lockout); `keyOf` in DPIA scope.
+- **Deploy/ops:** `setIssuerFor` wired (else verify reverts), real timelock on `setZkVerifier`, and Phase 2.5 gated on ROAX supporting the **BN254 pairing precompiles**.
+
+### 13.9 v4.1 normative items (Poseidon-unification audit remediations) — code in impl §11.10
+
+Audits 10 (Poseidon), 11 (contracts), 12 (systems) confirmed the unification eliminates the C-1/C-2 binding Criticals and is structurally sound, with these required fixes:
+
+- **Clone resolution via write-once `rootIssuer[R]`** (audit-11 V4-C1, Critical). A single Poseidon root `R` is issued in exactly one per-business clone, but `recordType→clone` is one-to-many — so the registry MUST resolve the clone **from the root itself**: `issue(R)` writes a protocol-global write-once `rootIssuer[R]=clone`, and `VerificationRegistry` (both paths) does `clone = rootIssuer[R]; require(clone!=0); isValid(R)`. This supersedes the `purposeToRecordType`/`issuerFor[recordType]` resolution (which couldn't pick the right per-business clone → wrong-issuer / revocation-evasion).
+- **Per-arity Poseidon determinism** (audit-10 P-C1, Critical): CI anchors at **t=2, t=3, t=6, t=7** (not just `poseidon([1,2])`), bit-identical across circom / poseidon-lite / light-poseidon / poseidon-solidity, since `R_P`/constants are per-`t`.
+- **Field-reduction parity** (audit-10 P-C2, Critical): all reductions pinned to the BN254 **scalar field `r`**; the normal path range-checks `dogTagId,nonce,purpose < r` before `PoseidonT7` so congruent ids can't collide in the shared `consumed` set.
+- **In-circuit Merkle matches the SDK** (odd-promotion, integer `[0,p)` comparator, single-leaf), `bytesToField` edge vectors, Rust limb-decode discipline, and a real `setZkVerifier` timelock.
+- **Confirmed eliminated:** audit-07 C-1 / audit-08 C-2 (no off-chain keccak↔Poseidon binding remains). **Still normative:** subject↔key (`keyOf[subject]==keyHash`), `ownerOf==subject`, purpose binding, hardened confirm, HMAC relay, Art. 9 exclusion, per-pet consent key. All v1/v2/v3.1 remediations intact.
 
 ## 12. Open items / future
 - Government/airline issuer stacks (USDA APHIS endorsement via VEHCS, EU competent authority, DOT/airline verification).
