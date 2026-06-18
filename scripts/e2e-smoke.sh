@@ -21,7 +21,7 @@ VET="${VET_BASE:-http://localhost:41874}"
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
 
 IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c          # IssuerRegistry
-VR=0x19C1B5f80c41EE864149500bdF998Dd18aec2a43          # VerificationRegistry (ZK-wired)
+VR=0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1          # VerificationRegistry (ZK-wired)
 SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233          # DogTagSBT
 VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53   # VACCINATION issuer clone
 ADMIN_PW="${ADMIN_PASSWORD:-admin}"
