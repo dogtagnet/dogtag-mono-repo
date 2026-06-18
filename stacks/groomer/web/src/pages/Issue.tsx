@@ -198,9 +198,11 @@ export function Issue() {
             are built server-side; this form supplies the credential fields (§1.6).
           </CardDescription>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={fillDemo}>
-          <Sparkles className="h-4 w-4" /> Fill demo data
-        </Button>
+        {env.demoMode && (
+          <Button type="button" variant="outline" size="sm" onClick={fillDemo}>
+            <Sparkles className="h-4 w-4" /> Fill demo data
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="space-y-6">

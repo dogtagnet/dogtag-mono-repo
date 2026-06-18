@@ -1,0 +1,52 @@
+# ----------------------------------------------------------------------------------------------
+# DogTag — production TLS reverse-proxy (Caddy 2).
+#
+# Caddy terminates HTTPS for this stack's public domain and forwards plaintext to the internal
+# `web` nginx service, which serves the built SPA (`dist`) and proxies `/api` to the api container.
+# This file is shared by every stack's docker-compose.yml; the actual hostname comes from the
+# `DOMAIN` env var ({$DOMAIN}) so one file parameterizes vet/groomer/admin deployments.
+#
+# REQUIREMENTS before first boot:
+#   1. A public DNS **A record** (and AAAA if you have IPv6) for $DOMAIN -> this host's public IP.
+#   2. Inbound TCP **80** and **443** open to this host:
+#        - port 80  : Let's Encrypt ACME HTTP-01 challenge + HTTP->HTTPS redirect
+#        - port 443 : public HTTPS traffic
+#      Caddy obtains and auto-renews a Let's Encrypt certificate on first request; certs persist in
+#      the `caddy_data` named volume (mounted at /data), so restarts don't re-issue.
+#
+# Bring-up:  export DOMAIN=vet.example.com  &&  docker compose up -d   (see scripts/remote-up.sh).
+# ----------------------------------------------------------------------------------------------
+
+{$DOMAIN} {
+	# --- Admin-route protection -------------------------------------------------------------------
+	# The api also runs ADMIN_LOOPBACK_ONLY=1 (custody/genesis/unlock bound to 127.0.0.1 inside the
+	# container), but we deny `/api/admin/*` at the edge too as defense-in-depth: the public internet
+	# must never reach these routes through the proxy.
+	@admin path /api/admin/*
+
+	# DEFAULT: deny outright (no admin access from the public internet).
+	respond @admin 403
+
+	# ALTERNATIVE: to allow admin access only from a trusted office IP / VPN, comment out the
+	# `respond @admin 403` line above and uncomment the block below (swap in your CIDR(s)):
+	#
+	#   @admin_blocked {
+	#       path /api/admin/*
+	#       not remote_ip 203.0.113.0/24 10.0.0.0/8
+	#   }
+	#   respond @admin_blocked 403
+
+	# --- Everything else -> the internal nginx (`web` service on the compose network) ---------------
+	# nginx serves the built SPA and proxies `/api` to the api container.
+	reverse_proxy web:80
+
+	# Sane security headers (HSTS once you've confirmed HTTPS works across all subdomains).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	encode gzip zstd
+}

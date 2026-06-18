@@ -13,13 +13,15 @@ import {
 } from "@dogtag/ui";
 import { useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 
 /** Admin session gate — POST /v1/admin/login on the central backend. */
 export function Login() {
   const { central, setAdminToken } = useApp();
   const { toast } = useToast();
-  // Testnet demo: prefill the admin password so the operator just clicks Sign in.
-  const [password, setPassword] = useState(DEMO_ADMIN_PASSWORD);
+  // Demo mode prefills the admin password so the operator just clicks Sign in; in production
+  // (VITE_DEMO_MODE unset) the field starts empty and must be typed.
+  const [password, setPassword] = useState(env.demoMode ? DEMO_ADMIN_PASSWORD : "");
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -68,7 +70,9 @@ export function Login() {
                 autoFocus
                 required
               />
-              <p className="text-xs text-muted">Demo default prefilled — just click Sign in.</p>
+              {env.demoMode && (
+                <p className="text-xs text-muted">Demo default prefilled — just click Sign in.</p>
+              )}
             </div>
             <Button type="submit" className="w-full" loading={busy}>
               Sign in

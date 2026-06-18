@@ -1,19 +1,39 @@
 # ----------------------------------------------------------------------------------------------
 # DogTag — ADMIN / CENTRAL stack (we host). impl §7.
-#   web   : React SPA built by Vite, served by nginx        -> host 39741
-#   api   : the Rust admin-api binary (multi-stage build)   -> host 39742  (internal 39742)
-#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY -> NO host port (never published)
+#   caddy : TLS reverse-proxy (Let's Encrypt) terminating HTTPS    -> host 80/443
+#   web   : React SPA built by Vite, served by nginx               -> internal only (web:80)
+#   api   : the Rust admin-api binary (multi-stage build)          -> host 39742 (internal 39742)
+#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY        -> NO host port (never published)
 #
 # Build context is the monorepo ROOT. Run from this directory: docker compose up -d (`make up-admin`).
+#
+# PERSISTENCE: custody (age-encrypted admin signer seed) + records live in MONGO (the `admindata`
+# volume). Operators MUST back up the `admindata` volume. The `adminseed`/KEYSTORE_PATH volume is dead
+# code retained for backward compat (the seed is a CustodyBlob in Mongo, not on disk).
 # ----------------------------------------------------------------------------------------------
 services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"             # ACME HTTP-01 challenge + HTTP->HTTPS redirect
+      - "443:443"           # public HTTPS (auto-TLS via Let's Encrypt)
+    volumes:
+      - ../../deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data    # ACME account + issued certificates (persist across restarts)
+    environment:
+      DOMAIN: ${DOMAIN}
+    depends_on:
+      - web
+    restart: unless-stopped
+
   web:
     build:
       context: ../..
       dockerfile: stacks/admin/web/Dockerfile
     image: dogtag-admin-web
-    ports:
-      - "39741:80"          # host 39741 -> nginx :80
+    # No host `ports:` — internal only. Caddy reaches it as `web:80`.
+    expose:
+      - "80"
     depends_on:
       - api
     restart: unless-stopped
@@ -22,26 +42,50 @@ services:
     build:
       context: ../..
       dockerfile: stacks/admin/api/Dockerfile
+      args:
+        FEATURES: mongo      # build the MongoStore-capable binary (Dockerfile has ARG FEATURES)
     image: dogtag-admin-api
     ports:
       - "39742:39742"       # host 39742 -> admin-api :39742
     env_file: .env
     environment:
-      MONGO_URI: "mongodb://mongo:39743/dogtag"
+      # Production knobs (secrets — incl. ADMIN_PRIVATE_KEY/ADMIN_ADDRESS — come from .env).
+      MONGO_URI: "mongodb://mongo:27017/dogtag"
+      MONGO_DB: ${MONGO_DB:-dogtag}
+      CHAIN_ID: ${CHAIN_ID:-135}
+      PORT: "39742"
+      DNS_CHECK: "doh"
+      CONFIRMATIONS: "2"
+      ADMIN_LOOPBACK_ONLY: "1"
+      ADMIN_PRIVATE_KEY: ${ADMIN_PRIVATE_KEY}
+      ADMIN_ADDRESS: ${ADMIN_ADDRESS}
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy   # fail-closed Mongo connect must not crash the API on first boot
     volumes:
-      - adminseed:/data
+      - adminseed:/data     # DEAD CODE: legacy seed path; custody now persists in Mongo (back up admindata)
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:39742/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   mongo:
     image: mongo:7
-    # NO `ports:` mapping — internal to the compose network only (service name `mongo`, port 39743).
+    # NO `ports:` mapping — internal to the compose network only (service name `mongo`, default 27017).
     expose:
-      - "39743"
-    command: ["mongod", "--port", "39743", "--bind_ip_all"]
+      - "27017"
+    command: ["mongod", "--port", "27017", "--bind_ip_all"]
     volumes:
-      - admindata:/data/db
+      - admindata:/data/db  # PERSISTENT custody + records — BACK THIS UP
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
 networks:
@@ -51,3 +95,4 @@ networks:
 volumes:
   admindata: {}
   adminseed: {}
+  caddy_data: {}

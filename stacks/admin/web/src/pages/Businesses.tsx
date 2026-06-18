@@ -28,6 +28,7 @@ import {
 import { Building2, Copy, MapPin, Plus, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 
 /**
  * Business registry (impl §5.3 / §4.2). Lists businesses from GET /v1/businesses (public discovery)
@@ -219,14 +220,16 @@ function RegisterDialog({
           <DialogTitle>Register a business</DialogTitle>
           <DialogDescription>Admin-gated. Non-personal fields only.</DialogDescription>
         </DialogHeader>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_BUSINESS_VET })}>
-            <Sparkles className="h-4 w-4" /> Demo (vet)
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_BUSINESS_GROOMER })}>
-            <Sparkles className="h-4 w-4" /> Demo (groomer)
-          </Button>
-        </div>
+        {env.demoMode && (
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_BUSINESS_VET })}>
+              <Sparkles className="h-4 w-4" /> Demo (vet)
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_BUSINESS_GROOMER })}>
+              <Sparkles className="h-4 w-4" /> Demo (groomer)
+            </Button>
+          </div>
+        )}
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
           <Field label="Type" value={form.type} onChange={(v) => upd("type", v)} placeholder="groomer / vet" required />
           <Field label="Name" value={form.name} onChange={(v) => upd("name", v)} required />

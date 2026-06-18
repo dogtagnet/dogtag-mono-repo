@@ -54,6 +54,8 @@ pub struct AppState {
     pub custody: Custody,
     pub jwt: JwtKeys,
     pub cfg: Arc<Config>,
+    /// in-memory login/unlock rate limiter (lenient; demo-safe).
+    pub ratelimit: Arc<crate::auth::RateLimiter>,
 }
 
 /// Build the issuer metadata for a record type (documentStore = the issuer clone address).

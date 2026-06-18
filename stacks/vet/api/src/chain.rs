@@ -114,6 +114,12 @@ pub struct TxView {
 /// Abstract chain surface. Addresses/roots are passed as lowercase `0x..` hex strings.
 #[async_trait]
 pub trait ChainClient: Send + Sync {
+    /// The EIP-155 chain id this client signs/validates against (config-driven via `CHAIN_ID`;
+    /// default `ROAX_CHAIN_ID` = 135). Used to stamp the wallet-mode `unsignedTx.chainId` and to
+    /// bind the confirm path's `tx.chainId` check — so a chain swap stays config-only.
+    fn chain_id(&self) -> u64 {
+        ROAX_CHAIN_ID
+    }
     /// Register the backend signer (32-byte secp256k1 private key) for an account index, with its
     /// derived address. Called by the unlock handler after custody decrypts the seed. The Alloy impl
     /// keeps the key for broadcasting; MemChain keeps only the address.
@@ -582,13 +588,20 @@ fn mem_consent_nullifier(c: &ConsentInput) -> String {
 /// A funded, unlocked Alloy chain client. Holds derived signers (by account index) and the RPC url.
 pub struct AlloyChain {
     pub rpc_url: String,
+    /// EIP-155 chain id used when signing legacy txs (default `ROAX_CHAIN_ID`; overridable via `CHAIN_ID`).
+    pub chain_id: u64,
     /// account index -> alloy local signer (registered at unlock time).
     signers: Mutex<HashMap<u32, alloy::signers::local::PrivateKeySigner>>,
 }
 
 impl AlloyChain {
     pub fn new(rpc_url: String) -> Self {
-        AlloyChain { rpc_url, signers: Mutex::new(HashMap::new()) }
+        AlloyChain { rpc_url, chain_id: ROAX_CHAIN_ID, signers: Mutex::new(HashMap::new()) }
+    }
+    /// Override the EIP-155 chain id (config-only chain swap; default stays `ROAX_CHAIN_ID` = 135).
+    pub fn with_chain_id(mut self, chain_id: u64) -> Self {
+        self.chain_id = chain_id;
+        self
     }
     fn signer(&self, index: u32) -> Option<alloy::signers::local::PrivateKeySigner> {
         self.signers.lock().unwrap().get(&index).cloned()
@@ -597,6 +610,9 @@ impl AlloyChain {
 
 #[async_trait]
 impl ChainClient for AlloyChain {
+    fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
     async fn register_signer(&self, index: u32, private_key: [u8; 32], _address: String) {
         if let Ok(s) = alloy::signers::local::PrivateKeySigner::from_bytes(&B256::from(private_key)) {
             self.signers.lock().unwrap().insert(index, s);
@@ -684,7 +700,7 @@ impl ChainClient for AlloyChain {
             .with_to(parse_addr(to))
             .with_input(data)
             .with_value(U256::ZERO)
-            .with_chain_id(ROAX_CHAIN_ID)
+            .with_chain_id(self.chain_id)
             .with_gas_price(gp);
 
         let pending = provider

@@ -58,6 +58,7 @@ pub fn state_with(
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
+        ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
     }
 }
 
@@ -98,6 +99,7 @@ pub fn state_with_verify(
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
+        ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
     }
 }
 
@@ -129,6 +131,7 @@ pub fn state_for_calendar(calendar: Arc<MockCalendar>, central: Arc<MockCentralC
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
+        ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
     }
 }
 

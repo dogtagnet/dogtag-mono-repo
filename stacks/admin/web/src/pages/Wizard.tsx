@@ -31,6 +31,27 @@ import {
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
+
+// Empty initial state for production (VITE_DEMO_MODE unset) — the operator keys every field in.
+const EMPTY_BUSINESS: DemoBusiness = {
+  type: "",
+  name: "",
+  lat: "",
+  lng: "",
+  services: "",
+  apiBaseUrl: "",
+  domain: "",
+  documentStores: "",
+};
+const EMPTY_APPLICATION: DemoIssuerApplication = {
+  issuerEntityId: "",
+  addresses: "",
+  recordTypes: "",
+  domain: "",
+  documentStore: "",
+  usdaNan: "",
+};
 
 /**
  * Add → approve issuer (end-to-end) wizard. A non-technical operator follows three linear steps:
@@ -48,13 +69,17 @@ export function Wizard() {
 
   const [preset, setPreset] = useState<Preset>("vet");
 
-  // step 1 — register business
-  const [biz, setBiz] = useState<DemoBusiness>({ ...DEMO_BUSINESS_VET });
+  // step 1 — register business (demo prefills the vet preset; production starts empty)
+  const [biz, setBiz] = useState<DemoBusiness>(
+    env.demoMode ? { ...DEMO_BUSINESS_VET } : { ...EMPTY_BUSINESS },
+  );
   const [bizResult, setBizResult] = useState<RegisterBusinessResp | null>(null);
   const [bizBusy, setBizBusy] = useState(false);
 
-  // step 2 — submit application
-  const [app, setApp] = useState<DemoIssuerApplication>({ ...DEMO_ISSUER_APPLICATION_VET });
+  // step 2 — submit application (demo prefills the vet preset; production starts empty)
+  const [app, setApp] = useState<DemoIssuerApplication>(
+    env.demoMode ? { ...DEMO_ISSUER_APPLICATION_VET } : { ...EMPTY_APPLICATION },
+  );
   const [appId, setAppId] = useState<string | null>(null);
   const [appBusy, setAppBusy] = useState(false);
 
@@ -134,7 +159,12 @@ export function Wizard() {
     setBizResult(null);
     setAppId(null);
     setWhitelistTxs(null);
-    applyPreset(preset);
+    if (env.demoMode) {
+      applyPreset(preset);
+    } else {
+      setBiz({ ...EMPTY_BUSINESS });
+      setApp({ ...EMPTY_APPLICATION });
+    }
   }
 
   const step1Done = bizResult !== null;
@@ -152,24 +182,26 @@ export function Wizard() {
               done — this business can now issue credentials.
             </CardDescription>
           </div>
-          <div className="flex gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant={preset === "vet" ? "primary" : "outline"}
-              onClick={() => applyPreset("vet")}
-            >
-              <Sparkles className="h-4 w-4" /> Vet preset
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={preset === "groomer" ? "primary" : "outline"}
-              onClick={() => applyPreset("groomer")}
-            >
-              <Sparkles className="h-4 w-4" /> Groomer preset
-            </Button>
-          </div>
+          {env.demoMode && (
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant={preset === "vet" ? "primary" : "outline"}
+                onClick={() => applyPreset("vet")}
+              >
+                <Sparkles className="h-4 w-4" /> Vet preset
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={preset === "groomer" ? "primary" : "outline"}
+                onClick={() => applyPreset("groomer")}
+              >
+                <Sparkles className="h-4 w-4" /> Groomer preset
+              </Button>
+            </div>
+          )}
         </CardHeader>
         <CardContent>
           <Stepper step1Done={step1Done} step2Done={step2Done} step3Done={step3Done} />

@@ -49,6 +49,7 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         vault: Arc::new(vault.clone()) as Arc<dyn KeyVault>,
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
+        ratelimit: Arc::new(admin_api::auth::RateLimiter::new()),
     };
     (state, chain, vault, business)
 }

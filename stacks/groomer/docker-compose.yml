@@ -1,20 +1,39 @@
 # ----------------------------------------------------------------------------------------------
 # DogTag — GROOMER stack (self-hosted). impl §7.
-#   web   : React SPA built by Vite, served by nginx        -> host 43617
-#   api   : the SAME vet-api binary run with BUSINESS_TYPE=groomer (NO separate groomer-api crate)
-#                                                           -> host 43618  (internal 41874)
-#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY -> NO host port (never published)
+#   caddy : TLS reverse-proxy (Let's Encrypt) terminating HTTPS    -> host 80/443
+#   web   : React SPA built by Vite, served by nginx               -> internal only (web:80)
+#   api   : the SAME vet-api binary run with BUSINESS_TYPE=groomer  -> host 43618 (internal 43618)
+#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY        -> NO host port (never published)
 #
 # Build context is the monorepo ROOT. Run from this directory: docker compose up -d (`make up-groomer`).
+#
+# PERSISTENCE: custody (age-encrypted seed) + records live in MONGO (the `groomerdata` volume).
+# Operators MUST back up the `groomerdata` volume. The `groomerseed`/KEYSTORE_PATH volume is dead code
+# retained for backward compat (the seed is a CustodyBlob in Mongo, not on disk).
 # ----------------------------------------------------------------------------------------------
 services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"             # ACME HTTP-01 challenge + HTTP->HTTPS redirect
+      - "443:443"           # public HTTPS (auto-TLS via Let's Encrypt)
+    volumes:
+      - ../../deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data    # ACME account + issued certificates (persist across restarts)
+    environment:
+      DOMAIN: ${DOMAIN}
+    depends_on:
+      - web
+    restart: unless-stopped
+
   web:
     build:
       context: ../..
       dockerfile: stacks/groomer/web/Dockerfile
     image: dogtag-groomer-web
-    ports:
-      - "43617:80"          # host 43617 -> nginx :80
+    # No host `ports:` — internal only. Caddy reaches it as `web:80`.
+    expose:
+      - "80"
     depends_on:
       - api
     restart: unless-stopped
@@ -23,27 +42,48 @@ services:
     build:
       context: ../..
       dockerfile: stacks/groomer/api/Dockerfile
+      args:
+        FEATURES: mongo      # build the MongoStore-capable binary (Dockerfile has ARG FEATURES)
     image: dogtag-groomer-api
     ports:
-      - "43618:41874"       # host 43618 -> vet-api :41874 (run as groomer)
+      - "43618:43618"       # host 43618 -> vet-api :43618 (run as groomer; PORT=43618 below)
     env_file: .env
     environment:
+      # Production knobs (secrets come from .env via ${VAR} interpolation — never hardcoded here).
       BUSINESS_TYPE: "groomer"
-      MONGO_URI: "mongodb://mongo:43619/dogtag"
+      MONGO_URI: "mongodb://mongo:27017/dogtag"
+      MONGO_DB: ${MONGO_DB:-dogtag}
+      CHAIN_ID: ${CHAIN_ID:-135}
+      PORT: "43618"
+      CONFIRMATIONS: "2"
+      ADMIN_LOOPBACK_ONLY: "1"
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy   # fail-closed Mongo connect must not crash the API on first boot
     volumes:
-      - groomerseed:/data
+      - groomerseed:/data   # DEAD CODE: legacy seed path; custody now persists in Mongo (back up groomerdata)
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:43618/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   mongo:
     image: mongo:7
-    # NO `ports:` mapping — internal to the compose network only (service name `mongo`, port 43619).
+    # NO `ports:` mapping — internal to the compose network only (service name `mongo`, default 27017).
     expose:
-      - "43619"
-    command: ["mongod", "--port", "43619", "--bind_ip_all"]
+      - "27017"
+    command: ["mongod", "--port", "27017", "--bind_ip_all"]
     volumes:
-      - groomerdata:/data/db
+      - groomerdata:/data/db  # PERSISTENT custody + records — BACK THIS UP
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
 networks:
@@ -53,3 +93,4 @@ networks:
 volumes:
   groomerdata: {}
   groomerseed: {}
+  caddy_data: {}

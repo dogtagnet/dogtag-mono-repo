@@ -14,9 +14,12 @@ COPY crates ./crates
 COPY stacks/vet/api ./stacks/vet/api
 COPY stacks/admin/api ./stacks/admin/api
 
+# FEATURES defaults to `mongo` (persistent prod store); override to empty (`--build-arg FEATURES=`)
+# for an ephemeral MemStore dev image.
+ARG FEATURES=mongo
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --bin admin-api && \
+    cargo build --release --features "${FEATURES}" --bin admin-api && \
     cp /build/target/release/admin-api /usr/local/bin/admin-api
 
 # ---- runtime ---------------------------------------------------------------------------------

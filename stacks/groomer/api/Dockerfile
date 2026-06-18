@@ -13,9 +13,12 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY stacks/vet/api ./stacks/vet/api
 COPY stacks/admin/api ./stacks/admin/api
+# The groomer backend IS the vet-api binary. FEATURES defaults to `mongo` (persistent prod store);
+# override to empty (`--build-arg FEATURES=`) for an ephemeral MemStore dev image.
+ARG FEATURES=mongo
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --bin vet-api && \
+    cargo build --release --features "${FEATURES}" --bin vet-api && \
     cp /build/target/release/vet-api /usr/local/bin/vet-api
 
 # ---- runtime ---------------------------------------------------------------------------------
@@ -29,6 +32,7 @@ USER dogtag
 ENV RUST_LOG=info
 # The groomer backend runs the vet-api binary; BUSINESS_TYPE=groomer is set via compose env.
 ENV BUSINESS_TYPE=groomer
-# Internal listen port (vet-api binds 0.0.0.0:41874; compose maps host 43618 -> 41874).
-EXPOSE 41874
+# Internal listen port. Compose runs the groomer with PORT=43618 (binds 0.0.0.0:43618,
+# maps 43618 -> 43618); the vet-api default is 41874 when PORT is unset.
+EXPOSE 43618
 ENTRYPOINT ["/usr/local/bin/vet-api"]

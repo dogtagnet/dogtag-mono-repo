@@ -117,7 +117,7 @@ function AdminLogin({
   toast: Toast;
 }) {
   // Testnet demo: prefill the admin password so the operator just clicks Continue.
-  const [pw, setPw] = useState(DEMO_ADMIN_PASSWORD);
+  const [pw, setPw] = useState(env.demoMode ? DEMO_ADMIN_PASSWORD : "");
   const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -147,7 +147,9 @@ function AdminLogin({
             Admin password
           </Label>
           <Input id="admin-pw" type="password" value={pw} onChange={(e) => setPw(e.target.value)} required />
-          <p className="text-xs text-muted">Demo default prefilled — just click Continue.</p>
+          {env.demoMode && (
+            <p className="text-xs text-muted">Demo default prefilled — just click Continue.</p>
+          )}
           <Button type="submit" loading={busy}>
             Continue
           </Button>
@@ -502,9 +504,11 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
           <Field label="License jurisdiction" value={form.licenseJurisdiction} onChange={(v) => upd("licenseJurisdiction", v)} />
           <Field label="License expiry" value={form.licenseExpiry} onChange={(v) => upd("licenseExpiry", v)} placeholder="YYYY-MM-DD" />
           <div className="sm:col-span-2 flex items-center gap-3">
-            <Button type="button" variant="ghost" onClick={fillDemo}>
-              Fill demo data
-            </Button>
+            {env.demoMode && (
+              <Button type="button" variant="ghost" onClick={fillDemo}>
+                Fill demo data
+              </Button>
+            )}
             <Button type="submit" loading={busy}>
               Submit application
             </Button>

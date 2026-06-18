@@ -26,7 +26,7 @@ pub mod verify;
 pub mod mongo;
 
 pub use app::{AppState, Config};
-pub use routes::router;
+pub use routes::{admin_router, public_router, router};
 
 /// `signing` is the EIP-1559/legacy sign-and-send surface; it lives in `chain` (AlloyChain).
 pub mod signing {

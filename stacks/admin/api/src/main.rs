@@ -8,7 +8,7 @@ use admin_api::business::ReqwestBusinessClient;
 use admin_api::chain::{AlloyChain, ChainClient};
 use admin_api::crypto::MemVault;
 use admin_api::dns::{DnsChecker, DohDnsChecker, MockDnsChecker};
-use admin_api::store::MemStore;
+use admin_api::store::{MemStore, Store};
 use tower_http::cors::CorsLayer;
 
 const PORT: u16 = 39742;
@@ -24,6 +24,11 @@ async fn main() {
 
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let rpc_url = env("ROAX_RPC", "http://127.0.0.1:8545");
+    // CHAIN_ID is env-driven so a different/production chain is a pure config swap (default 135 = ROAX).
+    let chain_id: u64 = std::env::var("CHAIN_ID")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(135);
 
     let cfg = Config {
         deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{PORT}")),
@@ -41,7 +46,7 @@ async fn main() {
     // whitelistFor/delistFor/mint can broadcast on-chain. Without this the chain client has no signer
     // and every admin write fails with "no signer for index". (The custody stacks unlock their own
     // signers; the central stack's signer is a static deployer key supplied at boot.)
-    let chain = AlloyChain::new(rpc_url);
+    let chain = AlloyChain::new(rpc_url).with_chain_id(chain_id);
     if let Ok(pk_hex) = std::env::var("ADMIN_PRIVATE_KEY") {
         let pk_hex = pk_hex.trim().strip_prefix("0x").unwrap_or(pk_hex.trim());
         match hex::decode(pk_hex) {
@@ -67,19 +72,117 @@ async fn main() {
         Arc::new(DohDnsChecker::default())
     };
 
+    // Store selection: persistent MongoStore when MONGO_URI is set (fail-closed), else ephemeral
+    // MemStore (demo/local — unchanged). Demo behavior is preserved when MONGO_URI is unset/empty.
+    let store: Arc<dyn Store> = build_store().await;
+
     let state = AppState {
-        store: Arc::new(MemStore::new()),
+        store,
         chain: Arc::new(chain),
         dns,
         business: Arc::new(ReqwestBusinessClient::new()),
         vault: Arc::new(MemVault::new()),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
+        ratelimit: Arc::new(admin_api::auth::RateLimiter::new()),
     };
 
-    let app = admin_api::router(state).layer(CorsLayer::permissive());
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], PORT));
-    tracing::info!(%addr, "admin-api listening");
-    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
-    axum::serve(listener, app).await.expect("serve");
+    // CORS: explicit allowlist when CORS_ALLOW_ORIGINS is set (prod), else permissive (demo).
+    let cors = build_cors();
+
+    // Admin-router loopback isolation (ADMIN_LOOPBACK_ONLY): when truthy, the public 0.0.0.0:PORT
+    // listener omits the admin-console routes, which are served on a separate 127.0.0.1:ADMIN_PORT
+    // listener (default PORT+1). Default (unset): everything on one listener exactly as today.
+    let admin_loopback = matches!(env("ADMIN_LOOPBACK_ONLY", "").as_str(), "1" | "true");
+
+    if admin_loopback {
+        let admin_port: u16 = std::env::var("ADMIN_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(PORT + 1);
+
+        let public_app = admin_api::public_router(state.clone()).layer(cors.clone());
+        let admin_app = admin_api::admin_router(state).layer(cors);
+
+        let public_addr = std::net::SocketAddr::from(([0, 0, 0, 0], PORT));
+        let admin_addr = std::net::SocketAddr::from(([127, 0, 0, 1], admin_port));
+        tracing::info!(%public_addr, %admin_addr, "admin-api public + loopback-only admin console listening");
+
+        let public_listener = tokio::net::TcpListener::bind(public_addr).await.expect("bind public");
+        let admin_listener = tokio::net::TcpListener::bind(admin_addr).await.expect("bind admin");
+
+        let public_srv = axum::serve(
+            public_listener,
+            public_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        );
+        let admin_srv = axum::serve(
+            admin_listener,
+            admin_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        );
+        let (a, b) = tokio::join!(public_srv, admin_srv);
+        a.expect("serve public");
+        b.expect("serve admin");
+    } else {
+        let app = admin_api::router(state).layer(cors);
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], PORT));
+        tracing::info!(%addr, "admin-api listening");
+        let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    }
+}
+
+/// Build the backing store. With `MONGO_URI` set & non-empty: persistent MongoStore (fail-closed on
+/// connect error). Otherwise: ephemeral MemStore (demo/local — unchanged).
+async fn build_store() -> Arc<dyn Store> {
+    let uri = std::env::var("MONGO_URI").unwrap_or_default();
+    if uri.trim().is_empty() {
+        return Arc::new(MemStore::new());
+    }
+
+    #[cfg(feature = "mongo")]
+    {
+        let db = std::env::var("MONGO_DB").unwrap_or_else(|_| "dogtag".to_string());
+        match admin_api::mongo::MongoStore::connect(&uri, &db).await {
+            Ok(s) => {
+                tracing::info!("connected to MongoStore (db={db})");
+                Arc::new(s)
+            }
+            Err(e) => {
+                tracing::error!("MONGO_URI set but MongoStore::connect failed: {e}; refusing to start");
+                std::process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(feature = "mongo"))]
+    {
+        tracing::error!(
+            "MONGO_URI is set but this binary was built WITHOUT the `mongo` feature; \
+             rebuild with --features mongo or unset MONGO_URI. Refusing to start."
+        );
+        std::process::exit(1);
+    }
+}
+
+/// CORS layer: explicit allowlist from `CORS_ALLOW_ORIGINS` (comma-separated) when set, else permissive.
+fn build_cors() -> CorsLayer {
+    match std::env::var("CORS_ALLOW_ORIGINS") {
+        Ok(s) if !s.trim().is_empty() => {
+            let origins: Vec<axum::http::HeaderValue> = s
+                .split(',')
+                .map(|o| o.trim())
+                .filter(|o| !o.is_empty())
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any)
+        }
+        _ => CorsLayer::permissive(),
+    }
 }

@@ -25,6 +25,7 @@ import {
 import { Check, ListChecks, Plus, Slash, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 import { shortAddr } from "../lib/format";
 
 const statusVariant: Record<IssuerApplicationStatus, "warning" | "success" | "danger" | "neutral"> = {
@@ -237,7 +238,11 @@ function CreateApplicationDialog({
 }) {
   const { central } = useApp();
   const { toast } = useToast();
-  const [form, setForm] = useState<DemoIssuerApplication>({ ...DEMO_ISSUER_APPLICATION_VET });
+  const [form, setForm] = useState<DemoIssuerApplication>(() =>
+    env.demoMode
+      ? { ...DEMO_ISSUER_APPLICATION_VET }
+      : { issuerEntityId: "", addresses: "", recordTypes: "", domain: "", documentStore: "", usdaNan: "" },
+  );
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -271,14 +276,16 @@ function CreateApplicationDialog({
             Multi-address × multi-recordType. Approving later whitelists each pair on-chain.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_VET })}>
-            <Sparkles className="h-4 w-4" /> Demo (vet)
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_GROOMER })}>
-            <Sparkles className="h-4 w-4" /> Demo (groomer)
-          </Button>
-        </div>
+        {env.demoMode && (
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_VET })}>
+              <Sparkles className="h-4 w-4" /> Demo (vet)
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_GROOMER })}>
+              <Sparkles className="h-4 w-4" /> Demo (groomer)
+            </Button>
+          </div>
+        )}
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
           <AppField label="Issuer entity id" value={form.issuerEntityId} onChange={(v) => setForm({ ...form, issuerEntityId: v })} required />
           <AppField label="Domain" value={form.domain} onChange={(v) => setForm({ ...form, domain: v })} required />

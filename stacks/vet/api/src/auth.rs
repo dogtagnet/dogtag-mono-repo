@@ -173,6 +173,97 @@ pub fn hmac_verify(secret: &str, method: &str, path: &str, body: &[u8], sig_hex:
     mac.verify_slice(&sig).is_ok()
 }
 
+// --------------------------------------------------------------------------------------------
+// In-memory rate limiter for the password endpoints (/login, /admin/login, /admin/unlock).
+//
+// Thresholds are intentionally LENIENT so the demo + e2e-smoke never trip: a client IP is locked
+// out for `lockout_secs` only after `per_ip_max` failed attempts inside `window_secs`, and a global
+// cap guards against a distributed flood. Successful auth clears the IP's failure record. Demo
+// behavior is unaffected — the limiter only ever rejects *repeated bad* passwords.
+// --------------------------------------------------------------------------------------------
+
+use std::sync::Mutex;
+
+#[derive(Default)]
+struct IpState {
+    /// failure timestamps (unix secs) inside the current window.
+    failures: Vec<u64>,
+    /// if Some, locked out until this unix-secs instant.
+    locked_until: Option<u64>,
+}
+
+pub struct RateLimiter {
+    inner: Mutex<std::collections::HashMap<String, IpState>>,
+    /// rolling global failure timestamps (DoS guard).
+    global: Mutex<Vec<u64>>,
+    window_secs: u64,
+    per_ip_max: usize,
+    global_max: usize,
+    lockout_secs: u64,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        // ~10 failures / 60s per IP -> 60s lockout; 200 failures / 60s globally.
+        RateLimiter {
+            inner: Mutex::new(std::collections::HashMap::new()),
+            global: Mutex::new(Vec::new()),
+            window_secs: 60,
+            per_ip_max: 10,
+            global_max: 200,
+            lockout_secs: 60,
+        }
+    }
+}
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns true if `ip` is currently locked out (call BEFORE checking the password).
+    pub fn is_locked(&self, ip: &str) -> bool {
+        let now = now();
+        let mut map = self.inner.lock().unwrap();
+        if let Some(st) = map.get_mut(ip) {
+            if let Some(until) = st.locked_until {
+                if now < until {
+                    return true;
+                }
+                st.locked_until = None;
+                st.failures.clear();
+            }
+        }
+        // global flood guard
+        let mut g = self.global.lock().unwrap();
+        g.retain(|t| now.saturating_sub(*t) < self.window_secs);
+        g.len() >= self.global_max
+    }
+
+    /// Record a failed attempt for `ip`; locks the IP out if it crosses the per-IP threshold.
+    pub fn record_failure(&self, ip: &str) {
+        let now = now();
+        {
+            let mut g = self.global.lock().unwrap();
+            g.retain(|t| now.saturating_sub(*t) < self.window_secs);
+            g.push(now);
+        }
+        let mut map = self.inner.lock().unwrap();
+        let st = map.entry(ip.to_string()).or_default();
+        st.failures.retain(|t| now.saturating_sub(*t) < self.window_secs);
+        st.failures.push(now);
+        if st.failures.len() >= self.per_ip_max {
+            st.locked_until = Some(now + self.lockout_secs);
+        }
+    }
+
+    /// Clear an IP's failure record on a successful auth.
+    pub fn record_success(&self, ip: &str) {
+        let mut map = self.inner.lock().unwrap();
+        map.remove(ip);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

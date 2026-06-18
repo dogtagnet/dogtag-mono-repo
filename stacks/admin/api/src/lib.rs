@@ -30,4 +30,4 @@ pub mod verify_relay;
 pub mod mongo;
 
 pub use app::{AppState, Config};
-pub use routes::router;
+pub use routes::{admin_router, public_router, router};

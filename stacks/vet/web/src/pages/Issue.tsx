@@ -39,10 +39,13 @@ export function Issue() {
   const { sendTransactionAsync } = useSendTransaction();
 
   // Testnet demo: prefill a valid rabies cert by default so you just click Sign & Issue (no typing).
-  const demo0 = useMemo(() => demoRabiesIssue(), []);
-  const [recordType, setRecordType] = useState(demo0.recordType);
-  const [dogTagId, setDogTagId] = useState(demo0.dogTagId);
-  const [values, setValues] = useState<Record<string, string>>(demo0.fields);
+  // Production (demo off): forms start empty.
+  const demo0 = useMemo(() => (env.demoMode ? demoRabiesIssue() : null), []);
+  const [recordType, setRecordType] = useState(
+    demo0?.recordType ?? (RECORD_TYPE_SCHEMAS[0]?.recordType ?? ""),
+  );
+  const [dogTagId, setDogTagId] = useState(demo0?.dogTagId ?? "");
+  const [values, setValues] = useState<Record<string, string>>(demo0?.fields ?? {});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{
@@ -200,9 +203,11 @@ export function Issue() {
             are built server-side; this form supplies the credential fields (§1.6).
           </CardDescription>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={fillDemo}>
-          <Sparkles className="h-4 w-4" /> Fill demo data
-        </Button>
+        {env.demoMode && (
+          <Button type="button" variant="outline" size="sm" onClick={fillDemo}>
+            <Sparkles className="h-4 w-4" /> Fill demo data
+          </Button>
+        )}
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="space-y-6">

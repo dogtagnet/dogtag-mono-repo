@@ -17,9 +17,11 @@
 //!   admin router (custody — mounted SEPARATELY; /admin/* requires the admin session):
 //!     POST /admin/genesis/start | /admin/genesis/confirm | /admin/unlock | /admin/accounts
 
+use std::net::SocketAddr;
+
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post, put},
     Json, Router,
@@ -43,6 +45,24 @@ fn err(code: StatusCode, msg: &str) -> Resp {
 // --------------------------------------------------------------------------------------------
 // auth helpers
 // --------------------------------------------------------------------------------------------
+
+/// Client IP for rate-limiting: prefer the first `X-Forwarded-For` hop (prod is behind Caddy),
+/// else the raw socket peer (absent under in-process tests -> a stable fallback key).
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| peer.map(|p| p.ip().to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Liveness probe (no auth): used by the compose healthcheck.
+async fn health() -> Resp {
+    ok(json!({ "status": "ok" }))
+}
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
     headers
@@ -81,19 +101,41 @@ struct LoginReq {
     password: String,
 }
 
-async fn login(State(st): State<AppState>, Json(body): Json<LoginReq>) -> Resp {
+async fn login(
+    State(st): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<LoginReq>,
+) -> Resp {
+    let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
+    if st.ratelimit.is_locked(&ip) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+    }
     if body.password != st.cfg.operator_password {
+        st.ratelimit.record_failure(&ip);
         return err(StatusCode::UNAUTHORIZED, "bad password");
     }
+    st.ratelimit.record_success(&ip);
     let token = auth::new_op_token();
     st.store.put_op_session(token.clone()).await;
     ok(json!({ "token": token }))
 }
 
-async fn admin_login(State(st): State<AppState>, Json(body): Json<LoginReq>) -> Resp {
+async fn admin_login(
+    State(st): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<LoginReq>,
+) -> Resp {
+    let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
+    if st.ratelimit.is_locked(&ip) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+    }
     if body.password != st.cfg.admin_password {
+        st.ratelimit.record_failure(&ip);
         return err(StatusCode::UNAUTHORIZED, "bad password");
     }
+    st.ratelimit.record_success(&ip);
     let token = format!("admin_{}", auth::new_op_token());
     st.store.put_op_session(token.clone()).await;
     ok(json!({ "token": token }))
@@ -177,9 +219,18 @@ struct UnlockReq {
     passphrase: String,
 }
 
-async fn unlock(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<UnlockReq>) -> Resp {
+async fn unlock(
+    State(st): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<UnlockReq>,
+) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
+    }
+    let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
+    if st.ratelimit.is_locked(&ip) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
     }
     let blob = match st.store.get_custody().await {
         Some(b) if b.meta.state == "initialized" => b,
@@ -187,8 +238,12 @@ async fn unlock(State(st): State<AppState>, headers: HeaderMap, Json(body): Json
     };
     let phrase = match crate::custody::decrypt_seed(&blob.encrypted_seed, &body.passphrase) {
         Ok(p) => p,
-        Err(_) => return err(StatusCode::UNAUTHORIZED, "wrong passphrase"),
+        Err(_) => {
+            st.ratelimit.record_failure(&ip);
+            return err(StatusCode::UNAUTHORIZED, "wrong passphrase");
+        }
     };
+    st.ratelimit.record_success(&ip);
     if let Err(e) = st.custody.unlock_with(phrase) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
@@ -330,7 +385,7 @@ async fn prepare(State(st): State<AppState>, headers: HeaderMap, Json(body): Jso
             "merkleRoot": root,
             "targetHash": target,
             "proof": [],
-            "unsignedTx": { "to": issuer_addr, "data": calldata, "value": 0, "chainId": 135 }
+            "unsignedTx": { "to": issuer_addr, "data": calldata, "value": 0, "chainId": st.chain.chain_id() }
         }));
     }
 
@@ -427,8 +482,8 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
     if !view.value.is_zero() {
         return Err(err(StatusCode::BAD_REQUEST, "tx.value != 0"));
     }
-    if view.chain_id != Some(crate::chain::ROAX_CHAIN_ID) {
-        return Err(err(StatusCode::BAD_REQUEST, "tx.chainId != 135"));
+    if view.chain_id != Some(st.chain.chain_id()) {
+        return Err(err(StatusCode::BAD_REQUEST, "tx.chainId mismatch (wrong chain)"));
     }
     // DERIVE signer from the tx (never the body).
     let signer = view.from.to_lowercase();
@@ -1055,17 +1110,26 @@ async fn staff_action(
 // router assembly
 // --------------------------------------------------------------------------------------------
 
-/// The single combined router (public + admin). Admin routes carry their own admin-session gate.
-pub fn router(state: AppState) -> Router {
+/// The `/admin/*` custody routes (admin-session/loopback isolated). Mounted on the public listener
+/// by default; when `ADMIN_LOOPBACK_ONLY` is set, served on a separate 127.0.0.1 listener instead.
+pub fn admin_router(state: AppState) -> Router {
     Router::new()
-        // login
-        .route("/login", post(login))
         .route("/admin/login", post(admin_login))
         // admin custody (admin-session gated inside handlers)
         .route("/admin/genesis/start", post(genesis_start))
         .route("/admin/genesis/confirm", post(genesis_confirm))
         .route("/admin/unlock", post(unlock))
         .route("/admin/accounts", post(accounts))
+        .with_state(state)
+}
+
+/// The public (non-admin) routes. Always mounted on the public `0.0.0.0:PORT` listener.
+pub fn public_router(state: AppState) -> Router {
+    Router::new()
+        // health (no auth) — used by compose healthchecks
+        .route("/health", get(health))
+        // login
+        .route("/login", post(login))
         // settings
         .route("/settings/signing-mode", get(get_signing_mode).put(put_signing_mode))
         // credentials
@@ -1096,4 +1160,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/appointments/:id/staff-action", post(staff_action))
         .route("/v1/appointments", get(list_appointments))
         .with_state(state)
+}
+
+/// The single combined router (public + admin) on one listener — the default (demo/local) topology.
+/// Admin routes carry their own admin-session gate. When `ADMIN_LOOPBACK_ONLY` is set, `main.rs`
+/// serves `public_router` and `admin_router` on separate listeners instead of calling this.
+pub fn router(state: AppState) -> Router {
+    public_router(state.clone()).merge(admin_router(state))
 }

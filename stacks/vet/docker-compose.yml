@@ -1,20 +1,40 @@
 # ----------------------------------------------------------------------------------------------
 # DogTag — VET stack (self-hosted). impl §7.
-#   web   : React SPA built by Vite, served by nginx        -> host 41873
-#   api   : the Rust vet-api binary (multi-stage build)     -> host 41874  (internal 41874)
-#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY -> NO host port (never published)
+#   caddy : TLS reverse-proxy (Let's Encrypt) terminating HTTPS    -> host 80/443
+#   web   : React SPA built by Vite, served by nginx               -> internal only (web:80)
+#   api   : the Rust vet-api binary (multi-stage build)            -> host 41874 (internal 41874)
+#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY        -> NO host port (never published)
 #
 # Build context is the monorepo ROOT (`..` resolves to dogtag-mono-repo/) because both images need
 # the pnpm/cargo workspaces. Run from this directory:  docker compose up -d   (or `make up-vet`).
+#
+# PERSISTENCE: custody (age-encrypted seed) + records live in MONGO (the `vetdata` volume). Operators
+# MUST back up the `vetdata` volume — losing it loses custody. The `vetseed`/KEYSTORE_PATH volume is
+# dead code retained only for backward compat (the seed is a CustodyBlob in Mongo, not on disk).
 # ----------------------------------------------------------------------------------------------
 services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"             # ACME HTTP-01 challenge + HTTP->HTTPS redirect
+      - "443:443"           # public HTTPS (auto-TLS via Let's Encrypt)
+    volumes:
+      - ../../deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data    # ACME account + issued certificates (persist across restarts)
+    environment:
+      DOMAIN: ${DOMAIN}
+    depends_on:
+      - web
+    restart: unless-stopped
+
   web:
     build:
       context: ../..
       dockerfile: stacks/vet/web/Dockerfile
     image: dogtag-vet-web
-    ports:
-      - "41873:80"          # host 41873 -> nginx :80
+    # No host `ports:` — internal only. Caddy reaches it as `web:80`.
+    expose:
+      - "80"
     depends_on:
       - api
     restart: unless-stopped
@@ -23,27 +43,48 @@ services:
     build:
       context: ../..
       dockerfile: stacks/vet/api/Dockerfile
+      args:
+        FEATURES: mongo      # build the MongoStore-capable binary (Dockerfile has ARG FEATURES)
     image: dogtag-vet-api
     ports:
       - "41874:41874"       # host 41874 -> vet-api :41874
     env_file: .env
     environment:
+      # Production knobs (secrets come from .env via ${VAR} interpolation — never hardcoded here).
       MONGO_URI: "mongodb://mongo:27017/dogtag"
+      MONGO_DB: ${MONGO_DB:-dogtag}
+      CHAIN_ID: ${CHAIN_ID:-135}
+      PORT: "41874"
+      CONFIRMATIONS: "2"
+      ADMIN_LOOPBACK_ONLY: "1"
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy   # fail-closed Mongo connect must not crash the API on first boot
     volumes:
-      - vetseed:/data       # age-encrypted seed (KEYSTORE_PATH=/data/seed.age)
+      - vetseed:/data       # DEAD CODE: legacy seed path; custody now persists in Mongo (back up vetdata)
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:41874/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   mongo:
     image: mongo:7
     # NO `ports:` mapping — Mongo is reachable ONLY from the compose network (service name `mongo`,
-    # internal port 41875 on this network's view; never exposed to the host).
+    # default port 27017 on this network's view; never exposed to the host).
     expose:
-      - "41875"
-    command: ["mongod", "--port", "41875", "--bind_ip_all"]
+      - "27017"
+    command: ["mongod", "--port", "27017", "--bind_ip_all"]
     volumes:
-      - vetdata:/data/db
+      - vetdata:/data/db    # PERSISTENT custody + records — BACK THIS UP
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
 networks:
@@ -53,3 +94,4 @@ networks:
 volumes:
   vetdata: {}
   vetseed: {}
+  caddy_data: {}

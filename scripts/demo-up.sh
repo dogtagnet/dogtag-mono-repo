@@ -45,9 +45,9 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   run groomer-api ":43618" "$ROOT/target/release/vet-api"
 
 echo "Starting portals (vite dev):"
-run admin-web ":39741" pnpm --filter @dogtag/admin-web dev
-run vet-web    ":41873" pnpm --filter @dogtag/vet-web dev
-run groomer-web ":43617" pnpm --filter @dogtag/groomer-web dev
+run admin-web ":39741" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/admin-web dev
+run vet-web    ":41873" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/vet-web dev
+run groomer-web ":43617" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/groomer-web dev
 
 echo
 echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617"

@@ -152,6 +152,7 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         vault: Arc::new(MemVault::new()) as Arc<dyn KeyVault>,
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
+        ratelimit: Arc::new(admin_api::auth::RateLimiter::new()),
     }
 }
 

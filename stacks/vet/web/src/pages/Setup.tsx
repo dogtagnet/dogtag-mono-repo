@@ -120,7 +120,7 @@ function AdminLogin({
   toast: Toast;
 }) {
   // Testnet demo: prefill the admin password so the operator just clicks Continue.
-  const [pw, setPw] = useState(DEMO_ADMIN_PASSWORD);
+  const [pw, setPw] = useState(env.demoMode ? DEMO_ADMIN_PASSWORD : "");
   const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -150,7 +150,9 @@ function AdminLogin({
             Admin password
           </Label>
           <Input id="admin-pw" type="password" value={pw} onChange={(e) => setPw(e.target.value)} required />
-          <p className="text-xs text-muted">Demo default prefilled — just click Continue.</p>
+          {env.demoMode && (
+            <p className="text-xs text-muted">Demo default prefilled — just click Continue.</p>
+          )}
           <Button type="submit" loading={busy}>
             Continue
           </Button>
@@ -175,7 +177,9 @@ function GenesisStart({ onNext }: { onNext: () => void }) {
       sessionStorage.setItem("vet.challengeIndices", JSON.stringify(r.challengeIndices));
       // Testnet demo only: stash the words so the Confirm step's "Fill demo data" can re-enter
       // the challenge words for you. (NEVER do this in production — the seed must stay offline.)
-      sessionStorage.setItem("vet.demoWords", JSON.stringify(r.words));
+      if (env.demoMode) {
+        sessionStorage.setItem("vet.demoWords", JSON.stringify(r.words));
+      }
     } catch (err) {
       toast({ title: "Genesis failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -238,9 +242,11 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
   const indices: number[] = JSON.parse(sessionStorage.getItem("vet.challengeIndices") ?? "[]");
   // Testnet demo: auto-fill the challenge words from the just-shown seed + a default passphrase,
   // so you type NOTHING — just click "Confirm & encrypt". (Prod never stashes the seed.)
-  const demoWords: string[] = JSON.parse(sessionStorage.getItem("vet.demoWords") ?? "[]");
+  const demoWords: string[] = env.demoMode
+    ? JSON.parse(sessionStorage.getItem("vet.demoWords") ?? "[]")
+    : [];
   const [words, setWords] = useState<string[]>(() => indices.map((idx) => demoWords[idx] ?? ""));
-  const [passphrase, setPassphrase] = useState(DEMO_PASSPHRASE);
+  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_PASSPHRASE : "");
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -310,7 +316,7 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
 function Unlock({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
-  const [passphrase, setPassphrase] = useState(DEMO_PASSPHRASE);
+  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_PASSPHRASE : "");
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
 
@@ -423,17 +429,21 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
   const { api, signerAddress } = useApp();
   const { toast } = useToast();
   // Testnet demo: prefill every field by default (signer auto-carried) so you just click Submit.
-  const [form, setForm] = useState({
-    issuerEntityId: "seaport-vet",
+  // Production (demo off): demo-ish fields start empty; recordTypes + signer auto-carry are not
+  // demo data so they're kept, and documentStore falls back to the configured issuer address.
+  const [form, setForm] = useState(() => ({
+    issuerEntityId: env.demoMode ? "seaport-vet" : "",
     address: signerAddress ?? "",
     recordTypes: "VACCINATION",
-    domain: "testvet.roax.net",
-    documentStore: env.dogtagIssuerAddr || "0x5c703910111f942EE0f47E02214291b5274cDb53",
-    usdaNan: "123456",
-    licenseNumber: "VET-2024-0001",
-    licenseJurisdiction: "CA",
-    licenseExpiry: "2027-12-31",
-  });
+    domain: env.demoMode ? "testvet.roax.net" : "",
+    documentStore: env.demoMode
+      ? env.dogtagIssuerAddr || "0x5c703910111f942EE0f47E02214291b5274cDb53"
+      : env.dogtagIssuerAddr || "",
+    usdaNan: env.demoMode ? "123456" : "",
+    licenseNumber: env.demoMode ? "VET-2024-0001" : "",
+    licenseJurisdiction: env.demoMode ? "CA" : "",
+    licenseExpiry: env.demoMode ? "2027-12-31" : "",
+  }));
   const [busy, setBusy] = useState(false);
   const [applicationId, setApplicationId] = useState<string | null>(null);
 
@@ -512,9 +522,11 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
           <Field label="License jurisdiction" value={form.licenseJurisdiction} onChange={(v) => upd("licenseJurisdiction", v)} />
           <Field label="License expiry" value={form.licenseExpiry} onChange={(v) => upd("licenseExpiry", v)} placeholder="YYYY-MM-DD" />
           <div className="sm:col-span-2 flex items-center gap-3">
-            <Button type="button" variant="ghost" onClick={fillDemo}>
-              Fill demo data
-            </Button>
+            {env.demoMode && (
+              <Button type="button" variant="ghost" onClick={fillDemo}>
+                Fill demo data
+              </Button>
+            )}
             <Button type="submit" loading={busy}>
               Submit application
             </Button>

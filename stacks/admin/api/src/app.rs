@@ -44,6 +44,8 @@ pub struct AppState {
     pub vault: Arc<dyn KeyVault>,
     pub jwt: JwtKeys,
     pub cfg: Arc<Config>,
+    /// in-memory login rate limiter (lenient; demo-safe).
+    pub ratelimit: Arc<crate::auth::RateLimiter>,
 }
 
 /// Build the issuer metadata for the central profile issuer.

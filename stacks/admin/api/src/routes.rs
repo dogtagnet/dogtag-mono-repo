@@ -1,9 +1,11 @@
 //! Axum router + all central HTTP handlers (impl §4.1 mobile, §4.2 registry/discovery,
 //! §4.3 whitelisting, §4.4 appointments, §4.5 consent/retention/erasure; §11.4 asserts).
 
+use std::net::SocketAddr;
+
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
@@ -32,6 +34,24 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .map(|s| s.to_string())
+}
+
+/// Client IP for rate-limiting: prefer the first `X-Forwarded-For` hop (prod is behind Caddy),
+/// else the raw socket peer (absent under in-process tests -> a stable fallback key).
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| peer.map(|p| p.ip().to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Liveness probe (no auth): used by the compose healthcheck.
+async fn health() -> Resp {
+    ok(json!({ "status": "ok" }))
 }
 
 /// Resolve the authenticated owner from a session bearer.
@@ -101,14 +121,28 @@ struct LoginReq {
     push_token: Option<String>,
 }
 
-async fn login(State(st): State<AppState>, Json(body): Json<LoginReq>) -> Resp {
+async fn login(
+    State(st): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<LoginReq>,
+) -> Resp {
+    let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
+    if st.ratelimit.is_locked(&ip) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+    }
     let owner = match st.store.get_owner_by_email(&body.email).await {
         Some(o) => o,
-        None => return err(StatusCode::UNAUTHORIZED, "bad credentials"),
+        None => {
+            st.ratelimit.record_failure(&ip);
+            return err(StatusCode::UNAUTHORIZED, "bad credentials");
+        }
     };
     if !auth::verify_password(&body.password, &owner.password_hash) {
+        st.ratelimit.record_failure(&ip);
         return err(StatusCode::UNAUTHORIZED, "bad credentials");
     }
+    st.ratelimit.record_success(&ip);
     if let Some(pt) = body.push_token {
         let mut o = owner.clone();
         o.push_token = Some(pt);
@@ -124,12 +158,23 @@ struct AdminLoginReq {
     password: String,
 }
 
-async fn admin_login(State(st): State<AppState>, Json(body): Json<AdminLoginReq>) -> Resp {
+async fn admin_login(
+    State(st): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
+    Json(body): Json<AdminLoginReq>,
+) -> Resp {
+    let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
+    if st.ratelimit.is_locked(&ip) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+    }
     if !auth::verify_password(&body.password, &auth::hash_password(&st.cfg.admin_password))
         && body.password != st.cfg.admin_password
     {
+        st.ratelimit.record_failure(&ip);
         return err(StatusCode::UNAUTHORIZED, "bad password");
     }
+    st.ratelimit.record_success(&ip);
     let token = auth::new_session_token("admin");
     st.store.put_admin_session(token.clone()).await;
     ok(json!({ "token": token }))
@@ -975,12 +1020,30 @@ async fn fulfill_deletions(State(st): State<AppState>, headers: HeaderMap) -> Re
 // router assembly
 // ============================================================================================
 
-pub fn router(state: AppState) -> Router {
+/// Admin-console routes (admin-session gated). Mounted on the public listener by default; when
+/// `ADMIN_LOOPBACK_ONLY` is set, served on a separate 127.0.0.1 listener instead. These are the
+/// central operator's privileged actions (admin login + issuer whitelisting + erasure trigger).
+pub fn admin_router(state: AppState) -> Router {
     Router::new()
+        .route("/v1/admin/login", post(admin_login))
+        // issuer whitelisting (admin-session writes)
+        .route("/v1/issuer-applications/:id/approve", post(approve_application))
+        .route("/v1/issuer-applications/:id/reject", post(reject_application))
+        .route("/v1/issuer-applications/:id/delist", post(delist_application))
+        // erasure cron trigger (admin)
+        .route("/v1/privacy/fulfill-deletions", post(fulfill_deletions))
+        .with_state(state)
+}
+
+/// Public routes (mobile API, registry/discovery, applications submission, consent). Always mounted
+/// on the public `0.0.0.0:PORT` listener.
+pub fn public_router(state: AppState) -> Router {
+    Router::new()
+        // health (no auth) — used by compose healthchecks
+        .route("/health", get(health))
         // auth
         .route("/v1/auth/signup", post(signup))
         .route("/v1/auth/login", post(login))
-        .route("/v1/admin/login", post(admin_login))
         // pets
         .route("/v1/pets", get(list_pets).post(create_pet))
         .route("/v1/pets/:id/mint", post(mint_pet))
@@ -994,11 +1057,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/verify/receipts", get(verify_receipts))
         // registry / discovery
         .route("/v1/businesses", get(list_businesses).post(register_business))
-        // issuer whitelisting
+        // issuer applications (list + business submission)
         .route("/v1/issuer-applications", get(list_applications).post(create_application))
-        .route("/v1/issuer-applications/:id/approve", post(approve_application))
-        .route("/v1/issuer-applications/:id/reject", post(reject_application))
-        .route("/v1/issuer-applications/:id/delist", post(delist_application))
         // appointments
         .route("/v1/appointments", get(list_appointments).post(create_appointment))
         .route("/v1/businesses/:bid/appointment-events", post(appointment_event))
@@ -1006,6 +1066,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/consents", get(list_consents).post(create_consent))
         .route("/v1/consents/:id/withdraw", post(withdraw_consent))
         .route("/v1/privacy/delete-request", post(delete_request))
-        .route("/v1/privacy/fulfill-deletions", post(fulfill_deletions))
         .with_state(state)
+}
+
+/// The single combined router (public + admin) on one listener — the default (demo/local) topology.
+/// When `ADMIN_LOOPBACK_ONLY` is set, `main.rs` serves `public_router` and `admin_router` separately.
+pub fn router(state: AppState) -> Router {
+    public_router(state.clone()).merge(admin_router(state))
 }
