@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dogtag-standard-rs",
+    # "crates/dogtag-prover-rs",   # added in Phase 2.5/3
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# Pinned crypto trust core (architecture §3.4 / impl §11.2)
+light-poseidon = "0.3"
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+sha3 = "0.10"          # keccak256 — EIP-712/ECDSA/namespacing keys ONLY (§7-keep-list)
+rand = "0.8"
+thiserror = "2"
+unicode-normalization = "0.1"   # NFC, pinned Unicode version
+
+[profile.release]
+opt-level = 3

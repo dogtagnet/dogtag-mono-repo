@@ -1,0 +1,25 @@
+[package]
+name = "dogtag-standard-rs"
+version = "0.0.0"
+edition = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+description = "DogTag open pet-credential standard — canonicalization, Poseidon Merkle, verify, consent (Rust SDK)"
+
+[lib]
+name = "dogtag_standard"
+crate-type = ["lib"]
+
+[dependencies]
+light-poseidon = { workspace = true }
+ark-bn254 = { workspace = true }
+ark-ff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+sha3 = { workspace = true }
+thiserror = { workspace = true }
+unicode-normalization = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

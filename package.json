@@ -1,0 +1,15 @@
+{
+  "name": "dogtag-mono-repo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "DogTag — pet-credentialing ecosystem (monorepo root)",
+  "packageManager": "pnpm@10.19.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter \"./packages/**\" build",
+    "test": "pnpm -r --filter \"./packages/**\" test",
+    "lint": "pnpm -r lint"
+  }
+}

@@ -1,0 +1,31 @@
+# node / pnpm
+node_modules/
+dist/
+*.tsbuildinfo
+.pnpm-store/
+
+# rust
+target/
+
+# foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# circuits — build artifacts (keep source + pinned vectors)
+circuits/build/
+circuits/*.zkey
+circuits/*.r1cs
+circuits/*.wasm
+circuits/*.sym
+circuits/ptau/*.ptau
+
+# env / secrets
+.env
+.env.*
+!.env.example
+*.keystore
+*.age
+
+# os
+.DS_Store
