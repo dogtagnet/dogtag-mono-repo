@@ -14,8 +14,15 @@ proof-of-verification path is **live** (Groth16Verifier wired into the Verificat
 contract addresses are in **[`contracts/deployments/roax.json`](contracts/deployments/roax.json)** — see
 the table below.
 
-**Run the live demo:** **[`docs/DEMO.md`](docs/DEMO.md)** (runbook) + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)**
-(literal, type-nothing click-through). Automated verification: `scripts/e2e-smoke.sh` (7 steps, all PASS on ROAX).
+**Two deployment modes.** A single `VITE_DEMO_MODE` flag (set = demo, **unset = production**) switches
+between them:
+- **LOCAL** — **[`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md)**: the click-through demo (forms
+  auto-filled, demo buttons, ephemeral MemStore, LAN/tunnel). Automated verification: `scripts/e2e-smoke.sh`
+  (7 steps, all PASS on ROAX).
+- **REMOTE** — **[`docs/REMOTE_DEPLOYMENT.md`](docs/REMOTE_DEPLOYMENT.md)**: hardened, self-hosted-per-business,
+  persistent Mongo, real domain + TLS, real DNS-TXT legitimacy, operators type everything (**no demo buttons**).
+
+Demo runbook + literal click-through: **[`docs/DEMO.md`](docs/DEMO.md)** + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)**.
 
 ## Live ROAX addresses (chainId 135)
 Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.json).
@@ -41,7 +48,9 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 > setup (3 contributions + beacon) is recorded in [`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md).
 
 ## Start here
-- **[`docs/DEMO.md`](docs/DEMO.md)** + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)** — run the LIVE demo.
+- **[`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md)** — LOCAL/demo runbook (`VITE_DEMO_MODE=1`, auto-filled, ephemeral).
+- **[`docs/REMOTE_DEPLOYMENT.md`](docs/REMOTE_DEPLOYMENT.md)** — REMOTE/production runbook (persistent, TLS, DNS-TXT, operators type everything).
+- **[`docs/DEMO.md`](docs/DEMO.md)** + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)** — run the LIVE demo (narrated + literal click-through).
 - **[`docs/architecture.md`](docs/architecture.md)** — system + smart-contract architecture (§13 = normative audit remediations).
 - **[`docs/implementation.md`](docs/implementation.md)** — per-function pseudocode, contract bodies, endpoints, Docker, deploy (§11 = normative corrected code).
 - **[`docs/BUILD_PROMPT.md`](docs/BUILD_PROMPT.md)** — the phased build-out prompt.
@@ -72,7 +81,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 
 Each stack is `web` (nginx serving the Vite build) + `api` (Rust binary, multi-stage build) +
 `mongo` (compose-network-internal). The groomer `api` runs the **`vet-api`** binary with
-`BUSINESS_TYPE=groomer` (host `43618` → container `41874`).
+`BUSINESS_TYPE=groomer` (host `43618` → container `43618`).
 
 ## Build & test
 

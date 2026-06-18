@@ -9,6 +9,11 @@ signs a consent that records a proof-of-verification on-chain.
 This flow is **verified working end-to-end on a real Android device** and by the automated
 `scripts/e2e-smoke.sh` (see [§7](#7-automated-verification-e2e-smokesh)).
 
+> **Start here:** this page is the narrated **LOCAL/demo** walkthrough. The authoritative LOCAL runbook
+> is **[LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md)**; `scripts/demo-up.sh` sets **`VITE_DEMO_MODE=1`**
+> (auto-fill + demo buttons + ephemeral MemStore). For a hardened, persistent, self-hosted, **type-
+> everything** deployment (flag **unset**), see **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)**.
+
 Pre-created on ROAX for the demo: `DogTagIssuer` clones — VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53`,
 DOG_PROFILE `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25`. ZK verifier is live (`0x138b4330…`),
 VerificationRegistry `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` (ZK-wired).
