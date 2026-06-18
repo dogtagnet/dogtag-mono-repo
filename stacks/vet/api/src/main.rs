@@ -9,7 +9,7 @@ use vet_api::app::{AppState, Config};
 use vet_api::auth::JwtKeys;
 use vet_api::chain::AlloyChain;
 use vet_api::custody::Custody;
-use vet_api::prover::StubProver;
+use vet_api::prover::{ArkProver, ProverClient, StubProver};
 use vet_api::store::MemStore;
 
 const PORT: u16 = 41874;
@@ -49,10 +49,26 @@ async fn main() {
 
     let chain = AlloyChain::new(rpc_url);
 
+    // Choose the prover: if CIRCUITS_BUILD_DIR points at a circuits `build` dir, load the REAL
+    // ark-circom Groth16 prover; otherwise fall back to the StubProver (ZK control-flow only).
+    let prover: Arc<dyn ProverClient> = match std::env::var("CIRCUITS_BUILD_DIR") {
+        Ok(dir) if !dir.is_empty() => match ArkProver::load(&dir) {
+            Ok(p) => {
+                tracing::info!("loaded real Groth16 prover from {dir} (zkey {})", p.zkey_hash_hex());
+                Arc::new(p)
+            }
+            Err(e) => {
+                tracing::warn!("CIRCUITS_BUILD_DIR set but prover load failed ({e}); using StubProver");
+                Arc::new(StubProver)
+            }
+        },
+        _ => Arc::new(StubProver),
+    };
+
     let state = AppState {
         store: Arc::new(MemStore::new()),
         chain: Arc::new(chain),
-        prover: Arc::new(StubProver),
+        prover,
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),

@@ -29,6 +29,57 @@ sol! {
     contract IIssuerRegistry {
         function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
     }
+
+    #[sol(rpc)]
+    contract IVerificationRegistry {
+        struct VerificationConsent {
+            uint256 dogTagId;
+            bytes32 recordType;
+            bytes32 purpose;
+            bytes32 credentialRoot;
+            bytes32 challenge;
+            address relayer;
+            address subject;
+            uint256 nonce;
+            uint256 deadline;
+        }
+
+        event Verified(
+            uint256 indexed dogTagId,
+            address indexed relayer,
+            address indexed subject,
+            bytes32 purpose,
+            bytes32 nullifier,
+            uint256 ts
+        );
+
+        function recordVerification(VerificationConsent c, bytes userSig) external;
+        function recordVerificationZK(
+            uint256[2] a,
+            uint256[2][2] b,
+            uint256[2] c,
+            uint256[7] pub
+        ) external;
+        function consumed(bytes32 nf) external view returns (bool);
+    }
+
+    #[sol(rpc)]
+    contract IConsentKeyRegistry {
+        function bindConsentKey(bytes32 babyJubPubKeyHash, bytes ecdsaSig) external;
+        function bindNonce(address wallet) external view returns (uint256);
+        function keyOf(address wallet) external view returns (bytes32);
+    }
+}
+
+/// A `Verified` event read off a recordVerification(ZK) receipt.
+#[derive(Clone, Debug)]
+pub struct VerifiedEvent {
+    pub dog_tag_id: U256,
+    pub relayer: String,
+    pub subject: String,
+    pub purpose: String,
+    pub nullifier: String,
+    pub ts: U256,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +145,35 @@ pub trait ChainClient: Send + Sync {
         issuer_addr: &str,
         confirmations: u64,
     ) -> Result<TxView, ChainError>;
+    /// Broadcast recordVerification(consent, userSig) to the VerificationRegistry FROM the backend
+    /// signer at `account_index` (the relayer pays gas). Returns the tx hash.
+    async fn record_verification(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        consent: &ConsentInput,
+        user_sig: &str,
+    ) -> Result<SentTx, ChainError>;
+    /// Broadcast recordVerificationZK(a,b,c,pub) FROM the backend signer at `account_index`. The
+    /// relayer (== pub[2]) must be the broadcaster on-chain. Returns the tx hash.
+    async fn record_verification_zk(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError>;
+    /// Read the `Verified(dogTagId,relayer,subject,purpose,nullifier,ts)` event emitted by
+    /// `registry_addr` in the given tx's receipt. Err(NotFound) if absent/unmined.
+    async fn get_verified_event(
+        &self,
+        tx_hash: &str,
+        registry_addr: &str,
+    ) -> Result<VerifiedEvent, ChainError>;
+    /// VerificationRegistry.consumed(nullifier).
+    async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError>;
     /// Encode issue(bytes32) calldata for `root`.
     fn encode_issue(&self, root: &str) -> String {
         issue_calldata(root)
@@ -131,6 +211,90 @@ pub fn revoke_calldata(root: &str) -> String {
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
+/// The 9-field VerificationConsent in the registry's struct order — all hex strings (uint256/bytes32
+/// as 0x.. 32-byte words; addresses as 0x.. 20-byte). Mirrors §11.9(a).
+#[derive(Clone, Debug)]
+pub struct ConsentInput {
+    pub dog_tag_id: U256,
+    pub record_type: String,
+    pub purpose: String,
+    pub credential_root: String,
+    pub challenge: String,
+    pub relayer: String,
+    pub subject: String,
+    pub nonce: U256,
+    pub deadline: U256,
+}
+
+impl ConsentInput {
+    fn to_sol(&self) -> IVerificationRegistry::VerificationConsent {
+        IVerificationRegistry::VerificationConsent {
+            dogTagId: self.dog_tag_id,
+            recordType: parse_b256(&self.record_type),
+            purpose: parse_b256(&self.purpose),
+            credentialRoot: parse_b256(&self.credential_root),
+            challenge: parse_b256(&self.challenge),
+            relayer: parse_addr(&self.relayer),
+            subject: parse_addr(&self.subject),
+            nonce: self.nonce,
+            deadline: self.deadline,
+        }
+    }
+}
+
+fn parse_u256_dec_or_hex(s: &str) -> U256 {
+    let t = s.trim();
+    if let Some(h) = t.strip_prefix("0x") {
+        U256::from_str_radix(h, 16).unwrap_or(U256::ZERO)
+    } else {
+        U256::from_str_radix(t, 10).unwrap_or(U256::ZERO)
+    }
+}
+
+/// ABI-encode recordVerification(consent, userSig).
+pub fn record_verification_calldata(consent: &ConsentInput, user_sig: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let sig = Bytes::from(hex::decode(user_sig.strip_prefix("0x").unwrap_or(user_sig)).unwrap_or_default());
+    let call = IVerificationRegistry::recordVerificationCall { c: consent.to_sol(), userSig: sig };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// ABI-encode recordVerificationZK(a,b,c,pub) from decimal-string proof components.
+pub fn record_verification_zk_calldata(
+    a: &[String; 2],
+    b: &[[String; 2]; 2],
+    c: &[String; 2],
+    pub_signals: &[String; 7],
+) -> String {
+    use alloy::sol_types::SolCall;
+    let g = |s: &str| parse_u256_dec_or_hex(s);
+    let a_arr = [g(&a[0]), g(&a[1])];
+    let b_arr = [[g(&b[0][0]), g(&b[0][1])], [g(&b[1][0]), g(&b[1][1])]];
+    let c_arr = [g(&c[0]), g(&c[1])];
+    let mut pub_arr: [U256; 7] = [U256::ZERO; 7];
+    for (slot, s) in pub_arr.iter_mut().zip(pub_signals.iter()) {
+        *slot = g(s);
+    }
+    let call = IVerificationRegistry::recordVerificationZKCall {
+        a: a_arr,
+        b: b_arr,
+        c: c_arr,
+        r#pub: pub_arr,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// ABI-encode bindConsentKey(babyJubPubKeyHash, ecdsaSig).
+pub fn bind_consent_key_calldata(key_hash: &str, ecdsa_sig: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let sig = Bytes::from(hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default());
+    let call = IConsentKeyRegistry::bindConsentKeyCall {
+        babyJubPubKeyHash: parse_b256(key_hash),
+        ecdsaSig: sig,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
 // --------------------------------------------------------------------------------------------
 // MemChain — in-memory emulation of issue / isValid / issuedAt / RootIssued + whitelist.
 // --------------------------------------------------------------------------------------------
@@ -146,6 +310,10 @@ struct MemChainInner {
     txs: HashMap<String, TxView>,
     /// backend signer addresses by account index.
     signers: HashMap<u32, String>,
+    /// (registry_addr, nullifier) consumed by a recordVerification(ZK).
+    consumed: HashMap<(String, String), bool>,
+    /// txHash -> Verified event emitted by a recordVerification(ZK).
+    verified: HashMap<String, VerifiedEvent>,
     nonce: u64,
     clock: u64,
 }
@@ -282,6 +450,129 @@ impl ChainClient for MemChain {
         }
         Ok(view)
     }
+    async fn record_verification(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        consent: &ConsentInput,
+        _user_sig: &str,
+    ) -> Result<SentTx, ChainError> {
+        // Emulate the on-chain effect: derive the nullifier (parity with consent.rs), consume it
+        // (reject replays), and record a Verified event. No real signature/ownership checks here —
+        // those are enforced on the real chain; MemChain exercises the backend control flow only.
+        let nf = mem_consent_nullifier(consent);
+        let mut g = self.inner.lock().unwrap();
+        let _from = g
+            .signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
+        let reg = registry_addr.to_lowercase();
+        if g.consumed.get(&(reg.clone(), nf.clone())).copied().unwrap_or(false) {
+            return Err(ChainError::Other("replayed".into()));
+        }
+        g.consumed.insert((reg.clone(), nf.clone()), true);
+        g.clock += 12;
+        let ts = U256::from(g.clock);
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        let ev = VerifiedEvent {
+            dog_tag_id: consent.dog_tag_id,
+            relayer: consent.relayer.to_lowercase(),
+            subject: consent.subject.to_lowercase(),
+            purpose: consent.purpose.to_lowercase(),
+            nullifier: nf,
+            ts,
+        };
+        g.verified.insert(tx_hash.clone(), ev);
+        Ok(SentTx { tx_hash })
+    }
+    async fn record_verification_zk(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        _a: &[String; 2],
+        _b: &[[String; 2]; 2],
+        _c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError> {
+        let nf = format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[4])));
+        let mut g = self.inner.lock().unwrap();
+        let _from = g
+            .signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
+        let reg = registry_addr.to_lowercase();
+        if g.consumed.get(&(reg.clone(), nf.clone())).copied().unwrap_or(false) {
+            return Err(ChainError::Other("replayed".into()));
+        }
+        g.consumed.insert((reg.clone(), nf.clone()), true);
+        g.clock += 12;
+        let ts = U256::from(g.clock);
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        let ev = VerifiedEvent {
+            dog_tag_id: parse_u256_dec_or_hex(&pub_signals[0]),
+            relayer: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[2])),
+            subject: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[3])),
+            purpose: format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[1]))),
+            nullifier: nf,
+            ts,
+        };
+        g.verified.insert(tx_hash.clone(), ev);
+        Ok(SentTx { tx_hash })
+    }
+    async fn get_verified_event(
+        &self,
+        tx_hash: &str,
+        _registry_addr: &str,
+    ) -> Result<VerifiedEvent, ChainError> {
+        let g = self.inner.lock().unwrap();
+        g.verified.get(tx_hash).cloned().ok_or(ChainError::NotFound)
+    }
+    async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g
+            .consumed
+            .get(&(registry_addr.to_lowercase(), nullifier.to_lowercase()))
+            .copied()
+            .unwrap_or(false))
+    }
+}
+
+/// Big-endian 32-byte word from a decimal-or-hex string (for MemChain nullifier emulation).
+fn parse_b256_dec_or_hex(s: &str) -> B256 {
+    B256::from(parse_u256_dec_or_hex(s).to_be_bytes::<32>())
+}
+
+/// MemChain-side nullifier: reuse the SDK's `consent_nullifier` for byte-for-byte parity with the
+/// registry's on-chain Poseidon6 computation.
+fn mem_consent_nullifier(c: &ConsentInput) -> String {
+    use dogtag_standard::consent::{consent_nullifier, VerificationConsent};
+    let b32 = |s: &str| parse_b256_dec_or_hex(s).0;
+    let a20 = |s: &str| {
+        let a: Address = parse_addr(s);
+        let mut out = [0u8; 20];
+        out.copy_from_slice(a.as_slice());
+        out
+    };
+    let mut dog = [0u8; 32];
+    dog.copy_from_slice(&c.dog_tag_id.to_be_bytes::<32>());
+    let mut nonce = [0u8; 32];
+    nonce.copy_from_slice(&c.nonce.to_be_bytes::<32>());
+    let consent = VerificationConsent {
+        dog_tag_id: dog,
+        record_type: b32(&c.record_type),
+        purpose: b32(&c.purpose),
+        credential_root: b32(&c.credential_root),
+        challenge: b32(&c.challenge),
+        relayer: a20(&c.relayer),
+        subject: a20(&c.subject),
+        nonce,
+        deadline: [0u8; 32],
+    };
+    format!("0x{}", hex::encode(consent_nullifier(&consent)))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -467,6 +758,80 @@ impl ChainClient for AlloyChain {
             success: receipt.status(),
             root_issued_logs: logs,
         })
+    }
+    async fn record_verification(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        consent: &ConsentInput,
+        user_sig: &str,
+    ) -> Result<SentTx, ChainError> {
+        let calldata = record_verification_calldata(consent, user_sig);
+        self.sign_and_send(account_index, registry_addr, &calldata).await
+    }
+    async fn record_verification_zk(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError> {
+        let calldata = record_verification_zk_calldata(a, b, c, pub_signals);
+        self.sign_and_send(account_index, registry_addr, &calldata).await
+    }
+    async fn get_verified_event(
+        &self,
+        tx_hash: &str,
+        registry_addr: &str,
+    ) -> Result<VerifiedEvent, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::sol_types::SolEvent;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let hash: B256 = parse_b256(tx_hash);
+        let receipt = provider
+            .get_transaction_receipt(hash)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            .ok_or(ChainError::NotFound)?;
+        if !receipt.status() {
+            return Err(ChainError::Other("tx reverted".into()));
+        }
+        let reg = parse_addr(registry_addr);
+        for log in receipt.inner.logs() {
+            if log.address() != reg {
+                continue;
+            }
+            if let Ok(ev) = IVerificationRegistry::Verified::decode_log(log.as_ref(), true) {
+                return Ok(VerifiedEvent {
+                    dog_tag_id: ev.dogTagId,
+                    relayer: format!("{:#x}", ev.relayer),
+                    subject: format!("{:#x}", ev.subject),
+                    purpose: format!("0x{}", hex::encode(ev.purpose.as_slice())),
+                    nullifier: format!("0x{}", hex::encode(ev.nullifier.as_slice())),
+                    ts: ev.ts,
+                });
+            }
+        }
+        Err(ChainError::NotFound)
+    }
+    async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IVerificationRegistry::new(parse_addr(registry_addr), provider);
+        let r = c
+            .consumed(parse_b256(nullifier))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
     }
 }
 

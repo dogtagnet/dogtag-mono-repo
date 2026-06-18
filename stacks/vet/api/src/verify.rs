@@ -32,6 +32,39 @@ pub fn verify_key(purpose: &str) -> String {
     format!("0x{}", hex::encode(keccak256(s.as_bytes()).as_slice()))
 }
 
+/// Parse the consent JSON (as posted to /verify/consent/submit) into the registry's `ConsentInput`.
+fn consent_input_from_json(consent: &Value) -> Result<crate::chain::ConsentInput, String> {
+    use alloy::primitives::U256;
+    let u256 = |key: &str| -> Result<U256, String> {
+        match consent.get(key) {
+            Some(Value::String(s)) => {
+                let t = s.trim();
+                if let Some(h) = t.strip_prefix("0x") {
+                    U256::from_str_radix(h, 16).map_err(|e| format!("{key}: {e}"))
+                } else {
+                    U256::from_str_radix(t, 10).map_err(|e| format!("{key}: {e}"))
+                }
+            }
+            Some(Value::Number(n)) => Ok(U256::from(n.as_u64().ok_or_else(|| format!("{key}: not u64"))?)),
+            _ => Err(format!("{key}: missing")),
+        }
+    };
+    let hexs = |key: &str| -> Result<String, String> {
+        consent.get(key).and_then(|v| v.as_str()).map(|s| s.to_string()).ok_or_else(|| format!("{key}: missing"))
+    };
+    Ok(crate::chain::ConsentInput {
+        dog_tag_id: u256("dogTagId")?,
+        record_type: hexs("recordType")?,
+        purpose: hexs("purpose")?,
+        credential_root: hexs("credentialRoot")?,
+        challenge: hexs("challenge")?,
+        relayer: hexs("relayer")?,
+        subject: hexs("subject")?,
+        nonce: u256("nonce")?,
+        deadline: u256("deadline")?,
+    })
+}
+
 /// Extract the cleartext dogTagId value from a wrapped doc.
 pub fn dog_tag_id_of(doc: &WrappedDoc) -> Option<String> {
     use dogtag_standard::wrap::flatten_data;
@@ -195,12 +228,23 @@ pub async fn consent_submit(
         if !consent_root.eq_ignore_ascii_case(&doc.signature.merkle_root) {
             return err(StatusCode::BAD_REQUEST, "consent.credentialRoot != doc root");
         }
-        // NORMAL submission would build recordVerification(consent, sig) and broadcast to the
-        // VerificationRegistry via the dual-signing path. We record the attestation intent and emit a
-        // synthetic tx hash; the on-chain recordVerification call is wired with the registry ABI in a
-        // follow-up (the contract + consent digest parity already live in dogtag-standard consent.rs).
-        let _ = &sig;
-        tx_hash = format!("0xverify-normal-{}", &session_id[..8.min(session_id.len())]);
+        // NORMAL submission: ABI-encode recordVerification(consent, userSig) and broadcast to the
+        // VerificationRegistry AS the relayer (the backend custody signer at index 0). The registry
+        // re-checks the EIP-712 subject signature, ownerOf, the VERIFY: whitelist, resolves the clone
+        // from R, re-checks isValid(R), and consumes the nullifier — then emits Verified.
+        let ci = match consent_input_from_json(&consent) {
+            Ok(c) => c,
+            Err(e) => return err(StatusCode::BAD_REQUEST, &format!("bad consent: {e}")),
+        };
+        let sent = match st
+            .chain
+            .record_verification(0, &st.cfg.verification_registry_addr, &ci, &sig)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("recordVerification: {e}")),
+        };
+        tx_hash = sent.tx_hash;
     } else {
         // ZK path: require consent.credentialRoot == R, run the (stub) prover, assemble pub signals.
         if consent_root.is_empty() {
@@ -209,6 +253,9 @@ pub async fn consent_submit(
         let dog = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("0").to_string();
         let subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let nonce = consent.get("nonce").and_then(|v| v.as_str()).unwrap_or("0").to_string();
+        // The full circuit input (19 named signals) may be supplied so the REAL prover can run; the
+        // StubProver ignores it. Passed through `consent.circuitInput` when present.
+        let circuit_input_json = consent.get("circuitInput").cloned();
         let input = crate::prover::ProveInput {
             dog_tag_id: dog,
             purpose: consent.get("purpose").and_then(|v| v.as_str()).unwrap_or("0x0").to_string(),
@@ -217,12 +264,29 @@ pub async fn consent_submit(
             nonce,
             r: consent_root.to_string(),
             eddsa_sig: sig.clone(),
+            circuit_input_json,
         };
-        match st.prover.prove(input).await {
-            Ok(_proof) => {}
+        let proof = match st.prover.prove(input).await {
+            Ok(p) => p,
             Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("prover: {e}")),
-        }
-        tx_hash = format!("0xverify-zk-{}", &session_id[..8.min(session_id.len())]);
+        };
+        // Broadcast recordVerificationZK(a,b,c,pub) AS the relayer (backend signer at index 0).
+        let sent = match st
+            .chain
+            .record_verification_zk(
+                0,
+                &st.cfg.verification_registry_addr,
+                &proof.a,
+                &proof.b,
+                &proof.c,
+                &proof.pub_signals,
+            )
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("recordVerificationZK: {e}")),
+        };
+        tx_hash = sent.tx_hash;
     }
 
     let mut updated = s;

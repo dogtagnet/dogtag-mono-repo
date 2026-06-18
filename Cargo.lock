@@ -6689,6 +6689,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bip39",
+ "dogtag-prover-rs",
  "dogtag-standard-rs",
  "ed25519-dalek",
  "futures",

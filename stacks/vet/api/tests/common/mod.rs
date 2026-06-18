@@ -15,7 +15,7 @@ use vet_api::app::{AppState, Config};
 use vet_api::auth::JwtKeys;
 use vet_api::chain::ChainClient;
 use vet_api::custody::Custody;
-use vet_api::prover::StubProver;
+use vet_api::prover::{ProverClient, StubProver};
 use vet_api::store::MemStore;
 
 pub const OPERATOR_PW: &str = "op-pw";
@@ -48,6 +48,42 @@ pub fn state_with(
         store: Arc::new(MemStore::new()),
         chain,
         prover: Arc::new(StubProver),
+        custody: Custody::new(),
+        jwt: JwtKeys::generate(),
+        cfg: Arc::new(cfg),
+    }
+}
+
+/// Like [`state_with`] but also sets the VerificationRegistry address and the prover (real or stub).
+#[allow(clippy::too_many_arguments)]
+pub fn state_with_verify(
+    chain: Arc<dyn ChainClient>,
+    rpc_url: String,
+    issuer_registry_addr: String,
+    verification_registry_addr: String,
+    vaccination_issuer_addr: String,
+    issuer_domain: String,
+    confirmations: u64,
+    prover: Arc<dyn ProverClient>,
+) -> AppState {
+    let mut issuer_addrs = HashMap::new();
+    issuer_addrs.insert("VACCINATION".to_string(), vaccination_issuer_addr);
+    let cfg = Config {
+        deployment_url: "http://localhost:41874".to_string(),
+        rpc_url,
+        issuer_registry_addr,
+        verification_registry_addr,
+        issuer_addrs,
+        issuer_name: "DogTag Vet".to_string(),
+        issuer_domain,
+        operator_password: OPERATOR_PW.to_string(),
+        admin_password: ADMIN_PW.to_string(),
+        confirmations,
+    };
+    AppState {
+        store: Arc::new(MemStore::new()),
+        chain,
+        prover,
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
