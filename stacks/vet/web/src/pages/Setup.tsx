@@ -397,7 +397,7 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
   const [form, setForm] = useState({
     issuerEntityId: "",
     address: "",
-    recordTypes: "RabiesVaccinationCertificate",
+    recordTypes: "VACCINATION",
     domain: "",
     documentStore: "",
     usdaNan: "",
@@ -410,6 +410,21 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
 
   function upd(k: keyof typeof form, v: string) {
     setForm((p) => ({ ...p, [k]: v }));
+  }
+
+  // Testnet demo: fill everything except the signer address (that's your genesis signer).
+  function fillDemo() {
+    setForm((p) => ({
+      ...p,
+      issuerEntityId: p.issuerEntityId || "seaport-vet",
+      recordTypes: "VACCINATION",
+      domain: "testvet.roax.net",
+      documentStore: env.dogtagIssuerAddr || "0x5c703910111f942EE0f47E02214291b5274cDb53",
+      usdaNan: "123456",
+      licenseNumber: "VET-2024-0001",
+      licenseJurisdiction: "CA",
+      licenseExpiry: "2027-12-31",
+    }));
   }
 
   async function submit(e: FormEvent) {
@@ -461,6 +476,9 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
           <Field label="License jurisdiction" value={form.licenseJurisdiction} onChange={(v) => upd("licenseJurisdiction", v)} />
           <Field label="License expiry" value={form.licenseExpiry} onChange={(v) => upd("licenseExpiry", v)} placeholder="YYYY-MM-DD" />
           <div className="sm:col-span-2 flex items-center gap-3">
+            <Button type="button" variant="ghost" onClick={fillDemo}>
+              Fill demo data
+            </Button>
             <Button type="submit" loading={busy}>
               Submit application
             </Button>

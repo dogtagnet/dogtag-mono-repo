@@ -12,8 +12,7 @@ use vet_api::chain::AlloyChain;
 use vet_api::custody::Custody;
 use vet_api::prover::{ArkProver, ProverClient, StubProver};
 use vet_api::store::MemStore;
-
-const PORT: u16 = 41874;
+use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() {
@@ -22,6 +21,8 @@ async fn main() {
         .init();
 
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+    // PORT from env so the same binary serves vet (41874) and groomer (43618).
+    let port: u16 = env("PORT", "41874").parse().unwrap_or(41874);
 
     let rpc_url = env("ROAX_RPC", "https://devrpc.roax.net");
     let mut issuer_addrs = HashMap::new();
@@ -30,7 +31,7 @@ async fn main() {
     }
 
     let cfg = Config {
-        deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{PORT}")),
+        deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{port}")),
         rpc_url: rpc_url.clone(),
         issuer_registry_addr: env(
             "ISSUER_REGISTRY_ADDR",
@@ -56,7 +57,7 @@ async fn main() {
     let calendar: Arc<dyn CalendarProvider> = Arc::new(GoogleCalendar::new(
         env("GOOGLE_CLIENT_ID", ""),
         env("GOOGLE_CLIENT_SECRET", ""),
-        env("GOOGLE_REDIRECT_URI", &format!("http://localhost:{PORT}/calendar/google/callback")),
+        env("GOOGLE_REDIRECT_URI", &format!("http://localhost:{port}/calendar/google/callback")),
         env("GOOGLE_CALENDAR_ID", "primary"),
     ));
     // central appointment-events callback (HMAC-signed).
@@ -92,8 +93,8 @@ async fn main() {
         cfg: Arc::new(cfg),
     };
 
-    let app = vet_api::router(state);
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], PORT));
+    let app = vet_api::router(state).layer(CorsLayer::permissive());
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("vet-api listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     axum::serve(listener, app).await.expect("serve");

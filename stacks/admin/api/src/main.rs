@@ -9,6 +9,7 @@ use admin_api::chain::AlloyChain;
 use admin_api::crypto::MemVault;
 use admin_api::dns::DohDnsChecker;
 use admin_api::store::MemStore;
+use tower_http::cors::CorsLayer;
 
 const PORT: u16 = 39742;
 
@@ -46,7 +47,7 @@ async fn main() {
         cfg: Arc::new(cfg),
     };
 
-    let app = admin_api::router(state);
+    let app = admin_api::router(state).layer(CorsLayer::permissive());
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], PORT));
     tracing::info!(%addr, "admin-api listening");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
