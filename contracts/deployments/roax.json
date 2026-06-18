@@ -10,5 +10,9 @@
   "VerificationRegistry_zk0_legacy": "0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8",
   "_zk_ceremony": "testnet self-run; zkey sha256 45d0b6fb78591548f5763e86f614d1c04cf48a80d35445d1740c0ba561fdc03e; see docs/CEREMONY_TRANSCRIPT.md",
   "admin": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-  "chainId": 135
+  "chainId": 135,
+  "demo_clones": {
+    "DOG_PROFILE": "0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25",
+    "VACCINATION": "0x5c703910111f942EE0f47E02214291b5274cDb53"
+  }
 }

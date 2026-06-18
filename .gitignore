@@ -29,3 +29,4 @@ circuits/ptau/*.ptau
 
 # os
 .DS_Store
+.demo/
