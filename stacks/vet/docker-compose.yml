@@ -1,0 +1,55 @@
+# ----------------------------------------------------------------------------------------------
+# DogTag — VET stack (self-hosted). impl §7.
+#   web   : React SPA built by Vite, served by nginx        -> host 41873
+#   api   : the Rust vet-api binary (multi-stage build)     -> host 41874  (internal 41874)
+#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY -> NO host port (never published)
+#
+# Build context is the monorepo ROOT (`..` resolves to dogtag-mono-repo/) because both images need
+# the pnpm/cargo workspaces. Run from this directory:  docker compose up -d   (or `make up-vet`).
+# ----------------------------------------------------------------------------------------------
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: stacks/vet/web/Dockerfile
+    image: dogtag-vet-web
+    ports:
+      - "41873:80"          # host 41873 -> nginx :80
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../..
+      dockerfile: stacks/vet/api/Dockerfile
+    image: dogtag-vet-api
+    ports:
+      - "41874:41874"       # host 41874 -> vet-api :41874
+    env_file: .env
+    environment:
+      MONGO_URI: "mongodb://mongo:27017/dogtag"
+    depends_on:
+      - mongo
+    volumes:
+      - vetseed:/data       # age-encrypted seed (KEYSTORE_PATH=/data/seed.age)
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    # NO `ports:` mapping — Mongo is reachable ONLY from the compose network (service name `mongo`,
+    # internal port 41875 on this network's view; never exposed to the host).
+    expose:
+      - "41875"
+    command: ["mongod", "--port", "41875", "--bind_ip_all"]
+    volumes:
+      - vetdata:/data/db
+    restart: unless-stopped
+
+networks:
+  default:
+    name: dogtag-vet
+
+volumes:
+  vetdata: {}
+  vetseed: {}

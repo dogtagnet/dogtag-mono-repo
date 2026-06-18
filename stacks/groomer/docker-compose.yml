@@ -1,0 +1,55 @@
+# ----------------------------------------------------------------------------------------------
+# DogTag — GROOMER stack (self-hosted). impl §7.
+#   web   : React SPA built by Vite, served by nginx        -> host 43617
+#   api   : the SAME vet-api binary run with BUSINESS_TYPE=groomer (NO separate groomer-api crate)
+#                                                           -> host 43618  (internal 41874)
+#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY -> NO host port (never published)
+#
+# Build context is the monorepo ROOT. Run from this directory: docker compose up -d (`make up-groomer`).
+# ----------------------------------------------------------------------------------------------
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: stacks/groomer/web/Dockerfile
+    image: dogtag-groomer-web
+    ports:
+      - "43617:80"          # host 43617 -> nginx :80
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../..
+      dockerfile: stacks/groomer/api/Dockerfile
+    image: dogtag-groomer-api
+    ports:
+      - "43618:41874"       # host 43618 -> vet-api :41874 (run as groomer)
+    env_file: .env
+    environment:
+      BUSINESS_TYPE: "groomer"
+      MONGO_URI: "mongodb://mongo:43619/dogtag"
+    depends_on:
+      - mongo
+    volumes:
+      - groomerseed:/data
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    # NO `ports:` mapping — internal to the compose network only (service name `mongo`, port 43619).
+    expose:
+      - "43619"
+    command: ["mongod", "--port", "43619", "--bind_ip_all"]
+    volumes:
+      - groomerdata:/data/db
+    restart: unless-stopped
+
+networks:
+  default:
+    name: dogtag-groomer
+
+volumes:
+  groomerdata: {}
+  groomerseed: {}
