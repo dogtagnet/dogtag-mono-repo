@@ -8,3 +8,7 @@ ios/build/
 ios/*.xcframework/
 ios/DerivedData/
 **/*.xcuserstate
+# bundled Groth16 proving key — a 1:1 copy of circuits/build/verification_final.zkey,
+# copied into the app at mobile-build time (see docs runbook). Don't double-commit the 65MB blob.
+android/app/src/main/assets/verification_final.zkey
+ios/DogTag/verification_final.zkey

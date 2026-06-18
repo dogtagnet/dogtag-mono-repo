@@ -19,6 +19,10 @@ struct WalletIdentity {
     let mnemonic: String          // shown ONCE at genesis; never persisted in plaintext
     let ethAddress: String        // secp256k1 userWallet (0x… 20 bytes)
     let consent: BabyjubConsentKeyFfi
+    let secpPriv: Data            // 32-byte secp256k1 scalar (in-memory only, post-unlock)
+
+    /// Sign a 32-byte EIP-712 digest with the secp256k1 wallet key → 65-byte 0x.. r||s||v.
+    func signEthDigest(_ digest: Data) -> String { Secp256k1.signDigest(priv: secpPriv, digest: digest) }
 }
 
 enum Wallet {
@@ -54,7 +58,7 @@ enum Wallet {
         // Belt-and-suspenders: keyHash must equal Poseidon(Ax,Ay).
         let kh = try keyHashHex(axHex: consent.axHex, ayHex: consent.ayHex)
         precondition(kh == consent.keyHashHex, "consent keyHash mismatch")
-        return WalletIdentity(mnemonic: mnemonic, ethAddress: ethAddress, consent: consent)
+        return WalletIdentity(mnemonic: mnemonic, ethAddress: ethAddress, consent: consent, secpPriv: priv)
     }
 
     // ---- Keychain (hardware-protected, this-device-only) -------------------------------------

@@ -149,39 +149,147 @@ struct ScanScreen: View {
                 }
             }
             Button { presentSelected() } label: {
-                Text("Approve & present").frame(maxWidth: .infinity).padding(.vertical, 12)
+                Text(working ? "Working…" : "Approve & present").frame(maxWidth: .infinity).padding(.vertical, 12)
                     .foregroundColor(.white).background(RoundedRectangle(cornerRadius: 12).fill(c.success))
             }
-            .disabled(selected == nil)
+            .disabled(selected == nil || working)
             if !status.isEmpty { Text(status).font(.system(size: 12)).foregroundColor(c.muted) }
         })
     }
 
     private func presentSelected() {
         guard let p = payload, let sel = selected else { status = "Select a record first."; return }
-        guard case let .verifySession(_, _, relayer, _, _, _, mode, _) = p else { return }
+        guard case let .verifySession(host, jwt, relayer, purpose, _, _, mode, sessionId) = p else { return }
+        let isZk = !(mode.lowercased() == "normal" || mode.lowercased() == "ecdsa")
         Biometric.authenticate(reason: "Present '\(sel.title)' to \(relayer.isEmpty ? "the verifier" : relayer)") { ok, e in
             guard ok else { status = e ?? "auth failed"; return }
-            do {
-                let wallet: WalletIdentity? = (try? Wallet.load()) ?? nil
-                let subject = wallet?.ethAddress
-                let isZk = !(mode.lowercased() == "normal" || mode.lowercased() == "ecdsa")
-                let consentPriv: String? = isZk ? wallet?.consent.prvHex : nil
-                guard let req = VerificationRequest.from(
-                    session: p, dogTagIdDec: sel.dogTagId, credentialRoot: sel.credentialRoot,
-                    subjectWallet: subject, callbackUrl: "\(AppConfig.centralApi)/v1/verify/consent")
-                else { status = "could not build consent"; return }
-                let signed = try ConsentSigner.sign(req, consentPrivHex: consentPriv)
-                status = "Signed (\(signed.mode.rawValue)); submitting…"
+            let wallet: WalletIdentity? = (try? Wallet.load()) ?? nil
+            let subject = wallet?.ethAddress
+            guard let req = VerificationRequest.from(
+                session: p, dogTagIdDec: sel.dogTagId, credentialRoot: sel.credentialRoot,
+                subjectWallet: subject, callbackUrl: "\(AppConfig.centralApi)/v1/verify/consent")
+            else { status = "could not build consent"; return }
+
+            if !isZk {
+                // ECDSA (legacy) path — relay through central as before.
                 Task {
-                    let r = await CentralApi.postConsent(sessionToken: AppConfig.sessionToken, payloadJson: signed.payloadJson)
-                    await MainActor.run {
-                        status = r.code < 0 ? "Signed locally; submit failed (no network / session)."
-                                            : "POST /v1/verify/consent → \(r.code)"
-                    }
+                    do {
+                        let signed = try ConsentSigner.sign(req, consentPrivHex: nil)
+                        await MainActor.run { status = "Signed (\(signed.mode.rawValue)); submitting…" }
+                        let r = await CentralApi.postConsent(sessionToken: AppConfig.sessionToken, payloadJson: signed.payloadJson)
+                        await MainActor.run {
+                            status = r.code < 0 ? "Signed locally; submit failed (no network / session)."
+                                                : "POST /v1/verify/consent → \(r.code)"
+                        }
+                    } catch { await MainActor.run { status = "sign failed: \(error)" } }
                 }
-            } catch { status = "sign failed: \(error)" }
+                return
+            }
+
+            // -------- ZERO-KNOWLEDGE on-device path --------
+            guard let wallet = wallet else { status = "Create your wallet first (Profile)."; return }
+            working = true
+            let roax = RoaxConfig.load()
+            Task {
+                do {
+                    // (a) PRE-PROOF GROOMER CHECK — hard-stop if the relayer is not whitelisted.
+                    await MainActor.run { status = "Checking verifier authorization…" }
+                    let verifyKey = verifyWhitelistKeyHex(purposeLabel: purpose)
+                    let wl = await RoaxRpc.isWhitelistedFor(
+                        rpcUrl: AppConfig.roaxRpc, issuerRegistry: roax.issuerRegistry,
+                        key: verifyKey, signer: relayer)
+                    guard case .valid = wl else {
+                        await MainActor.run {
+                            working = false
+                            status = "This verifier is not an authorized groomer."
+                        }
+                        return
+                    }
+
+                    // (b) Sign EdDSA consent + generate the Groth16 proof on-device.
+                    let eddsa = try signConsentEddsa(
+                        prvHex: wallet.consent.prvHex,
+                        dogTagIdHex: req.dogTagId, recordTypeHex: req.recordType, purposeHex: req.purpose,
+                        credentialRootHex: req.credentialRoot, challengeHex: req.challenge,
+                        relayerHex: req.relayer, subjectHex: req.subject, nonceHex: req.nonce, deadlineHex: req.deadline)
+                    guard let zkeyUrl = Bundle.main.url(forResource: "verification_final", withExtension: "zkey") else {
+                        await MainActor.run { working = false; status = "proving key missing from bundle." }
+                        return
+                    }
+                    await MainActor.run { status = "Generating proof…" }
+                    let eddsaInput = EddsaSigInput(
+                        r8xDec: eddsa.r8xDec, r8yDec: eddsa.r8yDec, sDec: eddsa.sDec,
+                        axHex: wallet.consent.axHex, ayHex: wallet.consent.ayHex)
+                    let proof = try proveVerification(
+                        wrappedDocJson: sel.wrappedDocJson, consentJson: eddsaConsentJson(req),
+                        eddsaSig: eddsaInput, zkeyPath: zkeyUrl.path)
+
+                    // (c) CONSENT-KEY BIND (gasless) — owner signs the EIP-712 digest; relayer submits.
+                    var bind: ConsentKeyBind? = nil
+                    let nonce = await RoaxRpc.bindNonce(
+                        rpcUrl: AppConfig.roaxRpc, consentKeyRegistry: roax.consentKeyRegistry,
+                        subject: wallet.ethAddress) ?? 0
+                    if let digestHex = try? bindConsentKeyDigestHex(
+                        consentKeyRegistryAddr: roax.consentKeyRegistry, keyHashHex: wallet.consent.keyHashHex,
+                        walletAddr: wallet.ethAddress, nonce: nonce, chainId: UInt64(roax.chainId)) {
+                        let ownerSig = wallet.signEthDigest(hexToData(digestHex))
+                        bind = ConsentKeyBind(subject: wallet.ethAddress, keyHash: wallet.consent.keyHashHex, ownerSig: ownerSig)
+                    }
+
+                    // (d) SUBMIT to the QR host (groomer), NOT central.
+                    await MainActor.run { status = "Submitting proof to verifier…" }
+                    let signed = try ConsentSigner.sign(req, consentPrivHex: wallet.consent.prvHex, proof: proof, bind: bind)
+                    let r = await CentralApi.postVerifyConsentToHost(host: host, payloadJson: signed.payloadJson)
+                    guard r.ok else {
+                        await MainActor.run { working = false; status = "Submit failed (\(r.code))." }
+                        return
+                    }
+
+                    // (e) POLL session status until recorded → show txHash.
+                    await MainActor.run { status = "Proof submitted — waiting for on-chain record…" }
+                    var recorded = false
+                    for _ in 0..<30 {
+                        if let st = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, sessionJwt: jwt),
+                           st.status == "recorded" {
+                            recorded = true
+                            let tx = st.txHash.map { String($0.prefix(14)) } ?? ""
+                            await MainActor.run { status = "Verified on-chain — no data disclosed. tx \(tx)…" }
+                            break
+                        }
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    }
+                    await MainActor.run {
+                        working = false
+                        if !recorded { status = "Submitted; awaiting confirmation (poll timed out)." }
+                    }
+                } catch {
+                    await MainActor.run { working = false; status = "ZK verify failed: \(error)" }
+                }
+            }
         }
+    }
+
+    /// The canonical §1.10 consent JSON the Rust prover consumes for `proveVerification`.
+    private func eddsaConsentJson(_ req: VerificationRequest) -> String {
+        let o: [String: Any] = [
+            "dogTagId": req.dogTagId, "recordType": req.recordType, "purpose": req.purpose,
+            "credentialRoot": req.credentialRoot, "challenge": req.challenge, "relayer": req.relayer,
+            "subject": req.subject, "nonce": req.nonce, "deadline": req.deadline,
+        ]
+        return String(data: (try? JSONSerialization.data(withJSONObject: o)) ?? Data(), encoding: .utf8) ?? "{}"
+    }
+
+    private func hexToData(_ hex: String) -> Data {
+        var h = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+        if h.count % 2 != 0 { h = "0" + h }
+        var out = Data()
+        var i = h.startIndex
+        while i < h.endIndex {
+            let next = h.index(i, offsetBy: 2)
+            if let b = UInt8(h[i..<next], radix: 16) { out.append(b) }
+            i = next
+        }
+        return out
     }
 
     // ---- helpers ----

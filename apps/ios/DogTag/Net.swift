@@ -64,6 +64,69 @@ enum RoaxRpc {
         return truthy ? .valid : .invalid
     }
 
+    private static let isWhitelistedForSelector = "0x779c3985" // keccak256("isWhitelistedFor(bytes32,address)")[:4]
+    private static let bindNonceSelector = "0x15c95be6"        // keccak256("bindNonce(address)")[:4]
+    private static let keyOfSelector = "0xfa073d76"            // keccak256("keyOf(address)")[:4]
+
+    /// `IssuerRegistry.isWhitelistedFor(key, signer)` — the PRE-PROOF groomer check. On Unknown the
+    /// caller MUST hard-stop (this gate is a user-safety requirement → unknown == not authorized).
+    static func isWhitelistedFor(rpcUrl: String, issuerRegistry: String, key: String, signer: String) async -> Result {
+        guard !issuerRegistry.isEmpty, !key.isEmpty, !signer.isEmpty else { return .unknown("missing addr/key/signer") }
+        let data = isWhitelistedForSelector + pad32(key) + padAddr(signer)
+        switch await ethCall(rpcUrl: rpcUrl, to: issuerRegistry, data: data) {
+        case let .success(hex):
+            let truthy = hex.contains { $0 != "0" }
+            return truthy ? .valid : .invalid
+        case let .failure(reason):
+            return .unknown(reason)
+        }
+    }
+
+    /// `ConsentKeyRegistry.bindNonce(subject)` → the current bind nonce (or nil on failure).
+    static func bindNonce(rpcUrl: String, consentKeyRegistry: String, subject: String) async -> UInt64? {
+        guard !consentKeyRegistry.isEmpty, !subject.isEmpty else { return nil }
+        let data = bindNonceSelector + padAddr(subject)
+        switch await ethCall(rpcUrl: rpcUrl, to: consentKeyRegistry, data: data) {
+        case let .success(hex): return UInt64(hex.suffix(16), radix: 16) ?? UInt64(hex, radix: 16) ?? 0
+        case .failure: return nil
+        }
+    }
+
+    /// `VerificationRegistry.keyOf(subject)` → bound consent keyHash (0x..), or nil.
+    static func keyOf(rpcUrl: String, verificationRegistry: String, subject: String) async -> String? {
+        guard !verificationRegistry.isEmpty, !subject.isEmpty else { return nil }
+        let data = keyOfSelector + padAddr(subject)
+        switch await ethCall(rpcUrl: rpcUrl, to: verificationRegistry, data: data) {
+        case let .success(hex): return "0x" + String(repeating: "0", count: max(0, 64 - hex.count)) + hex
+        case .failure: return nil
+        }
+    }
+
+    private enum CallResult { case success(String); case failure(String) }
+
+    private static func ethCall(rpcUrl: String, to: String, data: String) async -> CallResult {
+        let payload: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+            "params": [["to": to, "data": data], "latest"],
+        ]
+        guard let raw = try? JSONSerialization.data(withJSONObject: payload),
+              let bodyStr = String(data: raw, encoding: .utf8) else { return .failure("encode") }
+        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        guard resp.ok else { return .failure("rpc \(resp.code)") }
+        guard let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
+            return .failure("bad rpc json")
+        }
+        if let err = o["error"] as? [String: Any] { return .failure((err["message"] as? String) ?? "rpc error") }
+        let result = (o["result"] as? String) ?? ""
+        return .success(result.hasPrefix("0x") ? String(result.dropFirst(2)) : result)
+    }
+
+    private static func padAddr(_ addr: String) -> String {
+        let h = (addr.hasPrefix("0x") ? String(addr.dropFirst(2)) : addr).lowercased()
+        return String(repeating: "0", count: max(0, 64 - h.count)) + h
+    }
+
     private static func pad32(_ hex: String) -> String {
         let h = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
         return String(repeating: "0", count: max(0, 64 - h.count)) + h
@@ -83,5 +146,24 @@ enum CentralApi {
 
     static func postConsent(sessionToken: String?, payloadJson: String) async -> Http.Response {
         await Http.postJSON("\(AppConfig.centralApi)/v1/verify/consent", body: payloadJson, bearer: sessionToken)
+    }
+
+    /// ZK path: POST the proof bundle directly to the GROOMER host (scanned QR origin), NOT central.
+    /// The body's `sessionJwt` is the auth (no bearer). The groomer relays `recordVerificationZK`.
+    static func postVerifyConsentToHost(host: String, payloadJson: String) async -> Http.Response {
+        await Http.postJSON("\(host)/v1/verify/consent", body: payloadJson)
+    }
+
+    struct SessionStatus { let status: String; let txHash: String? }
+
+    /// Poll GET <host>/verify/session/{id} (session-JWT auth) → {status, txHash}.
+    static func verifySessionStatus(host: String, sessionId: String, sessionJwt: String) async -> SessionStatus? {
+        guard !sessionId.isEmpty else { return nil }
+        let resp = await Http.getJSON("\(host)/verify/session/\(sessionId)", bearer: sessionJwt)
+        guard resp.ok, let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
+        let status = (o["status"] as? String) ?? ""
+        let tx = (o["txHash"] as? String) ?? (o["tx_hash"] as? String)
+        return SessionStatus(status: status, txHash: (tx?.isEmpty == false) ? tx : nil)
     }
 }

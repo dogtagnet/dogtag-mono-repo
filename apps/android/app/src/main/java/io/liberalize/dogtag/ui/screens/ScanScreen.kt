@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
+import io.liberalize.dogtag.consent.ConsentKeyBind
 import io.liberalize.dogtag.consent.ConsentMode
 import io.liberalize.dogtag.consent.ConsentSigner
 import io.liberalize.dogtag.consent.VerificationRequest
@@ -41,14 +42,24 @@ import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.RecordImporter
+import io.liberalize.dogtag.data.RoaxConfig
+import io.liberalize.dogtag.data.ZkeyAsset
 import io.liberalize.dogtag.net.CentralApi
+import io.liberalize.dogtag.net.RoaxRpc
 import io.liberalize.dogtag.qr.QrPayload
 import io.liberalize.dogtag.qr.QrScannerView
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.wallet.Biometric
 import io.liberalize.dogtag.wallet.Wallet
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import uniffi.dogtag_standard.EddsaSigInput
+import uniffi.dogtag_standard.bindConsentKeyDigestHex
+import uniffi.dogtag_standard.proveVerification
+import uniffi.dogtag_standard.signConsentEddsa
+import uniffi.dogtag_standard.verifyWhitelistKeyHex
 
 /**
  * The single scan entry point for the user app. The owner ONLY scans — there is no QR display here.
@@ -248,6 +259,8 @@ private fun VerifyPanel(
     }
 
     val sel = selected
+    var busy by remember { mutableStateOf(false) }
+    val isZk = session.mode.lowercase() != "normal" && session.mode.lowercase() != "ecdsa"
     Button(
         onClick = {
             err = ""
@@ -256,40 +269,156 @@ private fun VerifyPanel(
                 activity, "Authorize consent",
                 "Present '${sel.title}' to ${session.relayer.ifBlank { "the verifier" }}",
                 onSuccess = {
-                    try {
-                        val wallet = runCatching { Wallet.load(context) }.getOrNull()
-                        val subject = wallet?.ethAddress
-                        val consentPriv = if (session.mode.lowercase() != "normal" && session.mode.lowercase() != "ecdsa")
-                            wallet?.consent?.prvHex else null
-                        val req = VerificationRequest.from(
-                            session = session,
-                            dogTagIdDec = sel.dogTagId,
-                            credentialRoot = sel.credentialRoot,
-                            subjectWallet = subject,
-                            callbackUrl = "${AppConfig.CENTRAL_API}/v1/verify/consent",
-                        )
-                        val signed = ConsentSigner.sign(req, consentPriv)
+                    val wallet = runCatching { Wallet.load(context) }.getOrNull()
+                    val subject = wallet?.ethAddress
+                    val consentPriv = if (isZk) wallet?.consent?.prvHex else null
+                    val req = VerificationRequest.from(
+                        session = session,
+                        dogTagIdDec = sel.dogTagId,
+                        credentialRoot = sel.credentialRoot,
+                        subjectWallet = subject,
+                        callbackUrl = "${AppConfig.CENTRAL_API}/v1/verify/consent",
+                    )
+                    if (!isZk) {
+                        // ECDSA (legacy) path — relay through central as before.
                         scope.launch {
-                            onStatus("Signed (${signed.mode}); submitting…")
-                            val token = AppConfig.sessionToken(context)
-                            val r = runCatching { CentralApi.postConsent(token, signed.payloadJson) }.getOrNull()
-                            onStatus(
-                                if (r == null) "Signed locally; submit failed (no network / session)."
-                                else "POST /v1/verify/consent → ${r.code}",
-                            )
+                            try {
+                                val signed = ConsentSigner.sign(req, null)
+                                onStatus("Signed (${signed.mode}); submitting…")
+                                val token = AppConfig.sessionToken(context)
+                                val r = runCatching { CentralApi.postConsent(token, signed.payloadJson) }.getOrNull()
+                                onStatus(
+                                    if (r == null) "Signed locally; submit failed (no network / session)."
+                                    else "POST /v1/verify/consent → ${r.code}",
+                                )
+                            } catch (e: Exception) { err = "sign failed: ${e.message}" }
                         }
-                    } catch (e: Exception) { err = "sign failed: ${e.message}" }
+                        return@prompt
+                    }
+
+                    // -------- ZERO-KNOWLEDGE on-device path --------
+                    busy = true
+                    scope.launch {
+                        try {
+                            val roax = RoaxConfig.load(context)
+
+                            // (a) PRE-PROOF GROOMER CHECK — hard-stop if the relayer is not a
+                            // whitelisted groomer for this purpose. Never sign/prove/disclose otherwise.
+                            onStatus("Checking verifier authorization…")
+                            val verifyKey = verifyWhitelistKeyHex(session.purpose)
+                            val wl = withContext(Dispatchers.IO) {
+                                RoaxRpc.isWhitelistedFor(
+                                    AppConfig.ROAX_RPC, roax.issuerRegistry, verifyKey, session.relayer,
+                                )
+                            }
+                            if (wl !is RoaxRpc.Result.Valid) {
+                                busy = false
+                                err = "This verifier is not an authorized groomer."
+                                onStatus("Blocked — verifier not whitelisted (${wl}).")
+                                return@launch
+                            }
+
+                            // (b) Sign the EdDSA consent + generate the Groth16 proof on-device.
+                            if (consentPriv == null || wallet == null) {
+                                busy = false; err = "Create your wallet first (Profile)."; return@launch
+                            }
+                            val eddsa = signConsentEddsa(
+                                consentPriv,
+                                req.dogTagId, req.recordType, req.purpose, req.credentialRoot, req.challenge,
+                                req.relayer, req.subject, req.nonce, req.deadline,
+                            )
+                            onStatus("Generating proof…")
+                            val zkeyPath = withContext(Dispatchers.IO) { ZkeyAsset.ensure(context) }
+                            val eddsaInput = EddsaSigInput(
+                                r8xDec = eddsa.r8xDec, r8yDec = eddsa.r8yDec, sDec = eddsa.sDec,
+                                axHex = wallet.consent.axHex, ayHex = wallet.consent.ayHex,
+                            )
+                            val proof = withContext(Dispatchers.Default) {
+                                proveVerification(sel.wrappedDocJson, eddsaConsentJson(req), eddsaInput, zkeyPath)
+                            }
+
+                            // (c) CONSENT-KEY BIND (gasless) — owner signs the EIP-712 bind digest;
+                            // the RELAYER submits bindConsentKeyFor (owner pays no gas).
+                            val bind: ConsentKeyBind? = runCatching {
+                                val nonce = withContext(Dispatchers.IO) {
+                                    RoaxRpc.bindNonce(AppConfig.ROAX_RPC, roax.consentKeyRegistry, wallet.ethAddress)
+                                } ?: 0L
+                                val digestHex = bindConsentKeyDigestHex(
+                                    roax.consentKeyRegistry, wallet.consent.keyHashHex,
+                                    wallet.ethAddress, nonce.toULong(), roax.chainId.toULong(),
+                                )
+                                val digest = hexToBytes(digestHex)
+                                val ownerSig = wallet.signEthDigest(digest)
+                                ConsentKeyBind(wallet.ethAddress, wallet.consent.keyHashHex, ownerSig)
+                            }.getOrNull()
+
+                            // (d) SUBMIT to the QR host (groomer), NOT central.
+                            onStatus("Submitting proof to verifier…")
+                            val signed = ConsentSigner.signWithProof(req, consentPriv, proof, bind)
+                            val r = withContext(Dispatchers.IO) {
+                                runCatching { CentralApi.postVerifyConsentToHost(session.host, signed.payloadJson) }.getOrNull()
+                            }
+                            if (r == null || !r.ok) {
+                                busy = false
+                                onStatus("Submit failed (${r?.code ?: "no network"}).")
+                                return@launch
+                            }
+
+                            // (e) POLL session status until recorded → show txHash.
+                            onStatus("Proof submitted — waiting for on-chain record…")
+                            var recorded = false
+                            for (i in 0 until 30) {
+                                val st = withContext(Dispatchers.IO) {
+                                    CentralApi.verifySessionStatus(session.host, session.sessionId, session.jwt)
+                                }
+                                if (st?.status == "recorded") {
+                                    recorded = true
+                                    onStatus("Verified on-chain — no data disclosed. tx ${st.txHash?.take(14) ?: ""}…")
+                                    break
+                                }
+                                kotlinx.coroutines.delay(2000)
+                            }
+                            if (!recorded) onStatus("Submitted; awaiting confirmation (poll timed out).")
+                            busy = false
+                        } catch (e: Exception) {
+                            busy = false
+                            err = "ZK verify failed: ${e.message}"
+                        }
+                    }
                 },
                 onError = { err = it },
             )
         },
-        enabled = sel != null,
+        enabled = sel != null && !busy,
         modifier = Modifier.fillMaxWidth(),
         colors = ButtonDefaults.buttonColors(containerColor = c.success, contentColor = Color.White),
-    ) { Text("Approve & present") }
+    ) { Text(if (busy) "Working…" else "Approve & present") }
 
     if (err.isNotBlank()) Text(err, fontSize = 12.sp, color = c.danger)
     if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = c.muted)
+}
+
+/**
+ * The consent JSON the Rust prover consumes for `proveVerification` — the canonical §1.10 consent
+ * fields (all 0x.. hex). The prover internally re-derives the circuit signals from these + the
+ * wrapped doc + the EdDSA signature.
+ */
+private fun eddsaConsentJson(req: VerificationRequest): String =
+    org.json.JSONObject().apply {
+        put("dogTagId", req.dogTagId)
+        put("recordType", req.recordType)
+        put("purpose", req.purpose)
+        put("credentialRoot", req.credentialRoot)
+        put("challenge", req.challenge)
+        put("relayer", req.relayer)
+        put("subject", req.subject)
+        put("nonce", req.nonce)
+        put("deadline", req.deadline)
+    }.toString()
+
+private fun hexToBytes(hex: String): ByteArray {
+    val h = hex.removePrefix("0x")
+    return ByteArray(h.length / 2) { i -> ((Character.digit(h[i * 2], 16) shl 4) + Character.digit(h[i * 2 + 1], 16)).toByte() }
 }
 
 @Composable

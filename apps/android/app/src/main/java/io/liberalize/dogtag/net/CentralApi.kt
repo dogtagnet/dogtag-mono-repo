@@ -28,4 +28,35 @@ object CentralApi {
     /** POST /v1/verify/consent — relay the signed consent. Owner-session gated server-side. */
     suspend fun postConsent(sessionToken: String?, payloadJson: String): Http.Response =
         Http.postJson("${AppConfig.CENTRAL_API}/v1/verify/consent", payloadJson, bearer = sessionToken)
+
+    /**
+     * ZK path: POST the proof bundle directly to the GROOMER host (the scanned QR `iss`/origin), NOT
+     * central. The groomer relays `recordVerificationZK` on-chain as the gas-payer. The body is the
+     * signed-consent payload already carrying `{sessionJwt, consent, sig, mode, proof, bind}`. No
+     * bearer — the body's `sessionJwt` is the auth (verify-session JWT, dual-gated server-side).
+     */
+    suspend fun postVerifyConsentToHost(host: String, payloadJson: String): Http.Response =
+        Http.postJson("$host/v1/verify/consent", payloadJson)
+
+    /**
+     * Poll the verify-session status on the GROOMER host: GET /verify/session/{id} authed with the
+     * session JWT. Returns the parsed `{status, txHash}` (or null on failure). Status flips to
+     * `recorded` once the relayer's `recordVerificationZK` tx confirms.
+     */
+    data class SessionStatus(val status: String, val txHash: String?)
+
+    suspend fun verifySessionStatus(host: String, sessionId: String, sessionJwt: String): SessionStatus? {
+        if (sessionId.isBlank()) return null
+        return try {
+            val resp = Http.getJson("$host/verify/session/$sessionId", bearer = sessionJwt)
+            if (!resp.ok) return null
+            val o = JSONObject(resp.body)
+            SessionStatus(
+                status = o.optString("status", ""),
+                txHash = o.optString("txHash", o.optString("tx_hash", "")).ifBlank { null },
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
 }

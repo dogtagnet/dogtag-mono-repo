@@ -127,6 +127,20 @@ struct BigUInt {
         return rem
     }
 
+    /// Logical right shift by one bit (floor(self / 2)).
+    func shiftRight1() -> BigUInt {
+        var res = [UInt32](repeating: 0, count: limbs.count)
+        var carry: UInt32 = 0
+        var i = limbs.count - 1
+        while i >= 0 {
+            let cur = limbs[i]
+            res[i] = (cur >> 1) | (carry << 31)
+            carry = cur & 1
+            i -= 1
+        }
+        return BigUInt(limbs: res)
+    }
+
     private func shiftLeft1() -> BigUInt {
         var res = [UInt32]()
         var carry: UInt32 = 0

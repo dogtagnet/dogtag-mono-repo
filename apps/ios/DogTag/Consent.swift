@@ -85,10 +85,15 @@ struct SignedConsent {
     let payloadJson: String
 }
 
+/// The gasless consent-key bind block. The RELAYER (groomer) submits
+/// `ConsentKeyRegistry.bindConsentKeyFor(subject, keyHash, ownerSig)` so the owner NEVER pays gas.
+struct ConsentKeyBind { let subject: String; let keyHash: String; let ownerSig: String }
+
 /// Build a signed consent over the SELECTED record's root. The POST body matches the central
-/// `/v1/verify/consent` contract: `{ sessionJwt, consent, sig, mode }`.
+/// `/v1/verify/consent` contract: `{ sessionJwt, consent, sig, mode }` (+ `proof`/`bind` on the ZK path).
 enum ConsentSigner {
-    static func sign(_ req: VerificationRequest, consentPrivHex: String?) throws -> SignedConsent {
+    static func sign(_ req: VerificationRequest, consentPrivHex: String?,
+                     proof: ProofFfi? = nil, bind: ConsentKeyBind? = nil) throws -> SignedConsent {
         let nullifier = try consentNullifierHex(
             dogTagIdHex: req.dogTagId, recordTypeHex: req.recordType, purposeHex: req.purpose,
             credentialRootHex: req.credentialRoot, challengeHex: req.challenge,
@@ -119,9 +124,17 @@ enum ConsentSigner {
             let sigObj: [String: Any] = ["R8x": e.r8xDec, "R8y": e.r8yDec, "S": e.sDec]
             sig = String(data: (try? JSONSerialization.data(withJSONObject: sigObj)) ?? Data(), encoding: .utf8) ?? ""
         }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "sessionJwt": req.sessionJwt, "consent": consent, "sig": sig, "mode": req.mode.rawValue,
         ]
+        if let p = proof {
+            payload["proof"] = [
+                "a": p.a, "b": p.b, "c": p.c, "pubSignals": p.pubSignals,
+            ]
+        }
+        if let b = bind {
+            payload["bind"] = ["subject": b.subject, "keyHash": b.keyHash, "ownerSig": b.ownerSig]
+        }
         let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
         return SignedConsent(mode: req.mode, nullifier: nullifier, message: message,
                              typehash: typehash, eddsa: eddsa, payloadJson: json)

@@ -8,13 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A35C55F156CE4480CF763C /* HomeScreen.swift */; };
-		DDDDDDDDDDDDDDDDDDDDDDD1 /* CredentialDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDDDDDDDDDDDDDDDDDDDDD2 /* CredentialDetailScreen.swift */; };
 		01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21052A141B470C3ACE0815DA /* LocalStore.swift */; };
+		069536323699D7A1734E92A9 /* CredentialDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */; };
 		0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AB4F26FEB853C4B49F7988 /* Consent.swift */; };
 		0FAAB8287B508C32516CFDE9 /* RecordImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0236E3495680C88FA6DA3FD /* RecordImporter.swift */; };
 		20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */; };
 		26286860F2F0C9B67191AAF6 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E305C5EDBCBAB54068928D /* Models.swift */; };
 		2D898909BA2816F7807E1DAC /* DogTagApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */; };
+		2EACE30CA5B71E766879B375 /* verification_final.zkey in Resources */ = {isa = PBXBuildFile; fileRef = 41B690C8C0288E6D92C49B1A /* verification_final.zkey */; };
 		3195F181C655ED2791616210 /* dogtag_standard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */; };
 		3F1ED6BFE55CC539565CF5B3 /* DocumentsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC51E046B7E0F7C0F0CA79A /* DocumentsScreen.swift */; };
 		4700C3226AED9C06D0D56FC1 /* DogTagFFI.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1DE9492A41E44C4441AF7189 /* DogTagFFI.xcframework */; };
@@ -36,12 +37,13 @@
 
 /* Begin PBXFileReference section */
 		05A35C55F156CE4480CF763C /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
-		DDDDDDDDDDDDDDDDDDDDDDD2 /* CredentialDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialDetailScreen.swift; sourceTree = "<group>"; };
 		1DE9492A41E44C4441AF7189 /* DogTagFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = DogTagFFI.xcframework; sourceTree = "<group>"; };
 		21052A141B470C3ACE0815DA /* LocalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStore.swift; sourceTree = "<group>"; };
 		3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagApp.swift; sourceTree = "<group>"; };
 		409155A71A31BD791C0561AD /* Net.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Net.swift; sourceTree = "<group>"; };
+		41B690C8C0288E6D92C49B1A /* verification_final.zkey */ = {isa = PBXFileReference; path = verification_final.zkey; sourceTree = "<group>"; };
 		4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileScreen.swift; sourceTree = "<group>"; };
+		49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialDetailScreen.swift; sourceTree = "<group>"; };
 		58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = dogtag_standard.swift; sourceTree = "<group>"; };
 		685707046DC0696308DB5C8D /* QrPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrPayload.swift; sourceTree = "<group>"; };
 		6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelScreen.swift; sourceTree = "<group>"; };
@@ -52,7 +54,7 @@
 		8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secp256k1.swift; sourceTree = "<group>"; };
 		A7926F506647E68F6A59FDAF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		BBCC68456C4002493E9519A5 /* testvectors.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = testvectors.json; sourceTree = "<group>"; };
-		C3AF3EC614608D5979DC48A2 /* DogTag.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DogTag.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3AF3EC614608D5979DC48A2 /* DogTag.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = DogTag.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C48A2C71E910181EB8484314 /* QR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QR.swift; sourceTree = "<group>"; };
 		C8AB4F26FEB853C4B49F7988 /* Consent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Consent.swift; sourceTree = "<group>"; };
 		D015751D851C794DC4128BC7 /* BigUInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BigUInt.swift; sourceTree = "<group>"; };
@@ -88,11 +90,11 @@
 			children = (
 				D015751D851C794DC4128BC7 /* BigUInt.swift */,
 				C8AB4F26FEB853C4B49F7988 /* Consent.swift */,
+				49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */,
 				7DC51E046B7E0F7C0F0CA79A /* DocumentsScreen.swift */,
 				58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */,
 				3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */,
 				05A35C55F156CE4480CF763C /* HomeScreen.swift */,
-				DDDDDDDDDDDDDDDDDDDDDDD2 /* CredentialDetailScreen.swift */,
 				85DFF42E4A240519092B9764 /* Keccak256.swift */,
 				21052A141B470C3ACE0815DA /* LocalStore.swift */,
 				78E305C5EDBCBAB54068928D /* Models.swift */,
@@ -107,6 +109,7 @@
 				BBCC68456C4002493E9519A5 /* testvectors.json */,
 				A7926F506647E68F6A59FDAF /* Theme.swift */,
 				6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */,
+				41B690C8C0288E6D92C49B1A /* verification_final.zkey */,
 				D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */,
 				E35FCC686C0AAD6B317376C7 /* Wallet.swift */,
 				E35067E42CB675A6C8D77F8D /* Wordlist.swift */,
@@ -163,6 +166,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					E5DC45AFEE7006A70B907F39 = {
+						DevelopmentTeam = AYDBUX9433;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -193,6 +197,7 @@
 			files = (
 				66976D595E830B76C1B03649 /* roax.json in Resources */,
 				6C880A8C57CA3473792895CB /* testvectors.json in Resources */,
+				2EACE30CA5B71E766879B375 /* verification_final.zkey in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -205,10 +210,10 @@
 			files = (
 				F71346870BDDB878D094DEFE /* BigUInt.swift in Sources */,
 				0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */,
+				069536323699D7A1734E92A9 /* CredentialDetailScreen.swift in Sources */,
 				3F1ED6BFE55CC539565CF5B3 /* DocumentsScreen.swift in Sources */,
 				2D898909BA2816F7807E1DAC /* DogTagApp.swift in Sources */,
 				01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */,
-				DDDDDDDDDDDDDDDDDDDDDDD1 /* CredentialDetailScreen.swift in Sources */,
 				88E11CB08CC2C81AE51118FA /* Keccak256.swift in Sources */,
 				01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */,
 				26286860F2F0C9B67191AAF6 /* Models.swift in Sources */,
@@ -237,7 +242,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 39EXN63988;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",
@@ -265,7 +269,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 39EXN63988;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",

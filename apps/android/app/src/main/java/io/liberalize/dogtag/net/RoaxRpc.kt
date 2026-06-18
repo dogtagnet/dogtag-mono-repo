@@ -59,6 +59,88 @@ object RoaxRpc {
         }
     }
 
+    // keccak256("isWhitelistedFor(bytes32,address)")[:4]
+    private const val IS_WHITELISTED_FOR_SELECTOR = "0x779c3985"
+    // keccak256("bindNonce(address)")[:4]
+    private const val BIND_NONCE_SELECTOR = "0x15c95be6"
+
+    /**
+     * `IssuerRegistry.isWhitelistedFor(key, signer)` — the PRE-PROOF groomer check. `key` is the
+     * 0x.. 32-byte VERIFY key (`verifyWhitelistKeyHex(purpose)`); `signer` is the scanned relayer.
+     * Returns Valid (whitelisted), Invalid (not), or Unknown (RPC unreachable). On Unknown the caller
+     * MUST hard-stop — this gate is a user-safety requirement, so unknown is treated as not-authorized.
+     */
+    suspend fun isWhitelistedFor(
+        rpcUrl: String,
+        issuerRegistry: String,
+        key: String,
+        signer: String,
+    ): Result {
+        if (issuerRegistry.isBlank() || key.isBlank() || signer.isBlank()) {
+            return Result.Unknown("missing addr/key/signer")
+        }
+        val data = IS_WHITELISTED_FOR_SELECTOR + pad32(key) + padAddr(signer)
+        return when (val r = ethCall(rpcUrl, issuerRegistry, data)) {
+            is CallResult.Ok -> {
+                val truthy = r.hex.trimStart('0').isNotEmpty()
+                if (truthy) Result.Valid else Result.Invalid
+            }
+            is CallResult.Err -> Result.Unknown(r.reason)
+        }
+    }
+
+    /** `ConsentKeyRegistry.bindNonce(subject)` → the current bind nonce (decimal) or null on failure. */
+    suspend fun bindNonce(rpcUrl: String, consentKeyRegistry: String, subject: String): Long? {
+        if (consentKeyRegistry.isBlank() || subject.isBlank()) return null
+        val data = BIND_NONCE_SELECTOR + padAddr(subject)
+        return when (val r = ethCall(rpcUrl, consentKeyRegistry, data)) {
+            is CallResult.Ok -> runCatching {
+                java.math.BigInteger(r.hex.ifBlank { "0" }, 16).toLong()
+            }.getOrNull()
+            is CallResult.Err -> null
+        }
+    }
+
+    /** `VerificationRegistry.keyOf(subject)` → the bound consent keyHash (0x..), or null/0x00.. if unbound. */
+    suspend fun keyOf(rpcUrl: String, verificationRegistry: String, subject: String): String? {
+        if (verificationRegistry.isBlank() || subject.isBlank()) return null
+        // keyOf(address) selector = keccak256("keyOf(address)")[:4]
+        val data = "0xfa073d76" + padAddr(subject)
+        return when (val r = ethCall(rpcUrl, verificationRegistry, data)) {
+            is CallResult.Ok -> "0x" + r.hex.padStart(64, '0')
+            is CallResult.Err -> null
+        }
+    }
+
+    private sealed class CallResult {
+        data class Ok(val hex: String) : CallResult()
+        data class Err(val reason: String) : CallResult()
+    }
+
+    private suspend fun ethCall(rpcUrl: String, to: String, data: String): CallResult {
+        val params = JSONArray().apply {
+            put(JSONObject().apply { put("to", to); put("data", data) })
+            put("latest")
+        }
+        val payload = JSONObject().apply {
+            put("jsonrpc", "2.0"); put("id", 1); put("method", "eth_call"); put("params", params)
+        }.toString()
+        return try {
+            val resp = Http.postJson(rpcUrl, payload)
+            if (!resp.ok) return CallResult.Err("rpc ${resp.code}")
+            val o = JSONObject(resp.body)
+            if (o.has("error")) return CallResult.Err(o.getJSONObject("error").optString("message", "rpc error"))
+            CallResult.Ok(o.optString("result", "").removePrefix("0x"))
+        } catch (e: Exception) {
+            CallResult.Err(e.message ?: "rpc unreachable")
+        }
+    }
+
+    private fun padAddr(addr: String): String {
+        val h = addr.removePrefix("0x").lowercase()
+        return h.padStart(64, '0')
+    }
+
     private fun pad32(hex: String): String {
         val h = hex.removePrefix("0x")
         return h.padStart(64, '0')

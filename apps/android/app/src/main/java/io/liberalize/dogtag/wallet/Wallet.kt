@@ -53,7 +53,11 @@ object Wallet {
         val mnemonic: String,         // shown ONCE at genesis; never persisted in plaintext
         val ethAddress: String,       // secp256k1 userWallet (0x… 20 bytes)
         val consent: BabyjubConsentKeyFfi,  // Ax/Ay/keyHash for ConsentKeyRegistry binding
-    )
+        val secpPriv: ByteArray,      // 32-byte secp256k1 scalar (in-memory only, post-unlock)
+    ) {
+        /** Sign a 32-byte EIP-712 digest with the secp256k1 wallet key → 65-byte 0x.. r||s||v. */
+        fun signEthDigest(digest: ByteArray): String = Secp256k1.signDigest(secpPriv, digest)
+    }
 
     /** True once a wallet seed has been generated and stored. */
     fun exists(context: Context): Boolean = SeedVault(context).hasSeed()
@@ -89,7 +93,7 @@ object Wallet {
         // Belt-and-suspenders: keyHash must equal Poseidon(Ax,Ay).
         val kh = keyHashHex(consent.axHex, consent.ayHex)
         require(kh == consent.keyHashHex) { "consent keyHash mismatch" }
-        return WalletIdentity(mnemonic, ethAddress, consent)
+        return WalletIdentity(mnemonic, ethAddress, consent, priv)
     }
 
     // ---- Android Keystore AES-GCM envelope (StrongBox when available) -------------------------
@@ -212,7 +216,7 @@ private class SHA512 : org.bouncycastle.crypto.Digest {
     override fun reset() = d.reset()
 }
 
-/** secp256k1 address derivation (priv → uncompressed pub → keccak256[12:]). */
+/** secp256k1 address derivation (priv → uncompressed pub → keccak256[12:]) + EIP-2098-style sign. */
 object Secp256k1 {
     fun addressFromPriv(priv: ByteArray): String {
         val spec: ECNamedCurveParameterSpec = ECNamedCurveTable.getParameterSpec("secp256k1")
@@ -226,6 +230,97 @@ object Secp256k1 {
         val hash = Keccak256.digest(pub)
         val addr = hash.copyOfRange(12, 32)
         return "0x" + addr.joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Sign a 32-byte digest with the secp256k1 private key, producing a 65-byte Ethereum
+     * `r || s || v` signature (0x.. hex). Deterministic (RFC-6979), low-S normalised, with the
+     * recovery id recovered against the signer's own public key (v ∈ {27,28}). This is the raw
+     * EIP-712 digest signature consumed by `ConsentKeyRegistry.bindConsentKeyFor` (digest comes from
+     * the Rust FFI `bindConsentKeyDigestHex`).
+     */
+    fun signDigest(priv: ByteArray, digest: ByteArray): String {
+        require(digest.size == 32) { "digest must be 32 bytes" }
+        val spec: ECNamedCurveParameterSpec = ECNamedCurveTable.getParameterSpec("secp256k1")
+        val n = spec.n
+        val d = java.math.BigInteger(1, priv).mod(n)
+        val domainParams = org.bouncycastle.crypto.params.ECDomainParameters(
+            spec.curve, spec.g, spec.n, spec.h,
+        )
+        val signer = org.bouncycastle.crypto.signers.ECDSASigner(
+            org.bouncycastle.crypto.signers.HMacDSAKCalculator(SHA256Digest()),
+        )
+        signer.init(true, org.bouncycastle.crypto.params.ECPrivateKeyParameters(d, domainParams))
+        val sig = signer.generateSignature(digest)
+        val r = sig[0]
+        var s = sig[1]
+        // Low-S normalisation (EIP-2): if s > n/2, replace with n - s and flip recovery parity.
+        val halfN = n.shiftRight(1)
+        var flip = false
+        if (s > halfN) { s = n.subtract(s); flip = true }
+
+        // Recover the public key to determine v. Our own pubkey is the ground truth.
+        val q = spec.g.multiply(d).normalize()
+        val recId = findRecId(domainParams, r, s, digest, q) ?: 0
+        val v = (recId xor (if (flip) 1 else 0)) + 27
+
+        val rb = to32(r)
+        val sb = to32(s)
+        return "0x" + rb.joinToString("") { "%02x".format(it) } +
+            sb.joinToString("") { "%02x".format(it) } + "%02x".format(v)
+    }
+
+    private fun findRecId(
+        domain: org.bouncycastle.crypto.params.ECDomainParameters,
+        r: java.math.BigInteger,
+        s: java.math.BigInteger,
+        message: ByteArray,
+        expectedQ: org.bouncycastle.math.ec.ECPoint,
+    ): Int? {
+        val n = domain.n
+        val e = java.math.BigInteger(1, message)
+        for (recId in 0..1) {
+            val x = r // r < n; recId 0/1 -> x = r (no overflow add for typical signatures)
+            val rPoint = decompressKey(domain, x, recId) ?: continue
+            if (!rPoint.multiply(n).isInfinity) continue
+            val rInv = r.modInverse(n)
+            val srInv = rInv.multiply(s).mod(n)
+            val eInvrInv = rInv.multiply(n.subtract(e)).mod(n)
+            val qCandidate = org.bouncycastle.math.ec.ECAlgorithms
+                .sumOfTwoMultiplies(domain.g, eInvrInv, rPoint, srInv).normalize()
+            if (qCandidate.equals(expectedQ)) return recId
+        }
+        return null
+    }
+
+    private fun decompressKey(
+        domain: org.bouncycastle.crypto.params.ECDomainParameters,
+        xBN: java.math.BigInteger,
+        yBit: Int,
+    ): org.bouncycastle.math.ec.ECPoint? {
+        return try {
+            val curve = domain.curve
+            val compEnc = ByteArray(1 + (curve.fieldSize + 7) / 8)
+            compEnc[0] = (0x02 + yBit).toByte()
+            val xBytes = to32(xBN)
+            System.arraycopy(xBytes, 0, compEnc, 1 + compEnc.size - 1 - 32, 32)
+            curve.decodePoint(compEnc)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun to32(v: java.math.BigInteger): ByteArray {
+        val b = v.toByteArray()
+        val out = ByteArray(32)
+        if (b.size == 33 && b[0].toInt() == 0) {
+            System.arraycopy(b, 1, out, 0, 32)
+        } else if (b.size <= 32) {
+            System.arraycopy(b, 0, out, 32 - b.size, b.size)
+        } else {
+            System.arraycopy(b, b.size - 32, out, 0, 32)
+        }
+        return out
     }
 }
 

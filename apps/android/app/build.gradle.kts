@@ -41,6 +41,13 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // The ~65 MB Groth16 proving key is bundled as a raw asset and read as a file path by the
+    // on-device prover. It MUST NOT be compressed, or the AssetManager cannot return a stable
+    // on-disk path / the copy-out would have to inflate it.
+    androidResources {
+        noCompress += "zkey"
+    }
 }
 
 kotlin {

@@ -2,10 +2,12 @@ package io.liberalize.dogtag.consent
 
 import io.liberalize.dogtag.qr.QrPayload
 import io.liberalize.dogtag.wallet.Keccak256
+import org.json.JSONArray
 import org.json.JSONObject
 
 // UniFFI consent surface.
 import uniffi.dogtag_standard.EddsaSignatureFfi
+import uniffi.dogtag_standard.ProofFfi
 import uniffi.dogtag_standard.consentNullifierHex
 import uniffi.dogtag_standard.eddsaConsentMessageHex
 import uniffi.dogtag_standard.signConsentEddsa
@@ -116,8 +118,32 @@ data class SignedConsent(
  * ECDSA leg from the surfaced digest fields. The POST body matches the central `/v1/verify/consent`
  * contract: `{ sessionJwt, consent, sig, mode }`.
  */
+/**
+ * The gasless consent-key bind block. The RELAYER (groomer) submits
+ * `ConsentKeyRegistry.bindConsentKeyFor(subject, keyHash, ownerSig)` so the owner NEVER pays gas.
+ * `ownerSig` is the owner's secp256k1 signature (0x.. 65-byte) over the EIP-712 bind digest from
+ * `bindConsentKeyDigestHex`.
+ */
+data class ConsentKeyBind(val subject: String, val keyHash: String, val ownerSig: String)
+
 object ConsentSigner {
-    fun sign(req: VerificationRequest, consentPrivHex: String?): SignedConsent {
+    /**
+     * ZK path: build the full submit payload INCLUDING the locally-generated Groth16 `proof` block
+     * (a/b/c/pubSignals) and the gasless `bind` block. Used by the on-device verify flow.
+     */
+    fun signWithProof(
+        req: VerificationRequest,
+        consentPrivHex: String?,
+        proof: ProofFfi,
+        bind: ConsentKeyBind?,
+    ): SignedConsent = sign(req, consentPrivHex, proof, bind)
+
+    fun sign(
+        req: VerificationRequest,
+        consentPrivHex: String?,
+        proof: ProofFfi? = null,
+        bind: ConsentKeyBind? = null,
+    ): SignedConsent {
         val nullifier = consentNullifierHex(
             req.dogTagId, req.recordType, req.purpose, req.credentialRoot, req.challenge,
             req.relayer, req.subject, req.nonce, req.deadline,
@@ -162,6 +188,21 @@ object ConsentSigner {
             put("consent", consent)
             put("sig", sig)
             put("mode", req.mode.name.lowercase())
+            if (proof != null) {
+                put("proof", JSONObject().apply {
+                    put("a", JSONArray(proof.a))
+                    put("b", JSONArray(proof.b.map { JSONArray(it) }))
+                    put("c", JSONArray(proof.c))
+                    put("pubSignals", JSONArray(proof.pubSignals))
+                })
+            }
+            if (bind != null) {
+                put("bind", JSONObject().apply {
+                    put("subject", bind.subject)
+                    put("keyHash", bind.keyHash)
+                    put("ownerSig", bind.ownerSig)
+                })
+            }
         }
         return SignedConsent(req.mode, nullifier, message, typehash, eddsa, payload.toString())
     }

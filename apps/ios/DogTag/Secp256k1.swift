@@ -1,4 +1,13 @@
 import Foundation
+import CryptoKit
+
+/// HMAC-SHA256 over CryptoKit, used by RFC-6979 deterministic-nonce generation.
+enum HmacSHA256 {
+    static func mac(key: Data, data: Data) -> Data {
+        let k = SymmetricKey(data: key)
+        return Data(HMAC<SHA256>.authenticationCode(for: data, using: k))
+    }
+}
 
 /// secp256k1 address derivation (priv → uncompressed pubkey → keccak256[12:]).
 ///
@@ -22,6 +31,72 @@ enum Secp256k1 {
         let hash = Keccak256.digest(pub)
         let addr = hash.suffix(20)
         return "0x" + addr.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /**
+     Sign a 32-byte digest with the secp256k1 private key → 65-byte Ethereum `r || s || v` (0x.. hex).
+     Deterministic nonce (RFC-6979 / HMAC-SHA256), low-S normalised, recovery id 27/28. This is the
+     raw EIP-712 digest signature consumed by `ConsentKeyRegistry.bindConsentKeyFor` (digest from the
+     Rust FFI `bindConsentKeyDigestHex`).
+     */
+    static func signDigest(priv: Data, digest: Data) -> String {
+        precondition(digest.count == 32, "digest must be 32 bytes")
+        var d = BigUInt(data: priv).mod(n)
+        if d.isZero { d = BigUInt(1) }
+        let e = BigUInt(data: digest).mod(n)
+
+        var counter = 0
+        while true {
+            let k = rfc6979Nonce(priv: priv, digest: digest, counter: counter).mod(n)
+            counter += 1
+            if k.isZero { continue }
+            let (rx, ry) = scalarMulBase(k)
+            let r = rx.mod(n)
+            if r.isZero { continue }
+            // s = k^-1 * (e + r*d) mod n
+            let kInv = k.modInverse(n)
+            let rd = r.mul(d).mod(n)
+            let s0 = kInv.mul(e.add(rd).mod(n)).mod(n)
+            if s0.isZero { continue }
+            // Low-S normalisation (EIP-2): if s > n/2, s = n - s and flip recovery parity.
+            let halfN = n.sub(BigUInt(1)).shiftRight1() // (n-1)/2; n is odd so floor(n/2)
+            var s = s0
+            var recParity = Int(ry.limbs.first ?? 0) & 1   // y is even/odd
+            if s.cmp(halfN) > 0 { s = n.sub(s); recParity ^= 1 }
+            let v = 27 + recParity
+            let rb = r.toData(32).map { String(format: "%02x", $0) }.joined()
+            let sb = s.toData(32).map { String(format: "%02x", $0) }.joined()
+            return "0x" + rb + sb + String(format: "%02x", v)
+        }
+    }
+
+    /// RFC-6979 deterministic nonce k (HMAC-SHA256, no extra entropy). `counter` re-runs the generator
+    /// loop if the first candidate is rejected.
+    private static func rfc6979Nonce(priv: Data, digest: Data, counter: Int) -> BigUInt {
+        let qlen = 256
+        var v = Data(repeating: 0x01, count: 32)
+        var kk = Data(repeating: 0x00, count: 32)
+        let x = BigUInt(data: priv).mod(n).toData(32)
+        let h1 = digest // already 32 bytes, reduced is fine for bits2octets at this size
+        kk = HmacSHA256.mac(key: kk, data: v + Data([0x00]) + x + h1)
+        v = HmacSHA256.mac(key: kk, data: v)
+        kk = HmacSHA256.mac(key: kk, data: v + Data([0x01]) + x + h1)
+        v = HmacSHA256.mac(key: kk, data: v)
+        var iters = 0
+        while true {
+            var t = Data()
+            while t.count < (qlen + 7) / 8 {
+                v = HmacSHA256.mac(key: kk, data: v)
+                t.append(v)
+            }
+            let cand = BigUInt(data: t.prefix(32))
+            if iters >= counter && !cand.isZero && cand.cmp(n) < 0 {
+                return cand
+            }
+            iters += 1
+            kk = HmacSHA256.mac(key: kk, data: v + Data([0x00]))
+            v = HmacSHA256.mac(key: kk, data: v)
+        }
     }
 
     // ---- Jacobian point ops ------------------------------------------------------------------
