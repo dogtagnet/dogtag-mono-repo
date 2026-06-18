@@ -25,3 +25,7 @@ pub use types::{DogTagError, TypeTag, TypedScalar};
 
 pub mod consent;
 
+// Phase 6 — mobile UniFFI binding surface (additive; does not touch the core algorithm modules).
+pub mod ffi;
+uniffi::setup_scaffolding!();
+

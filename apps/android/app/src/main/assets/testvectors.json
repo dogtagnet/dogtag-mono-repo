@@ -1,0 +1,312 @@
+{
+  "_comment": "Shared DogTag SDK test vectors (impl §9). TS = reference; dogtag-standard-rs asserts this file. Leaf = Poseidon(DS_LEAF, fieldOf(keyPath), fieldOf(salt), fieldOf(typeTag), fieldOf(value)); salts are fixed for reproducibility.",
+  "field_p": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+  "leaves": [
+    {
+      "name": "null",
+      "keyPath": "a.b",
+      "saltHex": "01010101010101010101010101010101",
+      "tag": 0,
+      "value": null,
+      "expected_hex": "0x16cc3d52da6900c62ec3a8a8c6c30b555b7cdee03d843a4ba497e6381f2ec9ad"
+    },
+    {
+      "name": "bool_true",
+      "keyPath": "flags.active",
+      "saltHex": "02020202020202020202020202020202",
+      "tag": 1,
+      "value": "true",
+      "expected_hex": "0x20777086f74f6478d71f20ca8ee27571417dcb65e66eb133c334f7275b11efaf"
+    },
+    {
+      "name": "bool_false",
+      "keyPath": "flags.lost",
+      "saltHex": "03030303030303030303030303030303",
+      "tag": 1,
+      "value": "false",
+      "expected_hex": "0x0b8b92ec1885a289ee0a803b6e958ab54bccda23772a3b65627d4d6450680016"
+    },
+    {
+      "name": "string_basic",
+      "keyPath": "credentialSubject.name",
+      "saltHex": "04040404040404040404040404040404",
+      "tag": 2,
+      "value": "Rex",
+      "expected_hex": "0x13aa5366f2d8e2330c81c0716e7a779c81ba5194b61eb298aef7bf53bb744ef8"
+    },
+    {
+      "name": "string_five",
+      "keyPath": "x",
+      "saltHex": "05050505050505050505050505050505",
+      "tag": 2,
+      "value": "5",
+      "expected_hex": "0x26f9ae2697ed147536cbdd9788ece69dcbe57961de853904ecacb3487ec77245"
+    },
+    {
+      "name": "integer_five",
+      "keyPath": "x",
+      "saltHex": "05050505050505050505050505050505",
+      "tag": 3,
+      "value": "5",
+      "expected_hex": "0x00020fa062289471c6c6309f5055c01633f394d66fe2b010e9751d13afe18c95"
+    },
+    {
+      "name": "microchip",
+      "keyPath": "credentialSubject.microchip.code",
+      "saltHex": "06060606060606060606060606060606",
+      "tag": 2,
+      "value": "985141006580311",
+      "expected_hex": "0x17c27399ac606f32b3c5f09b4924cd51f89ebdb0a4d63045008218945210ecf9"
+    },
+    {
+      "name": "microchip_leadingzero",
+      "keyPath": "credentialSubject.microchip.code",
+      "saltHex": "07070707070707070707070707070707",
+      "tag": 2,
+      "value": "012345678901234",
+      "expected_hex": "0x133a6e69c77957b9252814e037cbd99ed12f860c65a52e8c2f57bb840bf5fd9f"
+    },
+    {
+      "name": "decimal_weight",
+      "keyPath": "weightHistory[0].value",
+      "saltHex": "08080808080808080808080808080808",
+      "tag": 4,
+      "value": "22.7",
+      "expected_hex": "0x0c4a6e65bcaab5d85dcb247d7c1d5f0f6d78d060968693d9a62260971139ab8e"
+    },
+    {
+      "name": "decimal_titer",
+      "keyPath": "titer.resultIUml",
+      "saltHex": "09090909090909090909090909090909",
+      "tag": 4,
+      "value": "0.5",
+      "expected_hex": "0x0abd699b002b2e3f0c8fcb55141c9d66ea0f1456f954b25d94d64ad09e39b2be"
+    },
+    {
+      "name": "decimal_trailingzeros",
+      "keyPath": "w",
+      "saltHex": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "tag": 4,
+      "value": "22.70",
+      "expected_hex": "0x0c536c8cb4f3f0ef9f5ffc44d4022566d9bc73e042576c727d0e66c10d83ce47"
+    },
+    {
+      "name": "timestamp",
+      "keyPath": "vaccinationDate",
+      "saltHex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "tag": 2,
+      "value": "2026-06-17T14:46:29Z",
+      "expected_hex": "0x1dc4a17474de8bd300a64e1947dd40b4623d40d615fa4d8350f199c7b3349496"
+    },
+    {
+      "name": "nfc_combining",
+      "keyPath": "note",
+      "saltHex": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+      "tag": 2,
+      "value": "é",
+      "expected_hex": "0x01c4ff5371130c751bef1b117334c2802b02319550f80c154c897cc9d292ce24"
+    },
+    {
+      "name": "bytes",
+      "keyPath": "photoHashes[0]",
+      "saltHex": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+      "tag": 5,
+      "value": "deadbeef",
+      "expected_hex": "0x23ac0bcd123dd90f00a2f61b06edf84644644c5ea89bcddb0bfb5fe794ece89a"
+    },
+    {
+      "name": "long_string",
+      "keyPath": "taskDescription",
+      "saltHex": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+      "tag": 2,
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expected_hex": "0x1506c3ffb74b7850504affbf44c5dbd9aa1d7ac3e5f1e98cd26f513128a033a5"
+    }
+  ],
+  "bytesToField": [
+    {
+      "name": "empty",
+      "inputHex": "",
+      "expected_hex": "0x3043ce8ad378d029838ba8eef2e18e68d25ec1e09586fa39b30bf83fd19832c3"
+    },
+    {
+      "name": "a",
+      "inputHex": "61",
+      "expected_hex": "0x18b7de2ada69294a48766fa68a88538ab400bfec37690d99284bd78069e708e0"
+    },
+    {
+      "name": "a_nul",
+      "inputHex": "6100",
+      "expected_hex": "0x16cb08c9318641c01627dcebf0a61920d3bfa120313eef601b493e6a2a180bef"
+    },
+    {
+      "name": "31_bytes",
+      "inputHex": "ababababababababababababababababababababababababababababababab",
+      "expected_hex": "0x1205c4a31ba1bb1aa4ff33e1762dea8b07161012c0700246931fec85ef856afd"
+    },
+    {
+      "name": "32_bytes",
+      "inputHex": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "expected_hex": "0x222167b566edab8739613057c1183cc4baf0cccb9da738d7b86134c760256241"
+    }
+  ],
+  "merkle": [
+    {
+      "name": "size_1",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb"
+      ],
+      "root_hex": "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+      "first_sorted_leaf_proof": []
+    },
+    {
+      "name": "size_2",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a"
+      ],
+      "root_hex": "0x1b6fbfbdd590bffc8f23bb6931770142eed9e48f0ab88fe6565dec7555d03f59",
+      "first_sorted_leaf_proof": [
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a"
+      ]
+    },
+    {
+      "name": "size_3",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76"
+      ],
+      "root_hex": "0x22625f6e5279fc933b96f873db7bcdb228c1b01ffe7bba51958fbda1460e243d",
+      "first_sorted_leaf_proof": [
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76"
+      ]
+    },
+    {
+      "name": "size_4",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76",
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf"
+      ],
+      "root_hex": "0x1643b583c470b5e8f304b665eec822600c3375065e6a5740c464828ace605588",
+      "first_sorted_leaf_proof": [
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x0b1ed2a55de1a2b6e3456f11b97057b3f773cf1f1ae37b81875730944d352366"
+      ]
+    },
+    {
+      "name": "size_5",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76",
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x2d9c598532f4462499a8bb01cd30fd1161d3e653bad515e23ba4ae14b5b2e5ad"
+      ],
+      "root_hex": "0x2e5bd102f0f6f1a1a7dec08eaf66e9ca665a5ed81cd3eee2d680c283681c52da",
+      "first_sorted_leaf_proof": [
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x13bed3df27902de31547d2ff572adbf0ea3d6f82667e3c45bec96c79db7a3674",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76"
+      ]
+    },
+    {
+      "name": "size_6",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76",
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x2d9c598532f4462499a8bb01cd30fd1161d3e653bad515e23ba4ae14b5b2e5ad",
+        "0x11e7e734d53563ed7d9925abe75a6f4921deef7fe9ade6f19897ae8732099b23"
+      ],
+      "root_hex": "0x0d3d7c309463f1e7a9af83ba0c0e9dd877622466f6b02ec7ad198f5c89c8f6ae",
+      "first_sorted_leaf_proof": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x25d1d341eed7949d97892c74b917e7c40caa0c8d95eb6c57e37f84126e9f9531",
+        "0x0b1ed2a55de1a2b6e3456f11b97057b3f773cf1f1ae37b81875730944d352366"
+      ]
+    },
+    {
+      "name": "size_7",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76",
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x2d9c598532f4462499a8bb01cd30fd1161d3e653bad515e23ba4ae14b5b2e5ad",
+        "0x11e7e734d53563ed7d9925abe75a6f4921deef7fe9ade6f19897ae8732099b23",
+        "0x2125e5ac4db71f60a5a04a1e6a4f191cd83330ce812b5b9ac7671c20ef221984"
+      ],
+      "root_hex": "0x03d8419ecaea4a7bc353a05bed595a61e595c2dfe8e901087f5421f72f4cbd35",
+      "first_sorted_leaf_proof": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x1e4ac618f674dde6d58f981f655fff27c44e4a3338955b69b76540a7d7dde02e",
+        "0x02a9a9ad9267be3e15c7a673bd9ea645ffc7c5122cb3d0dedf7cad8d7380146b"
+      ]
+    },
+    {
+      "name": "size_8",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76",
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x2d9c598532f4462499a8bb01cd30fd1161d3e653bad515e23ba4ae14b5b2e5ad",
+        "0x11e7e734d53563ed7d9925abe75a6f4921deef7fe9ade6f19897ae8732099b23",
+        "0x2125e5ac4db71f60a5a04a1e6a4f191cd83330ce812b5b9ac7671c20ef221984",
+        "0x0556fcb1fa72c7df3d906e73c63c783ef0de3502fa8f944144d5a13700128d79"
+      ],
+      "root_hex": "0x122c0e22d63957468938eaa861f4e9b96ea26bcf9701d57b7eb216cf99a4da0d",
+      "first_sorted_leaf_proof": [
+        "0x11e7e734d53563ed7d9925abe75a6f4921deef7fe9ade6f19897ae8732099b23",
+        "0x1830c08c12c75f87d0664c93d6fa3451f34e0fe86a80b85e9426132262c8f760",
+        "0x0e4f48a5f969a5eed31e918c167a6fcb68758b51680b636cf20fa2608202bbfc"
+      ]
+    },
+    {
+      "name": "size_9",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76",
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x2d9c598532f4462499a8bb01cd30fd1161d3e653bad515e23ba4ae14b5b2e5ad",
+        "0x11e7e734d53563ed7d9925abe75a6f4921deef7fe9ade6f19897ae8732099b23",
+        "0x2125e5ac4db71f60a5a04a1e6a4f191cd83330ce812b5b9ac7671c20ef221984",
+        "0x0556fcb1fa72c7df3d906e73c63c783ef0de3502fa8f944144d5a13700128d79",
+        "0x075c836a5e44e50939007ccdf63199d6a3d7c6499f0171b1a908b79b0e3d6fbc"
+      ],
+      "root_hex": "0x0b1c0feec49712d549e5c434b25267e8f2fba12433d84b7829d81f865ef35018",
+      "first_sorted_leaf_proof": [
+        "0x075c836a5e44e50939007ccdf63199d6a3d7c6499f0171b1a908b79b0e3d6fbc",
+        "0x00e8d97ac6a1a49e4c368a51c627a1a6b4a22e31460b099fbe373712fb545958",
+        "0x288ca133ae55cf5c523b1283f882de36fd0f29843b308d7ccd29cc99ac921e1d",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76"
+      ]
+    },
+    {
+      "name": "commutativity_2",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a"
+      ],
+      "root_hex": "0x1b6fbfbdd590bffc8f23bb6931770142eed9e48f0ab88fe6565dec7555d03f59",
+      "reversed_root_hex": "0x1b6fbfbdd590bffc8f23bb6931770142eed9e48f0ab88fe6565dec7555d03f59"
+    },
+    {
+      "name": "obfuscation_5_same_root",
+      "leaf_hexes": [
+        "0x12d8e371eb924c18d12c432fe473fe6c31cff5c18747d18486adc2ab3058ccbb",
+        "0x2eb0fbf2e661316e46f40676f2ee7500e4577afb0a42ad30ef07368d2c30983a",
+        "0x2eb4ddf521b023fbe281c3b11121b78773e3be42ee5cfb472dce16eb1f4d9d76",
+        "0x1430bec4209ec1b7191fc9ccdb98ff02741b7f8866aa3f09ea12516ca2f2d4bf",
+        "0x2d9c598532f4462499a8bb01cd30fd1161d3e653bad515e23ba4ae14b5b2e5ad"
+      ],
+      "root_hex": "0x2e5bd102f0f6f1a1a7dec08eaf66e9ca665a5ed81cd3eee2d680c283681c52da"
+    }
+  ]
+}

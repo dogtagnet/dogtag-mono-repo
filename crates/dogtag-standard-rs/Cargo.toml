@@ -8,7 +8,16 @@ description = "DogTag open pet-credential standard — canonicalization, Poseido
 
 [lib]
 name = "dogtag_standard"
-crate-type = ["lib"]
+# "lib" keeps the native tests + Rust consumers working; "cdylib" is the Android (UniFFI) artifact;
+# "staticlib" is the iOS xcframework artifact.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+# UniFFI bindings generator binary (matches the uniffi 0.28.x dep below). Invoke via:
+#   cargo run --features uniffi/cli --bin uniffi-bindgen -- generate --language kotlin ...
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi/cli"]
 
 [dependencies]
 light-poseidon = { workspace = true }
@@ -20,6 +29,9 @@ hex = { workspace = true }
 sha3 = { workspace = true }
 thiserror = { workspace = true }
 unicode-normalization = { workspace = true }
+# Phase 6 mobile FFI deps (additive).
+uniffi = { version = "0.28", features = ["cli"] }
+getrandom = "0.2"
 
 [dev-dependencies]
 rand = { workspace = true }
