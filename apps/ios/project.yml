@@ -27,6 +27,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: io.liberalize.dogtag
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: "DogTag scans verifier QR codes to sign verification consents."
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "DogTag uses Face ID to protect your embedded wallet and authorize consent signing."
         MARKETING_VERSION: "0.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"

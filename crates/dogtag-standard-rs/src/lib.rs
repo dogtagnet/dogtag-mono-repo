@@ -25,6 +25,12 @@ pub use types::{DogTagError, TypeTag, TypedScalar};
 
 pub mod consent;
 
+// EdDSA-BabyJubjub consent SIGNING (Phase 6 — mobile crypto). Additive: a self-contained
+// circomlibjs-compatible BLAKE-512 + BabyJubjub Edwards curve + signer over the existing Poseidon.
+// Does NOT modify poseidon/field/leaf/merkle/encode.
+pub mod blake512;
+pub mod eddsa;
+
 // Phase 6 — mobile UniFFI binding surface (additive; does not touch the core algorithm modules).
 pub mod ffi;
 uniffi::setup_scaffolding!();

@@ -32,6 +32,8 @@ unicode-normalization = { workspace = true }
 # Phase 6 mobile FFI deps (additive).
 uniffi = { version = "0.28", features = ["cli"] }
 getrandom = "0.2"
+# EdDSA-BabyJubjub signing — big-integer scalar arithmetic over the BabyJubjub sub-group order.
+num-bigint = "0.4"
 
 [dev-dependencies]
 rand = { workspace = true }

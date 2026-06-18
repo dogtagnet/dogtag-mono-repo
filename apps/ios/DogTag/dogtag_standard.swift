@@ -415,6 +415,30 @@ fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -451,6 +475,186 @@ fileprivate struct FfiConverterString: FfiConverter {
         writeInt(&buf, len)
         writeBytes(&buf, value.utf8)
     }
+}
+
+
+/**
+ * A derived BabyJubjub consent keypair crossing the FFI boundary. `prvHex` is the 32-byte private
+ * key (keep encrypted behind the platform keystore); Ax/Ay are 0x.. 32-byte BE public-point hex;
+ * keyHashHex = Poseidon(Ax,Ay) is what the wallet binds in ConsentKeyRegistry.
+ */
+public struct BabyjubConsentKeyFfi {
+    public var prvHex: String
+    public var axHex: String
+    public var ayHex: String
+    public var keyHashHex: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(prvHex: String, axHex: String, ayHex: String, keyHashHex: String) {
+        self.prvHex = prvHex
+        self.axHex = axHex
+        self.ayHex = ayHex
+        self.keyHashHex = keyHashHex
+    }
+}
+
+
+
+extension BabyjubConsentKeyFfi: Equatable, Hashable {
+    public static func ==(lhs: BabyjubConsentKeyFfi, rhs: BabyjubConsentKeyFfi) -> Bool {
+        if lhs.prvHex != rhs.prvHex {
+            return false
+        }
+        if lhs.axHex != rhs.axHex {
+            return false
+        }
+        if lhs.ayHex != rhs.ayHex {
+            return false
+        }
+        if lhs.keyHashHex != rhs.keyHashHex {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(prvHex)
+        hasher.combine(axHex)
+        hasher.combine(ayHex)
+        hasher.combine(keyHashHex)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBabyjubConsentKeyFfi: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BabyjubConsentKeyFfi {
+        return
+            try BabyjubConsentKeyFfi(
+                prvHex: FfiConverterString.read(from: &buf), 
+                axHex: FfiConverterString.read(from: &buf), 
+                ayHex: FfiConverterString.read(from: &buf), 
+                keyHashHex: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BabyjubConsentKeyFfi, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.prvHex, into: &buf)
+        FfiConverterString.write(value.axHex, into: &buf)
+        FfiConverterString.write(value.ayHex, into: &buf)
+        FfiConverterString.write(value.keyHashHex, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBabyjubConsentKeyFfi_lift(_ buf: RustBuffer) throws -> BabyjubConsentKeyFfi {
+    return try FfiConverterTypeBabyjubConsentKeyFfi.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBabyjubConsentKeyFfi_lower(_ value: BabyjubConsentKeyFfi) -> RustBuffer {
+    return FfiConverterTypeBabyjubConsentKeyFfi.lower(value)
+}
+
+
+/**
+ * An EdDSA-BabyJubjub Poseidon consent signature: R8 point (0x.. 32-byte hex) + scalar S (decimal).
+ */
+public struct EddsaSignatureFfi {
+    public var r8xHex: String
+    public var r8yHex: String
+    public var r8xDec: String
+    public var r8yDec: String
+    public var sDec: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(r8xHex: String, r8yHex: String, r8xDec: String, r8yDec: String, sDec: String) {
+        self.r8xHex = r8xHex
+        self.r8yHex = r8yHex
+        self.r8xDec = r8xDec
+        self.r8yDec = r8yDec
+        self.sDec = sDec
+    }
+}
+
+
+
+extension EddsaSignatureFfi: Equatable, Hashable {
+    public static func ==(lhs: EddsaSignatureFfi, rhs: EddsaSignatureFfi) -> Bool {
+        if lhs.r8xHex != rhs.r8xHex {
+            return false
+        }
+        if lhs.r8yHex != rhs.r8yHex {
+            return false
+        }
+        if lhs.r8xDec != rhs.r8xDec {
+            return false
+        }
+        if lhs.r8yDec != rhs.r8yDec {
+            return false
+        }
+        if lhs.sDec != rhs.sDec {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(r8xHex)
+        hasher.combine(r8yHex)
+        hasher.combine(r8xDec)
+        hasher.combine(r8yDec)
+        hasher.combine(sDec)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeEddsaSignatureFfi: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> EddsaSignatureFfi {
+        return
+            try EddsaSignatureFfi(
+                r8xHex: FfiConverterString.read(from: &buf), 
+                r8yHex: FfiConverterString.read(from: &buf), 
+                r8xDec: FfiConverterString.read(from: &buf), 
+                r8yDec: FfiConverterString.read(from: &buf), 
+                sDec: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: EddsaSignatureFfi, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.r8xHex, into: &buf)
+        FfiConverterString.write(value.r8yHex, into: &buf)
+        FfiConverterString.write(value.r8xDec, into: &buf)
+        FfiConverterString.write(value.r8yDec, into: &buf)
+        FfiConverterString.write(value.sDec, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEddsaSignatureFfi_lift(_ buf: RustBuffer) throws -> EddsaSignatureFfi {
+    return try FfiConverterTypeEddsaSignatureFfi.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeEddsaSignatureFfi_lower(_ value: EddsaSignatureFfi) -> RustBuffer {
+    return FfiConverterTypeEddsaSignatureFfi.lower(value)
 }
 
 
@@ -536,6 +740,17 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     }
 }
 /**
+ * Build a consent key directly from a 32-byte circomlibjs private key (the raw private buffer is
+ * the key — no domain wrapping). For interop with vectors / externally-derived keys.
+ */
+public func babyjubConsentKeyFromPrv(prvHex: String)throws  -> BabyjubConsentKeyFfi {
+    return try  FfiConverterTypeBabyjubConsentKeyFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_babyjub_consent_key_from_prv(
+        FfiConverterString.lower(prvHex),$0
+    )
+})
+}
+/**
  * buildMerkle over a set of 0x.. 32-byte leaf hashes -> the 0x.. 32-byte root hex.
  * Sorts ascending and folds bottom-up (promote lone odd) — mirrors the SDK / TS.
  */
@@ -573,6 +788,18 @@ public func consentNullifierHex(dogTagIdHex: String, recordTypeHex: String, purp
         FfiConverterString.lower(subjectHex),
         FfiConverterString.lower(nonceHex),
         FfiConverterString.lower(deadlineHex),$0
+    )
+})
+}
+/**
+ * Derive a deterministic BabyJubjub consent key from a hex seed (any length). The seed is wrapped
+ * in a distinct domain from the secp256k1 wallet path (§6) before BLAKE-512, so the two keys are
+ * independent. Returns the 32-byte private key + public point (Ax, Ay) + keyHash.
+ */
+public func deriveBabyjubConsentKey(seedHex: String)throws  -> BabyjubConsentKeyFfi {
+    return try  FfiConverterTypeBabyjubConsentKeyFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_derive_babyjub_consent_key(
+        FfiConverterString.lower(seedHex),$0
     )
 })
 }
@@ -632,11 +859,57 @@ public func nfcNormalize(input: String) -> String {
 })
 }
 /**
+ * Sign the §1.10 consent message M = Poseidon6(dogTagId, purpose, relayer, subject, credentialRoot,
+ * nonce) with a 32-byte private key, producing the EdDSA-BabyJubjub Poseidon signature the ZK
+ * circuit's `EdDSAPoseidonVerifier` accepts. Consent fields are hex (same shape as the other
+ * consent functions); `prvHex` is the 32-byte private key.
+ */
+public func signConsentEddsa(prvHex: String, dogTagIdHex: String, recordTypeHex: String, purposeHex: String, credentialRootHex: String, challengeHex: String, relayerHex: String, subjectHex: String, nonceHex: String, deadlineHex: String)throws  -> EddsaSignatureFfi {
+    return try  FfiConverterTypeEddsaSignatureFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_sign_consent_eddsa(
+        FfiConverterString.lower(prvHex),
+        FfiConverterString.lower(dogTagIdHex),
+        FfiConverterString.lower(recordTypeHex),
+        FfiConverterString.lower(purposeHex),
+        FfiConverterString.lower(credentialRootHex),
+        FfiConverterString.lower(challengeHex),
+        FfiConverterString.lower(relayerHex),
+        FfiConverterString.lower(subjectHex),
+        FfiConverterString.lower(nonceHex),
+        FfiConverterString.lower(deadlineHex),$0
+    )
+})
+}
+/**
  * keccak256 of the EIP-712 VerificationConsent type string (0x.. 32-byte hex).
  */
 public func verificationConsentTypehashHex() -> String {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_dogtag_standard_fn_func_verification_consent_typehash_hex($0
+    )
+})
+}
+/**
+ * Verify an EdDSA-BabyJubjub Poseidon consent signature against the public key (Ax,Ay) and the
+ * consent fields. Mirrors circomlibjs `verifyPoseidon`. Returns true/false (no throw).
+ */
+public func verifyConsentEddsa(axHex: String, ayHex: String, r8xHex: String, r8yHex: String, sDec: String, dogTagIdHex: String, recordTypeHex: String, purposeHex: String, credentialRootHex: String, challengeHex: String, relayerHex: String, subjectHex: String, nonceHex: String, deadlineHex: String)throws  -> Bool {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_verify_consent_eddsa(
+        FfiConverterString.lower(axHex),
+        FfiConverterString.lower(ayHex),
+        FfiConverterString.lower(r8xHex),
+        FfiConverterString.lower(r8yHex),
+        FfiConverterString.lower(sDec),
+        FfiConverterString.lower(dogTagIdHex),
+        FfiConverterString.lower(recordTypeHex),
+        FfiConverterString.lower(purposeHex),
+        FfiConverterString.lower(credentialRootHex),
+        FfiConverterString.lower(challengeHex),
+        FfiConverterString.lower(relayerHex),
+        FfiConverterString.lower(subjectHex),
+        FfiConverterString.lower(nonceHex),
+        FfiConverterString.lower(deadlineHex),$0
     )
 })
 }
@@ -679,6 +952,9 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_dogtag_standard_checksum_func_babyjub_consent_key_from_prv() != 49002) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dogtag_standard_checksum_func_build_merkle_root_hex() != 1024) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -686,6 +962,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_consent_nullifier_hex() != 25451) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_eddsa_consent_message_hex() != 65311) {
@@ -700,7 +979,13 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_nfc_normalize() != 7804) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dogtag_standard_checksum_func_sign_consent_eddsa() != 33682) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dogtag_standard_checksum_func_verification_consent_typehash_hex() != 21064) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_verify_consent_eddsa() != 58972) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_verify_integrity() != 1032) {
