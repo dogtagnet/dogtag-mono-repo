@@ -95,7 +95,24 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
 
         when (val p = payload) {
             is QrPayload.ImportRecord -> ImportPanel(
-                req = p, working = working, status = status,
+                host = p.host, idLabel = p.recordId, working = working, status = status,
+                onImport = {
+                    working = true; status = "Fetching + verifying record…"
+                    scope.launch {
+                        val r = RecordImporter.import(p)
+                        working = false
+                        if (r.credential != null) {
+                            store.addCredential(r.credential)
+                            status = "Imported (${r.verdict}) — ${r.detail}"
+                        } else {
+                            status = "Import failed: ${r.detail}"
+                        }
+                    }
+                },
+            )
+
+            is QrPayload.ImportRecordToken -> ImportPanel(
+                host = p.host, idLabel = p.token, working = working, status = status,
                 onImport = {
                     working = true; status = "Fetching + verifying record…"
                     scope.launch {
@@ -120,7 +137,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 Card {
                     Text("Unrecognised QR", fontWeight = FontWeight.Bold, color = c.danger, fontSize = 15.sp)
                     Text(
-                        "This isn't a DogTag record link (/r) or verify session (/v).",
+                        "This isn't a DogTag record link (/r/<token> or /r?t=) or verify session (/v).",
                         fontSize = 12.sp, color = c.muted,
                     )
                     Text(p.raw.take(120), fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
@@ -146,7 +163,8 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
 
 @Composable
 private fun ImportPanel(
-    req: QrPayload.ImportRecord,
+    host: String,
+    idLabel: String,
     working: Boolean,
     status: String,
     onImport: () -> Unit,
@@ -154,8 +172,8 @@ private fun ImportPanel(
     val c = DogTagTheme.colors
     Card {
         Text("Import record", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
-        Text("From ${req.host}", fontSize = 12.sp, color = c.muted)
-        Text("Record ${req.recordId.take(18)}…", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
+        Text("From $host", fontSize = 12.sp, color = c.muted)
+        Text("Record ${idLabel.take(18)}…", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
         Text(
             "We'll fetch the wrapped document, recompute its Merkle root (offline) and re-check " +
                 "DogTagIssuer.isValid on ROAX before storing it under your pet.",

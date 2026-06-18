@@ -44,12 +44,14 @@ struct ScanScreen: View {
                 switch payload {
                 case let .importRecord(host, recordId, _):
                     importPanel(host: host, recordId: recordId)
+                case let .importRecordToken(host, token):
+                    importPanel(host: host, recordId: token)
                 case .verifySession:
                     verifyPanel
                 case let .unknown(raw):
                     card {
                         Text("Unrecognised QR").font(.system(size: 15, weight: .bold)).foregroundColor(c.danger)
-                        Text("This isn't a DogTag record link (/r) or verify session (/v).").font(.system(size: 12)).foregroundColor(c.muted)
+                        Text("This isn't a DogTag record link (/r/<token> or /r?t=) or verify session (/v).").font(.system(size: 12)).foregroundColor(c.muted)
                         Text(String(raw.prefix(120))).font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
                     }
                 case .none:

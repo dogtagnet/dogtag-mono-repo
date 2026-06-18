@@ -42,11 +42,18 @@ demo-bootstrap, the signer is whitelisted; Approve is idempotent/visual.)
 ## 3. Vet issues a credential → QR (vet portal :41873)
 **Issue** → click **Fill demo data** (a valid rabies certificate) → **Sign & Issue**: the backend
 builds the doc, anchors the Merkle root with `issue(root)` on ROAX, and re-verifies the `RootIssued`
-event before marking it issued. Then **Create QR** → renders the one-time-JWT QR.
+event before marking it issued. Then **Create QR** → renders the QR.
+
+> The QR now carries a SHORT one-time token — `http://<host>/r/<32-hex>` — instead of a long embedded
+> EdDSA record-JWT. The tiny payload makes a low-density QR the phone camera can focus on and scan
+> instantly. The token maps to the record server-side and is **deleted after the first scan** (one-time;
+> expires after 180s), so a second `GET /r/<token>` returns 404 — the same one-time-use guarantee as the
+> old JWT.
 
 ## 4. Owner app scans → imports → polls on-chain
 On the phone (DogTag app), open **Scan** (Home `+` or the Verify tab) and scan the vet's QR:
-- It `GET`s the wrapped doc, recomputes the Merkle root via the Rust SDK, and reads
+- It `GET`s the wrapped doc (resolving `/r/<token>` server-side), recomputes the Merkle root via the
+  Rust SDK, and reads
   `DogTagIssuer.isValid(root)` on ROAX — showing **Anchoring… → Verified on-chain ✓**.
 - The record lands under the pet, grouped by type; filter by dog on the Travel/Documents tabs.
 

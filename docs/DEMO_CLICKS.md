@@ -54,7 +54,9 @@ Setup is a linear wizard; each step auto-advances on success.
 1. Go to **Issue credential**.
 2. Click **Fill demo data** (valid rabies cert; recordType `VACCINATION`).
 3. **Sign & Issue**.
-4. **Create QR** → the one-time-JWT QR renders.
+4. **Create QR** → the QR renders. It now carries a SHORT one-time token (`http://<host>/r/<32-hex>`),
+   NOT a long embedded JWT — a low-density QR the camera focuses on instantly. The token is **deleted
+   after the first scan** (one-time; 180s expiry), so re-scanning the same QR yields a 404.
 
 ---
 

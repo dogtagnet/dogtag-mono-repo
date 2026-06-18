@@ -27,7 +27,7 @@ object RecordImporter {
     )
 
     suspend fun import(req: QrPayload.ImportRecord, rpcUrl: String = RoaxRpc.DEFAULT_RPC): ImportResult {
-        // 1. Fetch the wrapped doc from GET <host>/records/{recordId} with the Bearer record-JWT.
+        // Legacy: fetch the wrapped doc from GET <host>/records/{recordId} with the Bearer record-JWT.
         val url = "${req.host}/records/${req.recordId}"
         val resp = try {
             Http.getJson(url, bearer = req.jwt)
@@ -37,8 +37,29 @@ object RecordImporter {
         if (!resp.ok) {
             return ImportResult(false, "UNVERIFIED", "GET $url -> ${resp.code}: ${resp.body.take(120)}", null)
         }
+        return verifyAndBuild(resp.body, fallbackId = req.recordId, rpcUrl = rpcUrl)
+    }
 
-        val wrappedJson = resp.body
+    /**
+     * Preferred path: resolve a SHORT one-time share token at GET <host>/r/<token> (no Bearer). The
+     * server consumes the token (one-time) and returns the wrapped doc; downstream verification is
+     * identical to the legacy record-JWT path (integrity FFI + on-chain isValid + store under pet).
+     */
+    suspend fun import(req: QrPayload.ImportRecordToken, rpcUrl: String = RoaxRpc.DEFAULT_RPC): ImportResult {
+        val url = "${req.host}/r/${req.token}"
+        val resp = try {
+            Http.getJson(url)
+        } catch (e: Exception) {
+            return ImportResult(false, "UNVERIFIED", "fetch failed: ${e.message}", null)
+        }
+        if (!resp.ok) {
+            return ImportResult(false, "UNVERIFIED", "GET $url -> ${resp.code}: ${resp.body.take(120)}", null)
+        }
+        return verifyAndBuild(resp.body, fallbackId = req.token, rpcUrl = rpcUrl)
+    }
+
+    /** Shared verification + credential build for both import paths. */
+    private suspend fun verifyAndBuild(wrappedJson: String, fallbackId: String, rpcUrl: String): ImportResult {
         val doc = try {
             WrappedDoc(wrappedJson)
         } catch (e: Exception) {
@@ -71,9 +92,9 @@ object RecordImporter {
         val detail = "integrity: $integrity · $chainNote · issuer ${doc.issuerDomain.ifBlank { doc.issuerName }}"
 
         val group = CredentialGroup.fromRecordType(doc.recordType)
-        val dogTagId = doc.dogTagId.ifBlank { req.recordId }
+        val dogTagId = doc.dogTagId.ifBlank { fallbackId }
         val cred = Credential(
-            id = req.recordId,
+            id = fallbackId,
             dogTagId = dogTagId,
             group = group,
             recordType = doc.recordType.ifBlank { "RECORD" },

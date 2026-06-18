@@ -4,12 +4,19 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.util.Size
+import android.view.MotionEvent
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import java.util.concurrent.TimeUnit
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -70,8 +77,17 @@ fun QrScannerView(
                     val preview = Preview.Builder().build().also {
                         it.surfaceProvider = previewView.surfaceProvider
                     }
-                    val scanner = BarcodeScanning.getClient()
+                    val scanner = BarcodeScanning.getClient(
+                        BarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+                    )
+                    // 1280x720 analysis (default 640x480 can't resolve a dense QR's small modules).
+                    val resolution = ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(Size(1280, 720), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
+                        )
+                        .build()
                     val analysis = ImageAnalysis.Builder()
+                        .setResolutionSelector(resolution)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build().also { ia ->
                             ia.setAnalyzer(analysisExecutor) { proxy: ImageProxy ->
@@ -93,9 +109,20 @@ fun QrScannerView(
                         }
                     runCatching {
                         provider.unbindAll()
-                        provider.bindToLifecycle(
+                        val camera = provider.bindToLifecycle(
                             lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis
                         )
+                        // Tap-to-focus: dense QRs often need a manual focus nudge on some phones.
+                        previewView.setOnTouchListener { v, ev ->
+                            if (ev.action == MotionEvent.ACTION_UP) {
+                                val pt = previewView.meteringPointFactory.createPoint(ev.x, ev.y)
+                                val action = FocusMeteringAction.Builder(pt)
+                                    .setAutoCancelDuration(3, TimeUnit.SECONDS).build()
+                                camera.cameraControl.startFocusAndMetering(action)
+                                v.performClick()
+                            }
+                            true
+                        }
                     }
                 }, ContextCompat.getMainExecutor(ctx))
                 previewView

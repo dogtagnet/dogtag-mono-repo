@@ -12,13 +12,22 @@ enum RecordImporter {
     }
 
     static func `import`(_ req: QrPayload, rpcUrl: String = AppConfig.roaxRpc) async -> ImportResult {
-        guard case let .importRecord(host, recordId, jwt) = req else {
+        // Resolve the fetch URL + a fallback local id from the QR shape:
+        //   - SHORT token: GET <host>/r/<token> (no Bearer) — server consumes the one-time token.
+        //   - legacy JWT:  GET <host>/records/{recordId} with the Bearer record-JWT (back-compat).
+        let url: String
+        let bearer: String?
+        let fallbackId: String
+        switch req {
+        case let .importRecordToken(host, token):
+            url = "\(host)/r/\(token)"; bearer = nil; fallbackId = token
+        case let .importRecord(host, recordId, jwt):
+            url = "\(host)/records/\(recordId)"; bearer = jwt; fallbackId = recordId
+        default:
             return ImportResult(ok: false, verdict: "UNVERIFIED", detail: "not an import QR", credential: nil)
         }
 
-        // 1. Fetch GET <host>/records/{recordId} with the Bearer record-JWT.
-        let url = "\(host)/records/\(recordId)"
-        let resp = await Http.getJSON(url, bearer: jwt)
+        let resp = await Http.getJSON(url, bearer: bearer)
         guard resp.ok else {
             return ImportResult(ok: false, verdict: "UNVERIFIED",
                                 detail: "GET \(url) -> \(resp.code): \(resp.body.prefix(120))", credential: nil)
@@ -53,9 +62,9 @@ enum RecordImporter {
         let detail = "integrity: \(integrity) · \(chainNote) · issuer \(issuerLabel)"
 
         let group = CredentialGroup.from(recordType: doc.recordType)
-        let dogTagId = doc.dogTagId.isEmpty ? recordId : doc.dogTagId
+        let dogTagId = doc.dogTagId.isEmpty ? fallbackId : doc.dogTagId
         let cred = Credential(
-            id: recordId,
+            id: fallbackId,
             dogTagId: dogTagId,
             group: group,
             recordType: doc.recordType.isEmpty ? "RECORD" : doc.recordType,

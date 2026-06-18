@@ -160,6 +160,13 @@ pub trait Store: Send + Sync {
     /// Atomic consume: returns true if the jti was unused (now consumed), false if already used.
     async fn consume_jti(&self, jti: &str) -> bool;
 
+    // ---- share tokens (short one-time QR token -> record) ----
+    /// Store a short one-time share token mapping to `record_id`, expiring at unix-seconds `exp`.
+    async fn put_share_token(&self, token: &str, record_id: &str, exp: u64);
+    /// Atomically REMOVE the token (one-time consume) and return its `record_id` iff it exists and
+    /// has not expired. A missing/expired token returns `None` (and is purged if expired).
+    async fn take_share_token(&self, token: &str) -> Option<String>;
+
     // ---- issuer settings ----
     async fn get_settings(&self) -> IssuerSettings;
     async fn put_settings(&self, s: IssuerSettings);
@@ -204,6 +211,8 @@ struct MemInner {
     records: HashMap<String, Record>,
     sessions: HashMap<String, VerifySession>,
     jtis: std::collections::HashSet<String>,
+    /// short one-time share tokens: token -> (record_id, exp unix-seconds).
+    share_tokens: HashMap<String, (String, u64)>,
     settings: Option<IssuerSettings>,
     custody: Option<CustodyBlob>,
     op_sessions: std::collections::HashSet<String>,
@@ -268,6 +277,29 @@ impl Store for MemStore {
     async fn consume_jti(&self, jti: &str) -> bool {
         // atomic under the write lock: insert returns true iff newly inserted.
         self.inner.write().unwrap().jtis.insert(jti.to_string())
+    }
+
+    async fn put_share_token(&self, token: &str, record_id: &str, exp: u64) {
+        self.inner
+            .write()
+            .unwrap()
+            .share_tokens
+            .insert(token.to_string(), (record_id.to_string(), exp));
+    }
+    async fn take_share_token(&self, token: &str) -> Option<String> {
+        // atomic remove under the write lock == one-time consume.
+        let mut inner = self.inner.write().unwrap();
+        let (record_id, exp) = inner.share_tokens.remove(token)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // expired tokens are consumed-on-read and treated as missing.
+        if now > exp {
+            None
+        } else {
+            Some(record_id)
+        }
     }
 
     async fn get_settings(&self) -> IssuerSettings {

@@ -95,6 +95,32 @@ impl Store for MongoStore {
         coll.insert_one(doc! { "jti": jti }).await.is_ok()
     }
 
+    async fn put_share_token(&self, token: &str, record_id: &str, exp: u64) {
+        let coll: Collection<Document> = self.db.collection("share_tokens");
+        let _ = coll
+            .replace_one(
+                doc! { "token": token },
+                doc! { "token": token, "record_id": record_id, "exp": exp as i64 },
+            )
+            .upsert(true)
+            .await;
+    }
+    async fn take_share_token(&self, token: &str) -> Option<String> {
+        // find_one_and_delete is atomic == one-time consume; then enforce expiry on the read.
+        let coll: Collection<Document> = self.db.collection("share_tokens");
+        let d = coll.find_one_and_delete(doc! { "token": token }).await.ok().flatten()?;
+        let exp = d.get_i64("exp").unwrap_or(0) as u64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now > exp {
+            None
+        } else {
+            d.get_str("record_id").ok().map(|s| s.to_string())
+        }
+    }
+
     async fn get_settings(&self) -> IssuerSettings {
         self.settings()
             .find_one(doc! { "_id": "singleton" })

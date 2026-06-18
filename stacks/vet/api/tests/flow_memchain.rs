@@ -57,15 +57,21 @@ async fn full_issuance_share_revoke_flow() {
     assert!(b["txHash"].as_str().is_some());
 
     // record is now ISSUED on-chain — isValid(root) is true via the chain client (issuance pillar).
-    // --- share: mint a one-time record-JWT ---
+    // --- share: mint a SHORT one-time share token (low-density QR) ---
     let (s, b) = call(&app, "POST", &format!("/records/{record_id}/share"), Some(&op), Some(serde_json::json!({}))).await;
     assert_eq!(s, StatusCode::OK, "share: {b}");
+    assert_eq!(b["recordId"].as_str().unwrap(), record_id, "share still returns recordId");
     let qr = b["qrUrl"].as_str().unwrap();
+    // The QR is now a tiny `/r/<32hex>` path — NO embedded JWT, NO query string.
+    assert!(!qr.contains("t="), "qrUrl must not carry a JWT query string: {qr}");
     let token = extract_token(qr);
+    assert_eq!(token.len(), 32, "share token must be 32 hex chars (16 random bytes): {token}");
+    assert!(token.chars().all(|c| c.is_ascii_hexdigit()), "token must be hex: {token}");
+    assert!(qr.ends_with(&format!("/r/{token}")), "qrUrl path must be /r/<token>: {qr}");
 
-    // --- GET /records/{id} with the JWT: returns the wrapped doc; issuance verifies VALID ---
-    let (s, doc) = call(&app, "GET", &format!("/records/{record_id}"), Some(&token), None).await;
-    assert_eq!(s, StatusCode::OK, "get record: {doc}");
+    // --- GET /r/<token>: returns the wrapped doc; issuance verifies VALID ---
+    let (s, doc) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "get shared: {doc}");
     assert_eq!(doc["version"], "dogtag/1.0");
     let merkle_root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
 
@@ -75,9 +81,9 @@ async fn full_issuance_share_revoke_flow() {
         "issuance pillar: root must be valid on-chain after issue"
     );
 
-    // --- reused share-JWT => 401 (one-time jti) ---
-    let (s, _b) = call(&app, "GET", &format!("/records/{record_id}"), Some(&token), None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "reused share-JWT must be 401");
+    // --- reused short token => 404 (one-time, deleted after first use) ---
+    let (s, _b) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "reused share token must be 404 (one-time)");
 
     // --- revoke: re-verify issuance INVALID ---
     let (s, b) = call(&app, "POST", &format!("/records/{record_id}/revoke"), Some(&op), Some(serde_json::json!({}))).await;
@@ -353,7 +359,6 @@ fn common_now() -> u64 {
 }
 
 fn extract_token(qr: &str) -> String {
-    // qrUrl: .../r?t=<jwt>&i=<id>
-    let after = qr.split("t=").nth(1).unwrap();
-    after.split("&i=").next().unwrap().to_string()
+    // qrUrl: .../r/<32hex>
+    qr.rsplit('/').next().unwrap().to_string()
 }

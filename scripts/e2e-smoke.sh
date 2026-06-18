@@ -9,7 +9,7 @@
 #
 # It is idempotent-ish: it genesis-es a FRESH vet custody signer each run (the in-memory store means a
 # backend restart wipes custody, so a fresh genesis is expected), funds + whitelists it, issues a
-# VACCINATION credential anchored on the live clone, shares it (one-time JWT), and records a NORMAL-path
+# VACCINATION credential anchored on the live clone, shares it (short one-time /r/<token>), and records a NORMAL-path
 # verification on-chain (minting the subject SBT + binding the subject as needed).
 #
 # Requires: curl, jq, cast (foundry), python3. Uses contracts/.env (DEPLOYER_PRIVATE_KEY) for funding.
@@ -117,16 +117,25 @@ ROOT_HEX=$(echo "$PREP" | jqr .merkleRoot)
 green "issue(root) anchored ON-CHAIN; isValid($ROOT_HEX)=true; confirm re-verified RootIssued"
 
 # --------------------------------------------------------------------------------------------------
-step "5. Share -> GET with Bearer JWT returns the wrapped doc -> second GET = 401 (one-time jti)"
+step "5. Share -> SHORT one-time token QR -> GET /r/<token> returns the doc -> second GET = 404 (one-time)"
 QR=$(curl -fsS -X POST "$VET/records/$RID/share" -H "authorization: Bearer $OTOK" | jqr .qrUrl)
-JWT=$(echo "$QR" | sed -n 's/.*[?&]t=\([^&]*\).*/\1/p')
-[ -n "$JWT" ] || fail "share produced no JWT"
-G1=$(curl -fsS "$VET/records/$RID" -H "authorization: Bearer $JWT")
+echo "  qrUrl=$QR"
+case "$QR" in
+  *"/r/"*) : ;;
+  *) fail "share qrUrl is not a /r/<token> URL: $QR" ;;
+esac
+case "$QR" in
+  *"t="*) fail "share qrUrl must NOT carry a JWT query string: $QR" ;;
+esac
+TOKEN="${QR##*/r/}"
+[ "${#TOKEN}" = 32 ] || fail "share token must be 32 hex chars, got '${TOKEN}' (len ${#TOKEN})"
+green "share returned a short one-time token: /r/$TOKEN"
+G1=$(curl -fsS "$VET/r/$TOKEN")
 [ "$(echo "$G1" | jqr .signature.merkleRoot)" = "$ROOT_HEX" ] || fail "GET 1 did not return the wrapped doc: $G1"
-green "GET 1 returned the wrapped doc"
-CODE2=$(curl -s -o /dev/null -w '%{http_code}' "$VET/records/$RID" -H "authorization: Bearer $JWT")
-[ "$CODE2" = 401 ] || fail "GET 2 should be 401 (one-time jti), got $CODE2"
-green "GET 2 = 401 (one-time jti enforced)"
+green "GET /r/<token> returned the wrapped doc"
+CODE2=$(curl -s -o /dev/null -w '%{http_code}' "$VET/r/$TOKEN")
+[ "$CODE2" = 404 ] || fail "GET 2 should be 404 (one-time token consumed), got $CODE2"
+green "GET 2 = 404 (one-time token consumed)"
 
 # --------------------------------------------------------------------------------------------------
 step "6. Verify-session NORMAL path: subject SBT mint + consent-key bind, ECDSA consent, recorded on-chain"
@@ -196,10 +205,10 @@ print(json.dumps({
   'deadline': $DEADLINE,
 }))")
 
-# the disclosed doc is the wrapped credential (re-share a fresh one-time JWT to fetch it for the verifier).
+# the disclosed doc is the wrapped credential (re-share a fresh one-time token to fetch it for the verifier).
 QR2=$(curl -fsS -X POST "$VET/records/$RID/share" -H "authorization: Bearer $OTOK" | jqr .qrUrl)
-JWT2=$(echo "$QR2" | sed -n 's/.*[?&]t=\([^&]*\).*/\1/p')
-DOC=$(curl -fsS "$VET/records/$RID" -H "authorization: Bearer $JWT2")
+TOKEN2="${QR2##*/r/}"
+DOC=$(curl -fsS "$VET/r/$TOKEN2")
 
 SUBMIT=$(curl -fsS --max-time 120 -X POST "$VET/verify/consent/submit" -H "authorization: Bearer $OTOK" -H 'content-type: application/json' \
   -d "$(python3 -c "

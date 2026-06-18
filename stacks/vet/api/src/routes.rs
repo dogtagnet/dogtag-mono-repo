@@ -10,6 +10,7 @@
 //!     POST /records/{id}/revoke
 //!     POST /records/{id}/share
 //!     GET  /records/{id}                              (record-JWT — UNAUTHENTICATED by session)
+//!     GET  /r/{token}                                 (short one-time share token — UNAUTHENTICATED)
 //!     GET  /issuer/signers
 //!     POST /import/pull
 //!     POST /verify/session/start | /verify/consent/submit
@@ -504,21 +505,31 @@ async fn share(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<St
     if st.store.get_record(&id).await.is_none() {
         return err(StatusCode::NOT_FOUND, "record not found");
     }
-    let n = auth::now();
-    let jti = uuid::Uuid::new_v4().to_string();
-    let claims = ShareClaims {
-        iss: st.cfg.deployment_url.clone(),
-        sub: id.clone(),
-        aud: "dogtag-mobile".to_string(),
-        scope: "read:record".to_string(),
-        iat: n,
-        nbf: n,
-        exp: n + 180,
-        jti,
+    // Mint a SHORT one-time token (32 hex chars == 16 random bytes) so the QR is low-density and
+    // easy for a phone camera to focus on. The server maps token -> record (one-time, deleted on
+    // first GET /r/:token), expiring after 180s — the same one-time-use guarantee as the old
+    // embedded record-JWT, but with a tiny payload.
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    let token = hex::encode(bytes);
+    let exp = auth::now() + 180;
+    st.store.put_share_token(&token, &id, exp).await;
+    let qr = format!("{}/r/{}", st.cfg.deployment_url, token);
+    ok(json!({ "qrUrl": qr, "recordId": id }))
+}
+
+/// GET /r/:token — resolve a SHORT one-time share token to the record's wrapped doc. Unauthenticated
+/// (like the legacy record-JWT GET). The token is CONSUMED (deleted) on first read — a second read is
+/// a 404. An expired token is also a 404/410.
+async fn get_shared(State(st): State<AppState>, Path(token): Path<String>) -> Resp {
+    let record_id = match st.store.take_share_token(&token).await {
+        Some(id) => id,
+        None => return err(StatusCode::NOT_FOUND, "share token missing or expired"),
     };
-    let token = auth::sign_jwt(&st.jwt, &claims);
-    let qr = format!("{}/r?t={}&i={}", st.cfg.deployment_url, token, id);
-    ok(json!({ "qrUrl": qr }))
+    match st.store.get_record(&record_id).await {
+        Some(r) => ok(r.wrapped_doc),
+        None => err(StatusCode::NOT_FOUND, "record not found"),
+    }
 }
 
 /// GET /records/{id} — record-JWT bearer; UNAUTHENTICATED by operator session (§11.7e).
@@ -1064,6 +1075,8 @@ pub fn router(state: AppState) -> Router {
         .route("/records/:id/revoke", post(revoke))
         .route("/records/:id/share", post(share))
         .route("/records/:id", get(get_record))
+        // short one-time share token resolver (unauthenticated; consumed on first read)
+        .route("/r/:token", get(get_shared))
         // issuer signers
         .route("/issuer/signers", get(issuer_signers))
         // import

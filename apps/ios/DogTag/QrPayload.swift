@@ -2,10 +2,13 @@ import Foundation
 
 /// The two scan outcomes the user app supports. The pet owner's app ONLY scans — it never shows a QR.
 /// Detect which kind by the URL shape (architecture §7, impl §3.9 / §6.5).
-///   - Import (issuer -> user): `https://<vet-host>/r?t=<jwt>&i=<recordId>`
+///   - Import (issuer -> user, SHORT token): `https://<vet-host>/r/<32hex>` — preferred, low-density QR.
+///   - Import (issuer -> user, legacy JWT): `https://<vet-host>/r?t=<jwt>&i=<recordId>` (back-compat).
 ///   - Verify (verifier -> user): `https://<host>/v?t=<jwt>` (JWT carries relayer/purpose/challenge/recordType)
 enum QrPayload {
     case importRecord(host: String, recordId: String, jwt: String)
+    /// A SHORT one-time share token — fetch GET <host>/r/<token> (no Bearer); the server consumes it.
+    case importRecordToken(host: String, token: String)
     case verifySession(host: String, jwt: String, relayer: String, purpose: String,
                        recordType: String, challenge: String, mode: String, sessionId: String)
     case unknown(String)
@@ -18,6 +21,13 @@ enum QrPayload {
         if let port = comps.port { origin += ":\(port)" }
         let path = comps.path.hasSuffix("/") ? String(comps.path.dropLast()) : comps.path
         let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let segs = path.split(separator: "/").map(String.init)
+
+        // SHORT one-time share token: `/r/<token>` (no query string). Preferred.
+        if segs.count == 2, segs[0] == "r", comps.queryItems?.isEmpty ?? true {
+            let token = segs[1]
+            return token.isEmpty ? .unknown(trimmed) : .importRecordToken(host: origin, token: token)
+        }
 
         switch path {
         case "/r":

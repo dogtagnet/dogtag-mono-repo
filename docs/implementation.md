@@ -662,6 +662,18 @@ GET /records/{id}   Authorization: Bearer <jwt>
    require claims.sub==id && claims.scope=="read:record"
    require consume_jti(claims.jti)   // one-time: SETNX/delete; 401 if already used
    return records[id].wrappedDoc
+
+# Low-density VARIANT (server-side one-time token; preferred for QR scanning):
+POST /records/{id}/share -> { qrUrl, recordId }
+   token = hex(16 random bytes)                     # 32 hex chars — tiny, low-density QR
+   put_share_token(token -> { record_id:id, exp: now+180s })   # one-time
+   return { qrUrl: DEPLOYMENT_URL + "/r/" + token, recordId: id }   # NO JWT, NO query string
+
+GET /r/{token}   (unauthenticated, like the record-JWT GET)
+   record_id = take_share_token(token)   # atomic remove == ONE-TIME; missing/expired -> 404/410
+   return records[record_id].wrappedDoc  # same body as GET /records/{id}
+   # SAME one-time-use guarantee as the embedded record-JWT, but a far lower-density QR.
+   # The legacy /r?t= JWT path above remains for back-compat.
 ```
 
 ### 3.5 Import FROM user (user→business QR)

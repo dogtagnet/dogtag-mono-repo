@@ -197,13 +197,15 @@ async fn anvil_full_flow() {
     );
     assert!(chain.is_valid(&clone, &root).await.unwrap(), "AlloyChain.isValid agrees");
 
-    // --- share -> GET with one-time JWT -> doc returned; issuance pillar VALID ---
+    // --- share -> GET /r/<token> with the SHORT one-time token -> doc returned; issuance VALID ---
     let (s, b) = call(&app, "POST", &format!("/records/{record_id}/share"), Some(&op), Some(serde_json::json!({}))).await;
     assert_eq!(s, StatusCode::OK, "share: {b}");
-    let token = extract_token(b["qrUrl"].as_str().unwrap());
+    let qr = b["qrUrl"].as_str().unwrap();
+    assert!(!qr.contains("t="), "qrUrl must not carry a JWT query string: {qr}");
+    let token = extract_token(qr);
 
-    let (s, doc) = call(&app, "GET", &format!("/records/{record_id}"), Some(&token), None).await;
-    assert_eq!(s, StatusCode::OK, "get record: {doc}");
+    let (s, doc) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "get shared: {doc}");
     let merkle_root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
     assert_eq!(merkle_root, root);
     assert!(
@@ -211,9 +213,9 @@ async fn anvil_full_flow() {
         "issuance pillar: returned doc's root is VALID on-chain"
     );
 
-    // reused share-JWT => 401 (one-time jti).
-    let (s, _b) = call(&app, "GET", &format!("/records/{record_id}"), Some(&token), None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "reused share-JWT must be 401");
+    // reused short token => 404 (one-time, deleted after first use).
+    let (s, _b) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "reused share token must be 404 (one-time)");
 
     // --- confirm REFUSES a bogus txHash (independent prepared record) ---
     // prepare a wallet-mode record so confirm is callable separately.
@@ -241,6 +243,6 @@ fn fund(rpc: &str, to: &str, wei: &str) {
 }
 
 fn extract_token(qr: &str) -> String {
-    let after = qr.split("t=").nth(1).unwrap();
-    after.split("&i=").next().unwrap().to_string()
+    // qrUrl: .../r/<32hex>
+    qr.rsplit('/').next().unwrap().to_string()
 }
