@@ -16,6 +16,9 @@ VR=0x19C1B5f80c41EE864149500bdF998Dd18aec2a43      # ZK-wired VerificationRegist
 SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233      # DogTagSBT (central mints profiles)
 VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53
 HMAC=dev-central-hmac-secret
+# LAN IP so the share/verify QR points at a host the PHONE can reach (localhost is the phone itself).
+# Override with: LAN_IP=192.168.x.x scripts/demo-up.sh
+LAN_IP="${LAN_IP:-172.24.230.152}"
 # Deployer key = registry WHITELIST_ADMIN + SBT ISSUER + PLASMA source (contracts/.env). The central
 # stack broadcasts whitelistFor/mint AS this signer, so wire it at boot.
 set -a; source "$ROOT/contracts/.env"; set +a
@@ -33,12 +36,12 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Seaport Vet" ISSUER_DOMAIN=vet.local \
-  BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 \
+  BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 DEPLOYMENT_URL="http://$LAN_IP:41874" \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Pampered Paws" ISSUER_DOMAIN=groomer.local \
-  BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 \
+  BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="http://$LAN_IP:43618" \
   run groomer-api ":43618" "$ROOT/target/release/vet-api"
 
 echo "Starting portals (vite dev):"
