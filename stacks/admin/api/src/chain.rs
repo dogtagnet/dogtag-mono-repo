@@ -328,23 +328,22 @@ impl AlloyChain {
             hex::decode(calldata.strip_prefix("0x").unwrap_or(calldata))
                 .map_err(|e| ChainError::Other(format!("bad calldata: {e}")))?,
         );
+        // LEGACY pricing on ROAX: the node's base fee is ~7 wei but its mempool only mines txs at the
+        // ~1 gwei eth_gasPrice. Alloy's EIP-1559 filler derives maxFeePerGas from the (tiny) base fee,
+        // producing an underpriced tx that the node ACCEPTS but never mines (stuck forever). Read
+        // eth_gasPrice and send a legacy tx (mirrors the working `cast send --legacy`).
+        let gp = provider.get_gas_price().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
         let tx = TransactionRequest::default()
             .with_to(parse_addr(to))
             .with_input(data)
             .with_value(U256::ZERO)
-            .with_chain_id(ROAX_CHAIN_ID);
+            .with_chain_id(ROAX_CHAIN_ID)
+            .with_gas_price(gp);
 
-        let pending = match provider.send_transaction(tx.clone()).await {
-            Ok(p) => p,
-            Err(_) => {
-                let gp = provider.get_gas_price().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
-                let legacy = tx.with_gas_price(gp);
-                provider
-                    .send_transaction(legacy)
-                    .await
-                    .map_err(|e| ChainError::Rpc(e.to_string()))?
-            }
-        };
+        let pending = provider
+            .send_transaction(tx)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         // wait for the tx to be mined so on-chain reads (isWhitelistedFor/ownerOf) reflect it.
         let receipt = pending
             .get_receipt()

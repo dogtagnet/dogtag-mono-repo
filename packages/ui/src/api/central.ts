@@ -18,6 +18,11 @@ export interface CentralClientOptions {
   baseUrl: string;
   /** returns the admin session bearer token, if logged in */
   getAdminToken?: () => string | null | undefined;
+  /**
+   * Invoked when an admin-gated request gets a 401 (stale session after a backend restart). The
+   * host should clear the persisted admin token and route back to the admin login.
+   */
+  onUnauthorized?: () => void;
 }
 
 function makeError(status: number, body: unknown): ApiError {
@@ -65,7 +70,11 @@ export function createCentralClient(opts: CentralClientOptions) {
     });
     const text = await res.text();
     const parsed: unknown = text ? safeJson(text) : null;
-    if (!res.ok) throw makeError(res.status, parsed);
+    if (!res.ok) {
+      // Stale admin session (backend restarted its in-memory session store) → clear + re-login.
+      if (res.status === 401 && auth === "admin") opts.onUnauthorized?.();
+      throw makeError(res.status, parsed);
+    }
     return parsed as T;
   }
 

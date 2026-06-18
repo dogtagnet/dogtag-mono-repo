@@ -9,6 +9,7 @@ import {
   Label,
   ThemeToggle,
   useToast,
+  DEMO_OPERATOR_PASSWORD,
 } from "@dogtag/ui";
 import { useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
@@ -17,7 +18,8 @@ import { useApp } from "../app/AppContext";
 export function Login() {
   const { api, setOpToken } = useApp();
   const { toast } = useToast();
-  const [password, setPassword] = useState("");
+  // Testnet demo: prefill the operator password so the operator just clicks Sign in.
+  const [password, setPassword] = useState(DEMO_OPERATOR_PASSWORD);
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -66,6 +68,7 @@ export function Login() {
                 autoFocus
                 required
               />
+              <p className="text-xs text-muted">Demo default prefilled — just click Sign in.</p>
             </div>
             <Button type="submit" className="w-full" loading={busy}>
               Sign in

@@ -7,6 +7,27 @@
  * the same fields the operator would otherwise type.
  */
 
+/**
+ * Demo credentials for the testnet click-through (scripts/demo-up.sh launches the backends with
+ * ADMIN_PASSWORD=admin / OPERATOR_PASSWORD=operator). These prefill the login + admin-login inputs
+ * so the operator just clicks Continue. TESTNET DEMO ONLY — never ship real secrets here.
+ */
+export const DEMO_ADMIN_PASSWORD = "admin";
+export const DEMO_OPERATOR_PASSWORD = "operator";
+
+/**
+ * On-chain VACCINATION DogTagIssuer clone (VACCINATION_ISSUER_ADDR in scripts/demo-up.sh). This is
+ * the documentStore the issuer-application must reference so the on-chain whitelist matches.
+ */
+export const DEMO_VACCINATION_DOCUMENT_STORE = "0x5c703910111f942EE0f47E02214291b5274cDb53";
+
+/**
+ * The single record type the vet/groomer backend accepts for issuance + whitelisting. The backend
+ * resolves the issuer clone via issuer_addrs["VACCINATION"] and whitelists keccak256("VACCINATION"),
+ * so EVERY demo (issue form, whitelist apply, issuer application) must use this literal.
+ */
+export const DEMO_RECORD_TYPE = "VACCINATION";
+
 /** YYYY-MM-DD `daysFromToday` days from now (UTC). */
 export function isoDate(daysFromToday = 0): string {
   const d = new Date();
@@ -21,9 +42,9 @@ function demoMicrochip(): string {
 }
 
 /**
- * Valid RabiesVaccinationCertificate preset keyed by the flat dotted field paths used by the
- * issue form (see `RABIES_VACCINATION` in recordTypes.ts). series=primary ⇒ validFrom =
- * vaccinationDate + 21d. Returns `{ dogTagId, recordType, fields }` for the issue form.
+ * Valid rabies-vaccination preset keyed by the flat dotted field paths used by the issue form (see
+ * `RABIES_VACCINATION` in recordTypes.ts). recordType is the backend literal `VACCINATION`.
+ * series=primary ⇒ validFrom = vaccinationDate + 21d. Returns `{ dogTagId, recordType, fields }`.
  */
 export function demoRabiesIssue(): {
   recordType: string;
@@ -36,7 +57,7 @@ export function demoRabiesIssue(): {
   const nextDueDate = isoDate(-7 + 365);
   const implantDate = isoDate(-120); // chipped well before vaccination
   return {
-    recordType: "RabiesVaccinationCertificate",
+    recordType: DEMO_RECORD_TYPE,
     dogTagId: `dtag:demo:${String(Date.now()).slice(-6)}`,
     fields: {
       "microchip.code": demoMicrochip(),
@@ -76,7 +97,7 @@ export const DEMO_BUSINESS_VET: DemoBusiness = {
   services: "vaccination, microchip, wellness",
   apiBaseUrl: "http://localhost:41874",
   domain: "vet.dogtag.localhost",
-  documentStores: "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
+  documentStores: DEMO_VACCINATION_DOCUMENT_STORE,
 };
 
 export const DEMO_BUSINESS_GROOMER: DemoBusiness = {
@@ -87,7 +108,7 @@ export const DEMO_BUSINESS_GROOMER: DemoBusiness = {
   services: "grooming, boarding, daycare",
   apiBaseUrl: "http://localhost:43618",
   domain: "groomer.dogtag.localhost",
-  documentStores: "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
+  documentStores: DEMO_VACCINATION_DOCUMENT_STORE,
 };
 
 /**
@@ -107,17 +128,57 @@ export interface DemoIssuerApplication {
 export const DEMO_ISSUER_APPLICATION_VET: DemoIssuerApplication = {
   issuerEntityId: "bayview-vet",
   addresses: "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-  recordTypes: "RabiesVaccinationCertificate",
+  // MUST be the literal "VACCINATION" so keccak256(recordType) matches the on-chain whitelist key.
+  recordTypes: DEMO_RECORD_TYPE,
   domain: "vet.dogtag.localhost",
-  documentStore: "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
+  documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
   usdaNan: "123456",
 };
 
 export const DEMO_ISSUER_APPLICATION_GROOMER: DemoIssuerApplication = {
   issuerEntityId: "pawsh-groomer",
   addresses: "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-  recordTypes: "HealthAttestation",
+  recordTypes: DEMO_RECORD_TYPE,
   domain: "groomer.dogtag.localhost",
-  documentStore: "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
+  documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
   usdaNan: "",
+};
+
+/**
+ * Demo preset for the per-issuer Setup "Apply for whitelist" form (vet/groomer Setup.tsx). Shares
+ * the issuer-application contract but the form collects a single signer address + flat license
+ * fields. The signer address is left blank: the Setup wizard auto-fills it from the genesis-derived
+ * signer (see DEMO_CLICKS.md).
+ */
+export interface DemoWhitelistApply {
+  issuerEntityId: string;
+  recordTypes: string;
+  domain: string;
+  documentStore: string;
+  usdaNan: string;
+  licenseNumber: string;
+  licenseJurisdiction: string;
+  licenseExpiry: string;
+}
+
+export const DEMO_WHITELIST_APPLY_VET: DemoWhitelistApply = {
+  issuerEntityId: "seaport-vet",
+  recordTypes: DEMO_RECORD_TYPE,
+  domain: "vet.local",
+  documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
+  usdaNan: "123456",
+  licenseNumber: "VET-2024-0001",
+  licenseJurisdiction: "CA",
+  licenseExpiry: "2027-12-31",
+};
+
+export const DEMO_WHITELIST_APPLY_GROOMER: DemoWhitelistApply = {
+  issuerEntityId: "pampered-paws",
+  recordTypes: DEMO_RECORD_TYPE,
+  domain: "groomer.local",
+  documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
+  usdaNan: "",
+  licenseNumber: "GRM-2024-0007",
+  licenseJurisdiction: "CA",
+  licenseExpiry: "2027-12-31",
 };

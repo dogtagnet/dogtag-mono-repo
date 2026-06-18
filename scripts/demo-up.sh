@@ -13,8 +13,13 @@ cd "$ROOT"; mkdir -p .demo; : > .demo/pids
 RPC=https://devrpc.roax.net
 IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c
 VR=0x19C1B5f80c41EE864149500bdF998Dd18aec2a43      # ZK-wired VerificationRegistry
+SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233      # DogTagSBT (central mints profiles)
 VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53
 HMAC=dev-central-hmac-secret
+# Deployer key = registry WHITELIST_ADMIN + SBT ISSUER + PLASMA source (contracts/.env). The central
+# stack broadcasts whitelistFor/mint AS this signer, so wire it at boot.
+set -a; source "$ROOT/contracts/.env"; set +a
+ADMIN_PK="$DEPLOYER_PRIVATE_KEY"; ADMIN_ADDR="$DEPLOYER_ADDRESS"
 run(){ echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & echo $! >> .demo/pids ); }
 
 echo "Building backend binaries (release for speed)…"
@@ -22,7 +27,8 @@ cargo build -q --release -p admin-api -p vet-api
 
 echo "Starting backends:"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
-  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR PORT=39742 \
+  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
+  ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \

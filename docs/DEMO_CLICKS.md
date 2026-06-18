@@ -1,0 +1,84 @@
+# DogTag — literal click-through (testnet demo)
+
+The exact buttons to press, in order. The demo buttons fill every form, and all passwords are
+prefilled, so the operator **types nothing** — just click. (Testnet only.)
+
+Portals: **admin** http://localhost:39741 · **vet** http://localhost:41873 · **groomer** http://localhost:43617
+Demo passwords (prefilled): operator `operator`, admin `admin`. Record type everywhere: **VACCINATION**.
+
+> Stale session? Backends keep sessions in memory, so a backend restart invalidates the saved token.
+> The portal now detects the 401, shows **"Session expired — please log in again"**, clears the token,
+> and routes you back to login (vet/groomer Setup re-shows the Custody admin login). Just click Sign in
+> again (password stays prefilled).
+
+---
+
+## A. Admin onboards the business — admin portal (:39741)
+
+1. **Sign in** (admin password prefilled).
+2. Go to **Onboard issuer** (the wizard).
+3. Click **Vet preset** (top-right) — fills all three steps with the vet demo data
+   (recordType `VACCINATION`, documentStore `0x5c70…Db53`).
+4. Step 1 **Register business** → **Register business**.
+5. Step 2 **Submit issuer application** → **Submit application**.
+6. Step 3 **Approve (whitelists on-chain)** → **Approve & whitelist** → done (tx hashes shown).
+
+> Funding gas: the on-chain signer still needs PLASMA + whitelist. If not already done, run
+> `scripts/demo-bootstrap.sh 0x<vetSignerAddress>` once (the address is the genesis signer from step B).
+
+---
+
+## B. Vet stands up its signer + applies — vet portal (:41873)
+
+Setup is a linear wizard; each step auto-advances on success.
+
+1. **Sign in** (operator password prefilled).
+2. Navigate to **Setup**.
+3. **Continue** (Custody admin login — admin password prefilled).
+4. **Generate 24-word seed** → tick **"I have written down all 24 words."** → **Continue to confirmation**.
+5. Confirm screen: (demo) re-type the challenge words shown on the seed screen + any passphrase →
+   **Confirm & encrypt**. (The derived signer address is now auto-saved.)
+6. **Unlock** (enter the same passphrase) → **Unlock** → **Continue**.
+7. **Accounts** → **Continue to whitelist application** (no extra accounts needed).
+8. **Whitelist** → **Fill demo data** (signer address is already auto-filled from genesis) →
+   **Submit application** → **Continue**.
+9. **DNS** → **Done**.
+
+> The signer address is auto-carried — you never copy/paste it. After this, approve in the admin
+> portal (section A) if you haven't, and fund/whitelist via demo-bootstrap.
+
+---
+
+## C. Vet issues a credential → QR — vet portal (:41873)
+
+1. Go to **Issue credential**.
+2. Click **Fill demo data** (valid rabies cert; recordType `VACCINATION`).
+3. **Sign & Issue**.
+4. **Create QR** → the one-time-JWT QR renders.
+
+---
+
+## D. Phone (DogTag app) — scan → import → verified on-chain
+
+1. Open **Scan** (Home `+` or Verify tab) → scan the vet's QR.
+2. Watch **Anchoring… → Verified on-chain ✓**. The record lands under the pet.
+
+> Phone can't reach `localhost` — set the app server base to this Mac's LAN IP and set
+> `DEPLOYMENT_URL=http://<LAN-IP>:41874` in demo-up.sh's vet env. See docs/DEMO.md.
+
+---
+
+## E. (Optional) proof-of-verification on-chain — vet or groomer portal Verify tab
+
+1. Go to **Verify**.
+2. Click **Fill sample** (selects a non-sensitive purpose + Normal mode).
+3. **Start verification** → QR.
+4. On the phone: scan → review → select record → sign consent.
+5. The portal polls and flips to **Verified on-chain ✓** (ZK = no credential data on chain).
+
+---
+
+## Groomer variant (groomer portal :43617)
+
+Same as B + C + E, but in admin step A.3 click **Groomer preset**, and in the groomer Setup
+Whitelist step click **Fill demo data** (groomer preset, recordType `VACCINATION`).

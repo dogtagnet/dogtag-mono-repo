@@ -22,14 +22,49 @@ fn err(code: StatusCode, msg: &str) -> Resp {
     (code, Json(json!({ "error": msg })))
 }
 
-/// keccak256("VERIFY:"||purpose) reduced... we use keccak256 of the namespaced string, matching the
-/// registry's `_verifyKey` shape conceptually (the contract uses abi.encode; here we key the test
-/// whitelist by this string-derived bytes32). For on-chain parity the registry computes its own key;
-/// the backend only needs a stable bytes32 to query `isWhitelistedFor`.
-pub fn verify_key(purpose: &str) -> String {
+/// The purpose label reduced to the registry's bytes32 `purpose` field: keccak256(label) reduced mod
+/// the BN254 scalar field r (VerificationRegistry §11.10(c): `purpose` is a field element, distinct
+/// from recordType). This MUST match the `c.purpose` the relayer broadcasts, the nullifier input, and
+/// the value fed into `_verifyKey`.
+pub fn purpose_key(label: &str) -> String {
+    use alloy::primitives::{keccak256, U256};
+    // BN254 r.
+    let r = U256::from_str_radix(
+        "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+        10,
+    )
+    .unwrap();
+    let full = U256::from_be_bytes::<32>(keccak256(label.as_bytes()).0);
+    let reduced = full % r;
+    format!("0x{}", hex::encode(reduced.to_be_bytes::<32>()))
+}
+
+/// The IssuerRegistry whitelist key the VerificationRegistry checks for the relayer on a given purpose:
+/// `keccak256(abi.encode("VERIFY:", purpose))` where `purpose` is the bytes32 from `purpose_key(label)`
+/// (Solidity `abi.encode(string,bytes32)` = head[offset=0x40] ++ purpose ++ len(7) ++ "VERIFY:" padded).
+/// The previous impl hashed the literal string "VERIFY:<label>", which NEVER matched the on-chain key,
+/// so the relayer whitelist preflight (and the on-chain `!verify-wl` require) could never pass.
+pub fn verify_key(label: &str) -> String {
     use alloy::primitives::keccak256;
-    let s = format!("VERIFY:{purpose}");
-    format!("0x{}", hex::encode(keccak256(s.as_bytes()).as_slice()))
+    let purpose_hex = purpose_key(label);
+    let purpose = hex::decode(purpose_hex.trim_start_matches("0x")).unwrap_or_default();
+    // abi.encode(string "VERIFY:", bytes32 purpose)
+    let mut buf = Vec::with_capacity(160);
+    // [0] offset to the string data = 0x40 (after the two head words).
+    let mut off = [0u8; 32];
+    off[31] = 0x40;
+    buf.extend_from_slice(&off);
+    // [1] the bytes32 purpose word.
+    buf.extend_from_slice(&purpose);
+    // [2] string length = 7 ("VERIFY:").
+    let mut len = [0u8; 32];
+    len[31] = 7;
+    buf.extend_from_slice(&len);
+    // [3] string bytes, right-padded to 32.
+    let mut data = [0u8; 32];
+    data[..7].copy_from_slice(b"VERIFY:");
+    buf.extend_from_slice(&data);
+    format!("0x{}", hex::encode(keccak256(&buf).as_slice()))
 }
 
 /// Parse the consent JSON (as posted to /verify/consent/submit) into the registry's `ConsentInput`.

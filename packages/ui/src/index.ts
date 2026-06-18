@@ -106,10 +106,17 @@ export {
 export {
   isoDate,
   demoRabiesIssue,
+  DEMO_ADMIN_PASSWORD,
+  DEMO_OPERATOR_PASSWORD,
+  DEMO_RECORD_TYPE,
+  DEMO_VACCINATION_DOCUMENT_STORE,
   DEMO_BUSINESS_VET,
   DEMO_BUSINESS_GROOMER,
   DEMO_ISSUER_APPLICATION_VET,
   DEMO_ISSUER_APPLICATION_GROOMER,
+  DEMO_WHITELIST_APPLY_VET,
+  DEMO_WHITELIST_APPLY_GROOMER,
   type DemoBusiness,
   type DemoIssuerApplication,
+  type DemoWhitelistApply,
 } from "./schema/demoData";

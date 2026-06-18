@@ -9,20 +9,28 @@ import {
   Input,
   Label,
   useToast,
+  DEMO_ADMIN_PASSWORD,
+  DEMO_WHITELIST_APPLY_GROOMER,
   type AccountInfo,
   type GenesisStartResp,
 } from "@dogtag/ui";
 import { Check, Copy, KeyRound, ShieldAlert } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 
 type Step = "admin" | "genesis" | "confirm" | "unlock" | "accounts" | "apply" | "dns" | "done";
 
 export function Setup() {
-  const { api, adminToken, setAdminToken, setUnlocked } = useApp();
+  const { api, adminToken, setAdminToken, setUnlocked, setSignerAddress } = useApp();
   const { toast } = useToast();
   const [step, setStep] = useState<Step>(adminToken ? "genesis" : "admin");
+
+  // Stale-session recovery: if the admin (custody) token is cleared (e.g. a 401 after a backend
+  // restart), drop back to the Custody admin login instead of stranding the user mid-wizard.
+  useEffect(() => {
+    if (!adminToken && step !== "admin") setStep("admin");
+  }, [adminToken, step]);
 
   return (
     <div className="space-y-6">
@@ -38,11 +46,19 @@ export function Setup() {
         />
       )}
       {step === "genesis" && <GenesisStart onNext={() => setStep("confirm")} />}
-      {step === "confirm" && <GenesisConfirm onNext={() => setStep("unlock")} />}
+      {step === "confirm" && (
+        <GenesisConfirm
+          onNext={(addr) => {
+            if (addr) setSignerAddress(addr);
+            setStep("unlock");
+          }}
+        />
+      )}
       {step === "unlock" && (
         <Unlock
-          onNext={() => {
+          onNext={(addr) => {
             setUnlocked(true);
+            if (addr) setSignerAddress(addr);
             setStep("accounts");
           }}
         />
@@ -100,7 +116,8 @@ function AdminLogin({
   login: (pw: string) => Promise<{ token: string }>;
   toast: Toast;
 }) {
-  const [pw, setPw] = useState("");
+  // Testnet demo: prefill the admin password so the operator just clicks Continue.
+  const [pw, setPw] = useState(DEMO_ADMIN_PASSWORD);
   const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -130,6 +147,7 @@ function AdminLogin({
             Admin password
           </Label>
           <Input id="admin-pw" type="password" value={pw} onChange={(e) => setPw(e.target.value)} required />
+          <p className="text-xs text-muted">Demo default prefilled — just click Continue.</p>
           <Button type="submit" loading={busy}>
             Continue
           </Button>
@@ -208,7 +226,7 @@ function GenesisStart({ onNext }: { onNext: () => void }) {
   );
 }
 
-function GenesisConfirm({ onNext }: { onNext: () => void }) {
+function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
   const indices: number[] = JSON.parse(sessionStorage.getItem("groomer.challengeIndices") ?? "[]");
@@ -223,7 +241,7 @@ function GenesisConfirm({ onNext }: { onNext: () => void }) {
       const r = await api.genesisConfirm({ words: words.map((w) => w.trim()), passphrase });
       toast({ title: "Custody initialized", description: r.address, variant: "success" });
       sessionStorage.removeItem("groomer.challengeIndices");
-      onNext();
+      onNext(r.address);
     } catch (err) {
       toast({ title: "Confirmation failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -279,7 +297,7 @@ function GenesisConfirm({ onNext }: { onNext: () => void }) {
   );
 }
 
-function Unlock({ onNext }: { onNext: () => void }) {
+function Unlock({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
   const [passphrase, setPassphrase] = useState("");
@@ -333,7 +351,7 @@ function Unlock({ onNext }: { onNext: () => void }) {
                 </div>
               ))}
             </div>
-            <Button onClick={onNext}>Continue</Button>
+            <Button onClick={() => onNext(accounts[0]?.address)}>Continue</Button>
           </>
         )}
       </CardContent>
@@ -392,12 +410,13 @@ function DeriveAccounts({ onNext }: { onNext: () => void }) {
 }
 
 function ApplyWhitelist({ onNext }: { onNext: () => void }) {
-  const { api } = useApp();
+  const { api, signerAddress } = useApp();
   const { toast } = useToast();
   const [form, setForm] = useState({
     issuerEntityId: "",
-    address: "",
-    recordTypes: "RabiesVaccinationCertificate",
+    // Auto-carry the genesis-derived signer so the operator never copies an address.
+    address: signerAddress ?? "",
+    recordTypes: "VACCINATION",
     domain: "",
     documentStore: "",
     usdaNan: "",
@@ -408,8 +427,30 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
   const [busy, setBusy] = useState(false);
   const [applicationId, setApplicationId] = useState<string | null>(null);
 
+  // Keep the signer address synced if it lands after this form mounts.
+  useEffect(() => {
+    if (signerAddress) setForm((p) => (p.address ? p : { ...p, address: signerAddress }));
+  }, [signerAddress]);
+
   function upd(k: keyof typeof form, v: string) {
     setForm((p) => ({ ...p, [k]: v }));
+  }
+
+  // Testnet demo: fill everything. The signer address is auto-carried from genesis (kept as-is here).
+  function fillDemo() {
+    setForm((p) => ({
+      ...p,
+      issuerEntityId: DEMO_WHITELIST_APPLY_GROOMER.issuerEntityId,
+      address: p.address || signerAddress || "",
+      recordTypes: DEMO_WHITELIST_APPLY_GROOMER.recordTypes,
+      domain: DEMO_WHITELIST_APPLY_GROOMER.domain,
+      documentStore: env.dogtagIssuerAddr || DEMO_WHITELIST_APPLY_GROOMER.documentStore,
+      usdaNan: DEMO_WHITELIST_APPLY_GROOMER.usdaNan,
+      licenseNumber: DEMO_WHITELIST_APPLY_GROOMER.licenseNumber,
+      licenseJurisdiction: DEMO_WHITELIST_APPLY_GROOMER.licenseJurisdiction,
+      licenseExpiry: DEMO_WHITELIST_APPLY_GROOMER.licenseExpiry,
+    }));
+    toast({ title: "Demo data filled", description: "Review and Submit application.", variant: "success" });
   }
 
   async function submit(e: FormEvent) {
@@ -446,13 +487,13 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
         <CardTitle>Apply for whitelist</CardTitle>
         <CardDescription>
           Submit your USDA accreditation / license to the central registry. An admin approves it
-          out-of-band (on-chain whitelist).
+          out-of-band (on-chain whitelist). The signer address is auto-carried from genesis.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
           <Field label="Issuer entity id" required value={form.issuerEntityId} onChange={(v) => upd("issuerEntityId", v)} />
-          <Field label="Signer address" required value={form.address} onChange={(v) => upd("address", v)} placeholder="0x…" />
+          <Field label="Signer address (auto-filled)" required value={form.address} onChange={(v) => upd("address", v)} placeholder="0x…" />
           <Field label="Record types (comma-separated)" required value={form.recordTypes} onChange={(v) => upd("recordTypes", v)} />
           <Field label="Domain" required value={form.domain} onChange={(v) => upd("domain", v)} placeholder="clinic.example.com" />
           <Field label="Document store address" required value={form.documentStore} onChange={(v) => upd("documentStore", v)} placeholder="0x…" />
@@ -461,6 +502,9 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
           <Field label="License jurisdiction" value={form.licenseJurisdiction} onChange={(v) => upd("licenseJurisdiction", v)} />
           <Field label="License expiry" value={form.licenseExpiry} onChange={(v) => upd("licenseExpiry", v)} placeholder="YYYY-MM-DD" />
           <div className="sm:col-span-2 flex items-center gap-3">
+            <Button type="button" variant="ghost" onClick={fillDemo}>
+              Fill demo data
+            </Button>
             <Button type="submit" loading={busy}>
               Submit application
             </Button>

@@ -1,9 +1,10 @@
-import { createCentralClient, type CentralClient } from "@dogtag/ui";
+import { createCentralClient, useToast, type CentralClient } from "@dogtag/ui";
 import {
   createContext,
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -29,6 +30,7 @@ function read(key: string): string | null {
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const { toast } = useToast();
   const [adminToken, setAdminTokenState] = useState<string | null>(() => read(ADMIN_KEY));
 
   const setAdminToken = useCallback((t: string | null) => {
@@ -41,11 +43,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Route the 401 callback through a ref so the once-created client always clears the latest token.
+  const onUnauthorizedRef = useRef<() => void>(() => {});
+  onUnauthorizedRef.current = () => {
+    setAdminToken(null);
+    toast({
+      title: "Session expired",
+      description: "Your admin session is no longer valid — please log in again.",
+      variant: "danger",
+    });
+  };
+
   const central = useMemo(
     () =>
       createCentralClient({
         baseUrl: env.centralApiBase,
         getAdminToken: () => read(ADMIN_KEY),
+        onUnauthorized: () => onUnauthorizedRef.current(),
       }),
     [],
   );

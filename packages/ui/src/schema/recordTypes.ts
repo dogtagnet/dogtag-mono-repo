@@ -62,7 +62,10 @@ const MICROCHIP_FIELDS: FieldDef[] = [
 ];
 
 export const RABIES_VACCINATION: RecordTypeSchema = {
-  recordType: "RabiesVaccinationCertificate",
+  // Backend issuer key (keccak256 whitelist key + issuer_addr_for lookup) is the literal
+  // "VACCINATION" — see stacks/vet/api/src/main.rs (VACCINATION_ISSUER_ADDR). The human label
+  // below is still "Rabies Vaccination Certificate".
+  recordType: "VACCINATION",
   label: "Rabies Vaccination Certificate",
   description: "USDA-coded rabies vaccination credential (microchip mandatory).",
   groups: [

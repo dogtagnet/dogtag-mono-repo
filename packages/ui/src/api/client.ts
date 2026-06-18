@@ -37,6 +37,13 @@ export interface ApiClientOptions {
   getOperatorToken?: () => string | null | undefined;
   /** returns the admin (custody) session bearer token, if logged in */
   getAdminToken?: () => string | null | undefined;
+  /**
+   * Invoked when a request that carried a stored token gets a 401. The backends use an in-memory
+   * session store, so a backend restart silently invalidates the persisted token; the host should
+   * CLEAR the matching token and route the user back to the relevant login step. Only fired for the
+   * "operator"/"admin" token kinds (not record-JWT bearer or unauthenticated calls).
+   */
+  onUnauthorized?: (kind: "operator" | "admin") => void;
 }
 
 type TokenKind = "operator" | "admin" | "bearer" | "none";
@@ -82,7 +89,15 @@ export function createApiClient(opts: ApiClientOptions) {
 
     const text = await res.text();
     const parsed: unknown = text ? safeJson(text) : null;
-    if (!res.ok) throw makeError(res.status, parsed);
+    if (!res.ok) {
+      // Stale-session handling: a 401 on a token-bearing call means the persisted session was
+      // invalidated (e.g. the backend restarted its in-memory session store). Clear it so the UI
+      // routes back to login instead of replaying a dead token.
+      if (res.status === 401 && (tokenKind === "operator" || tokenKind === "admin") && !explicitToken) {
+        opts.onUnauthorized?.(tokenKind);
+      }
+      throw makeError(res.status, parsed);
+    }
     return parsed as T;
   }
 

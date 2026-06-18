@@ -14,13 +14,13 @@ const PURPOSES: VerifyPurpose[] = [
   {
     value: "grooming_intake",
     label: "Grooming intake — rabies status",
-    recordType: "RabiesVaccinationCertificate",
+    recordType: "VACCINATION",
     sensitive: false,
   },
   {
     value: "boarding_intake",
     label: "Boarding intake — vaccination",
-    recordType: "RabiesVaccinationCertificate",
+    recordType: "VACCINATION",
     sensitive: true,
   },
   {

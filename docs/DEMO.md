@@ -17,6 +17,10 @@ scripts/demo-up.sh        # builds + starts admin/vet/groomer backends + the 3 p
 ```
 Backends use the in-memory store (no Mongo needed); a restart means re-genesis.
 
+> **Just want the buttons?** See **[DEMO_CLICKS.md](./DEMO_CLICKS.md)** — the exact, literal
+> click-through (every form is prefilled by demo buttons; passwords are prefilled; type nothing).
+> It also covers the stale-session recovery if you restart a backend mid-demo.
+
 ## 1. Stand up the vet's signer (one-time)
 1. Open the **vet portal** (:41873) → **Setup wizard**: log in (operator password `operator`), run
    **Genesis** (it shows 24 words → confirm the challenge words → set a passphrase → Unlock). The

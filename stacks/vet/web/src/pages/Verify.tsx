@@ -2,8 +2,8 @@ import { VerifyFlow, type VerifyPurpose } from "@dogtag/ui";
 import { useApp } from "../app/AppContext";
 
 const PURPOSES: VerifyPurpose[] = [
-  { value: "boarding_intake", label: "Boarding intake — rabies status", recordType: "RabiesVaccinationCertificate", sensitive: false },
-  { value: "travel_check", label: "Travel check — vaccination", recordType: "RabiesVaccinationCertificate", sensitive: true },
+  { value: "boarding_intake", label: "Boarding intake — rabies status", recordType: "VACCINATION", sensitive: false },
+  { value: "travel_check", label: "Travel check — vaccination", recordType: "VACCINATION", sensitive: true },
   { value: "service_dog_access", label: "Service-dog access", recordType: "SERVICE_ATTESTATION", sensitive: true },
 ];
 
