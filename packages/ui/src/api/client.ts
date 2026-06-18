@@ -25,6 +25,7 @@ import type {
   VerifyConsentSubmitResp,
   VerifySessionStartReq,
   VerifySessionStartResp,
+  VerifySessionStatusResp,
 } from "./types";
 
 export interface ApiClientOptions {
@@ -134,6 +135,9 @@ export function createApiClient(opts: ApiClientOptions) {
     // ---- verify ----
     verifySessionStart: (body: VerifySessionStartReq) =>
       request<VerifySessionStartResp>("POST", "/verify/session/start", body),
+    /** GET /verify/session/{id} — operator-gated status poll (pending → recorded). */
+    verifySessionStatus: (id: string) =>
+      request<VerifySessionStatusResp>("GET", `/verify/session/${id}`),
     verifyConsentSubmit: (body: VerifyConsentSubmitReq) =>
       request<VerifyConsentSubmitResp>("POST", "/verify/consent/submit", body),
 

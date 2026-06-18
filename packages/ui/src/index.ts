@@ -62,6 +62,13 @@ export {
   explorerAddressUrl,
 } from "./wallet/chain";
 export { createWalletConfig, roaxNetwork, type WalletConfigOptions } from "./wallet/config";
+export {
+  DEPLOYED_ADDRESSES,
+  recordTypeKey,
+  roaxPublicClient,
+  isWhitelistedFor,
+  isRootValid,
+} from "./wallet/contracts";
 export { WalletProvider } from "./wallet/WalletProvider";
 export { WalletButton, shortAddress } from "./wallet/WalletButton";
 export { useRoaxChain, type UseRoaxChainResult } from "./wallet/useRoaxChain";
@@ -70,6 +77,10 @@ export { useRoaxChain, type UseRoaxChainResult } from "./wallet/useRoaxChain";
 export { SigningModeToggle, type SigningModeToggleProps } from "./domain/SigningModeToggle";
 export { StatusPanel, formatPlasma, type StatusPanelProps } from "./domain/StatusPanel";
 export { VerifyFlow, type VerifyFlowProps, type VerifyPurpose } from "./domain/VerifyFlow";
+export {
+  IssuanceStatusPanel,
+  type IssuanceStatusPanelProps,
+} from "./domain/IssuanceStatusPanel";
 
 // api
 export { createApiClient, type ApiClient, type ApiClientOptions } from "./api/client";
@@ -92,3 +103,13 @@ export {
   type FieldKind,
   type RecordTypeSchema,
 } from "./schema/recordTypes";
+export {
+  isoDate,
+  demoRabiesIssue,
+  DEMO_BUSINESS_VET,
+  DEMO_BUSINESS_GROOMER,
+  DEMO_ISSUER_APPLICATION_VET,
+  DEMO_ISSUER_APPLICATION_GROOMER,
+  type DemoBusiness,
+  type DemoIssuerApplication,
+} from "./schema/demoData";

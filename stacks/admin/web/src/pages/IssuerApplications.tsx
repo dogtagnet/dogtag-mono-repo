@@ -6,14 +6,24 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
   Spinner,
   explorerTxUrl,
   useToast,
+  DEMO_ISSUER_APPLICATION_GROOMER,
+  DEMO_ISSUER_APPLICATION_VET,
+  type DemoIssuerApplication,
   type IssuerApplicationListItem,
   type IssuerApplicationStatus,
 } from "@dogtag/ui";
-import { Check, ListChecks, Slash, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Check, ListChecks, Plus, Slash, Sparkles, X } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
 import { shortAddr } from "../lib/format";
 
@@ -36,6 +46,7 @@ export function IssuerApplications() {
   const [apps, setApps] = useState<IssuerApplicationListItem[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [txs, setTxs] = useState<Record<string, string[]>>({});
+  const [createOpen, setCreateOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -99,15 +110,25 @@ export function IssuerApplications() {
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ListChecks className="h-5 w-5 text-primary" /> Issuer applications
-        </CardTitle>
-        <CardDescription>
-          Approve triggers on-chain <code>whitelistFor(keccak256(recordType), address)</code> for every
-          (address × recordType) pair, after DNS-TXT + accreditation checks.
-        </CardDescription>
+      <CardHeader className="flex flex-row items-start justify-between gap-4">
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <ListChecks className="h-5 w-5 text-primary" /> Issuer applications
+          </CardTitle>
+          <CardDescription>
+            Approve triggers on-chain <code>whitelistFor(keccak256(recordType), address)</code> for every
+            (address × recordType) pair, after DNS-TXT + accreditation checks.
+          </CardDescription>
+        </div>
+        <Button onClick={() => setCreateOpen(true)}>
+          <Plus className="h-4 w-4" /> Submit application
+        </Button>
       </CardHeader>
+      <CreateApplicationDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={() => void load()}
+      />
       <CardContent className="space-y-4">
         {apps === null ? (
           <div className="flex justify-center py-8">
@@ -202,5 +223,97 @@ export function IssuerApplications() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function CreateApplicationDialog({
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  onCreated: () => void;
+}) {
+  const { central } = useApp();
+  const { toast } = useToast();
+  const [form, setForm] = useState<DemoIssuerApplication>({ ...DEMO_ISSUER_APPLICATION_VET });
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await central.createApplication({
+        issuerEntityId: form.issuerEntityId,
+        addresses: form.addresses.split(",").map((s) => s.trim()).filter(Boolean),
+        recordTypes: form.recordTypes.split(",").map((s) => s.trim()).filter(Boolean),
+        domain: form.domain,
+        documentStore: form.documentStore,
+        usdaNan: form.usdaNan.trim() || undefined,
+      });
+      toast({ title: "Application submitted", description: `pending — ${r.applicationId.slice(0, 8)}…`, variant: "success" });
+      onOpenChange(false);
+      onCreated();
+    } catch (err) {
+      toast({ title: "Submit failed", description: (err as Error).message, variant: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Submit issuer application</DialogTitle>
+          <DialogDescription>
+            Multi-address × multi-recordType. Approving later whitelists each pair on-chain.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_VET })}>
+            <Sparkles className="h-4 w-4" /> Demo (vet)
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...DEMO_ISSUER_APPLICATION_GROOMER })}>
+            <Sparkles className="h-4 w-4" /> Demo (groomer)
+          </Button>
+        </div>
+        <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+          <AppField label="Issuer entity id" value={form.issuerEntityId} onChange={(v) => setForm({ ...form, issuerEntityId: v })} required />
+          <AppField label="Domain" value={form.domain} onChange={(v) => setForm({ ...form, domain: v })} required />
+          <AppField label="Addresses (comma)" value={form.addresses} onChange={(v) => setForm({ ...form, addresses: v })} required />
+          <AppField label="Record types (comma)" value={form.recordTypes} onChange={(v) => setForm({ ...form, recordTypes: v })} required />
+          <AppField label="Document store" value={form.documentStore} onChange={(v) => setForm({ ...form, documentStore: v })} required />
+          <AppField label="USDA NAN (optional)" value={form.usdaNan} onChange={(v) => setForm({ ...form, usdaNan: v })} placeholder="6 digits" />
+          <div className="sm:col-span-2">
+            <Button type="submit" loading={busy}>
+              Submit application
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AppField({
+  label,
+  value,
+  onChange,
+  required,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  required?: boolean;
+  placeholder?: string;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label required={required}>{label}</Label>
+      <Input value={value} onChange={(e) => onChange(e.target.value)} required={required} placeholder={placeholder} />
+    </div>
   );
 }

@@ -3,6 +3,7 @@ import {
   LayoutDashboard,
   ListChecks,
   LogOut,
+  Rocket,
   ShieldCheck,
   Building2,
 } from "lucide-react";
@@ -12,6 +13,7 @@ import { useApp } from "./AppContext";
 
 const NAV: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { key: "onboard", href: "/onboard", label: "Onboard issuer", icon: Rocket },
   { key: "businesses", href: "/businesses", label: "Business registry", icon: Building2 },
   { key: "applications", href: "/applications", label: "Issuer applications", icon: ListChecks },
   { key: "whitelist", href: "/whitelist", label: "Whitelist viewer", icon: ShieldCheck },

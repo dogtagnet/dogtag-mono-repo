@@ -6,6 +6,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Businesses } from "./pages/Businesses";
 import { IssuerApplications } from "./pages/IssuerApplications";
 import { Whitelist } from "./pages/Whitelist";
+import { Wizard } from "./pages/Wizard";
 
 export function App() {
   const { adminToken } = useApp();
@@ -15,6 +16,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/dashboard" element={<Layout title="Dashboard"><Dashboard /></Layout>} />
+      <Route path="/onboard" element={<Layout title="Onboard issuer"><Wizard /></Layout>} />
       <Route path="/businesses" element={<Layout title="Business registry"><Businesses /></Layout>} />
       <Route
         path="/applications"

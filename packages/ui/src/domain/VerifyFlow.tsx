@@ -1,4 +1,4 @@
-import { CheckCircle2, Lock, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Lock, ShieldCheck, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api/client";
 import type { VerifyMode } from "../api/types";
@@ -36,6 +36,11 @@ export interface VerifyFlowProps {
    */
   pollSession?: (sessionId: string) => Promise<{ status: string; txHash?: string }>;
   pollIntervalMs?: number;
+  /**
+   * When true, shows a "Fill sample" demo button that selects a sensible non-sensitive purpose +
+   * Normal mode so a non-technical operator can one-click prepare the verify session. Defaults true.
+   */
+  showDemo?: boolean;
 }
 
 type Phase = "idle" | "starting" | "awaiting" | "verified" | "error";
@@ -45,7 +50,13 @@ type Phase = "idle" | "starting" | "awaiting" | "verified" | "error";
  * pick purpose + Normal/ZK toggle → POST /verify/session/start → render QR → poll session →
  * show on-chain status (pending → Verified + explorer link). ZK shows the privacy note.
  */
-export function VerifyFlow({ client, purposes, pollSession, pollIntervalMs = 3000 }: VerifyFlowProps) {
+export function VerifyFlow({
+  client,
+  purposes,
+  pollSession,
+  pollIntervalMs = 3000,
+  showDemo = true,
+}: VerifyFlowProps) {
   const [purpose, setPurpose] = useState<string>(purposes[0]?.value ?? "");
   const selected = purposes.find((p) => p.value === purpose);
   const [mode, setMode] = useState<VerifyMode>(selected?.sensitive === false ? "normal" : "zk");
@@ -106,6 +117,14 @@ export function VerifyFlow({ client, purposes, pollSession, pollIntervalMs = 300
         /* keep polling; transient errors are non-fatal */
       }
     }, pollIntervalMs);
+  }
+
+  function fillSample() {
+    const preset = purposes.find((p) => p.sensitive === false) ?? purposes[0];
+    if (!preset) return;
+    setPurpose(preset.value);
+    setMode(preset.sensitive === false ? "normal" : "zk");
+    setError(null);
   }
 
   function reset() {
@@ -181,9 +200,16 @@ export function VerifyFlow({ client, purposes, pollSession, pollIntervalMs = 300
 
             {error && <p className="text-sm text-danger">{error}</p>}
 
-            <Button onClick={() => void start()} loading={phase === "starting"} disabled={!selected}>
-              Start verification
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={() => void start()} loading={phase === "starting"} disabled={!selected}>
+                Start verification
+              </Button>
+              {showDemo && (
+                <Button type="button" variant="outline" onClick={fillSample}>
+                  <Sparkles className="h-4 w-4" /> Fill sample
+                </Button>
+              )}
+            </div>
           </>
         ) : null}
 

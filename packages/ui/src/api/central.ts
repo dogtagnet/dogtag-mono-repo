@@ -5,6 +5,8 @@ import type {
   BusinessesQuery,
   BusinessesResp,
   DelistApplicationResp,
+  IssuerApplicationReq,
+  IssuerApplicationResp,
   IssuerApplicationsResp,
   RegisterBusinessReq,
   RegisterBusinessResp,
@@ -93,6 +95,9 @@ export function createCentralClient(opts: CentralClientOptions) {
       request<RegisterBusinessResp>("POST", "/v1/businesses", body),
 
     // ---- issuer applications queue (§4.3) ----
+    /** POST /v1/issuer-applications — create an application (public; no auth required). */
+    createApplication: (body: IssuerApplicationReq) =>
+      request<IssuerApplicationResp>("POST", "/v1/issuer-applications", body, "none"),
     listApplications: () =>
       request<IssuerApplicationsResp>("GET", "/v1/issuer-applications"),
     approveApplication: (id: string) =>

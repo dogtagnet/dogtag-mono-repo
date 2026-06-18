@@ -137,6 +137,13 @@ export interface VerifyConsentSubmitResp {
   txHash?: string;
   mode?: VerifyMode;
 }
+/** GET /verify/session/{id} — operator-gated status read used by VerifyFlow's poller. */
+export interface VerifySessionStatusResp {
+  status: string;
+  mode?: VerifyMode;
+  txHash?: string | null;
+  nullifier?: string | null;
+}
 
 // ---- central: issuer applications (admin/api §4.3) ----
 export interface CentralLicense {

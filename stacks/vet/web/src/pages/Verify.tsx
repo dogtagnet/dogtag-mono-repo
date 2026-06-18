@@ -9,11 +9,17 @@ const PURPOSES: VerifyPurpose[] = [
 
 export function Verify() {
   const { api } = useApp();
-  // routes.rs exposes no GET session-status endpoint; VerifyFlow polls only if a poller is given.
-  // Omitted here → the QR + awaiting-consent state is shown; status advances when a poller is wired.
+  // Poll GET /verify/session/{id}; status flips pending → recorded once the owner consent is on chain.
   return (
     <div className="space-y-4">
-      <VerifyFlow client={api} purposes={PURPOSES} />
+      <VerifyFlow
+        client={api}
+        purposes={PURPOSES}
+        pollSession={async (id) => {
+          const s = await api.verifySessionStatus(id);
+          return { status: s.status, txHash: s.txHash ?? undefined };
+        }}
+      />
     </div>
   );
 }
