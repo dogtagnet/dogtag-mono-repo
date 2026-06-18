@@ -13,6 +13,7 @@ use tower::ServiceExt;
 
 use vet_api::app::{AppState, Config};
 use vet_api::auth::JwtKeys;
+use vet_api::calendar::{CalendarProvider, CentralClient, MockCalendar, MockCentralClient};
 use vet_api::chain::ChainClient;
 use vet_api::custody::Custody;
 use vet_api::prover::{ProverClient, StubProver};
@@ -20,6 +21,8 @@ use vet_api::store::MemStore;
 
 pub const OPERATOR_PW: &str = "op-pw";
 pub const ADMIN_PW: &str = "admin-pw";
+pub const CENTRAL_HMAC_SECRET: &str = "central-shared-secret";
+pub const BUSINESS_ID: &str = "biz-test";
 
 /// Build an AppState with the given chain client + issuer/registry addresses.
 pub fn state_with(
@@ -43,11 +46,15 @@ pub fn state_with(
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
         confirmations,
+        business_id: BUSINESS_ID.to_string(),
+        central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
     };
     AppState {
         store: Arc::new(MemStore::new()),
         chain,
         prover: Arc::new(StubProver),
+        calendar: Arc::new(MockCalendar::new()),
+        central: Arc::new(MockCentralClient::new()),
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
@@ -79,15 +86,57 @@ pub fn state_with_verify(
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
         confirmations,
+        business_id: BUSINESS_ID.to_string(),
+        central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
     };
     AppState {
         store: Arc::new(MemStore::new()),
         chain,
         prover,
+        calendar: Arc::new(MockCalendar::new()),
+        central: Arc::new(MockCentralClient::new()),
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
     }
+}
+
+/// Build a Phase-7 AppState wired with the supplied `MockCalendar` + `MockCentralClient` so a test
+/// can program list responses, inspect the mirror, and assert appointment-event callbacks.
+pub fn state_for_calendar(calendar: Arc<MockCalendar>, central: Arc<MockCentralClient>) -> AppState {
+    let mut issuer_addrs = HashMap::new();
+    issuer_addrs.insert("VACCINATION".to_string(), "0x00000000000000000000000000000000000000bb".to_string());
+    let cfg = Config {
+        deployment_url: "http://localhost:41874".to_string(),
+        rpc_url: "memchain".to_string(),
+        issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
+        verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
+        issuer_addrs,
+        issuer_name: "DogTag Vet".to_string(),
+        issuer_domain: "vet.example".to_string(),
+        operator_password: OPERATOR_PW.to_string(),
+        admin_password: ADMIN_PW.to_string(),
+        confirmations: 1,
+        business_id: BUSINESS_ID.to_string(),
+        central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
+    };
+    AppState {
+        store: Arc::new(MemStore::new()),
+        chain: Arc::new(vet_api::chain::MemChain::new()),
+        prover: Arc::new(StubProver),
+        calendar: calendar as Arc<dyn CalendarProvider>,
+        central: central as Arc<dyn CentralClient>,
+        custody: Custody::new(),
+        jwt: JwtKeys::generate(),
+        cfg: Arc::new(cfg),
+    }
+}
+
+/// Mint an operator session token directly in the store (skips the password login round-trip).
+pub async fn mint_operator(state: &AppState) -> String {
+    let token = vet_api::auth::new_op_token();
+    state.store.put_op_session(token.clone()).await;
+    token
 }
 
 /// Issue a request and return (status, json body).

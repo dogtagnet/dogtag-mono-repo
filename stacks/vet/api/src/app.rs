@@ -6,6 +6,7 @@ use dogtag_standard::wrap::{wrap_document, IssuerMeta, WrappedDoc};
 use serde_json::Value;
 
 use crate::auth::JwtKeys;
+use crate::calendar::{CalendarProvider, CentralClient};
 use crate::chain::{record_type_key, ChainClient};
 use crate::custody::Custody;
 use crate::prover::ProverClient;
@@ -28,6 +29,10 @@ pub struct Config {
     pub admin_password: String,
     /// confirmations to wait at confirm time (low for tests).
     pub confirmations: u64,
+    /// this business's id (assigned by central registration) — used in the appointment contract.
+    pub business_id: String,
+    /// shared HMAC secret with central (verifies inbound PUTs; signs outbound appointment-events).
+    pub central_hmac_secret: String,
 }
 
 impl Config {
@@ -42,6 +47,10 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub chain: Arc<dyn ChainClient>,
     pub prover: Arc<dyn ProverClient>,
+    /// Google Calendar provider (real `GoogleCalendar` in prod, `MockCalendar` in tests).
+    pub calendar: Arc<dyn CalendarProvider>,
+    /// the appointment-events callback to central (real `ReqwestCentralClient` / mock in tests).
+    pub central: Arc<dyn CentralClient>,
     pub custody: Custody,
     pub jwt: JwtKeys,
     pub cfg: Arc<Config>,

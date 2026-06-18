@@ -13,11 +13,13 @@
 
 pub mod app;
 pub mod auth;
+pub mod calendar;
 pub mod chain;
 pub mod custody;
 pub mod prover;
 pub mod routes;
 pub mod store;
+pub mod sync;
 pub mod verify;
 
 #[cfg(feature = "mongo")]

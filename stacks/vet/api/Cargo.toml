@@ -57,6 +57,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 mongodb = { version = "3", optional = true }
 futures = "0.3"
 
+# calendar sync (Phase 7): HMAC for cross-backend appointment contract + URL building for OAuth consent.
+hmac = "0.12"
+sha2 = "0.10"
+url = "2"
+
 [features]
 default = []
 mongo = ["dep:mongodb"]

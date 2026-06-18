@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use vet_api::app::{AppState, Config};
 use vet_api::auth::JwtKeys;
+use vet_api::calendar::{CalendarProvider, CentralClient, GoogleCalendar, ReqwestCentralClient};
 use vet_api::chain::AlloyChain;
 use vet_api::custody::Custody;
 use vet_api::prover::{ArkProver, ProverClient, StubProver};
@@ -45,9 +46,24 @@ async fn main() {
         operator_password: env("OPERATOR_PASSWORD", "operator-dev-password"),
         admin_password: env("ADMIN_PASSWORD", "admin-dev-password"),
         confirmations: env("CONFIRMATIONS", "1").parse().unwrap_or(1),
+        business_id: env("BUSINESS_ID", "biz-local"),
+        central_hmac_secret: env("CENTRAL_HMAC_SECRET", "dev-central-hmac-secret"),
     };
 
     let chain = AlloyChain::new(rpc_url);
+
+    // Google Calendar provider (real reqwest impl; UNtested against live Google without OAuth creds).
+    let calendar: Arc<dyn CalendarProvider> = Arc::new(GoogleCalendar::new(
+        env("GOOGLE_CLIENT_ID", ""),
+        env("GOOGLE_CLIENT_SECRET", ""),
+        env("GOOGLE_REDIRECT_URI", &format!("http://localhost:{PORT}/calendar/google/callback")),
+        env("GOOGLE_CALENDAR_ID", "primary"),
+    ));
+    // central appointment-events callback (HMAC-signed).
+    let central: Arc<dyn CentralClient> = Arc::new(ReqwestCentralClient::new(
+        env("CENTRAL_BASE_URL", "http://localhost:39742"),
+        cfg.central_hmac_secret.clone(),
+    ));
 
     // Choose the prover: if CIRCUITS_BUILD_DIR points at a circuits `build` dir, load the REAL
     // ark-circom Groth16 prover; otherwise fall back to the StubProver (ZK control-flow only).
@@ -69,6 +85,8 @@ async fn main() {
         store: Arc::new(MemStore::new()),
         chain: Arc::new(chain),
         prover,
+        calendar,
+        central,
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),

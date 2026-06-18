@@ -8,7 +8,8 @@ use mongodb::options::IndexOptions;
 use mongodb::{Client, Collection, Database, IndexModel};
 
 use crate::store::{
-    CustodyBlob, IssuerSettings, KeystoreMeta, Record, Store, VerifySession,
+    ApptReplica, CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, KeystoreMeta, Record,
+    Store, VerifySession,
 };
 
 pub struct MongoStore {
@@ -145,6 +146,84 @@ impl Store for MongoStore {
         let coll: Collection<Document> = self.db.collection("client_cache");
         let d = coll.find_one(doc! { "dog_tag_id": dog_tag_id }).await.ok().flatten()?;
         d.get("doc").and_then(|b| mongodb::bson::from_bson(b.clone()).ok())
+    }
+
+    // ---- appointment replica (Phase 7) ----
+    async fn get_appt(&self, id: &str) -> Option<ApptReplica> {
+        let coll: Collection<ApptReplica> = self.db.collection("appt_replica");
+        coll.find_one(doc! { "appointment_id": id }).await.ok().flatten()
+    }
+    async fn put_appt(&self, a: ApptReplica) {
+        let coll: Collection<ApptReplica> = self.db.collection("appt_replica");
+        let _ = coll
+            .replace_one(doc! { "appointment_id": &a.appointment_id }, &a)
+            .upsert(true)
+            .await;
+    }
+    async fn appts_updated_since(&self, since: u64) -> Vec<ApptReplica> {
+        let coll: Collection<ApptReplica> = self.db.collection("appt_replica");
+        let mut out = Vec::new();
+        if let Ok(mut cur) = coll.find(doc! { "updatedAt": { "$gte": since as i64 } }).await {
+            use futures::StreamExt;
+            while let Some(Ok(a)) = cur.next().await {
+                out.push(a);
+            }
+        }
+        out
+    }
+    async fn record_idempotency_key(&self, key: &str) -> bool {
+        // unique index gives atomic insert-or-fail (mirrors consume_jti).
+        let coll: Collection<Document> = self.db.collection("idempotency_keys");
+        let idx = IndexModel::builder()
+            .keys(doc! { "key": 1 })
+            .options(IndexOptions::builder().unique(true).build())
+            .build();
+        let _ = coll.create_index(idx).await;
+        coll.insert_one(doc! { "key": key }).await.is_ok()
+    }
+
+    // ---- gcal mapping + sync state ----
+    async fn put_gcal_map(&self, m: GcalEventMap) {
+        let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
+        let _ = coll
+            .replace_one(doc! { "google_event_id": &m.google_event_id }, &m)
+            .upsert(true)
+            .await;
+    }
+    async fn get_gcal_map_by_appt(&self, appointment_id: &str) -> Option<GcalEventMap> {
+        let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
+        coll.find_one(doc! { "appointment_id": appointment_id }).await.ok().flatten()
+    }
+    async fn get_gcal_map_by_event(&self, google_event_id: &str) -> Option<GcalEventMap> {
+        let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
+        coll.find_one(doc! { "google_event_id": google_event_id }).await.ok().flatten()
+    }
+    async fn all_gcal_maps(&self) -> Vec<GcalEventMap> {
+        let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
+        let mut out = Vec::new();
+        if let Ok(mut cur) = coll.find(doc! {}).await {
+            use futures::StreamExt;
+            while let Some(Ok(m)) = cur.next().await {
+                out.push(m);
+            }
+        }
+        out
+    }
+    async fn delete_gcal_map_by_event(&self, google_event_id: &str) {
+        let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
+        let _ = coll.delete_one(doc! { "google_event_id": google_event_id }).await;
+    }
+    async fn wipe_gcal_mirror(&self) {
+        let coll: Collection<Document> = self.db.collection("gcal_event_map");
+        let _ = coll.delete_many(doc! {}).await;
+    }
+    async fn get_sync_state(&self) -> GcalSyncState {
+        let coll: Collection<GcalSyncState> = self.db.collection("gcal_sync_state");
+        coll.find_one(doc! { "_id": "singleton" }).await.ok().flatten().unwrap_or_default()
+    }
+    async fn put_sync_state(&self, s: GcalSyncState) {
+        let coll: Collection<GcalSyncState> = self.db.collection("gcal_sync_state");
+        let _ = coll.replace_one(doc! { "_id": "singleton" }, &s).upsert(true).await;
     }
 }
 

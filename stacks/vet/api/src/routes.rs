@@ -17,9 +17,10 @@
 //!     POST /admin/genesis/start | /admin/genesis/confirm | /admin/unlock | /admin/accounts
 
 use axum::{
-    extract::{Path, State},
+    body::Bytes,
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -27,7 +28,7 @@ use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
 use crate::auth::{self, ShareClaims, VerifyClaims};
-use crate::store::{IssuerSettings, Record, RecordStatus, VerifySession};
+use crate::store::{ApptReplica, IssuerSettings, Record, RecordStatus, VerifySession};
 
 type Resp = (StatusCode, Json<Value>);
 
@@ -716,6 +717,306 @@ async fn verify_consent_submit(
 }
 
 // --------------------------------------------------------------------------------------------
+// Google Calendar sync (impl §3.6 / §8.1) — operator-session gated.
+// --------------------------------------------------------------------------------------------
+
+/// GET /calendar/google/connect -> the OAuth 2.0 consent URL (access_type=offline + prompt=consent,
+/// scope calendar.events). Operator-session gated.
+async fn google_connect(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    // CSRF state ties the callback back to this deployment.
+    let state = uuid::Uuid::new_v4().to_string();
+    let url = st.calendar.consent_url(&state);
+    ok(json!({ "consentUrl": url, "state": state }))
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+}
+
+/// GET /calendar/google/callback?code= -> exchange the code for tokens; store the refresh token via
+/// the Store (opaque/encrypted at rest). Operator-session gated.
+async fn google_callback(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CallbackQuery>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let code = match q.code {
+        Some(c) if !c.is_empty() => c,
+        _ => return err(StatusCode::BAD_REQUEST, "missing code"),
+    };
+    match st.calendar.exchange_code(&code).await {
+        Ok(refresh_token) => {
+            st.store_refresh_token(refresh_token).await;
+            // best-effort: stand up the watch channel on first connect.
+            let _ = crate::sync::renew_watch_if_due(&st, auth::now()).await;
+            ok(json!({ "connected": true, "state": q.state }))
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, &format!("token exchange: {e}")),
+    }
+}
+
+/// POST /calendar/sync -> run an incremental sync pass (410 -> wipe + full resync). Operator gated.
+async fn calendar_sync(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let r = crate::sync::run_sync(&st).await;
+    ok(json!({
+        "echoesSkipped": r.echoes_skipped,
+        "busyBlocks": r.busy_blocks,
+        "humanEdits": r.human_edits,
+        "reconciled": r.reconciled,
+        "fullResync": r.full_resync,
+    }))
+}
+
+// --------------------------------------------------------------------------------------------
+// Appointment replica — business side (impl §3.7 / §8.3). Inbound from central: HMAC + Idempotency.
+// --------------------------------------------------------------------------------------------
+
+/// Verify the inbound cross-backend HMAC (METHOD\nPATH\nBODY) with the shared central secret, and the
+/// Idempotency-Key (replay-dedup). Returns the parsed body on success, or an error Resp.
+async fn verify_central_inbound(
+    st: &AppState,
+    method: &str,
+    path: &str,
+    headers: &HeaderMap,
+    raw: &Bytes,
+) -> Result<Value, Resp> {
+    let sig = headers
+        .get("X-DogTag-HMAC")
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing HMAC"))?;
+    if !auth::hmac_verify(&st.cfg.central_hmac_secret, method, path, raw, sig) {
+        return Err(err(StatusCode::UNAUTHORIZED, "bad HMAC"));
+    }
+    // Idempotency-Key: dedupe replays (atomic record).
+    if let Some(key) = headers.get("Idempotency-Key").and_then(|h| h.to_str().ok()) {
+        if !st.store.record_idempotency_key(key).await {
+            // already processed: idempotent noop with the current replica state.
+            return Err(idempotent_replay(st, raw).await);
+        }
+    }
+    serde_json::from_slice(raw).map_err(|e| err(StatusCode::BAD_REQUEST, &format!("bad json: {e}")))
+}
+
+/// Build a 200 idempotent-replay response from the stored replica (Idempotency-Key already seen).
+async fn idempotent_replay(st: &AppState, raw: &Bytes) -> Resp {
+    let id = serde_json::from_slice::<Value>(raw)
+        .ok()
+        .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()));
+    if let Some(id) = id {
+        if let Some(a) = st.store.get_appt(&id).await {
+            return ok(appt_json(&a));
+        }
+    }
+    ok(json!({ "idempotent": true }))
+}
+
+fn appt_json(a: &ApptReplica) -> Value {
+    json!({
+        "id": a.appointment_id, "businessId": a.business_id, "dogTagId": a.dog_tag_id,
+        "slot": a.slot, "rev": a.rev, "state": a.state, "updatedAt": a.updated_at,
+    })
+}
+
+fn is_terminal(state: &str) -> bool {
+    matches!(state, "DECLINED" | "CANCELLED" | "COMPLETED" | "NO_SHOW")
+}
+
+/// Core idempotent upsert keyed by appointmentId + central-assigned rev. Apply-if-rev-newer; a
+/// strictly-older rev is `409 stale_rev`; terminal states win over a later CONFIRMED with older rev.
+async fn upsert_replica(st: &AppState, incoming: ApptReplica) -> Resp {
+    if let Some(existing) = st.store.get_appt(&incoming.appointment_id).await {
+        // apply-if-newer: an OLDER rev is stale.
+        if incoming.rev < existing.rev {
+            return err(StatusCode::CONFLICT, "stale_rev");
+        }
+        // same rev -> idempotent noop.
+        if incoming.rev == existing.rev {
+            return ok(appt_json(&existing));
+        }
+        // terminal wins: never move OUT of a terminal state even if a newer rev arrives.
+        if is_terminal(&existing.state) && !is_terminal(&incoming.state) {
+            return ok(appt_json(&existing));
+        }
+    }
+    st.store.put_appt(incoming.clone()).await;
+    // mirror the platform appointment to Google (tagged + store etag for echo recognition).
+    crate::sync::mirror_to_google(st, &incoming).await;
+    ok(appt_json(&incoming))
+}
+
+/// PUT /v1/appointments/{id} — from central; Idempotency-Key + HMAC verify; idempotent replica upsert.
+async fn put_appointment(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    raw: Bytes,
+) -> Resp {
+    let path = format!("/v1/appointments/{id}");
+    let body = match verify_central_inbound(&st, "PUT", &path, &headers, &raw).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let now = auth::now();
+    let mut incoming = match crate::sync::replica_from_json(&body, now) {
+        Some(a) => a,
+        None => return err(StatusCode::BAD_REQUEST, "malformed appointment body"),
+    };
+    // path id is authoritative.
+    incoming.appointment_id = id;
+    upsert_replica(&st, incoming).await
+}
+
+/// POST /v1/appointments/{id}/cancel — terminal transition from central (terminal wins).
+async fn cancel_appointment(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    raw: Bytes,
+) -> Resp {
+    let path = format!("/v1/appointments/{id}/cancel");
+    let body = match verify_central_inbound(&st, "POST", &path, &headers, &raw).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    apply_central_transition(&st, &id, &body, "CANCELLED").await
+}
+
+/// POST /v1/appointments/{id}/reschedule — slot change at a newer rev from central.
+async fn reschedule_appointment(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    raw: Bytes,
+) -> Resp {
+    let path = format!("/v1/appointments/{id}/reschedule");
+    let body = match verify_central_inbound(&st, "POST", &path, &headers, &raw).await {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    apply_central_transition(&st, &id, &body, "REQUESTED").await
+}
+
+/// Apply a central-driven transition (cancel/reschedule) carrying a `rev` + optional `slot`/`state`.
+async fn apply_central_transition(st: &AppState, id: &str, body: &Value, default_state: &str) -> Resp {
+    let rev = match body.get("rev").and_then(|v| v.as_u64()) {
+        Some(r) => r,
+        None => return err(StatusCode::BAD_REQUEST, "rev required"),
+    };
+    let now = auth::now();
+    let existing = st.store.get_appt(id).await;
+    let (business_id, dog_tag_id, slot, state) = match &existing {
+        Some(e) => (
+            e.business_id.clone(),
+            e.dog_tag_id.clone(),
+            body.get("slot").and_then(|v| v.as_str()).unwrap_or(&e.slot).to_string(),
+            body.get("state").and_then(|v| v.as_str()).unwrap_or(default_state).to_string(),
+        ),
+        None => (
+            body.get("businessId").and_then(|v| v.as_str()).unwrap_or(&st.cfg.business_id).to_string(),
+            body.get("dogTagId").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            body.get("slot").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            body.get("state").and_then(|v| v.as_str()).unwrap_or(default_state).to_string(),
+        ),
+    };
+    let incoming = ApptReplica {
+        appointment_id: id.to_string(),
+        business_id,
+        dog_tag_id,
+        slot,
+        rev,
+        state,
+        updated_at: now,
+    };
+    upsert_replica(st, incoming).await
+}
+
+#[derive(Deserialize)]
+struct ApptListQuery {
+    #[serde(rename = "updatedSince", default)]
+    updated_since: Option<u64>,
+}
+
+/// GET /v1/appointments?updatedSince= — catch-up pull (operator gated).
+async fn list_appointments(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ApptListQuery>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let since = q.updated_since.unwrap_or(0);
+    let appts: Vec<Value> = st.store.appts_updated_since(since).await.iter().map(appt_json).collect();
+    ok(json!({ "appointments": appts }))
+}
+
+#[derive(Deserialize)]
+struct StaffActionReq {
+    event: String, // CONFIRMED | DECLINED | COMPLETED | NO_SHOW
+}
+
+/// POST /v1/appointments/{id}/staff-action — a business-driven transition. The business NEVER assigns
+/// rev; it POSTs {appointmentId, lastRev, event, occurredAt} to central (HMAC-signed) and applies the
+/// central-allocated rev back to the replica. Operator-session gated.
+async fn staff_action(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<StaffActionReq>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let appt = match st.store.get_appt(&id).await {
+        Some(a) => a,
+        None => return err(StatusCode::NOT_FOUND, "appointment not found"),
+    };
+    // ownership binding (C-2): this business may only drive transitions on ITS OWN appointments.
+    if appt.business_id != st.cfg.business_id {
+        return err(StatusCode::FORBIDDEN, "appointment not owned by business");
+    }
+    // validate the event is an allowed business-driven transition.
+    if !matches!(body.event.as_str(), "CONFIRMED" | "DECLINED" | "COMPLETED" | "NO_SHOW") {
+        return err(StatusCode::BAD_REQUEST, "invalid staff event");
+    }
+    let now = auth::now();
+    // POST to central; central is the SOLE rev allocator -> we send lastRev, receive the new rev.
+    match st
+        .central
+        .post_appointment_event(&appt.business_id, &id, appt.rev, &body.event, now)
+        .await
+    {
+        Ok(ack) => {
+            // apply the central-allocated rev + (terminal-aware) state back to the replica.
+            let mut updated = appt.clone();
+            updated.rev = ack.rev;
+            updated.state = ack.state;
+            updated.updated_at = now;
+            st.store.put_appt(updated.clone()).await;
+            crate::sync::mirror_to_google(&st, &updated).await;
+            ok(appt_json(&updated))
+        }
+        Err(crate::calendar::CentralError::Status(403)) => {
+            err(StatusCode::FORBIDDEN, "appointment not owned by business")
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, &format!("central callback: {e}")),
+    }
+}
+
+// --------------------------------------------------------------------------------------------
 // router assembly
 // --------------------------------------------------------------------------------------------
 
@@ -746,5 +1047,15 @@ pub fn router(state: AppState) -> Router {
         // verify
         .route("/verify/session/start", post(verify_session_start))
         .route("/verify/consent/submit", post(verify_consent_submit))
+        // calendar sync (Phase 7, §3.6)
+        .route("/calendar/google/connect", get(google_connect))
+        .route("/calendar/google/callback", get(google_callback))
+        .route("/calendar/sync", post(calendar_sync))
+        // appointment replica (Phase 7, §3.7) — inbound from central (HMAC) + business-driven actions
+        .route("/v1/appointments/:id", put(put_appointment))
+        .route("/v1/appointments/:id/cancel", post(cancel_appointment))
+        .route("/v1/appointments/:id/reschedule", post(reschedule_appointment))
+        .route("/v1/appointments/:id/staff-action", post(staff_action))
+        .route("/v1/appointments", get(list_appointments))
         .with_state(state)
 }

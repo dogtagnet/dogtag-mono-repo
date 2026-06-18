@@ -89,6 +89,53 @@ pub struct CustodyBlob {
     pub meta: KeystoreMeta,
 }
 
+// --------------------------------------------------------------------------------------------
+// Calendar sync + appointment replica (Phase 7, impl §3.6 / §3.7).
+// --------------------------------------------------------------------------------------------
+
+/// The business-side appointment REPLICA. The central backend is the system-of-record; the business
+/// keeps an idempotent replica keyed by `appointment_id` + central-assigned `rev` (NEVER bumped
+/// locally — the business is not a rev allocator).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApptReplica {
+    pub appointment_id: String,
+    #[serde(rename = "businessId")]
+    pub business_id: String,
+    #[serde(rename = "dogTagId")]
+    pub dog_tag_id: String,
+    pub slot: String,
+    /// central-assigned monotonic revision. Apply-if-newer; an older rev arriving is `409 stale_rev`.
+    pub rev: u64,
+    pub state: String, // REQUESTED | CONFIRMED | DECLINED | CANCELLED | COMPLETED | NO_SHOW
+    #[serde(rename = "updatedAt")]
+    pub updated_at: u64,
+}
+
+/// One row of the `gcal_event_map` mapping table (appointmentId <-> googleEventId, etag, rev, dir).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GcalEventMap {
+    pub appointment_id: String,
+    pub google_event_id: String,
+    /// the etag Google returned for OUR last write — the PRIMARY echo discriminator (§13.3).
+    pub etag: String,
+    /// the appointment rev this mirror reflects.
+    pub rev: u64,
+    /// "out" (platform -> google) | "in" (google -> platform, e.g. external busy block).
+    pub direction: String,
+}
+
+/// The `gcal_sync_state`: the persisted incremental `syncToken` + watch channel identifiers.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GcalSyncState {
+    pub sync_token: Option<String>,
+    pub channel_id: Option<String>,
+    pub resource_id: Option<String>,
+    /// unix seconds the watch channel was (re)created — the ~6-day renewal cron reads this.
+    pub channel_created_at: u64,
+    /// the stored Google refresh token (opaque/encrypted at rest in production).
+    pub refresh_token: Option<String>,
+}
+
 /// The persistence trait. All methods async so MongoStore is a drop-in.
 #[async_trait]
 pub trait Store: Send + Sync {
@@ -125,6 +172,24 @@ pub trait Store: Send + Sync {
     // ---- imported client cache (import/pull) ----
     async fn upsert_client_cache(&self, dog_tag_id: String, doc: serde_json::Value);
     async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value>;
+
+    // ---- appointment replica (Phase 7, §3.7) ----
+    async fn get_appt(&self, id: &str) -> Option<ApptReplica>;
+    async fn put_appt(&self, a: ApptReplica);
+    async fn appts_updated_since(&self, since: u64) -> Vec<ApptReplica>;
+    /// Idempotency-Key dedupe: true if newly recorded (proceed), false if already seen (replay).
+    async fn record_idempotency_key(&self, key: &str) -> bool;
+
+    // ---- gcal mapping table + sync state (Phase 7, §3.6) ----
+    async fn put_gcal_map(&self, m: GcalEventMap);
+    async fn get_gcal_map_by_appt(&self, appointment_id: &str) -> Option<GcalEventMap>;
+    async fn get_gcal_map_by_event(&self, google_event_id: &str) -> Option<GcalEventMap>;
+    async fn all_gcal_maps(&self) -> Vec<GcalEventMap>;
+    async fn delete_gcal_map_by_event(&self, google_event_id: &str);
+    /// Wipe the ENTIRE gcal mirror (mapping table) — called on an HTTP-410 full resync.
+    async fn wipe_gcal_mirror(&self);
+    async fn get_sync_state(&self) -> GcalSyncState;
+    async fn put_sync_state(&self, s: GcalSyncState);
 }
 
 // --------------------------------------------------------------------------------------------
@@ -140,6 +205,11 @@ struct MemInner {
     custody: Option<CustodyBlob>,
     op_sessions: std::collections::HashSet<String>,
     client_cache: HashMap<String, serde_json::Value>,
+    // Phase 7
+    appts: HashMap<String, ApptReplica>,
+    idempotency_keys: std::collections::HashSet<String>,
+    gcal_maps: HashMap<String, GcalEventMap>, // keyed by google_event_id
+    sync_state: GcalSyncState,
 }
 
 #[derive(Clone, Default)]
@@ -223,5 +293,62 @@ impl Store for MemStore {
     }
     async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value> {
         self.inner.read().unwrap().client_cache.get(dog_tag_id).cloned()
+    }
+
+    // ---- appointment replica ----
+    async fn get_appt(&self, id: &str) -> Option<ApptReplica> {
+        self.inner.read().unwrap().appts.get(id).cloned()
+    }
+    async fn put_appt(&self, a: ApptReplica) {
+        self.inner.write().unwrap().appts.insert(a.appointment_id.clone(), a);
+    }
+    async fn appts_updated_since(&self, since: u64) -> Vec<ApptReplica> {
+        let mut v: Vec<ApptReplica> = self
+            .inner
+            .read()
+            .unwrap()
+            .appts
+            .values()
+            .filter(|a| a.updated_at >= since)
+            .cloned()
+            .collect();
+        v.sort_by_key(|a| a.updated_at);
+        v
+    }
+    async fn record_idempotency_key(&self, key: &str) -> bool {
+        // atomic under the write lock: insert returns true iff newly inserted.
+        self.inner.write().unwrap().idempotency_keys.insert(key.to_string())
+    }
+
+    // ---- gcal mapping + sync state ----
+    async fn put_gcal_map(&self, m: GcalEventMap) {
+        self.inner.write().unwrap().gcal_maps.insert(m.google_event_id.clone(), m);
+    }
+    async fn get_gcal_map_by_appt(&self, appointment_id: &str) -> Option<GcalEventMap> {
+        self.inner
+            .read()
+            .unwrap()
+            .gcal_maps
+            .values()
+            .find(|m| m.appointment_id == appointment_id)
+            .cloned()
+    }
+    async fn get_gcal_map_by_event(&self, google_event_id: &str) -> Option<GcalEventMap> {
+        self.inner.read().unwrap().gcal_maps.get(google_event_id).cloned()
+    }
+    async fn all_gcal_maps(&self) -> Vec<GcalEventMap> {
+        self.inner.read().unwrap().gcal_maps.values().cloned().collect()
+    }
+    async fn delete_gcal_map_by_event(&self, google_event_id: &str) {
+        self.inner.write().unwrap().gcal_maps.remove(google_event_id);
+    }
+    async fn wipe_gcal_mirror(&self) {
+        self.inner.write().unwrap().gcal_maps.clear();
+    }
+    async fn get_sync_state(&self) -> GcalSyncState {
+        self.inner.read().unwrap().sync_state.clone()
+    }
+    async fn put_sync_state(&self, s: GcalSyncState) {
+        self.inner.write().unwrap().sync_state = s;
     }
 }

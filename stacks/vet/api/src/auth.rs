@@ -138,6 +138,41 @@ pub fn new_op_token() -> String {
     format!("op_{}", hex::encode(b))
 }
 
+// --------------------------------------------------------------------------------------------
+// HMAC — cross-backend appointment sync (impl §3.7 / §11.4 C-2). The signature binds
+// METHOD\nPATH\nBODY to the per-business shared secret. This MIRRORS the central backend's
+// `hmac_sign`/`hmac_verify` (stacks/admin/api/src/auth.rs) byte-for-byte so the contract holds.
+// --------------------------------------------------------------------------------------------
+
+/// Compute the canonical HMAC-SHA256 over `METHOD\nPATH\nBODY` with `secret`, hex-encoded.
+pub fn hmac_sign(secret: &str, method: &str, path: &str, body: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = <Hmac<Sha256>>::new_from_slice(secret.as_bytes()).expect("hmac key");
+    mac.update(method.as_bytes());
+    mac.update(b"\n");
+    mac.update(path.as_bytes());
+    mac.update(b"\n");
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Verify an HMAC signature (constant-time via the `hmac` crate's `verify_slice`).
+pub fn hmac_verify(secret: &str, method: &str, path: &str, body: &[u8], sig_hex: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let Ok(sig) = hex::decode(sig_hex) else {
+        return false;
+    };
+    let mut mac = <Hmac<Sha256>>::new_from_slice(secret.as_bytes()).expect("hmac key");
+    mac.update(method.as_bytes());
+    mac.update(b"\n");
+    mac.update(path.as_bytes());
+    mac.update(b"\n");
+    mac.update(body);
+    mac.verify_slice(&sig).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +208,17 @@ mod tests {
         // a different deployment's key cannot verify.
         let other = JwtKeys::generate();
         assert!(verify_jwt::<ShareClaims>(&other, &token, 30).is_err());
+    }
+
+    #[test]
+    fn hmac_roundtrip_and_tamper() {
+        let sig = hmac_sign("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":1}");
+        assert!(hmac_verify("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
+        // tampered body / path / method / key all fail.
+        assert!(!hmac_verify("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":2}", &sig));
+        assert!(!hmac_verify("secret", "PUT", "/v1/appointments/a2", b"{\"rev\":1}", &sig));
+        assert!(!hmac_verify("secret", "POST", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
+        assert!(!hmac_verify("other", "PUT", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
     }
 
     #[test]
