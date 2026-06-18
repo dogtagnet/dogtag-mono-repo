@@ -12,6 +12,10 @@ pub mod merkle;
 pub mod poseidon;
 pub mod types;
 pub mod util;
+pub mod flatten;
+pub mod wrap;
+pub mod verify;
+pub mod schema;
 
 pub use field::{bytes_to_field, to_hex32};
 pub use leaf::hash_leaf;
