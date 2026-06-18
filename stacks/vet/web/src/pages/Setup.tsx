@@ -21,6 +21,9 @@ import { env } from "../lib/env";
 
 type Step = "admin" | "genesis" | "confirm" | "unlock" | "accounts" | "apply" | "dns" | "done";
 
+// Testnet demo: a fixed passphrase prefilled into genesis-confirm + unlock so you type nothing.
+const DEMO_PASSPHRASE = "demo-pass-0000";
+
 export function Setup() {
   const { api, adminToken, setAdminToken, setUnlocked, setSignerAddress } = useApp();
   const { toast } = useToast();
@@ -170,6 +173,9 @@ function GenesisStart({ onNext }: { onNext: () => void }) {
       const r = await api.genesisStart();
       setData(r);
       sessionStorage.setItem("vet.challengeIndices", JSON.stringify(r.challengeIndices));
+      // Testnet demo only: stash the words so the Confirm step's "Fill demo data" can re-enter
+      // the challenge words for you. (NEVER do this in production — the seed must stay offline.)
+      sessionStorage.setItem("vet.demoWords", JSON.stringify(r.words));
     } catch (err) {
       toast({ title: "Genesis failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -230,8 +236,11 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
   const indices: number[] = JSON.parse(sessionStorage.getItem("vet.challengeIndices") ?? "[]");
-  const [words, setWords] = useState<string[]>(() => indices.map(() => ""));
-  const [passphrase, setPassphrase] = useState("");
+  // Testnet demo: auto-fill the challenge words from the just-shown seed + a default passphrase,
+  // so you type NOTHING — just click "Confirm & encrypt". (Prod never stashes the seed.)
+  const demoWords: string[] = JSON.parse(sessionStorage.getItem("vet.demoWords") ?? "[]");
+  const [words, setWords] = useState<string[]>(() => indices.map((idx) => demoWords[idx] ?? ""));
+  const [passphrase, setPassphrase] = useState(DEMO_PASSPHRASE);
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -241,6 +250,7 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
       const r = await api.genesisConfirm({ words: words.map((w) => w.trim()), passphrase });
       toast({ title: "Custody initialized", description: r.address, variant: "success" });
       sessionStorage.removeItem("vet.challengeIndices");
+      sessionStorage.removeItem("vet.demoWords");
       onNext(r.address);
     } catch (err) {
       toast({ title: "Confirmation failed", description: (err as Error).message, variant: "danger" });
@@ -300,7 +310,7 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
 function Unlock({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
-  const [passphrase, setPassphrase] = useState("");
+  const [passphrase, setPassphrase] = useState(DEMO_PASSPHRASE);
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
 
@@ -412,17 +422,17 @@ function DeriveAccounts({ onNext }: { onNext: () => void }) {
 function ApplyWhitelist({ onNext }: { onNext: () => void }) {
   const { api, signerAddress } = useApp();
   const { toast } = useToast();
+  // Testnet demo: prefill every field by default (signer auto-carried) so you just click Submit.
   const [form, setForm] = useState({
-    issuerEntityId: "",
-    // Auto-carry the genesis-derived signer so the operator never copies an address.
+    issuerEntityId: "seaport-vet",
     address: signerAddress ?? "",
     recordTypes: "VACCINATION",
-    domain: "",
-    documentStore: "",
-    usdaNan: "",
-    licenseNumber: "",
-    licenseJurisdiction: "",
-    licenseExpiry: "",
+    domain: "testvet.roax.net",
+    documentStore: env.dogtagIssuerAddr || "0x5c703910111f942EE0f47E02214291b5274cDb53",
+    usdaNan: "123456",
+    licenseNumber: "VET-2024-0001",
+    licenseJurisdiction: "CA",
+    licenseExpiry: "2027-12-31",
   });
   const [busy, setBusy] = useState(false);
   const [applicationId, setApplicationId] = useState<string | null>(null);

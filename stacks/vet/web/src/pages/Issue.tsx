@@ -38,9 +38,11 @@ export function Issue() {
   const { upsert } = useRecordsStore();
   const { sendTransactionAsync } = useSendTransaction();
 
-  const [recordType, setRecordType] = useState(RECORD_TYPE_SCHEMAS[0]?.recordType ?? "");
-  const [dogTagId, setDogTagId] = useState("");
-  const [values, setValues] = useState<Record<string, string>>({});
+  // Testnet demo: prefill a valid rabies cert by default so you just click Sign & Issue (no typing).
+  const demo0 = useMemo(() => demoRabiesIssue(), []);
+  const [recordType, setRecordType] = useState(demo0.recordType);
+  const [dogTagId, setDogTagId] = useState(demo0.dogTagId);
+  const [values, setValues] = useState<Record<string, string>>(demo0.fields);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{
