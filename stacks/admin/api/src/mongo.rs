@@ -2,9 +2,10 @@
 //! and `microchips` collections use UNIQUE indexes so `consume_jti` / `reserve_microchip` are atomic
 //! (insert-or-fail) — the one-time share-JWT guarantee (§11.4) + microchip.code uniqueness (§4.1).
 //!
-//! NOTE: `alloc_rev_and_apply` (the sole-rev-allocator) here uses a read-modify-write; in production
-//! this MUST run inside a Mongo transaction or a `findOneAndUpdate` with `$inc`-bound rev to remain
-//! collision-free under concurrency. The hermetic `MemStore` enforces the invariant under a lock.
+//! NOTE: `alloc_rev_and_apply` (the sole-rev-allocator) uses a compare-and-set on `rev` (conditional
+//! `replace_one` filtered on the observed rev) so it stays collision-free under concurrency WITHOUT a
+//! replica-set transaction — a loser of the CAS returns None and is healed by the `?updatedSince`
+//! catch-up (§8.3). The hermetic `MemStore` enforces the same invariant under a lock.
 
 use async_trait::async_trait;
 use mongodb::bson::{doc, Document};
@@ -206,12 +207,28 @@ impl Store for MongoStore {
         .await
     }
     async fn alloc_rev_and_apply(&self, appointment_id: &str, f: RevApply) -> Option<Appointment> {
-        // read-modify-write (see module note: production needs a txn / $inc-bound rev).
+        // Compare-and-set on `rev` so central stays the SOLE rev allocator with NO collisions under
+        // concurrency, without requiring a replica-set transaction (works on a standalone mongod).
+        // `RevApply` is FnOnce, so we read -> apply once -> write only if `rev` is unchanged since the
+        // read. If a concurrent writer won the rev, the conditional write matches nothing and we
+        // return None; the cross-backend `?updatedSince` catch-up retries the dropped event (§8.3).
         let current = self.get_appointment(appointment_id).await;
-        let next_rev = current.as_ref().map(|a| a.rev + 1).unwrap_or(1);
+        let observed_rev = current.as_ref().map(|a| a.rev);
+        let next_rev = observed_rev.map(|r| r + 1).unwrap_or(1);
         let result = f(current, next_rev)?;
-        self.put_appointment(result.clone()).await;
-        Some(result)
+        let coll = self.appointments();
+        let outcome = match observed_rev {
+            Some(r) => {
+                coll.replace_one(doc! { "appointment_id": appointment_id, "rev": r as i64 }, &result).await
+            }
+            None => {
+                coll.replace_one(doc! { "appointment_id": appointment_id }, &result).upsert(true).await
+            }
+        };
+        match outcome {
+            Ok(res) if res.matched_count > 0 || res.upserted_id.is_some() => Some(result),
+            _ => None, // lost the rev CAS to a concurrent writer -> caller retries via catch-up sync
+        }
     }
 
     async fn put_consent(&self, c: Consent) {
