@@ -1,0 +1,82 @@
+/**
+ * DogTag semantic design tokens (impl §5.0) — CSS variables only, no Tailwind directives.
+ * Light is the default; `.dark` (set on <html>) swaps the palette. Import this once, then
+ * the host app's Tailwind layer (`@tailwind base/components/utilities`) consumes them via the
+ * shared preset. (`styles.css` is the all-in-one variant for standalone setups.)
+ *
+ * Values are HSL channels so Tailwind opacity modifiers work (`bg-primary/90`).
+ */
+@layer base {
+  :root {
+    --color-background: 210 40% 98%;
+    --color-surface: 0 0% 100%;
+    --color-surface-muted: 210 40% 96%;
+    --color-onSurface: 222 47% 11%;
+
+    --color-primary: 221 83% 53%;
+    --color-onPrimary: 0 0% 100%;
+    --color-secondary: 215 28% 25%;
+    --color-onSecondary: 210 40% 98%;
+
+    --color-sidebar: 222 47% 11%;
+    --color-sidebar-muted: 217 33% 17%;
+    --color-onSidebar: 210 40% 96%;
+    --color-onSidebarMuted: 215 20% 65%;
+    --color-sidebar-active: 221 70% 28%;
+
+    --color-muted: 215 16% 47%;
+    --color-border: 214 32% 91%;
+    --color-input: 214 32% 91%;
+    --color-ring: 221 83% 53%;
+    --color-success: 142 71% 45%;
+    --color-onSuccess: 0 0% 100%;
+    --color-warning: 38 92% 50%;
+    --color-onWarning: 0 0% 100%;
+    --color-danger: 0 72% 51%;
+    --color-onDanger: 0 0% 100%;
+    --color-accent: 199 89% 48%;
+    --color-onAccent: 0 0% 100%;
+
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --color-background: 222 47% 8%;
+    --color-surface: 222 33% 13%;
+    --color-surface-muted: 217 33% 17%;
+    --color-onSurface: 210 40% 96%;
+
+    --color-primary: 217 91% 60%;
+    --color-onPrimary: 222 47% 11%;
+    --color-secondary: 215 25% 65%;
+    --color-onSecondary: 222 47% 11%;
+
+    --color-sidebar: 224 47% 6%;
+    --color-sidebar-muted: 222 40% 12%;
+    --color-onSidebar: 210 40% 96%;
+    --color-onSidebarMuted: 215 20% 60%;
+    --color-sidebar-active: 221 70% 32%;
+
+    --color-muted: 215 20% 60%;
+    --color-border: 217 33% 22%;
+    --color-input: 217 33% 22%;
+    --color-ring: 217 91% 60%;
+    --color-success: 142 64% 48%;
+    --color-onSuccess: 0 0% 100%;
+    --color-warning: 38 92% 55%;
+    --color-onWarning: 222 47% 11%;
+    --color-danger: 0 72% 58%;
+    --color-onDanger: 0 0% 100%;
+    --color-accent: 199 89% 55%;
+    --color-onAccent: 222 47% 11%;
+  }
+
+  * {
+    border-color: hsl(var(--color-border));
+  }
+  body {
+    background-color: hsl(var(--color-background));
+    color: hsl(var(--color-onSurface));
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}

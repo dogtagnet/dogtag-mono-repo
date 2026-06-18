@@ -1,0 +1,11 @@
+/**
+ * DogTag shared portal styles — all-in-one variant for standalone setups.
+ * Pulls in the semantic design tokens (light + `.dark`) plus the Tailwind layers.
+ * Apps that drive their own Tailwind build should import `tokens.css` instead and add
+ * the `@tailwind` directives in their own entry CSS.
+ */
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

@@ -2,3 +2,9 @@ packages:
   - "packages/*"
   - "stacks/*/web"
   - "circuits"
+
+# Pin @wagmi/connectors to the wagmi-2.x compatible line. The Reown AppKit wagmi adapter
+# otherwise resolves @wagmi/connectors@8.x, which imports `viem/tempo` (a viem-3 / wagmi-3
+# export) and breaks the Vite build under wagmi 2 + viem 2.
+overrides:
+  "@wagmi/connectors": "5.7.11"
