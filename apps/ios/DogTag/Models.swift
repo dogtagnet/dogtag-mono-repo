@@ -1,7 +1,8 @@
 import Foundation
 
-/// A credential group as shown on Home (Health / Service / Travel). Mirrors Models.kt.
-enum CredentialGroup: String, CaseIterable, Identifiable {
+/// A credential group as shown on Home (Health / Service / Travel). Derived from the on-chain
+/// `recordType` label. Mirrors Models.kt.
+enum CredentialGroup: String, CaseIterable, Identifiable, Codable {
     case health, service, travel
     var id: String { rawValue }
     var title: String {
@@ -11,45 +12,92 @@ enum CredentialGroup: String, CaseIterable, Identifiable {
         case .travel: return "Travel Docs"
         }
     }
+
+    /// Map an issuer recordType label (e.g. "VACCINATION", "SERVICE_ATTESTATION") to a group.
+    static func from(recordType: String?) -> CredentialGroup {
+        let rt = (recordType ?? "").uppercased()
+        if rt.contains("SERVICE") || rt.contains("DOT") { return .service }
+        if rt.contains("TRAVEL") || rt.contains("CDC") || rt.contains("EU_HEALTH") ||
+            rt.contains("IMPORT") || rt.contains("USDA") { return .travel }
+        return .health
+    }
 }
 
-/// A single credential / record held for a pet.
-struct Credential: Identifiable {
-    let id: String
-    let group: CredentialGroup
-    let recordType: String
-    let title: String
-    let subtitle: String
-    let issuer: String
-    let issuedOn: String
+/// A pet the user owns. Seeded from central GET /v1/pets and/or imported records. Keyed by dogTagId.
+struct Pet: Identifiable, Codable, Equatable {
+    var dogTagId: String     // on-chain DogTagSBT tokenId (decimal) — primary key
+    var name: String
+    var breed: String
+    var ageLabel: String
+    var microchip: String?
+
+    var id: String { dogTagId }
+
+    /// Parse a pet from the central GET /v1/pets `pets[]` entry.
+    static func fromCentral(_ o: [String: Any]) -> Pet {
+        let mc = o["microchip"] as? [String: Any]
+        let profile = o["profile"] as? [String: Any]
+        let tagFromChain = (o["dogTagId"] as? String) ?? ""
+        let tag = tagFromChain.isEmpty ? ((o["id"] as? String) ?? "") : tagFromChain
+        return Pet(
+            dogTagId: tag,
+            name: (o["name"] as? String) ?? "Unnamed",
+            breed: (profile?["breed"] as? String) ?? "",
+            ageLabel: (profile?["dateOfBirth"] as? String) ?? "",
+            microchip: (mc?["code"] as? String)
+        )
+    }
 }
 
-/// The pet card (reference: "Blaze", Goldendoodle).
-struct Pet {
-    let name: String
-    let breed: String
-    let ageLabel: String
-    let dogTagId: String   // on-chain DogTagSBT tokenId (decimal)
+/// A single imported credential / record held for a pet. The full wrapped doc JSON is kept so the
+/// verification can be re-run and the record re-presented (consent over `credentialRoot`).
+struct Credential: Identifiable, Codable, Equatable {
+    var id: String                // recordId from the vet record link
+    var dogTagId: String          // owning pet
+    var group: CredentialGroup
+    var recordType: String
+    var title: String
+    var subtitle: String
+    var issuer: String
+    var issuedOn: String
+    var credentialRoot: String    // signature.merkleRoot (0x..) — what consent signs over
+    var verdict: String           // "VALID" / "INVALID" / "UNVERIFIED"
+    var wrappedDocJson: String    // the full wrapped doc (for re-verify + disclosure)
 }
 
-/// In-memory seed data mirroring the reference app (identical to Android DemoData).
-enum DemoData {
-    static let pet = Pet(name: "Blaze", breed: "Goldendoodle", ageLabel: "2 yrs 7 mo", dogTagId: "42")
+/// A thin, typed view over a wrapped-doc JSON (§1.4 WrappedDoc). Extracts the fields the app needs;
+/// the canonicalization heavy-lifting stays in Rust (`verifyIntegrity` / `buildMerkleRootHex`).
+struct WrappedDoc {
+    let json: String
+    private let root: [String: Any]
+    private var sig: [String: Any] { (root["signature"] as? [String: Any]) ?? [:] }
+    private var issuerObj: [String: Any] { (root["issuer"] as? [String: Any]) ?? [:] }
+    private var data: [String: Any] { (root["data"] as? [String: Any]) ?? [:] }
 
-    static let credentials: [Credential] = [
-        Credential(id: "h1", group: .health, recordType: "Vaccine", title: "Rabies (3-yr)", subtitle: "Lot #RB-2291 · valid to 2027", issuer: "Liberalize Vet Clinic", issuedOn: "2024-08-14"),
-        Credential(id: "h2", group: .health, recordType: "Vaccine", title: "DHPP Booster", subtitle: "Annual core vaccine", issuer: "Liberalize Vet Clinic", issuedOn: "2024-08-14"),
-        Credential(id: "h3", group: .health, recordType: "Checkup / Wellness", title: "Annual Wellness Exam", subtitle: "Healthy · 28.4 kg", issuer: "Liberalize Vet Clinic", issuedOn: "2025-03-02"),
-        Credential(id: "h4", group: .health, recordType: "Lab Work", title: "Heartworm Antigen", subtitle: "Negative", issuer: "IDEXX Reference Labs", issuedOn: "2025-03-02"),
-        Credential(id: "s1", group: .service, recordType: "DOT Service Dog Form", title: "Service Animal Attestation", subtitle: "DOT Air Transportation Form", issuer: "Owner-attested", issuedOn: "2025-01-10"),
-        Credential(id: "t1", group: .travel, recordType: "CDC Dog Import Form", title: "U.S. Entry Receipt", subtitle: "Valid 6 months", issuer: "CDC", issuedOn: "2025-05-20"),
-        Credential(id: "t2", group: .travel, recordType: "Microchip", title: "ISO 11784/11785", subtitle: "985112… (15 digit)", issuer: "Liberalize Vet Clinic", issuedOn: "2022-11-03"),
-        Credential(id: "t3", group: .travel, recordType: "Rabies Certificate", title: "International Travel", subtitle: "EU/UK accepted", issuer: "Liberalize Vet Clinic", issuedOn: "2024-08-14"),
-        Credential(id: "t4", group: .travel, recordType: "Health Certificate", title: "USDA-endorsed", subtitle: "10-day validity", issuer: "USDA APHIS", issuedOn: "2025-05-18"),
-    ]
+    init?(json: String) {
+        guard let d = json.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
+        self.json = json
+        self.root = o
+    }
 
-    static func count(for group: CredentialGroup) -> Int {
-        credentials.filter { $0.group == group }.count
+    var merkleRoot: String { (sig["merkleRoot"] as? String) ?? "" }
+    var targetHash: String { (sig["targetHash"] as? String) ?? "" }
+    var documentStore: String { (issuerObj["documentStore"] as? String) ?? "" }
+    var issuerName: String { (issuerObj["name"] as? String) ?? "Unknown issuer" }
+    var issuerDomain: String { (issuerObj["domain"] as? String) ?? "" }
+    var recordType: String { (issuerObj["recordType"] as? String) ?? "" }
+
+    var dogTagId: String {
+        let cs = data["credentialSubject"] as? [String: Any]
+        let raw = (cs?["dogTagId"] as? String) ?? ""
+        if let tail = raw.split(separator: ":").last { return String(tail) }
+        return raw
+    }
+
+    func displayTitle() -> String {
+        let rt = recordType.isEmpty ? "Record" : recordType
+        return rt.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
 
@@ -77,5 +125,20 @@ struct RoaxConfig {
             issuerRegistry: (o["IssuerRegistry"] as? String) ?? "",
             poseidon6: (o["Poseidon6"] as? String) ?? ""
         )
+    }
+}
+
+/// Endpoint configuration for the live backends (mirrors Android AppConfig).
+enum AppConfig {
+    static let centralApi = "https://api.dogtag.io"
+    static let roaxRpc = "https://devrpc.roax.net"
+
+    private static let sessionKey = "owner_session"
+    static var sessionToken: String? {
+        get { UserDefaults.standard.string(forKey: sessionKey) }
+        set {
+            if let v = newValue { UserDefaults.standard.set(v, forKey: sessionKey) }
+            else { UserDefaults.standard.removeObject(forKey: sessionKey) }
+        }
     }
 }

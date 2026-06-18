@@ -1,34 +1,8 @@
 import SwiftUI
 import AVFoundation
-import CoreImage.CIFilterBuiltins
 
-/// QR generation via CoreImage CIQRCodeGenerator (no third-party deps).
-enum QRGen {
-    static func image(from string: String) -> UIImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(string.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage else { return nil }
-        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
-        let context = CIContext()
-        guard let cg = context.createCGImage(scaled, from: scaled.extent) else { return nil }
-        return UIImage(cgImage: cg)
-    }
-}
-
-struct QRImageView: View {
-    let content: String
-    var body: some View {
-        if let ui = QRGen.image(from: content) {
-            Image(uiImage: ui)
-                .interpolation(.none)
-                .resizable()
-                .scaledToFit()
-        } else {
-            Color.gray
-        }
-    }
-}
+// NOTE: QR GENERATION has been intentionally removed. The pet owner's app ONLY scans — it never shows
+// a QR. The vet/groomer is the party that DISPLAYS a one-time-JWT QR (architecture §7, impl §3.9).
 
 /// A live AVFoundation QR scanner. Device-only: the camera is unavailable on the simulator, so the
 /// scan plumbing is fully wired but cannot be exercised headlessly (it shows the camera permission

@@ -33,12 +33,19 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.AppSettings
+import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.SettingsStore
+import io.liberalize.dogtag.net.CentralApi
 import io.liberalize.dogtag.ui.screens.DocumentsScreen
 import io.liberalize.dogtag.ui.screens.HomeScreen
 import io.liberalize.dogtag.ui.screens.ProfileScreen
+import io.liberalize.dogtag.ui.screens.ScanScreen
 import io.liberalize.dogtag.ui.screens.TravelScreen
 import io.liberalize.dogtag.ui.screens.VerifyScreen
 
@@ -53,24 +60,39 @@ enum class Tab(val label: String, val icon: ImageVector) {
 @Composable
 fun DogTagApp(store: SettingsStore, settings: AppSettings, activity: FragmentActivity) {
     val c = DogTagTheme.colors
+    val context = LocalContext.current
     var tab by remember { mutableStateOf(Tab.Home) }
+    var scanning by remember { mutableStateOf(false) }
+
+    // One-shot central pet sync once the user has an owner session (seeds the local pet store).
+    LaunchedEffect(Unit) {
+        val token = AppConfig.sessionToken(context)
+        if (!token.isNullOrBlank()) {
+            val pets = CentralApi.listPets(token)
+            if (pets.isNotEmpty()) LocalStore.get(context).mergeCentralPets(pets)
+        }
+    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = c.background) {
         Box(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxSize().padding(bottom = 72.dp)) {
-                when (tab) {
-                    Tab.Verify -> VerifyScreen(activity)
-                    Tab.Travel -> TravelScreen()
-                    Tab.Home -> HomeScreen(onScan = { tab = Tab.Verify })
-                    Tab.Documents -> DocumentsScreen()
-                    Tab.Profile -> ProfileScreen(store, settings, activity)
+            if (scanning) {
+                ScanScreen(activity, onDone = { scanning = false })
+            } else {
+                Box(Modifier.fillMaxSize().padding(bottom = 72.dp)) {
+                    when (tab) {
+                        Tab.Verify -> VerifyScreen(activity, onScan = { scanning = true })
+                        Tab.Travel -> TravelScreen(onScan = { scanning = true })
+                        Tab.Home -> HomeScreen(onScan = { scanning = true })
+                        Tab.Documents -> DocumentsScreen(onScan = { scanning = true })
+                        Tab.Profile -> ProfileScreen(store, settings, activity)
+                    }
                 }
+                BottomBar(
+                    current = tab,
+                    onSelect = { tab = it },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
             }
-            BottomBar(
-                current = tab,
-                onSelect = { tab = it },
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
         }
     }
 }

@@ -1,17 +1,23 @@
 import Foundation
 
 /// The proof mode a verifier requests.
-enum ConsentMode: String {
-    case ecdsa, zk
-}
+enum ConsentMode: String { case ecdsa, zk }
 
 private let ZERO32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
 private let ZERO20 = "0x0000000000000000000000000000000000000000"
 
-/// A verification request scanned from a verifier's QR. Mirrors the on-chain VerificationConsent
-/// (impl §11.9). All 32-byte / address fields are 0x.. hex. Missing fields default to zero.
+/// A verification request scanned from a verifier's QR combined with the SPECIFIC stored record the
+/// user chose to present (impl §1.10). The verifier supplies relayer/purpose/challenge/recordType
+/// (from its /v?t= JWT); the user supplies `credentialRoot` (the selected record's merkleRoot) and
+/// `subject` (their wallet).
 struct VerificationRequest {
     let mode: ConsentMode
+    let sessionJwt: String
+    let callbackUrl: String?
+    let verifierName: String
+    let purposeLabel: String
+    let recordTypeLabel: String
+    // consent fields (all 0x.. hex)
     let dogTagId: String
     let recordType: String
     let purpose: String
@@ -21,39 +27,50 @@ struct VerificationRequest {
     let subject: String
     let nonce: String
     let deadline: String
-    let verifierName: String
-    let callbackUrl: String?
 
-    /// Parse the JSON payload a verifier encodes in its QR.
-    static func parse(_ qr: String) -> VerificationRequest? {
-        guard let data = qr.data(using: .utf8),
-              let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+    /// keccak256(label) -> 0x.. bytes32 (recordType / purpose namespacing — §3 keep-list).
+    static func keccakLabel(_ label: String) -> String {
+        if label.isEmpty { return ZERO32 }
+        if label.hasPrefix("0x") && label.count == 66 { return label }
+        let h = Keccak256.digest(Data(label.utf8))
+        return "0x" + h.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func dogTagIdToHex(_ dec: String) -> String {
+        // Decimal/hex dogTagId -> 0x.. 32-byte. Fall back to zero on parse failure.
+        let s = dec.hasPrefix("0x") ? String(dec.dropFirst(2)) : dec
+        let radix = dec.hasPrefix("0x") ? 16 : 10
+        guard let n = UInt64(s, radix: radix) else { return ZERO32 }
+        let hex = String(n, radix: 16)
+        return "0x" + String(repeating: "0", count: max(0, 64 - hex.count)) + hex
+    }
+
+    /// Build a consent request from the scanned verify-session + the record the user selected.
+    static func from(session: QrPayload, dogTagIdDec: String, credentialRoot: String,
+                     subjectWallet: String?, callbackUrl: String?) -> VerificationRequest? {
+        guard case let .verifySession(_, jwt, relayer, purpose, recordType, challenge, mode, _) = session else {
             return nil
         }
-        func w(_ k: String) -> String {
-            let v = (o[k] as? String) ?? ZERO32
-            return v.isEmpty ? ZERO32 : v
-        }
-        func a(_ k: String) -> String {
-            let v = (o[k] as? String) ?? ZERO20
-            return v.isEmpty ? ZERO20 : v
-        }
-        let modeStr = ((o["mode"] as? String) ?? "ecdsa").lowercased()
-        let mode: ConsentMode = (modeStr == "zk") ? .zk : .ecdsa
-        let cb = (o["callback"] as? String) ?? ""
+        let m: ConsentMode = (mode.lowercased() == "normal" || mode.lowercased() == "ecdsa") ? .ecdsa : .zk
+        let now = UInt64(Date().timeIntervalSince1970)
+        let deadlineHex = String(now + 300, radix: 16)
+        let nonceHex = String(UInt64(Date().timeIntervalSince1970 * 1000), radix: 16)
         return VerificationRequest(
-            mode: mode,
-            dogTagId: w("dogTagId"),
-            recordType: w("recordType"),
-            purpose: w("purpose"),
-            credentialRoot: w("credentialRoot"),
-            challenge: w("challenge"),
-            relayer: a("relayer"),
-            subject: a("subject"),
-            nonce: w("nonce"),
-            deadline: w("deadline"),
-            verifierName: (o["verifier"] as? String) ?? "Unknown verifier",
-            callbackUrl: cb.isEmpty ? nil : cb
+            mode: m,
+            sessionJwt: jwt,
+            callbackUrl: callbackUrl,
+            verifierName: relayer.isEmpty ? "Verifier" : relayer,
+            purposeLabel: purpose.isEmpty ? "verification" : purpose,
+            recordTypeLabel: recordType.isEmpty ? "record" : recordType,
+            dogTagId: dogTagIdToHex(dogTagIdDec),
+            recordType: keccakLabel(recordType),
+            purpose: keccakLabel(purpose),
+            credentialRoot: credentialRoot.isEmpty ? ZERO32 : credentialRoot,
+            challenge: challenge.isEmpty ? ZERO32 : challenge,
+            relayer: relayer.isEmpty ? ZERO20 : relayer,
+            subject: (subjectWallet?.isEmpty == false) ? subjectWallet! : ZERO20,
+            nonce: "0x" + String(repeating: "0", count: max(0, 64 - nonceHex.count)) + nonceHex,
+            deadline: "0x" + String(repeating: "0", count: max(0, 64 - deadlineHex.count)) + deadlineHex
         )
     }
 }
@@ -68,9 +85,8 @@ struct SignedConsent {
     let payloadJson: String
 }
 
-/// Build a signed consent for a request. For the ZK path we EdDSA-BabyJubjub-sign the §1.10 message
-/// via the FFI; for the ECDSA path we surface the digest/nullifier/typehash from the FFI so the
-/// central can finish the secp256k1 leg (the wallet ECDSA-signing is handled elsewhere / device-side).
+/// Build a signed consent over the SELECTED record's root. The POST body matches the central
+/// `/v1/verify/consent` contract: `{ sessionJwt, consent, sig, mode }`.
 enum ConsentSigner {
     static func sign(_ req: VerificationRequest, consentPrivHex: String?) throws -> SignedConsent {
         let nullifier = try consentNullifierHex(
@@ -92,23 +108,20 @@ enum ConsentSigner {
                 relayerHex: req.relayer, subjectHex: req.subject, nonceHex: req.nonce, deadlineHex: req.deadline)
         }
 
-        var payload: [String: Any] = [
-            "mode": req.mode.rawValue,
-            "dogTagId": req.dogTagId,
-            "recordType": req.recordType,
-            "purpose": req.purpose,
-            "credentialRoot": req.credentialRoot,
-            "challenge": req.challenge,
-            "relayer": req.relayer,
-            "subject": req.subject,
-            "nonce": req.nonce,
-            "deadline": req.deadline,
-            "nullifier": nullifier,
-            "message": message,
+        let consent: [String: Any] = [
+            "dogTagId": req.dogTagId, "recordType": req.recordType, "purpose": req.purpose,
+            "credentialRoot": req.credentialRoot, "challenge": req.challenge, "relayer": req.relayer,
+            "subject": req.subject, "nonce": req.nonce, "deadline": req.deadline,
+            "nullifier": nullifier, "message": message,
         ]
+        var sig = ""
         if let e = eddsa {
-            payload["eddsaSig"] = ["R8x": e.r8xDec, "R8y": e.r8yDec, "S": e.sDec]
+            let sigObj: [String: Any] = ["R8x": e.r8xDec, "R8y": e.r8yDec, "S": e.sDec]
+            sig = String(data: (try? JSONSerialization.data(withJSONObject: sigObj)) ?? Data(), encoding: .utf8) ?? ""
         }
+        let payload: [String: Any] = [
+            "sessionJwt": req.sessionJwt, "consent": consent, "sig": sig, "mode": req.mode.rawValue,
+        ]
         let json = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8) ?? "{}"
         return SignedConsent(mode: req.mode, nullifier: nullifier, message: message,
                              typehash: typehash, eddsa: eddsa, payloadJson: json)

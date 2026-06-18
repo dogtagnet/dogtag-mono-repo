@@ -52,42 +52,28 @@ func runParity() -> ParityResult {
     }
 }
 
+/// The Verify tab. The user app SCANS — it never displays a QR. The primary action ("Scan a QR") opens
+/// the unified ScanScreen, which routes to import-a-record or present-a-record by the QR shape. The
+/// trust-core parity panel below is a real diagnostic (mobile Merkle root == server root).
 struct VerifyScreen: View {
     @Environment(\.dogTagColors) var c
+    let onScan: () -> Void
     private let parity = runParity()
 
-    @State private var scanning = false
-    @State private var request: VerificationRequest? = nil
-    @State private var signed: SignedConsent? = nil
-    @State private var status = ""
-
     var body: some View {
-        if scanning {
-            ZStack(alignment: .topLeading) {
-                QRScannerView { raw in
-                    scanning = false
-                    if let req = VerificationRequest.parse(raw) {
-                        request = req
-                    } else {
-                        status = "Not a verifier QR"
-                    }
-                }
-                .ignoresSafeArea()
-                Button("Cancel") { scanning = false }
-                    .padding()
-                    .foregroundColor(.white)
-            }
-        } else {
-            content
-        }
-    }
-
-    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Verify").font(.system(size: 26, weight: .bold)).foregroundColor(c.onBackground)
 
-                // Verify-core parity panel.
+                Text("Scan a vet or groomer's QR to import a verified record, or to present one of your stored records for an on-chain proof-of-verification. Your app only scans — it never shows a QR.")
+                    .font(.system(size: 13)).foregroundColor(c.muted)
+
+                Button(action: onScan) {
+                    Text("Scan a QR").frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .foregroundColor(c.onAccent).background(RoundedRectangle(cornerRadius: 12).fill(c.accent))
+                }
+
+                // Verify-core parity panel (real diagnostic).
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Trust-core parity").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
                     Text("Rust SDK via UniFFI (xcframework + Swift binding)").font(.system(size: 12)).foregroundColor(c.muted)
@@ -102,106 +88,9 @@ struct VerifyScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
 
-                Button {
-                    status = ""; signed = nil; request = nil; scanning = true
-                } label: {
-                    Text("Scan verifier QR")
-                        .frame(maxWidth: .infinity).padding(.vertical, 12)
-                        .foregroundColor(c.onAccent)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(c.accent))
-                }
-
-                if let req = request {
-                    ConsentReview(req: req) { sc in
-                        signed = sc; status = "Signed locally — ready to submit."
-                    }
-                }
-
-                if let sc = signed {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Signed consent (\(sc.mode.rawValue))").font(.system(size: 14, weight: .bold)).foregroundColor(c.onBackground)
-                        Text("nullifier: \(String(sc.nullifier.prefix(18)))…").font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
-                        if let e = sc.eddsa {
-                            Text("EdDSA S: \(String(e.sDec.prefix(20)))…").font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
-                        }
-                        Button {
-                            submit(sc)
-                        } label: {
-                            Text("Submit to /v1/verify/consent")
-                                .padding(.vertical, 10).padding(.horizontal, 14)
-                                .foregroundColor(c.onAccent)
-                                .background(RoundedRectangle(cornerRadius: 10).fill(c.accent))
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 16).fill(c.surfaceVariant))
-                }
-
-                if !status.isEmpty { Text(status).font(.system(size: 12)).foregroundColor(c.muted) }
                 Spacer(minLength: 40)
             }
             .padding(20)
-        }
-    }
-
-    private func submit(_ sc: SignedConsent) {
-        guard let urlStr = request?.callbackUrl, let url = URL(string: urlStr) else {
-            status = "No callback URL in request; consent built but not submitted."
-            return
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = sc.payloadJson.data(using: .utf8)
-        URLSession.shared.dataTask(with: req) { _, resp, err in
-            DispatchQueue.main.async {
-                if let e = err { status = "POST failed: \(e.localizedDescription)" }
-                else if let h = resp as? HTTPURLResponse { status = "POST \(urlStr) → \(h.statusCode)" }
-            }
-        }.resume()
-    }
-}
-
-private struct ConsentReview: View {
-    @Environment(\.dogTagColors) var c
-    let req: VerificationRequest
-    let onSign: (SignedConsent) -> Void
-    @State private var err = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Verification request").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
-            field("Verifier", req.verifierName)
-            field("Mode", req.mode == .zk ? "Zero-knowledge (EdDSA-BabyJubjub)" : "ECDSA (EIP-712)")
-            field("DogTag", req.dogTagId)
-            field("Purpose", String(req.purpose.prefix(18)) + "…")
-            field("Relayer", req.relayer)
-            Button {
-                Biometric.authenticate(reason: "Sign a \(req.mode == .zk ? "ZK" : "standard") verification consent") { ok, e in
-                    guard ok else { err = e ?? "auth failed"; return }
-                    do {
-                        let consentPriv = (req.mode == .zk) ? (try? Wallet.load())??.consent.prvHex : nil
-                        onSign(try ConsentSigner.sign(req, consentPrivHex: consentPriv))
-                    } catch { self.err = "sign failed: \(error)" }
-                }
-            } label: {
-                Text("Approve & sign")
-                    .frame(maxWidth: .infinity).padding(.vertical, 12)
-                    .foregroundColor(.white)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(c.success))
-            }
-            if !err.isEmpty { Text(err).font(.system(size: 12)).foregroundColor(c.danger) }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
-    }
-
-    private func field(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .top) {
-            Text(label).font(.system(size: 12)).foregroundColor(c.muted).frame(width: 90, alignment: .leading)
-            Text(value).font(.system(size: 12, design: .monospaced)).foregroundColor(c.onBackground)
         }
     }
 }

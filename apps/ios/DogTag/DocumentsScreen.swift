@@ -2,16 +2,31 @@ import SwiftUI
 
 struct DocumentsScreen: View {
     @Environment(\.dogTagColors) var c
-    @State private var shareOf: Credential? = nil
+    @ObservedObject private var store = LocalStore.shared
+    let onScan: () -> Void
+    @State private var filterPetId: String? = nil   // nil == All pets
+
+    private var shown: [Credential] {
+        filterPetId == nil ? store.credentials : store.credentials.filter { $0.dogTagId == filterPetId }
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Documents").font(.system(size: 26, weight: .bold)).foregroundColor(c.onBackground)
-                SectionTitle(text: "All records", trailing: "\(DemoData.credentials.count)")
 
-                ForEach(DemoData.credentials) { cred in
-                    Button { shareOf = cred } label: {
+                if store.credentials.isEmpty {
+                    EmptyStateCard(
+                        title: "No documents yet",
+                        message: "Scan a vet or groomer's QR to import a verified record. Imported records appear here, grouped by dog.",
+                        onScan: onScan)
+                } else {
+                    PetFilterRow(pets: store.pets, selectedId: filterPetId) { filterPetId = $0 }
+                    SectionTitle(text: "Records", trailing: "\(shown.count)")
+                    if shown.isEmpty {
+                        Text("No records for this dog yet.").font(.system(size: 13)).foregroundColor(c.muted)
+                    }
+                    ForEach(shown) { cred in
                         HStack {
                             ZStack {
                                 Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
@@ -20,59 +35,61 @@ struct DocumentsScreen: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
                                 Text("\(cred.group.title) · \(cred.recordType)").font(.system(size: 12)).foregroundColor(c.muted)
+                                let petName = store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
+                                Text(petName).font(.system(size: 11)).foregroundColor(c.muted)
                             }
                             Spacer()
-                            Image(systemName: "qrcode").foregroundColor(c.muted)
+                            VerdictBadge(verdict: cred.verdict)
                         }
                         .padding(14)
                         .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
                     }
-                    .buttonStyle(.plain)
                 }
                 Spacer(minLength: 24)
             }
             .padding(20)
         }
-        .sheet(item: $shareOf) { cred in
-            ShareSheet(cred: cred)
-                .environment(\.dogTagColors, c)
-        }
     }
 }
 
-private struct ShareSheet: View {
+/// A chip row with an "All pets" option plus one chip per dog. Shared by Travel + Documents.
+struct PetFilterRow: View {
     @Environment(\.dogTagColors) var c
-    @Environment(\.dismiss) var dismiss
-    let cred: Credential
-
-    private var payload: String {
-        let obj: [String: Any] = [
-            "type": "dogtag.credential.share",
-            "dogTagId": DemoData.pet.dogTagId,
-            "credentialId": cred.id,
-            "title": cred.title,
-            "recordType": cred.recordType,
-            "issuer": cred.issuer,
-            "issuedOn": cred.issuedOn,
-        ]
-        let data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data()
-        return String(data: data, encoding: .utf8) ?? "{}"
+    let pets: [Pet]
+    let selectedId: String?
+    let onSelect: (String?) -> Void
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip("All pets", selected: selectedId == nil) { onSelect(nil) }
+                ForEach(pets) { p in chip(p.name, selected: selectedId == p.dogTagId) { onSelect(p.dogTagId) } }
+            }
+        }
     }
 
+    private func chip(_ label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label).font(.system(size: 13, weight: .semibold))
+                .foregroundColor(selected ? c.onAccent : c.onBackground)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(Capsule().fill(selected ? c.accent : c.surfaceVariant))
+        }.buttonStyle(.plain)
+    }
+}
+
+struct VerdictBadge: View {
+    @Environment(\.dogTagColors) var c
+    let verdict: String
     var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                Text("Share credential").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
-                Spacer()
-                Button { dismiss() } label: { Image(systemName: "xmark").foregroundColor(c.muted) }
+        let (bg, fg): (Color, Color) = {
+            switch verdict {
+            case "VALID": return (c.success.opacity(0.18), c.success)
+            case "INVALID": return (c.danger.opacity(0.18), c.danger)
+            default: return (c.surfaceVariant, c.muted)
             }
-            Text(cred.title).font(.system(size: 14)).foregroundColor(c.muted)
-            QRImageView(content: payload).frame(width: 240, height: 240)
-            Text("Scan to share this credential reference").font(.system(size: 12)).foregroundColor(c.muted)
-            Spacer()
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(c.background.ignoresSafeArea())
+        }()
+        return Text(verdict).font(.system(size: 10, weight: .bold)).foregroundColor(fg)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(Capsule().fill(bg))
     }
 }

@@ -1,11 +1,8 @@
 package io.liberalize.dogtag.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,11 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -31,16 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
-import io.liberalize.dogtag.consent.ConsentMode
-import io.liberalize.dogtag.consent.ConsentSigner
-import io.liberalize.dogtag.consent.SignedConsent
-import io.liberalize.dogtag.consent.VerificationRequest
-import io.liberalize.dogtag.net.Http
-import io.liberalize.dogtag.qr.QrScannerView
 import io.liberalize.dogtag.ui.DogTagTheme
-import io.liberalize.dogtag.wallet.Biometric
-import io.liberalize.dogtag.wallet.Wallet
-import kotlinx.coroutines.launch
 import org.json.JSONObject
 import uniffi.dogtag_standard.buildMerkleRootHex
 import uniffi.dogtag_standard.hashLeafHex
@@ -79,38 +63,19 @@ private fun runParity(json: String): ParityResult = try {
     ParityResult(false, 0, 0, "exception: ${t.message}")
 }
 
+/**
+ * The Verify tab. The user app SCANS — it never displays a QR. The primary action ("Scan a QR") opens
+ * the unified [ScanScreen], which routes to import-a-record or present-a-record (consent) by the QR
+ * shape. The trust-core parity panel below is a real diagnostic (mobile Merkle root == server root).
+ */
 @Composable
-fun VerifyScreen(activity: FragmentActivity) {
+fun VerifyScreen(activity: FragmentActivity, onScan: () -> Unit) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
 
     val parity = remember {
         runParity(context.assets.open("testvectors.json").bufferedReader().use { it.readText() })
-    }
-
-    var scanning by remember { mutableStateOf(false) }
-    var request by remember { mutableStateOf<VerificationRequest?>(null) }
-    var signed by remember { mutableStateOf<SignedConsent?>(null) }
-    var status by remember { mutableStateOf("") }
-
-    if (scanning) {
-        Box(Modifier.fillMaxSize()) {
-            QrScannerView(
-                onResult = { raw ->
-                    scanning = false
-                    request = try { VerificationRequest.parse(raw) } catch (e: Exception) {
-                        status = "Not a verifier QR: ${e.message}"; null
-                    }
-                },
-            )
-            Button(
-                onClick = { scanning = false },
-                modifier = Modifier.padding(20.dp),
-            ) { Text("Cancel") }
-        }
-        return
     }
 
     Column(
@@ -119,7 +84,18 @@ fun VerifyScreen(activity: FragmentActivity) {
     ) {
         Text("Verify", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
 
-        // --- Verify-core parity panel (kept) ---
+        Text(
+            "Scan a vet or groomer's QR to import a verified record, or to present one of your stored " +
+                "records for an on-chain proof-of-verification. Your app only scans — it never shows a QR.",
+            fontSize = 13.sp, color = c.muted,
+        )
+        Button(
+            onClick = onScan,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent),
+        ) { Text("Scan a QR") }
+
+        // --- Verify-core parity panel (real diagnostic) ---
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -135,101 +111,6 @@ fun VerifyScreen(activity: FragmentActivity) {
             Text(parity.detail, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
         }
 
-        // --- Consent signing flow ---
-        Button(
-            onClick = { status = ""; signed = null; request = null; scanning = true },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent),
-        ) { Text("Scan verifier QR") }
-
-        val req = request
-        if (req != null) {
-            ConsentReview(req, activity, onSign = { sc -> signed = sc; status = "Signed locally — ready to submit." })
-        }
-
-        val sc = signed
-        if (sc != null) {
-            Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surfaceVariant).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text("Signed consent (${sc.mode})", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
-                Text("nullifier: ${sc.nullifier.take(18)}…", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
-                if (sc.eddsa != null) {
-                    Text("EdDSA S: ${sc.eddsa.sDec.take(20)}…", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
-                }
-                Button(
-                    onClick = {
-                        val url = request?.callbackUrl
-                        if (url == null) { status = "No callback URL in request; consent built but not submitted."; return@Button }
-                        scope.launch {
-                            status = try {
-                                val r = Http.postJson(url, sc.payloadJson)
-                                "POST $url → ${r.code}"
-                            } catch (e: Exception) { "POST failed: ${e.message}" }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent),
-                ) { Text("Submit to /v1/verify/consent") }
-            }
-        }
-
-        if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = c.muted)
         Spacer(Modifier.aspectRatio(8f))
-    }
-}
-
-@Composable
-private fun ConsentReview(
-    req: VerificationRequest,
-    activity: FragmentActivity,
-    onSign: (SignedConsent) -> Unit,
-) {
-    val c = DogTagTheme.colors
-    val context = LocalContext.current
-    var err by remember { mutableStateOf("") }
-
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text("Verification request", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
-        Field("Verifier", req.verifierName)
-        Field("Mode", if (req.mode == ConsentMode.ZK) "Zero-knowledge (EdDSA-BabyJubjub)" else "ECDSA (EIP-712)")
-        Field("DogTag", req.dogTagId)
-        Field("Purpose", req.purpose.take(18) + "…")
-        Field("Relayer", req.relayer)
-        Spacer(Modifier.aspectRatio(40f))
-        Button(
-            onClick = {
-                err = ""
-                Biometric.prompt(
-                    activity,
-                    title = "Authorize consent",
-                    subtitle = "Sign a ${if (req.mode == ConsentMode.ZK) "ZK" else "standard"} verification consent",
-                    onSuccess = {
-                        try {
-                            val consentPriv = if (req.mode == ConsentMode.ZK) {
-                                Wallet.load(context)?.consent?.prvHex
-                            } else null
-                            onSign(ConsentSigner.sign(req, consentPriv))
-                        } catch (e: Exception) { err = "sign failed: ${e.message}" }
-                    },
-                    onError = { err = it },
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = c.success, contentColor = androidx.compose.ui.graphics.Color.White),
-        ) { Text("Approve & sign") }
-        if (err.isNotBlank()) Text(err, fontSize = 12.sp, color = c.danger)
-    }
-}
-
-@Composable
-private fun Field(label: String, value: String) {
-    val c = DogTagTheme.colors
-    Row(Modifier.fillMaxWidth()) {
-        Text(label, fontSize = 12.sp, color = c.muted, modifier = Modifier.fillMaxWidth(0.32f))
-        Text(value, fontSize = 12.sp, color = c.onBackground, fontFamily = FontFamily.Monospace)
     }
 }

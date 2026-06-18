@@ -70,9 +70,6 @@ dependencies {
     implementation("androidx.camera:camera-view:1.4.1")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
-    // QR generation (share-QR) via ZXing.
-    implementation("com.google.zxing:core:3.5.3")
-
     // Embedded wallet: Android Keystore-gated secret + BIP-39/secp256k1 + biometric prompt.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("androidx.biometric:biometric:1.1.0")
