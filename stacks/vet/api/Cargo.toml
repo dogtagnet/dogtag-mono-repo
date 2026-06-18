@@ -1,0 +1,67 @@
+[package]
+name = "vet-api"
+version = "0.0.0"
+edition = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+description = "DogTag vet business backend (Axum + Alloy custody + dogtag-standard-rs)"
+
+[[bin]]
+name = "vet-api"
+path = "src/main.rs"
+
+[lib]
+name = "vet_api"
+path = "src/lib.rs"
+
+[dependencies]
+dogtag-standard-rs = { path = "../../../crates/dogtag-standard-rs" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+# web
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+http = "1"
+
+# chain
+alloy = { version = "0.8", features = [
+    "full",
+    "node-bindings",
+    "signer-mnemonic",
+    "rpc-types",
+    "json-rpc",
+    "contract",
+] }
+
+# custody / crypto
+bip39 = { version = "2", features = ["rand"] }
+age = { version = "0.11", features = ["armor"] }
+secrecy = "0.10"
+zeroize = { version = "1", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+
+# misc
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+mongodb = { version = "3", optional = true }
+futures = "0.3"
+
+[features]
+default = []
+mongo = ["dep:mongodb"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+hex = { workspace = true }

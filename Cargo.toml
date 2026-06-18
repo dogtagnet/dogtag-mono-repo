@@ -2,7 +2,8 @@
 resolver = "2"
 members = [
     "crates/dogtag-standard-rs",
-    # "crates/dogtag-prover-rs",   # added in Phase 2.5/3
+    "crates/dogtag-prover-rs",
+    "stacks/vet/api",
 ]
 
 [workspace.package]
