@@ -94,15 +94,42 @@ pub fn build_vc(record_type: &str, fields: &Value, dog_tag_id: &str) -> Value {
     cred
 }
 
+/// Project a plain VC into the typed-scalar `{tag,value}` form the flatten/Merkle pipeline requires,
+/// PRESERVING any leaf that `build_vc` already typed (e.g. dogTagId). Mirrors the central `to_typed_vc`.
+fn to_typed(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            // already a typed scalar -> keep as-is
+            if m.len() == 2 && m.contains_key("tag") && m.contains_key("value") {
+                return v.clone();
+            }
+            let mut out = serde_json::Map::new();
+            for (k, val) in m {
+                out.insert(k.clone(), to_typed(val));
+            }
+            Value::Object(out)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(to_typed).collect()),
+        Value::Null => serde_json::json!({ "tag": 0u8, "value": Value::Null }),
+        Value::Bool(b) => serde_json::json!({ "tag": 1u8, "value": b }),
+        Value::String(s) => serde_json::json!({ "tag": 2u8, "value": s }),
+        Value::Number(n) => {
+            let tag = if n.is_i64() || n.is_u64() { 3u8 } else { 4u8 };
+            serde_json::json!({ "tag": tag, "value": n.to_string() })
+        }
+    }
+}
+
 /// Wrap a VC into a `WrappedDoc` using a cryptographically-random salt provider.
 pub fn wrap(record_type: &str, issuer_meta: IssuerMeta, vc: &Value) -> Result<WrappedDoc, String> {
     let _ = record_type;
+    let typed = to_typed(vc); // type every scalar leaf (fixes "non-typed leaf at ..." on form fields)
     let mut salt = || {
         let mut s = [0u8; 16];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut s);
         s
     };
-    wrap_document(vc, issuer_meta, &mut salt).map_err(|e| format!("wrap: {e}"))
+    wrap_document(&typed, issuer_meta, &mut salt).map_err(|e| format!("wrap: {e}"))
 }
 
 /// Convenience: the bytes32 whitelist/issuer key for a record type.
