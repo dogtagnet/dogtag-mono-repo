@@ -52,6 +52,9 @@ pub struct VerifySession {
     pub challenge: String,
     pub status: String, // "pending" | "recorded"
     pub tx_hash: Option<String>,
+    /// the consumed verification nullifier (set on `recorded`, primarily the ZK path).
+    #[serde(default)]
+    pub nullifier: Option<String>,
 }
 
 /// Persisted per-issuer settings (impl §3.8).

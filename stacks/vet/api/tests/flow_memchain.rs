@@ -262,6 +262,92 @@ async fn verify_session_and_zk_consent_stub() {
     assert_eq!(b["mode"], "zk");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn verify_session_status_polls_pending_to_recorded() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let state = state_with(
+        chain,
+        "memchain".to_string(),
+        REGISTRY.to_string(),
+        ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let app = vet_api::router(state);
+    let (_admin, op, backend_addr) = boot_custody(&app).await;
+
+    let purpose = "boarding-checkin";
+    let vk = {
+        use vet_api::verify::verify_key;
+        verify_key(purpose)
+    };
+    mem.whitelist(REGISTRY, &vk, &backend_addr);
+
+    // start a session.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/session/start",
+        Some(&op),
+        Some(serde_json::json!({"purpose": purpose, "recordType":"VACCINATION", "mode":"zk"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
+    let session_id = b["sessionId"].as_str().unwrap().to_string();
+
+    // status read is operator-gated: no session -> 401.
+    let (s, _b) = call(&app, "GET", &format!("/verify/session/{session_id}"), None, None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "status read must be operator-gated");
+
+    // unknown session -> 404.
+    let (s, _b) = call(&app, "GET", "/verify/session/does-not-exist", Some(&op), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "unknown session -> 404");
+
+    // before submit: status pending, no txHash.
+    let (s, b) = call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "status pending: {b}");
+    assert_eq!(b["status"], "pending");
+    assert_eq!(b["mode"], "zk");
+    assert!(b["txHash"].is_null(), "no txHash while pending");
+
+    // submit the ZK consent (MemChain) -> records the attestation.
+    let rt = record_type_key("VACCINATION");
+    let consent = serde_json::json!({
+        "dogTagId": "42",
+        "recordType": rt,
+        "purpose": "0x0000000000000000000000000000000000000000000000000000000000000007",
+        "credentialRoot": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "challenge": "0x00",
+        "relayer": backend_addr,
+        "subject": "0x00000000000000000000000000000000000000cc",
+        "nonce": "1",
+        "nullifier": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "deadline": (common_now() + 300)
+    });
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/consent/submit",
+        Some(&op),
+        Some(serde_json::json!({"sessionId": session_id, "consent": consent, "sig": "0xstub", "mode":"zk"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "consent submit: {b}");
+    let submit_tx = b["txHash"].as_str().unwrap().to_string();
+
+    // after submit: status recorded + txHash + nullifier surfaced.
+    let (s, b) = call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "status recorded: {b}");
+    assert_eq!(b["status"], "recorded");
+    assert_eq!(b["txHash"].as_str().unwrap(), submit_tx, "txHash persisted on the session");
+    assert_eq!(
+        b["nullifier"],
+        "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "nullifier surfaced",
+    );
+}
+
 fn common_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }

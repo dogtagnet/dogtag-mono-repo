@@ -143,6 +143,9 @@ async fn admin_login(State(st): State<AppState>, Json(body): Json<AdminLoginReq>
 struct CreatePetReq {
     name: String,
     microchip: Microchip,
+    /// optional DOG_PROFILE identity fields (species/breed/sex/neuterStatus/dateOfBirth/weightHistory).
+    #[serde(default)]
+    profile: PetProfile,
 }
 
 async fn list_pets(State(st): State<AppState>, headers: HeaderMap) -> Resp {
@@ -190,6 +193,7 @@ async fn create_pet(State(st): State<AppState>, headers: HeaderMap, Json(body): 
         owner_id,
         name: body.name,
         microchip: body.microchip,
+        profile: body.profile,
         dog_tag_id: None,
         root: None,
         mint_tx: None,
@@ -219,7 +223,7 @@ async fn mint_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path
     // allocate the non-personal dogTagId, build + wrap the DOG_PROFILE VC -> root.
     let dog_tag_id = st.store.next_dog_tag_id().await.to_string();
     let meta = app::profile_issuer_meta(&st.cfg);
-    let vc = app::build_profile_vc(&pet.name, &pet.microchip, &dog_tag_id);
+    let vc = app::build_profile_vc(&st.cfg, &pet.name, &pet.microchip, &pet.profile, &dog_tag_id);
     let doc = match app::wrap_vc(meta, &vc) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::BAD_REQUEST, &e),

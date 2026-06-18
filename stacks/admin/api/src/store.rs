@@ -42,12 +42,54 @@ pub struct Microchip {
     pub body_location: String,
 }
 
+/// One dated, unit-bearing weight measurement (DOG_PROFILE `weightHistory[i]`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WeightEntry {
+    /// "kg" | "lb"
+    pub unit: String,
+    /// decimal string (e.g. "22.7") — NEVER a float (precision/leading-zero loss).
+    pub value: String,
+    #[serde(rename = "measuredOn")]
+    pub measured_on: String,
+}
+
+/// Optional DOG_PROFILE identity fields supplied at `POST /v1/pets` (or defaulted at mint).
+/// All optional on input; `build_profile_vc` fills sensible defaults so the wrapped VC always
+/// passes `validate_schema` (impl §1.6 / CHANGESPEC §0/§1.8).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PetProfile {
+    /// taxonomic species, defaults to "Canis lupus familiaris".
+    #[serde(default)]
+    pub species: Option<String>,
+    /// VBO breed id, e.g. "VBO:0200798".
+    #[serde(rename = "breedVbo", default)]
+    pub breed_vbo: Option<String>,
+    /// human breed label.
+    #[serde(rename = "breedLabel", default)]
+    pub breed_label: Option<String>,
+    /// "male" | "female".
+    #[serde(default)]
+    pub sex: Option<String>,
+    /// "intact" | "neutered" | "spayed".
+    #[serde(rename = "neuterStatus", default)]
+    pub neuter_status: Option<String>,
+    /// ISO date "YYYY-MM-DD".
+    #[serde(rename = "dateOfBirth", default)]
+    pub date_of_birth: Option<String>,
+    /// unit-bearing, dated weight history.
+    #[serde(rename = "weightHistory", default)]
+    pub weight_history: Vec<WeightEntry>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pet {
     pub pet_id: String,
     pub owner_id: String,
     pub name: String,
     pub microchip: Microchip,
+    /// optional DOG_PROFILE identity fields (species/breed/sex/neuterStatus/dateOfBirth/weightHistory).
+    #[serde(default)]
+    pub profile: PetProfile,
     /// assigned at mint (non-personal random/sequential id — NEVER a hash of the microchip).
     #[serde(rename = "dogTagId")]
     pub dog_tag_id: Option<String>,

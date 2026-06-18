@@ -312,6 +312,108 @@ async fn verify_consent_relay_stores_receipt() {
     assert_eq!(s, StatusCode::UNAUTHORIZED, "reused session jti must be 401");
 }
 
+// ============================================================================================
+// (f) central mint -> wrap: a created pet mints an SBT end-to-end and the wrapped DOG_PROFILE VC
+//     passes schema validation + integrity verify.
+// ============================================================================================
+
+#[tokio::test]
+async fn pet_mint_produces_valid_dog_profile_sbt() {
+    let (state, _chain, vault, _biz) = hermetic_state();
+    let store = state.store.clone();
+    let app = admin_api::router(state.clone());
+    let wallet = "0x00000000000000000000000000000000000000f1";
+    let (_oid, sess) = signup(&app, "mint@x.io", wallet).await;
+
+    // create a pet WITH the DOG_PROFILE fields the schema requires.
+    let (s, pet) = call(
+        &app,
+        "POST",
+        "/v1/pets",
+        Some(&sess),
+        Some(serde_json::json!({
+            "name": "Rex",
+            "microchip": {
+                "code": "985141006580319", "standard": "ISO_11784_11785",
+                "implantDate": "2024-01-01", "bodyLocation": "neck"
+            },
+            "profile": {
+                "species": "Canis lupus familiaris",
+                "breedVbo": "VBO:0200798",
+                "breedLabel": "Labrador Retriever",
+                "sex": "male",
+                "neuterStatus": "neutered",
+                "dateOfBirth": "2022-03-15",
+                "weightHistory": [
+                    { "unit": "kg", "value": "22.7", "measuredOn": "2024-05-01" }
+                ]
+            }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "create pet: {pet}");
+    let pet_id = pet["id"].as_str().unwrap().to_string();
+
+    // mint SUCCEEDS and returns {dogTagId, root, txHash}.
+    let (s, m) = call(&app, "POST", &format!("/v1/pets/{pet_id}/mint"), Some(&sess), Some(serde_json::json!({}))).await;
+    assert_eq!(s, StatusCode::OK, "mint must succeed: {m}");
+    assert!(m["dogTagId"].as_str().is_some(), "dogTagId present");
+    assert!(m["root"].as_str().is_some(), "root present");
+    assert!(m["txHash"].as_str().is_some(), "txHash present");
+    assert_eq!(m["recordType"], "DOG_PROFILE");
+
+    // the stored wrapped doc opens, has the returned root, and passes integrity verify.
+    let stored = store.get_pet(&pet_id).await.unwrap();
+    assert_eq!(stored.dog_tag_id.as_deref(), m["dogTagId"].as_str());
+    assert_eq!(stored.root.as_deref(), m["root"].as_str());
+    let sealed = stored.sealed_doc.expect("sealed doc stored");
+    let doc_val: serde_json::Value =
+        admin_api::crypto::open_json(&vault, &sealed).await.expect("open sealed doc");
+    let doc: dogtag_standard::wrap::WrappedDoc =
+        serde_json::from_value(doc_val).expect("stored doc is a WrappedDoc");
+    assert_eq!(doc.signature.merkle_root, m["root"].as_str().unwrap(), "stored root == returned root");
+    assert!(admin_api::verify::structural_valid(&doc), "wrapped DOG_PROFILE VC integrity must verify");
+    // the non-personal dogTagId is the disclosed reference identity.
+    assert_eq!(
+        admin_api::verify::dog_tag_id_of(&doc).as_deref(),
+        m["dogTagId"].as_str(),
+        "dogTagId disclosed in the wrapped doc",
+    );
+}
+
+#[tokio::test]
+async fn pet_mint_fills_defaults_when_profile_omitted() {
+    // even with NO profile fields supplied, mint must still emit a schema-valid DOG_PROFILE VC.
+    let (state, _chain, vault, _biz) = hermetic_state();
+    let store = state.store.clone();
+    let app = admin_api::router(state.clone());
+    let (_oid, sess) = signup(&app, "mint2@x.io", "0x00000000000000000000000000000000000000f2").await;
+
+    let (s, pet) = call(
+        &app,
+        "POST",
+        "/v1/pets",
+        Some(&sess),
+        Some(serde_json::json!({
+            "name": "Buddy",
+            "microchip": { "code": "985141006580320", "standard": "ISO_11784_11785", "implantDate": "2024-01-01", "bodyLocation": "neck" }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "create pet: {pet}");
+    let pet_id = pet["id"].as_str().unwrap().to_string();
+
+    let (s, m) = call(&app, "POST", &format!("/v1/pets/{pet_id}/mint"), Some(&sess), Some(serde_json::json!({}))).await;
+    assert_eq!(s, StatusCode::OK, "mint with default profile must succeed: {m}");
+
+    let stored = store.get_pet(&pet_id).await.unwrap();
+    let sealed = stored.sealed_doc.expect("sealed doc stored");
+    let doc_val: serde_json::Value =
+        admin_api::crypto::open_json(&vault, &sealed).await.expect("open sealed doc");
+    let doc: dogtag_standard::wrap::WrappedDoc = serde_json::from_value(doc_val).expect("WrappedDoc");
+    assert!(admin_api::verify::structural_valid(&doc), "defaulted DOG_PROFILE VC integrity must verify");
+}
+
 // --------------------------------------------------------------------------------------------
 // test helpers
 // --------------------------------------------------------------------------------------------

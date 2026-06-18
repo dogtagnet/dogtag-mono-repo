@@ -289,9 +289,12 @@ pub async fn consent_submit(
         tx_hash = sent.tx_hash;
     }
 
+    // expose the consumed nullifier if the consent carried one (ZK path / explicit signal).
+    let nullifier = consent.get("nullifier").and_then(|v| v.as_str()).map(|s| s.to_string());
     let mut updated = s;
     updated.status = "recorded".to_string();
     updated.tx_hash = Some(tx_hash.clone());
+    updated.nullifier = nullifier;
     st.store.update_session(updated).await;
     ok(json!({ "recorded": true, "txHash": tx_hash, "mode": mode }))
 }

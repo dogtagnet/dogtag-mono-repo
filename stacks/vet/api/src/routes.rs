@@ -686,6 +686,7 @@ async fn verify_session_start(
             challenge: challenge_hex,
             status: "pending".to_string(),
             tx_hash: None,
+            nullifier: None,
         })
         .await;
     let qr = format!("{}/v?t={}", st.cfg.deployment_url, token);
@@ -714,6 +715,29 @@ async fn verify_consent_submit(
         return e;
     }
     crate::verify::consent_submit(&st, body.session_id, body.consent, body.sig, body.mode, body.disclosed_doc).await
+}
+
+/// GET /verify/session/{sessionId} — operator-gated status read so the portal's VerifyFlow can poll
+/// pending -> recorded. Returns the stored session's status/mode and (once recorded) the txHash +
+/// nullifier. `nullifier` is exposed when present in the session row (ZK path); null otherwise.
+async fn verify_session_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let s = match st.store.get_session(&session_id).await {
+        Some(s) => s,
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+    ok(json!({
+        "status": s.status,
+        "mode": s.mode,
+        "txHash": s.tx_hash,
+        "nullifier": s.nullifier,
+    }))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -1046,6 +1070,7 @@ pub fn router(state: AppState) -> Router {
         .route("/import/pull", post(import_pull))
         // verify
         .route("/verify/session/start", post(verify_session_start))
+        .route("/verify/session/:id", get(verify_session_status))
         .route("/verify/consent/submit", post(verify_consent_submit))
         // calendar sync (Phase 7, §3.6)
         .route("/calendar/google/connect", get(google_connect))
