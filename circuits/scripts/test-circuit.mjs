@@ -29,7 +29,7 @@ const SDK = resolve(ROOT, "..", "packages", "dogtag-standard-ts", "dist");
 const {buildMerkle} = await import(resolve(SDK, "merkle.js"));
 const {DS_LEAF, DS_NODE, DS_NULLIFIER, FIELD_P} = await import(resolve(SDK, "field.js"));
 
-const N = 8;
+const N = 24; // PRODUCTION: max leaves
 const SNARKJS = resolve(ROOT, "node_modules", ".bin", "snarkjs");
 const snarkjsBin = existsSync(SNARKJS)
   ? SNARKJS
@@ -63,10 +63,17 @@ function check(name, cond) {
 }
 
 // ---------------------------------------------------------------------------
-// Build a sample credential witness object.
+// Build a sample credential witness object for a given numLeaves (1..N=24).
+// The first `numLeaves` slots are REAL leaves (one of them the dogTagId leaf);
+// slots [numLeaves, N) are inert padding pinned to the inactive diagonal
+// (perm[k]==k, sortedLeafHashes[k]==leafHash[k]) so the circuit ignores them.
+// The SDK buildMerkle root is computed over EXACTLY the first `numLeaves` leaves.
 // ---------------------------------------------------------------------------
 async function buildWitness(eddsa, opts = {}) {
   const F = eddsa.babyJub.F;
+
+  const numLeaves = opts.numLeaves ?? 8;
+  if (numLeaves < 1 || numLeaves > N) throw new Error("numLeaves out of range");
 
   // public inputs
   const dogTagId = opts.dogTagId ?? 424242n;
@@ -78,8 +85,11 @@ async function buildWitness(eddsa, opts = {}) {
   // keyPath field for credentialSubject.dogTagId (any fixed constant; bound in-circuit).
   const dogTagKeyPathField = 0xabcdef1234567890n;
 
-  // Build N=8 leaves. Index 3 is the dogTagId leaf; its value == dogTagId, its keyPath == bound.
-  const dogTagIdLeafIndex = 3;
+  // The dogTagId leaf lives at a canonical index strictly inside the active prefix.
+  const dogTagIdLeafIndex = Math.min(3, numLeaves - 1);
+
+  // Build full N-wide canonical arrays. Indices [0,numLeaves) are real; the rest are
+  // padding (kept distinct so leafHash values stay distinct, but never folded).
   const leafKeyPathHashes = [];
   const leafSalts = [];
   const leafTypeTags = [];
@@ -101,17 +111,28 @@ async function buildWitness(eddsa, opts = {}) {
   const leafHashes = leafValues.map((_, i) =>
     hashLeaf(leafKeyPathHashes[i], leafSalts[i], leafTypeTags[i], leafValues[i]));
 
-  // SDK ground-truth root + ascending-sorted leaf order.
-  const sdk = buildMerkle(leafHashes);
-  const sortedLeafHashes = sdk.layers[0]; // ascending-sorted layer 0
+  // SDK ground-truth root over EXACTLY the active prefix [0, numLeaves).
+  const activeHashes = leafHashes.slice(0, numLeaves);
+  const sdk = buildMerkle(activeHashes);
+  const sortedActive = sdk.layers[0]; // ascending-sorted active leaves
   const R = sdk.root;
 
-  // perm[k] = canonical index i such that sortedLeafHashes[k] == leafHashes[i].
-  const perm = sortedLeafHashes.map((h) => {
-    const idx = leafHashes.findIndex((x) => x === h);
-    if (idx < 0) throw new Error("perm: leaf not found");
-    return idx;
-  });
+  // perm for active prefix: perm[k] = canonical index i s.t. sortedActive[k] == leafHashes[i].
+  // Padding slots [numLeaves, N) are pinned to the diagonal (perm[k]==k) and
+  // sortedLeafHashes[k] == leafHash[k] (the padding leaf's own hash) — circuit ignores them.
+  const sortedLeafHashes = [];
+  const perm = [];
+  for (let k = 0; k < N; k++) {
+    if (k < numLeaves) {
+      sortedLeafHashes.push(sortedActive[k]);
+      const idx = activeHashes.findIndex((x) => x === sortedActive[k]);
+      if (idx < 0) throw new Error("perm: active leaf not found");
+      perm.push(idx);
+    } else {
+      sortedLeafHashes.push(leafHashes[k]); // diagonal: out[k] == in[k]
+      perm.push(k);
+    }
+  }
 
   // consent message M = Poseidon6([dogTagId, purpose, relayer, subject, R, nonce]) (no DS tag).
   const M = poseidon([dogTagId, purpose, relayer, subject, R, consentNonce]);
@@ -137,6 +158,7 @@ async function buildWitness(eddsa, opts = {}) {
     purpose: purpose.toString(),
     relayer: relayer.toString(),
     subject: subject.toString(),
+    numLeaves: String(numLeaves),
     leafKeyPathHashes: leafKeyPathHashes.map(String),
     leafTypeTags: leafTypeTags.map(String),
     leafSalts: leafSalts.map(String),
@@ -153,7 +175,7 @@ async function buildWitness(eddsa, opts = {}) {
     S: S.toString(),
   };
 
-  return {input, expected: {dogTagId, purpose, relayer, subject, nullifier, keyHash, R}};
+  return {input, expected: {dogTagId, purpose, relayer, subject, nullifier, keyHash, R, numLeaves}};
 }
 
 // ---------------------------------------------------------------------------
@@ -218,9 +240,30 @@ async function main() {
   // ================= (2) R-PARITY (§9) =================
   console.log("\n[2] R-PARITY: circuit R == SDK buildMerkle root (bit-for-bit)");
   const circuitR = publicSignals[6];
-  check("circuit R == SDK R", circuitR === expected.R.toString());
+  check("circuit R == SDK R (numLeaves=8)", circuitR === expected.R.toString());
   console.log(`      SDK R     = ${expected.R}`);
   console.log(`      circuit R = ${circuitR}`);
+
+  // R-PARITY across MANY leaf counts, including ODD (non-power-of-2) counts that exercise
+  // odd-promotion at multiple levels. For each, the circuit's output R must equal the SDK
+  // buildMerkle root over exactly `numLeaves` leaves.
+  console.log("\n[2b] R-PARITY across leaf counts {1,2,3,5,6,7,13,24} (odd-promotion)");
+  for (const nl of [1, 2, 3, 5, 6, 7, 13, 24]) {
+    const {input: inp, expected: exp} = await buildWitness(eddsa, {numLeaves: nl});
+    const {ok: pok, publicSignals: ps} = await proveAndVerify(inp, "parity-" + nl);
+    const rOk = ps[6] === exp.R.toString();
+    check(`numLeaves=${nl}: prove+verify OK`, pok);
+    check(`numLeaves=${nl}: circuit R == SDK buildMerkle root`, rOk);
+    if (nl === 1) {
+      // Single leaf: SDK root == that leaf; circuit must pass it through unchanged.
+      check(`numLeaves=1: R == the single sorted leaf (pass-through)`,
+        ps[6] === inp.sortedLeafHashes[0]);
+    }
+    if (!rOk) {
+      console.error(`      numLeaves=${nl} SDK R     = ${exp.R}`);
+      console.error(`      numLeaves=${nl} circuit R = ${ps[6]}`);
+    }
+  }
 
   // ================= (3) NEGATIVE TESTS =================
   console.log("\n[3] negative tests");

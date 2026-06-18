@@ -11,14 +11,15 @@
 #     ending in a PUBLIC, verifiable randomness beacon (e.g. a future Ethereum block hash /
 #     drand round) so no single party knows the toxic waste.
 #
-# The circuit has ~31.4k non-linear constraints -> needs 2^15 = 32768 powers (power 15).
+# The PRODUCTION circuit (N=24, depth=5, variable numLeaves) has ~94.5k non-linear
+# constraints -> needs 2^17 = 131072 powers (power 17 >= 94459).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 BUILD="$ROOT/build"
 CLIB="node_modules/circomlib/circuits"
-POWER=15            # 2^15 = 32768 >= 31369 constraints
+POWER=17            # 2^17 = 131072 >= 94459 constraints (N=24/depth=5)
 ENTROPY1="dogtag-dev-ptau-contribution-DO-NOT-USE-IN-PROD"
 ENTROPY2="dogtag-dev-zkey-contribution-DO-NOT-USE-IN-PROD"
 BEACON="0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"

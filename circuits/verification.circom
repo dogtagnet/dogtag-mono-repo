@@ -8,10 +8,11 @@ pragma circom 2.1.9;
 //
 // PROVES (§11.9(d)):
 //   (a) Each leaf = Poseidon5([DS_LEAF, keyPathHash, salt, typeTag, value]); the supplied
-//       sortedLeafHashes is a true PERMUTATION of those leaves and is strictly ascending;
-//       fold sortedLeafHashes with the SDK node rule Poseidon3([DS_NODE, lo, hi]) (sorted pair)
-//       to obtain the credential root R == the SDK's buildMerkle root.
-//   (b) leafValues[dogTagIdLeafIndex] == dogTagId, dogTagIdLeafIndex in [0,N), and the
+//       sortedLeafHashes (first numLeaves entries) is a true PERMUTATION of those leaves and
+//       is strictly ascending; fold those numLeaves leaves with the SDK node rule
+//       Poseidon3([DS_NODE, lo, hi]) (sorted pair) WITH ODD-PROMOTION to obtain the credential
+//       root R == the SDK's buildMerkle root over exactly numLeaves leaves (1..N, any count).
+//   (b) leafValues[dogTagIdLeafIndex] == dogTagId, dogTagIdLeafIndex in [0,numLeaves), and the
 //       dogTagId leaf's keyPath-hash == the bound credentialSubject.dogTagId keyPath field.
 //   (c) EdDSA-BabyJubjub verify (Ax,Ay,S,R8x,R8y) over M = Poseidon6([dogTagId, purpose,
 //       relayer, subject, R, consentNonce]).
@@ -19,12 +20,11 @@ pragma circom 2.1.9;
 //   (e) nullifier = Poseidon6([DS_NULLIFIER, dogTagId, purpose, relayer, subject, consentNonce]).
 //   (f) range-check relayer, subject < 2^160.
 //
-// SIMPLIFICATIONS vs production (documented, see README):
-//   - N=8 (power of two), depth=3. Production credential trees are larger (e.g. N up to 24,
-//     depth 5). For N a power of two the fold is purely pairwise; ODD-PROMOTION for non-power-of-2
-//     N is NOT implemented here (TODO below) — required for production sizes.
-//   - Dev trusted setup only (small ptau, single contributor). Production needs the Hermez ptau
-//     and a >=3-contributor phase-2 ceremony ending in a public beacon.
+// PRODUCTION: N=24 max leaves, depth=5, VARIABLE actual leaf count `numLeaves` (1..24), with
+// correct ODD-PROMOTION matching the SDK's buildMerkle bit-for-bit for any leaf count.
+//
+// CEREMONY: still DEV trusted setup only (small ptau, single contributor) — see README/setup.sh.
+// Production needs the Hermez ptau and a >=3-contributor phase-2 ceremony ending in a public beacon.
 
 include "poseidon.circom";
 include "comparators.circom";
@@ -86,59 +86,8 @@ template LessEqThanField() {
 }
 
 // ---------------------------------------------------------------------------
-// PermutationApply(N): given the matrix-free index list `perm`, prove that
-// `out` is `in` permuted by a genuine permutation. We build an N×N 0/1 matrix
-// sel[k][j] = (perm[k] == j). Constraining each row to sum to 1 and each column
-// to sum to 1 (with sel binary) forces sel to be a permutation matrix, hence
-// perm is a bijection on [0,N). out[k] = sum_j sel[k][j] * in[j].
-// ---------------------------------------------------------------------------
-template PermutationApply(N) {
-    signal input in[N];     // computed leaf hashes (canonical order)
-    signal input perm[N];   // prover-supplied: out[k] == in[perm[k]]
-    signal output out[N];   // == sortedLeafHashes (asserted ascending by caller)
-
-    // sel[k][j] in {0,1}, sel[k][j] == 1 iff perm[k] == j.
-    signal sel[N][N];
-    component eqc[N][N];
-    for (var k = 0; k < N; k++) {
-        for (var j = 0; j < N; j++) {
-            eqc[k][j] = IsEqual();
-            eqc[k][j].in[0] <== perm[k];
-            eqc[k][j].in[1] <== j;
-            sel[k][j] <== eqc[k][j].out; // IsEqual guarantees boolean output
-        }
-    }
-
-    // Each row sums to exactly 1 (perm[k] hits exactly one column in [0,N)).
-    for (var k = 0; k < N; k++) {
-        var rowSum = 0;
-        for (var j = 0; j < N; j++) { rowSum += sel[k][j]; }
-        rowSum === 1;
-    }
-    // Each column sums to exactly 1 (distinctness: no index used twice).
-    for (var j = 0; j < N; j++) {
-        var colSum = 0;
-        for (var k = 0; k < N; k++) { colSum += sel[k][j]; }
-        colSum === 1;
-    }
-
-    // out[k] = sum_j sel[k][j] * in[j]  (= in[perm[k]]). Accumulate via partial
-    // sums so each constraint stays quadratic.
-    signal partial[N][N + 1];
-    for (var k = 0; k < N; k++) {
-        partial[k][0] <== 0;
-        for (var j = 0; j < N; j++) {
-            partial[k][j + 1] <== partial[k][j] + sel[k][j] * in[j];
-        }
-        out[k] <== partial[k][N];
-    }
-}
-
-// ---------------------------------------------------------------------------
 // NodeHash: commutative SDK node — Poseidon3([DS_NODE, lo, hi]) with lo<=hi by
-// integer value. We pick the order with a comparator + mux (252-bit compare is
-// safe: field elements are < 2^254 but distinct sortedLeafHashes are ascending,
-// so a/b already ordered; we still sort defensively to match SDK hashNode).
+// integer value (full-field 254-bit comparator, matching SDK hashNode).
 // ---------------------------------------------------------------------------
 template NodeHash() {
     signal input a;
@@ -164,7 +113,88 @@ template NodeHash() {
 }
 
 // ---------------------------------------------------------------------------
-// Main circuit. N must be a power of two for this pairwise fold (N=8 -> depth 3).
+// PermutationApply(N): given the matrix-free index list `perm`, prove that
+// `out` is `in` permuted by a genuine permutation OVER THE ACTIVE PREFIX [0,numLeaves).
+// We build an N×N 0/1 matrix sel[k][j] = (perm[k] == j). The permutation argument is
+// gated by `active[i] = (i < numLeaves)`: for active rows/cols we force a bijection of
+// the active index set onto itself; inactive rows/cols are forced to the identity
+// (sel[i][i]=1) so they don't smuggle in extra/reordered leaves.
+//   - row k active  : exactly one active column hit -> perm[k] in [0,numLeaves)
+//   - col j active  : hit by exactly one active row
+//   - row/col inactive: pinned to identity (sel[k][k]=1, all others 0)
+// out[k] = sum_j sel[k][j] * in[j]  (= in[perm[k]] for active k).
+// ---------------------------------------------------------------------------
+template PermutationApply(N) {
+    signal input in[N];        // computed leaf hashes (canonical order)
+    signal input perm[N];      // prover-supplied: out[k] == in[perm[k]] for active k
+    signal input active[N];    // active[i] = (i < numLeaves), boolean (asserted by caller)
+    signal output out[N];      // == sortedLeafHashes (active prefix asserted ascending by caller)
+
+    // sel[k][j] in {0,1}, sel[k][j] == 1 iff perm[k] == j.
+    signal sel[N][N];
+    component eqc[N][N];
+    for (var k = 0; k < N; k++) {
+        for (var j = 0; j < N; j++) {
+            eqc[k][j] = IsEqual();
+            eqc[k][j].in[0] <== perm[k];
+            eqc[k][j].in[1] <== j;
+            sel[k][j] <== eqc[k][j].out; // IsEqual guarantees boolean output
+        }
+    }
+
+    // For inactive rows k (k>=numLeaves), pin perm[k]==k so the row maps to its own
+    // (inactive) column. This makes the active sub-block a self-contained bijection.
+    for (var k = 0; k < N; k++) {
+        // (1 - active[k]) * (1 - sel[k][k]) == 0  -> inactive row must hit its diagonal.
+        (1 - active[k]) * (1 - sel[k][k]) === 0;
+    }
+
+    // Row sums: every row (active or inactive) hits exactly one column in [0,N).
+    for (var k = 0; k < N; k++) {
+        var rowSum = 0;
+        for (var j = 0; j < N; j++) { rowSum += sel[k][j]; }
+        rowSum === 1;
+    }
+    // Column sums: every column hit exactly once. Combined with row sums this forces a
+    // permutation of [0,N); combined with the inactive-diagonal pin above, the active
+    // rows must permute exactly among the active columns.
+    for (var j = 0; j < N; j++) {
+        var colSum = 0;
+        for (var k = 0; k < N; k++) { colSum += sel[k][j]; }
+        colSum === 1;
+    }
+
+    // An active row may NOT point at an inactive column (would let a real leaf land in a
+    // padding slot, dropping it from the fold). For active row k: forbid sel[k][j]=1 with
+    // j inactive. Equivalently the active rows hit exactly the active columns. Since row/col
+    // sums already force a full permutation of [0,N) and inactive rows are pinned to their
+    // own diagonal (active[k]==0 -> sel[k][k]=1), the active rows are exactly the complement
+    // and must map onto the active columns. We additionally pin each active row to an active
+    // column explicitly for defense in depth: active[k]*sel[k][j]*(1-active[j]) == 0.
+    signal aMix[N][N];
+    for (var k = 0; k < N; k++) {
+        for (var j = 0; j < N; j++) {
+            aMix[k][j] <== active[k] * sel[k][j];
+            aMix[k][j] * (1 - active[j]) === 0;
+        }
+    }
+
+    // out[k] = sum_j sel[k][j] * in[j]  (= in[perm[k]]). Accumulate via partial
+    // sums so each constraint stays quadratic.
+    signal partial[N][N + 1];
+    for (var k = 0; k < N; k++) {
+        partial[k][0] <== 0;
+        for (var j = 0; j < N; j++) {
+            partial[k][j + 1] <== partial[k][j] + sel[k][j] * in[j];
+        }
+        out[k] <== partial[k][N];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main circuit. N = max leaves (24), depth = 5 levels (24->12->6->3->2->1).
+// VARIABLE leaf count `numLeaves` in [1,N]; only the first numLeaves sorted leaves are
+// folded, with odd-promotion exactly matching the SDK buildMerkle.
 // ---------------------------------------------------------------------------
 template DogTagVerification(N, depth) {
     // ---- The 4 consent-context values (dogTagId, purpose, relayer, subject) ----
@@ -182,12 +212,13 @@ template DogTagVerification(N, depth) {
     signal input subject;    // echoed to outSubject
 
     // ---- PRIVATE inputs ----
+    signal input numLeaves;            // actual leaf count, 1..N (private)
     signal input leafKeyPathHashes[N]; // fieldOf(keyPath) precomputed by prover
     signal input leafTypeTags[N];
     signal input leafSalts[N];         // fieldOf(salt)
     signal input leafValues[N];        // fieldOf(value)
     signal input dogTagIdLeafIndex;    // index (canonical order) of the dogTagId leaf
-    signal input sortedLeafHashes[N];  // SDK ascending-sorted leaf order
+    signal input sortedLeafHashes[N];  // SDK ascending-sorted leaf order (first numLeaves meaningful)
     signal input perm[N];              // sortedLeafHashes[k] == leafHash[perm[k]]
     signal input dogTagKeyPathField;   // fieldOf("credentialSubject.dogTagId") — bound below
     signal input consentNonce;
@@ -213,6 +244,28 @@ template DogTagVerification(N, depth) {
     outSubject  <== subject;
 
     // ===================================================================
+    // numLeaves in [1,N]: range-check with a SMALL comparator (numLeaves<=N<=255).
+    // ===================================================================
+    component nlLo = LessThan(8);   // 1 <= numLeaves  <=>  0 < numLeaves
+    nlLo.in[0] <== 0;
+    nlLo.in[1] <== numLeaves;
+    nlLo.out === 1;
+    component nlHi = LessThan(8);   // numLeaves <= N  <=>  numLeaves < N+1
+    nlHi.in[0] <== numLeaves;
+    nlHi.in[1] <== N + 1;
+    nlHi.out === 1;
+
+    // active[i] = (i < numLeaves), boolean. Small comparators (i,numLeaves <= N <= 255).
+    signal active[N];
+    component activeLt[N];
+    for (var i = 0; i < N; i++) {
+        activeLt[i] = LessThan(8);
+        activeLt[i].in[0] <== i;
+        activeLt[i].in[1] <== numLeaves;
+        active[i] <== activeLt[i].out; // boolean
+    }
+
+    // ===================================================================
     // (a.1) recompute each leaf hash = Poseidon5([DS_LEAF, kp, salt, tag, val])
     // ===================================================================
     signal leafHash[N];
@@ -228,64 +281,132 @@ template DogTagVerification(N, depth) {
     }
 
     // ===================================================================
-    // (a.2) sortedLeafHashes is a true permutation of leafHash[]
+    // (a.2) sortedLeafHashes is a true permutation of leafHash[] over the active prefix.
     // ===================================================================
     component pa = PermutationApply(N);
     for (var i = 0; i < N; i++) {
         pa.in[i] <== leafHash[i];
         pa.perm[i] <== perm[i];
+        pa.active[i] <== active[i];
     }
     for (var i = 0; i < N; i++) {
         sortedLeafHashes[i] === pa.out[i]; // bind prover-supplied sorted array to the permutation
     }
 
     // ===================================================================
-    // (a.3) sortedLeafHashes strictly ascending (SDK sorts ascending by integer
-    //       value; leaf hashes are distinct for distinct credentials). Using
-    //       strict LessThan also rejects duplicate leaves, matching a set.
+    // (a.3) sortedLeafHashes strictly ascending over the ACTIVE prefix [0,numLeaves).
+    //       For each adjacent pair (i,i+1) that is BOTH active (i+1<numLeaves) we force
+    //       sortedLeafHashes[i] < sortedLeafHashes[i+1]. Strict LessThan also rejects
+    //       duplicate leaves, matching a set. Inactive pairs are unconstrained.
     // ===================================================================
+    signal pairActive[N - 1]; // pairActive[i] = (i+1 < numLeaves)
     component asc[N - 1];
     for (var i = 0; i < N - 1; i++) {
+        pairActive[i] <== active[i + 1]; // active[i+1] = (i+1 < numLeaves)
         asc[i] = LessThanField();
         asc[i].a <== sortedLeafHashes[i];
         asc[i].b <== sortedLeafHashes[i + 1];
-        asc[i].out === 1;
+        // require ascending only when both members of the pair are active:
+        // pairActive * (1 - asc.out) == 0  <=>  pairActive=1 -> asc.out=1.
+        pairActive[i] * (1 - asc[i].out) === 0;
     }
 
     // ===================================================================
-    // (a.4) fold sortedLeafHashes bottom-up with the SDK node rule.
-    //       N is a power of two -> pure pairwise fold, no odd-promotion.
-    //       TODO(production): for non-power-of-2 N, PROMOTE a lone odd node
-    //       unchanged (merkle.ts buildMerkle) instead of padding.
+    // (a.4) VARIABLE-COUNT fold with ODD-PROMOTION (matches SDK buildMerkle).
+    //
+    //   level0 = sortedLeafHashes (length N; only first cnt[0]=numLeaves meaningful).
+    //   cnt[0] = numLeaves;  cnt[l+1] = (cnt[l] + 1) >> 1.
+    //   For level l, next-slot k:
+    //       hasPair_k = (2k+1 <  cnt[l])   -> parent = hashNode(level[2k], level[2k+1])
+    //       promote_k = (2k+1 == cnt[l])   -> next   = level[2k] (lone odd node, unchanged)
+    //       next[k]   = hasPair_k ? paired_k : (promote_k ? level[2k] : 0)
+    //   R = level[depth][0]. For numLeaves==1: cnt stays 1 at every level; slot 0 promotes
+    //   each level -> the single leaf passes through unchanged.
     // ===================================================================
-    // level sizes: N, N/2, ..., 1   (depth = log2(N))
-    var levelSize = N;
-    // Flattened storage of node hashes per level.
-    component nh[N]; // upper bound on nodes; we use fewer
-    signal level[depth + 1][N];
+    // maxlen per level: maxlen[0]=N; maxlen[l+1]=ceil(maxlen[l]/2). Compile-time.
+    var maxlen[6];
+    maxlen[0] = N;
+    for (var l = 0; l < depth; l++) { maxlen[l + 1] = (maxlen[l] + 1) \ 2; }
+
+    // cnt[l] as signals. cnt[l+1] = floor((cnt[l]+1)/2). Prover supplies the quotient via
+    // a boolean parity bit and we constrain it; numLeaves<=N so values are tiny (<=24).
+    signal cnt[depth + 1];
+    cnt[0] <== numLeaves;
+    signal cntParity[depth]; // boolean: (cnt[l]+1) is odd? i.e. cnt[l] even -> +1 odd. We derive lo bit of (cnt[l]+1).
+    // We compute q = (cnt[l]+1) >> 1 and r = (cnt[l]+1) & 1, with cnt[l]+1 = 2q + r, r in {0,1}.
+    // r is the prover-free low bit of (cnt[l]+1). Use Num2Bits on (cnt[l]+1) bounded to 6 bits
+    // (cnt<=24 -> cnt+1<=25 < 64). q = sum of bits[1..] ; r = bits[0]. cnt[l+1] = q.
+    component cntBits[depth];
+    for (var l = 0; l < depth; l++) {
+        cntBits[l] = Num2Bits(6); // cnt[l]+1 <= 25 < 64
+        cntBits[l].in <== cnt[l] + 1;
+        // q = (cnt[l]+1) >> 1 = sum_{b=1..5} bit[b] * 2^(b-1)
+        var q = 0;
+        for (var b = 1; b < 6; b++) { q += cntBits[l].out[b] * (1 << (b - 1)); }
+        cnt[l + 1] <== q;
+        cntParity[l] <== cntBits[l].out[0]; // (cnt[l]+1) low bit (unused but documents intent)
+    }
+
+    // level storage. level[0] = sortedLeafHashes. We size each level to maxlen[l].
+    signal level[depth + 1][N]; // over-allocate width N; use maxlen[l] entries.
     for (var i = 0; i < N; i++) { level[0][i] <== sortedLeafHashes[i]; }
 
+    // Per-level fold with promotion selectors.
+    // Count node-hash components: sum over levels of next-slot count = sum maxlen[l+1].
+    var totalNodes = 0;
+    for (var l = 0; l < depth; l++) { totalNodes += maxlen[l + 1]; }
+    component nh[totalNodes];
+    // selectors: hasPair_k = (2k+1 < cnt[l]); promote_k = (2k+1 == cnt[l]).
+    component hasPairLt[totalNodes];
+    component promoteEq[totalNodes];
+    signal hasPair[totalNodes];
+    signal promote[totalNodes];
+    signal pairedVal[totalNodes];
+    signal pairedTerm[totalNodes];
+    signal promoteTerm[totalNodes];
     var nodeIdx = 0;
-    for (var d = 0; d < depth; d++) {
-        var half = levelSize \ 2;
-        for (var i = 0; i < half; i++) {
+    for (var l = 0; l < depth; l++) {
+        var nextLen = maxlen[l + 1];
+        for (var k = 0; k < nextLen; k++) {
+            // hasPair_k = (2k+1 < cnt[l])  ->  both children real.
+            hasPairLt[nodeIdx] = LessThan(8); // 2k+1 <= 2*(N-1)+1 < 256
+            hasPairLt[nodeIdx].in[0] <== 2 * k + 1;
+            hasPairLt[nodeIdx].in[1] <== cnt[l];
+            hasPair[nodeIdx] <== hasPairLt[nodeIdx].out;
+            // promote_k = (2k+1 == cnt[l])  ->  lone odd node at index 2k.
+            promoteEq[nodeIdx] = IsEqual();
+            promoteEq[nodeIdx].in[0] <== 2 * k + 1;
+            promoteEq[nodeIdx].in[1] <== cnt[l];
+            promote[nodeIdx] <== promoteEq[nodeIdx].out;
+
+            // paired_k = hashNode(level[2k], level[2k+1]). Always computed (cheap relative
+            // to selecting); only used when hasPair_k. Inactive slots feed 0/0 -> harmless.
             nh[nodeIdx] = NodeHash();
-            nh[nodeIdx].a <== level[d][2 * i];
-            nh[nodeIdx].b <== level[d][2 * i + 1];
-            level[d + 1][i] <== nh[nodeIdx].out;
+            nh[nodeIdx].a <== level[l][2 * k];
+            nh[nodeIdx].b <== level[l][2 * k + 1];
+            pairedVal[nodeIdx] <== nh[nodeIdx].out;
+
+            // next[k] = hasPair ? paired : (promote ? level[2k] : 0)
+            //         = hasPair*paired + promote*level[2k]   (hasPair,promote mutually excl.)
+            // Split into two quadratic terms (each <==) then sum (linear).
+            pairedTerm[nodeIdx]  <== hasPair[nodeIdx] * pairedVal[nodeIdx];
+            promoteTerm[nodeIdx] <== promote[nodeIdx] * level[l][2 * k];
+            level[l + 1][k] <== pairedTerm[nodeIdx] + promoteTerm[nodeIdx];
             nodeIdx++;
         }
-        levelSize = half;
+        // zero-fill the unused tail of level[l+1] (slots >= nextLen) so they are defined.
+        for (var k = nextLen; k < N; k++) { level[l + 1][k] <== 0; }
     }
     R <== level[depth][0];
 
     // ===================================================================
-    // (b) dogTagId leaf binding: value == dogTagId, index in [0,N), keyPath bound.
+    // (b) dogTagId leaf binding: value == dogTagId, index in [0,numLeaves), keyPath bound.
     // ===================================================================
-    // Range-check index in [0, N).
-    component idxLt = LessThan(8); // N <= 255 here
+    // Range-check index in [0, numLeaves): require active[dogTagIdLeafIndex]==1 via the
+    // one-hot selector below combined with a direct index<numLeaves comparator.
+    component idxLt = LessThan(8); // numLeaves <= N <= 255
     idxLt.in[0] <== dogTagIdLeafIndex;
-    idxLt.in[1] <== N;
+    idxLt.in[1] <== numLeaves;
     idxLt.out === 1;
 
     // Select leafValues[dogTagIdLeafIndex] and leafKeyPathHashes[dogTagIdLeafIndex]
@@ -363,8 +484,8 @@ template DogTagVerification(N, depth) {
     subjectBits.in <== subject;
 }
 
-// Dev/test instantiation: N=8, depth=3 (NOT production 24/5; see header + README).
+// PRODUCTION instantiation: N=24 max leaves, depth=5 (24->12->6->3->2->1), variable numLeaves.
 // No `public [...]` list: ALL public signals are OUTPUTS (declared in spec order), so the
 // snarkjs public-signal vector is exactly [dogTagId, purpose, relayer, subject, nullifier,
 // keyHash, R]. ALL named inputs are therefore PRIVATE.
-component main = DogTagVerification(8, 3);
+component main = DogTagVerification(24, 5);

@@ -5,15 +5,24 @@ Groth16 circuit proving a **consent-bound credential verification** (impl §11.8
 
 ## What it proves
 
-`DogTagVerification(N, depth)` (instantiated `main = DogTagVerification(8, 3)`):
+`DogTagVerification(N, depth)` (instantiated `main = DogTagVerification(24, 5)` — PRODUCTION:
+N=24 max leaves, depth 5, with a **variable** actual leaf count `numLeaves` 1..24):
 
 - **(a)** Recomputes every leaf `Poseidon5([DS_LEAF, keyPathHash, salt, typeTag, value])`, proves
-  the prover-supplied `sortedLeafHashes` is a genuine **permutation** of those leaves (via an
-  N×N one-hot permutation matrix: each row and each column sums to 1) **and** is strictly
-  ascending, then folds it with the SDK node rule `Poseidon3([DS_NODE, lo, hi])` (commutative,
-  `lo<=hi` by a full-field comparator) to obtain the credential root `R`. This `R` equals the
-  SDK `buildMerkle` root bit-for-bit (the §9 root-parity gate).
-- **(b)** `leafValues[dogTagIdLeafIndex] == dogTagId`, `dogTagIdLeafIndex in [0,N)`, and the
+  the prover-supplied `sortedLeafHashes` (the first `numLeaves` entries) is a genuine
+  **permutation** of those leaves (via an N×N one-hot permutation matrix gated to the active
+  prefix `[0,numLeaves)`: each row/column sums to 1, inactive rows pinned to their own diagonal,
+  active rows forbidden from pointing at inactive columns) **and** that the active prefix is
+  strictly ascending, then folds **exactly** those `numLeaves` leaves with the SDK node rule
+  `Poseidon3([DS_NODE, lo, hi])` (commutative, `lo<=hi` by a full-field 254-bit comparator)
+  **with ODD-PROMOTION** to obtain the credential root `R`. The fold is the EXACT static
+  construction: `cnt[0]=numLeaves`, `cnt[l+1]=(cnt[l]+1)>>1`; per next-slot `k`,
+  `hasPair_k = (2k+1 < cnt[l])` (parent = hashNode of the pair) and
+  `promote_k = (2k+1 == cnt[l])` (lone odd node promoted unchanged); `next[k] = hasPair?paired:(promote?level[2k]:0)`.
+  For `numLeaves==1` the cnt stays 1 at every level and slot 0 promotes each level, so the single
+  leaf passes through unchanged. This `R` equals the SDK `buildMerkle` root bit-for-bit for ANY
+  leaf count (the §9 root-parity gate).
+- **(b)** `leafValues[dogTagIdLeafIndex] == dogTagId`, `dogTagIdLeafIndex in [0,numLeaves)`, and the
   dogTagId leaf's keyPath-hash `== dogTagKeyPathField` (the bound `credentialSubject.dogTagId`
   keyPath field).
 - **(c)** EdDSA-BabyJubjub verify `(Ax,Ay,S,R8x,R8y)` over `M = Poseidon6([dogTagId, purpose,
@@ -40,8 +49,8 @@ keyHash, R]`.
 
 ## Constraints
 
-`snarkjs r1cs info`: **31369 non-linear constraints**, 0 public inputs, 7 public outputs,
-56 private inputs, 31362 wires.
+`snarkjs r1cs info`: **94459 non-linear constraints**, 0 public inputs, 7 public outputs,
+157 private inputs, 93764 wires (N=24, depth=5). The DEV ptau is **power 17** (2^17 = 131072 ≥ 94459).
 
 ## Build + test
 
@@ -52,11 +61,10 @@ npm run test-circuit    # round-trip proof + R-parity + negative tests
 
 ## DEV-vs-PRODUCTION simplifications (be honest)
 
-- **N=8, depth=3** (NOT production 24/5). N=8 is a power of two, so the Merkle fold is purely
-  pairwise. **Odd-promotion** (`buildMerkle` promotes a lone odd node unchanged) is NOT
-  implemented — `// TODO(production)` in the fold. Production non-power-of-2 N **requires**
-  odd-promotion to match the SDK root.
-- **DEV trusted setup only** (`scripts/setup.sh`): a *locally generated* power-of-tau (power 15)
+- **N=24, depth=5, variable `numLeaves`** (production sizing). The fold implements full
+  **odd-promotion** (a lone odd node is promoted unchanged, never duplicated), matching the SDK
+  `buildMerkle` for ANY leaf count 1..24. Verified against the SDK for counts {1,2,3,5,6,7,13,24}.
+- **DEV trusted setup only** (`scripts/setup.sh`): a *locally generated* power-of-tau (power 17)
   with a *single* contributor and a throwaway beacon. **Production REQUIRES** the public
   Hermez/Perpetual ptau + a **≥3-contributor** phase-2 ceremony ending in a **public verifiable
   beacon** so no party knows the toxic waste. The dev pipeline is for testing only.
@@ -70,6 +78,7 @@ npm run test-circuit    # round-trip proof + R-parity + negative tests
 - VALIDATED end-to-end: compile, dev setup, witness → groth16 prove → verify, public-signal
   order, R-parity against the built SDK (`packages/dogtag-standard-ts/dist`), and three negative
   tests (tampered dogTagId leaf value, bad EdDSA signature, tampered nullifier public signal).
-- The permutation/sortedness/full-field-comparator machinery is a complete, correct
-  implementation (no stubs) for N=8. Odd-promotion is the only spec item deliberately deferred
-  (TODO), and the ceremony is dev-grade by design.
+- The permutation/sortedness/full-field-comparator machinery and the variable-count
+  odd-promotion fold are a complete, correct implementation (no stubs) for N=24/depth=5. R-parity
+  is verified against the SDK for leaf counts {1,2,3,5,6,7,13,24}. Only the ceremony is dev-grade
+  by design.

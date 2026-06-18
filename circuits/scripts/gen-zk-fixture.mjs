@@ -21,7 +21,8 @@ const SNARKJS = existsSync(resolve(ROOT, "node_modules", ".bin", "snarkjs"))
 const SDK = resolve(ROOT, "..", "packages", "dogtag-standard-ts", "dist");
 const {buildMerkle} = await import(resolve(SDK, "merkle.js"));
 const {DS_LEAF, DS_NULLIFIER} = await import(resolve(SDK, "field.js"));
-const N = 8;
+const N = 24;            // PRODUCTION max leaves
+const NUM_LEAVES = 13;   // NON-power-of-2 -> exercises odd-promotion on-chain
 
 const sh = (args, cwd = ROOT) => execFileSync(SNARKJS, args, {cwd, stdio: ["ignore", "pipe", "pipe"]}).toString();
 const poseidon = (a) => ({2: poseidon2, 3: poseidon3, 5: poseidon5, 6: poseidon6}[a.length](a));
@@ -47,10 +48,17 @@ async function main() {
     else { kp.push(BigInt(100 + i) * 7919n); salt.push(1000n + BigInt(i)); tag.push(BigInt((i % 4) + 1)); val.push(BigInt(500000 + i * 13)); }
   }
   const leaves = val.map((_, i) => hashLeaf(kp[i], salt[i], tag[i], val[i]));
-  const sdk = buildMerkle(leaves);
-  const sortedLeafHashes = sdk.layers[0];
+  // SDK root over EXACTLY the active prefix [0, NUM_LEAVES) — odd-promotion (13 leaves).
+  const active = leaves.slice(0, NUM_LEAVES);
+  const sdk = buildMerkle(active);
+  const sortedActive = sdk.layers[0];
   const R = sdk.root;
-  const perm = sortedLeafHashes.map((h) => leaves.findIndex((x) => x === h));
+  // Active prefix = sorted active leaves; padding slots [NUM_LEAVES,N) pinned to diagonal.
+  const sortedLeafHashes = [], perm = [];
+  for (let k = 0; k < N; k++) {
+    if (k < NUM_LEAVES) { sortedLeafHashes.push(sortedActive[k]); perm.push(active.findIndex((x) => x === sortedActive[k])); }
+    else { sortedLeafHashes.push(leaves[k]); perm.push(k); }
+  }
 
   const M = poseidon([dogTagId, purpose, relayer, subject, R, consentNonce]);
   const prv = Buffer.from("0001020304050607080900010203040506070809000102030405060708090001", "hex");
@@ -62,6 +70,7 @@ async function main() {
 
   const input = {
     dogTagId: String(dogTagId), purpose: String(purpose), relayer: String(relayer), subject: String(subject),
+    numLeaves: String(NUM_LEAVES),
     leafKeyPathHashes: kp.map(String), leafTypeTags: tag.map(String), leafSalts: salt.map(String), leafValues: val.map(String),
     dogTagIdLeafIndex: String(dogTagIdLeafIndex), sortedLeafHashes: sortedLeafHashes.map(String), perm: perm.map(String),
     dogTagKeyPathField: String(dogTagKeyPathField), consentNonce: String(consentNonce),
@@ -80,7 +89,7 @@ async function main() {
     const [a, b, c, pubSignals] = JSON.parse("[" + raw + "]");
 
     const fixture = {
-      _comment: "Real Groth16 proof from circuits/verification.circom (N=8). Solidity calldata (b swapped).",
+      _comment: "Real Groth16 proof from circuits/verification.circom (N=24, numLeaves=13 -> odd-promotion). Solidity calldata (b swapped).",
       a, b, c, pub: pubSignals,
       // on-chain state the Foundry test must establish to make recordVerificationZK pass:
       dogTagId: String(dogTagId),
