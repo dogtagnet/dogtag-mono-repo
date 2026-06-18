@@ -40,6 +40,7 @@ pub fn state_with(
         rpc_url,
         issuer_registry_addr,
         verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
+        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain,
@@ -74,6 +75,33 @@ pub fn state_with_verify(
     confirmations: u64,
     prover: Arc<dyn ProverClient>,
 ) -> AppState {
+    state_with_verify_keys(
+        chain,
+        rpc_url,
+        issuer_registry_addr,
+        verification_registry_addr,
+        "0x0000000000000000000000000000000000000000".to_string(),
+        vaccination_issuer_addr,
+        issuer_domain,
+        confirmations,
+        prover,
+    )
+}
+
+/// Like [`state_with_verify`] but also wires the ConsentKeyRegistry address (the relayer-sponsored
+/// bind target / `keyOf` read surface for the ZK consent path).
+#[allow(clippy::too_many_arguments)]
+pub fn state_with_verify_keys(
+    chain: Arc<dyn ChainClient>,
+    rpc_url: String,
+    issuer_registry_addr: String,
+    verification_registry_addr: String,
+    consent_key_registry_addr: String,
+    vaccination_issuer_addr: String,
+    issuer_domain: String,
+    confirmations: u64,
+    prover: Arc<dyn ProverClient>,
+) -> AppState {
     let mut issuer_addrs = HashMap::new();
     issuer_addrs.insert("VACCINATION".to_string(), vaccination_issuer_addr);
     let cfg = Config {
@@ -81,6 +109,7 @@ pub fn state_with_verify(
         rpc_url,
         issuer_registry_addr,
         verification_registry_addr,
+        consent_key_registry_addr,
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain,
@@ -113,6 +142,7 @@ pub fn state_for_calendar(calendar: Arc<MockCalendar>, central: Arc<MockCentralC
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
         verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
+        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),

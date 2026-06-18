@@ -110,6 +110,51 @@ pub fn hash_typed_consent(consent: &VerificationConsent, verifying_contract: [u8
 }
 
 // ----------------------------------------------------------------------------------------------
+// BindConsentKey EIP-712 — the relayer-sponsored consent-key bind (ConsentKeyRegistry.bindConsentKeyFor).
+//
+// The owner's secp256k1 wallet ECDSA-signs this digest; the relayer broadcasts the bind so the owner
+// never pays gas. Domain == DogTag domain with verifyingContract = the ConsentKeyRegistry address.
+// ----------------------------------------------------------------------------------------------
+
+/// EIP-712 type string for the consent-key bind — field order MUST match the contract typehash.
+pub const BIND_CONSENT_KEY_TYPE_STRING: &str =
+    "BindConsentKey(bytes32 babyJubPubKeyHash,address wallet,uint256 nonce)";
+
+/// keccak256 of the BindConsentKey type string.
+pub fn bind_consent_key_typehash() -> [u8; 32] {
+    keccak(BIND_CONSENT_KEY_TYPE_STRING.as_bytes())
+}
+
+/// keccak256(abi.encode(BIND_TYPEHASH, babyJubPubKeyHash, wallet, nonce)) — the bind struct hash.
+fn bind_struct_hash(key_hash: &[u8; 32], wallet: &[u8; 20], nonce: &[u8; 32]) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(32 * 4);
+    buf.extend_from_slice(&bind_consent_key_typehash());
+    buf.extend_from_slice(key_hash);
+    buf.extend_from_slice(&address_word(wallet));
+    buf.extend_from_slice(nonce);
+    keccak(&buf)
+}
+
+/// The EIP-712 digest the owner's wallet signs to authorize a consent-key bind (impl §1.10):
+/// keccak256(0x1901 || domainSeparator(consentKeyRegistry, chainId) || bindStructHash). The
+/// domain reuses the DogTag domain ("DogTag","1") with verifyingContract = the ConsentKeyRegistry.
+pub fn bind_consent_key_digest(
+    consent_key_registry: [u8; 20],
+    key_hash: &[u8; 32],
+    wallet: &[u8; 20],
+    nonce: &[u8; 32],
+    chain_id: u64,
+) -> [u8; 32] {
+    let ds = domain_separator(consent_key_registry, chain_id);
+    let sh = bind_struct_hash(key_hash, wallet, nonce);
+    let mut buf = Vec::with_capacity(2 + 64);
+    buf.extend_from_slice(&[0x19, 0x01]);
+    buf.extend_from_slice(&ds);
+    buf.extend_from_slice(&sh);
+    keccak(&buf)
+}
+
+// ----------------------------------------------------------------------------------------------
 // Poseidon nullifier / eddsa message / keyHash — over BN254 Fr (parity with poseidon-lite TS leg).
 // ----------------------------------------------------------------------------------------------
 
@@ -185,6 +230,63 @@ mod tests {
             },
             deadline: [0u8; 32],
         }
+    }
+
+    /// Reference impl mirroring stacks/vet/api/tests/verify_onchain.rs::sign_bind_key digest
+    /// construction (byte-exact), to assert `bind_consent_key_digest` produces the same bytes.
+    fn ref_bind_digest(
+        consent_keys: [u8; 20],
+        key_hash: &[u8; 32],
+        wallet: &[u8; 20],
+        nonce: &[u8; 32],
+        chain_id: u64,
+    ) -> [u8; 32] {
+        let domain_typehash = keccak(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        );
+        let name_hash = keccak(b"DogTag");
+        let version_hash = keccak(b"1");
+        let mut chain_word = [0u8; 32];
+        chain_word[24..].copy_from_slice(&chain_id.to_be_bytes());
+        let mut ckw = [0u8; 32];
+        ckw[12..].copy_from_slice(&consent_keys);
+        let mut ds_buf = Vec::new();
+        ds_buf.extend_from_slice(&domain_typehash);
+        ds_buf.extend_from_slice(&name_hash);
+        ds_buf.extend_from_slice(&version_hash);
+        ds_buf.extend_from_slice(&chain_word);
+        ds_buf.extend_from_slice(&ckw);
+        let domain_sep = keccak(&ds_buf);
+
+        let bind_typehash =
+            keccak(b"BindConsentKey(bytes32 babyJubPubKeyHash,address wallet,uint256 nonce)");
+        let mut wallet_word = [0u8; 32];
+        wallet_word[12..].copy_from_slice(wallet);
+        let mut sh_buf = Vec::new();
+        sh_buf.extend_from_slice(&bind_typehash);
+        sh_buf.extend_from_slice(key_hash);
+        sh_buf.extend_from_slice(&wallet_word);
+        sh_buf.extend_from_slice(nonce);
+        let struct_hash = keccak(&sh_buf);
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&[0x19, 0x01]);
+        buf.extend_from_slice(&domain_sep);
+        buf.extend_from_slice(&struct_hash);
+        keccak(&buf)
+    }
+
+    #[test]
+    fn bind_consent_key_digest_matches_sign_bind_key_path() {
+        let registry = [0xABu8; 20];
+        let key_hash = [0x55u8; 32];
+        let wallet = [0x22u8; 20];
+        let mut nonce = [0u8; 32];
+        nonce[31] = 7;
+        let chain_id = 135u64;
+        let got = bind_consent_key_digest(registry, &key_hash, &wallet, &nonce, chain_id);
+        let want = ref_bind_digest(registry, &key_hash, &wallet, &nonce, chain_id);
+        assert_eq!(got, want, "bind digest must match the verify_onchain sign_bind_key construction");
     }
 
     #[test]

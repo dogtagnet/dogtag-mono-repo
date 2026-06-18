@@ -211,6 +211,99 @@ pub async fn third_party_verify(st: &AppState, doc: &WrappedDoc) -> Verdict {
 // /verify/consent/submit orchestration
 // --------------------------------------------------------------------------------------------
 
+/// Parse a Groth16 proof JSON `{a:[2], b:[2][2], c:[2], pubSignals:[7]}` (decimal or 0x-hex strings,
+/// or JSON numbers) into the typed arrays `record_verification_zk` expects. Returns Err on any shape
+/// mismatch (wrong arity, non-string/number elements, etc.).
+fn parse_client_proof(
+    v: &Value,
+) -> Result<([String; 2], [[String; 2]; 2], [String; 2], [String; 7]), String> {
+    // Normalize a single field element to a 0x-less decimal/hex string as the chain layer accepts.
+    let one = |x: &Value, what: &str| -> Result<String, String> {
+        match x {
+            Value::String(s) => Ok(s.trim().to_string()),
+            Value::Number(n) => Ok(n.to_string()),
+            _ => Err(format!("{what}: not a string/number")),
+        }
+    };
+    let arr2 = |key: &str| -> Result<[String; 2], String> {
+        let a = v.get(key).and_then(|x| x.as_array()).ok_or_else(|| format!("{key}: missing/!array"))?;
+        if a.len() != 2 {
+            return Err(format!("{key}: expected len 2"));
+        }
+        Ok([one(&a[0], key)?, one(&a[1], key)?])
+    };
+    let a = arr2("a")?;
+    let c = arr2("c")?;
+    // b is [2][2].
+    let bv = v.get("b").and_then(|x| x.as_array()).ok_or_else(|| "b: missing/!array".to_string())?;
+    if bv.len() != 2 {
+        return Err("b: expected len 2".to_string());
+    }
+    let row = |i: usize| -> Result<[String; 2], String> {
+        let r = bv[i].as_array().ok_or_else(|| format!("b[{i}]: !array"))?;
+        if r.len() != 2 {
+            return Err(format!("b[{i}]: expected len 2"));
+        }
+        Ok([one(&r[0], "b")?, one(&r[1], "b")?])
+    };
+    let b = [row(0)?, row(1)?];
+    // pubSignals[7].
+    let pv = v
+        .get("pubSignals")
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| "pubSignals: missing/!array".to_string())?;
+    if pv.len() != 7 {
+        return Err(format!("pubSignals: expected len 7, got {}", pv.len()));
+    }
+    let mut pub_signals: [String; 7] = Default::default();
+    for (i, x) in pv.iter().enumerate() {
+        pub_signals[i] = one(x, "pubSignals")?;
+    }
+    Ok((a, b, c, pub_signals))
+}
+
+/// Interpret a field-element pubSignal (decimal or 0x-hex) as a 20-byte EVM address `0x…40hex`.
+fn pub_signal_to_address(s: &str) -> Option<String> {
+    use alloy::primitives::U256;
+    let t = s.trim();
+    let u = if let Some(h) = t.strip_prefix("0x") {
+        U256::from_str_radix(h, 16).ok()?
+    } else {
+        U256::from_str_radix(t, 10).ok()?
+    };
+    let bytes = u.to_be_bytes::<32>();
+    Some(format!("0x{}", hex::encode(&bytes[12..])))
+}
+
+/// True iff the field-element string represents a non-zero value (decimal or 0x-hex).
+fn pub_signal_is_nonzero(s: &str) -> bool {
+    use alloy::primitives::U256;
+    let t = s.trim();
+    let u = if let Some(h) = t.strip_prefix("0x") {
+        U256::from_str_radix(h, 16).ok()
+    } else {
+        U256::from_str_radix(t, 10).ok()
+    };
+    u.map(|x| !x.is_zero()).unwrap_or(false)
+}
+
+/// Compare two field-element strings for equality regardless of decimal/hex encoding.
+fn pub_signal_eq(a: &str, b: &str) -> bool {
+    use alloy::primitives::U256;
+    let parse = |s: &str| -> Option<U256> {
+        let t = s.trim();
+        if let Some(h) = t.strip_prefix("0x") {
+            U256::from_str_radix(h, 16).ok()
+        } else {
+            U256::from_str_radix(t, 10).ok()
+        }
+    };
+    match (parse(a), parse(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
 pub async fn consent_submit(
     st: &AppState,
     session_id: String,
@@ -218,6 +311,8 @@ pub async fn consent_submit(
     sig: String,
     mode_override: Option<String>,
     disclosed_doc: Option<Value>,
+    proof: Option<Value>,
+    bind: Option<Value>,
 ) -> Resp {
     let s: VerifySession = match st.store.get_session(&session_id).await {
         Some(s) if s.status == "pending" => s,
@@ -245,6 +340,8 @@ pub async fn consent_submit(
     let consent_root = consent.get("credentialRoot").and_then(|v| v.as_str()).unwrap_or("");
 
     let tx_hash;
+    // Set by the client-supplied-proof ZK branch from pub[4] (the consumed nullifier).
+    let mut session_nullifier: Option<String> = None;
     if mode == "normal" {
         // third-party verify the disclosed doc; require valid.
         let doc_val = match disclosed_doc {
@@ -281,51 +378,179 @@ pub async fn consent_submit(
         };
         tx_hash = sent.tx_hash;
     } else {
-        // ZK path: require consent.credentialRoot == R, run the (stub) prover, assemble pub signals.
+        // ZK path: require consent.credentialRoot == R.
         if consent_root.is_empty() {
             return err(StatusCode::BAD_REQUEST, "zk mode requires consent.credentialRoot");
         }
-        let dog = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("0").to_string();
-        let subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let nonce = consent.get("nonce").and_then(|v| v.as_str()).unwrap_or("0").to_string();
-        // The full circuit input (19 named signals) may be supplied so the REAL prover can run; the
-        // StubProver ignores it. Passed through `consent.circuitInput` when present.
-        let circuit_input_json = consent.get("circuitInput").cloned();
-        let input = crate::prover::ProveInput {
-            dog_tag_id: dog,
-            purpose: consent.get("purpose").and_then(|v| v.as_str()).unwrap_or("0x0").to_string(),
-            relayer: s.relayer.clone(),
-            subject,
-            nonce,
-            r: consent_root.to_string(),
-            eddsa_sig: sig.clone(),
-            circuit_input_json,
-        };
-        let proof = match st.prover.prove(input).await {
-            Ok(p) => p,
-            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("prover: {e}")),
-        };
-        // Broadcast recordVerificationZK(a,b,c,pub) AS the relayer (backend signer at index 0).
-        let sent = match st
-            .chain
-            .record_verification_zk(
-                0,
-                &st.cfg.verification_registry_addr,
-                &proof.a,
-                &proof.b,
-                &proof.c,
-                &proof.pub_signals,
-            )
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("recordVerificationZK: {e}")),
-        };
-        tx_hash = sent.tx_hash;
+
+        if let Some(proof_val) = proof.as_ref() {
+            // CLIENT-SUPPLIED PROOF (true on-device ZK): the owner's phone generated the Groth16
+            // proof locally and we (the relayer) only broadcast it. SKIP server-prove entirely.
+            let (a, b, c, pubs) = match parse_client_proof(proof_val) {
+                Ok(t) => t,
+                Err(e) => return err(StatusCode::BAD_REQUEST, &format!("bad proof: {e}")),
+            };
+            // pubSignals <-> session/consent binding (the on-chain requires are the real gate; this
+            // just stops the relayer paying gas for an unrelated/forged-context proof):
+            //   pub[0]=dogTagId, pub[1]=purpose, pub[2]=relayer (as address), pub[3]=subject,
+            //   pub[4]=nullifier, pub[5]=keyHash, pub[6]=credentialRoot.
+            let pub_relayer = match pub_signal_to_address(&pubs[2]) {
+                Some(a) => a,
+                None => return err(StatusCode::BAD_REQUEST, "pubSignals[2]: bad relayer"),
+            };
+            if !pub_relayer.eq_ignore_ascii_case(&s.relayer) {
+                return err(StatusCode::BAD_REQUEST, "pubSignals.relayer != session relayer");
+            }
+            let expected_purpose = purpose_key(&s.purpose);
+            if !pub_signal_eq(&pubs[1], &expected_purpose) {
+                return err(StatusCode::BAD_REQUEST, "pubSignals.purpose != purpose_key(session.purpose)");
+            }
+            let dog = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("");
+            if !pub_signal_eq(&pubs[0], dog) {
+                return err(StatusCode::BAD_REQUEST, "pubSignals.dogTagId != consent.dogTagId");
+            }
+            if consent_root.is_empty() || !pub_signal_eq(&pubs[6], consent_root) {
+                return err(StatusCode::BAD_REQUEST, "pubSignals.credentialRoot != consent.credentialRoot");
+            }
+            let subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+            if !pub_signal_eq(&pubs[3], subject) {
+                return err(StatusCode::BAD_REQUEST, "pubSignals.subject != consent.subject");
+            }
+            if !pub_signal_is_nonzero(&pubs[4]) {
+                return err(StatusCode::BAD_REQUEST, "pubSignals.nullifier is zero");
+            }
+            if !pub_signal_is_nonzero(&pubs[5]) {
+                return err(StatusCode::BAD_REQUEST, "pubSignals.keyHash is zero");
+            }
+            // CONSENT-KEY BIND (relayer-sponsored, gasless for the owner): recordVerificationZK only
+            // succeeds when keyOf(subject) == keyHash(pub[5]). Read the registry's current binding; if
+            // it already matches pub[5] we skip the bind. Otherwise, an optional `bind` block carrying
+            // the owner's EIP-712 BindConsentKey signature authorizes a permissionless
+            // bindConsentKeyFor broadcast (the relayer pays gas; the owner sig is just data). Without a
+            // bind block AND not yet bound -> a clear 400 (no point paying gas for a doomed record tx).
+            //
+            // pub[3] is the subject as a field element; bind.subject/keyHash must agree with the proof.
+            let subject_addr = match pub_signal_to_address(&pubs[3]) {
+                Some(a) => a,
+                None => return err(StatusCode::BAD_REQUEST, "pubSignals[3]: bad subject"),
+            };
+            // pub[5] keyHash as a 0x.. 32-byte word for the on-chain keyOf comparison + bind calldata.
+            let key_hash_hex = {
+                use alloy::primitives::U256;
+                let t = pubs[5].trim();
+                let u = if let Some(h) = t.strip_prefix("0x") {
+                    U256::from_str_radix(h, 16)
+                } else {
+                    U256::from_str_radix(t, 10)
+                };
+                match u {
+                    Ok(v) => format!("0x{}", hex::encode(v.to_be_bytes::<32>())),
+                    Err(_) => return err(StatusCode::BAD_REQUEST, "pubSignals[5]: bad keyHash"),
+                }
+            };
+            let registry = st.cfg.consent_key_registry_addr.clone();
+            let current_key = match st.chain.consent_key_of(&registry, &subject_addr).await {
+                Ok(k) => k,
+                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("keyOf: {e}")),
+            };
+            let already_bound = pub_signal_eq(&current_key, &key_hash_hex);
+            if !already_bound {
+                let bind_val = match bind.as_ref() {
+                    Some(b) => b,
+                    None => {
+                        return err(
+                            StatusCode::BAD_REQUEST,
+                            "consent key not bound; include bind authorization",
+                        )
+                    }
+                };
+                let bind_subject = bind_val.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                let bind_key_hash = bind_val.get("keyHash").and_then(|v| v.as_str()).unwrap_or("");
+                let owner_sig = bind_val.get("ownerSig").and_then(|v| v.as_str()).unwrap_or("");
+                if owner_sig.is_empty() {
+                    return err(StatusCode::BAD_REQUEST, "bind.ownerSig: missing");
+                }
+                // bind.subject == consent.subject == pub[3] (all the same wallet).
+                let consent_subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                if !bind_subject.eq_ignore_ascii_case(&subject_addr)
+                    || !bind_subject.eq_ignore_ascii_case(consent_subject)
+                {
+                    return err(StatusCode::BAD_REQUEST, "bind.subject != consent.subject/pubSignals[3]");
+                }
+                // bind.keyHash == pub[5].
+                if !pub_signal_eq(bind_key_hash, &key_hash_hex) {
+                    return err(StatusCode::BAD_REQUEST, "bind.keyHash != pubSignals.keyHash");
+                }
+                // Broadcast bindConsentKeyFor AS the relayer (backend signer at index 0) and AWAIT the
+                // receipt before recording, so keyOf(subject) reflects the bind on the record tx.
+                match st
+                    .chain
+                    .bind_consent_key_for(0, &registry, &subject_addr, &key_hash_hex, owner_sig)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("bindConsentKeyFor: {e}")),
+                }
+            }
+            // Broadcast the CLIENT proof AS the relayer (backend signer at index 0).
+            let sent = match st
+                .chain
+                .record_verification_zk(0, &st.cfg.verification_registry_addr, &a, &b, &c, &pubs)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("recordVerificationZK: {e}")),
+            };
+            // The nullifier consumed on-chain is pub[4]; surface it on the session.
+            session_nullifier = Some(pubs[4].clone());
+            tx_hash = sent.tx_hash;
+        } else {
+            // FALLBACK: no client proof -> server-prove (stub/Ark) then broadcast. Used by tests + the
+            // e2e oracle; NOT the true-ZK path.
+            let dog = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("0").to_string();
+            let subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let nonce = consent.get("nonce").and_then(|v| v.as_str()).unwrap_or("0").to_string();
+            // The full circuit input (19 named signals) may be supplied so the REAL prover can run; the
+            // StubProver ignores it. Passed through `consent.circuitInput` when present.
+            let circuit_input_json = consent.get("circuitInput").cloned();
+            let input = crate::prover::ProveInput {
+                dog_tag_id: dog,
+                purpose: consent.get("purpose").and_then(|v| v.as_str()).unwrap_or("0x0").to_string(),
+                relayer: s.relayer.clone(),
+                subject,
+                nonce,
+                r: consent_root.to_string(),
+                eddsa_sig: sig.clone(),
+                circuit_input_json,
+            };
+            let proof = match st.prover.prove(input).await {
+                Ok(p) => p,
+                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("prover: {e}")),
+            };
+            // Broadcast recordVerificationZK(a,b,c,pub) AS the relayer (backend signer at index 0).
+            let sent = match st
+                .chain
+                .record_verification_zk(
+                    0,
+                    &st.cfg.verification_registry_addr,
+                    &proof.a,
+                    &proof.b,
+                    &proof.c,
+                    &proof.pub_signals,
+                )
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("recordVerificationZK: {e}")),
+            };
+            tx_hash = sent.tx_hash;
+        }
     }
 
-    // expose the consumed nullifier if the consent carried one (ZK path / explicit signal).
-    let nullifier = consent.get("nullifier").and_then(|v| v.as_str()).map(|s| s.to_string());
+    // expose the consumed nullifier: from the client proof's pub[4] if present, else the explicit
+    // consent.nullifier signal (server-prove / NORMAL paths).
+    let nullifier = session_nullifier
+        .or_else(|| consent.get("nullifier").and_then(|v| v.as_str()).map(|s| s.to_string()));
     let mut updated = s;
     updated.status = "recorded".to_string();
     updated.tx_hash = Some(tx_hash.clone());

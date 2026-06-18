@@ -66,6 +66,31 @@ pub struct VerifyClaims {
     pub jti: String,
 }
 
+/// Validate a verify-session JWT's claims for the phone-auth path: verify the signature/exp via
+/// `verify_jwt`, then bind the claims to the deployment + the session being acted on. Returns the
+/// decoded `VerifyClaims` on success (the caller decides whether to consume `jti`). The
+/// relayer/purpose/challenge binding against the stored session is the caller's responsibility (it
+/// holds the `VerifySession`); this centralizes the deployment/audience/subject checks shared by the
+/// submit + status handlers.
+pub fn verify_session_jwt(
+    keys: &JwtKeys,
+    token: &str,
+    deployment_url: &str,
+    session_id: &str,
+) -> Result<VerifyClaims, AuthError> {
+    let claims: VerifyClaims = verify_jwt(keys, token, 30)?;
+    if claims.aud != "dogtag-mobile" {
+        return Err(AuthError::BadToken);
+    }
+    if claims.iss != deployment_url {
+        return Err(AuthError::BadToken);
+    }
+    if claims.sub != session_id {
+        return Err(AuthError::BadToken);
+    }
+    Ok(claims)
+}
+
 fn b64(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)

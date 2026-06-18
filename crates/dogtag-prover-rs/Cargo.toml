@@ -9,6 +9,11 @@ description = "DogTag Groth16 proving service (ark-circom + ark-groth16) for the
 [lib]
 name = "dogtag_prover"
 
+# e2e helper: prove from a circuit-input JSON on stdin (scripts/e2e-zk.sh).
+[[bin]]
+name = "prove-stdin"
+path = "src/bin/prove-stdin.rs"
+
 [dependencies]
 # NOTE: ark-circom 0.6 pulls in the ark 0.6 stack. The workspace's `dogtag-standard-rs`
 # pins ark 0.5; the two majors coexist in the lockfile as long as ark TYPES never cross

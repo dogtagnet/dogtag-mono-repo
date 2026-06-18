@@ -251,6 +251,16 @@ typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureStr
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_BABYJUB_CONSENT_KEY_FROM_PRV
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_BABYJUB_CONSENT_KEY_FROM_PRV
+RustBuffer uniffi_dogtag_standard_fn_func_babyjub_consent_key_from_prv(RustBuffer prv_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_BIND_CONSENT_KEY_DIGEST_HEX
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_BIND_CONSENT_KEY_DIGEST_HEX
+RustBuffer uniffi_dogtag_standard_fn_func_bind_consent_key_digest_hex(RustBuffer consent_key_registry_addr, RustBuffer key_hash_hex, RustBuffer wallet_addr, uint64_t nonce, uint64_t chain_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_BUILD_MERKLE_ROOT_HEX
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_BUILD_MERKLE_ROOT_HEX
 RustBuffer uniffi_dogtag_standard_fn_func_build_merkle_root_hex(RustBuffer leaf_hexes, RustCallStatus *_Nonnull out_status
@@ -264,6 +274,11 @@ RustBuffer uniffi_dogtag_standard_fn_func_bytes_to_field_hex(RustBuffer input_he
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_CONSENT_NULLIFIER_HEX
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_CONSENT_NULLIFIER_HEX
 RustBuffer uniffi_dogtag_standard_fn_func_consent_nullifier_hex(RustBuffer dog_tag_id_hex, RustBuffer record_type_hex, RustBuffer purpose_hex, RustBuffer credential_root_hex, RustBuffer challenge_hex, RustBuffer relayer_hex, RustBuffer subject_hex, RustBuffer nonce_hex, RustBuffer deadline_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_DERIVE_BABYJUB_CONSENT_KEY
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_DERIVE_BABYJUB_CONSENT_KEY
+RustBuffer uniffi_dogtag_standard_fn_func_derive_babyjub_consent_key(RustBuffer seed_hex, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_EDDSA_CONSENT_MESSAGE_HEX
@@ -286,15 +301,35 @@ RustBuffer uniffi_dogtag_standard_fn_func_key_hash_hex(RustBuffer ax_hex, RustBu
 RustBuffer uniffi_dogtag_standard_fn_func_nfc_normalize(RustBuffer input, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_PROVE_VERIFICATION
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_PROVE_VERIFICATION
+RustBuffer uniffi_dogtag_standard_fn_func_prove_verification(RustBuffer wrapped_doc_json, RustBuffer consent_json, RustBuffer eddsa_sig, RustBuffer zkey_path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_SIGN_CONSENT_EDDSA
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_SIGN_CONSENT_EDDSA
+RustBuffer uniffi_dogtag_standard_fn_func_sign_consent_eddsa(RustBuffer prv_hex, RustBuffer dog_tag_id_hex, RustBuffer record_type_hex, RustBuffer purpose_hex, RustBuffer credential_root_hex, RustBuffer challenge_hex, RustBuffer relayer_hex, RustBuffer subject_hex, RustBuffer nonce_hex, RustBuffer deadline_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFICATION_CONSENT_TYPEHASH_HEX
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFICATION_CONSENT_TYPEHASH_HEX
 RustBuffer uniffi_dogtag_standard_fn_func_verification_consent_typehash_hex(RustCallStatus *_Nonnull out_status
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFY_CONSENT_EDDSA
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFY_CONSENT_EDDSA
+int8_t uniffi_dogtag_standard_fn_func_verify_consent_eddsa(RustBuffer ax_hex, RustBuffer ay_hex, RustBuffer r8x_hex, RustBuffer r8y_hex, RustBuffer s_dec, RustBuffer dog_tag_id_hex, RustBuffer record_type_hex, RustBuffer purpose_hex, RustBuffer credential_root_hex, RustBuffer challenge_hex, RustBuffer relayer_hex, RustBuffer subject_hex, RustBuffer nonce_hex, RustBuffer deadline_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFY_INTEGRITY
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFY_INTEGRITY
 RustBuffer uniffi_dogtag_standard_fn_func_verify_integrity(RustBuffer wrapped_doc_json, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFY_WHITELIST_KEY_HEX
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_VERIFY_WHITELIST_KEY_HEX
+RustBuffer uniffi_dogtag_standard_fn_func_verify_whitelist_key_hex(RustBuffer purpose_label, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_FN_FUNC_WRAP_DOCUMENT_JSON
@@ -582,6 +617,18 @@ void ffi_dogtag_standard_rust_future_free_void(uint64_t handle
 void ffi_dogtag_standard_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_BABYJUB_CONSENT_KEY_FROM_PRV
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_BABYJUB_CONSENT_KEY_FROM_PRV
+uint16_t uniffi_dogtag_standard_checksum_func_babyjub_consent_key_from_prv(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_BIND_CONSENT_KEY_DIGEST_HEX
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_BIND_CONSENT_KEY_DIGEST_HEX
+uint16_t uniffi_dogtag_standard_checksum_func_bind_consent_key_digest_hex(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_BUILD_MERKLE_ROOT_HEX
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_BUILD_MERKLE_ROOT_HEX
 uint16_t uniffi_dogtag_standard_checksum_func_build_merkle_root_hex(void
@@ -597,6 +644,12 @@ uint16_t uniffi_dogtag_standard_checksum_func_bytes_to_field_hex(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_CONSENT_NULLIFIER_HEX
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_CONSENT_NULLIFIER_HEX
 uint16_t uniffi_dogtag_standard_checksum_func_consent_nullifier_hex(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_DERIVE_BABYJUB_CONSENT_KEY
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_DERIVE_BABYJUB_CONSENT_KEY
+uint16_t uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key(void
     
 );
 #endif
@@ -624,15 +677,39 @@ uint16_t uniffi_dogtag_standard_checksum_func_nfc_normalize(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_PROVE_VERIFICATION
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_PROVE_VERIFICATION
+uint16_t uniffi_dogtag_standard_checksum_func_prove_verification(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_SIGN_CONSENT_EDDSA
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_SIGN_CONSENT_EDDSA
+uint16_t uniffi_dogtag_standard_checksum_func_sign_consent_eddsa(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFICATION_CONSENT_TYPEHASH_HEX
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFICATION_CONSENT_TYPEHASH_HEX
 uint16_t uniffi_dogtag_standard_checksum_func_verification_consent_typehash_hex(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFY_CONSENT_EDDSA
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFY_CONSENT_EDDSA
+uint16_t uniffi_dogtag_standard_checksum_func_verify_consent_eddsa(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFY_INTEGRITY
 #define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFY_INTEGRITY
 uint16_t uniffi_dogtag_standard_checksum_func_verify_integrity(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFY_WHITELIST_KEY_HEX
+#define UNIFFI_FFIDEF_UNIFFI_DOGTAG_STANDARD_CHECKSUM_FUNC_VERIFY_WHITELIST_KEY_HEX
+uint16_t uniffi_dogtag_standard_checksum_func_verify_whitelist_key_hex(void
     
 );
 #endif

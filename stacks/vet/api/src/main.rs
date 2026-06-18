@@ -46,6 +46,10 @@ async fn main() {
             "VERIFICATION_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
+        consent_key_registry_addr: env(
+            "CONSENT_KEY_REGISTRY_ADDR",
+            "0x0000000000000000000000000000000000000000",
+        ),
         issuer_addrs,
         issuer_name: env("ISSUER_NAME", "DogTag Vet"),
         issuer_domain: env("ISSUER_DOMAIN", "vet.example"),

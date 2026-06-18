@@ -155,6 +155,7 @@ fn cfg_for_build() -> vet_api::app::Config {
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: REGISTRY.to_string(),
         verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
+        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),

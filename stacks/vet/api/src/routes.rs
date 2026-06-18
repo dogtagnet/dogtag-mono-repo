@@ -82,6 +82,51 @@ async fn require_operator(st: &AppState, headers: &HeaderMap) -> Result<(), Resp
     }
 }
 
+/// Dual gate for the verify consent/status endpoints: authorize EITHER a valid operator session OR a
+/// valid verify-session JWT bound to `session_id`. The JWT may arrive as `body_jwt` (request field)
+/// or as the `Authorization: Bearer` header. When the JWT path is taken, its `relayer/purpose/
+/// challenge` claims are checked against the stored `VerifySession`. If `consume` is set, the JWT's
+/// `jti` is consumed once-only (replay protection) — used for the SUBMIT, not the (idempotent) status
+/// read. Returns `Ok(true)` if authorized via a session JWT, `Ok(false)` if via operator session.
+async fn require_operator_or_session_jwt(
+    st: &AppState,
+    headers: &HeaderMap,
+    session_id: &str,
+    body_jwt: Option<&str>,
+    consume: bool,
+) -> Result<bool, Resp> {
+    // Operator session first (portal + scripts/e2e-smoke.sh): an op_ bearer satisfies the gate.
+    if let Some(token) = bearer(headers) {
+        if st.store.has_op_session(&token).await {
+            return Ok(false);
+        }
+    }
+    // Otherwise try a verify-session JWT (the owner's phone). Accept it from the body field or the
+    // Bearer header.
+    let jwt = body_jwt
+        .map(|s| s.to_string())
+        .or_else(|| bearer(headers))
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing operator session or session JWT"))?;
+    let claims = auth::verify_session_jwt(&st.jwt, &jwt, &st.cfg.deployment_url, session_id)
+        .map_err(|e| err(StatusCode::UNAUTHORIZED, &format!("session jwt: {e}")))?;
+    // Bind the claims to the stored session (relayer/purpose/challenge).
+    let session = st
+        .store
+        .get_session(session_id)
+        .await
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "session not found"))?;
+    if !claims.relayer.eq_ignore_ascii_case(&session.relayer)
+        || claims.purpose != session.purpose
+        || claims.challenge != session.challenge
+    {
+        return Err(err(StatusCode::UNAUTHORIZED, "session jwt does not match session"));
+    }
+    if consume && !st.store.consume_jti(&claims.jti).await {
+        return Err(err(StatusCode::UNAUTHORIZED, "session jwt already used"));
+    }
+    Ok(true)
+}
+
 /// Require a valid admin session bearer (custody gate). Same mechanism, distinct token prefix.
 async fn require_admin(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
     let token = bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing admin session"))?;
@@ -770,6 +815,19 @@ struct ConsentSubmitReq {
     /// the disclosed wrapped doc (normal path third-party verify input).
     #[serde(rename = "disclosedDoc", default)]
     disclosed_doc: Option<Value>,
+    /// the client-supplied Groth16 proof `{a,b,c,pubSignals}` (on-device ZK path). When present the
+    /// backend SKIPS server-prove and broadcasts these values as the relayer.
+    #[serde(default)]
+    proof: Option<Value>,
+    /// OPTIONAL relayer-sponsored consent-key bind authorization `{ subject, keyHash, ownerSig }`.
+    /// When the ZK path needs keyOf(subject)==keyHash and the key isn't bound yet, the backend
+    /// broadcasts `bindConsentKeyFor` from the relayer signer using the owner's EIP-712 `ownerSig`
+    /// (gasless for the owner). Ignored when the key is already bound.
+    #[serde(default)]
+    bind: Option<Value>,
+    /// the verify-session JWT (phone auth). May also arrive as a `Bearer` token; either is accepted.
+    #[serde(rename = "sessionJwt", default)]
+    session_jwt: Option<String>,
 }
 
 async fn verify_consent_submit(
@@ -777,10 +835,30 @@ async fn verify_consent_submit(
     headers: HeaderMap,
     Json(body): Json<ConsentSubmitReq>,
 ) -> Resp {
-    if let Err(e) = require_operator(&st, &headers).await {
+    // Dual gate: operator session OR a verify-session JWT (the owner's phone). The JWT's jti is
+    // consumed once-only here so a captured submit can't be replayed.
+    if let Err(e) = require_operator_or_session_jwt(
+        &st,
+        &headers,
+        &body.session_id,
+        body.session_jwt.as_deref(),
+        true,
+    )
+    .await
+    {
         return e;
     }
-    crate::verify::consent_submit(&st, body.session_id, body.consent, body.sig, body.mode, body.disclosed_doc).await
+    crate::verify::consent_submit(
+        &st,
+        body.session_id,
+        body.consent,
+        body.sig,
+        body.mode,
+        body.disclosed_doc,
+        body.proof,
+        body.bind,
+    )
+    .await
 }
 
 /// GET /verify/session/{sessionId} — operator-gated status read so the portal's VerifyFlow can poll
@@ -791,7 +869,9 @@ async fn verify_session_status(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Resp {
-    if let Err(e) = require_operator(&st, &headers).await {
+    // Dual gate: operator session OR a verify-session JWT (the owner's phone polling). No jti consume
+    // — status reads are idempotent and polled repeatedly. The JWT arrives via the Bearer header.
+    if let Err(e) = require_operator_or_session_jwt(&st, &headers, &session_id, None, false).await {
         return e;
     }
     let s = match st.store.get_session(&session_id).await {
@@ -1149,6 +1229,8 @@ pub fn public_router(state: AppState) -> Router {
         .route("/verify/session/start", post(verify_session_start))
         .route("/verify/session/:id", get(verify_session_status))
         .route("/verify/consent/submit", post(verify_consent_submit))
+        // alias so the owner's phone can POST consent+proof directly to the groomer host.
+        .route("/v1/verify/consent", post(verify_consent_submit))
         // calendar sync (Phase 7, §3.6)
         .route("/calendar/google/connect", get(google_connect))
         .route("/calendar/google/callback", get(google_callback))

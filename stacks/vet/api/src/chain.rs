@@ -66,6 +66,7 @@ sol! {
     #[sol(rpc)]
     contract IConsentKeyRegistry {
         function bindConsentKey(bytes32 babyJubPubKeyHash, bytes ecdsaSig) external;
+        function bindConsentKeyFor(address wallet, bytes32 babyJubPubKeyHash, bytes ecdsaSig) external;
         function bindNonce(address wallet) external view returns (uint256);
         function keyOf(address wallet) external view returns (bytes32);
     }
@@ -180,6 +181,24 @@ pub trait ChainClient: Send + Sync {
     ) -> Result<VerifiedEvent, ChainError>;
     /// VerificationRegistry.consumed(nullifier).
     async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError>;
+    /// ConsentKeyRegistry.keyOf(wallet) — the bound babyJubPubKeyHash (0x0..0 if unbound). Hex string.
+    async fn consent_key_of(&self, registry_addr: &str, wallet: &str) -> Result<String, ChainError>;
+    /// ConsentKeyRegistry.bindNonce(wallet) — the next bind nonce the owner's EIP-712 sig must use.
+    async fn bind_nonce(&self, registry_addr: &str, wallet: &str) -> Result<U256, ChainError>;
+    /// Broadcast bindConsentKeyFor(wallet, keyHash, ecdsaSig) to the ConsentKeyRegistry FROM the
+    /// backend signer at `account_index` (the relayer pays gas; the owner's EIP-712 sig authorizes).
+    /// Returns the tx hash (awaits the receipt in the Alloy impl). Default = encode + sign_and_send.
+    async fn bind_consent_key_for(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        wallet: &str,
+        key_hash: &str,
+        ecdsa_sig: &str,
+    ) -> Result<SentTx, ChainError> {
+        let calldata = bind_consent_key_for_calldata(wallet, key_hash, ecdsa_sig);
+        self.sign_and_send(account_index, registry_addr, &calldata).await
+    }
     /// Encode issue(bytes32) calldata for `root`.
     fn encode_issue(&self, root: &str) -> String {
         issue_calldata(root)
@@ -301,6 +320,20 @@ pub fn bind_consent_key_calldata(key_hash: &str, ecdsa_sig: &str) -> String {
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
+/// ABI-encode bindConsentKeyFor(wallet, babyJubPubKeyHash, ecdsaSig) — the permissionless,
+/// relayer-sponsored bind. The relayer broadcasts; `ecdsaSig` is the owner's EIP-712 BindConsentKey
+/// signature (recover == wallet on-chain), so the owner never pays gas.
+pub fn bind_consent_key_for_calldata(wallet: &str, key_hash: &str, ecdsa_sig: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let sig = Bytes::from(hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default());
+    let call = IConsentKeyRegistry::bindConsentKeyForCall {
+        wallet: parse_addr(wallet),
+        babyJubPubKeyHash: parse_b256(key_hash),
+        ecdsaSig: sig,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
 // --------------------------------------------------------------------------------------------
 // MemChain — in-memory emulation of issue / isValid / issuedAt / RootIssued + whitelist.
 // --------------------------------------------------------------------------------------------
@@ -320,6 +353,10 @@ struct MemChainInner {
     consumed: HashMap<(String, String), bool>,
     /// txHash -> Verified event emitted by a recordVerification(ZK).
     verified: HashMap<String, VerifiedEvent>,
+    /// (consent_key_registry_addr, wallet) -> bound babyJubPubKeyHash (keyOf).
+    consent_keys: HashMap<(String, String), String>,
+    /// (consent_key_registry_addr, wallet) -> bindNonce (incremented on each successful bind).
+    bind_nonce: HashMap<(String, String), u64>,
     nonce: u64,
     clock: u64,
 }
@@ -343,6 +380,14 @@ impl MemChain {
             (registry.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()),
             true,
         );
+    }
+    /// Pre-bind a consent key (test harness): set `keyOf[wallet]` in the given ConsentKeyRegistry.
+    pub fn set_consent_key(&self, registry: &str, wallet: &str, key_hash: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .consent_keys
+            .insert((registry.to_lowercase(), wallet.to_lowercase()), key_hash.to_lowercase());
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
     fn decode_b32_call(calldata: &str) -> Option<(bool, String)> {
@@ -544,6 +589,47 @@ impl ChainClient for MemChain {
             .get(&(registry_addr.to_lowercase(), nullifier.to_lowercase()))
             .copied()
             .unwrap_or(false))
+    }
+    async fn consent_key_of(&self, registry_addr: &str, wallet: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g
+            .consent_keys
+            .get(&(registry_addr.to_lowercase(), wallet.to_lowercase()))
+            .cloned()
+            .unwrap_or_else(|| format!("0x{}", "0".repeat(64))))
+    }
+    async fn bind_nonce(&self, registry_addr: &str, wallet: &str) -> Result<U256, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let n = g
+            .bind_nonce
+            .get(&(registry_addr.to_lowercase(), wallet.to_lowercase()))
+            .copied()
+            .unwrap_or(0);
+        Ok(U256::from(n))
+    }
+    async fn bind_consent_key_for(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        wallet: &str,
+        key_hash: &str,
+        _ecdsa_sig: &str,
+    ) -> Result<SentTx, ChainError> {
+        // Emulate the on-chain effect: set keyOf[wallet]=keyHash and bump bindNonce. No signature
+        // recovery here — that is enforced on the real chain; MemChain exercises control flow only.
+        let mut g = self.inner.lock().unwrap();
+        let _from = g
+            .signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
+        let reg = registry_addr.to_lowercase();
+        let w = wallet.to_lowercase();
+        g.consent_keys.insert((reg.clone(), w.clone()), key_hash.to_lowercase());
+        *g.bind_nonce.entry((reg, w)).or_insert(0) += 1;
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        Ok(SentTx { tx_hash })
     }
 }
 
@@ -852,6 +938,34 @@ impl ChainClient for AlloyChain {
         let c = IVerificationRegistry::new(parse_addr(registry_addr), provider);
         let r = c
             .consumed(parse_b256(nullifier))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
+    async fn consent_key_of(&self, registry_addr: &str, wallet: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IConsentKeyRegistry::new(parse_addr(registry_addr), provider);
+        let r = c
+            .keyOf(parse_addr(wallet))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(format!("0x{}", hex::encode(r._0.as_slice())))
+    }
+    async fn bind_nonce(&self, registry_addr: &str, wallet: &str) -> Result<U256, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IConsentKeyRegistry::new(parse_addr(registry_addr), provider);
+        let r = c
+            .bindNonce(parse_addr(wallet))
             .call()
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;

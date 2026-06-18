@@ -19,6 +19,9 @@ pub struct Config {
     pub rpc_url: String,
     pub issuer_registry_addr: String,
     pub verification_registry_addr: String,
+    /// ConsentKeyRegistry address (env `CONSENT_KEY_REGISTRY_ADDR`) — the relayer-sponsored
+    /// `bindConsentKeyFor` target and the `keyOf`/`bindNonce` read surface for the ZK consent path.
+    pub consent_key_registry_addr: String,
     /// recordType (string) -> issuer clone address (documentStore).
     pub issuer_addrs: std::collections::HashMap<String, String>,
     pub issuer_name: String,

@@ -354,6 +354,161 @@ async fn verify_session_status_polls_pending_to_recorded() {
     );
 }
 
+const CONSENT_KEYS: &str = "0x00000000000000000000000000000000000000cc";
+
+/// Decimal field-element string for a 0x.. 20-byte address (uint160).
+fn addr_field_dec(addr: &str) -> String {
+    use alloy::primitives::U256;
+    let b = hex::decode(addr.trim_start_matches("0x")).unwrap();
+    let mut w = [0u8; 32];
+    w[12..].copy_from_slice(&b);
+    U256::from_be_bytes(w).to_string()
+}
+
+/// The relayer-sponsored consent-key bind path on the client-supplied-proof ZK branch:
+///   (a) not bound + no bind block -> 400; (b) bind block -> bindConsentKeyFor + record;
+///   (c) already bound -> skip the bind tx and record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zk_client_proof_relayer_sponsored_bind() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let state = state_with_verify_keys(
+        chain,
+        "memchain".to_string(),
+        REGISTRY.to_string(),
+        "0x0000000000000000000000000000000000000000".to_string(),
+        CONSENT_KEYS.to_string(),
+        ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+        Arc::new(vet_api::prover::StubProver),
+    );
+    let app = vet_api::router(state);
+    let (_admin, op, backend_addr) = boot_custody(&app).await;
+
+    let purpose = "boarding-checkin";
+    let vk = {
+        use vet_api::verify::verify_key;
+        verify_key(purpose)
+    };
+    mem.whitelist(REGISTRY, &vk, &backend_addr);
+
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/session/start",
+        Some(&op),
+        Some(serde_json::json!({"purpose": purpose, "recordType":"VACCINATION", "mode":"zk"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
+    let session_id = b["sessionId"].as_str().unwrap().to_string();
+
+    let subject = "0x00000000000000000000000000000000000000dd";
+    let rt = record_type_key("VACCINATION");
+    let credential_root =
+        "0x1111111111111111111111111111111111111111111111111111111111111111";
+    let key_hash = "0x3333333333333333333333333333333333333333333333333333333333333333";
+    // purpose as the registry's reduced bytes32 (purpose_key); pub[1] must equal it.
+    let purpose_b32 = vet_api::verify::purpose_key(purpose);
+
+    let consent = serde_json::json!({
+        "dogTagId": "42",
+        "recordType": rt,
+        "purpose": purpose_b32,
+        "credentialRoot": credential_root,
+        "challenge": "0x00",
+        "relayer": backend_addr,
+        "subject": subject,
+        "nonce": "1",
+        "deadline": (common_now() + 300)
+    });
+    // pubSignals: [dogTagId, purpose, relayer, subject, nullifier, keyHash, credentialRoot].
+    let proof = serde_json::json!({
+        "a": ["1", "2"],
+        "b": [["1", "2"], ["3", "4"]],
+        "c": ["5", "6"],
+        "pubSignals": [
+            "42",
+            purpose_b32,
+            addr_field_dec(&backend_addr),
+            addr_field_dec(subject),
+            "0x4444444444444444444444444444444444444444444444444444444444444444",
+            key_hash,
+            credential_root
+        ]
+    });
+
+    // (a) not bound + no bind block -> 400.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/consent/submit",
+        Some(&op),
+        Some(serde_json::json!({
+            "sessionId": session_id, "consent": consent, "sig": "0xstub",
+            "mode":"zk", "proof": proof
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "unbound + no bind block must 400: {b}");
+    assert!(
+        b["error"].as_str().unwrap_or("").contains("consent key not bound"),
+        "clear 400 message: {b}"
+    );
+
+    // (b) with a bind block -> bindConsentKeyFor + record. keyOf(subject) must end == keyHash.
+    let bind = serde_json::json!({ "subject": subject, "keyHash": key_hash, "ownerSig": "0xowner" });
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/consent/submit",
+        Some(&op),
+        Some(serde_json::json!({
+            "sessionId": session_id, "consent": consent, "sig": "0xstub",
+            "mode":"zk", "proof": proof, "bind": bind
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "bind + record must succeed: {b}");
+    assert_eq!(b["recorded"], true);
+    assert_eq!(
+        mem.consent_key_of(CONSENT_KEYS, subject).await.unwrap().to_lowercase(),
+        key_hash.to_lowercase(),
+        "keyOf(subject) bound to keyHash after submit"
+    );
+
+    // (c) already bound (set keyOf directly) -> a fresh session records WITHOUT a bind block.
+    mem.set_consent_key(CONSENT_KEYS, subject, key_hash);
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/session/start",
+        Some(&op),
+        Some(serde_json::json!({"purpose": purpose, "recordType":"VACCINATION", "mode":"zk"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "session start 2: {b}");
+    let session_id2 = b["sessionId"].as_str().unwrap().to_string();
+    // a distinct nullifier so MemChain doesn't reject the replay.
+    let mut proof2 = proof.clone();
+    proof2["pubSignals"][4] =
+        serde_json::json!("0x5555555555555555555555555555555555555555555555555555555555555555");
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/consent/submit",
+        Some(&op),
+        Some(serde_json::json!({
+            "sessionId": session_id2, "consent": consent, "sig": "0xstub",
+            "mode":"zk", "proof": proof2
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "already-bound submit must succeed without bind block: {b}");
+    assert_eq!(b["recorded"], true);
+}
+
 fn common_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }

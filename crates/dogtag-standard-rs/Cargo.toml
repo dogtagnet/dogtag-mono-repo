@@ -35,5 +35,29 @@ getrandom = "0.2"
 # EdDSA-BabyJubjub signing — big-integer scalar arithmetic over the BabyJubjub sub-group order.
 num-bigint = "0.4"
 
+# ---------------------------------------------------------------------------------------------
+# On-device Groth16 prover (Workstream A) — gated behind the OFF-by-default `prover` feature so
+# default workspace builds (vet-api/admin-api, which depend on this crate) never pull these heavy
+# deps or run the witness-C transpile in build.rs. Both pin the arkworks 0.5 stack (circom-prover
+# 0.1.4 pins ark `=0.5.0`, matching the workspace ark 0.5 deps), so there is no ark major clash.
+# `rust-witness` is also a build-dependency because build.rs calls `transpile::transpile_wasm`.
+circom-prover = { version = "0.1.4", optional = true }
+rust-witness = { version = "0.1.6", optional = true }
+
+[build-dependencies]
+# Only used when the `prover` feature is active; build.rs guards on CARGO_FEATURE_PROVER so the
+# default build does NOTHING here.
+rust-witness = { version = "0.1.6", optional = true }
+
+[features]
+# OFF by default. Enabling pulls circom-prover + rust-witness and activates build.rs transpilation.
+prover = ["dep:circom-prover", "dep:rust-witness"]
+
 [dev-dependencies]
 rand = { workspace = true }
+ark-bn254 = { workspace = true }
+ark-ff = { workspace = true }
+ark-groth16 = { version = "0.5", default-features = false }
+ark-crypto-primitives = { version = "0.5", default-features = false, features = ["snark"] }
+num-bigint = "0.4"
+serde_json = { workspace = true }

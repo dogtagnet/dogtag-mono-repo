@@ -33,5 +33,11 @@ pub mod eddsa;
 
 // Phase 6 — mobile UniFFI binding surface (additive; does not touch the core algorithm modules).
 pub mod ffi;
+
+// Workstream A — on-device Groth16 prover (mopro/circom-prover + rust-witness). Gated behind the
+// OFF-by-default `prover` feature so default workspace builds never pull the heavy deps / build.rs.
+#[cfg(feature = "prover")]
+pub mod prover_ffi;
+
 uniffi::setup_scaffolding!();
 

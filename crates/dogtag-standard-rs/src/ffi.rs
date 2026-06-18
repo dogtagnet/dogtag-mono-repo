@@ -243,6 +243,30 @@ pub fn key_hash_hex(ax_hex: String, ay_hex: String) -> Result<String, FfiError> 
     Ok(format!("0x{}", hex::encode(crate::consent::key_hash(ax, ay))))
 }
 
+/// The EIP-712 digest the owner's secp256k1 wallet signs to authorize a relayer-sponsored
+/// consent-key bind (`ConsentKeyRegistry.bindConsentKeyFor`). Returns 0x.. 32-byte hex of
+/// keccak256(0x1901 || domainSeparator("DogTag","1",chainId,consentKeyRegistry) ||
+/// keccak256(abi.encode(BIND_TYPEHASH, keyHash, wallet, nonce))). NOT feature-gated — mobile
+/// needs it regardless of the `prover` feature. `nonce` is `bindNonce[wallet]` (a uint256 < 2^64
+/// in practice; passed as u64 and BE-padded to 32 bytes).
+#[uniffi::export]
+pub fn bind_consent_key_digest_hex(
+    consent_key_registry_addr: String,
+    key_hash_hex: String,
+    wallet_addr: String,
+    nonce: u64,
+    chain_id: u64,
+) -> Result<String, FfiError> {
+    let registry = decode_word::<20>("consentKeyRegistryAddr", &consent_key_registry_addr)?;
+    let key_hash = decode_word::<32>("keyHash", &key_hash_hex)?;
+    let wallet = decode_word::<20>("walletAddr", &wallet_addr)?;
+    let mut nonce_word = [0u8; 32];
+    nonce_word[24..].copy_from_slice(&nonce.to_be_bytes());
+    let digest =
+        crate::consent::bind_consent_key_digest(registry, &key_hash, &wallet, &nonce_word, chain_id);
+    Ok(format!("0x{}", hex::encode(digest)))
+}
+
 /// Parse a 0x.. 32-byte hex into a field element (reduced mod r if needed, like the TS leg).
 fn field_from_hex(h: &str) -> Result<Fr, FfiError> {
     let s = h.strip_prefix("0x").unwrap_or(h);
@@ -401,4 +425,105 @@ pub fn verify_consent_eddsa(
 #[uniffi::export]
 pub fn nfc_normalize(input: String) -> String {
     nfc(&input)
+}
+
+// --------------------------------------------------------------------------------------------
+// VERIFY-whitelist key (pre-proof relayer check) — NOT feature-gated. The mobile app calls this
+// even WITHOUT the `prover` feature: before signing/proving, it must verify on-chain that the
+// scanned relayer is a whitelisted groomer for this purpose. Byte-for-byte parity with the
+// backend `stacks/vet/api/src/verify.rs` `verify_key`/`purpose_key`:
+//   purpose = keccak256(label) mod BN254_r   (32-byte BE word)
+//   key     = keccak256(abi.encode("VERIFY:", purpose))
+// where abi.encode(string,bytes32) lays out [offset=0x40][purpose word][len=7]["VERIFY:" padded].
+// --------------------------------------------------------------------------------------------
+
+/// `purpose` field element for a purpose label: keccak256(label) reduced mod the BN254 scalar
+/// field r, as a 32-byte big-endian word. Mirrors backend `purpose_key`.
+fn purpose_key_word(label: &str) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut h = Keccak256::new();
+    h.update(label.as_bytes());
+    let digest: [u8; 32] = h.finalize().into();
+    // Reduce mod r in the BN254 scalar field, then re-encode canonical 32-byte BE.
+    let reduced = Fr::from_be_bytes_mod_order(&digest);
+    crate::poseidon::to_be_bytes32(&reduced)
+}
+
+/// The IssuerRegistry whitelist key the VerificationRegistry checks for the relayer on a given
+/// purpose label: `keccak256(abi.encode("VERIFY:", purpose_key(label)))` as `0x..` hex.
+///
+/// Used by the mobile pre-proof check (`IssuerRegistry.isWhitelistedFor(key, relayer)`). Available
+/// even without the `prover` feature. Byte-for-byte parity with backend `verify.rs::verify_key`.
+#[uniffi::export]
+pub fn verify_whitelist_key_hex(purpose_label: String) -> String {
+    use sha3::{Digest, Keccak256};
+    let purpose = purpose_key_word(&purpose_label);
+    // abi.encode(string "VERIFY:", bytes32 purpose):
+    let mut buf = Vec::with_capacity(128);
+    // [0] offset to the string data = 0x40 (after the two head words).
+    let mut off = [0u8; 32];
+    off[31] = 0x40;
+    buf.extend_from_slice(&off);
+    // [1] the bytes32 purpose word.
+    buf.extend_from_slice(&purpose);
+    // [2] string length = 7 ("VERIFY:").
+    let mut len = [0u8; 32];
+    len[31] = 7;
+    buf.extend_from_slice(&len);
+    // [3] string bytes, right-padded to 32.
+    let mut data = [0u8; 32];
+    data[..7].copy_from_slice(b"VERIFY:");
+    buf.extend_from_slice(&data);
+    let mut h = Keccak256::new();
+    h.update(&buf);
+    let key: [u8; 32] = h.finalize().into();
+    format!("0x{}", hex::encode(key))
+}
+
+#[cfg(test)]
+mod verify_key_tests {
+    use super::*;
+
+    /// Independently recompute the backend `verify.rs::verify_key` (keccak + num-bigint mod r,
+    /// the same path alloy's `U256 % r` takes) and assert byte-for-byte parity with our FFI fn.
+    #[test]
+    fn verify_whitelist_key_matches_backend() {
+        use num_bigint::BigUint;
+        use sha3::{Digest, Keccak256};
+        let r = BigUint::parse_bytes(
+            b"21888242871839275222246405745257275088548364400416034343698204186575808495617",
+            10,
+        )
+        .unwrap();
+        let reference = |label: &str| -> String {
+            let mut h = Keccak256::new();
+            h.update(label.as_bytes());
+            let full = BigUint::from_bytes_be(&h.finalize());
+            let reduced = full % &r;
+            let mut purpose = [0u8; 32];
+            let rb = reduced.to_bytes_be();
+            purpose[32 - rb.len()..].copy_from_slice(&rb);
+            let mut buf = Vec::new();
+            let mut off = [0u8; 32];
+            off[31] = 0x40;
+            buf.extend_from_slice(&off);
+            buf.extend_from_slice(&purpose);
+            let mut len = [0u8; 32];
+            len[31] = 7;
+            buf.extend_from_slice(&len);
+            let mut data = [0u8; 32];
+            data[..7].copy_from_slice(b"VERIFY:");
+            buf.extend_from_slice(&data);
+            let mut h2 = Keccak256::new();
+            h2.update(&buf);
+            format!("0x{}", hex::encode(h2.finalize()))
+        };
+        for label in ["boarding_intake", "grooming_intake", "daycare_access", ""] {
+            assert_eq!(
+                verify_whitelist_key_hex(label.to_string()),
+                reference(label),
+                "verify_whitelist_key_hex parity for label {label:?}"
+            );
+        }
+    }
 }
