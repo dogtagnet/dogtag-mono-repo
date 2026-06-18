@@ -9,6 +9,9 @@ settings:
   base:
     # The xcframework headers ship a module.modulemap; nothing else to set globally.
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+    # Automatic signing with the signed-in Apple Developer team (Zhenhao Wu).
+    DEVELOPMENT_TEAM: AYDBUX9433
+    CODE_SIGN_STYLE: Automatic
 
 targets:
   DogTag:
