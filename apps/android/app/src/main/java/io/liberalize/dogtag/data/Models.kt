@@ -150,4 +150,92 @@ class WrappedDoc(val json: String) {
         val rt = recordType.ifBlank { "Record" }
         return rt.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }
     }
+
+    /** The hashes the issuer redacted (selective disclosure). */
+    val obfuscatedCount: Int
+        get() = root.optJSONObject("privacy")?.optJSONArray("obfuscated")?.length() ?: 0
+
+    /**
+     * One decoded Merkle leaf: the dotted key path, the type tag, and the human-readable value.
+     * Leaves in `data` are packed as `"<saltHex>:<tag>:<value>"` (split on the FIRST TWO colons —
+     * the value may itself contain ':').
+     */
+    data class DecodedField(val keyPath: String, val tag: Int, val value: String) {
+        /** A title-cased, human label derived from the keyPath (strips a leading `credentialSubject.`). */
+        val label: String get() = humanizeKeyPath(keyPath)
+    }
+
+    /**
+     * Flatten `data` into an ordered list of decoded leaves. Objects recurse with dotted key paths;
+     * arrays index with `[i]`. Each scalar leaf is parsed `"<salt>:<tag>:<value>"` (first two ':').
+     */
+    fun decodedFields(): List<DecodedField> {
+        val out = ArrayList<DecodedField>()
+        flatten(data, "", out)
+        return out
+    }
+
+    private fun flatten(node: Any?, prefix: String, out: MutableList<DecodedField>) {
+        when (node) {
+            is JSONObject -> {
+                val keys = node.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val child = node.opt(k)
+                    val path = if (prefix.isEmpty()) k else "$prefix.$k"
+                    flatten(child, path, out)
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until node.length()) {
+                    flatten(node.opt(i), "$prefix[$i]", out)
+                }
+            }
+            is String -> out.add(parseLeaf(prefix, node))
+            // Non-string scalars are not part of the packed-leaf format; show as-is.
+            else -> if (node != null && node != JSONObject.NULL) {
+                out.add(DecodedField(prefix, 2, node.toString()))
+            }
+        }
+    }
+
+    companion object {
+        /** Parse a packed `"<salt>:<tag>:<value>"` leaf — split on the FIRST TWO colons only. */
+        fun parseLeaf(keyPath: String, raw: String): DecodedField {
+            val first = raw.indexOf(':')
+            if (first < 0) return DecodedField(keyPath, 2, raw)
+            val second = raw.indexOf(':', first + 1)
+            if (second < 0) return DecodedField(keyPath, 2, raw)
+            val tag = raw.substring(first + 1, second).toIntOrNull() ?: 2
+            val value = raw.substring(second + 1)
+            return DecodedField(keyPath, tag, value)
+        }
+
+        /**
+         * Humanize a dotted keyPath into a Title Case label. Strips a leading `credentialSubject.`,
+         * splits on dots, splits camelCase into words, drops array indices, and title-cases.
+         * e.g. `credentialSubject.microchip.code` -> "Microchip code",
+         *      `vaccineProductName` -> "Vaccine product name".
+         */
+        fun humanizeKeyPath(keyPath: String): String {
+            var path = keyPath.removePrefix("credentialSubject.")
+            // Drop array index brackets, e.g. "vaccinations[0].date" -> "vaccinations.date 1".
+            val idxMatch = Regex("\\[(\\d+)]")
+            val indices = idxMatch.findAll(path).map { it.groupValues[1].toInt() + 1 }.toList()
+            path = idxMatch.replace(path, "")
+            val words = path.split('.')
+                .filter { it.isNotBlank() }
+                .flatMap { splitCamel(it) }
+            if (words.isEmpty()) return keyPath
+            val titled = words.mapIndexed { i, w ->
+                if (i == 0) w.replaceFirstChar { it.uppercase() } else w.lowercase()
+            }.joinToString(" ")
+            return if (indices.isNotEmpty()) "$titled ${indices.joinToString(" ")}" else titled
+        }
+
+        private fun splitCamel(s: String): List<String> =
+            Regex("(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+                .split(s)
+                .filter { it.isNotBlank() }
+    }
 }

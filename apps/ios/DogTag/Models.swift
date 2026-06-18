@@ -99,6 +99,109 @@ struct WrappedDoc {
         let rt = recordType.isEmpty ? "Record" : recordType
         return rt.replacingOccurrences(of: "_", with: " ").capitalized
     }
+
+    /// The number of leaf hashes the issuer redacted (selective disclosure).
+    var obfuscatedCount: Int {
+        let privacy = root["privacy"] as? [String: Any]
+        return (privacy?["obfuscated"] as? [Any])?.count ?? 0
+    }
+
+    /// One decoded Merkle leaf: dotted keyPath, type tag, and human-readable value.
+    struct DecodedField: Identifiable {
+        let keyPath: String
+        let tag: Int
+        let value: String
+        var id: String { keyPath }
+        /// A title-cased label derived from the keyPath (strips a leading `credentialSubject.`).
+        var label: String { WrappedDoc.humanizeKeyPath(keyPath) }
+    }
+
+    /// Flatten `data` into an ordered list of decoded leaves. Objects recurse with dotted key paths;
+    /// arrays index with `[i]`. Each scalar leaf is parsed `"<salt>:<tag>:<value>"` (first two ':').
+    func decodedFields() -> [DecodedField] {
+        var out: [DecodedField] = []
+        WrappedDoc.flatten(data, prefix: "", into: &out)
+        return out
+    }
+
+    private static func flatten(_ node: Any?, prefix: String, into out: inout [DecodedField]) {
+        if let obj = node as? [String: Any] {
+            // Preserve a stable order: sort keys so output is deterministic.
+            for k in obj.keys.sorted() {
+                let path = prefix.isEmpty ? k : "\(prefix).\(k)"
+                flatten(obj[k], prefix: path, into: &out)
+            }
+        } else if let arr = node as? [Any] {
+            for (i, child) in arr.enumerated() {
+                flatten(child, prefix: "\(prefix)[\(i)]", into: &out)
+            }
+        } else if let s = node as? String {
+            out.append(parseLeaf(keyPath: prefix, raw: s))
+        } else if let n = node, !(n is NSNull) {
+            out.append(DecodedField(keyPath: prefix, tag: 2, value: "\(n)"))
+        }
+    }
+
+    /// Parse a packed `"<salt>:<tag>:<value>"` leaf — split on the FIRST TWO colons only
+    /// (the value may itself contain ':').
+    static func parseLeaf(keyPath: String, raw: String) -> DecodedField {
+        guard let first = raw.firstIndex(of: ":") else {
+            return DecodedField(keyPath: keyPath, tag: 2, value: raw)
+        }
+        let afterFirst = raw.index(after: first)
+        guard let second = raw[afterFirst...].firstIndex(of: ":") else {
+            return DecodedField(keyPath: keyPath, tag: 2, value: raw)
+        }
+        let tag = Int(raw[afterFirst..<second]) ?? 2
+        let value = String(raw[raw.index(after: second)...])
+        return DecodedField(keyPath: keyPath, tag: tag, value: value)
+    }
+
+    /// Humanize a dotted keyPath into a Title Case label. Strips a leading `credentialSubject.`,
+    /// splits on dots, splits camelCase into words, drops array indices, title-cases.
+    /// e.g. `credentialSubject.microchip.code` -> "Microchip code".
+    static func humanizeKeyPath(_ keyPath: String) -> String {
+        var path = keyPath
+        if path.hasPrefix("credentialSubject.") {
+            path = String(path.dropFirst("credentialSubject.".count))
+        }
+        // Capture array indices (1-based) and strip the brackets.
+        var indices: [Int] = []
+        do {
+            let re = try NSRegularExpression(pattern: "\\[(\\d+)\\]")
+            let ns = path as NSString
+            for m in re.matches(in: path, range: NSRange(location: 0, length: ns.length)) {
+                if let i = Int(ns.substring(with: m.range(at: 1))) { indices.append(i + 1) }
+            }
+            path = re.stringByReplacingMatches(in: path, range: NSRange(location: 0, length: ns.length), withTemplate: "")
+        } catch {}
+
+        let words = path.split(separator: ".").flatMap { splitCamel(String($0)) }
+        guard !words.isEmpty else { return keyPath }
+        let titled = words.enumerated().map { i, w in
+            i == 0 ? w.prefix(1).uppercased() + w.dropFirst() : w.lowercased()
+        }.joined(separator: " ")
+        return indices.isEmpty ? titled : titled + " " + indices.map(String.init).joined(separator: " ")
+    }
+
+    private static func splitCamel(_ s: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        let chars = Array(s)
+        for (i, ch) in chars.enumerated() {
+            if i > 0, ch.isUppercase {
+                let prev = chars[i - 1]
+                let next: Character? = i + 1 < chars.count ? chars[i + 1] : nil
+                // Boundary: lower/digit -> Upper, or Upper -> Upper followed by lower (acronym end).
+                if prev.isLowercase || prev.isNumber || (prev.isUppercase && (next?.isLowercase ?? false)) {
+                    if !current.isEmpty { out.append(current); current = "" }
+                }
+            }
+            current.append(ch)
+        }
+        if !current.isEmpty { out.append(current) }
+        return out.filter { !$0.isEmpty }
+    }
 }
 
 /// The live ROAX (chainId 135) deployment addresses, loaded from the bundled `roax.json`.

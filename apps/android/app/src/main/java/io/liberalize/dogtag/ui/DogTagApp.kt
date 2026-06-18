@@ -39,9 +39,11 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.AppSettings
+import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.SettingsStore
 import io.liberalize.dogtag.net.CentralApi
+import io.liberalize.dogtag.ui.screens.CredentialDetailScreen
 import io.liberalize.dogtag.ui.screens.DocumentsScreen
 import io.liberalize.dogtag.ui.screens.HomeScreen
 import io.liberalize.dogtag.ui.screens.ProfileScreen
@@ -63,6 +65,7 @@ fun DogTagApp(store: SettingsStore, settings: AppSettings, activity: FragmentAct
     val context = LocalContext.current
     var tab by remember { mutableStateOf(Tab.Home) }
     var scanning by remember { mutableStateOf(false) }
+    var selectedCred by remember { mutableStateOf<Credential?>(null) }
 
     // One-shot central pet sync once the user has an owner session (seeds the local pet store).
     LaunchedEffect(Unit) {
@@ -75,15 +78,18 @@ fun DogTagApp(store: SettingsStore, settings: AppSettings, activity: FragmentAct
 
     Surface(modifier = Modifier.fillMaxSize(), color = c.background) {
         Box(Modifier.fillMaxSize()) {
+            val detail = selectedCred
             if (scanning) {
                 ScanScreen(activity, onDone = { scanning = false })
+            } else if (detail != null) {
+                CredentialDetailScreen(detail, onBack = { selectedCred = null })
             } else {
                 Box(Modifier.fillMaxSize().padding(bottom = 72.dp)) {
                     when (tab) {
                         Tab.Verify -> VerifyScreen(activity, onScan = { scanning = true })
-                        Tab.Travel -> TravelScreen(onScan = { scanning = true })
-                        Tab.Home -> HomeScreen(onScan = { scanning = true })
-                        Tab.Documents -> DocumentsScreen(onScan = { scanning = true })
+                        Tab.Travel -> TravelScreen(onScan = { scanning = true }, onOpen = { selectedCred = it })
+                        Tab.Home -> HomeScreen(onScan = { scanning = true }, onOpen = { selectedCred = it })
+                        Tab.Documents -> DocumentsScreen(onScan = { scanning = true }, onOpen = { selectedCred = it })
                         Tab.Profile -> ProfileScreen(store, settings, activity)
                     }
                 }

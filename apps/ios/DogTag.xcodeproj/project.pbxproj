@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A35C55F156CE4480CF763C /* HomeScreen.swift */; };
+		DDDDDDDDDDDDDDDDDDDDDDD1 /* CredentialDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDDDDDDDDDDDDDDDDDDDDDD2 /* CredentialDetailScreen.swift */; };
 		01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21052A141B470C3ACE0815DA /* LocalStore.swift */; };
 		0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AB4F26FEB853C4B49F7988 /* Consent.swift */; };
 		0FAAB8287B508C32516CFDE9 /* RecordImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0236E3495680C88FA6DA3FD /* RecordImporter.swift */; };
@@ -35,6 +36,7 @@
 
 /* Begin PBXFileReference section */
 		05A35C55F156CE4480CF763C /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
+		DDDDDDDDDDDDDDDDDDDDDDD2 /* CredentialDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialDetailScreen.swift; sourceTree = "<group>"; };
 		1DE9492A41E44C4441AF7189 /* DogTagFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = DogTagFFI.xcframework; sourceTree = "<group>"; };
 		21052A141B470C3ACE0815DA /* LocalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStore.swift; sourceTree = "<group>"; };
 		3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagApp.swift; sourceTree = "<group>"; };
@@ -90,6 +92,7 @@
 				58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */,
 				3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */,
 				05A35C55F156CE4480CF763C /* HomeScreen.swift */,
+				DDDDDDDDDDDDDDDDDDDDDDD2 /* CredentialDetailScreen.swift */,
 				85DFF42E4A240519092B9764 /* Keccak256.swift */,
 				21052A141B470C3ACE0815DA /* LocalStore.swift */,
 				78E305C5EDBCBAB54068928D /* Models.swift */,
@@ -205,6 +208,7 @@
 				3F1ED6BFE55CC539565CF5B3 /* DocumentsScreen.swift in Sources */,
 				2D898909BA2816F7807E1DAC /* DogTagApp.swift in Sources */,
 				01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */,
+				DDDDDDDDDDDDDDDDDDDDDDD1 /* CredentialDetailScreen.swift in Sources */,
 				88E11CB08CC2C81AE51118FA /* Keccak256.swift in Sources */,
 				01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */,
 				26286860F2F0C9B67191AAF6 /* Models.swift in Sources */,

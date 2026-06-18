@@ -50,7 +50,7 @@ import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
 
 @Composable
-fun HomeScreen(onScan: () -> Unit) {
+fun HomeScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val store = remember { LocalStore.get(context) }
@@ -106,15 +106,15 @@ fun HomeScreen(onScan: () -> Unit) {
                 )
             } else {
                 GroupCard(CredentialGroup.Health, Icons.Filled.Favorite, c.healthTint, c.danger,
-                    petCreds, expanded == CredentialGroup.Health) {
+                    petCreds, expanded == CredentialGroup.Health, onOpen) {
                     expanded = if (expanded == CredentialGroup.Health) null else CredentialGroup.Health
                 }
                 GroupCard(CredentialGroup.Service, Icons.Filled.Shield, c.serviceTint, c.success,
-                    petCreds, expanded == CredentialGroup.Service) {
+                    petCreds, expanded == CredentialGroup.Service, onOpen) {
                     expanded = if (expanded == CredentialGroup.Service) null else CredentialGroup.Service
                 }
                 GroupCard(CredentialGroup.Travel, Icons.Filled.Flight, c.travelTint, Color(0xFF2F6BFF),
-                    petCreds, expanded == CredentialGroup.Travel) {
+                    petCreds, expanded == CredentialGroup.Travel, onOpen) {
                     expanded = if (expanded == CredentialGroup.Travel) null else CredentialGroup.Travel
                 }
             }
@@ -215,6 +215,7 @@ private fun GroupCard(
     iconTint: Color,
     creds: List<Credential>,
     expanded: Boolean,
+    onOpen: (Credential) -> Unit,
     onToggle: () -> Unit,
 ) {
     val c = DogTagTheme.colors
@@ -239,12 +240,17 @@ private fun GroupCard(
         }
         if (expanded) {
             items.forEach { cred ->
-                Column(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surface).padding(12.dp),
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surface)
+                        .clickable { onOpen(cred) }.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(cred.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
-                    Text("${cred.recordType} · ${cred.verdict}", fontSize = 12.sp, color = c.muted)
-                    if (cred.issuer.isNotBlank()) Text(cred.issuer, fontSize = 11.sp, color = c.muted)
+                    Column(Modifier.weight(1f)) {
+                        Text(cred.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
+                        Text("${cred.recordType} · ${cred.verdict}", fontSize = 12.sp, color = c.muted)
+                        if (cred.issuer.isNotBlank()) Text(cred.issuer, fontSize = 11.sp, color = c.muted)
+                    }
+                    Icon(Icons.Filled.ChevronRight, "Open", tint = c.muted)
                 }
             }
         }

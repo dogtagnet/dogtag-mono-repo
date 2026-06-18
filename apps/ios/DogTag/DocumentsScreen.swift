@@ -5,6 +5,7 @@ struct DocumentsScreen: View {
     @ObservedObject private var store = LocalStore.shared
     let onScan: () -> Void
     @State private var filterPetId: String? = nil   // nil == All pets
+    @State private var detailCred: Credential? = nil
 
     private var shown: [Credential] {
         filterPetId == nil ? store.credentials : store.credentials.filter { $0.dogTagId == filterPetId }
@@ -27,27 +28,32 @@ struct DocumentsScreen: View {
                         Text("No records for this dog yet.").font(.system(size: 13)).foregroundColor(c.muted)
                     }
                     ForEach(shown) { cred in
-                        HStack {
-                            ZStack {
-                                Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
-                                Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                        Button { detailCred = cred } label: {
+                            HStack {
+                                ZStack {
+                                    Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
+                                    Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                                }
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
+                                    Text("\(cred.group.title) · \(cred.recordType)").font(.system(size: 12)).foregroundColor(c.muted)
+                                    let petName = store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
+                                    Text(petName).font(.system(size: 11)).foregroundColor(c.muted)
+                                }
+                                Spacer()
+                                VerdictBadge(verdict: cred.verdict)
                             }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                                Text("\(cred.group.title) · \(cred.recordType)").font(.system(size: 12)).foregroundColor(c.muted)
-                                let petName = store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
-                                Text(petName).font(.system(size: 11)).foregroundColor(c.muted)
-                            }
-                            Spacer()
-                            VerdictBadge(verdict: cred.verdict)
-                        }
-                        .padding(14)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
+                            .padding(14)
+                            .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
+                        }.buttonStyle(.plain)
                     }
                 }
                 Spacer(minLength: 24)
             }
             .padding(20)
+        }
+        .sheet(item: $detailCred) { cred in
+            CredentialDetailScreen(cred: cred).environment(\.dogTagColors, c)
         }
     }
 }

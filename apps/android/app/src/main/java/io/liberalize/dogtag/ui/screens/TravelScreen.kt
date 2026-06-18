@@ -1,6 +1,7 @@
 package io.liberalize.dogtag.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.CredentialGroup
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.ui.DogTagTheme
@@ -43,7 +45,7 @@ import io.liberalize.dogtag.ui.SectionTitle
  * until a travel record is scanned in.
  */
 @Composable
-fun TravelScreen(onScan: () -> Unit) {
+fun TravelScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val store = remember { LocalStore.get(context) }
@@ -86,7 +88,8 @@ fun TravelScreen(onScan: () -> Unit) {
         }
         travel.forEach { cred ->
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.surface).padding(14.dp),
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.surface)
+                    .clickable { onOpen(cred) }.padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.size(38.dp).clip(CircleShape).background(c.surfaceVariant), contentAlignment = Alignment.Center) {

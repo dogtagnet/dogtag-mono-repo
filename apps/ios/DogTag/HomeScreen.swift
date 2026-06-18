@@ -6,6 +6,7 @@ struct HomeScreen: View {
     let onScan: () -> Void
     @State private var expanded: CredentialGroup? = nil
     @State private var selectedPetId: String? = nil
+    @State private var detailCred: Credential? = nil
 
     private var currentPet: Pet? {
         store.pets.first { $0.dogTagId == selectedPetId } ?? store.pets.first
@@ -53,6 +54,9 @@ struct HomeScreen: View {
                 Spacer(minLength: 24)
             }
             .padding(20)
+        }
+        .sheet(item: $detailCred) { cred in
+            CredentialDetailScreen(cred: cred).environment(\.dogTagColors, c)
         }
     }
 
@@ -110,14 +114,20 @@ struct HomeScreen: View {
             .buttonStyle(.plain)
             if expanded == group {
                 ForEach(items) { cred in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                        Text("\(cred.recordType) · \(cred.verdict)").font(.system(size: 12)).foregroundColor(c.muted)
-                        if !cred.issuer.isEmpty { Text(cred.issuer).font(.system(size: 11)).foregroundColor(c.muted) }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
+                    Button { detailCred = cred } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
+                                Text("\(cred.recordType) · \(cred.verdict)").font(.system(size: 12)).foregroundColor(c.muted)
+                                if !cred.issuer.isEmpty { Text(cred.issuer).font(.system(size: 11)).foregroundColor(c.muted) }
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundColor(c.muted).font(.system(size: 12))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
+                    }.buttonStyle(.plain)
                 }
             }
         }

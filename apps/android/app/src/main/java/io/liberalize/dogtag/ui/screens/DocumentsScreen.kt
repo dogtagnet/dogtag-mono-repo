@@ -34,13 +34,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.Pet
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
 
 @Composable
-fun DocumentsScreen(onScan: () -> Unit) {
+fun DocumentsScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val store = remember { LocalStore.get(context) }
@@ -76,7 +77,8 @@ fun DocumentsScreen(onScan: () -> Unit) {
         }
         shown.forEach { cred ->
             Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.surface).padding(14.dp),
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.surface)
+                    .clickable { onOpen(cred) }.padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(

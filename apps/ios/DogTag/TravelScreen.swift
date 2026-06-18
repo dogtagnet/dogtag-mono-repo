@@ -8,6 +8,7 @@ struct TravelScreen: View {
     @ObservedObject private var store = LocalStore.shared
     let onScan: () -> Void
     @State private var filterPetId: String? = nil
+    @State private var detailCred: Credential? = nil
 
     private var travel: [Credential] {
         store.credentials
@@ -38,26 +39,31 @@ struct TravelScreen: View {
                         Text("No travel records for this dog yet.").font(.system(size: 13)).foregroundColor(c.muted)
                     }
                     ForEach(travel) { cred in
-                        HStack {
-                            ZStack {
-                                Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
-                                Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                        Button { detailCred = cred } label: {
+                            HStack {
+                                ZStack {
+                                    Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
+                                    Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                                }
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
+                                    let petName = store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
+                                    Text("\(petName) · \(cred.recordType)").font(.system(size: 12)).foregroundColor(c.muted)
+                                }
+                                Spacer()
+                                VerdictBadge(verdict: cred.verdict)
                             }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                                let petName = store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
-                                Text("\(petName) · \(cred.recordType)").font(.system(size: 12)).foregroundColor(c.muted)
-                            }
-                            Spacer()
-                            VerdictBadge(verdict: cred.verdict)
-                        }
-                        .padding(14)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
+                            .padding(14)
+                            .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
+                        }.buttonStyle(.plain)
                     }
                 }
                 Spacer(minLength: 24)
             }
             .padding(20)
+        }
+        .sheet(item: $detailCred) { cred in
+            CredentialDetailScreen(cred: cred).environment(\.dogTagColors, c)
         }
     }
 }
