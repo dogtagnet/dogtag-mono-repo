@@ -1,0 +1,109 @@
+BEACON=ead1c929dbf9f056be33438062738bc09f34e984372e12c75418281d67298c99
+[0] groth16 setup
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading r1cs
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading tauG1
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading tauG2
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading alphatauG1
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading betatauG1
+[32;22m[INFO]  [39;1msnarkJS[0m: Circuit hash: 
+		6d78539a 6675aa95 1abf3e3b 9bd1d284
+		5965dd2d 5b327031 6e1e7bcf 8770c79c
+		5cd93acf f79138f9 93b80825 a28e378f
+		9ca7f877 cad6238a 9d58e1b3 345cfdd1
+  0000 sha256=7512a3733486d1c8782d75685fc52fbb9a800652f7c416e0693fb989733b1612
+[1] zkey contribute (contributor-1, random entropy, destroyed)
+[32;22m[INFO]  [39;1msnarkJS[0m: Circuit Hash: 
+		6d78539a 6675aa95 1abf3e3b 9bd1d284
+		5965dd2d 5b327031 6e1e7bcf 8770c79c
+		5cd93acf f79138f9 93b80825 a28e378f
+		9ca7f877 cad6238a 9d58e1b3 345cfdd1
+[32;22m[INFO]  [39;1msnarkJS[0m: Contribution Hash: 
+		a2cb5bc0 86f5a975 3f7e2611 de59a9ff
+		200b99d1 d732bc13 e2ea87da 28548379
+		55e5980a c4eeeb0f 84378e0d e7ac547d
+		abf6c3e6 a3896786 16dbd313 df97c985
+  0001 sha256=fc198a0540a462606bfcee250d31e69b11516e3fa8e702699ad00b466a0e14b9
+[2] zkey contribute (contributor-2, random entropy, destroyed)
+[32;22m[INFO]  [39;1msnarkJS[0m: Circuit Hash: 
+		6d78539a 6675aa95 1abf3e3b 9bd1d284
+		5965dd2d 5b327031 6e1e7bcf 8770c79c
+		5cd93acf f79138f9 93b80825 a28e378f
+		9ca7f877 cad6238a 9d58e1b3 345cfdd1
+[32;22m[INFO]  [39;1msnarkJS[0m: Contribution Hash: 
+		e96912b8 eded79a8 b0c7b399 6161c7e8
+		c14dd72e c8dcf894 c9fe6fa1 0ef62ab7
+		9cb21218 2a075433 918c0ba3 369c4320
+		0ebc99cb c2c2ed0f 8a8a95f3 28bc187f
+  0002 sha256=7062dd62618269b5f86fa2e4d77171ce0b4e7764453b6bf35f6d5eb3e005f870
+[3] zkey contribute (contributor-3, random entropy, destroyed)
+[32;22m[INFO]  [39;1msnarkJS[0m: Circuit Hash: 
+		6d78539a 6675aa95 1abf3e3b 9bd1d284
+		5965dd2d 5b327031 6e1e7bcf 8770c79c
+		5cd93acf f79138f9 93b80825 a28e378f
+		9ca7f877 cad6238a 9d58e1b3 345cfdd1
+[32;22m[INFO]  [39;1msnarkJS[0m: Contribution Hash: 
+		350b6e8e d17de9aa 80e0357a 4d85eaf4
+		a7687c97 730ce69b 6f26d9be fe20af7a
+		c6eaef07 cd1cf4d3 b9c27d49 97353e4b
+		1e8b5494 c18f55c2 7d70c201 1d9eba8d
+  0003 sha256=d621bd1d94fb58e65736a9aaf72f5b7f209135b90790d55e0fdc2dacbeb7c212
+[beacon] applying public beacon
+[32;22m[INFO]  [39;1msnarkJS[0m: Contribution Hash: 
+		d61d84c2 ea221998 89d7c3a0 a935dba6
+		58483f04 31a69a8f b4d9fb33 df1018cc
+		2bbccd05 c12d4149 d88d8208 c87cc64c
+		f0334367 c151ba01 76d3e713 82f14467
+  final sha256=45d0b6fb78591548f5763e86f614d1c04cf48a80d35445d1740c0ba561fdc03e
+[verify]
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading r1cs
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading tauG1
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading tauG2
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading alphatauG1
+[32;22m[INFO]  [39;1msnarkJS[0m: Reading betatauG1
+[32;22m[INFO]  [39;1msnarkJS[0m: Circuit hash: 
+		6d78539a 6675aa95 1abf3e3b 9bd1d284
+		5965dd2d 5b327031 6e1e7bcf 8770c79c
+		5cd93acf f79138f9 93b80825 a28e378f
+		9ca7f877 cad6238a 9d58e1b3 345cfdd1
+[32;22m[INFO]  [39;1msnarkJS[0m: Circuit Hash: 
+		6d78539a 6675aa95 1abf3e3b 9bd1d284
+		5965dd2d 5b327031 6e1e7bcf 8770c79c
+		5cd93acf f79138f9 93b80825 a28e378f
+		9ca7f877 cad6238a 9d58e1b3 345cfdd1
+[32;22m[INFO]  [39;1msnarkJS[0m: -------------------------
+[32;22m[INFO]  [39;1msnarkJS[0m: contribution #4 final beacon (testnet):
+		d61d84c2 ea221998 89d7c3a0 a935dba6
+		58483f04 31a69a8f b4d9fb33 df1018cc
+		2bbccd05 c12d4149 d88d8208 c87cc64c
+		f0334367 c151ba01 76d3e713 82f14467
+[32;22m[INFO]  [39;1msnarkJS[0m: Beacon generator: ead1c929dbf9f056be33438062738bc09f34e984372e12c75418281d67298c99
+[32;22m[INFO]  [39;1msnarkJS[0m: Beacon iterations Exp: 10
+[32;22m[INFO]  [39;1msnarkJS[0m: -------------------------
+[32;22m[INFO]  [39;1msnarkJS[0m: contribution #3 testnet-contributor-3:
+		350b6e8e d17de9aa 80e0357a 4d85eaf4
+		a7687c97 730ce69b 6f26d9be fe20af7a
+		c6eaef07 cd1cf4d3 b9c27d49 97353e4b
+		1e8b5494 c18f55c2 7d70c201 1d9eba8d
+[32;22m[INFO]  [39;1msnarkJS[0m: -------------------------
+[32;22m[INFO]  [39;1msnarkJS[0m: contribution #2 testnet-contributor-2:
+		e96912b8 eded79a8 b0c7b399 6161c7e8
+		c14dd72e c8dcf894 c9fe6fa1 0ef62ab7
+		9cb21218 2a075433 918c0ba3 369c4320
+		0ebc99cb c2c2ed0f 8a8a95f3 28bc187f
+[32;22m[INFO]  [39;1msnarkJS[0m: -------------------------
+[32;22m[INFO]  [39;1msnarkJS[0m: contribution #1 testnet-contributor-1:
+		a2cb5bc0 86f5a975 3f7e2611 de59a9ff
+		200b99d1 d732bc13 e2ea87da 28548379
+		55e5980a c4eeeb0f 84378e0d e7ac547d
+		abf6c3e6 a3896786 16dbd313 df97c985
+[32;22m[INFO]  [39;1msnarkJS[0m: -------------------------
+[32;22m[INFO]  [39;1msnarkJS[0m: ZKey Ok!
+  ZKEY OK
+[export verifier]
+[32;22m[INFO]  [39;1msnarkJS[0m: EXPORT VERIFICATION KEY STARTED
+[32;22m[INFO]  [39;1msnarkJS[0m: > Detected protocol: groth16
+[32;22m[INFO]  [39;1msnarkJS[0m: EXPORT VERIFICATION KEY FINISHED
+[32;22m[INFO]  [39;1msnarkJS[0m: EXPORT VERIFICATION KEY STARTED
+[32;22m[INFO]  [39;1msnarkJS[0m: > Detected protocol: groth16
+[32;22m[INFO]  [39;1msnarkJS[0m: EXPORT VERIFICATION KEY FINISHED
+DONE final_zkey_sha256=45d0b6fb78591548f5763e86f614d1c04cf48a80d35445d1740c0ba561fdc03e verifier_bytes=    9391
