@@ -4,6 +4,7 @@ members = [
     "crates/dogtag-standard-rs",
     "crates/dogtag-prover-rs",
     "stacks/vet/api",
+    "stacks/admin/api",
 ]
 
 [workspace.package]
