@@ -167,11 +167,19 @@ template NodeHash() {
 // Main circuit. N must be a power of two for this pairwise fold (N=8 -> depth 3).
 // ---------------------------------------------------------------------------
 template DogTagVerification(N, depth) {
-    // ---- PUBLIC inputs (order is load-bearing) ----
-    signal input dogTagId;
-    signal input purpose;
-    signal input relayer;
-    signal input subject;
+    // ---- The 4 consent-context values (dogTagId, purpose, relayer, subject) ----
+    // PUBLIC-SIGNAL ORDERING NOTE (verified via build/verification.sym): circom assigns
+    // OUTPUT signals the lowest wire indices, so snarkjs lists OUTPUTS *before* public
+    // INPUTS in the public-signal vector. The §11.9(e) Solidity verifier hard-requires
+    //   pub = [dogTagId, purpose, relayer, subject, nullifier, keyHash, R].
+    // To produce that EXACT order we declare ALL SEVEN as OUTPUTS in spec order, taking
+    // dogTagId/purpose/relayer/subject as PRIVATE inputs and echoing them to outputs
+    // (out* <== in*). The witness for an echoed output is fully constrained by the input,
+    // so making them outputs does not weaken soundness.
+    signal input dogTagId;   // echoed to outDogTagId
+    signal input purpose;    // echoed to outPurpose
+    signal input relayer;    // echoed to outRelayer
+    signal input subject;    // echoed to outSubject
 
     // ---- PRIVATE inputs ----
     signal input leafKeyPathHashes[N]; // fieldOf(keyPath) precomputed by prover
@@ -189,10 +197,20 @@ template DogTagVerification(N, depth) {
     signal input R8y;
     signal input S;
 
-    // ---- OUTPUT signals (appended to public vector after the 4 inputs) ----
+    // ---- OUTPUT signals — declaration order IS the public-signal order ----
+    //   [outDogTagId, outPurpose, outRelayer, outSubject, nullifier, keyHash, R]
+    signal output outDogTagId;
+    signal output outPurpose;
+    signal output outRelayer;
+    signal output outSubject;
     signal output nullifier;
     signal output keyHash;
     signal output R;
+
+    outDogTagId <== dogTagId;
+    outPurpose  <== purpose;
+    outRelayer  <== relayer;
+    outSubject  <== subject;
 
     // ===================================================================
     // (a.1) recompute each leaf hash = Poseidon5([DS_LEAF, kp, salt, tag, val])
@@ -346,4 +364,7 @@ template DogTagVerification(N, depth) {
 }
 
 // Dev/test instantiation: N=8, depth=3 (NOT production 24/5; see header + README).
-component main {public [dogTagId, purpose, relayer, subject]} = DogTagVerification(8, 3);
+// No `public [...]` list: ALL public signals are OUTPUTS (declared in spec order), so the
+// snarkjs public-signal vector is exactly [dogTagId, purpose, relayer, subject, nullifier,
+// keyHash, R]. ALL named inputs are therefore PRIVATE.
+component main = DogTagVerification(8, 3);
