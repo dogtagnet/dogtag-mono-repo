@@ -4,13 +4,15 @@ import Foundation
 /// Detect which kind by the URL shape (architecture §7, impl §3.9 / §6.5).
 ///   - Import (issuer -> user, SHORT token): `https://<vet-host>/r/<32hex>` — preferred, low-density QR.
 ///   - Import (issuer -> user, legacy JWT): `https://<vet-host>/r?t=<jwt>&i=<recordId>` (back-compat).
-///   - Verify (verifier -> user): `https://<host>/v?t=<jwt>` (JWT carries relayer/purpose/challenge/recordType)
+///   - Export (user -> groomer, SHORT token): `https://<host>/x/<token>?a=<relayerAddr>` — one-time
+///     token + groomer wallet address. The phone resolves `/x/<token>` for the session metadata,
+///     DNS-verifies the groomer (prod/remote), proves on-device, and POSTs the proof using the token.
 enum QrPayload {
     case importRecord(host: String, recordId: String, jwt: String)
     /// A SHORT one-time share token — fetch GET <host>/r/<token> (no Bearer); the server consumes it.
     case importRecordToken(host: String, token: String)
-    case verifySession(host: String, jwt: String, relayer: String, purpose: String,
-                       recordType: String, challenge: String, mode: String, sessionId: String)
+    /// An export-session one-time token plus the groomer's wallet/relayer address (`/x/<token>?a=<addr>`).
+    case exportSession(host: String, token: String, groomerAddr: String)
     case unknown(String)
 
     static func parse(_ raw: String) -> QrPayload {
@@ -29,23 +31,19 @@ enum QrPayload {
             return token.isEmpty ? .unknown(trimmed) : .importRecordToken(host: origin, token: token)
         }
 
+        // Export session one-time token: `/x/<token>?a=<groomerAddr>`.
+        if segs.count == 2, segs[0] == "x" {
+            let token = segs[1]
+            let addr = q["a"] ?? ""
+            return (!token.isEmpty && !addr.isEmpty)
+                ? .exportSession(host: origin, token: token, groomerAddr: addr)
+                : .unknown(trimmed)
+        }
+
         switch path {
         case "/r":
             let t = q["t"] ?? "", i = q["i"] ?? ""
             return (!t.isEmpty && !i.isEmpty) ? .importRecord(host: origin, recordId: i, jwt: t) : .unknown(trimmed)
-        case "/v":
-            let t = q["t"] ?? ""
-            guard !t.isEmpty else { return .unknown(trimmed) }
-            let c = decodeJwtClaims(t)
-            return .verifySession(
-                host: origin, jwt: t,
-                relayer: (c["relayer"] as? String) ?? "",
-                purpose: (c["purpose"] as? String) ?? "",
-                recordType: (c["recordType"] as? String) ?? (c["record_type"] as? String) ?? "",
-                challenge: (c["challenge"] as? String) ?? "",
-                mode: (c["mode"] as? String) ?? "zk",
-                sessionId: (c["sub"] as? String) ?? ""
-            )
         default:
             return .unknown(trimmed)
         }

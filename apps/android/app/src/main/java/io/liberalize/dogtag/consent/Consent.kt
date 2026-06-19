@@ -17,15 +17,15 @@ import uniffi.dogtag_standard.verificationConsentTypehashHex
 enum class ConsentMode { ECDSA, ZK }
 
 /**
- * A verification request scanned from a verifier's QR, combined with the SPECIFIC stored record the
- * user chose to present. Mirrors the on-chain VerificationConsent (impl §1.10). All 32-byte / address
- * fields are 0x.. hex. The verifier supplies relayer/purpose/challenge/recordType (from its /v?t= JWT);
- * the user supplies `credentialRoot` (the merkleRoot of the record they selected) + `subject` (their
- * wallet).
+ * An export request scanned from a groomer's QR, combined with the SPECIFIC stored record the user
+ * chose to present. Mirrors the on-chain VerificationConsent (impl §1.10). All 32-byte / address
+ * fields are 0x.. hex. The groomer supplies relayer/purpose/challenge/recordType (resolved from the
+ * `/x/<token>` session metadata); the user supplies `credentialRoot` (the merkleRoot of the record
+ * they selected) + `subject` (their wallet). `exportToken` is the one-time QR token (consumed on submit).
  */
 data class VerificationRequest(
     val mode: ConsentMode,
-    val sessionJwt: String,
+    val exportToken: String,
     val callbackUrl: String?,   // central /v1/verify/consent endpoint
     val verifierName: String,
     val purposeLabel: String,
@@ -65,35 +65,41 @@ data class VerificationRequest(
         }
 
         /**
-         * Build a consent request from the scanned verify-session and the record the user selected to
+         * Build a consent request from the scanned export-session token + the resolved session
+         * metadata (relayer/purpose/recordType/challenge/mode) and the record the user selected to
          * present. `subjectWallet` is the user's secp256k1 address.
          */
         fun from(
-            session: QrPayload.VerifySession,
+            exportToken: String,
+            relayer: String,
+            purpose: String,
+            recordType: String,
+            challenge: String,
+            mode: String,
             dogTagIdDec: String,
             credentialRoot: String,
             subjectWallet: String?,
             callbackUrl: String?,
         ): VerificationRequest {
-            val mode = if (session.mode.lowercase() == "normal" || session.mode.lowercase() == "ecdsa")
+            val m = if (mode.lowercase() == "normal" || mode.lowercase() == "ecdsa")
                 ConsentMode.ECDSA else ConsentMode.ZK
             val deadline = "0x" + java.math.BigInteger.valueOf(
                 (System.currentTimeMillis() / 1000) + 300,
             ).toString(16).padStart(64, '0')
             val nonce = "0x" + java.math.BigInteger.valueOf(System.currentTimeMillis()).toString(16).padStart(64, '0')
             return VerificationRequest(
-                mode = mode,
-                sessionJwt = session.jwt,
+                mode = m,
+                exportToken = exportToken,
                 callbackUrl = callbackUrl,
-                verifierName = session.relayer.ifBlank { "Verifier" },
-                purposeLabel = session.purpose.ifBlank { "verification" },
-                recordTypeLabel = session.recordType.ifBlank { "record" },
+                verifierName = relayer.ifBlank { "Groomer" },
+                purposeLabel = purpose.ifBlank { "verification" },
+                recordTypeLabel = recordType.ifBlank { "record" },
                 dogTagId = dogTagIdToHex(dogTagIdDec),
-                recordType = keccakLabel(session.recordType),
-                purpose = keccakLabel(session.purpose),
+                recordType = keccakLabel(recordType),
+                purpose = keccakLabel(purpose),
                 credentialRoot = if (credentialRoot.isBlank()) ZERO32 else credentialRoot,
-                challenge = session.challenge.ifBlank { ZERO32 },
-                relayer = session.relayer.ifBlank { ZERO20 },
+                challenge = challenge.ifBlank { ZERO32 },
+                relayer = relayer.ifBlank { ZERO20 },
                 subject = subjectWallet?.ifBlank { ZERO20 } ?: ZERO20,
                 nonce = nonce,
                 deadline = deadline,
@@ -115,8 +121,8 @@ data class SignedConsent(
 /**
  * Build a signed consent for a request over the SELECTED record's root. For the ZK path we
  * EdDSA-BabyJubjub-sign the §1.10 message via the FFI; for the ECDSA path the central finishes the
- * ECDSA leg from the surfaced digest fields. The POST body matches the central `/v1/verify/consent`
- * contract: `{ sessionJwt, consent, sig, mode }`.
+ * ECDSA leg from the surfaced digest fields. The POST body matches the `/v1/verify/consent`
+ * contract: `{ exportToken, consent, sig, mode, proof, bind }`.
  */
 /**
  * The gasless consent-key bind block. The RELAYER (groomer) submits
@@ -184,7 +190,7 @@ object ConsentSigner {
         } else ""
 
         val payload = JSONObject().apply {
-            put("sessionJwt", req.sessionJwt)
+            put("exportToken", req.exportToken)
             put("consent", consent)
             put("sig", sig)
             put("mode", req.mode.name.lowercase())

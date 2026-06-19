@@ -3,7 +3,8 @@ import SwiftUI
 /// The single scan entry point for the user app. The owner ONLY scans — there is no QR display.
 /// A scanned QR routes to one of two outcomes (architecture §7, impl §3.9 / §6.5):
 ///   - Import a record (issuer -> user): fetch the wrapped doc, verify, store under the pet.
-///   - Verify (verifier -> user): pick which stored record to present, sign consent, relay to central.
+///   - Export (user -> groomer): pick which stored record to present, DNS-verify the groomer, prove
+///     on-device, POST the proof to the groomer host.
 struct ScanScreen: View {
     @Environment(\.dogTagColors) var c
     @ObservedObject private var store = LocalStore.shared
@@ -14,6 +15,9 @@ struct ScanScreen: View {
     @State private var status = ""
     @State private var working = false
     @State private var selected: Credential? = nil
+    // Export-session metadata resolved (non-consuming) from the QR's one-time token.
+    @State private var exportSession: CentralApi.ExportSession? = nil
+    @State private var exportResolveErr: String? = nil
 
     var body: some View {
         if scanning {
@@ -46,12 +50,12 @@ struct ScanScreen: View {
                     importPanel(host: host, recordId: recordId)
                 case let .importRecordToken(host, token):
                     importPanel(host: host, recordId: token)
-                case .verifySession:
-                    verifyPanel
+                case let .exportSession(host, token, groomerAddr):
+                    exportPanel(host: host, token: token, groomerAddr: groomerAddr)
                 case let .unknown(raw):
                     card {
                         Text("Unrecognised QR").font(.system(size: 15, weight: .bold)).foregroundColor(c.danger)
-                        Text("This isn't a DogTag record link (/r/<token> or /r?t=) or verify session (/v).").font(.system(size: 12)).foregroundColor(c.muted)
+                        Text("This isn't a DogTag record link (/r/<token> or /r?t=) or export session (/x/<token>).").font(.system(size: 12)).foregroundColor(c.muted)
                         Text(String(raw.prefix(120))).font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
                     }
                 case .none:
@@ -59,7 +63,7 @@ struct ScanScreen: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button { status = ""; payload = nil; selected = nil; scanning = true } label: {
+                    Button { status = ""; payload = nil; selected = nil; exportSession = nil; exportResolveErr = nil; scanning = true } label: {
                         Text("Scan again").foregroundColor(c.onBackground).padding(.horizontal, 16).padding(.vertical, 10)
                             .background(Capsule().fill(c.surfaceVariant))
                     }.buttonStyle(.plain)
@@ -109,66 +113,88 @@ struct ScanScreen: View {
         }
     }
 
-    // ---- verify ----
+    // ---- export ----
 
-    private var verifyPanel: some View {
-        guard case let .verifySession(_, _, relayer, purpose, recordType, _, mode, _) = payload! else {
-            return AnyView(EmptyView())
-        }
-        let wantGroup = CredentialGroup.from(recordType: recordType)
-        let matching = store.credentials.filter { $0.group == wantGroup }
-        let candidates = matching.isEmpty ? store.credentials : matching
-
-        return AnyView(VStack(alignment: .leading, spacing: 14) {
-            card {
-                Text("Verification request").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
-                field("Verifier", relayer.isEmpty ? "Unknown" : relayer)
-                field("Purpose", purpose.isEmpty ? "—" : purpose)
-                field("Record type", recordType.isEmpty ? "any" : recordType)
-                field("Mode", (mode.lowercased() == "normal" || mode.lowercased() == "ecdsa") ? "ECDSA (EIP-712)" : "Zero-knowledge")
-            }
-            card {
-                Text("Select the record to present").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
-                if candidates.isEmpty {
-                    Text("No matching records yet — scan a vet's QR to import one first.").font(.system(size: 12)).foregroundColor(c.muted)
+    private func exportPanel(host: String, token: String, groomerAddr: String) -> some View {
+        AnyView(exportPanelBody(host: host, token: token, groomerAddr: groomerAddr)
+            .task(id: token) {
+                // Resolve the export-session metadata from the one-time token (non-consuming GET /x/<token>).
+                exportSession = nil; exportResolveErr = nil
+                guard let s = await CentralApi.resolveExportSession(host: host, token: token) else {
+                    exportResolveErr = "Could not resolve export session (expired or offline)."; return
                 }
-                ForEach(candidates) { cred in
-                    let isSel = selected?.id == cred.id
-                    Button { selected = cred } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                                Text("\(cred.group.title) · \(cred.verdict)").font(.system(size: 11)).foregroundColor(c.muted)
-                            }
-                            Spacer()
-                        }
-                        .padding(12)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(isSel ? c.accent.opacity(0.14) : c.surfaceVariant))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSel ? c.accent : .clear, lineWidth: 1.5))
-                    }.buttonStyle(.plain)
+                // (b) The QR-claimed groomer address must match the session relayer — hard-stop on mismatch.
+                if s.relayer.lowercased() != groomerAddr.lowercased() {
+                    exportResolveErr = "Groomer address mismatch — refusing to present."; return
                 }
-            }
-            Button { presentSelected() } label: {
-                Text(working ? "Working…" : "Approve & present").frame(maxWidth: .infinity).padding(.vertical, 12)
-                    .foregroundColor(.white).background(RoundedRectangle(cornerRadius: 12).fill(c.success))
-            }
-            .disabled(selected == nil || working)
-            if !status.isEmpty { Text(status).font(.system(size: 12)).foregroundColor(c.muted) }
-        })
+                exportSession = s
+            })
     }
 
-    private func presentSelected() {
-        guard let p = payload, let sel = selected else { status = "Select a record first."; return }
-        guard case let .verifySession(host, jwt, relayer, purpose, _, _, mode, sessionId) = p else { return }
+    @ViewBuilder
+    private func exportPanelBody(host: String, token: String, groomerAddr: String) -> some View {
+        if let sess = exportSession {
+            let wantGroup = CredentialGroup.from(recordType: sess.recordType)
+            let matching = store.credentials.filter { $0.group == wantGroup }
+            let candidates = matching.isEmpty ? store.credentials : matching
+            VStack(alignment: .leading, spacing: 14) {
+                card {
+                    Text("Export request").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
+                    field("Groomer", sess.relayer.isEmpty ? "Unknown" : sess.relayer)
+                    field("Purpose", sess.purpose.isEmpty ? "—" : sess.purpose)
+                    field("Record type", sess.recordType.isEmpty ? "any" : sess.recordType)
+                    field("Mode", (sess.mode.lowercased() == "normal" || sess.mode.lowercased() == "ecdsa") ? "ECDSA (EIP-712)" : "Zero-knowledge")
+                }
+                card {
+                    Text("Select the record to export").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
+                    if candidates.isEmpty {
+                        Text("No matching records yet — scan a vet's QR to import one first.").font(.system(size: 12)).foregroundColor(c.muted)
+                    }
+                    ForEach(candidates) { cred in
+                        let isSel = selected?.id == cred.id
+                        Button { selected = cred } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
+                                    Text("\(cred.group.title) · \(cred.verdict)").font(.system(size: 11)).foregroundColor(c.muted)
+                                }
+                                Spacer()
+                            }
+                            .padding(12)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(isSel ? c.accent.opacity(0.14) : c.surfaceVariant))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSel ? c.accent : .clear, lineWidth: 1.5))
+                        }.buttonStyle(.plain)
+                    }
+                }
+                Button { presentExport(host: host, token: token, groomerAddr: groomerAddr, sess: sess) } label: {
+                    Text(working ? "Working…" : "Approve & export").frame(maxWidth: .infinity).padding(.vertical, 12)
+                        .foregroundColor(.white).background(RoundedRectangle(cornerRadius: 12).fill(c.success))
+                }
+                .disabled(selected == nil || working)
+                if !status.isEmpty { Text(status).font(.system(size: 12)).foregroundColor(c.muted) }
+            }
+        } else {
+            card {
+                Text("Export request").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
+                Text(exportResolveErr ?? "Resolving export session…")
+                    .font(.system(size: 12)).foregroundColor(exportResolveErr != nil ? c.danger : c.muted)
+            }
+        }
+    }
+
+    private func presentExport(host: String, token: String, groomerAddr: String, sess: CentralApi.ExportSession) {
+        guard let sel = selected else { status = "Select a record first."; return }
+        let relayer = sess.relayer, purpose = sess.purpose, mode = sess.mode, sessionId = sess.sessionId
         let isZk = !(mode.lowercased() == "normal" || mode.lowercased() == "ecdsa")
-        Biometric.authenticate(reason: "Present '\(sel.title)' to \(relayer.isEmpty ? "the verifier" : relayer)") { ok, e in
+        Biometric.authenticate(reason: "Present '\(sel.title)' to \(relayer.isEmpty ? "the groomer" : relayer)") { ok, e in
             guard ok else { status = e ?? "auth failed"; return }
             let wallet: WalletIdentity? = (try? Wallet.load()) ?? nil
             let subject = wallet?.ethAddress
-            guard let req = VerificationRequest.from(
-                session: p, dogTagIdDec: sel.dogTagId, credentialRoot: sel.credentialRoot,
+            let req = VerificationRequest.from(
+                exportToken: token, relayer: sess.relayer, purpose: sess.purpose,
+                recordType: sess.recordType, challenge: sess.challenge, mode: sess.mode,
+                dogTagIdDec: sel.dogTagId, credentialRoot: sel.credentialRoot,
                 subjectWallet: subject, callbackUrl: "\(AppConfig.centralApi)/v1/verify/consent")
-            else { status = "could not build consent"; return }
 
             if !isZk {
                 // ECDSA (legacy) path — relay through central as before.
@@ -193,7 +219,7 @@ struct ScanScreen: View {
             Task {
                 do {
                     // (a) PRE-PROOF GROOMER CHECK — hard-stop if the relayer is not whitelisted.
-                    await MainActor.run { status = "Checking verifier authorization…" }
+                    await MainActor.run { status = "Checking groomer authorization…" }
                     let verifyKey = verifyWhitelistKeyHex(purposeLabel: purpose)
                     let wl = await RoaxRpc.isWhitelistedFor(
                         rpcUrl: AppConfig.roaxRpc, issuerRegistry: roax.issuerRegistry,
@@ -201,9 +227,23 @@ struct ScanScreen: View {
                     guard case .valid = wl else {
                         await MainActor.run {
                             working = false
-                            status = "This verifier is not an authorized groomer."
+                            status = "This groomer is not authorized (not whitelisted)."
                         }
                         return
+                    }
+
+                    // (a2) DNS VERIFY (prod/remote only) — the groomer's domain must publish a TXT
+                    // `dogtag-verify=<groomerAddr>`. Local hosts skip this entirely.
+                    if !DnsVerify.isLocalHost(host) {
+                        await MainActor.run { status = "Verifying groomer DNS…" }
+                        let dnsOk = await DnsVerify.verifyGroomer(host: host, groomerAddr: groomerAddr)
+                        if !dnsOk {
+                            await MainActor.run {
+                                working = false
+                                status = "Groomer DNS not verified — refusing to present."
+                            }
+                            return
+                        }
                     }
 
                     // (b) Sign EdDSA consent + generate the Groth16 proof on-device.
@@ -236,8 +276,9 @@ struct ScanScreen: View {
                         bind = ConsentKeyBind(subject: wallet.ethAddress, keyHash: wallet.consent.keyHashHex, ownerSig: ownerSig)
                     }
 
-                    // (d) SUBMIT to the QR host (groomer), NOT central.
-                    await MainActor.run { status = "Submitting proof to verifier…" }
+                    // (d) SUBMIT to the QR host (groomer), NOT central. The one-time exportToken is
+                    // consumed server-side on submit.
+                    await MainActor.run { status = "Submitting proof to groomer…" }
                     let signed = try ConsentSigner.sign(req, consentPrivHex: wallet.consent.prvHex, proof: proof, bind: bind)
                     let r = await CentralApi.postVerifyConsentToHost(host: host, payloadJson: signed.payloadJson)
                     guard r.ok else {
@@ -249,7 +290,7 @@ struct ScanScreen: View {
                     await MainActor.run { status = "Proof submitted — waiting for on-chain record…" }
                     var recorded = false
                     for _ in 0..<30 {
-                        if let st = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, sessionJwt: jwt),
+                        if let st = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, token: token),
                            st.status == "recorded" {
                             recorded = true
                             let tx = st.txHash.map { String($0.prefix(14)) } ?? ""

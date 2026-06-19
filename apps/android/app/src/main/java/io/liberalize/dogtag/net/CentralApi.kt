@@ -4,7 +4,7 @@ import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Pet
 import org.json.JSONObject
 
-/** Typed client for the central (admin) API: pet sync + the verify-consent relay. */
+/** Typed client for the central (admin) API: pet sync + the export-consent relay. */
 object CentralApi {
 
     /**
@@ -30,25 +30,58 @@ object CentralApi {
         Http.postJson("${AppConfig.CENTRAL_API}/v1/verify/consent", payloadJson, bearer = sessionToken)
 
     /**
-     * ZK path: POST the proof bundle directly to the GROOMER host (the scanned QR `iss`/origin), NOT
-     * central. The groomer relays `recordVerificationZK` on-chain as the gas-payer. The body is the
-     * signed-consent payload already carrying `{sessionJwt, consent, sig, mode, proof, bind}`. No
-     * bearer — the body's `sessionJwt` is the auth (verify-session JWT, dual-gated server-side).
+     * The export-session metadata resolved from the QR's one-time token. The phone GETs this
+     * (non-consuming) before proving so it can assert the groomer address, run the whitelist + DNS
+     * checks, and build the consent. The token is consumed only on submit.
+     */
+    data class ExportSession(
+        val sessionId: String,
+        val relayer: String,
+        val purpose: String,
+        val recordType: String,
+        val challenge: String,
+        val mode: String,
+    )
+
+    /** GET <host>/x/<token> → export-session metadata (non-consuming). Null on failure. */
+    suspend fun resolveExportSession(host: String, token: String): ExportSession? {
+        if (token.isBlank()) return null
+        return try {
+            val resp = Http.getJson("$host/x/$token")
+            if (!resp.ok) return null
+            val o = JSONObject(resp.body)
+            ExportSession(
+                sessionId = o.optString("sessionId", o.optString("session_id", "")),
+                relayer = o.optString("relayer", ""),
+                purpose = o.optString("purpose", ""),
+                recordType = o.optString("recordType", o.optString("record_type", "")),
+                challenge = o.optString("challenge", ""),
+                mode = o.optString("mode", "zk"),
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * ZK path: POST the proof bundle directly to the GROOMER host (the scanned QR origin), NOT central.
+     * The groomer relays `recordVerificationZK` on-chain as the gas-payer. The body carries the one-time
+     * `exportToken` (consumed server-side on submit) plus `{consent, sig, mode, proof, bind}`.
      */
     suspend fun postVerifyConsentToHost(host: String, payloadJson: String): Http.Response =
         Http.postJson("$host/v1/verify/consent", payloadJson)
 
     /**
-     * Poll the verify-session status on the GROOMER host: GET /verify/session/{id} authed with the
-     * session JWT. Returns the parsed `{status, txHash}` (or null on failure). Status flips to
-     * `recorded` once the relayer's `recordVerificationZK` tx confirms.
+     * Poll the export-session status on the GROOMER host: GET /verify/session/{id}?token=<token>.
+     * Returns the parsed `{status, txHash}` (or null on failure). Status flips to `recorded` once the
+     * relayer's `recordVerificationZK` tx confirms.
      */
     data class SessionStatus(val status: String, val txHash: String?)
 
-    suspend fun verifySessionStatus(host: String, sessionId: String, sessionJwt: String): SessionStatus? {
+    suspend fun verifySessionStatus(host: String, sessionId: String, token: String): SessionStatus? {
         if (sessionId.isBlank()) return null
         return try {
-            val resp = Http.getJson("$host/verify/session/$sessionId", bearer = sessionJwt)
+            val resp = Http.getJson("$host/verify/session/$sessionId?token=$token")
             if (!resp.ok) return null
             val o = JSONObject(resp.body)
             SessionStatus(

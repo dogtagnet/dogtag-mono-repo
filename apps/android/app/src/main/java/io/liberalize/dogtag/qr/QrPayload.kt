@@ -6,12 +6,14 @@ import org.json.JSONObject
 
 /**
  * The two scan outcomes the user app supports. The pet owner's app ONLY scans — it never shows a QR.
- * The vet/groomer is the party that DISPLAYS a one-time-JWT QR; we detect which kind it is by the URL
+ * The vet/groomer is the party that DISPLAYS a one-time-token QR; we detect which kind it is by the URL
  * shape (architecture §7, impl §3.9 / §6.5).
  *
  *  - Import (issuer -> user, SHORT token): `https://<vet-host>/r/<32hex>` — preferred, low-density QR.
  *  - Import (issuer -> user, legacy JWT): `https://<vet-host>/r?t=<jwt>&i=<recordId>` (back-compat).
- *  - Verify (verifier -> user): `https://<host>/v?t=<jwt>` (JWT carries relayer/purpose/challenge/recordType)
+ *  - Export (user -> groomer, SHORT token): `https://<host>/x/<token>?a=<relayerAddr>` — one-time token +
+ *    groomer wallet address. The phone resolves `GET <host>/x/<token>` for the session metadata, DNS-
+ *    verifies the groomer (prod/remote), proves on-device, and POSTs the proof using the token.
  */
 sealed class QrPayload {
     /** A vet/groomer record link — fetch GET <host>/records/{recordId} with the Bearer JWT and import. */
@@ -23,16 +25,15 @@ sealed class QrPayload {
      */
     data class ImportRecordToken(val host: String, val token: String) : QrPayload()
 
-    /** A verify-session — show the request, let the user pick a stored record, sign + relay consent. */
-    data class VerifySession(
+    /**
+     * An export-session — the groomer requests the owner present a record. The QR is a SHORT one-time
+     * token plus the groomer's wallet/relayer address: `/x/<token>?a=<addr>`. The session metadata
+     * (relayer/purpose/recordType/challenge/mode/sessionId) is fetched non-consuming from `/x/<token>`.
+     */
+    data class ExportSession(
         val host: String,
-        val jwt: String,
-        val relayer: String,
-        val purpose: String,
-        val recordType: String,
-        val challenge: String,
-        val mode: String,        // "zk" | "normal"
-        val sessionId: String,
+        val token: String,
+        val groomerAddr: String,
     ) : QrPayload()
 
     /** Anything we don't recognise. */
@@ -53,27 +54,19 @@ sealed class QrPayload {
                         if (token.isNotBlank()) ImportRecordToken(origin, token)
                         else Unknown(trimmed)
                     }
+                    // Export session one-time token: `/x/<token>?a=<groomerAddr>`.
+                    segs.size == 2 && segs[0] == "x" -> {
+                        val token = segs[1]
+                        val addr = uri.getQueryParameter("a").orEmpty()
+                        if (token.isNotBlank() && addr.isNotBlank()) ExportSession(origin, token, addr)
+                        else Unknown(trimmed)
+                    }
                     // Legacy embedded record-JWT: `/r?t=<jwt>&i=<recordId>` (back-compat).
                     path == "/r" -> {
                         val t = uri.getQueryParameter("t").orEmpty()
                         val i = uri.getQueryParameter("i").orEmpty()
                         if (t.isNotBlank() && i.isNotBlank()) ImportRecord(origin, i, t)
                         else Unknown(trimmed)
-                    }
-                    path == "/v" -> {
-                        val t = uri.getQueryParameter("t").orEmpty()
-                        if (t.isBlank()) return Unknown(trimmed)
-                        val claims = decodeJwtClaims(t)
-                        VerifySession(
-                            host = origin,
-                            jwt = t,
-                            relayer = claims.optString("relayer", ""),
-                            purpose = claims.optString("purpose", ""),
-                            recordType = claims.optString("recordType", claims.optString("record_type", "")),
-                            challenge = claims.optString("challenge", ""),
-                            mode = claims.optString("mode", "zk"),
-                            sessionId = claims.optString("sub", ""),
-                        )
                     }
                     else -> Unknown(trimmed)
                 }

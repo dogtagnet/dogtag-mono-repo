@@ -8,6 +8,21 @@ enum Http {
         await request(url, method: "GET", body: nil, bearer: bearer)
     }
 
+    /// GET with an explicit Accept header (e.g. DoH `application/dns-json`).
+    static func getJSON(_ url: String, accept: String) async -> Response {
+        guard let u = URL(string: url) else { return Response(code: -1, body: "bad url") }
+        var req = URLRequest(url: u, timeoutInterval: 8)
+        req.httpMethod = "GET"
+        req.setValue(accept, forHTTPHeaderField: "Accept")
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            return Response(code: code, body: String(data: data, encoding: .utf8) ?? "")
+        } catch {
+            return Response(code: -1, body: error.localizedDescription)
+        }
+    }
+
     static func postJSON(_ url: String, body: String, bearer: String? = nil) async -> Response {
         await request(url, method: "POST", body: body, bearer: bearer)
     }
@@ -148,22 +163,109 @@ enum CentralApi {
         await Http.postJSON("\(AppConfig.centralApi)/v1/verify/consent", body: payloadJson, bearer: sessionToken)
     }
 
+    /// The export-session metadata resolved (non-consuming) from the QR's one-time token before proving.
+    struct ExportSession {
+        let sessionId: String
+        let relayer: String
+        let purpose: String
+        let recordType: String
+        let challenge: String
+        let mode: String
+    }
+
+    /// GET <host>/x/<token> → export-session metadata (non-consuming). Nil on failure.
+    static func resolveExportSession(host: String, token: String) async -> ExportSession? {
+        guard !token.isEmpty else { return nil }
+        let resp = await Http.getJSON("\(host)/x/\(token)")
+        guard resp.ok, let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
+        return ExportSession(
+            sessionId: (o["sessionId"] as? String) ?? (o["session_id"] as? String) ?? "",
+            relayer: (o["relayer"] as? String) ?? "",
+            purpose: (o["purpose"] as? String) ?? "",
+            recordType: (o["recordType"] as? String) ?? (o["record_type"] as? String) ?? "",
+            challenge: (o["challenge"] as? String) ?? "",
+            mode: (o["mode"] as? String) ?? "zk")
+    }
+
     /// ZK path: POST the proof bundle directly to the GROOMER host (scanned QR origin), NOT central.
-    /// The body's `sessionJwt` is the auth (no bearer). The groomer relays `recordVerificationZK`.
+    /// The body carries the one-time `exportToken` (no bearer, consumed on submit). The groomer relays
+    /// `recordVerificationZK`.
     static func postVerifyConsentToHost(host: String, payloadJson: String) async -> Http.Response {
         await Http.postJSON("\(host)/v1/verify/consent", body: payloadJson)
     }
 
     struct SessionStatus { let status: String; let txHash: String? }
 
-    /// Poll GET <host>/verify/session/{id} (session-JWT auth) → {status, txHash}.
-    static func verifySessionStatus(host: String, sessionId: String, sessionJwt: String) async -> SessionStatus? {
+    /// Poll GET <host>/verify/session/{id}?token=<token> → {status, txHash}.
+    static func verifySessionStatus(host: String, sessionId: String, token: String) async -> SessionStatus? {
         guard !sessionId.isEmpty else { return nil }
-        let resp = await Http.getJSON("\(host)/verify/session/\(sessionId)", bearer: sessionJwt)
+        let resp = await Http.getJSON("\(host)/verify/session/\(sessionId)?token=\(token)")
         guard resp.ok, let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
         let status = (o["status"] as? String) ?? ""
         let tx = (o["txHash"] as? String) ?? (o["tx_hash"] as? String)
         return SessionStatus(status: status, txHash: (tx?.isEmpty == false) ? tx : nil)
+    }
+}
+
+/// Phone-side DNS verification of the groomer (mirrors `stacks/admin/api/src/dns.rs`). The export QR
+/// carries the groomer's wallet address; before disclosing a proof the phone requires the groomer's
+/// DOMAIN to publish a TXT `dogtag-verify=<groomerAddr lowercased>` resolved via DoH (Cloudflare). This
+/// is enforced ONLY for real public domains; LOCAL hosts (IP literal / localhost / *.local / LAN) skip it.
+enum DnsVerify {
+    /// The canonical TXT a groomer must publish to prove control of its domain.
+    static func expectedTxt(_ groomerAddr: String) -> String { "dogtag-verify=\(groomerAddr.lowercased())" }
+
+    /// Strip scheme/port/path from an origin or host string → bare host.
+    static func hostOnly(_ host: String) -> String {
+        var h = host.trimmingCharacters(in: .whitespaces)
+        if let r = h.range(of: "://") { h = String(h[r.upperBound...]) }
+        if let slash = h.firstIndex(of: "/") { h = String(h[..<slash]) }
+        if h.hasPrefix("["), let close = h.firstIndex(of: "]") {  // [IPv6]
+            return String(h[h.index(after: h.startIndex)..<close])
+        }
+        // strip :port for IPv4/hostname (single colon only)
+        if h.filter({ $0 == ":" }).count == 1, let colon = h.firstIndex(of: ":") {
+            h = String(h[..<colon])
+        }
+        return h
+    }
+
+    /// True when `host` is LOCAL (IP literal / localhost / *.local / private-LAN), so DNS is skipped.
+    static func isLocalHost(_ host: String) -> Bool {
+        let h = hostOnly(host).lowercased()
+        if h.isEmpty { return true }
+        if h == "localhost" || h.hasSuffix(".local") || h.hasSuffix(".localhost") { return true }
+        if h == "::1" || h.hasPrefix("fe80:") || h.hasPrefix("fc") || h.hasPrefix("fd") { return true }
+        let octets = h.split(separator: ".").map(String.init)
+        if octets.count == 4, octets.allSatisfy({ Int($0).map { (0...255).contains($0) } ?? false }) {
+            let a = Int(octets[0])!, b = Int(octets[1])!
+            if a == 127 || a == 10 || a == 0 { return true }
+            if a == 192 && b == 168 { return true }
+            if a == 172 && (16...31).contains(b) { return true }
+            if a == 169 && b == 254 { return true }
+            return false   // any other IPv4 literal = public
+        }
+        return false
+    }
+
+    /// Resolve the groomer's domain via DoH and require a TXT answer CONTAINING the expected binding.
+    /// Returns true for LOCAL hosts (skip — gate via `isLocalHost`).
+    static func verifyGroomer(host: String, groomerAddr: String) async -> Bool {
+        if isLocalHost(host) { return true }
+        let domain = hostOnly(host)
+        if domain.isEmpty || groomerAddr.isEmpty { return false }
+        let expected = expectedTxt(groomerAddr)
+        guard let name = domain.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return false }
+        let url = "https://cloudflare-dns.com/dns-query?name=\(name)&type=TXT"
+        let resp = await Http.getJSON(url, accept: "application/dns-json")
+        guard resp.ok, let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let answers = o["Answer"] as? [[String: Any]] else { return false }
+        return answers.contains { ans in
+            let data = ((ans["data"] as? String) ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            return data.contains(expected)
+        }
     }
 }

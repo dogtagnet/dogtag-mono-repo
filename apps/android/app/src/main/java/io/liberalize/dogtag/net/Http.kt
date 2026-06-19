@@ -34,6 +34,18 @@ object Http {
             }
         }
 
+    /** GET with an explicit Accept header (e.g. DoH `application/dns-json`). */
+    suspend fun getJsonAccept(url: String, accept: String): Response =
+        withContext(Dispatchers.IO) {
+            val conn = open(url, "GET", null)
+            conn.setRequestProperty("Accept", accept)
+            try {
+                read(conn)
+            } finally {
+                conn.disconnect()
+            }
+        }
+
     private fun open(url: String, method: String, bearer: String?): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method

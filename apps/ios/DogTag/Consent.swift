@@ -6,13 +6,13 @@ enum ConsentMode: String { case ecdsa, zk }
 private let ZERO32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
 private let ZERO20 = "0x0000000000000000000000000000000000000000"
 
-/// A verification request scanned from a verifier's QR combined with the SPECIFIC stored record the
-/// user chose to present (impl §1.10). The verifier supplies relayer/purpose/challenge/recordType
-/// (from its /v?t= JWT); the user supplies `credentialRoot` (the selected record's merkleRoot) and
-/// `subject` (their wallet).
+/// An export request scanned from a groomer's QR combined with the SPECIFIC stored record the user
+/// chose to present (impl §1.10). The groomer supplies relayer/purpose/challenge/recordType (resolved
+/// from the `/x/<token>` session metadata); the user supplies `credentialRoot` (the selected record's
+/// merkleRoot) and `subject` (their wallet). `exportToken` is the one-time QR token (consumed on submit).
 struct VerificationRequest {
     let mode: ConsentMode
-    let sessionJwt: String
+    let exportToken: String
     let callbackUrl: String?
     let verifierName: String
     let purposeLabel: String
@@ -45,21 +45,20 @@ struct VerificationRequest {
         return "0x" + String(repeating: "0", count: max(0, 64 - hex.count)) + hex
     }
 
-    /// Build a consent request from the scanned verify-session + the record the user selected.
-    static func from(session: QrPayload, dogTagIdDec: String, credentialRoot: String,
-                     subjectWallet: String?, callbackUrl: String?) -> VerificationRequest? {
-        guard case let .verifySession(_, jwt, relayer, purpose, recordType, challenge, mode, _) = session else {
-            return nil
-        }
+    /// Build a consent request from the scanned export-session token + the resolved session metadata
+    /// and the record the user selected to present.
+    static func from(exportToken: String, relayer: String, purpose: String, recordType: String,
+                     challenge: String, mode: String, dogTagIdDec: String, credentialRoot: String,
+                     subjectWallet: String?, callbackUrl: String?) -> VerificationRequest {
         let m: ConsentMode = (mode.lowercased() == "normal" || mode.lowercased() == "ecdsa") ? .ecdsa : .zk
         let now = UInt64(Date().timeIntervalSince1970)
         let deadlineHex = String(now + 300, radix: 16)
         let nonceHex = String(UInt64(Date().timeIntervalSince1970 * 1000), radix: 16)
         return VerificationRequest(
             mode: m,
-            sessionJwt: jwt,
+            exportToken: exportToken,
             callbackUrl: callbackUrl,
-            verifierName: relayer.isEmpty ? "Verifier" : relayer,
+            verifierName: relayer.isEmpty ? "Groomer" : relayer,
             purposeLabel: purpose.isEmpty ? "verification" : purpose,
             recordTypeLabel: recordType.isEmpty ? "record" : recordType,
             dogTagId: dogTagIdToHex(dogTagIdDec),
@@ -89,8 +88,8 @@ struct SignedConsent {
 /// `ConsentKeyRegistry.bindConsentKeyFor(subject, keyHash, ownerSig)` so the owner NEVER pays gas.
 struct ConsentKeyBind { let subject: String; let keyHash: String; let ownerSig: String }
 
-/// Build a signed consent over the SELECTED record's root. The POST body matches the central
-/// `/v1/verify/consent` contract: `{ sessionJwt, consent, sig, mode }` (+ `proof`/`bind` on the ZK path).
+/// Build a signed consent over the SELECTED record's root. The POST body matches the
+/// `/v1/verify/consent` contract: `{ exportToken, consent, sig, mode }` (+ `proof`/`bind` on the ZK path).
 enum ConsentSigner {
     static func sign(_ req: VerificationRequest, consentPrivHex: String?,
                      proof: ProofFfi? = nil, bind: ConsentKeyBind? = nil) throws -> SignedConsent {
@@ -125,7 +124,7 @@ enum ConsentSigner {
             sig = String(data: (try? JSONSerialization.data(withJSONObject: sigObj)) ?? Data(), encoding: .utf8) ?? ""
         }
         var payload: [String: Any] = [
-            "sessionJwt": req.sessionJwt, "consent": consent, "sig": sig, "mode": req.mode.rawValue,
+            "exportToken": req.exportToken, "consent": consent, "sig": sig, "mode": req.mode.rawValue,
         ]
         if let p = proof {
             payload["proof"] = [

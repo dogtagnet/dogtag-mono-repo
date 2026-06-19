@@ -65,7 +65,8 @@ import uniffi.dogtag_standard.verifyWhitelistKeyHex
  * The single scan entry point for the user app. The owner ONLY scans — there is no QR display here.
  * A scanned QR routes to one of two outcomes (architecture §7, impl §3.9 / §6.5):
  *   - Import a record (issuer -> user): fetch the wrapped doc, verify, store under the pet.
- *   - Verify (verifier -> user): pick which stored record to present, sign consent, relay to central.
+ *   - Export (user -> groomer): pick which stored record to present, DNS-verify the groomer, prove
+ *     on-device, POST the proof to the groomer host.
  */
 @Composable
 fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
@@ -139,8 +140,8 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 },
             )
 
-            is QrPayload.VerifySession -> VerifyPanel(
-                session = p, activity = activity, store = store, status = status,
+            is QrPayload.ExportSession -> ExportPanel(
+                qr = p, activity = activity, store = store, status = status,
                 onStatus = { status = it },
             )
 
@@ -148,7 +149,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 Card {
                     Text("Unrecognised QR", fontWeight = FontWeight.Bold, color = c.danger, fontSize = 15.sp)
                     Text(
-                        "This isn't a DogTag record link (/r/<token> or /r?t=) or verify session (/v).",
+                        "This isn't a DogTag record link (/r/<token> or /r?t=) or export session (/x/<token>).",
                         fontSize = 12.sp, color = c.muted,
                     )
                     Text(p.raw.take(120), fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
@@ -204,8 +205,8 @@ private fun ImportPanel(
 }
 
 @Composable
-private fun VerifyPanel(
-    session: QrPayload.VerifySession,
+private fun ExportPanel(
+    qr: QrPayload.ExportSession,
     activity: FragmentActivity,
     store: LocalStore,
     status: String,
@@ -217,21 +218,46 @@ private fun VerifyPanel(
     var selected by remember { mutableStateOf<Credential?>(null) }
     var err by remember { mutableStateOf("") }
 
+    // Resolve the export-session metadata from the one-time token (non-consuming GET /x/<token>).
+    var session by remember { mutableStateOf<CentralApi.ExportSession?>(null) }
+    var resolveErr by remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(qr.token) {
+        val s = withContext(Dispatchers.IO) { CentralApi.resolveExportSession(qr.host, qr.token) }
+        if (s == null) {
+            resolveErr = "Could not resolve export session (expired or offline)."
+        } else if (!s.relayer.equals(qr.groomerAddr, ignoreCase = true)) {
+            // (b) The QR-claimed groomer address must match the session relayer — hard-stop on mismatch.
+            resolveErr = "Groomer address mismatch — refusing to present."
+        } else {
+            session = s
+        }
+    }
+
+    val sess = session
+    if (sess == null) {
+        Card {
+            Text("Export request", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+            Text(resolveErr ?: "Resolving export session…", fontSize = 12.sp,
+                color = if (resolveErr != null) c.danger else c.muted)
+        }
+        return
+    }
+
     // candidate records: all the user's stored credentials (optionally filtered by requested recordType).
     val all by store.credentials.collectAsStateWithLifecycle()
-    val wantGroup = io.liberalize.dogtag.data.CredentialGroup.fromRecordType(session.recordType)
+    val wantGroup = io.liberalize.dogtag.data.CredentialGroup.fromRecordType(sess.recordType)
     val candidates = all.filter { it.group == wantGroup }.ifEmpty { all }
 
     Card {
-        Text("Verification request", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
-        Field("Verifier", session.relayer.ifBlank { "Unknown" })
-        Field("Purpose", session.purpose.ifBlank { "—" })
-        Field("Record type", session.recordType.ifBlank { "any" })
-        Field("Mode", if (session.mode.lowercase() == "normal" || session.mode.lowercase() == "ecdsa") "ECDSA (EIP-712)" else "Zero-knowledge")
+        Text("Export request", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+        Field("Groomer", sess.relayer.ifBlank { "Unknown" })
+        Field("Purpose", sess.purpose.ifBlank { "—" })
+        Field("Record type", sess.recordType.ifBlank { "any" })
+        Field("Mode", if (sess.mode.lowercase() == "normal" || sess.mode.lowercase() == "ecdsa") "ECDSA (EIP-712)" else "Zero-knowledge")
     }
 
     Card {
-        Text("Select the record to present", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+        Text("Select the record to export", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
         if (candidates.isEmpty()) {
             Text("No matching records yet — scan a vet's QR to import one first.", fontSize = 12.sp, color = c.muted)
         }
@@ -260,20 +286,25 @@ private fun VerifyPanel(
 
     val sel = selected
     var busy by remember { mutableStateOf(false) }
-    val isZk = session.mode.lowercase() != "normal" && session.mode.lowercase() != "ecdsa"
+    val isZk = sess.mode.lowercase() != "normal" && sess.mode.lowercase() != "ecdsa"
     Button(
         onClick = {
             err = ""
             if (sel == null) { onStatus("Select a record first."); return@Button }
             Biometric.prompt(
                 activity, "Authorize consent",
-                "Present '${sel.title}' to ${session.relayer.ifBlank { "the verifier" }}",
+                "Present '${sel.title}' to ${sess.relayer.ifBlank { "the groomer" }}",
                 onSuccess = {
                     val wallet = runCatching { Wallet.load(context) }.getOrNull()
                     val subject = wallet?.ethAddress
                     val consentPriv = if (isZk) wallet?.consent?.prvHex else null
                     val req = VerificationRequest.from(
-                        session = session,
+                        exportToken = qr.token,
+                        relayer = sess.relayer,
+                        purpose = sess.purpose,
+                        recordType = sess.recordType,
+                        challenge = sess.challenge,
+                        mode = sess.mode,
                         dogTagIdDec = sel.dogTagId,
                         credentialRoot = sel.credentialRoot,
                         subjectWallet = subject,
@@ -304,18 +335,33 @@ private fun VerifyPanel(
 
                             // (a) PRE-PROOF GROOMER CHECK — hard-stop if the relayer is not a
                             // whitelisted groomer for this purpose. Never sign/prove/disclose otherwise.
-                            onStatus("Checking verifier authorization…")
-                            val verifyKey = verifyWhitelistKeyHex(session.purpose)
+                            onStatus("Checking groomer authorization…")
+                            val verifyKey = verifyWhitelistKeyHex(sess.purpose)
                             val wl = withContext(Dispatchers.IO) {
                                 RoaxRpc.isWhitelistedFor(
-                                    AppConfig.ROAX_RPC, roax.issuerRegistry, verifyKey, session.relayer,
+                                    AppConfig.ROAX_RPC, roax.issuerRegistry, verifyKey, sess.relayer,
                                 )
                             }
                             if (wl !is RoaxRpc.Result.Valid) {
                                 busy = false
-                                err = "This verifier is not an authorized groomer."
-                                onStatus("Blocked — verifier not whitelisted (${wl}).")
+                                err = "This groomer is not authorized (not whitelisted)."
+                                onStatus("Blocked — not an authorized groomer (${wl}).")
                                 return@launch
+                            }
+
+                            // (a2) DNS VERIFY (prod/remote only) — the groomer's domain must publish a
+                            // TXT `dogtag-verify=<groomerAddr>`. Local hosts skip this entirely.
+                            if (!io.liberalize.dogtag.net.DnsVerify.isLocalHost(qr.host)) {
+                                onStatus("Verifying groomer DNS…")
+                                val dnsOk = withContext(Dispatchers.IO) {
+                                    io.liberalize.dogtag.net.DnsVerify.verifyGroomer(qr.host, qr.groomerAddr)
+                                }
+                                if (!dnsOk) {
+                                    busy = false
+                                    err = "Groomer DNS not verified — refusing to present."
+                                    onStatus("Blocked — groomer DNS not verified.")
+                                    return@launch
+                                }
                             }
 
                             // (b) Sign the EdDSA consent + generate the Groth16 proof on-device.
@@ -352,11 +398,12 @@ private fun VerifyPanel(
                                 ConsentKeyBind(wallet.ethAddress, wallet.consent.keyHashHex, ownerSig)
                             }.getOrNull()
 
-                            // (d) SUBMIT to the QR host (groomer), NOT central.
-                            onStatus("Submitting proof to verifier…")
+                            // (d) SUBMIT to the QR host (groomer), NOT central. The one-time exportToken
+                            // is consumed server-side on submit.
+                            onStatus("Submitting proof to groomer…")
                             val signed = ConsentSigner.signWithProof(req, consentPriv, proof, bind)
                             val r = withContext(Dispatchers.IO) {
-                                runCatching { CentralApi.postVerifyConsentToHost(session.host, signed.payloadJson) }.getOrNull()
+                                runCatching { CentralApi.postVerifyConsentToHost(qr.host, signed.payloadJson) }.getOrNull()
                             }
                             if (r == null || !r.ok) {
                                 busy = false
@@ -369,7 +416,7 @@ private fun VerifyPanel(
                             var recorded = false
                             for (i in 0 until 30) {
                                 val st = withContext(Dispatchers.IO) {
-                                    CentralApi.verifySessionStatus(session.host, session.sessionId, session.jwt)
+                                    CentralApi.verifySessionStatus(qr.host, sess.sessionId, qr.token)
                                 }
                                 if (st?.status == "recorded") {
                                     recorded = true
@@ -392,7 +439,7 @@ private fun VerifyPanel(
         enabled = sel != null && !busy,
         modifier = Modifier.fillMaxWidth(),
         colors = ButtonDefaults.buttonColors(containerColor = c.success, contentColor = Color.White),
-    ) { Text(if (busy) "Working…" else "Approve & present") }
+    ) { Text(if (busy) "Working…" else "Approve & export") }
 
     if (err.isNotBlank()) Text(err, fontSize = 12.sp, color = c.danger)
     if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = c.muted)
