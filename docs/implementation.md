@@ -591,50 +591,60 @@ POST /issuer/signers { address, mode, recordTypes[] }   # new-address onboarding
    # Switching modes is an onboarding event; delist inactive-mode addresses to avoid stale over-broad whitelist.
 ```
 
-### 3.9 On-chain proof-of-verification (`/verify/*`) — CHANGESPEC §3; research 10/11/12
+### 3.9 EXPORT session — on-chain proof-of-verification (`/verify/*`) — CHANGESPEC §3; research 10/11/12
 
-The **verifier's** on-chain attestation leg. **DECOUPLED from `/import/pull`** (§3.5): `/import/pull` is
+The **groomer's** on-chain attestation leg: the owner **exports** an on-device proof to the groomer
+(symmetric counterpart of IMPORT, §3.4). **DECOUPLED from `/import/pull`** (§3.5): `/import/pull` is
 off-chain operational data; `/verify/*` is the on-chain attestation. NORMAL mode can compose both
-(a disclosed doc drives import + attestation); **ZK mode = verification with NO data import at all**
-(privacy-maximal — the default for sensitive purposes). The owner pays no gas; the verifier (relayer)
-pays PLASMA. Endpoint pseudocode is canonical in §11.8.
+(a disclosed doc drives import + attestation); **ZK mode = export with NO data import at all**
+(privacy-maximal — the default for sensitive purposes). The owner pays no gas; the groomer (relayer)
+pays PLASMA. **Proving is ON-DEVICE** — the phone POSTs only `{proof, pubSignals, consent, bind}`; the
+groomer never receives the witness or the raw record. Endpoint pseudocode is canonical in §11.8.
 
 ```
-# (1) verifier starts a session -> QR + one-time JWT (relayer wallet + purpose + challenge + recordType)
+# (1) groomer starts an EXPORT session -> low-density QR carrying {host, one-time token, groomerAddr}
 POST /verify/session/start { purpose, recordType, mode? }      # mode: "normal" | "zk" (default "zk" for sensitive)
    require operator session && account whitelistedFor(keccak256("VERIFY:"||purpose), relayer)
-   relayer = activeSignerAddress()                             # verifier's funded wallet, bound into consent
+   relayer = activeSignerAddress()                             # groomer's funded wallet, bound into consent
    challenge = random(); sessionId = uuid()
-   jwt = sign_eddsa({ iss:DEPLOYMENT_URL, aud:"dogtag-mobile", sub:sessionId,
-                      relayer, purpose, recordType, challenge, mode, exp: now+180s, jti })
-   save verify_sessions{ sessionId, relayer, purpose, recordType, mode, challenge, status:"pending" }
-   return { qrUrl: DEPLOYMENT_URL+"/v?t="+jwt, sessionId }     # frontend renders QR (§5)
+   token = hex(16 random bytes)                                # one-time token (NOT a JWT) — reuse put/take_share_token
+   save verify_sessions{ sessionId, token, relayer, purpose, recordType, mode, challenge, status:"pending" }
+   return { qrUrl: DEPLOYMENT_URL+"/x/"+token+"?a="+relayer, sessionId }   # frontend renders QR (§5)
 
-# (2) consent arrives RELAYED from central /v1/verify/consent (§4) — never directly from the device
-POST /verify/consent/submit { sessionId, consent, sig, mode }  # consent = VerificationConsent (§1.10)
-   s = verify_sessions[sessionId]; require s.status=="pending"
+# (1b) phone resolves the export session WITHOUT consuming the token (consume on submit)
+GET /x/{token}
+   s = verify_sessions[token]; require s.status=="pending"
+   return { relayer, purpose, recordType, challenge, mode }    # phone: assert groomerAddr(QR)==relayer,
+                                                                #        isWhitelistedFor(VERIFY:purpose, relayer),
+                                                                #        DNS-verify groomer (prod/remote; skip local)
+
+# (2) consent + ON-DEVICE proof arrive RELAYED from central /v1/verify/consent (§4)
+POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bind? }  # consent = VerificationConsent (§1.10)
+   s = verify_sessions[token]; require s.status=="pending"     # one-time token (consumed at the end of this call)
    require consent.relayer == s.relayer && consent.deadline >= now    # relayer binding
    require consent.recordType == keccak256(s.recordType)
-   # (3) build the proof:
-   if mode=="normal":                                           # ECDSA over R; reuse 3-pillar verify
+   # (3) assemble the tx (backend NEVER sees the witness in ZK mode):
+   if mode=="normal":                                           # ECDSA over R; reuse 3-pillar verify on disclosed doc
        require verify(disclosedDoc, {rpc:ROAX_RPC, dns, mode:"third-party"}).valid   # §11.3, NOT self-import
        require consent.credentialRoot == R                      # the single Poseidon issuance root
        prepared = buildTx("recordVerification", consent, sig)
-   else:                                                        # ZK: dogtag-prover-rs, no raw data on chain
+   else:                                                        # ZK: phone-generated proof; no raw data on chain OR to groomer
        require consent.credentialRoot == R                      # the same Poseidon root the circuit proves
-       (a,b,c,pub) = proverClient.prove({ dogTagId, purpose, relayer:s.relayer, subject:consent.subject,
-                                          nonce:consent.nonce, R, eddsaSig:sig, ... })  # §3.10
+       (a,b,c,pub) = (proof, pubSignals)                        # the DEVICE proved it; backend only relays — §3.10
        prepared = buildTx("recordVerificationZK", a, b, c, pub) # pub=[dogTagId,purpose,relayer,subject,nullifier,keyHash,R]
    # (4) submit on-chain via the EXISTING dual-signing prepare/confirm (§11.6 hardened-confirm),
    #     verifyingContract = VerificationRegistry; relayer == msg.sender; tx pays PLASMA
    { txHash } = submitViaPrepareConfirm(prepared)               # backend or wallet mode, same path as issuance
+   take_share_token(token)                                      # consume the one-time token
    s.status="recorded"; s.txHash=txHash; save s
    return { recorded:true, txHash, mode }                       # emits Verified(...); consumes nullifier
 ```
 
-### 3.10 Prover integration (`dogtag-prover-rs`) — CHANGESPEC §0/§3; research 10
+### 3.10 Prover integration (`dogtag-prover-rs`) — TEST ORACLE; CHANGESPEC §0/§3; research 10
 
-The verifier backend integrates the local Groth16 proving service. ZK only; NORMAL never touches it.
+In production the **phone** generates the Groth16 proof on-device (mopro). The `dogtag-prover-rs`
+crate is a **test oracle only** — it re-proves from a witness for `scripts/e2e-zk.sh` (no phone in the
+loop). ZK only; NORMAL never touches it. Same loaded artifacts as the on-device prover.
 
 ```
 # crates/dogtag-prover-rs — ark-circom + ark-groth16 (pure Rust, integrated witness-gen, no native deps)
@@ -857,13 +867,13 @@ Shared across vet, groomer, and admin portals (lives in `packages/ui`):
 - **Issue credential**: pick recordType → form (schema-driven, validates §1.6) → "Sign & Issue" (POST `/records`) → show txHash + "Show QR" (`/records/{id}/share`, render QR).
 - **Records list**: status (issued/revoked), re-generate QR anytime, revoke.
 - **Import from user**: "Import Profile / Vaccination" → show scan prompt → `/import/pull` (off-chain; **decoupled** from Verify below).
-- **Verify (on-chain proof-of-verification)** — CHANGESPEC §5: pick purpose + **Normal/ZK toggle** (ZK = default for sensitive purposes; no data imported) → `POST /verify/session/start` → render **QR** (owner scans, approves consent in-app) → poll session: owner consent relayed → `/verify/consent/submit` builds proof + submits → show **on-chain verification status** (pending → `Verified` txHash + explorer link). ZK shows "private — no credential data on chain."
+- **Export (on-chain proof-of-verification)** — CHANGESPEC §5: pick purpose + **Normal/ZK toggle** (ZK = default for sensitive purposes; no data imported) → `POST /verify/session/start` → render the one-time **export QR** (`/x/<token>?a=<relayer>`; owner scans, approves consent in-app) → poll session: the owner's phone generates the Groth16 proof **on-device** and POSTs `{proof, pubSignals, consent, bind}` (auth via the one-time `exportToken`) → the relayer submits on-chain → show **on-chain verification status** (pending → `Verified` txHash + explorer link). ZK shows "private — no credential data on chain."
 - **Calendar + Appointments**: connect Google, calendar grid, approve/decline/reschedule (mirrors reference groomer UI).
 
 ### 5.2 Groomer portal (`stacks/groomer/web`, port 43617)
 - Mirrors the reference dashboard (Dashboard/Calendar/Appointments/Clients/Groomers/Reports/Marketing/Settings).
 - Import pet **profile** + **vaccination status** via QR (`/import/*`), verify on chain+DNS before accepting.
-- **Verify (on-chain proof-of-verification)**: same "Verify" UI as §5.1 — purpose + **Normal/ZK toggle**, show QR, on-chain verification status. A groomer can verify a vet-issued vaccination **without being an issuer** (`VERIFY:` whitelist namespace, distinct from issuer roles). Decoupled from `/import/*`.
+- **Export (on-chain proof-of-verification)**: same **Export** UI as §5.1 — purpose + **Normal/ZK toggle**, show the export QR, on-chain verification status. A groomer can verify a vet-issued vaccination **without being an issuer** (`VERIFY:` whitelist namespace, distinct from issuer roles). Decoupled from `/import/*`.
 - Same genesis/custody setup (groomers can issue their own records too).
 
 ### 5.3 Admin portal (`stacks/admin/web`, port 39741)
@@ -1601,10 +1611,12 @@ component main {public [dogTagId, purpose, relayer, subject]} = DogTagVerificati
 - **~12–18k constraints**, sub-second proving. keccak (~151k/hash) and secp256k1 ECDSA (~150k–1.5M)
   are kept **out of circuit** by the single Poseidon root + EdDSA-BabyJubjub consent.
 
-**(e) prover service flow (`dogtag-prover-rs`, ark-circom + ark-groth16):** load
-`verification.{r1cs,wasm}` + the phase-2 `verification.zkey` once at boot; per request build the witness
-from the credential + EdDSA consent sig, call `ark_groth16::prove`, serialize `(a,b,c,pub[7])` for the
-`recordVerificationZK` call. Pure Rust, integrated witness-gen, no native deps (no gmp/cmake/nasm).
+**(e) prover flow.** In production the **phone proves on-device** (mopro `circom-prover` + `rust-witness`,
+the bundled `.zkey`): load `verification.{r1cs,wasm}` + the phase-2 `verification.zkey` once, build the
+witness from the credential + EdDSA consent sig, run Groth16, serialize `(a,b,c,pub[7])` and POST it for
+the `recordVerificationZK` call — the witness never leaves the device. `dogtag-prover-rs`
+(ark-circom + ark-groth16, pure Rust, integrated witness-gen, no native deps) runs the **identical**
+proving flow as a **test oracle** for `scripts/e2e-zk.sh` (no phone). Sub-second either way.
 `rapidsnark` is a documented escape hatch only if the circuit balloons past a few hundred k constraints.
 
 **(f) trusted setup (NORMATIVE):** reuse the **Hermez / Perpetual Powers of Tau** phase-1 `.ptau`
@@ -1615,24 +1627,30 @@ ship it in the prover image. A compromised phase-2 lets a party **forge attestat
 setup at all** — a forged attestation is still constrained by the shared nullifier + the on-chain
 `isValid(R)` re-check (directly on the public root — no `kecOf` mapping).
 
-**(g) `/verify/*` endpoint pseudocode (canonical; §3.9 references this):**
+**(g) EXPORT `/verify/*` endpoint pseudocode (canonical; §3.9 references this):**
 ```
-POST /verify/session/start { purpose, recordType, mode }    // verifier; mode default "zk" for sensitive
+POST /verify/session/start { purpose, recordType, mode }    // groomer; mode default "zk" for sensitive
    require operator session && whitelistedFor(keccak256("VERIFY:"||purpose), relayer=activeSigner())
-   jwt = sign_eddsa({ aud:"dogtag-mobile", sub:sessionId, relayer, purpose, recordType,
-                      challenge:random(), mode, exp: now+180s, jti })
-   return { qrUrl: DEPLOYMENT_URL+"/v?t="+jwt, sessionId }
+   token = hex(16 random bytes)                              // ONE-TIME TOKEN (not a JWT) — reuse put/take_share_token
+   save verify_sessions{ sessionId, token, relayer, purpose, recordType, challenge:random(), mode, status:"pending" }
+   return { qrUrl: DEPLOYMENT_URL+"/x/"+token+"?a="+relayer, sessionId }   // QR = {host, token, groomerAddr}
 
-# owner (mobile §6.6) signs VerificationConsent -> central /v1/verify/consent (§4) -> relayed here:
-POST /verify/consent/submit { sessionId, consent, sig, mode }
-   s=verify_sessions[sessionId]; require s.status=="pending" && consent.relayer==s.relayer && consent.deadline>=now
+GET /x/{token}                                              // phone resolves the export session (token NOT consumed)
+   s=verify_sessions[token]; require s.status=="pending"
+   return { relayer, purpose, recordType, challenge, mode } // phone: assert groomerAddr(QR)==relayer; isWhitelistedFor;
+                                                            //        DNS-verify groomer (prod/remote; skip local)
+
+# owner (mobile §6.6) signs VerificationConsent + PROVES ON-DEVICE -> central /v1/verify/consent (§4) -> relayed here:
+POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bind? }
+   s=verify_sessions[token]; require s.status=="pending" && consent.relayer==s.relayer && consent.deadline>=now
    if mode=="normal":   // ECDSA over R; reuse 3-pillar third-party verify on the disclosed doc
       require verify(disclosedDoc,{rpc,dns,mode:"third-party"}).valid && consent.credentialRoot==R  // §11.3
       prepared = tx("recordVerification", consent, sig)
-   else:                // ZK: prover builds proof; NO raw data on chain; credentialRoot==R (same root the circuit proves)
-      (a,b,c,pub) = prover.prove({dogTagId,purpose,relayer:s.relayer,subject:consent.subject,nonce:consent.nonce,R,eddsaSig:sig})
+   else:                // ZK: the DEVICE generated the proof; backend only relays. NO raw data on chain OR to groomer.
+      (a,b,c,pub) = (proof, pubSignals)                     // credentialRoot==R (the same root the circuit proved on-device)
       prepared = tx("recordVerificationZK", a, b, c, pub)   // pub=[dogTagId,purpose,relayer,subject,nullifier,keyHash,R]
    { txHash } = submitViaPrepareConfirm(prepared)           // §11.6 hardened prepare/confirm; relayer pays PLASMA
+   take_share_token(token)                                  // one-time: consume on submit
    s.status="recorded"; return { recorded:true, txHash, mode }   // emits Verified(...); consumes nullifier
 ```
 > **`/import/pull` (off-chain data) stays DECOUPLED from `/verify/*` (on-chain attestation).** NORMAL
@@ -1689,11 +1707,11 @@ Normal path adds the same `purpose` field + purpose-scoped whitelist key and the
 
 **(f) Generalized hardened confirm (audit-08).** For verify submissions, §11.6 `confirm` asserts the **`Verified`** event (emitted by the registry address) + `consumed[nf]==true` at N confirmations — not just `RootIssued`. Else confirm degrades to receipt-status-only.
 
-**(g) Relay auth + fail-fast (audit-09 F-2/F-3).** `POST /verify/consent/submit` is **HMAC-signed with the per-business discovery key** (same as appointment-events/erase). At submit, re-add off-chain fail-fast: `ECDSA.recover(consent)==subject`, `relayer==activeSigner`, and **one-time `challenge` consumption** against the session. The verify-flow JWT `aud` is canonical (not the stale `dogtag-verify`).
+**(g) Relay auth + fail-fast (audit-09 F-2/F-3).** `POST /verify/consent/submit` is **HMAC-signed with the per-business discovery key** (same as appointment-events/erase). At submit, re-add off-chain fail-fast: `ECDSA.recover(consent)==subject`, `relayer==activeSigner`, and **one-time token consumption** (the export `/x/<token>` is consumed on submit — §11.8(g)) plus `challenge` binding against the session.
 
 **(h) Art. 9 enforcement (audit-09 P-3 Critical).** `SERVICE_ATTESTATION` is off-chain-only with **no on-chain root** → it is **NOT verifiable via on-chain proof-of-verification** (state explicitly; reject at registry + backend). The mechanism applies to `VACCINATION`, `DOG_PROFILE`, `TRAVEL_CLEARANCE`, `EU_HEALTH_CERT`. `purpose` labels MUST be non-sensitive (no Art. 9 leakage in cleartext `Verified.purpose`).
 
-**(i) ZK privacy scope — corrected claim (audit-09 B-4).** Server-side proving means the **verifier backend DOES receive the disclosed doc/witness**; **ZK minimizes on-chain exposure (raw data never on chain), NOT exposure to the verifier.** Correct any "the groomer never holds the cert" wording. On-device proving (relay only `(a,b,c,pub)`) is the documented v2 upgrade.
+**(i) ZK privacy scope — on-device proving is CANONICAL (audit-09 B-4, resolved).** The **phone generates the Groth16 proof on-device** and POSTs only `{proof, pubSignals, consent, bind}`; the groomer backend relays `(a,b,c,pub)` and **never receives the witness or the raw record**. ZK therefore minimizes exposure **both on-chain AND to the groomer** (true ZK against the verifier, not merely the chain) — "the groomer never holds the cert" is now TRUE. **Server-side proving (`dogtag-prover-rs` on the backend) is a TEST ORACLE ONLY** (re-proves from a witness for `scripts/e2e-zk.sh`); it is NOT the production path. Any earlier wording calling on-device a "v2 upgrade" or claiming "the verifier receives the witness/disclosed doc" is **superseded**.
 
 **(j) Per-pet consent key + rotation (audit-09 P-5 / audit-08 M-3).** Derive the BabyJubjub consent key **per pet** (so the ZK path doesn't re-link fresh-per-pet `subject` addresses). `ConsentKeyRegistry.bindConsentKey` supports **rotation** (not one-time-irrevocable → avoids lost-key lockout). `keyOf` is in DPIA scope; verifier-side erasure needs an `ownerId→verifier` index.
 

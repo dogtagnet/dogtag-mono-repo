@@ -64,14 +64,19 @@ idempotent/visual.)
 builds the doc, anchors the Merkle root with `issue(root)` on ROAX, and re-verifies the `RootIssued`
 event (waits for the receipt) before marking it issued. Then **Create QR** → renders the QR.
 
-> The QR carries a SHORT one-time token — `http://<host>/r/<32-hex>` — instead of a long embedded
-> EdDSA record-JWT. The tiny payload makes a low-density QR the phone camera can focus on and scan
-> instantly. The token maps to the record server-side and is **deleted after the first scan** (one-time;
-> expires after 180s), so a second `GET /r/<token>` returns 404 — the same one-time-use guarantee as the
-> old JWT. (`<host>` is the vet's `DEPLOYMENT_URL` — the LAN IP or the cloudflared tunnel; see §6.)
+> This is the **IMPORT** QR (device ← vet). It carries a SHORT one-time token — `http://<host>/r/<32-hex>`
+> — instead of a long embedded EdDSA record-JWT. The tiny payload makes a low-density QR the phone camera
+> can focus on and scan instantly. The token maps to the record server-side and is **deleted after the
+> first scan** (one-time; expires after 180s), so a second `GET /r/<token>` returns 404 — the same
+> one-time-use guarantee as the old JWT. (`<host>` is the vet's `DEPLOYMENT_URL` — the LAN IP or the
+> cloudflared tunnel; see §6.)
+>
+> The symmetric **EXPORT** QR (device → groomer, §5) is also a one-time token, but carries the groomer's
+> wallet address too: `http://<host>/x/<token>?a=<groomerAddr>`. The phone resolves it via `GET /x/<token>`,
+> (prod/remote) DNS-verifies the groomer, proves **on-device**, and POSTs the proof — see §5.
 
 ## 4. Owner app scans → imports → polls on-chain → taps to view decoded fields
-On the phone (DogTag app), open **Scan** (Home `+` or the Verify tab) and scan the vet's QR:
+On the phone (DogTag app), open **Scan** (Home `+` or the Export tab) and scan the vet's QR:
 - It `GET`s the wrapped doc (resolving `/r/<token>` server-side), recomputes the Merkle root via the
   Rust SDK, and reads `DogTagIssuer.isValid(root)` on ROAX — showing **Anchoring… → Verified on-chain ✓**.
 - The record lands under the pet, grouped by type; filter by dog on the Travel/Documents tabs.
@@ -81,14 +86,20 @@ On the phone (DogTag app), open **Scan** (Home `+` or the Verify tab) and scan t
 
 See [§6](#6-phone-networking-real-gotchas) for getting the phone to actually reach the backend.
 
-## 5. (Optional) proof-of-verification on-chain
-In the vet/groomer portal **Verify** tab → pick a purpose (**Normal** or **ZK**) → **Start session** → QR.
-On the phone, scan it → review → select the record to present → sign consent (EdDSA-BabyJubjub) → it's
-relayed to central `/v1/verify/consent` and submitted on-chain. The portal **polls `GET /verify/session/:id`**
-→ shows **Verified on-chain ✓** with the tx + a `Verified` event.
+## 5. (Optional) EXPORT — proof-of-verification on-chain
+The owner **exports** a proof to the groomer (the symmetric counterpart of the §3–4 import). In the
+vet/groomer portal **Export** tab → pick a purpose (**Normal** or **ZK**) → **Start session** → QR. The
+EXPORT QR is a one-time token carrying the groomer's wallet address + host
+(`http://<host>/x/<token>?a=<groomerAddr>`). On the phone, scan it → the app resolves `GET /x/<token>`,
+asserts the groomer is whitelisted on-chain (and, on prod/remote, DNS-verifies the groomer — skipped for
+the `.local` demo) → review → select the record to present → sign consent (EdDSA-BabyJubjub) →
+**generate the Groth16 proof ON-DEVICE** → POST `{proof, pubSignals, consent, bind}` to
+`/v1/verify/consent` with the token. The portal **polls `GET /verify/session/:id`** → shows
+**Verified on-chain ✓** with the tx + a `Verified` event.
 - **Normal** path commits `credentialRoot` on-chain (ECDSA consent; instant).
-- **ZK** path (live, Groth16Verifier `0x138b4330…`) keeps `recordType`/`credentialRoot` **off chain**;
-  proving via `dogtag-prover-rs` takes a few minutes per proof.
+- **ZK** path (live, Groth16Verifier `0x138b4330…`) keeps `recordType`/`credentialRoot` **off chain** and
+  the raw record **off the groomer entirely** — the phone proves locally in **~1–2 s** and sends only the
+  proof. (The backend `dogtag-prover-rs` is a test oracle for `scripts/e2e-zk.sh`, not the demo path.)
 
 ## 6. Phone networking (real gotchas)
 The phone is **not** the Mac — `localhost` on the phone is the phone itself. Two cases:
@@ -119,7 +130,7 @@ PASS on ROAX**:
 3. fund + whitelist the genesis signer (`demo-bootstrap.sh`);
 4. prepare VACCINATION → **`issue(root)` anchored on the clone** (`isValid(root)=true`);
 5. share → **short one-time `/r/<token>`** QR → `GET` returns the doc → **second GET = 404** (one-time);
-6. NORMAL-path verify-session → subject SBT mint + consent-key bind → ECDSA consent → **recorded on-chain**;
+6. NORMAL-path EXPORT session → subject SBT mint + consent-key bind → ECDSA consent → **recorded on-chain**;
 7. `GET /verify/session/{id}` shows `recorded` + the txHash.
 ```bash
 scripts/demo-up.sh && scripts/e2e-smoke.sh

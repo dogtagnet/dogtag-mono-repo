@@ -394,17 +394,28 @@ FETCH + VERIFY (mobile scans):
     NOT_APPLICABLE for third-party verifiers (a groomer/airline is not ownerOf)
   mobile stores credential under the pet, grouped by recordType
 
-VERIFY (on-chain proof-of-verification — decoupled from import; §4.7, §3.6):
-  verifier API → POST /verify/session/start {purpose}
-                 → QR + one-time JWT {relayer=verifierWallet, purpose, challenge, recordType}
+EXPORT (device → groomer; on-chain proof-of-verification — decoupled from import; §4.7, §3.6):
+  groomer API → POST /verify/session/start {purpose}
+                 → QR carries {host, one-time token, groomerAddr=relayer} — low-density
+                   https://<host>/x/<token>?a=<relayer>  (token, NOT a JWT; one-time, 180s)
+  mobile scans → GET https://<host>/x/<token> → session meta {relayer,purpose,recordType,challenge,mode}
+          asserts groomerAddr(QR) == session relayer
+          on-chain: isWhitelistedFor(VERIFY:purpose, groomerAddr)  (hard-stop if not a whitelisted groomer)
+          DNS-verify the groomer (prod/remote): the host's domain must publish
+            dogtag-verify=<groomerAddr> via DoH (Cloudflare) — SKIPPED for local hosts (§4.7)
   mobile: user reviews → signs VerificationConsent over the credential ROOT (never salted data):
             normal: ECDSA (secp256k1) over R
             ZK:     EdDSA-BabyJubjub over R  (key bound via ConsentKeyRegistry)
-          → POST central /v1/verify/consent → relayed to verifier /verify/consent/submit
-  verifier backend builds proof:
+          ON-DEVICE: the phone generates the Groth16 proof locally (mopro; ~1–2 s) — the raw record
+            NEVER leaves the phone (true ZK against the groomer, not just the chain)
+          → POST {proof, pubSignals, consent, bind} to https://<host>/v1/verify/consent (with the token);
+            relayed to the groomer's /verify/consent/submit. NORMAL mode may instead disclose the doc.
+  groomer backend assembles the tx (it receives only the proof, never the witness):
             NORMAL: reuse 3-pillar verify(...,mode:"third-party") on the disclosed doc; OR
-            ZK:     dogtag-prover-rs builds witness + Groth16 proof (no raw data on chain)
-  verifier submits via the existing dual-signing prepare/confirm (§6.2, hardened §13.6):
+            ZK:     submit the device-generated Groth16 proof (no raw data on chain OR to the groomer)
+            [TEST ORACLE ONLY: dogtag-prover-rs on the backend can re-prove from a witness — used by
+             scripts/e2e-zk.sh, NOT the production path]
+  groomer submits via the existing dual-signing prepare/confirm (§6.2, hardened §13.6):
             VerificationRegistry.recordVerification(consent, userSig)              // normal
             VerificationRegistry.recordVerificationZK(a,b,c, [dogTagId,purpose,relayer,subject,nullifier,keyHash,R])  // ZK
           → emits Verified(...); consumes the shared nullifier
@@ -412,9 +423,13 @@ VERIFY (on-chain proof-of-verification — decoupled from import; §4.7, §3.6):
 
 > **Import and verification are DECOUPLED.** `/import/pull` (off-chain operational data) stays as-is. The new `/verify/*` is the on-chain attestation: NORMAL mode can compose both (the disclosed doc drives import + attestation); **ZK mode = verification with no data import at all** (the default for sensitive purposes).
 
-### 4.7 Verification contracts & ZK circuit (proof-of-verification)
+### 4.7 EXPORT contracts & ZK circuit (proof-of-verification)
 
-Records that a verifier validated a credential **with the user's signed consent** (§3.6). Two paths share one `VerificationRegistry`, one `consumed` nullifier set, and the existing issuance/revocation gate. Full detail: [`research/10-zk-groth16.md`](./research/10-zk-groth16.md), [`research/11-consent-attestation.md`](./research/11-consent-attestation.md), [`research/12-verification-integration.md`](./research/12-verification-integration.md). Corrected code in `implementation.md §11.8`.
+Records that a groomer validated a credential **with the owner's signed consent** — the owner **exports** a proof to the groomer (the symmetric counterpart of IMPORT, §7). Two paths share one `VerificationRegistry`, one `consumed` nullifier set, and the existing issuance/revocation gate.
+
+**Proving is ON-DEVICE (canonical).** In ZK mode the **phone** assembles the 19 signals and generates the Groth16 proof locally; it POSTs only `{proof, pubSignals, consent, bind}` — the groomer **never receives the raw record or the witness**. This is true zero-knowledge against the *groomer*, not merely against the chain. The backend `dogtag-prover-rs` crate is a **test oracle only** (it re-proves from a witness for `scripts/e2e-zk.sh`); it is not on the production export path.
+
+**Export QR = one-time token (not a JWT).** The QR is `https://<host>/x/<token>?a=<relayer>` carrying the groomer wallet address + a one-time token + host (low-density). The phone resolves it via `GET /x/<token>`, on-chain-checks `isWhitelistedFor(VERIFY:purpose, groomerAddr)`, and (prod/remote) **DNS-verifies the groomer**: the host's domain must publish `dogtag-verify=<groomerAddr>` (mirrors the issuer TXT in `stacks/admin/api/src/dns.rs`, resolved via Cloudflare DoH) — **skipped for local hosts** (IP literal / `localhost` / `*.local` / LAN), the LOCAL demo. Proof is POSTed to `/v1/verify/consent` with the token (consumed once on submit). Full detail: [`research/10-zk-groth16.md`](./research/10-zk-groth16.md), [`research/11-consent-attestation.md`](./research/11-consent-attestation.md), [`research/12-verification-integration.md`](./research/12-verification-integration.md). Corrected code in `implementation.md §11.8`.
 
 **`VerificationRegistry`** — custom, **not EAS** (EAS isn't on ROAX, can't express a relayer-bound-in-signature, and has no Groth16 path; we borrow only its EIP-712 delegation *shape*).
 
@@ -526,16 +541,23 @@ A vet/groomer anchors a merkle root (or mints an SBT) using **either** their own
 
 ---
 
-## 7. QR + JWT record sharing
+## 7. QR record sharing — IMPORT & EXPORT (symmetric one-time-token flows)
+
+The two QR directions are **symmetric**, each a low-density one-time token bound to a host:
+
+- **IMPORT** (device ← vet): the QR carries `{one-time token, IP/host}`; the phone `GET`s the raw cert from `host + /r/<token>` (one-time, 180s, **deleted after first read**), then verifies the three authenticity pillars locally. This is how the code works today.
+- **EXPORT** (device → groomer): the QR carries `{groomer wallet address, one-time token, IP/host}` as `https://<host>/x/<token>?a=<relayer>` — a **one-time token, NOT a JWT**. The phone resolves it via `GET /x/<token>`, **DNS-verifies the groomer** (prod/remote; skipped local), generates the ZK proof **on-device**, and POSTs `{proof, pubSignals, consent, bind}` to `host + /v1/verify/consent` using the token (consumed once). Detail in §4.7.
+
+The legacy embedded-JWT record path (`/r?t=<jwt>`) below remains only for IMPORT back-compat:
 
 - **JWT alg:** EdDSA (Ed25519), a **per-deployment keypair separate from blockchain keys** (ES256 fallback). Lib `jsonwebtoken` 10.x.
 - **Claims:** `iss`=deployment URL, `sub`=recordId (scoping anchor), `aud`=`dogtag-mobile`, `scope`=`read:record`, `iat`/`nbf`, `exp` ~2–5 min, `jti`.
 - **Enforcement:** server checks `sub == path recordId`, scope, and a `jti` store (Redis/Mongo `SETNX … EX exp`) for **one-time use**; `leeway = 30s` for clock skew.
 - **QR payload:** HTTPS deep link `https://<deployment-host>/r?t=<jwt>&i=<recordId>` — the **origin is the API base**, so the per-deployment URL requirement is satisfied by construction. ECC level M, byte mode, ~QR v6–10. `qrcode` crate.
 - **Low-density variant (server-side one-time token):** the issuer→user QR MAY instead carry a SHORT server-side one-time token — `https://<deployment-host>/r/<32-hex>` (16 random bytes, no embedded JWT, no query string). The server maps `token → recordId` (exp ~180s) and resolves it via an unauthenticated `GET /r/:token` that **deletes the token on first read** (atomic remove == one-time), returning the same `wrappedDoc` body as `GET /records/{id}`. This gives the SAME one-time-use guarantee as the embedded record-JWT, but a far lower-density QR the phone camera can focus on. The legacy `/r?t=` JWT path remains for back-compat.
-- **Two QR directions:**
-  - **Issuer → user** (vet/groomer shows QR; mobile pulls the record to import).
-  - **User → business** (mobile shows QR carrying a JWT against the **central** API; groomer/vet pulls the pet profile / vaccination status the user is sharing). Same one-time-JWT pattern, audience `dogtag-business`.
+- **Two QR directions (see the IMPORT/EXPORT summary at the top of §7):**
+  - **IMPORT — issuer → user** (vet shows QR; mobile pulls the record to import via `/r/<token>`).
+  - **EXPORT — groomer → user** (groomer shows QR carrying `{groomerAddr, token, host}`; the owner exports an on-device ZK proof of a credential to the groomer via `/x/<token>` → `/v1/verify/consent`, §4.7). The user→business *operational profile share* (pet profile / vaccination status against the **central** API) still uses the one-time-JWT pattern, audience `dogtag-business`.
 
 ---
 
@@ -756,7 +778,7 @@ Three audits (07 ZK, 08 contracts, 09 systems) found the ZK path **unsound as fi
 - **Generalized hardened confirm** asserts the `Verified` event + `consumed[nf]` for verify submissions.
 - **Relay hop HMAC-authenticated** (`/verify/consent/submit`), off-chain fail-fast re-added (recover==subject, relayer==activeSigner, one-time challenge), 5-min deadline.
 - **Art. 9:** `SERVICE_ATTESTATION` has no on-chain root and is **NOT verifiable via on-chain proof-of-verification** (rejected at registry + backend); `purpose` labels are non-sensitive (no cleartext Art. 9 leak in `Verified.purpose`).
-- **ZK privacy claim corrected:** server-side proving means the verifier **does** receive the disclosed witness — ZK minimizes **on-chain** exposure (raw data never on chain), *not* exposure to the verifier; on-device proving is the v2 upgrade.
+- **ZK privacy scope (on-device proving is CANONICAL):** the **phone** generates the Groth16 proof locally and POSTs only `{proof, pubSignals, consent, bind}` — the groomer **never receives the raw record or the witness**, so ZK minimizes exposure **both on-chain AND to the groomer** (true zero-knowledge against the verifier, not just the chain). Server-side proving (`dogtag-prover-rs` on the backend) is a **test oracle only** (re-proves from a witness for `scripts/e2e-zk.sh`), NOT the production path — any earlier wording calling on-device a "v2 upgrade" or claiming "the verifier receives the witness/disclosed doc" is **superseded**.
 - **Per-pet BabyJubjub consent key** (don't re-link fresh-per-pet `subject` addresses) with **rotation** (no lost-key lockout); `keyOf` in DPIA scope.
 - **Deploy/ops:** `setIssuerFor` wired (else verify reverts), real timelock on `setZkVerifier`, and Phase 2.5 gated on ROAX supporting the **BN254 pairing precompiles**.
 

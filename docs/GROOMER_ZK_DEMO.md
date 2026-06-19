@@ -19,7 +19,7 @@ Verified on-chain (gasless, owner balance stayed 0): bind
 `consumed(nullifier)=true`). The automated `scripts/e2e-zk.sh` reproduces the full HTTP-relay path.
 
 This builds on `docs/DEMO_CLICKS.md` (admin/vet setup, issue, import) — only the **new** groomer ZK
-verify, the **mobile prover build**, and the **reset** are detailed here.
+**export**, the **mobile prover build**, and the **reset** are detailed here.
 
 ---
 
@@ -98,19 +98,21 @@ Scan the `/r/<token>` QR → the app fetches the wrapped doc, verifies integrity
 `isValid(root)`, and stores it (with its raw Merkle leaves — the witness source). Tap the credential
 to view the decoded fields.
 
-## 6. Groomer ZK verify (the finale)
+## 6. Groomer ZK export (the finale)
 
-1. **Groomer** portal → **Verify** → purpose **boarding_intake**, mode **ZK (private)** → **Start** →
-   renders a one-time verify QR (`/v?t=<jwt>`, carrying the groomer **relayer** address + purpose).
-2. **Phone** → Scan → the verify panel:
+1. **Groomer** portal → **Export** → purpose **boarding_intake**, mode **ZK (private)** → **Start** →
+   renders a one-time **EXPORT** QR — a **token** (`/x/<token>?a=<groomerAddr>`, NOT a JWT) carrying the
+   groomer's **relayer** wallet address + host. (The session record holds the purpose/challenge/mode.)
+2. **Phone** → Scan → resolves `GET /x/<token>` → the export panel:
    - **Verifies the groomer on-chain first**: `IssuerRegistry.isWhitelistedFor(verifyKey(purpose),
      relayer)` — if the verifier isn't a whitelisted groomer, it **hard-stops** ("not an authorized
-     groomer") and never discloses anything.
+     groomer") and never discloses anything. (Prod/remote also **DNS-verifies the groomer**:
+     `dogtag-verify=<groomerAddr>` via DoH; skipped for the `.local` demo.)
    - Select the vaccination credential → **Approve & present**: the phone signs the EdDSA consent,
      **generates the Groth16 proof locally** (~1–2 s), and signs the one-time EIP-712 consent-key
      **bind** authorization (off-chain).
    - POSTs `{proof, pubSignals, consent, bind:{subject, keyHash, ownerSig}}` to the groomer host
-     (`/v1/verify/consent`, authenticated by the one-time session JWT).
+     (`/v1/verify/consent`, authorized by the one-time export token, consumed on submit).
 3. **Groomer backend (relayer)**: validates `pubSignals ↔ session`, then **pays gas** to (a)
    `bindConsentKeyFor` (first time only — the owner authorized it off-chain) and (b)
    `recordVerificationZK` on the VerificationRegistry. The contract checks `msg.sender == relayer`

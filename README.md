@@ -69,7 +69,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` · `ConsentKeyRegistry` | ROAX |
 | `circuits` | Groth16 Poseidon-Merkle + EdDSA-BabyJubjub consent circuit (N=24, depth 5) | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
-| `crates/dogtag-prover-rs` | ark-circom + ark-groth16 witness/proof builder | vet/groomer api |
+| `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |
 | `packages/ui` | Shared React components + light/dark theme tokens | Portals |
 
 ## Ports (uncommon; Mongo internal-only, NEVER published to the host)
@@ -118,7 +118,7 @@ Cross-cutting CI guardrails enforce the privacy claims:
 - **Dual-signing parity** (`stacks/vet/api/tests/gate_dual_signing_parity.rs`) — wallet vs backend mode yield byte-identical `merkleRoot`/`targetHash`/records (build is server-side in both modes).
 - **PII-off-chain negative** (`stacks/admin/api/tests/gate_pii_off_chain.rs`) — `dogTagId` is never `keccak256`/`Poseidon` of the microchip; only the **salted** root is anchored.
 - **Erasure-unlinkability** (`stacks/admin/api/tests/gate_erasure_unlinkability.rs`) — after `erase()`, the per-record DEK is destroyed and salts/PII (incl. `verification_records`) **decrypt fails** → on-chain commitment unlinkable.
-- **Behavioral-privacy** (`stacks/vet/api/tests/gate_behavioral_privacy.rs`) — `/verify/session/start` defaults to **ZK** for sensitive purposes; fresh-per-pet `subject` bounds linkage to one pet.
+- **Behavioral-privacy** (`stacks/vet/api/tests/gate_behavioral_privacy.rs`) — the **EXPORT** session (`/verify/session/start`, the owner→groomer proof flow) defaults to **ZK** for sensitive purposes; the **proof is generated on-device** so the groomer never receives the record; fresh-per-pet `subject` bounds linkage to one pet.
 
 ## Status (Phases 0–8)
 | Phase | Scope | Status |
@@ -129,8 +129,8 @@ Cross-cutting CI guardrails enforce the privacy claims:
 | 2.5 | ZK verification subsystem (circuit, VerificationRegistry, ConsentKeyRegistry) | ✅ Done |
 | 3 | Vet business backend (Rust): issue→share→verify, dual signing, custody | ✅ Done |
 | 4 | Central/admin backend: discovery, whitelisting, appointments, erasure | ✅ Done |
-| 5 | Web portals (vet/groomer/admin; light/dark, wallet-connect, Verify UI) | ✅ Done |
-| 6 | Mobile apps (Android + iOS): verify, wallet, consent signing | ✅ Done |
+| 5 | Web portals (vet/groomer/admin; light/dark, wallet-connect, Export UI) | ✅ Done |
+| 6 | Mobile apps (Android + iOS): import, on-device-proof export, wallet, consent signing | ✅ Done |
 | 7 | Calendar sync + cross-backend appointments | ✅ Done |
 | 8 | Hardening: per-stack Docker, privacy/parity gates, DEPLOY + DPIA docs | ✅ Done |
 | — | **DEPLOYED LIVE on ROAX (chainId 135)** — contracts live, ZK path wired, demo verified on a real Android device | ✅ Live |

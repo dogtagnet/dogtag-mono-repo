@@ -53,7 +53,10 @@ scripts/demo-up.sh        # builds + starts admin/vet/groomer backends + the 3 p
 
 `demo-up.sh` also: sets `VITE_DEMO_MODE=1` on all three portal launches, wires the deployer/admin key,
 sets `DNS_CHECK=skip` (bypasses DNS-TXT for the `.local` demo domains, since there is no real domain),
-and points the QR host at the Mac LAN IP.
+and points the QR host at the Mac LAN IP. Because the QR host is a LAN IP/`.local` (not a real domain),
+the phone-side **EXPORT** groomer DNS-verify (`dogtag-verify=<groomerAddr>`, §EXPORT) is **skipped
+locally** too — see [REMOTE_DEPLOYMENT.md §4](./REMOTE_DEPLOYMENT.md#4-dns-txt-issuer--groomer-legitimacy-verbatim)
+for the production check.
 
 | Stack | Portal (web) | API |
 |---|---|---|
@@ -92,8 +95,13 @@ The literal buttons are in **[DEMO_CLICKS.md](./DEMO_CLICKS.md)**. In short:
 4. **Vet issues a credential → QR.** Vet portal → **Issue** → **Fill demo data** → **Sign & Issue**
    (anchors the Merkle root with `issue(root)` on ROAX, waits for the `RootIssued` receipt) → **Create
    QR**. The QR carries a **short one-time** `http://<host>/r/<32-hex>` token (deleted after first scan).
-5. **Phone scans → imports → polls on-chain → taps to view decoded fields.** See
+5. **Phone scans IMPORT QR → imports → polls on-chain → taps to view decoded fields.** See
    [DEMO.md §4–5](./DEMO.md#4-owner-app-scans--imports--polls-on-chain--taps-to-view-decoded-fields).
+6. **(Optional) EXPORT.** In the vet/groomer **Export** tab, start a session → the **EXPORT QR**
+   (`http://<host>/x/<token>?a=<groomerAddr>`, a one-time token carrying the groomer's wallet address).
+   The phone resolves `GET /x/<token>`, checks the groomer is whitelisted on-chain (the groomer
+   DNS-verify is **skipped** locally), generates the ZK proof **on-device** (~1–2 s), and POSTs only the
+   proof — the groomer never sees the record. See [DEMO.md §5](./DEMO.md#5-optional-export--proof-of-verification-on-chain).
 
 ---
 
@@ -123,8 +131,8 @@ scripts/demo-up.sh && scripts/e2e-smoke.sh
 
 It covers: admin login → register business → issuer-application → **approve whitelists
 `keccak256(VACCINATION)` on-chain**; vet genesis + unlock; fund + whitelist the signer; prepare → `issue(root)`
-anchored (`isValid=true`); share → one-time `/r/<token>` (second GET = 404); NORMAL-path verify-session
-recorded on-chain; session status `recorded` + txHash. See
+anchored (`isValid=true`); share → one-time IMPORT `/r/<token>` (second GET = 404); NORMAL-path **EXPORT**
+session (`/x/<token>` resolve → consent → recorded on-chain); session status `recorded` + txHash. See
 [DEMO.md §7](./DEMO.md#7-automated-verification-e2e-smokesh).
 
 ---

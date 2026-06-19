@@ -54,20 +54,21 @@ Setup is a linear wizard; each step auto-advances on success.
 
 ---
 
-## C. Vet issues a credential → QR — vet portal (:41873)
+## C. Vet issues a credential → IMPORT QR — vet portal (:41873)
 
 1. Go to **Issue credential**.
 2. Click **Fill demo data** (valid rabies cert; recordType `VACCINATION`).
 3. **Sign & Issue**.
-4. **Create QR** → the QR renders. It now carries a SHORT one-time token (`http://<host>/r/<32-hex>`),
-   NOT a long embedded JWT — a low-density QR the camera focuses on instantly. The token is **deleted
-   after the first scan** (one-time; 180s expiry), so re-scanning the same QR yields a 404.
+4. **Create QR** → the **IMPORT** QR (device ← vet) renders. It carries a SHORT one-time token
+   (`http://<host>/r/<32-hex>`), NOT a long embedded JWT — a low-density QR the camera focuses on
+   instantly. The token is **deleted after the first scan** (one-time; 180s expiry), so re-scanning the
+   same QR yields a 404.
 
 ---
 
 ## D. Phone (DogTag app) — scan → import → verified on-chain → view fields
 
-1. Open **Scan** (Home `+` or Verify tab) → scan the vet's QR.
+1. Open **Scan** (Home `+` or Export tab) → scan the vet's QR.
 2. Watch **Anchoring… → Verified on-chain ✓**. The record lands under the pet.
 3. **Tap the imported credential** → the detail view decodes **every Merkle leaf** and shows the field
    values + the on-chain root/issuer/verdict (Android + iOS).
@@ -78,13 +79,19 @@ Setup is a linear wizard; each step auto-advances on success.
 
 ---
 
-## E. (Optional) proof-of-verification on-chain — vet or groomer portal Verify tab
+## E. (Optional) EXPORT — proof-of-verification on-chain — vet or groomer portal Export tab
 
-1. Go to **Verify**.
+The owner **exports** an on-device proof to the groomer (symmetric counterpart of the §C–D import).
+
+1. Go to **Export**.
 2. Click **Fill sample** (selects a non-sensitive purpose + Normal mode).
-3. **Start verification** → QR.
-4. On the phone: scan → review → select record → sign consent.
-5. The portal polls and flips to **Verified on-chain ✓** (ZK = no credential data on chain).
+3. **Start export** → the **EXPORT** QR renders. It carries the groomer's wallet address + a one-time
+   token + host: `http://<host>/x/<token>?a=<groomerAddr>` (a token, NOT a JWT).
+4. On the phone: scan → the app resolves `GET /x/<token>`, confirms the groomer is whitelisted on-chain
+   (prod/remote also DNS-verifies the groomer; skipped for the `.local` demo) → review → select record →
+   sign consent → **generate the proof ON-DEVICE** (~1–2 s) → POST `{proof, pubSignals, consent, bind}`.
+5. The portal polls and flips to **Verified on-chain ✓** (ZK = no credential data on chain **and** the
+   groomer never sees the record).
 
 ---
 

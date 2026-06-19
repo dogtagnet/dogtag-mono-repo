@@ -25,7 +25,7 @@ The single switch is **`VITE_DEMO_MODE`** (portal build-time flag): set = demo, 
 | Genesis seed | Stashed + auto-filled into confirm | Operator **reads + re-types** challenge words |
 | Storage | `MemStore` (ephemeral; restart = re-genesis) | `MongoStore` (persistent; back up the volume) |
 | Networking | LAN IP or cloudflared tunnel | Real domain + **TLS** (Caddy auto-HTTPS) |
-| DNS legitimacy | `DNS_CHECK=skip` (`.local`) | `DNS_CHECK=doh` + real `dogtag-verify=` TXT |
+| DNS legitimacy | `DNS_CHECK=skip` (`.local`); phone groomer-DNS skipped | `DNS_CHECK=doh` + real `dogtag-verify=` TXT (issuer **and** EXPORT groomer, §4) |
 | `/admin/*` exposure | On the main listener (single host) | **Loopback-isolated** + proxy-denied publicly |
 | Confirmations | `CONFIRMATIONS=1` | `CONFIRMATIONS=2` |
 | Chain | ROAX testnet (135) | **Same** ROAX testnet (135) |
@@ -101,7 +101,9 @@ healthcheck; Mongo has its own healthcheck and api `depends_on: condition: servi
 
 ---
 
-## 4. DNS-TXT issuer legitimacy (verbatim)
+## 4. DNS-TXT issuer & groomer legitimacy (verbatim)
+
+### 4a. Issuer legitimacy (central, at approve time)
 
 Before whitelisting an issuer, central verifies the business controls its domain by checking a DNS TXT
 record via **Cloudflare DNS-over-HTTPS** (`DNS_CHECK=doh`). The exact record (from
@@ -121,6 +123,30 @@ The address is **lowercased**, the prefix is the literal string `dogtag-verify=`
 matches a TXT record whose value **contains** that token (Cloudflare DoH, `accept: application/dns-json`).
 The check runs at **approve time, before** the on-chain `whitelistFor`. Publish the TXT on the issuer's
 `domain` (the same `domain` you submit in the issuer application) before central approves.
+
+### 4b. Groomer legitimacy for EXPORT (phone-side, before disclosing a proof)
+
+The **EXPORT** flow (owner → groomer, §8) is symmetric: when the phone scans the groomer's EXPORT QR
+(`https://<host>/x/<token>?a=<groomerAddr>`), it **DNS-verifies the groomer** before generating or
+disclosing any proof. The groomer's `<host>` domain MUST publish a TXT that binds the host to the
+groomer's relayer wallet address — the **same format** as the issuer record above:
+
+```
+dogtag-verify=<lowercased groomer relayer address>
+```
+
+For example, a groomer whose relayer is `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` publishes on its
+`<host>` domain:
+
+```
+dogtag-verify=0xa74dde4a9b5b5b9045d9244907de5d84c75bd671
+```
+
+The **phone** (not central) resolves the QR host's domain via Cloudflare DoH and requires a TXT
+**containing** `dogtag-verify=<groomerAddr>`; if it's absent, the app hard-stops and discloses nothing.
+This is **enforced for real domains (remote/prod) and SKIPPED for local hosts** (IP literal / `localhost`
+/ `*.local` / LAN) — the LOCAL demo (`DNS_CHECK=skip`, [LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md)). It
+mirrors the issuer DoH convention in [`stacks/admin/api/src/dns.rs`](../stacks/admin/api/src/dns.rs).
 
 ---
 
@@ -213,11 +239,16 @@ Forms are empty in production; operators key in real values. Endpoints below are
 
 ---
 
-## 8. ZK proof-of-verification
+## 8. ZK proof-of-verification (EXPORT)
 
-- The Normal / ECDSA verification path works today. The **ZK (Groth16)** path uses
-  **`CIRCUITS_BUILD_DIR`**: set it (e.g. `/circuits/build`) to load the real prover keys; **unset**
-  falls back to `StubProver` (no real proofs).
+- This is the **EXPORT** flow: the owner exports an on-chain proof to the groomer. The Normal / ECDSA
+  path works today. In the **ZK (Groth16)** path the **phone generates the proof ON-DEVICE** and POSTs
+  only `{proof, pubSignals, consent, bind}` — the groomer **never receives the witness or the raw
+  record** (true ZK against the groomer, not just the chain). The phone DNS-verifies the groomer (§4b)
+  before disclosing anything.
+- The backend **`CIRCUITS_BUILD_DIR`** (e.g. `/circuits/build`) only matters for the **test oracle**
+  `dogtag-prover-rs` (used by `scripts/e2e-zk.sh`, no phone in the loop): set it to load real prover
+  keys, **unset** falls back to `StubProver` (no real proofs). It is **not** the production proving path.
 - The live `Groth16Verifier` (`0x138b433071Ad806E841B5AD53623290a9bf21761`) is wired into the
   `VerificationRegistry`. The shipped testnet key is a **single-operator** setup
   ([`CEREMONY_TRANSCRIPT.md`](./CEREMONY_TRANSCRIPT.md)) — fine for testnet, **NOT** for a real
