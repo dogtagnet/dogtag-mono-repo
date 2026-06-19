@@ -39,18 +39,19 @@ export function Verify() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5 text-primary" /> Verify without being an issuer
+            <ShieldCheck className="h-5 w-5 text-primary" /> Export a proof without being an issuer
           </CardTitle>
           <CardDescription>
             A groomer can record an on-chain proof-of-verification of a vet-issued vaccination{" "}
-            <strong>without being a credential issuer</strong>. Verification authority lives in the{" "}
+            <strong>without being a credential issuer</strong>. The owner <strong>exports</strong> a
+            proof from their app; verification authority lives in the{" "}
             <code>VERIFY:&lt;purpose&gt;</code> whitelist namespace, which is distinct from the issuer
             roles used to mint records.
           </CardDescription>
         </CardHeader>
         <CardContent className="text-sm text-muted">
-          Pick a purpose and Normal/ZK mode below, start a session, and let the owner scan + approve
-          consent. ZK is the default for sensitive purposes — no credential data is written on chain.
+          Pick a purpose and Normal/ZK mode below, start a session, and let the owner scan + export a
+          proof. ZK is the default for sensitive purposes — no credential data is written on chain.
         </CardContent>
       </Card>
       <VerifyFlow

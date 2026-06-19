@@ -197,19 +197,31 @@ OWNER_SIG=$(cast wallet sign --private-key "$SUBJECT_PK" --no-hash "$BIND_DIGEST
 green "owner off-chain bind sig produced (nonce=$BIND_NONCE) — owner spent NO gas"
 
 # --------------------------------------------------------------------------------------------------
-step "7. Operator login + start verify session (mode=zk) on the relayer backend -> sessionId + JWT"
+step "7. Operator login + start EXPORT session (mode=zk) on the relayer backend -> sessionId + one-time export token QR"
 OTOK=$(curl -fsS -X POST "$GROOMER/login" -H 'content-type: application/json' -d "{\"password\":\"$OP_PW\"}" | jq -r .token)
 [ -n "$OTOK" ] && [ "$OTOK" != null ] || fail "operator login"
 SS=$(curl -fsS --max-time 60 -X POST "$GROOMER/verify/session/start" -H "authorization: Bearer $OTOK" \
   -H 'content-type: application/json' -d "{\"purpose\":\"$PURPOSE_LABEL\",\"recordType\":\"$RECORD_TYPE\",\"mode\":\"zk\"}")
 SID=$(echo "$SS" | jq -r .sessionId)
 [ -n "$SID" ] && [ "$SID" != null ] || fail "session/start: $SS"
-QR=$(echo "$SS" | jq -r .qrUrl); SESSION_JWT="${QR##*t=}"
-green "verify session started: $SID (jwt len ${#SESSION_JWT})"
+# EXPORT QR is a low-density one-time token: <host>/x/<token>?a=<relayerAddr> (no JWT). Parse the
+# token (path tail before `?`) — symmetric with the import `/r/<token>` flow.
+QR=$(echo "$SS" | jq -r .qrUrl)
+echo "$QR" | grep -q "/x/" || fail "export QR must be /x/<token>?a=<relayer>: $QR"
+EXPORT_TOKEN=$(echo "$QR" | sed -E 's#.*/x/([0-9a-fA-F]+).*#\1#')
+[ "${#EXPORT_TOKEN}" = 32 ] || fail "export token must be 32 hex chars: '$EXPORT_TOKEN' (qr=$QR)"
+green "export session started: $SID (export token len ${#EXPORT_TOKEN})"
+
+# (phone step) GET /x/<token> resolves the session metadata WITHOUT consuming the token.
+META=$(curl -fsS --max-time 30 "$GROOMER/x/$EXPORT_TOKEN")
+[ "$(echo "$META" | jq -r .sessionId)" = "$SID" ] || fail "GET /x/<token> sessionId mismatch: $META"
+[ "$(echo "$META" | jq -r .mode)" = zk ] || fail "GET /x/<token> mode != zk: $META"
+CHALLENGE=$(echo "$META" | jq -r .challenge)
+[ -n "$CHALLENGE" ] && [ "$CHALLENGE" != null ] || fail "GET /x/<token> missing challenge: $META"
+green "GET /x/<token> resolved: relayer=$(echo "$META" | jq -r .relayer) purpose=$(echo "$META" | jq -r .purpose)"
 
 # --------------------------------------------------------------------------------------------------
-step "8. RELAY: POST proof + gasless bind block to /v1/verify/consent (session-JWT auth)"
-CHALLENGE=$(python3 -c "import base64,json; p='$SESSION_JWT'.split('.')[1]; p+='='*(-len(p)%4); print(json.loads(base64.urlsafe_b64decode(p))['challenge'])")
+step "8. RELAY: POST proof + gasless bind block to /v1/verify/consent (one-time export-token auth)"
 DEADLINE=$(( NOW + 3600 ))
 # The consent block the relayer cross-checks against the proof's public signals + the session.
 CONSENT=$(jq -nc \
@@ -221,11 +233,11 @@ BIND=$(jq -nc --arg subject "$SUBJECT" --arg keyHash "$KEY_HASH" --arg ownerSig 
   '{subject:$subject,keyHash:$keyHash,ownerSig:$ownerSig}')
 PROOF=$(jq -nc --argjson a "$PUB_A" --argjson b "$PUB_B" --argjson c "$PUB_C" --argjson pubSignals "$PUB" \
   '{a:$a,b:$b,c:$c,pubSignals:$pubSignals}')
-BODY=$(jq -nc --arg sessionId "$SID" --arg sessionJwt "$SESSION_JWT" \
+BODY=$(jq -nc --arg sessionId "$SID" --arg exportToken "$EXPORT_TOKEN" \
   --argjson consent "$CONSENT" --argjson proof "$PROOF" --argjson bind "$BIND" \
-  '{sessionId:$sessionId,sessionJwt:$sessionJwt,consent:$consent,sig:"0x",mode:"zk",proof:$proof,bind:$bind}')
+  '{sessionId:$sessionId,exportToken:$exportToken,consent:$consent,sig:"0x",mode:"zk",proof:$proof,bind:$bind}')
 RELAY=$(curl -sS --max-time 180 -X POST "$GROOMER/v1/verify/consent" \
-  -H "authorization: Bearer $SESSION_JWT" -H 'content-type: application/json' -d "$BODY")
+  -H "authorization: Bearer $EXPORT_TOKEN" -H 'content-type: application/json' -d "$BODY")
 RECORDED=$(echo "$RELAY" | jq -r .recorded 2>/dev/null || echo null)
 VTX=$(echo "$RELAY" | jq -r .txHash 2>/dev/null || echo null)
 if [ "$RECORDED" != true ] || [ -z "$VTX" ] || [ "$VTX" = null ]; then
@@ -258,7 +270,10 @@ SUBJECT_BAL_AFTER=$(cast balance "$SUBJECT" --rpc-url "$RPC")
 green "(c) owner gasless: subject PLASMA balance == 0 (unchanged); relayer paid all gas"
 
 # (d) session status reflects recorded + txHash via the dual-gated status endpoint.
-STAT=$(curl -fsS "$GROOMER/verify/session/$SID" -H "authorization: Bearer $SESSION_JWT")
+# The one-time export token was CONSUMED on submit, so poll status via the operator session (the
+# portal path). The phone polls with `?token=` BEFORE submitting; post-submit it relies on its own
+# success response. Here we assert via the operator gate.
+STAT=$(curl -fsS "$GROOMER/verify/session/$SID" -H "authorization: Bearer $OTOK")
 [ "$(echo "$STAT" | jq -r .status)" = recorded ] || fail "session status != recorded: $STAT"
 [ "$(echo "$STAT" | jq -r .txHash)" = "$VTX" ] || fail "session txHash mismatch: $STAT"
 green "(d) GET /verify/session/$SID -> recorded, txHash=$VTX"

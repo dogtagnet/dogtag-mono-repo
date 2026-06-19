@@ -143,10 +143,10 @@ export function VerifyFlow({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-primary" />
-          Verify on chain
+          Export on chain
         </CardTitle>
         <CardDescription>
-          Start a session, let the owner scan and approve consent, then record the verification on ROAX.
+          Start a session, let the owner scan and export a proof, then record the verification on ROAX.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -202,7 +202,7 @@ export function VerifyFlow({
 
             <div className="flex flex-wrap items-center gap-2">
               <Button onClick={() => void start()} loading={phase === "starting"} disabled={!selected}>
-                Start verification
+                Start export
               </Button>
               {showDemo && (
                 <Button type="button" variant="outline" onClick={fillSample}>
@@ -253,7 +253,7 @@ export function VerifyFlow({
               </a>
             )}
             <Button variant="outline" size="sm" onClick={reset}>
-              New verification
+              New export
             </Button>
           </div>
         )}

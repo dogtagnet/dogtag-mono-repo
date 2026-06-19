@@ -10,10 +10,11 @@
 //!     POST /records/{id}/revoke
 //!     POST /records/{id}/share
 //!     GET  /records/{id}                              (record-JWT — UNAUTHENTICATED by session)
-//!     GET  /r/{token}                                 (short one-time share token — UNAUTHENTICATED)
+//!     GET  /r/{token}                                 (short one-time share/IMPORT token — UNAUTHENTICATED)
+//!     GET  /x/{token}                                 (short one-time EXPORT token — UNAUTHENTICATED)
 //!     GET  /issuer/signers
 //!     POST /import/pull
-//!     POST /verify/session/start | /verify/consent/submit
+//!     POST /verify/session/start | /verify/consent/submit   (EXPORT flow; route PATHS kept stable)
 //!   admin router (custody — mounted SEPARATELY; /admin/* requires the admin session):
 //!     POST /admin/genesis/start | /admin/genesis/confirm | /admin/unlock | /admin/accounts
 
@@ -30,7 +31,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
-use crate::auth::{self, ShareClaims, VerifyClaims};
+use crate::auth::{self, ShareClaims};
 use crate::store::{ApptReplica, IssuerSettings, Record, RecordStatus, VerifySession};
 
 type Resp = (StatusCode, Json<Value>);
@@ -82,17 +83,19 @@ async fn require_operator(st: &AppState, headers: &HeaderMap) -> Result<(), Resp
     }
 }
 
-/// Dual gate for the verify consent/status endpoints: authorize EITHER a valid operator session OR a
-/// valid verify-session JWT bound to `session_id`. The JWT may arrive as `body_jwt` (request field)
-/// or as the `Authorization: Bearer` header. When the JWT path is taken, its `relayer/purpose/
-/// challenge` claims are checked against the stored `VerifySession`. If `consume` is set, the JWT's
-/// `jti` is consumed once-only (replay protection) — used for the SUBMIT, not the (idempotent) status
-/// read. Returns `Ok(true)` if authorized via a session JWT, `Ok(false)` if via operator session.
-async fn require_operator_or_session_jwt(
+/// Dual gate for the verify/export consent/status endpoints: authorize EITHER a valid operator
+/// session OR a valid one-time EXPORT TOKEN bound to `session_id`. The export token is the low-density
+/// QR token (16 random bytes hex) minted at session start — symmetric with the import `/r/<token>`
+/// flow (no EdDSA JWT on the export path). The token may arrive as `export_token` (request field) or
+/// as the `?token=` query / `Authorization: Bearer` value. It is validated to map to `session_id`. If
+/// `consume` is set, the token is CONSUMED once-only (replay protection) — used for the SUBMIT, not
+/// the (idempotent, repeatedly-polled) status read which only PEEKs. Returns `Ok(true)` if authorized
+/// via an export token, `Ok(false)` if via operator session.
+async fn require_operator_or_export_token(
     st: &AppState,
     headers: &HeaderMap,
     session_id: &str,
-    body_jwt: Option<&str>,
+    body_token: Option<&str>,
     consume: bool,
 ) -> Result<bool, Resp> {
     // Operator session first (portal + scripts/e2e-smoke.sh): an op_ bearer satisfies the gate.
@@ -101,28 +104,21 @@ async fn require_operator_or_session_jwt(
             return Ok(false);
         }
     }
-    // Otherwise try a verify-session JWT (the owner's phone). Accept it from the body field or the
+    // Otherwise try a one-time export token (the owner's phone). Accept it from the body field or the
     // Bearer header.
-    let jwt = body_jwt
+    let token = body_token
         .map(|s| s.to_string())
         .or_else(|| bearer(headers))
-        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing operator session or session JWT"))?;
-    let claims = auth::verify_session_jwt(&st.jwt, &jwt, &st.cfg.deployment_url, session_id)
-        .map_err(|e| err(StatusCode::UNAUTHORIZED, &format!("session jwt: {e}")))?;
-    // Bind the claims to the stored session (relayer/purpose/challenge).
-    let session = st
-        .store
-        .get_session(session_id)
-        .await
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "session not found"))?;
-    if !claims.relayer.eq_ignore_ascii_case(&session.relayer)
-        || claims.purpose != session.purpose
-        || claims.challenge != session.challenge
-    {
-        return Err(err(StatusCode::UNAUTHORIZED, "session jwt does not match session"));
-    }
-    if consume && !st.store.consume_jti(&claims.jti).await {
-        return Err(err(StatusCode::UNAUTHORIZED, "session jwt already used"));
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing operator session or export token"))?;
+    // SUBMIT consumes the token once-only; the status read peeks without consuming.
+    let mapped = if consume {
+        st.store.take_export_token(&token).await
+    } else {
+        st.store.peek_export_token(&token).await
+    };
+    let mapped = mapped.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "export token missing, expired or already used"))?;
+    if mapped != session_id {
+        return Err(err(StatusCode::UNAUTHORIZED, "export token does not match session"));
     }
     Ok(true)
 }
@@ -742,7 +738,7 @@ struct SessionStartReq {
     mode: Option<String>,
 }
 
-async fn verify_session_start(
+async fn export_session_start(
     State(st): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<SessionStartReq>,
@@ -773,24 +769,10 @@ async fn verify_session_start(
     let mut challenge = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge);
     let challenge_hex = format!("0x{}", hex::encode(challenge));
-    let n = auth::now();
-    let claims = VerifyClaims {
-        iss: st.cfg.deployment_url.clone(),
-        sub: session_id.clone(),
-        aud: "dogtag-mobile".to_string(),
-        relayer: relayer.clone(),
-        purpose: body.purpose.clone(),
-        record_type: body.record_type.clone(),
-        challenge: challenge_hex.clone(),
-        mode: mode.clone(),
-        exp: n + 180,
-        jti: uuid::Uuid::new_v4().to_string(),
-    };
-    let token = auth::sign_jwt(&st.jwt, &claims);
     st.store
         .put_session(VerifySession {
             session_id: session_id.clone(),
-            relayer,
+            relayer: relayer.clone(),
             purpose: body.purpose,
             record_type: body.record_type,
             mode,
@@ -800,8 +782,39 @@ async fn verify_session_start(
             nullifier: None,
         })
         .await;
-    let qr = format!("{}/v?t={}", st.cfg.deployment_url, token);
+    // Mint a SHORT one-time EXPORT token (32 hex chars == 16 random bytes) so the QR is low-density
+    // and symmetric with the import `/r/<token>` flow. The server maps token -> export session
+    // (one-time, consumed on consent submit), expiring after 180s. The QR carries {host, token,
+    // groomer wallet address (relayer)} — the phone resolves session metadata via GET /x/<token>.
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    let token = hex::encode(bytes);
+    let exp = auth::now() + 180;
+    st.store.put_export_token(&token, &session_id, exp).await;
+    let qr = format!("{}/x/{}?a={}", st.cfg.deployment_url, token, relayer);
     ok(json!({ "qrUrl": qr, "sessionId": session_id }))
+}
+
+/// GET /x/{token} — resolve a SHORT one-time EXPORT token to the export session metadata the phone
+/// needs ({ sessionId, relayer, purpose, recordType, challenge, mode }). Unauthenticated and
+/// NON-consuming — the token is consumed only on consent submit, not here. A missing/expired token is
+/// a 404. Symmetric with `GET /r/{token}` on the import side.
+async fn export_session_resolve(State(st): State<AppState>, Path(token): Path<String>) -> Resp {
+    let session_id = match st.store.peek_export_token(&token).await {
+        Some(id) => id,
+        None => return err(StatusCode::NOT_FOUND, "export token missing or expired"),
+    };
+    match st.store.get_session(&session_id).await {
+        Some(s) => ok(json!({
+            "sessionId": s.session_id,
+            "relayer": s.relayer,
+            "purpose": s.purpose,
+            "recordType": s.record_type,
+            "challenge": s.challenge,
+            "mode": s.mode,
+        })),
+        None => err(StatusCode::NOT_FOUND, "session not found"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -825,9 +838,10 @@ struct ConsentSubmitReq {
     /// (gasless for the owner). Ignored when the key is already bound.
     #[serde(default)]
     bind: Option<Value>,
-    /// the verify-session JWT (phone auth). May also arrive as a `Bearer` token; either is accepted.
-    #[serde(rename = "sessionJwt", default)]
-    session_jwt: Option<String>,
+    /// the one-time EXPORT token (phone auth). May also arrive as a `Bearer` token; either is
+    /// accepted. Consumed once-only on submit (replay protection) — symmetric with import `/r/<token>`.
+    #[serde(rename = "exportToken", default)]
+    export_token: Option<String>,
 }
 
 async fn verify_consent_submit(
@@ -835,13 +849,13 @@ async fn verify_consent_submit(
     headers: HeaderMap,
     Json(body): Json<ConsentSubmitReq>,
 ) -> Resp {
-    // Dual gate: operator session OR a verify-session JWT (the owner's phone). The JWT's jti is
+    // Dual gate: operator session OR a one-time export token (the owner's phone). The token is
     // consumed once-only here so a captured submit can't be replayed.
-    if let Err(e) = require_operator_or_session_jwt(
+    if let Err(e) = require_operator_or_export_token(
         &st,
         &headers,
         &body.session_id,
-        body.session_jwt.as_deref(),
+        body.export_token.as_deref(),
         true,
     )
     .await
@@ -861,6 +875,14 @@ async fn verify_consent_submit(
     .await
 }
 
+#[derive(Deserialize)]
+struct SessionStatusQuery {
+    /// the one-time export token (the owner's phone polling) — non-consuming peek. The operator
+    /// portal omits this and relies on the Bearer operator-session instead.
+    #[serde(default)]
+    token: Option<String>,
+}
+
 /// GET /verify/session/{sessionId} — operator-gated status read so the portal's VerifyFlow can poll
 /// pending -> recorded. Returns the stored session's status/mode and (once recorded) the txHash +
 /// nullifier. `nullifier` is exposed when present in the session row (ZK path); null otherwise.
@@ -868,10 +890,14 @@ async fn verify_session_status(
     State(st): State<AppState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
+    Query(q): Query<SessionStatusQuery>,
 ) -> Resp {
-    // Dual gate: operator session OR a verify-session JWT (the owner's phone polling). No jti consume
-    // — status reads are idempotent and polled repeatedly. The JWT arrives via the Bearer header.
-    if let Err(e) = require_operator_or_session_jwt(&st, &headers, &session_id, None, false).await {
+    // Dual gate: operator session OR a one-time export token (the owner's phone polling). No consume
+    // — status reads are idempotent and polled repeatedly (peek only). The token arrives via the
+    // `?token=` query or the Bearer header.
+    if let Err(e) =
+        require_operator_or_export_token(&st, &headers, &session_id, q.token.as_deref(), false).await
+    {
         return e;
     }
     let s = match st.store.get_session(&session_id).await {
@@ -1221,12 +1247,14 @@ pub fn public_router(state: AppState) -> Router {
         .route("/records/:id", get(get_record))
         // short one-time share token resolver (unauthenticated; consumed on first read)
         .route("/r/:token", get(get_shared))
+        // short one-time EXPORT token resolver (unauthenticated; NON-consuming — consume on submit)
+        .route("/x/:token", get(export_session_resolve))
         // issuer signers
         .route("/issuer/signers", get(issuer_signers))
         // import
         .route("/import/pull", post(import_pull))
         // verify
-        .route("/verify/session/start", post(verify_session_start))
+        .route("/verify/session/start", post(export_session_start))
         .route("/verify/session/:id", get(verify_session_status))
         .route("/verify/consent/submit", post(verify_consent_submit))
         // alias so the owner's phone can POST consent+proof directly to the groomer host.

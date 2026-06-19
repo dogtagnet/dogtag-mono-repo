@@ -50,46 +50,11 @@ pub struct ShareClaims {
     pub jti: String,
 }
 
-/// Verify-session claims (impl §3.9). Extra fields beyond the standard set.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VerifyClaims {
-    pub iss: String,
-    pub sub: String, // sessionId
-    pub aud: String,
-    pub relayer: String,
-    pub purpose: String,
-    #[serde(rename = "recordType")]
-    pub record_type: String,
-    pub challenge: String,
-    pub mode: String,
-    pub exp: u64,
-    pub jti: String,
-}
-
-/// Validate a verify-session JWT's claims for the phone-auth path: verify the signature/exp via
-/// `verify_jwt`, then bind the claims to the deployment + the session being acted on. Returns the
-/// decoded `VerifyClaims` on success (the caller decides whether to consume `jti`). The
-/// relayer/purpose/challenge binding against the stored session is the caller's responsibility (it
-/// holds the `VerifySession`); this centralizes the deployment/audience/subject checks shared by the
-/// submit + status handlers.
-pub fn verify_session_jwt(
-    keys: &JwtKeys,
-    token: &str,
-    deployment_url: &str,
-    session_id: &str,
-) -> Result<VerifyClaims, AuthError> {
-    let claims: VerifyClaims = verify_jwt(keys, token, 30)?;
-    if claims.aud != "dogtag-mobile" {
-        return Err(AuthError::BadToken);
-    }
-    if claims.iss != deployment_url {
-        return Err(AuthError::BadToken);
-    }
-    if claims.sub != session_id {
-        return Err(AuthError::BadToken);
-    }
-    Ok(claims)
-}
+// NOTE: the EXPORT (formerly "verify") session no longer mints an EdDSA `VerifyClaims` JWT for its
+// QR. It now uses a one-time export TOKEN (16 random bytes hex, 180s, consumed on submit) — symmetric
+// with the import `/r/<token>` flow. See `routes.rs::export_session_start` / `GET /x/{token}`. The
+// `ShareClaims` record-share JWT and the generic `sign_jwt`/`verify_jwt` below remain in use by
+// `GET /records/{id}`.
 
 fn b64(bytes: &[u8]) -> String {
     use base64::Engine;

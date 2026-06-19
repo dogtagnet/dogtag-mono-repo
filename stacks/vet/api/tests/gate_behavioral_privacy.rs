@@ -62,20 +62,27 @@ async fn zk_is_the_default_mode_when_unspecified() {
     assert_eq!(s, StatusCode::OK, "session start (mode unspecified): {b}");
     let session_id = b["sessionId"].as_str().expect("sessionId").to_string();
 
-    // The persisted session + its one-time JWT carry mode == "zk" (the data-minimization default).
-    // We verify via the session-status surface if present, else re-issue is not needed: the QR URL
-    // embeds the JWT whose `mode` claim we decode below.
+    // The persisted export session carries mode == "zk" (the data-minimization default). The QR is a
+    // low-density one-time TOKEN (no JWT); we resolve the session metadata via GET /x/<token> and read
+    // its `mode`.
     let qr = b["qrUrl"].as_str().expect("qrUrl");
-    let token = extract_jwt(qr);
-    let mode_claim = jwt_claim_mode(&token);
-    assert_eq!(mode_claim.as_deref(), Some("zk"), "default verify mode MUST be zk (sensitive default)");
+    assert!(!qr.contains("t="), "export QR must not carry a JWT query string: {qr}");
+    let token = extract_token(qr);
+    let (s, meta) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "GET /x/<token> resolve: {meta}");
+    assert_eq!(
+        meta["mode"].as_str(),
+        Some("zk"),
+        "default export mode MUST be zk (sensitive default)"
+    );
+    assert_eq!(meta["sessionId"].as_str(), Some(session_id.as_str()), "resolve binds the session");
 
     // sanity: the session id is opaque and the request carried NO owner identifier (only a purpose),
     // so the session itself does not bind the owner's portfolio — linkage is per-pet via `subject`.
     assert!(!session_id.is_empty());
     assert!(
         !qr.contains("owner") && !qr.contains("ownerId"),
-        "the session QR/JWT must not embed an owner identifier"
+        "the export QR must not embed an owner identifier"
     );
 }
 
@@ -96,21 +103,13 @@ async fn explicit_normal_mode_is_still_honoured() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "explicit normal mode: {b}");
-    let token = extract_jwt(b["qrUrl"].as_str().unwrap());
-    assert_eq!(jwt_claim_mode(&token).as_deref(), Some("normal"), "explicit normal honoured");
+    let token = extract_token(b["qrUrl"].as_str().unwrap());
+    let (s, meta) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "GET /x/<token> resolve: {meta}");
+    assert_eq!(meta["mode"].as_str(), Some("normal"), "explicit normal honoured");
 }
 
-/// Pull the JWT out of the session QR URL (`.../v?t=<jwt>`).
-fn extract_jwt(qr: &str) -> String {
-    qr.split("t=").nth(1).unwrap().split('&').next().unwrap().to_string()
-}
-
-/// Decode the (unverified) JWT payload and read the `mode` claim. Test-only; we don't need to verify
-/// the signature here — we are asserting the server-chosen default, not authenticating.
-fn jwt_claim_mode(token: &str) -> Option<String> {
-    use base64::Engine;
-    let payload_b64 = token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    v.get("mode").and_then(|m| m.as_str()).map(|s| s.to_string())
+/// Pull the one-time export TOKEN out of the export QR URL (`.../x/<token>?a=<relayer>`).
+fn extract_token(qr: &str) -> String {
+    qr.rsplit('/').next().unwrap().split('?').next().unwrap().to_string()
 }

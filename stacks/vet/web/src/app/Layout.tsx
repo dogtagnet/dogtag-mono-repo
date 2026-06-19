@@ -17,7 +17,7 @@ const NAV: NavItem[] = [
   { key: "issue", href: "/issue", label: "Issue credential", icon: FilePlus2 },
   { key: "records", href: "/records", label: "Records", icon: ListChecks },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
-  { key: "verify", href: "/verify", label: "Verify", icon: ShieldCheck },
+  { key: "verify", href: "/verify", label: "Export", icon: ShieldCheck },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

@@ -33,7 +33,7 @@ const NAV: NavItem[] = [
   { key: "marketing", href: "/marketing", label: "Marketing", icon: Megaphone },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
   { key: "issue", href: "/issue", label: "Issue credential", icon: FileSignature },
-  { key: "verify", href: "/verify", label: "Verify", icon: ShieldCheck },
+  { key: "verify", href: "/verify", label: "Export", icon: ShieldCheck },
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
