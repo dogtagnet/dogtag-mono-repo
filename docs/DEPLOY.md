@@ -5,9 +5,15 @@
 > (deploy), §11.8/§11.10 (verification subsystem). **Security gates are blocking** — do not deploy
 > until the Gate B prechecks pass.
 
+> **New deployment docs:** start at [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md) (index + tier decision-guide).
+> For go-live hardening see [`docs/PRODUCTION_DEPLOYMENT.md`](./PRODUCTION_DEPLOYMENT.md); for building +
+> installing the phone apps see [`docs/MOBILE_BUILD.md`](./MOBILE_BUILD.md).
+
 > **ALREADY DEPLOYED.** The full contract set is **live on ROAX (chainId 135)** with the **ZK path
 > wired** — addresses below and in `contracts/deployments/roax.json`. This runbook is the reproducible
 > procedure; to just run the live demo see `docs/DEMO.md` / `docs/DEMO_CLICKS.md`.
+>
+> Snapshot — authoritative copy is `contracts/deployments/roax.json`.
 >
 > | Contract | Address |
 > |---|---|
@@ -15,17 +21,22 @@
 > | DogTagSBT | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
 > | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
 > | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
-> | ConsentKeyRegistry | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
+> | **ConsentKeyRegistry** (current; gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 > | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-> | **VerificationRegistry** (ZK-wired) | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` |
+> | **VerificationRegistry** (current; ZK-wired) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
 > | Groth16Verifier | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
 > | admin / deployer | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 > | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
 > | demo clone DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |
+> | ~~VerificationRegistry~~ `_preMetaTx_legacy` (RETIRED) | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` |
+> | ~~VerificationRegistry~~ `_zk0_legacy` (RETIRED) | `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` |
+> | ~~ConsentKeyRegistry~~ `_preMetaTx_legacy` (RETIRED) | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
 >
-> The first VerificationRegistry was deployed with `zkVerifier = 0` (`VerificationRegistry_zk0_legacy`
-> `0xb4FbbDb5…`, retired). See §3.2 for how the ZK verifier was actually wired (testnet redeploy) vs the
-> production timelock path.
+> There are **THREE VerificationRegistry generations**. Current VR = `0x8bA836eCe9…` and current CKR =
+> `0xA74DDe4a9b…` (the meta-tx migration is LIVE — gasless `bindConsentKeyFor`). RETIRED:
+> `0x19C1B5f8…` (`_preMetaTx_legacy` VR), `0xb4FbbDb5…` (`_zk0_legacy` VR, deployed with `zkVerifier = 0`),
+> and `0xFD277b9B…` (`_preMetaTx_legacy` CKR). See §3.2 for how the ZK verifier was wired (testnet redeploy)
+> and the meta-tx migration vs the production timelock path.
 
 ---
 
@@ -99,10 +110,17 @@ forge verify-contract --rpc-url $ROAX_RPC \
 
    **(b) Testnet — redeploy (what we did on ROAX).** Rather than wait out the 2-day timelock on testnet,
    the **VerificationRegistry was REDEPLOYED** with the live `Groth16Verifier` (`0x138b4330…`) wired in
-   at construction, so the ZK path is active immediately. The new registry is `0x19C1B5f8…`; the original
-   zk=0 instance is kept as `VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`. The testnet trusted setup
-   (3 contributions + beacon) is recorded in `docs/CEREMONY_TRANSCRIPT.md` (zkey sha256 `45d0b6fb…`); the
-   on-chain wiring + the prod timelock procedure are in `docs/CEREMONY.md`.
+   at construction, so the ZK path is active immediately. That ZK-wired redeploy was `0x19C1B5f8…`; the
+   original zk=0 instance is kept as `VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`.
+
+   **(c) Meta-tx migration (the CURRENT generation).** `0x19C1B5f8…` is itself now legacy
+   (`VerificationRegistry_preMetaTx_legacy`). A later **meta-tx migration** produced the **current VR
+   `0x8bA836eCe9…`** plus the **current CKR `0xA74DDe4a9b…`**, enabling the gasless `bindConsentKeyFor`
+   path that is now LIVE. So there are **THREE VR generations** — `0xb4FbbDb5…` (zk0) → `0x19C1B5f8…`
+   (preMetaTx) → `0x8bA836eCe9…` (current) — and `0x19C1B5f8…` is NOT the current registry.
+
+   The testnet trusted setup (3 contributions + beacon) is recorded in `docs/CEREMONY_TRANSCRIPT.md`
+   (zkey sha256 `45d0b6fb…`); the on-chain wiring + the prod timelock procedure are in `docs/CEREMONY.md`.
 
 ## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
 
@@ -145,20 +163,21 @@ make up-groomer   # groomer : web 43617, api 43618  (vet-api binary, BUSINESS_TY
 
 | Stack | web | api | mongo |
 |---|---|---|---|
-| **admin** (central) | **39741** | **39742** | internal only (compose-net `39743`) |
-| **vet** | **41873** | **41874** | internal only (compose-net `41875`) |
-| **groomer** | **43617** | **43618** | internal only (compose-net `43619`) |
+| **admin** (central) | **39741** | **39742** | `27017` internal-only (never published) |
+| **vet** | **41873** | **41874** | `27017` internal-only (never published) |
+| **groomer** | **43617** | **43618** | `27017` internal-only (never published) |
 
 The **groomer** stack has **no separate api crate** — its `api` service runs the **`vet-api` binary**
-with `BUSINESS_TYPE=groomer` (host `43618` → container `41874`).
+with `BUSINESS_TYPE=groomer` (host `43618` → container `43618`).
 
 ## 6. Post-up custody bring-up (per business stack)
 
 The vet/groomer api boots **locked**. Via the operator/admin portal (custody routes are
 localhost/session-bound, `/admin/*`):
 
-1. `POST /admin/genesis/start` → `/admin/genesis/confirm` (24-word BIP-39, age-encrypted seed at
-   `KEYSTORE_PATH=/data/seed.age`).
+1. `POST /admin/genesis/start` → `/admin/genesis/confirm` (24-word BIP-39). Custody persists as a
+   `CustodyBlob` in **Mongo** (back up the stack's mongo volume). The `KEYSTORE_PATH`/`seed.age` volume
+   is **DEAD CODE** — nothing is written to `/data/seed.age`.
 2. `POST /admin/unlock` on each boot (rate-limited).
 3. Apply for whitelisting (relayed to central → DNS-TXT check → on-chain `whitelistFor`); poll until
    the signer is live before issuing.

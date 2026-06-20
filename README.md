@@ -9,10 +9,24 @@ OpenAttestation-style design, **implemented from scratch** with a JSON-free, lan
 
 ## Status: LIVE on ROAX (chainId 135)
 The full system is **built and DEPLOYED LIVE** to the ROAX testnet, and the **end-to-end demo runs on
-a real Android device** (issue → QR → scan → import → verify on-chain → view decoded fields). The ZK
-proof-of-verification path is **live** (Groth16Verifier wired into the VerificationRegistry). Live
-contract addresses are in **[`contracts/deployments/roax.json`](contracts/deployments/roax.json)** — see
-the table below.
+a real Android device**. The proper onboarding flow is **vets-issue-dog-tags**: the **admin portal only
+approves + whitelists vet/groomer wallet addresses** — **both issuers and verifiers onboard via
+apply→approve** (approval whitelists issuance record-types **and** `VERIFY:<purpose>` on-chain) — it does
+**not** register devices or mint dog tags (there is **no** `POST /v1/register` and **no** admin
+"Registered devices" / "Mint dog-tag" page; the phone has **no** "Central API URL" — every host comes
+from a scanned QR). To get a dog tag: the phone creates a self-custodial wallet, the **vet** "Issue dog
+tag" wizard (operator enters an `ownerIdentity` + pet fields) starts a session and shows a QR
+`/p/<token>`, the device scans it and sends its **signed wallet address**, and the **vet mints the
+`DogTagSBT` on-chain** (`mint(walletAddress, dogTagId, root)`) and returns the credential, which the
+device verifies against the SBT and imports. This requires the vet signer to hold
+`DogTagSBT.ISSUER_ROLE` (granted by the protocol admin — a trust escalation, so prod grants it only to
+accredited vets). Then: the vet issues a vaccination → QR → scan → import → verify on-chain → view
+decoded fields. The ZK proof-of-verification path is **live** (Groth16Verifier wired into the
+VerificationRegistry); the proof is generated **on-device on 64-bit phones** (mopro `circom-prover` +
+`circom-witnesscalc` graph witness) and via a **backend prover-service** (`POST /prove-verification`)
+on **32-bit-only Android** that cannot prove locally, and the device stays **gasless** throughout
+(the consent-key bind is relayer-sponsored). Live contract addresses are in
+**[`contracts/deployments/roax.json`](contracts/deployments/roax.json)** — see the table below.
 
 **Two deployment modes.** A single `VITE_DEMO_MODE` flag (set = demo, **unset = production**) switches
 between them:
@@ -33,9 +47,9 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | DogTagSBT | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
 | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
 | DogTagIssuerImpl (clone impl) | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
-| ConsentKeyRegistry | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
+| ConsentKeyRegistry (gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-| **VerificationRegistry** (ZK-wired) | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` |
+| **VerificationRegistry** (ZK-wired) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
 | Groth16Verifier | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
 | admin / deployer | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 | demo clone — VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
@@ -43,11 +57,19 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 
 > The original VerificationRegistry was deployed with `zkVerifier = 0`; for the testnet the registry was
 > **redeployed** pointing at the live Groth16Verifier (`VerificationRegistry_zk0_legacy`
-> `0xb4FbbDb5…` is the retired zk=0 instance). In production the verifier is wired via the registry's
-> 2-day `setZkVerifier` timelock instead — see [`docs/DEPLOY.md`](docs/DEPLOY.md). The testnet ZK trusted
-> setup (3 contributions + beacon) is recorded in [`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md).
+> `0xb4FbbDb5…` is the retired zk=0 instance), and a later **meta-tx migration** produced the current VR
+> `0x8bA836eCe9…` + CKR `0xA74DDe4a9b…` (retiring the `_preMetaTx_legacy` VR `0x19C1B5f8…` and CKR
+> `0xFD277b9B…`) — three VR generations in all. In production the verifier is wired via the registry's
+> 2-day timelock (`proposeZkVerifier(addr)` → wait ≥ 2 days → `executeZkVerifier()`) instead — see
+> [`docs/DEPLOY.md`](docs/DEPLOY.md). The testnet ZK trusted setup (3 contributions + beacon) is recorded
+> in [`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md).
 
 ## Start here
+- **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — **deployment index — start here** (tier decision-guide, system model, address book, routing).
+- **[`docs/PREREQUISITES.md`](docs/PREREQUISITES.md)** — canonical install/tooling matrix (macOS + Linux, per-tool "needed by").
+- **[`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md)** — Tier 3 go-live hardening (chain-swap + ceremony/timelock runbook).
+- **[`docs/MOBILE_BUILD.md`](docs/MOBILE_BUILD.md)** — build + install the iOS & Android apps on real phones.
+- **[`docs/TUNNELING.md`](docs/TUNNELING.md)** — the 3-tunnel reference + phone networking + ephemerality.
 - **[`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md)** — LOCAL/demo runbook (`VITE_DEMO_MODE=1`, auto-filled, ephemeral).
 - **[`docs/REMOTE_DEPLOYMENT.md`](docs/REMOTE_DEPLOYMENT.md)** — REMOTE/production runbook (persistent, TLS, DNS-TXT, operators type everything).
 - **[`docs/DEMO.md`](docs/DEMO.md)** + **[`docs/DEMO_CLICKS.md`](docs/DEMO_CLICKS.md)** — run the LIVE demo (narrated + literal click-through).
