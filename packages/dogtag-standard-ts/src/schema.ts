@@ -183,6 +183,18 @@ export function validateSchema<T extends Obj>(credential: T): T {
       push(`credentialSubject.neuterStatus must be one of {${NEU.join(", ")}}`);
     }
     reqPresent(subject.dateOfBirth, "credentialSubject.dateOfBirth");
+    // owner's official identity — OBJECT with three string sub-fields (keys must be present;
+    // empty strings allowed for non-admin mint paths).
+    const ownerIdentity = subject.ownerIdentity;
+    if (!isObject(ownerIdentity)) {
+      push(`credentialSubject.ownerIdentity must be an object`);
+    } else {
+      for (const f of ["countryOfIdentification", "identification", "name"]) {
+        if (!isString(ownerIdentity[f])) {
+          push(`credentialSubject.ownerIdentity.${f} must be a string`);
+        }
+      }
+    }
     const wh = subject.weightHistory;
     if (wh !== undefined) {
       if (!isArray(wh)) {

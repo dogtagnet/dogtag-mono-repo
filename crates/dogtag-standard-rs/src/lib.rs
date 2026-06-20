@@ -34,8 +34,17 @@ pub mod eddsa;
 // Phase 6 — mobile UniFFI binding surface (additive; does not touch the core algorithm modules).
 pub mod ffi;
 
-// Workstream A — on-device Groth16 prover (mopro/circom-prover + rust-witness). Gated behind the
-// OFF-by-default `prover` feature so default workspace builds never pull the heavy deps / build.rs.
+// Workstream A — circuit-input ASSEMBLY (prover-independent). Gated behind the lightweight
+// `assemble` feature: it pulls NO circom-prover (ark-0.5) deps, only the SDK's own field/merkle, so
+// the 64-bit backend (vet-api, on ark-0.6 dogtag-prover-rs) can reuse the SAME 19-input assembly to
+// drive the server proving API. Only decimal strings cross the boundary — no ark-version clash. The
+// full on-device `prover` feature implies `assemble` (the on-device prover reuses this assembly).
+#[cfg(feature = "assemble")]
+pub mod prover_assemble;
+
+// Workstream A — on-device Groth16 prover (mopro/circom-prover + circom-witnesscalc graph witness).
+// Gated behind the OFF-by-default `prover` feature so default workspace builds never pull the heavy
+// ark-0.5 deps. It layers the circom-prover proving on top of `prover_assemble`'s assembly.
 #[cfg(feature = "prover")]
 pub mod prover_ffi;
 

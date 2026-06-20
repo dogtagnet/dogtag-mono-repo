@@ -91,6 +91,18 @@ pub fn bytes_to_field_hex(input_hex: String) -> Result<String, FfiError> {
     Ok(to_hex32(&bytes_to_field(&bytes)))
 }
 
+/// Field-hash a numeric dogTagId EXACTLY as its credential leaf value is hashed:
+/// `field_of_value(Integer(dec))` -> 0x.. 32-byte hex. THE CANONICAL dogTagId: the §1.10 consent's
+/// dogTagId, the EdDSA consent message M, the Poseidon nullifier, AND the on-chain DOG_PROFILE SBT id
+/// must ALL be this value — it equals `leafValues[dogTagIdLeafIndex]`, which the verification circuit
+/// compares to the dogTagId input DIRECTLY (constraint §(b)), not the raw decimal id.
+#[uniffi::export]
+pub fn dog_tag_id_field_hex(dog_tag_id_dec: String) -> Result<String, FfiError> {
+    let scalar = scalar_from_packed(TypeTag::Integer, &dog_tag_id_dec)?;
+    let f = crate::leaf::field_of_value(&scalar)?;
+    Ok(to_hex32(&f))
+}
+
 /// wrapDocument — typed credential JSON + issuer JSON -> WrappedDoc JSON. Salts come from the OS
 /// RNG (each leaf gets 16 fresh bytes). Mirrors `wrap::wrap_document`.
 #[uniffi::export]

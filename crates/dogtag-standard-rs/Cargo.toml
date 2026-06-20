@@ -38,20 +38,31 @@ num-bigint = "0.4"
 # ---------------------------------------------------------------------------------------------
 # On-device Groth16 prover (Workstream A) — gated behind the OFF-by-default `prover` feature so
 # default workspace builds (vet-api/admin-api, which depend on this crate) never pull these heavy
-# deps or run the witness-C transpile in build.rs. Both pin the arkworks 0.5 stack (circom-prover
-# 0.1.4 pins ark `=0.5.0`, matching the workspace ark 0.5 deps), so there is no ark major clash.
-# `rust-witness` is also a build-dependency because build.rs calls `transpile::transpile_wasm`.
-circom-prover = { version = "0.1.4", optional = true }
-rust-witness = { version = "0.1.6", optional = true }
-
-[build-dependencies]
-# Only used when the `prover` feature is active; build.rs guards on CARGO_FEATURE_PROVER so the
-# default build does NOTHING here.
-rust-witness = { version = "0.1.6", optional = true }
+# deps. They pin the arkworks 0.5 stack (circom-prover 0.1.4 pins ark `=0.5.0`, matching the
+# workspace ark 0.5 deps), so there is no ark major clash.
+#
+# WITNESS BACKEND: we use circom-prover's `circom-witnesscalc` feature — the pure-Rust GRAPH
+# witness calculator (`WitnessFn::CircomWitnessCalc`) — instead of `rust-witness` (wasm2c / w2c2).
+# rust-witness MISCOMPILES the circuit's i64 BN254 field arithmetic on 32-bit ARM (armeabi-v7a),
+# zeroing the last-computed output wires (nullifier/keyHash). The graph interpreter evaluates the
+# circuit's field ops in Rust and is integer-width-correct on any target.
+#
+# `circom-witnesscalc` is also a DIRECT dep here so we can call `calc_witness(json, graph_bytes)`
+# ourselves (the graph is loaded at runtime from a filesystem path, like the zkey).
+circom-prover = { version = "0.1.4", default-features = false, features = ["arkworks", "circom-witnesscalc"], optional = true }
+circom-witnesscalc = { version = "0.2.1", optional = true }
+anyhow = { version = "1", optional = true }
 
 [features]
-# OFF by default. Enabling pulls circom-prover + rust-witness and activates build.rs transpilation.
-prover = ["dep:circom-prover", "dep:rust-witness"]
+# `assemble` (OFF by default) compiles the prover-independent circuit-input ASSEMBLY
+# (`prover_assemble`) WITHOUT pulling circom-prover. It only uses the SDK's own ark-bn254/ark-ff
+# field types + wrap/leaf/field/merkle, so the 64-bit backend (vet-api, on ark-0.6 dogtag-prover-rs)
+# can reuse the SAME 19-input assembly for the server proving API. Only decimal strings cross the
+# crate boundary, so the ark 0.5 / 0.6 majors stay disjoint (no version clash).
+assemble = []
+# `prover` (OFF by default) is the full on-device prover: it implies `assemble` (it reuses the same
+# assembly) and additionally pulls circom-prover (graph-witness backend) + circom-witnesscalc.
+prover = ["assemble", "dep:circom-prover", "dep:circom-witnesscalc", "dep:anyhow"]
 
 [dev-dependencies]
 rand = { workspace = true }

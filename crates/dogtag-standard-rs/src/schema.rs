@@ -244,6 +244,18 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
         if !as_str(subject, "neuterStatus").map(|s| neu.contains(&s)).unwrap_or(false) {
             e.push(format!("credentialSubject.neuterStatus must be one of {{{}}}", neu.join(", ")));
         }
+        // owner's official identity — OBJECT with three string sub-fields (keys must be present;
+        // empty strings allowed for non-admin mint paths).
+        match get(subject, "ownerIdentity") {
+            Some(oi) if oi.is_object() => {
+                for f in ["countryOfIdentification", "identification", "name"] {
+                    if oi.get(f).and_then(Value::as_str).is_none() {
+                        e.push(format!("credentialSubject.ownerIdentity.{f} must be a string"));
+                    }
+                }
+            }
+            _ => e.push("credentialSubject.ownerIdentity must be an object".into()),
+        }
         if let Some(wh) = get(subject, "weightHistory") {
             match wh.as_array() {
                 None => e.push("credentialSubject.weightHistory must be an array".into()),
@@ -468,6 +480,69 @@ mod tests {
             "storage": "off_chain",
             "credentialSubject": {"dogTagId": "dogtag:0xdef"}
         })
+    }
+
+    fn valid_dog_profile() -> Value {
+        json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2", DOGTAG_CONTEXT_URI],
+            "type": ["VerifiableCredential", "DogProfile"],
+            "id": "urn:dogtag:profile:42",
+            "issuer": "did:web:dogtag.example",
+            "validFrom": "2024-01-01",
+            "credentialSchema": {"id": "https://dogtag.example/schemas/dog-profile", "type": "JsonSchema"},
+            "credentialStatus": {"id": "https://dogtag.example/status/42", "type": "DogTagStatus2025"},
+            "attestationType": "identity",
+            "signatureTrustTier": "self_attested",
+            "legalEffect": "evidentiary",
+            "legalBasisVersion": "DOGTAG-PROFILE-v1",
+            "jurisdiction": "GLOBAL",
+            "recordType": "DOG_PROFILE",
+            "credentialSubject": {
+                "dogTagId": 42,
+                "name": "Rex",
+                "species": "Canis lupus familiaris",
+                "breedVbo": "VBO:0200798",
+                "breedLabel": "Labrador",
+                "sex": "male",
+                "neuterStatus": "intact",
+                "dateOfBirth": "2020-01-01",
+                "ownerIdentity": {
+                    "countryOfIdentification": "GB",
+                    "identification": "P1234567",
+                    "name": "Alex Doe"
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn accepts_valid_dog_profile() {
+        assert_eq!(validate_schema(&valid_dog_profile()), Ok(()));
+    }
+
+    #[test]
+    fn fails_dog_profile_missing_owner_identity() {
+        let mut c = valid_dog_profile();
+        c["credentialSubject"].as_object_mut().unwrap().remove("ownerIdentity");
+        assert_violation(&c, "credentialSubject.ownerIdentity must be an object");
+    }
+
+    #[test]
+    fn fails_dog_profile_missing_owner_identity_subfield() {
+        let mut c = valid_dog_profile();
+        c["credentialSubject"]["ownerIdentity"].as_object_mut().unwrap().remove("name");
+        assert_violation(&c, "credentialSubject.ownerIdentity.name must be a string");
+    }
+
+    #[test]
+    fn accepts_dog_profile_with_empty_owner_identity_strings() {
+        let mut c = valid_dog_profile();
+        c["credentialSubject"]["ownerIdentity"] = json!({
+            "countryOfIdentification": "",
+            "identification": "",
+            "name": ""
+        });
+        assert_eq!(validate_schema(&c), Ok(()));
     }
 
     fn assert_violation(c: &Value, needle: &str) {
