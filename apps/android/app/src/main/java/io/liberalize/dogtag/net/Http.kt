@@ -11,9 +11,9 @@ object Http {
         val ok: Boolean get() = code in 200..299
     }
 
-    suspend fun postJson(url: String, json: String, bearer: String? = null): Response =
+    suspend fun postJson(url: String, json: String, bearer: String? = null, readTimeoutMs: Int = 8000): Response =
         withContext(Dispatchers.IO) {
-            val conn = open(url, "POST", bearer)
+            val conn = open(url, "POST", bearer, readTimeoutMs)
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json")
             try {
@@ -46,11 +46,11 @@ object Http {
             }
         }
 
-    private fun open(url: String, method: String, bearer: String?): HttpURLConnection =
+    private fun open(url: String, method: String, bearer: String?, readTimeoutMs: Int = 8000): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 8000
-            readTimeout = 8000
+            readTimeout = readTimeoutMs
             setRequestProperty("Accept", "application/json")
             if (bearer != null) setRequestProperty("Authorization", "Bearer $bearer")
         }

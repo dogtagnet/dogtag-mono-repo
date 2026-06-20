@@ -36,6 +36,14 @@ sealed class QrPayload {
         val groomerAddr: String,
     ) : QrPayload()
 
+    /**
+     * A dog-tag ISSUANCE session — the vet displays `/p/<token>` (token = 32 hex, one-time, 180s).
+     * The phone POSTs `<host>/profiles/issue/bind { token, walletAddress, signature }` to bind the
+     * dog tag to this wallet, then verifies the returned DOG_PROFILE against the DogTagSBT and stores
+     * it as a credential. (Optional non-consuming pre-step: GET `<host>/p/<token>`.)
+     */
+    data class DogTagIssueSession(val host: String, val token: String) : QrPayload()
+
     /** Anything we don't recognise. */
     data class Unknown(val raw: String) : QrPayload()
 
@@ -59,6 +67,12 @@ sealed class QrPayload {
                         val token = segs[1]
                         val addr = uri.getQueryParameter("a").orEmpty()
                         if (token.isNotBlank() && addr.isNotBlank()) ExportSession(origin, token, addr)
+                        else Unknown(trimmed)
+                    }
+                    // Dog-tag issuance one-time token: `/p/<token>` (no query string).
+                    segs.size == 2 && segs[0] == "p" && uri.query.isNullOrBlank() -> {
+                        val token = segs[1]
+                        if (token.isNotBlank()) DogTagIssueSession(origin, token)
                         else Unknown(trimmed)
                     }
                     // Legacy embedded record-JWT: `/r?t=<jwt>&i=<recordId>` (back-compat).

@@ -745,6 +745,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -772,6 +774,8 @@ internal interface UniffiLib : Library {
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_derive_babyjub_consent_key(`seedHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_dog_tag_id_field_hex(`dogTagIdDec`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_eddsa_consent_message_hex(`dogTagIdHex`: RustBuffer.ByValue,`recordTypeHex`: RustBuffer.ByValue,`purposeHex`: RustBuffer.ByValue,`credentialRootHex`: RustBuffer.ByValue,`challengeHex`: RustBuffer.ByValue,`relayerHex`: RustBuffer.ByValue,`subjectHex`: RustBuffer.ByValue,`nonceHex`: RustBuffer.ByValue,`deadlineHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_hash_leaf_hex(`keyPath`: RustBuffer.ByValue,`saltHex`: RustBuffer.ByValue,`tag`: Byte,`value`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -780,7 +784,7 @@ internal interface UniffiLib : Library {
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_nfc_normalize(`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    fun uniffi_dogtag_standard_fn_func_prove_verification(`wrappedDocJson`: RustBuffer.ByValue,`consentJson`: RustBuffer.ByValue,`eddsaSig`: RustBuffer.ByValue,`zkeyPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    fun uniffi_dogtag_standard_fn_func_prove_verification(`wrappedDocJson`: RustBuffer.ByValue,`consentJson`: RustBuffer.ByValue,`eddsaSig`: RustBuffer.ByValue,`zkeyPath`: RustBuffer.ByValue,`graphPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_sign_consent_eddsa(`prvHex`: RustBuffer.ByValue,`dogTagIdHex`: RustBuffer.ByValue,`recordTypeHex`: RustBuffer.ByValue,`purposeHex`: RustBuffer.ByValue,`credentialRootHex`: RustBuffer.ByValue,`challengeHex`: RustBuffer.ByValue,`relayerHex`: RustBuffer.ByValue,`subjectHex`: RustBuffer.ByValue,`nonceHex`: RustBuffer.ByValue,`deadlineHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -918,6 +922,8 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_eddsa_consent_message_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_hash_leaf_hex(
@@ -975,6 +981,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex() != 50191.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_dogtag_standard_checksum_func_eddsa_consent_message_hex() != 65311.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -987,7 +996,7 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_dogtag_standard_checksum_func_nfc_normalize() != 7804.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_dogtag_standard_checksum_func_prove_verification() != 55387.toShort()) {
+    if (lib.uniffi_dogtag_standard_checksum_func_prove_verification() != 3014.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_sign_consent_eddsa() != 33682.toShort()) {
@@ -1576,6 +1585,23 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     
 
         /**
+         * Field-hash a numeric dogTagId EXACTLY as its credential leaf value is hashed:
+         * `field_of_value(Integer(dec))` -> 0x.. 32-byte hex. THE CANONICAL dogTagId: the §1.10 consent's
+         * dogTagId, the EdDSA consent message M, the Poseidon nullifier, AND the on-chain DOG_PROFILE SBT id
+         * must ALL be this value — it equals `leafValues[dogTagIdLeafIndex]`, which the verification circuit
+         * compares to the dogTagId input DIRECTLY (constraint §(b)), not the raw decimal id.
+         */
+    @Throws(FfiException::class) fun `dogTagIdFieldHex`(`dogTagIdDec`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_dog_tag_id_field_hex(
+        FfiConverterString.lower(`dogTagIdDec`),_status)
+}
+    )
+    }
+    
+
+        /**
          * The EdDSA-BabyJubjub consent message M (impl §11.9(d)): Poseidon(dogTagId, purpose, relayer,
          * subject, credentialRoot, nonce) -> 0x.. 32-byte hex.
          */
@@ -1636,15 +1662,17 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
          * - `consent_json`     — the signed consent (same hex shape as the POSTed consent / ffi.rs consent).
          * - `eddsa_sig`        — the EdDSA-BabyJubjub consent signature + public key.
          * - `zkey_path`        — filesystem path to `verification_final.zkey` (bundled app asset).
+         * - `graph_path`       — filesystem path to `verification.graph`, the precompiled witness graph
+         * (bundled app asset, loaded the same way as the zkey).
          *
          * Returns the proof as Solidity calldata (`a`, `b` with the snarkjs->Solidity swap, `c`) plus the
          * 7 public signals `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]` (all decimal).
          */
-    @Throws(FfiException::class) fun `proveVerification`(`wrappedDocJson`: kotlin.String, `consentJson`: kotlin.String, `eddsaSig`: EddsaSigInput, `zkeyPath`: kotlin.String): ProofFfi {
+    @Throws(FfiException::class) fun `proveVerification`(`wrappedDocJson`: kotlin.String, `consentJson`: kotlin.String, `eddsaSig`: EddsaSigInput, `zkeyPath`: kotlin.String, `graphPath`: kotlin.String): ProofFfi {
             return FfiConverterTypeProofFfi.lift(
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_prove_verification(
-        FfiConverterString.lower(`wrappedDocJson`),FfiConverterString.lower(`consentJson`),FfiConverterTypeEddsaSigInput.lower(`eddsaSig`),FfiConverterString.lower(`zkeyPath`),_status)
+        FfiConverterString.lower(`wrappedDocJson`),FfiConverterString.lower(`consentJson`),FfiConverterTypeEddsaSigInput.lower(`eddsaSig`),FfiConverterString.lower(`zkeyPath`),FfiConverterString.lower(`graphPath`),_status)
 }
     )
     }

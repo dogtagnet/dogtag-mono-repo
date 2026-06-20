@@ -13,6 +13,7 @@
 		0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AB4F26FEB853C4B49F7988 /* Consent.swift */; };
 		0FAAB8287B508C32516CFDE9 /* RecordImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0236E3495680C88FA6DA3FD /* RecordImporter.swift */; };
 		20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */; };
+		25DE54A9AD9062ED98EEC699 /* ZkeyAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */; };
 		26286860F2F0C9B67191AAF6 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E305C5EDBCBAB54068928D /* Models.swift */; };
 		2D898909BA2816F7807E1DAC /* DogTagApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */; };
 		2EACE30CA5B71E766879B375 /* verification_final.zkey in Resources */ = {isa = PBXBuildFile; fileRef = 41B690C8C0288E6D92C49B1A /* verification_final.zkey */; };
@@ -25,6 +26,7 @@
 		82DFB6F5477D97DDCA88CF69 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7926F506647E68F6A59FDAF /* Theme.swift */; };
 		88E11CB08CC2C81AE51118FA /* Keccak256.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85DFF42E4A240519092B9764 /* Keccak256.swift */; };
 		95966E12D4F0950D42E83A0A /* Secp256k1.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */; };
+		A35B34283194640E9BFBB803 /* verification.graph in Resources */ = {isa = PBXBuildFile; fileRef = 9DE95B9868DF2B01687427E7 /* verification.graph */; };
 		D0F8DCB58714F356E47D7CBE /* VerifyScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */; };
 		D23B623773E4F1738D03833B /* ScanScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75DFD2A29A8CADFA74489995 /* ScanScreen.swift */; };
 		D4C0703D456B06AF417BD96E /* QR.swift in Sources */ = {isa = PBXBuildFile; fileRef = C48A2C71E910181EB8484314 /* QR.swift */; };
@@ -41,7 +43,7 @@
 		21052A141B470C3ACE0815DA /* LocalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStore.swift; sourceTree = "<group>"; };
 		3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagApp.swift; sourceTree = "<group>"; };
 		409155A71A31BD791C0561AD /* Net.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Net.swift; sourceTree = "<group>"; };
-		41B690C8C0288E6D92C49B1A /* verification_final.zkey */ = {isa = PBXFileReference; path = verification_final.zkey; sourceTree = "<group>"; };
+		41B690C8C0288E6D92C49B1A /* verification_final.zkey */ = {isa = PBXFileReference; lastKnownFileType = file; path = verification_final.zkey; sourceTree = "<group>"; };
 		4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileScreen.swift; sourceTree = "<group>"; };
 		49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialDetailScreen.swift; sourceTree = "<group>"; };
 		58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = dogtag_standard.swift; sourceTree = "<group>"; };
@@ -52,9 +54,11 @@
 		7DC51E046B7E0F7C0F0CA79A /* DocumentsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsScreen.swift; sourceTree = "<group>"; };
 		85DFF42E4A240519092B9764 /* Keccak256.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keccak256.swift; sourceTree = "<group>"; };
 		8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secp256k1.swift; sourceTree = "<group>"; };
+		9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkeyAsset.swift; sourceTree = "<group>"; };
+		9DE95B9868DF2B01687427E7 /* verification.graph */ = {isa = PBXFileReference; lastKnownFileType = file; path = verification.graph; sourceTree = "<group>"; };
 		A7926F506647E68F6A59FDAF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		BBCC68456C4002493E9519A5 /* testvectors.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = testvectors.json; sourceTree = "<group>"; };
-		C3AF3EC614608D5979DC48A2 /* DogTag.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = DogTag.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3AF3EC614608D5979DC48A2 /* DogTag.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DogTag.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C48A2C71E910181EB8484314 /* QR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QR.swift; sourceTree = "<group>"; };
 		C8AB4F26FEB853C4B49F7988 /* Consent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Consent.swift; sourceTree = "<group>"; };
 		D015751D851C794DC4128BC7 /* BigUInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BigUInt.swift; sourceTree = "<group>"; };
@@ -110,9 +114,11 @@
 				A7926F506647E68F6A59FDAF /* Theme.swift */,
 				6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */,
 				41B690C8C0288E6D92C49B1A /* verification_final.zkey */,
+				9DE95B9868DF2B01687427E7 /* verification.graph */,
 				D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */,
 				E35FCC686C0AAD6B317376C7 /* Wallet.swift */,
 				E35067E42CB675A6C8D77F8D /* Wordlist.swift */,
+				9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */,
 			);
 			path = DogTag;
 			sourceTree = "<group>";
@@ -166,7 +172,6 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					E5DC45AFEE7006A70B907F39 = {
-						DevelopmentTeam = AYDBUX9433;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -197,6 +202,7 @@
 			files = (
 				66976D595E830B76C1B03649 /* roax.json in Resources */,
 				6C880A8C57CA3473792895CB /* testvectors.json in Resources */,
+				A35B34283194640E9BFBB803 /* verification.graph in Resources */,
 				2EACE30CA5B71E766879B375 /* verification_final.zkey in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -229,6 +235,7 @@
 				D0F8DCB58714F356E47D7CBE /* VerifyScreen.swift in Sources */,
 				F99C7D3CA52E6CCBE02EB6A5 /* Wallet.swift in Sources */,
 				49DE2EAF2A416E46CC4633B1 /* Wordlist.swift in Sources */,
+				25DE54A9AD9062ED98EEC699 /* ZkeyAsset.swift in Sources */,
 				3195F181C655ED2791616210 /* dogtag_standard.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -242,6 +249,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 39EXN63988;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",
@@ -269,6 +277,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 39EXN63988;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",

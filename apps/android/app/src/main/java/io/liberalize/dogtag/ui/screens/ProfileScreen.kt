@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import io.liberalize.dogtag.data.AppSettings
 import io.liberalize.dogtag.data.DarkPref
+import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.SettingsStore
 import io.liberalize.dogtag.ui.DogTagTheme
@@ -50,6 +51,7 @@ import io.liberalize.dogtag.ui.SectionTitle
 import io.liberalize.dogtag.ui.ThemeId
 import io.liberalize.dogtag.wallet.Biometric
 import io.liberalize.dogtag.wallet.Wallet
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 
 @Composable
@@ -66,6 +68,9 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
     var consentKeyHash by remember { mutableStateOf<String?>(null) }
     var mnemonic by remember { mutableStateOf<String?>(null) }
     var walletMsg by remember { mutableStateOf("") }
+
+    val localStore = remember { LocalStore.get(context) }
+    val pets by localStore.pets.collectAsStateWithLifecycle()
 
     Column(
         Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp),
@@ -175,6 +180,26 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
                 }
             }
             if (walletMsg.isNotBlank()) Text(walletMsg, fontSize = 12.sp, color = c.muted)
+        }
+
+        // ---- Dog-tags: dog tags issued to this wallet (scan the vet's /p/<token> QR to issue one) ----
+        SectionTitle("Dog-tags")
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            val minted = pets.filter { it.dogTagId.isNotBlank() && it.dogTagId.all { ch -> ch.isDigit() } }
+            if (minted.isEmpty()) {
+                Text(
+                    "No dog tag yet. Scan your vet's dog-tag QR (Scan) to have one issued and bound to " +
+                        "this wallet — the dogTagId then appears here.",
+                    fontSize = 12.sp, color = c.muted,
+                )
+            } else {
+                minted.forEach { pet ->
+                    KV(pet.name.ifBlank { "Pet" }, "dogTagId ${pet.dogTagId}")
+                }
+            }
         }
 
         // ---- Network ----

@@ -57,6 +57,21 @@ object Wallet {
     ) {
         /** Sign a 32-byte EIP-712 digest with the secp256k1 wallet key → 65-byte 0x.. r||s||v. */
         fun signEthDigest(digest: ByteArray): String = Secp256k1.signDigest(secpPriv, digest)
+
+        /**
+         * The EIP-191 `personal_sign` signature over the central registration message
+         * "DogTag wallet registration: <ethAddress lowercased>". The digest is
+         * keccak256("\x19Ethereum Signed Message:\n" + len + message), signed with the secp256k1
+         * wallet key → 65-byte 0x.. r||s||v (recovers to ethAddress server-side).
+         */
+        fun registerSignature(): String {
+            val message = "DogTag wallet registration: ${ethAddress.lowercase()}"
+            val msgBytes = message.toByteArray(Charsets.UTF_8)
+            val prefix = byteArrayOf(0x19) +
+                "Ethereum Signed Message:\n${msgBytes.size}".toByteArray(Charsets.UTF_8)
+            val digest = Keccak256.digest(prefix + msgBytes)
+            return signEthDigest(digest)
+        }
     }
 
     /** True once a wallet seed has been generated and stored. */
@@ -254,15 +269,19 @@ object Secp256k1 {
         val sig = signer.generateSignature(digest)
         val r = sig[0]
         var s = sig[1]
-        // Low-S normalisation (EIP-2): if s > n/2, replace with n - s and flip recovery parity.
+        // Low-S normalisation (EIP-2): if s > n/2, replace with n - s. The recovery id is then computed
+        // against this normalized `s` directly (see below), so no separate parity flip is tracked.
         val halfN = n.shiftRight(1)
-        var flip = false
-        if (s > halfN) { s = n.subtract(s); flip = true }
+        if (s > halfN) { s = n.subtract(s) }
 
         // Recover the public key to determine v. Our own pubkey is the ground truth.
+        // NOTE: `s` is ALREADY low-S-normalized above, and `findRecId` is called with that normalized `s`,
+        // so the recId it returns is already correct for the signature we return — do NOT xor `flip` again
+        // (that double-counts the parity flip and yields the wrong `v` ~50% of the time → on-chain
+        // ECDSA.recover returns a different address → "bad sig").
         val q = spec.g.multiply(d).normalize()
         val recId = findRecId(domainParams, r, s, digest, q) ?: 0
-        val v = (recId xor (if (flip) 1 else 0)) + 27
+        val v = recId + 27
 
         val rb = to32(r)
         val sb = to32(s)

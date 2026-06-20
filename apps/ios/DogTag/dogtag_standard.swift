@@ -1048,6 +1048,20 @@ public func deriveBabyjubConsentKey(seedHex: String)throws  -> BabyjubConsentKey
 })
 }
 /**
+ * Field-hash a numeric dogTagId EXACTLY as its credential leaf value is hashed:
+ * `field_of_value(Integer(dec))` -> 0x.. 32-byte hex. THE CANONICAL dogTagId: the §1.10 consent's
+ * dogTagId, the EdDSA consent message M, the Poseidon nullifier, AND the on-chain DOG_PROFILE SBT id
+ * must ALL be this value — it equals `leafValues[dogTagIdLeafIndex]`, which the verification circuit
+ * compares to the dogTagId input DIRECTLY (constraint §(b)), not the raw decimal id.
+ */
+public func dogTagIdFieldHex(dogTagIdDec: String)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_dog_tag_id_field_hex(
+        FfiConverterString.lower(dogTagIdDec),$0
+    )
+})
+}
+/**
  * The EdDSA-BabyJubjub consent message M (impl §11.9(d)): Poseidon(dogTagId, purpose, relayer,
  * subject, credentialRoot, nonce) -> 0x.. 32-byte hex.
  */
@@ -1109,17 +1123,20 @@ public func nfcNormalize(input: String) -> String {
  * - `consent_json`     — the signed consent (same hex shape as the POSTed consent / ffi.rs consent).
  * - `eddsa_sig`        — the EdDSA-BabyJubjub consent signature + public key.
  * - `zkey_path`        — filesystem path to `verification_final.zkey` (bundled app asset).
+ * - `graph_path`       — filesystem path to `verification.graph`, the precompiled witness graph
+ * (bundled app asset, loaded the same way as the zkey).
  *
  * Returns the proof as Solidity calldata (`a`, `b` with the snarkjs->Solidity swap, `c`) plus the
  * 7 public signals `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]` (all decimal).
  */
-public func proveVerification(wrappedDocJson: String, consentJson: String, eddsaSig: EddsaSigInput, zkeyPath: String)throws  -> ProofFfi {
+public func proveVerification(wrappedDocJson: String, consentJson: String, eddsaSig: EddsaSigInput, zkeyPath: String, graphPath: String)throws  -> ProofFfi {
     return try  FfiConverterTypeProofFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
     uniffi_dogtag_standard_fn_func_prove_verification(
         FfiConverterString.lower(wrappedDocJson),
         FfiConverterString.lower(consentJson),
         FfiConverterTypeEddsaSigInput.lower(eddsaSig),
-        FfiConverterString.lower(zkeyPath),$0
+        FfiConverterString.lower(zkeyPath),
+        FfiConverterString.lower(graphPath),$0
     )
 })
 }
@@ -1249,6 +1266,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex() != 50191) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dogtag_standard_checksum_func_eddsa_consent_message_hex() != 65311) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1261,7 +1281,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_nfc_normalize() != 7804) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dogtag_standard_checksum_func_prove_verification() != 55387) {
+    if (uniffi_dogtag_standard_checksum_func_prove_verification() != 3014) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_sign_consent_eddsa() != 33682) {

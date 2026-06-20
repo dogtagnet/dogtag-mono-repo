@@ -231,17 +231,28 @@ struct RoaxConfig {
     }
 }
 
-/// Endpoint configuration for the live backends (mirrors Android AppConfig).
+/// Endpoint configuration (mirrors Android AppConfig). Per-vet/-groomer hosts always come from scanned
+/// QR origins — the device never calls a central admin base for registration or pet sync. The legacy
+/// ECDSA export path still reads an optional central base URL + owner session token (read-only here);
+/// `roaxRpc` is the on-chain read endpoint.
 enum AppConfig {
-    static let centralApi = "https://api.dogtag.io"
+    static let defaultCentralApi = "https://api.dogtag.io"
     static let roaxRpc = "https://devrpc.roax.net"
 
+    private static let centralKey = "central_api"
     private static let sessionKey = "owner_session"
-    static var sessionToken: String? {
-        get { UserDefaults.standard.string(forKey: sessionKey) }
-        set {
-            if let v = newValue { UserDefaults.standard.set(v, forKey: sessionKey) }
-            else { UserDefaults.standard.removeObject(forKey: sessionKey) }
+
+    /// The configured central API base URL (no trailing slash), or the compiled-in default.
+    static var centralApi: String {
+        let v = UserDefaults.standard.string(forKey: centralKey)?
+            .trimmingCharacters(in: .whitespaces)
+        if let v = v, !v.isEmpty {
+            return v.hasSuffix("/") ? String(v.dropLast()) : v
         }
+        return defaultCentralApi
+    }
+
+    static var sessionToken: String? {
+        UserDefaults.standard.string(forKey: sessionKey)
     }
 }

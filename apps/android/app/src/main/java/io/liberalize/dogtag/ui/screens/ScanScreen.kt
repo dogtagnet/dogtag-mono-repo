@@ -1,5 +1,6 @@
 package io.liberalize.dogtag.ui.screens
 
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +34,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.height
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.fragment.app.FragmentActivity
 import io.liberalize.dogtag.consent.ConsentKeyBind
 import io.liberalize.dogtag.consent.ConsentMode
@@ -76,10 +87,36 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
 
+    val walletExists = remember { Wallet.exists(context) }
+
     var scanning by remember { mutableStateOf(true) }
     var payload by remember { mutableStateOf<QrPayload?>(null) }
     var status by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
+
+    // SCAN GATE (B1): import + export both need a wallet (the device address is what the record is
+    // minted to / the consent is signed with). No wallet → don't scan; point the user to Profile.
+    if (!walletExists) {
+        Column(
+            Modifier.fillMaxSize().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Scan", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+            Card {
+                Text("Create your wallet first", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+                Text(
+                    "You need an embedded wallet before you can import or export records. " +
+                        "Go to Profile → Create embedded wallet.",
+                    fontSize = 12.sp, color = c.muted,
+                )
+            }
+            Button(
+                onClick = onDone,
+                colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent),
+            ) { Text("Back") }
+        }
+        return
+    }
 
     if (scanning) {
         Box(Modifier.fillMaxSize()) {
@@ -140,6 +177,10 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 },
             )
 
+            is QrPayload.DogTagIssueSession -> IssuePanel(
+                qr = p, activity = activity, store = store,
+            )
+
             is QrPayload.ExportSession -> ExportPanel(
                 qr = p, activity = activity, store = store, status = status,
                 onStatus = { status = it },
@@ -149,7 +190,8 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 Card {
                     Text("Unrecognised QR", fontWeight = FontWeight.Bold, color = c.danger, fontSize = 15.sp)
                     Text(
-                        "This isn't a DogTag record link (/r/<token> or /r?t=) or export session (/x/<token>).",
+                        "This isn't a DogTag record link (/r/<token> or /r?t=), dog-tag issuance (/p/<token>) " +
+                            "or export session (/x/<token>).",
                         fontSize = 12.sp, color = c.muted,
                     )
                     Text(p.raw.take(120), fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
@@ -200,6 +242,132 @@ private fun ImportPanel(
         if (status.isNotBlank()) {
             val good = status.startsWith("Imported (VALID")
             Text(status, fontSize = 12.sp, color = if (good) c.success else c.muted)
+        }
+    }
+}
+
+/**
+ * The dog-tag issuance panel (vet-issues-the-dog-tag). POST <host>/profiles/issue/bind with the wallet
+ * address + its registration signature; on `{ wrappedDoc, dogTagId, root, txHash }` verify the issued
+ * DOG_PROFILE against the DogTagSBT (profileRoot + ownerOf) AND offline integrity, store it as a
+ * Credential, and show a success card with the dogTagId + txHash.
+ */
+@Composable
+private fun IssuePanel(
+    qr: QrPayload.DogTagIssueSession,
+    activity: FragmentActivity,
+    store: LocalStore,
+) {
+    val c = DogTagTheme.colors
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val roax = remember { RoaxConfig.load(context) }
+
+    var working by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    var issued by remember { mutableStateOf<CentralApi.DogTagIssue?>(null) }
+    var verdict by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf("") }
+
+    Card {
+        Text("Issue dog tag", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+        Text("From ${qr.host}", fontSize = 12.sp, color = c.muted)
+        Text("Token ${qr.token.take(18)}…", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
+        Text(
+            "Your vet will bind a new dog tag to this wallet. We'll sign the binding, then verify the " +
+                "issued profile against the DogTagSBT (profileRoot + ownerOf) before storing it.",
+            fontSize = 12.sp, color = c.muted,
+        )
+
+        if (issued == null && !working) {
+            Button(
+                onClick = {
+                    err = ""
+                    Biometric.prompt(
+                        activity, "Issue dog tag", "Authenticate to bind this dog tag to your wallet",
+                        onSuccess = {
+                            val wallet = runCatching { Wallet.load(context) }.getOrNull()
+                            if (wallet == null) { err = "Create your wallet first (Profile)."; return@prompt }
+                            working = true
+                            status = "Binding dog tag…"
+                            scope.launch {
+                                try {
+                                    val sig = wallet.registerSignature()
+                                    val res = withContext(Dispatchers.IO) {
+                                        CentralApi.bindDogTagIssue(qr.host, qr.token, wallet.ethAddress, sig)
+                                    }
+                                    if (res == null) {
+                                        working = false; err = "Bind failed (expired token / network)."; return@launch
+                                    }
+                                    // The bind responds immediately (status "minting") and the vet mints the
+                                    // SBT in the background. Poll the chain (profileRoot + ownerOf) until the
+                                    // mint lands — retrying a miss rather than failing on the first read.
+                                    status = "Minting your dog tag on-chain…"
+                                    val poll = withContext(Dispatchers.IO) {
+                                        RecordImporter.pollSbtMint(
+                                            dogTagId = res.dogTagId,
+                                            expectedRoot = res.root,
+                                            walletAddress = wallet.ethAddress,
+                                            dogTagSbt = roax.dogTagSbt,
+                                            rpcUrl = AppConfig.ROAX_RPC,
+                                        )
+                                    }
+                                    if (poll is RecordImporter.MintPoll.Timeout) {
+                                        working = false
+                                        err = "Mint not confirmed — check the vet portal."
+                                        return@launch
+                                    }
+                                    // Mint confirmed on-chain: run the offline integrity + (now-landed) SBT check.
+                                    status = "Verifying against DogTagSBT…"
+                                    val r = withContext(Dispatchers.IO) {
+                                        RecordImporter.verifyIssuedDogTag(
+                                            wrappedDocJson = res.wrappedDocJson,
+                                            dogTagId = res.dogTagId,
+                                            expectedRoot = res.root,
+                                            walletAddress = wallet.ethAddress,
+                                            dogTagSbt = roax.dogTagSbt,
+                                            rpcUrl = AppConfig.ROAX_RPC,
+                                        )
+                                    }
+                                    working = false
+                                    if (r.credential != null) {
+                                        store.addCredential(r.credential)
+                                        issued = res
+                                        verdict = r.verdict
+                                        status = "Issued (${r.verdict}) — ${r.detail}"
+                                    } else {
+                                        err = "Verify failed: ${r.detail}"
+                                    }
+                                } catch (e: Exception) {
+                                    working = false; err = "Issue failed: ${e.message}"
+                                }
+                            }
+                        },
+                        onError = { err = it },
+                    )
+                },
+                enabled = !working,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent),
+            ) { Text("Issue & verify") }
+        }
+        if (working) {
+            ForgingAnimation(status)
+        }
+        if (!working && status.isNotBlank()) {
+            Text(status, fontSize = 12.sp, color = if (verdict == "VALID") c.success else c.muted)
+        }
+        if (err.isNotBlank()) Text(err, fontSize = 12.sp, color = c.danger)
+    }
+
+    issued?.let { res ->
+        Card {
+            Text("Dog tag issued", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.success)
+            Field("dogTagId", res.dogTagId.ifBlank { "—" })
+            Field("Verdict", verdict.ifBlank { "—" })
+            Field("Root", res.root.take(18).ifBlank { "—" } + "…")
+            Field("Tx", res.txHash.take(18).ifBlank { "—" } + "…")
+            Text("Stored under your dog tags.", fontSize = 12.sp, color = c.muted)
         }
     }
 }
@@ -287,6 +455,12 @@ private fun ExportPanel(
     val sel = selected
     var busy by remember { mutableStateOf(false) }
     val isZk = sess.mode.lowercase() != "normal" && sess.mode.lowercase() != "ecdsa"
+    if (busy) {
+        ForgingAnimation(
+            status.ifBlank { "Recording your verification on-chain…" },
+            title = "Recording your verification on-chain",
+        )
+    }
     Button(
         onClick = {
             err = ""
@@ -308,7 +482,7 @@ private fun ExportPanel(
                         dogTagIdDec = sel.dogTagId,
                         credentialRoot = sel.credentialRoot,
                         subjectWallet = subject,
-                        callbackUrl = "${AppConfig.CENTRAL_API}/v1/verify/consent",
+                        callbackUrl = "${AppConfig.centralApi(context)}/v1/verify/consent",
                     )
                     if (!isZk) {
                         // ECDSA (legacy) path — relay through central as before.
@@ -317,7 +491,7 @@ private fun ExportPanel(
                                 val signed = ConsentSigner.sign(req, null)
                                 onStatus("Signed (${signed.mode}); submitting…")
                                 val token = AppConfig.sessionToken(context)
-                                val r = runCatching { CentralApi.postConsent(token, signed.payloadJson) }.getOrNull()
+                                val r = runCatching { CentralApi.postConsent(AppConfig.centralApi(context), token, signed.payloadJson) }.getOrNull()
                                 onStatus(
                                     if (r == null) "Signed locally; submit failed (no network / session)."
                                     else "POST /v1/verify/consent → ${r.code}",
@@ -373,14 +547,53 @@ private fun ExportPanel(
                                 req.dogTagId, req.recordType, req.purpose, req.credentialRoot, req.challenge,
                                 req.relayer, req.subject, req.nonce, req.deadline,
                             )
-                            onStatus("Generating proof…")
-                            val zkeyPath = withContext(Dispatchers.IO) { ZkeyAsset.ensure(context) }
-                            val eddsaInput = EddsaSigInput(
-                                r8xDec = eddsa.r8xDec, r8yDec = eddsa.r8yDec, sDec = eddsa.sDec,
-                                axHex = wallet.consent.axHex, ayHex = wallet.consent.ayHex,
-                            )
-                            val proof = withContext(Dispatchers.Default) {
-                                proveVerification(sel.wrappedDocJson, eddsaConsentJson(req), eddsaInput, zkeyPath)
+                            // 32-BIT FALLBACK DECISION. A 32-bit-only device (no arm64 ABI) cannot run
+                            // the on-device circom-prover, so it queries the trusted PROVER SERVICE for
+                            // the proof instead. 64-bit devices (arm64 Android, iOS) keep true
+                            // on-device proving — that path is unchanged. `SUPPORTED_64_BIT_ABIS` is
+                            // empty iff the device is 32-bit only.
+                            val is32BitOnly = Build.SUPPORTED_64_BIT_ABIS.isEmpty()
+                            val consentJson = eddsaConsentJson(req)
+                            val proof = if (is32BitOnly) {
+                                // ---- 32-bit: prove on the prover service (groomer never sees witness) ----
+                                onStatus("Proving on the prover service (32-bit device)…")
+                                val proverUrl = AppConfig.proverApiUrl(context)
+                                if (proverUrl.isBlank()) {
+                                    busy = false
+                                    err = "No prover service configured for this 32-bit device."
+                                    onStatus("Blocked — 32-bit device has no prover service configured.")
+                                    return@launch
+                                }
+                                val served = withContext(Dispatchers.IO) {
+                                    CentralApi.proveOnServer(
+                                        proverUrl,
+                                        sel.wrappedDocJson,
+                                        consentJson,
+                                        CentralApi.ProverEddsaSig(
+                                            r8xDec = eddsa.r8xDec, r8yDec = eddsa.r8yDec, sDec = eddsa.sDec,
+                                            axHex = wallet.consent.axHex, ayHex = wallet.consent.ayHex,
+                                        ),
+                                    )
+                                }
+                                if (served == null) {
+                                    busy = false
+                                    err = "Prover service failed to return a proof."
+                                    onStatus("Blocked — prover service unavailable.")
+                                    return@launch
+                                }
+                                served
+                            } else {
+                                // ---- 64-bit: TRUE on-device proving (UNCHANGED) ----
+                                onStatus("Generating proof…")
+                                val zkeyPath = withContext(Dispatchers.IO) { ZkeyAsset.ensure(context) }
+                                val graphPath = withContext(Dispatchers.IO) { ZkeyAsset.ensureGraph(context) }
+                                val eddsaInput = EddsaSigInput(
+                                    r8xDec = eddsa.r8xDec, r8yDec = eddsa.r8yDec, sDec = eddsa.sDec,
+                                    axHex = wallet.consent.axHex, ayHex = wallet.consent.ayHex,
+                                )
+                                withContext(Dispatchers.Default) {
+                                    proveVerification(sel.wrappedDocJson, consentJson, eddsaInput, zkeyPath, graphPath)
+                                }
                             }
 
                             // (c) CONSENT-KEY BIND (gasless) — owner signs the EIP-712 bind digest;
@@ -398,34 +611,94 @@ private fun ExportPanel(
                                 ConsentKeyBind(wallet.ethAddress, wallet.consent.keyHashHex, ownerSig)
                             }.getOrNull()
 
+                            // The proof's nullifier = pubSignals[4] (a decimal field element). This is
+                            // the on-chain `VerificationRegistry.consumed(bytes32)` key — the canonical
+                            // completion signal we poll the CHAIN for below.
+                            val nullifier = proof.pubSignals.getOrNull(4).orEmpty()
+
+                            // PRE-SUBMIT REPLAY GUARD: if this nullifier is already consumed on-chain,
+                            // the verification was recorded before — submitting again is a doomed replay
+                            // the relayer will reject. Stop early with a clear message.
+                            val alreadyRecorded = withContext(Dispatchers.IO) {
+                                RoaxRpc.consumed(AppConfig.ROAX_RPC, roax.verificationRegistry, nullifier)
+                            }
+                            if (alreadyRecorded) {
+                                busy = false
+                                err = "This verification was already recorded."
+                                onStatus("Already recorded on-chain.")
+                                return@launch
+                            }
+
                             // (d) SUBMIT to the QR host (groomer), NOT central. The one-time exportToken
-                            // is consumed server-side on submit.
+                            // is consumed server-side on record-success. The submit now returns 200
+                            // {status:"recording"} FAST and records on-chain in the background, so we
+                            // ALWAYS proceed to the chain poll — even on a null/non-2xx submit response
+                            // (the relayer may still be recording). Only a clearly-rejected 4xx carrying
+                            // an {error} body is a hard failure.
                             onStatus("Submitting proof to groomer…")
                             val signed = ConsentSigner.signWithProof(req, consentPriv, proof, bind)
                             val r = withContext(Dispatchers.IO) {
                                 runCatching { CentralApi.postVerifyConsentToHost(qr.host, signed.payloadJson) }.getOrNull()
                             }
-                            if (r == null || !r.ok) {
-                                busy = false
-                                onStatus("Submit failed (${r?.code ?: "no network"}).")
-                                return@launch
-                            }
-
-                            // (e) POLL session status until recorded → show txHash.
-                            onStatus("Proof submitted — waiting for on-chain record…")
-                            var recorded = false
-                            for (i in 0 until 30) {
-                                val st = withContext(Dispatchers.IO) {
-                                    CentralApi.verifySessionStatus(qr.host, sess.sessionId, qr.token)
+                            if (r != null && r.code in 400..499) {
+                                val rejectMsg = runCatching {
+                                    org.json.JSONObject(r.body).optString("error", "")
+                                }.getOrNull().orEmpty()
+                                if (rejectMsg.isNotBlank()) {
+                                    busy = false
+                                    err = "Rejected: $rejectMsg"
+                                    onStatus("Submit rejected ($rejectMsg).")
+                                    return@launch
                                 }
-                                if (st?.status == "recorded") {
-                                    recorded = true
-                                    onStatus("Verified on-chain — no data disclosed. tx ${st.txHash?.take(14) ?: ""}…")
+                            }
+                            // Otherwise (2xx, null/network, or a 4xx without an {error} body) proceed
+                            // to the chain poll — the canonical success signal is consumed(nullifier).
+
+                            // (e) POLL THE CHAIN until VerificationRegistry.consumed(nullifier) == true.
+                            // Do NOT rely on the token-gated session poll: the export token is consumed
+                            // at record-success, so that GET starts returning 401 exactly when it
+                            // succeeds. Poll every ~3s up to ~120s.
+                            // The export token is consumed server-side only on record-SUCCESS, so the
+                            // token-gated session poll keeps returning until success/error. We poll it
+                            // ALONGSIDE the chain: a bind/record failure flips the session to
+                            // status="error" (the reason is carried in txHash/message) and would
+                            // otherwise never set consumed(nullifier)=true — leaving the phone stuck
+                            // until the ~120s timeout. On error we STOP and surface it immediately.
+                            onStatus("Recording your verification on-chain…")
+                            var done = false
+                            var failedMsg: String? = null
+                            for (i in 0 until 40) {
+                                val ok = withContext(Dispatchers.IO) {
+                                    RoaxRpc.consumed(AppConfig.ROAX_RPC, roax.verificationRegistry, nullifier)
+                                }
+                                if (ok) { done = true; break }
+                                val st = withContext(Dispatchers.IO) {
+                                    runCatching { CentralApi.verifySessionStatus(qr.host, sess.sessionId, qr.token) }.getOrNull()
+                                }
+                                if (st?.status == "error") {
+                                    failedMsg = st.txHash?.ifBlank { null } ?: "recording failed"
                                     break
                                 }
-                                kotlinx.coroutines.delay(2000)
+                                kotlinx.coroutines.delay(3000)
                             }
-                            if (!recorded) onStatus("Submitted; awaiting confirmation (poll timed out).")
+                            if (failedMsg != null) {
+                                busy = false
+                                err = "Verification failed: $failedMsg"
+                                onStatus("Verification failed: $failedMsg")
+                                return@launch
+                            }
+                            if (done) {
+                                // Optional: one best-effort session read to surface a txHash for display.
+                                val tx = withContext(Dispatchers.IO) {
+                                    runCatching { CentralApi.verifySessionStatus(qr.host, sess.sessionId, qr.token) }.getOrNull()
+                                }?.txHash
+                                onStatus(
+                                    if (!tx.isNullOrBlank()) "Verified on-chain — no data disclosed. tx ${tx.take(14)}…"
+                                    else "Verified on-chain — no data disclosed.",
+                                )
+                            } else {
+                                onStatus("Submitted; awaiting confirmation.")
+                            }
                             busy = false
                         } catch (e: Exception) {
                             busy = false
@@ -442,7 +715,12 @@ private fun ExportPanel(
     ) { Text(if (busy) "Working…" else "Approve & export") }
 
     if (err.isNotBlank()) Text(err, fontSize = 12.sp, color = c.danger)
-    if (status.isNotBlank()) Text(status, fontSize = 12.sp, color = c.muted)
+    // While busy the ForgingAnimation already surfaces the live status; show the plain status text
+    // only when idle (the final success/timeout line).
+    if (!busy && status.isNotBlank()) {
+        val good = status.startsWith("Verified on-chain")
+        Text(status, fontSize = 12.sp, color = if (good) c.success else c.muted)
+    }
 }
 
 /**
@@ -466,6 +744,42 @@ private fun eddsaConsentJson(req: VerificationRequest): String =
 private fun hexToBytes(hex: String): ByteArray {
     val h = hex.removePrefix("0x")
     return ByteArray(h.length / 2) { i -> ((Character.digit(h[i * 2], 16) shl 4) + Character.digit(h[i * 2 + 1], 16)).toByte() }
+}
+
+/** Animated waiting screen shown while the dog tag is minted on-chain (the bind returns instantly, the
+ * SBT mint lands ~12-24s later). A pulsing/glowing dog-tag forging while the phone polls the chain. */
+@Composable
+private fun ForgingAnimation(status: String, title: String = "Forging your dog tag") {
+    val c = DogTagTheme.colors
+    val infinite = rememberInfiniteTransition(label = "forge")
+    val scale by infinite.animateFloat(
+        initialValue = 0.82f, targetValue = 1.16f,
+        animationSpec = infiniteRepeatable(tween(750, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "scale",
+    )
+    val glow by infinite.animateFloat(
+        initialValue = 0.4f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(750, easing = LinearEasing), RepeatMode.Reverse),
+        label = "glow",
+    )
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            "🏷️",
+            fontSize = 54.sp,
+            modifier = Modifier.graphicsLayer {
+                scaleX = scale; scaleY = scale; alpha = glow
+            },
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+        Spacer(Modifier.height(4.dp))
+        Text(status.ifBlank { "Minting on-chain…" }, fontSize = 12.sp, color = c.muted)
+        Spacer(Modifier.height(16.dp))
+        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(0.78f), color = c.accent)
+    }
 }
 
 @Composable

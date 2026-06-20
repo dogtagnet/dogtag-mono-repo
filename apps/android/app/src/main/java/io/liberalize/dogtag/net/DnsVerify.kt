@@ -24,6 +24,9 @@ object DnsVerify {
         val h = hostOnly(host).lowercase()
         if (h.isBlank()) return true
         if (h == "localhost" || h.endsWith(".local") || h.endsWith(".localhost")) return true
+        // dev tunnels used to expose the LOCAL demo to a phone (can't host a dogtag-verify TXT) → skip,
+        // same as any other local host. DNS-verify stays enforced for real groomer domains in prod.
+        if (h.endsWith(".trycloudflare.com") || h.endsWith(".ngrok-free.app") || h.endsWith(".ngrok.io") || h.endsWith(".loca.lt")) return true
         // IPv6 loopback / link-local (bracketed origins already stripped to the literal).
         if (h == "::1" || h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true
         // IPv4 dotted-quad → inspect the private/loopback ranges.

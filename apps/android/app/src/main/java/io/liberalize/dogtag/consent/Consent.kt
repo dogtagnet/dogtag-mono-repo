@@ -9,6 +9,7 @@ import org.json.JSONObject
 import uniffi.dogtag_standard.EddsaSignatureFfi
 import uniffi.dogtag_standard.ProofFfi
 import uniffi.dogtag_standard.consentNullifierHex
+import uniffi.dogtag_standard.dogTagIdFieldHex
 import uniffi.dogtag_standard.eddsaConsentMessageHex
 import uniffi.dogtag_standard.signConsentEddsa
 import uniffi.dogtag_standard.verificationConsentTypehashHex
@@ -54,16 +55,6 @@ data class VerificationRequest(
             return "0x" + h.joinToString("") { "%02x".format(it) }
         }
 
-        private fun dogTagIdToHex(dec: String): String {
-            return try {
-                val n = java.math.BigInteger(dec.removePrefix("0x").ifBlank { "0" },
-                    if (dec.startsWith("0x")) 16 else 10)
-                "0x" + n.toString(16).padStart(64, '0')
-            } catch (e: Exception) {
-                ZERO32
-            }
-        }
-
         /**
          * Build a consent request from the scanned export-session token + the resolved session
          * metadata (relayer/purpose/recordType/challenge/mode) and the record the user selected to
@@ -94,7 +85,7 @@ data class VerificationRequest(
                 verifierName = relayer.ifBlank { "Groomer" },
                 purposeLabel = purpose.ifBlank { "verification" },
                 recordTypeLabel = recordType.ifBlank { "record" },
-                dogTagId = dogTagIdToHex(dogTagIdDec),
+                dogTagId = dogTagIdFieldHex(dogTagIdDec),
                 recordType = keccakLabel(recordType),
                 purpose = keccakLabel(purpose),
                 credentialRoot = if (credentialRoot.isBlank()) ZERO32 else credentialRoot,

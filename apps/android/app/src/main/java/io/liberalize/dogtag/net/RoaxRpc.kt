@@ -63,6 +63,40 @@ object RoaxRpc {
     private const val IS_WHITELISTED_FOR_SELECTOR = "0x779c3985"
     // keccak256("bindNonce(address)")[:4]
     private const val BIND_NONCE_SELECTOR = "0x15c95be6"
+    // keccak256("profileRoot(uint256)")[:4]
+    private const val PROFILE_ROOT_SELECTOR = "0x85105cb3"
+    // keccak256("ownerOf(uint256)")[:4] (ERC-721)
+    private const val OWNER_OF_SELECTOR = "0x6352211e"
+
+    /**
+     * `DogTagSBT.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or null on
+     * failure. `dogTagId` is the decimal tokenId. This is the SBT anchor used to verify an issued
+     * DOG_PROFILE (NOT the DogTagIssuer-clone isValid).
+     */
+    suspend fun profileRoot(rpcUrl: String, dogTagSbt: String, dogTagId: String): String? {
+        if (dogTagSbt.isBlank() || dogTagId.isBlank()) return null
+        val data = PROFILE_ROOT_SELECTOR + padUint(dogTagId)
+        return when (val r = ethCall(rpcUrl, dogTagSbt, data)) {
+            is CallResult.Ok -> "0x" + r.hex.padStart(64, '0')
+            is CallResult.Err -> null
+        }
+    }
+
+    /**
+     * `DogTagSBT.ownerOf(dogTagId)` → the owner address (0x.. 20-byte, lowercased), or null on
+     * failure. `dogTagId` is the decimal tokenId.
+     */
+    suspend fun ownerOf(rpcUrl: String, dogTagSbt: String, dogTagId: String): String? {
+        if (dogTagSbt.isBlank() || dogTagId.isBlank()) return null
+        val data = OWNER_OF_SELECTOR + padUint(dogTagId)
+        return when (val r = ethCall(rpcUrl, dogTagSbt, data)) {
+            is CallResult.Ok -> {
+                val padded = r.hex.padStart(64, '0')
+                "0x" + padded.takeLast(40).lowercase()
+            }
+            is CallResult.Err -> null
+        }
+    }
 
     /**
      * `IssuerRegistry.isWhitelistedFor(key, signer)` — the PRE-PROOF groomer check. `key` is the
@@ -98,6 +132,26 @@ object RoaxRpc {
                 java.math.BigInteger(r.hex.ifBlank { "0" }, 16).toLong()
             }.getOrNull()
             is CallResult.Err -> null
+        }
+    }
+
+    // keccak256("consumed(bytes32)")[:4]
+    private const val CONSUMED_SELECTOR = "0x4648c943"
+
+    /**
+     * `VerificationRegistry.consumed(nullifier)` → true once the relayer's `recordVerificationZK`
+     * (or the legacy path) has landed on-chain for this nullifier. This is the CANONICAL completion
+     * signal for the async export/verify flow: the groomer host records in the background, so the
+     * phone polls this until it flips true. `nullifier` is the proof's `pubSignals[4]` (a decimal
+     * field element or 0x.. hex), encoded here as a 32-byte word. Returns false on any RPC failure so
+     * the caller simply keeps polling (and ultimately times out) rather than treating it as success.
+     */
+    suspend fun consumed(rpcUrl: String, verificationRegistry: String, nullifier: String): Boolean {
+        if (verificationRegistry.isBlank() || nullifier.isBlank()) return false
+        val data = CONSUMED_SELECTOR + padUint(nullifier)
+        return when (val r = ethCall(rpcUrl, verificationRegistry, data)) {
+            is CallResult.Ok -> r.hex.trimStart('0').isNotEmpty()
+            is CallResult.Err -> false
         }
     }
 
@@ -144,5 +198,15 @@ object RoaxRpc {
     private fun pad32(hex: String): String {
         val h = hex.removePrefix("0x")
         return h.padStart(64, '0')
+    }
+
+    /** Encode a decimal (or 0x-hex) uint256 tokenId as a 64-char hex word. */
+    private fun padUint(dec: String): String {
+        val v = if (dec.startsWith("0x")) {
+            java.math.BigInteger(dec.removePrefix("0x"), 16)
+        } else {
+            java.math.BigInteger(dec)
+        }
+        return v.toString(16).padStart(64, '0')
     }
 }

@@ -36,8 +36,14 @@ struct VerificationRequest {
         return "0x" + h.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The CANONICAL dogTagId for the consent: `field_of_value(Integer(dec))` (impl §1.10) — the same
+    /// value the credential leaf hashes and the verification circuit compares DIRECTLY (constraint §(b)).
+    /// The consent.dogTagId, the EdDSA message M, and the Poseidon nullifier MUST all use this
+    /// field-hashed value (NOT the raw decimal/hex id), or the ZK export proof fails. Mirrors Android.
+    /// Falls back to the raw 32-byte encoding only if the FFI field-hash throws (parse failure).
     private static func dogTagIdToHex(_ dec: String) -> String {
-        // Decimal/hex dogTagId -> 0x.. 32-byte. Fall back to zero on parse failure.
+        if let field = try? dogTagIdFieldHex(dogTagIdDec: dec) { return field }
+        // Fallback: raw decimal/hex dogTagId -> 0x.. 32-byte (parse failure path only).
         let s = dec.hasPrefix("0x") ? String(dec.dropFirst(2)) : dec
         let radix = dec.hasPrefix("0x") ? 16 : 10
         guard let n = UInt64(s, radix: radix) else { return ZERO32 }

@@ -13,6 +13,10 @@ enum QrPayload {
     case importRecordToken(host: String, token: String)
     /// An export-session one-time token plus the groomer's wallet/relayer address (`/x/<token>?a=<addr>`).
     case exportSession(host: String, token: String, groomerAddr: String)
+    /// A dog-tag ISSUANCE session — the vet displays `/p/<token>` (32 hex, one-time, 180s). The phone
+    /// POSTs `<host>/profiles/issue/bind { token, walletAddress, signature }`, verifies the returned
+    /// DOG_PROFILE against the DogTagSBT, and stores it as a credential.
+    case dogTagIssueSession(host: String, token: String)
     case unknown(String)
 
     static func parse(_ raw: String) -> QrPayload {
@@ -38,6 +42,12 @@ enum QrPayload {
             return (!token.isEmpty && !addr.isEmpty)
                 ? .exportSession(host: origin, token: token, groomerAddr: addr)
                 : .unknown(trimmed)
+        }
+
+        // Dog-tag issuance one-time token: `/p/<token>` (no query string).
+        if segs.count == 2, segs[0] == "p", comps.queryItems?.isEmpty ?? true {
+            let token = segs[1]
+            return token.isEmpty ? .unknown(trimmed) : .dogTagIssueSession(host: origin, token: token)
         }
 
         switch path {

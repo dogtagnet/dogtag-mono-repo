@@ -23,6 +23,20 @@ struct WalletIdentity {
 
     /// Sign a 32-byte EIP-712 digest with the secp256k1 wallet key → 65-byte 0x.. r||s||v.
     func signEthDigest(_ digest: Data) -> String { Secp256k1.signDigest(priv: secpPriv, digest: digest) }
+
+    /// The EIP-191 `personal_sign` signature over the central registration message
+    /// "DogTag wallet registration: <ethAddress lowercased>". The digest is
+    /// keccak256(0x19 + "Ethereum Signed Message:\n" + len + message), signed with the secp256k1
+    /// wallet key → 65-byte 0x.. r||s||v (recovers to ethAddress server-side).
+    func registerSignature() -> String {
+        let message = "DogTag wallet registration: \(ethAddress.lowercased())"
+        let msgBytes = Data(message.utf8)
+        var prefixed = Data([0x19])
+        prefixed.append(Data("Ethereum Signed Message:\n\(msgBytes.count)".utf8))
+        prefixed.append(msgBytes)
+        let digest = Keccak256.digest(prefixed)
+        return signEthDigest(digest)
+    }
 }
 
 enum Wallet {

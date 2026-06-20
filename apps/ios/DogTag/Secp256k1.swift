@@ -50,7 +50,7 @@ enum Secp256k1 {
             let k = rfc6979Nonce(priv: priv, digest: digest, counter: counter).mod(n)
             counter += 1
             if k.isZero { continue }
-            let (rx, ry) = scalarMulBase(k)
+            let (rx, _) = scalarMulBase(k)
             let r = rx.mod(n)
             if r.isZero { continue }
             // s = k^-1 * (e + r*d) mod n
@@ -58,16 +58,61 @@ enum Secp256k1 {
             let rd = r.mul(d).mod(n)
             let s0 = kInv.mul(e.add(rd).mod(n)).mod(n)
             if s0.isZero { continue }
-            // Low-S normalisation (EIP-2): if s > n/2, s = n - s and flip recovery parity.
+            // Low-S normalisation (EIP-2): if s > n/2, replace with n - s. The recovery id is then
+            // computed against this normalized `s` directly (see findRecId below), so NO separate
+            // parity flip is tracked — mirrors Android Wallet.kt:272-284. Tracking a `flip` AND
+            // recovering against the normalized s double-counts the parity → wrong `v` ~50% of the
+            // time → on-chain ECDSA.recover returns a different address → "bad sig".
             let halfN = n.sub(BigUInt(1)).shiftRight1() // (n-1)/2; n is odd so floor(n/2)
             var s = s0
-            var recParity = Int(ry.limbs.first ?? 0) & 1   // y is even/odd
-            if s.cmp(halfN) > 0 { s = n.sub(s); recParity ^= 1 }
-            let v = 27 + recParity
+            if s.cmp(halfN) > 0 { s = n.sub(s) }
+            // Recover the public key to determine v against our own pubkey (the ground truth), using
+            // the ALREADY-NORMALIZED `s`. v = recId + 27 (no separate flip).
+            let q = scalarMulBase(d)
+            let recId = findRecId(r: r, s: s, e: e, expectedQ: q) ?? 0
+            let v = 27 + recId
             let rb = r.toData(32).map { String(format: "%02x", $0) }.joined()
             let sb = s.toData(32).map { String(format: "%02x", $0) }.joined()
             return "0x" + rb + sb + String(format: "%02x", v)
         }
+    }
+
+    /// Recover the recovery id (0/1) for signature `(r, s)` over digest-scalar `e` such that the
+    /// recovered public key equals the signer's own `expectedQ` (affine). Mirrors Android
+    /// `Wallet.kt:findRecId`: for each candidate parity, decompress R = (r, yBit), then compute the
+    /// candidate pubkey Q = r⁻¹·(s·R − e·G) and compare. `s` is passed already low-S-normalized, so
+    /// the returned recId is correct for the returned signature — the caller must NOT flip it again.
+    private static func findRecId(
+        r: BigUInt, s: BigUInt, e: BigUInt, expectedQ: (BigUInt, BigUInt)
+    ) -> Int? {
+        let rInv = r.modInverse(n)
+        for recId in 0...1 {
+            // R = (r, y) with y-parity == recId (r < n, so the x-coordinate is r itself).
+            guard let rPoint = decompress(x: r, yBit: recId) else { continue }
+            // Q = r⁻¹ · (s·R + (n - e)·G)  ==  r⁻¹ · (s·R − e·G).
+            let srP = jacScalarMul(s.mod(n), rPoint)
+            let negeG = scalarMulBaseJac(n.sub(e.mod(n)).mod(n))
+            let sum = add(srP, negeG)
+            let qCand = jacScalarMul(rInv, sum)
+            let (qx, qy) = toAffine(qCand)
+            if qx.eq(expectedQ.0) && qy.eq(expectedQ.1) { return recId }
+        }
+        return nil
+    }
+
+    /// Decompress an affine point from its x-coordinate and y-parity on y² = x³ + 7 (mod p).
+    /// Returns nil if x is not on the curve.
+    private static func decompress(x: BigUInt, yBit: Int) -> Jac? {
+        // rhs = x³ + 7 (mod p)
+        let x3 = mulm(mulm(x, x), x)
+        let rhs = addm(x3, BigUInt(7))
+        // y = rhs^((p+1)/4) mod p  (p ≡ 3 mod 4).
+        let y = rhs.modPow(p.add(BigUInt(1)).shiftRight1().shiftRight1(), p)
+        // Verify y² == rhs (x on curve).
+        if !mulm(y, y).eq(rhs.mod(p)) { return nil }
+        let yParity = Int(y.limbs.first ?? 0) & 1
+        let yFinal = (yParity == yBit) ? y : p.sub(y)
+        return Jac(x: x.mod(p), y: yFinal, z: BigUInt(1), inf: false)
     }
 
     /// RFC-6979 deterministic nonce k (HMAC-SHA256, no extra entropy). `counter` re-runs the generator
@@ -145,14 +190,24 @@ enum Secp256k1 {
     }
 
     private static func scalarMulBase(_ k: BigUInt) -> (BigUInt, BigUInt) {
+        toAffine(scalarMulBaseJac(k))
+    }
+
+    /// k·G in Jacobian coordinates.
+    private static func scalarMulBaseJac(_ k: BigUInt) -> Jac {
+        jacScalarMul(k, Jac(x: gx, y: gy, z: BigUInt(1), inf: false))
+    }
+
+    /// k·P for an arbitrary Jacobian point P (double-and-add).
+    private static func jacScalarMul(_ k: BigUInt, _ base: Jac) -> Jac {
         var result = Jac(x: BigUInt(1), y: BigUInt(1), z: BigUInt(0), inf: true)
-        var addend = Jac(x: gx, y: gy, z: BigUInt(1), inf: false)
+        var addend = base
         let bits = k.bitLength
         for i in 0..<bits {
             if k.bit(i) { result = add(result, addend) }
             addend = double(addend)
         }
-        return toAffine(result)
+        return result
     }
 
     private static func toAffine(_ pt: Jac) -> (BigUInt, BigUInt) {

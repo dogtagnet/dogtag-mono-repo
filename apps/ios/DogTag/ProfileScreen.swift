@@ -3,6 +3,7 @@ import SwiftUI
 struct ProfileScreen: View {
     @Environment(\.dogTagColors) var c
     @EnvironmentObject var theme: ThemeManager
+    @ObservedObject private var store = LocalStore.shared
     private let roax = RoaxConfig.load()
 
     @State private var walletExists = Wallet.exists()
@@ -96,6 +97,23 @@ struct ProfileScreen: View {
                         .background(RoundedRectangle(cornerRadius: 12).fill(c.surfaceVariant))
                     }
                     if !walletMsg.isEmpty { Text(walletMsg).font(.system(size: 12)).foregroundColor(c.muted) }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
+
+                // ---- Dog-tags: dog tags issued to this wallet (scan the vet's /p/<token> QR to issue one) ----
+                SectionTitle(text: "Dog-tags")
+                VStack(alignment: .leading, spacing: 6) {
+                    let minted = store.pets.filter { !$0.dogTagId.isEmpty && $0.dogTagId.allSatisfy { $0.isNumber } }
+                    if minted.isEmpty {
+                        Text("No dog tag yet. Scan your vet's dog-tag QR (Scan) to have one issued and bound to this wallet — the dogTagId then appears here.")
+                            .font(.system(size: 12)).foregroundColor(c.muted)
+                    } else {
+                        ForEach(minted) { pet in
+                            kv(pet.name.isEmpty ? "Pet" : pet.name, "dogTagId \(pet.dogTagId)")
+                        }
+                    }
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)

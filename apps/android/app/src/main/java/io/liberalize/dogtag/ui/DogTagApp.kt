@@ -33,16 +33,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.platform.LocalContext
 import androidx.fragment.app.FragmentActivity
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.AppSettings
 import io.liberalize.dogtag.data.Credential
-import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.SettingsStore
-import io.liberalize.dogtag.net.CentralApi
 import io.liberalize.dogtag.ui.screens.CredentialDetailScreen
 import io.liberalize.dogtag.ui.screens.DocumentsScreen
 import io.liberalize.dogtag.ui.screens.HomeScreen
@@ -62,19 +56,9 @@ enum class Tab(val label: String, val icon: ImageVector) {
 @Composable
 fun DogTagApp(store: SettingsStore, settings: AppSettings, activity: FragmentActivity) {
     val c = DogTagTheme.colors
-    val context = LocalContext.current
     var tab by remember { mutableStateOf(Tab.Home) }
     var scanning by remember { mutableStateOf(false) }
     var selectedCred by remember { mutableStateOf<Credential?>(null) }
-
-    // One-shot central pet sync once the user has an owner session (seeds the local pet store).
-    LaunchedEffect(Unit) {
-        val token = AppConfig.sessionToken(context)
-        if (!token.isNullOrBlank()) {
-            val pets = CentralApi.listPets(token)
-            if (pets.isNotEmpty()) LocalStore.get(context).mergeCentralPets(pets)
-        }
-    }
 
     Surface(modifier = Modifier.fillMaxSize(), color = c.background) {
         Box(Modifier.fillMaxSize()) {

@@ -42,11 +42,12 @@ android {
         compose = true
     }
 
-    // The ~65 MB Groth16 proving key is bundled as a raw asset and read as a file path by the
-    // on-device prover. It MUST NOT be compressed, or the AssetManager cannot return a stable
-    // on-disk path / the copy-out would have to inflate it.
+    // The ~65 MB Groth16 proving key and the ~3 MB witness graph are bundled as raw assets and read
+    // as file paths by the on-device prover. They MUST NOT be compressed, or the AssetManager cannot
+    // return a stable on-disk path / the copy-out would have to inflate them.
     androidResources {
         noCompress += "zkey"
+        noCompress += "graph"
     }
 }
 

@@ -66,13 +66,6 @@ struct MainTabView: View {
             ScanScreen(onDone: { scanning = false })
                 .environment(\.dogTagColors, c)
         }
-        .task {
-            // One-shot central pet sync once the user has an owner session (seeds the local pet store).
-            if let token = AppConfig.sessionToken, !token.isEmpty {
-                let pets = await CentralApi.listPets(sessionToken: token)
-                if !pets.isEmpty { LocalStore.shared.mergeCentralPets(pets) }
-            }
-        }
     }
 }
 

@@ -1,5 +1,29 @@
 import SwiftUI
 
+/// Animated waiting view shown while the dog tag is minted on-chain (the bind returns instantly; the
+/// SBT mint lands ~12-24s later as the phone polls the chain). A pulsing, glowing dog tag being forged.
+private struct ForgeWaitView: View {
+    @Environment(\.dogTagColors) var c
+    let status: String
+    var title: String = "Forging your dog tag"
+    @State private var pulse = false
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("🏷️")
+                .font(.system(size: 52))
+                .scaleEffect(pulse ? 1.16 : 0.84)
+                .opacity(pulse ? 1.0 : 0.45)
+                .animation(.easeInOut(duration: 0.75).repeatForever(autoreverses: true), value: pulse)
+            Text(title).font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
+            Text(status.isEmpty ? "Minting on-chain…" : status).font(.system(size: 12)).foregroundColor(c.muted)
+            ProgressView().progressViewStyle(.linear).tint(c.accent).frame(maxWidth: 240)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .onAppear { pulse = true }
+    }
+}
+
 /// The single scan entry point for the user app. The owner ONLY scans — there is no QR display.
 /// A scanned QR routes to one of two outcomes (architecture §7, impl §3.9 / §6.5):
 ///   - Import a record (issuer -> user): fetch the wrapped doc, verify, store under the pet.
@@ -18,9 +42,17 @@ struct ScanScreen: View {
     // Export-session metadata resolved (non-consuming) from the QR's one-time token.
     @State private var exportSession: CentralApi.ExportSession? = nil
     @State private var exportResolveErr: String? = nil
+    // Dog-tag issuance result + verdict (vet-issues-the-dog-tag flow).
+    @State private var issued: CentralApi.DogTagIssue? = nil
+    @State private var issueVerdict = ""
+    @State private var issueErr = ""
 
     var body: some View {
-        if scanning {
+        // SCAN GATE (B1): import + export both need a wallet (the device address is what the record is
+        // minted to / the consent is signed with). No wallet → don't scan; point the user to Profile.
+        if !Wallet.exists() {
+            walletGate
+        } else if scanning {
             ZStack(alignment: .bottom) {
                 QRScannerView { raw in
                     scanning = false
@@ -40,6 +72,25 @@ struct ScanScreen: View {
         }
     }
 
+    private var walletGate: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Scan").font(.system(size: 26, weight: .bold)).foregroundColor(c.onBackground)
+                card {
+                    Text("Create your wallet first").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
+                    Text("You need an embedded wallet before you can import or export records. Go to Profile → Create embedded wallet.")
+                        .font(.system(size: 12)).foregroundColor(c.muted)
+                }
+                Button(action: onDone) {
+                    Text("Back").foregroundColor(c.onAccent).padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(Capsule().fill(c.accent))
+                }.buttonStyle(.plain)
+                Spacer(minLength: 24)
+            }
+            .padding(20)
+        }
+    }
+
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -52,10 +103,12 @@ struct ScanScreen: View {
                     importPanel(host: host, recordId: token)
                 case let .exportSession(host, token, groomerAddr):
                     exportPanel(host: host, token: token, groomerAddr: groomerAddr)
+                case let .dogTagIssueSession(host, token):
+                    issuePanel(host: host, token: token)
                 case let .unknown(raw):
                     card {
                         Text("Unrecognised QR").font(.system(size: 15, weight: .bold)).foregroundColor(c.danger)
-                        Text("This isn't a DogTag record link (/r/<token> or /r?t=) or export session (/x/<token>).").font(.system(size: 12)).foregroundColor(c.muted)
+                        Text("This isn't a DogTag record link (/r/<token> or /r?t=), dog-tag issuance (/p/<token>) or export session (/x/<token>).").font(.system(size: 12)).foregroundColor(c.muted)
                         Text(String(raw.prefix(120))).font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
                     }
                 case .none:
@@ -63,7 +116,7 @@ struct ScanScreen: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button { status = ""; payload = nil; selected = nil; exportSession = nil; exportResolveErr = nil; scanning = true } label: {
+                    Button { status = ""; payload = nil; selected = nil; exportSession = nil; exportResolveErr = nil; issued = nil; issueVerdict = ""; issueErr = ""; scanning = true } label: {
                         Text("Scan again").foregroundColor(c.onBackground).padding(.horizontal, 16).padding(.vertical, 10)
                             .background(Capsule().fill(c.surfaceVariant))
                     }.buttonStyle(.plain)
@@ -109,6 +162,93 @@ struct ScanScreen: View {
             .disabled(working)
             if !status.isEmpty {
                 Text(status).font(.system(size: 12)).foregroundColor(status.hasPrefix("Imported (VALID") ? c.success : c.muted)
+            }
+        }
+    }
+
+    // ---- issue (vet-issues-the-dog-tag) ----
+
+    @ViewBuilder
+    private func issuePanel(host: String, token: String) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            card {
+                Text("Issue dog tag").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
+                Text("From \(host)").font(.system(size: 12)).foregroundColor(c.muted)
+                Text("Token \(String(token.prefix(18)))…").font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
+                Text("Your vet will bind a new dog tag to this wallet. We'll sign the binding, then verify the issued profile against the DogTagSBT (profileRoot + ownerOf) before storing it.")
+                    .font(.system(size: 12)).foregroundColor(c.muted)
+
+                if issued == nil && !working {
+                    Button { bindIssue(host: host, token: token) } label: {
+                        Text("Issue & verify").frame(maxWidth: .infinity).padding(.vertical, 12)
+                            .foregroundColor(c.onAccent).background(RoundedRectangle(cornerRadius: 12).fill(c.accent))
+                    }
+                }
+                if working {
+                    ForgeWaitView(status: status)
+                }
+                if !working && !status.isEmpty {
+                    Text(status).font(.system(size: 12)).foregroundColor(issueVerdict == "VALID" ? c.success : c.muted)
+                }
+                if !issueErr.isEmpty { Text(issueErr).font(.system(size: 12)).foregroundColor(c.danger) }
+            }
+
+            if let res = issued {
+                card {
+                    Text("Dog tag issued").font(.system(size: 16, weight: .bold)).foregroundColor(c.success)
+                    field("dogTagId", res.dogTagId.isEmpty ? "—" : res.dogTagId)
+                    field("Verdict", issueVerdict.isEmpty ? "—" : issueVerdict)
+                    field("Root", (res.root.isEmpty ? "—" : String(res.root.prefix(18))) + "…")
+                    field("Tx", (res.txHash.isEmpty ? "—" : String(res.txHash.prefix(18))) + "…")
+                    Text("Stored under your dog tags.").font(.system(size: 12)).foregroundColor(c.muted)
+                }
+            }
+        }
+    }
+
+    private func bindIssue(host: String, token: String) {
+        issueErr = ""
+        Biometric.authenticate(reason: "Authenticate to bind this dog tag to your wallet") { ok, e in
+            guard ok else { issueErr = e ?? "auth failed"; return }
+            guard let wallet = (try? Wallet.load()) ?? nil else {
+                issueErr = "Create your wallet first (Profile)."; return
+            }
+            working = true
+            status = "Binding dog tag…"
+            let sig = wallet.registerSignature()
+            let addr = wallet.ethAddress
+            let roax = RoaxConfig.load()
+            Task {
+                guard let res = await CentralApi.bindDogTagIssue(host: host, token: token, walletAddress: addr, signature: sig) else {
+                    await MainActor.run { working = false; issueErr = "Bind failed (expired token / network)." }
+                    return
+                }
+                // The bind responds immediately (status "minting") and the vet mints the SBT in the
+                // background. Poll the chain (profileRoot + ownerOf) until the mint lands — retrying a
+                // miss rather than failing on the first read.
+                await MainActor.run { status = "Minting your dog tag on-chain…" }
+                let poll = await RecordImporter.pollSbtMint(
+                    dogTagId: res.dogTagId, expectedRoot: res.root, walletAddress: addr,
+                    dogTagSbt: roax.dogTagSbt, rpcUrl: AppConfig.roaxRpc)
+                if case .timeout = poll {
+                    await MainActor.run { working = false; issueErr = "Mint not confirmed — check the vet portal." }
+                    return
+                }
+                await MainActor.run { status = "Verifying against DogTagSBT…" }
+                let r = await RecordImporter.verifyIssuedDogTag(
+                    wrappedDocJson: res.wrappedDocJson, dogTagId: res.dogTagId, expectedRoot: res.root,
+                    walletAddress: addr, dogTagSbt: roax.dogTagSbt, rpcUrl: AppConfig.roaxRpc)
+                await MainActor.run {
+                    working = false
+                    if let cred = r.credential {
+                        store.addCredential(cred)
+                        issued = res
+                        issueVerdict = r.verdict
+                        status = "Issued (\(r.verdict)) — \(r.detail)"
+                    } else {
+                        issueErr = "Verify failed: \(r.detail)"
+                    }
+                }
             }
         }
     }
@@ -166,12 +306,21 @@ struct ScanScreen: View {
                         }.buttonStyle(.plain)
                     }
                 }
+                if working {
+                    ForgeWaitView(status: status.isEmpty ? "Recording your verification on-chain…" : status,
+                                  title: "Recording your verification on-chain")
+                }
                 Button { presentExport(host: host, token: token, groomerAddr: groomerAddr, sess: sess) } label: {
                     Text(working ? "Working…" : "Approve & export").frame(maxWidth: .infinity).padding(.vertical, 12)
                         .foregroundColor(.white).background(RoundedRectangle(cornerRadius: 12).fill(c.success))
                 }
                 .disabled(selected == nil || working)
-                if !status.isEmpty { Text(status).font(.system(size: 12)).foregroundColor(c.muted) }
+                // While working the ForgeWaitView already surfaces the live status; show the plain
+                // status text only when idle (the final success/timeout line).
+                if !working && !status.isEmpty {
+                    Text(status).font(.system(size: 12))
+                        .foregroundColor(status.hasPrefix("Verified on-chain") ? c.success : c.muted)
+                }
             }
         } else {
             card {
@@ -256,13 +405,20 @@ struct ScanScreen: View {
                         await MainActor.run { working = false; status = "proving key missing from bundle." }
                         return
                     }
+                    // The witness graph (`verification.graph`) is the pure-Rust circom-witnesscalc
+                    // input — loaded by absolute path exactly like the zkey. Mirrors Android
+                    // ZkeyAsset.ensureGraph().
+                    guard let graphPath = ZkeyAsset.ensureGraph() else {
+                        await MainActor.run { working = false; status = "witness graph missing from bundle." }
+                        return
+                    }
                     await MainActor.run { status = "Generating proof…" }
                     let eddsaInput = EddsaSigInput(
                         r8xDec: eddsa.r8xDec, r8yDec: eddsa.r8yDec, sDec: eddsa.sDec,
                         axHex: wallet.consent.axHex, ayHex: wallet.consent.ayHex)
                     let proof = try proveVerification(
                         wrappedDocJson: sel.wrappedDocJson, consentJson: eddsaConsentJson(req),
-                        eddsaSig: eddsaInput, zkeyPath: zkeyUrl.path)
+                        eddsaSig: eddsaInput, zkeyPath: zkeyUrl.path, graphPath: graphPath)
 
                     // (c) CONSENT-KEY BIND (gasless) — owner signs the EIP-712 digest; relayer submits.
                     var bind: ConsentKeyBind? = nil
@@ -276,32 +432,84 @@ struct ScanScreen: View {
                         bind = ConsentKeyBind(subject: wallet.ethAddress, keyHash: wallet.consent.keyHashHex, ownerSig: ownerSig)
                     }
 
-                    // (d) SUBMIT to the QR host (groomer), NOT central. The one-time exportToken is
-                    // consumed server-side on submit.
-                    await MainActor.run { status = "Submitting proof to groomer…" }
-                    let signed = try ConsentSigner.sign(req, consentPrivHex: wallet.consent.prvHex, proof: proof, bind: bind)
-                    let r = await CentralApi.postVerifyConsentToHost(host: host, payloadJson: signed.payloadJson)
-                    guard r.ok else {
-                        await MainActor.run { working = false; status = "Submit failed (\(r.code))." }
+                    // The proof's nullifier = pubSignals[4] (a decimal field element). This is the
+                    // on-chain `VerificationRegistry.consumed(bytes32)` key — the canonical completion
+                    // signal we poll the CHAIN for below.
+                    let nullifier = proof.pubSignals.count > 4 ? proof.pubSignals[4] : ""
+
+                    // PRE-SUBMIT REPLAY GUARD: if this nullifier is already consumed on-chain, the
+                    // verification was recorded before — submitting again is a doomed replay the relayer
+                    // will reject. Stop early with a clear message (mirrors Android ScanScreen).
+                    let alreadyRecorded = await RoaxRpc.consumed(
+                        rpcUrl: AppConfig.roaxRpc, verificationRegistry: roax.verificationRegistry,
+                        nullifier: nullifier)
+                    if alreadyRecorded {
+                        await MainActor.run { working = false; status = "This verification was already recorded." }
                         return
                     }
 
-                    // (e) POLL session status until recorded → show txHash.
-                    await MainActor.run { status = "Proof submitted — waiting for on-chain record…" }
-                    var recorded = false
-                    for _ in 0..<30 {
-                        if let st = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, token: token),
-                           st.status == "recorded" {
-                            recorded = true
-                            let tx = st.txHash.map { String($0.prefix(14)) } ?? ""
-                            await MainActor.run { status = "Verified on-chain — no data disclosed. tx \(tx)…" }
+                    // (d) SUBMIT to the QR host (groomer), NOT central. The one-time exportToken is
+                    // consumed server-side on record-success. The submit now returns 200
+                    // {status:"recording"} FAST and records on-chain in the background, so we ALWAYS
+                    // proceed to the chain poll — even on a non-2xx/network-failure submit response
+                    // (the relayer may still be recording). Only a clearly-rejected 4xx carrying an
+                    // {error} body is a hard failure.
+                    await MainActor.run { status = "Submitting proof to groomer…" }
+                    let signed = try ConsentSigner.sign(req, consentPrivHex: wallet.consent.prvHex, proof: proof, bind: bind)
+                    let r = await CentralApi.postVerifyConsentToHost(host: host, payloadJson: signed.payloadJson)
+                    if (400..<500).contains(r.code),
+                       let d = r.body.data(using: .utf8),
+                       let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+                       let rejectMsg = o["error"] as? String, !rejectMsg.isEmpty {
+                        await MainActor.run { working = false; status = "Submit rejected (\(rejectMsg))." }
+                        return
+                    }
+                    // Otherwise (2xx, network failure, or a 4xx without an {error} body) proceed to the
+                    // chain poll — the canonical success signal is consumed(nullifier).
+
+                    // (e) POLL THE CHAIN until VerificationRegistry.consumed(nullifier) == true. Do NOT
+                    // rely SOLELY on the token-gated session poll: the export token is consumed at
+                    // record-success, so that GET starts returning 401 exactly when it succeeds. Poll
+                    // every ~3s up to ~120s.
+                    // The export token is consumed server-side only on record-SUCCESS, so the
+                    // token-gated session poll keeps returning until success/error. We poll it
+                    // ALONGSIDE the chain: a bind/record failure flips the session to status="error"
+                    // (the reason is carried in txHash/message) and would otherwise never set
+                    // consumed(nullifier)=true — leaving the phone stuck until the ~120s timeout. On
+                    // error we STOP and surface it immediately (mirrors Android ScanScreen).
+                    await MainActor.run { status = "Recording your verification on-chain…" }
+                    var done = false
+                    var failedMsg: String? = nil
+                    for _ in 0..<40 {
+                        if await RoaxRpc.consumed(rpcUrl: AppConfig.roaxRpc, verificationRegistry: roax.verificationRegistry, nullifier: nullifier) {
+                            done = true
                             break
                         }
-                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        if let st = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, token: token),
+                           st.status == "error" {
+                            let reason = st.txHash?.isEmpty == false ? st.txHash! : "recording failed"
+                            failedMsg = reason
+                            break
+                        }
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
                     }
-                    await MainActor.run {
-                        working = false
-                        if !recorded { status = "Submitted; awaiting confirmation (poll timed out)." }
+                    if let failedMsg = failedMsg {
+                        await MainActor.run { working = false; status = "Verification failed: \(failedMsg)" }
+                        return
+                    }
+                    if done {
+                        // Optional: one best-effort session read to surface a txHash for display.
+                        let tx = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, token: token)?.txHash
+                        await MainActor.run {
+                            working = false
+                            if let tx = tx, !tx.isEmpty {
+                                status = "Verified on-chain — no data disclosed. tx \(String(tx.prefix(14)))…"
+                            } else {
+                                status = "Verified on-chain — no data disclosed."
+                            }
+                        }
+                    } else {
+                        await MainActor.run { working = false; status = "Submitted; awaiting confirmation." }
                     }
                 } catch {
                     await MainActor.run { working = false; status = "ZK verify failed: \(error)" }
