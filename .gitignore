@@ -19,6 +19,7 @@ circuits/*.r1cs
 circuits/*.wasm
 circuits/*.sym
 circuits/ptau/*.ptau
+circuits/log_*.txt
 
 # env / secrets
 .env

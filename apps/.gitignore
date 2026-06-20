@@ -12,3 +12,9 @@ ios/DerivedData/
 # copied into the app at mobile-build time (see docs runbook). Don't double-commit the 65MB blob.
 android/app/src/main/assets/verification_final.zkey
 ios/DogTag/verification_final.zkey
+# bundled circuit witness graph — a 1:1 copy of circuits/build/verification.graph, vendored into the
+# app at mobile-build time (see docs/MOBILE_BUILD.md). Treated like the zkey: don't commit the ~3MB blob.
+android/app/src/main/assets/verification.graph
+ios/DogTag/verification.graph
+# stray xcframework backup (the live xcframework is ignored above)
+ios/*.xcframework.bak/
