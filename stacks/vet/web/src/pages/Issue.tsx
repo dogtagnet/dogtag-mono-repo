@@ -38,13 +38,14 @@ export function Issue() {
   const { upsert } = useRecordsStore();
   const { sendTransactionAsync } = useSendTransaction();
 
-  // Testnet demo: prefill a valid rabies cert by default so you just click Sign & Issue (no typing).
-  // Production (demo off): forms start empty.
+  // Testnet demo: prefill the rabies cert FIELDS so you only set the dogTagId + Sign & Issue. The dogTagId
+  // is NEVER demo-prefilled — it must be the handle from the DOG_PROFILE SBT issuance, typed by the operator
+  // (a mismatch reverts the owner's ZK export). Production (demo off): forms start empty.
   const demo0 = useMemo(() => (env.demoMode ? demoRabiesIssue() : null), []);
   const [recordType, setRecordType] = useState(
     demo0?.recordType ?? (RECORD_TYPE_SCHEMAS[0]?.recordType ?? ""),
   );
-  const [dogTagId, setDogTagId] = useState(demo0?.dogTagId ?? "");
+  const [dogTagId, setDogTagId] = useState("");
   const [values, setValues] = useState<Record<string, string>>(demo0?.fields ?? {});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -64,10 +65,12 @@ export function Issue() {
   function fillDemo() {
     const demo = demoRabiesIssue();
     setRecordType(demo.recordType);
-    setDogTagId(demo.dogTagId);
+    // Do NOT touch dogTagId here: it must stay the operator-entered handle from the DOG_PROFILE SBT
+    // issuance ("Issue Dog Tag"). A mismatch makes ownerOf(field_of_value(dogTagId)) revert on the owner's
+    // ZK export (the iOS failure). Demo-fill only populates the vaccination fields.
     setValues(demo.fields);
     setErrors({});
-    toast({ title: "Demo data filled", description: "Valid rabies certificate — review and Sign & Issue.", variant: "success" });
+    toast({ title: "Demo data filled", description: "Valid rabies certificate — fields filled. Set the dogTagId to the dog tag's handle, then Sign & Issue.", variant: "success" });
   }
 
   function setVal(path: string, v: string) {

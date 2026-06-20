@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # DogTag testnet demo — boot the backends + portals wired to the LIVE ROAX deployment.
-# Backends run with the in-memory store (no Mongo needed); restart = fresh state (re-genesis).
+# Backends run with the in-memory store (no Mongo needed). The custody seal (age-encrypted seed +
+# non-secret keystore meta) IS persisted to .demo/{vet,groomer}-custody.json (CUSTODY_SEAL_PATH), so
+# after a restart the operator UNLOCKS (same signer) instead of re-genesising. Everything else (records,
+# sessions, op/admin sessions) is still in-memory and lost on restart.
 # Logs in .demo/, PIDs in .demo/pids. Stop with: scripts/demo-down.sh
 #
 #   scripts/demo-up.sh
@@ -28,6 +31,13 @@ run(){ echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & e
 
 echo "Building backend binaries (release for speed)…"
 cargo build -q --release -p admin-api -p vet-api
+# The PROVER SERVICE is the SAME vet-api binary but compiled WITH the `prover` feature (which mounts
+# the `/prove-verification` route + the prover-independent circuit-input assembly). We build it to a
+# SEPARATE target dir so the vet/groomer instances stay on the feature-OFF binary — the groomer
+# literally cannot accept /prove-verification (the route is #[cfg(feature = "prover")] compiled out),
+# so it can never see a witness. See stacks/vet/api/src/routes.rs::prove_verification.
+echo "Building prover-service binary (vet-api --features prover)…"
+cargo build -q --release -p vet-api --features prover --target-dir "$ROOT/target/prover"
 
 echo "Starting backends:"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
@@ -36,14 +46,33 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR CONSENT_KEY_REGISTRY_ADDR=$CKR \
+  SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Seaport Vet" ISSUER_DOMAIN=vet.local \
   BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 DEPLOYMENT_URL="${VET_PUBLIC_URL:-http://$LAN_IP:41874}" \
+  CUSTODY_SEAL_PATH="$ROOT/.demo/vet-custody.json" \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR CONSENT_KEY_REGISTRY_ADDR=$CKR \
+  SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Pampered Paws" ISSUER_DOMAIN=groomer.local \
-  BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="http://$LAN_IP:43618" \
+  BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="${GROOMER_PUBLIC_URL:-http://$LAN_IP:43618}" \
+  CUSTODY_SEAL_PATH="$ROOT/.demo/groomer-custody.json" \
   run groomer-api ":43618" "$ROOT/target/release/vet-api"
+# PROVER SERVICE — the trusted 64-bit prover a 32-bit-only Android phone queries for its Groth16 proof
+# (the phone then submits that proof to the GROOMER itself, so the groomer never sees the witness).
+# It's a vet-api built WITH `--features prover` and CIRCUITS_BUILD_DIR set so the REAL ArkProver (not
+# the StubProver) is loaded. TRUST: it sees the witness, so in prod it's the OWNER's trusted prover;
+# the demo runs it as a platform service. Exposed via PROVER_PUBLIC_URL (mirrors VET/GROOMER_PUBLIC_URL):
+#   cloudflared tunnel --url http://localhost:41875  ->  PROVER_PUBLIC_URL=https://<sub>.trycloudflare.com
+# then point the phone's `prover_api` pref at that URL (demo-prepare-phone.sh / Settings).
+ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
+  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR CONSENT_KEY_REGISTRY_ADDR=$CKR \
+  SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
+  VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="DogTag Prover" ISSUER_DOMAIN=prover.local \
+  BUSINESS_ID=biz-prover CONFIRMATIONS=1 PORT=41875 DEPLOYMENT_URL="${PROVER_PUBLIC_URL:-http://$LAN_IP:41875}" \
+  CIRCUITS_BUILD_DIR="$ROOT/circuits/build" \
+  CUSTODY_SEAL_PATH="$ROOT/.demo/prover-custody.json" \
+  run prover-api ":41875" "$ROOT/target/prover/release/vet-api"
 
 echo "Starting portals (vite dev):"
 run admin-web ":39741" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/admin-web dev
@@ -52,6 +81,7 @@ run groomer-web ":43617" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/groomer-web 
 
 echo
 echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617"
-echo "Backends:     admin :39742  vet :41874  groomer :43618   (ROAX chainId 135)"
+echo "Backends:     admin :39742  vet :41874  groomer :43618  prover :41875   (ROAX chainId 135)"
+echo "Prover svc:   POST :41875/prove-verification  (32-bit-Android fallback; set PROVER_PUBLIC_URL to tunnel it)"
 echo "Next: docs/DEMO.md  (genesis the vet -> demo-bootstrap.sh <signer> -> Issue -> Create QR -> scan on phone)"
 echo "For the PHONE: set its server base to this Mac's LAN IP (not localhost) — see docs/DEMO.md."

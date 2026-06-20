@@ -27,7 +27,10 @@ const DEMO_PASSPHRASE = "demo-pass-0000";
 export function Setup() {
   const { api, adminToken, setAdminToken, setUnlocked, setSignerAddress } = useApp();
   const { toast } = useToast();
-  const [step, setStep] = useState<Step>(adminToken ? "genesis" : "admin");
+  // Always start at the admin login: it reports the custody state and routes to Unlock (when the seal
+  // is already initialized — e.g. hydrated from disk after a backend restart) instead of Genesis. A
+  // stale token from a prior session can't be trusted to mean "uninitialized".
+  const [step, setStep] = useState<Step>("admin");
 
   // Stale-session recovery: if the admin (custody) token is cleared (e.g. a 401 after a backend
   // restart), drop back to the Custody admin login instead of stranding the user mid-wizard.
@@ -40,9 +43,18 @@ export function Setup() {
       <SetupProgress step={step} />
       {step === "admin" && (
         <AdminLogin
-          onDone={(tok) => {
+          onDone={(tok, initialized, unlocked) => {
             setAdminToken(tok);
-            setStep("genesis");
+            // route by custody state: already unlocked -> accounts; initialized-but-locked (seal
+            // hydrated after a restart) -> Unlock; fresh -> Genesis.
+            if (unlocked) {
+              setUnlocked(true);
+              setStep("accounts");
+            } else if (initialized) {
+              setStep("unlock");
+            } else {
+              setStep("genesis");
+            }
           }}
           login={api.adminLogin}
           toast={toast}
@@ -115,8 +127,8 @@ function AdminLogin({
   login,
   toast,
 }: {
-  onDone: (token: string) => void;
-  login: (pw: string) => Promise<{ token: string }>;
+  onDone: (token: string, initialized: boolean, unlocked: boolean) => void;
+  login: (pw: string) => Promise<{ token: string; initialized?: boolean; unlocked?: boolean }>;
   toast: Toast;
 }) {
   // Testnet demo: prefill the admin password so the operator just clicks Continue.
@@ -127,7 +139,7 @@ function AdminLogin({
     setBusy(true);
     try {
       const r = await login(pw);
-      onDone(r.token);
+      onDone(r.token, !!r.initialized, !!r.unlocked);
     } catch (err) {
       toast({ title: "Admin login failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -434,7 +446,11 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
   const [form, setForm] = useState(() => ({
     issuerEntityId: env.demoMode ? "seaport-vet" : "",
     address: signerAddress ?? "",
-    recordTypes: "VACCINATION",
+    // Demo: a vet is a dog-tag issuer → VACCINATION + DOG_PROFILE so the admin approve flow ALSO grants
+    // DogTagSBT.ISSUER_ROLE (mint rights). Production starts with just VACCINATION (pick more in-form).
+    recordTypes: env.demoMode ? DEMO_WHITELIST_APPLY_VET.recordTypes : "VACCINATION",
+    // Vets onboard as issuers; VERIFY purposes default empty (a vet purpose can be added if needed).
+    verifyPurposes: env.demoMode ? DEMO_WHITELIST_APPLY_VET.verifyPurposes : "",
     domain: env.demoMode ? "testvet.roax.net" : "",
     documentStore: env.demoMode
       ? env.dogtagIssuerAddr || "0x5c703910111f942EE0f47E02214291b5274cDb53"
@@ -463,6 +479,7 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
       issuerEntityId: DEMO_WHITELIST_APPLY_VET.issuerEntityId,
       address: p.address || signerAddress || "",
       recordTypes: DEMO_WHITELIST_APPLY_VET.recordTypes,
+      verifyPurposes: DEMO_WHITELIST_APPLY_VET.verifyPurposes,
       domain: DEMO_WHITELIST_APPLY_VET.domain,
       documentStore: env.dogtagIssuerAddr || DEMO_WHITELIST_APPLY_VET.documentStore,
       usdaNan: DEMO_WHITELIST_APPLY_VET.usdaNan,
@@ -477,10 +494,12 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
     e.preventDefault();
     setBusy(true);
     try {
+      const verifyPurposes = form.verifyPurposes.split(",").map((s) => s.trim()).filter(Boolean);
       const r = await api.applyForWhitelist({
         issuerEntityId: form.issuerEntityId,
         addresses: [form.address],
         recordTypes: form.recordTypes.split(",").map((s) => s.trim()).filter(Boolean),
+        verifyPurposes: verifyPurposes.length ? verifyPurposes : undefined,
         domain: form.domain,
         documentStore: form.documentStore,
         usdaNan: form.usdaNan || undefined,
@@ -515,6 +534,7 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
           <Field label="Issuer entity id" required value={form.issuerEntityId} onChange={(v) => upd("issuerEntityId", v)} />
           <Field label="Signer address (auto-filled)" required value={form.address} onChange={(v) => upd("address", v)} placeholder="0x…" />
           <Field label="Record types (comma-separated)" required value={form.recordTypes} onChange={(v) => upd("recordTypes", v)} />
+          <Field label="Verify purposes (comma-separated)" value={form.verifyPurposes} onChange={(v) => upd("verifyPurposes", v)} placeholder="optional" />
           <Field label="Domain" required value={form.domain} onChange={(v) => upd("domain", v)} placeholder="clinic.example.com" />
           <Field label="Document store address" required value={form.documentStore} onChange={(v) => upd("documentStore", v)} placeholder="0x…" />
           <Field label="USDA NAN (6 digits)" value={form.usdaNan} onChange={(v) => upd("usdaNan", v)} placeholder="123456" />

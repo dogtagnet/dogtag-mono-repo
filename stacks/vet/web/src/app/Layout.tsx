@@ -1,5 +1,6 @@
 import { AppShell, ThemeToggle, WalletButton, type NavItem } from "@dogtag/ui";
 import {
+  Dog,
   FilePlus2,
   ListChecks,
   LogOut,
@@ -15,6 +16,7 @@ import { useApp } from "./AppContext";
 const NAV: NavItem[] = [
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
   { key: "issue", href: "/issue", label: "Issue credential", icon: FilePlus2 },
+  { key: "issue-dog-tag", href: "/issue-dog-tag", label: "Issue dog tag", icon: Dog },
   { key: "records", href: "/records", label: "Records", icon: ListChecks },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
   { key: "verify", href: "/verify", label: "Export", icon: ShieldCheck },
@@ -38,7 +40,10 @@ function Brand() {
 export function Layout({ children, title }: { children: ReactNode; title: string }) {
   const location = useLocation();
   const { logout } = useApp();
-  const activeKey = NAV.find((n) => location.pathname.startsWith(n.href))?.key;
+  // Longest matching href wins so /issue-dog-tag highlights its own item, not /issue.
+  const activeKey = NAV.filter((n) => location.pathname.startsWith(n.href)).sort(
+    (a, b) => b.href.length - a.href.length,
+  )[0]?.key;
 
   return (
     <AppShell

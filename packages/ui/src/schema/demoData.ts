@@ -28,6 +28,21 @@ export const DEMO_VACCINATION_DOCUMENT_STORE = "0x5c703910111f942EE0f47E02214291
  */
 export const DEMO_RECORD_TYPE = "VACCINATION";
 
+/**
+ * Record types a demo VET (dog-tag issuer) requests: VACCINATION (issuance) PLUS DOG_PROFILE so that
+ * approving the application in the admin portal ALSO grants DogTagSBT.ISSUER_ROLE (mint rights) — the
+ * canonical grant now happens in the approve flow, not a separate cast. Groomers (verifiers) stay on
+ * `DEMO_RECORD_TYPE` only (no DOG_PROFILE → no mint grant).
+ */
+export const DEMO_DOG_TAG_ISSUER_RECORD_TYPES = "VACCINATION, DOG_PROFILE";
+
+/**
+ * Demo VERIFY:<purpose> whitelist purposes for the groomer onboarding flow. On approval the central
+ * backend whitelists VERIFY:<purpose> per address so the groomer can run on-chain verifications.
+ * Mirrors the purposes the groomer Verify.tsx surfaces.
+ */
+export const DEMO_VERIFY_PURPOSES = "grooming_intake, boarding_intake, daycare_access";
+
 /** YYYY-MM-DD `daysFromToday` days from now (UTC). */
 export function isoDate(daysFromToday = 0): string {
   const d = new Date();
@@ -58,7 +73,10 @@ export function demoRabiesIssue(): {
   const implantDate = isoDate(-120); // chipped well before vaccination
   return {
     recordType: DEMO_RECORD_TYPE,
-    dogTagId: `dtag:demo:${String(Date.now()).slice(-6)}`,
+    // NOT prefilled: the vaccination's dogTagId must be the operator-entered handle from the DOG_PROFILE
+    // SBT issuance. A random/time-based value here had no minted SBT -> ownerOf(field_of_value(dogTagId))
+    // reverted on the owner's ZK export (the iOS failure). The operator types the dog tag's handle.
+    dogTagId: "",
     fields: {
       "microchip.code": demoMicrochip(),
       "microchip.standard": "ISO_11784_11785",
@@ -120,6 +138,8 @@ export interface DemoIssuerApplication {
   issuerEntityId: string;
   addresses: string;
   recordTypes: string;
+  /** comma-separated VERIFY:<purpose> purposes (optional). */
+  verifyPurposes: string;
   domain: string;
   documentStore: string;
   usdaNan: string;
@@ -128,8 +148,11 @@ export interface DemoIssuerApplication {
 export const DEMO_ISSUER_APPLICATION_VET: DemoIssuerApplication = {
   issuerEntityId: "bayview-vet",
   addresses: "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-  // MUST be the literal "VACCINATION" so keccak256(recordType) matches the on-chain whitelist key.
-  recordTypes: DEMO_RECORD_TYPE,
+  // VACCINATION (keccak256 matches the on-chain whitelist key) + DOG_PROFILE so approving in the admin
+  // portal ALSO grants DogTagSBT.ISSUER_ROLE (mint rights) to this signer.
+  recordTypes: DEMO_DOG_TAG_ISSUER_RECORD_TYPES,
+  // A vet onboards as an issuer; it doesn't need VERIFY purposes by default.
+  verifyPurposes: "",
   domain: "vet.dogtag.localhost",
   documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
   usdaNan: "123456",
@@ -139,6 +162,8 @@ export const DEMO_ISSUER_APPLICATION_GROOMER: DemoIssuerApplication = {
   issuerEntityId: "pawsh-groomer",
   addresses: "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
   recordTypes: DEMO_RECORD_TYPE,
+  // A groomer onboards as a VERIFIER → whitelist VERIFY:<purpose> per address.
+  verifyPurposes: DEMO_VERIFY_PURPOSES,
   domain: "groomer.dogtag.localhost",
   documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
   usdaNan: "",
@@ -153,6 +178,8 @@ export const DEMO_ISSUER_APPLICATION_GROOMER: DemoIssuerApplication = {
 export interface DemoWhitelistApply {
   issuerEntityId: string;
   recordTypes: string;
+  /** comma-separated VERIFY:<purpose> purposes (optional). */
+  verifyPurposes: string;
   domain: string;
   documentStore: string;
   usdaNan: string;
@@ -163,7 +190,10 @@ export interface DemoWhitelistApply {
 
 export const DEMO_WHITELIST_APPLY_VET: DemoWhitelistApply = {
   issuerEntityId: "seaport-vet",
-  recordTypes: DEMO_RECORD_TYPE,
+  // Vet = dog-tag issuer: VACCINATION + DOG_PROFILE so admin approval grants ISSUER_ROLE (mint rights).
+  recordTypes: DEMO_DOG_TAG_ISSUER_RECORD_TYPES,
+  // Vets onboard as issuers; no VERIFY purposes by default.
+  verifyPurposes: "",
   domain: "vet.local",
   documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
   usdaNan: "123456",
@@ -175,6 +205,8 @@ export const DEMO_WHITELIST_APPLY_VET: DemoWhitelistApply = {
 export const DEMO_WHITELIST_APPLY_GROOMER: DemoWhitelistApply = {
   issuerEntityId: "pampered-paws",
   recordTypes: DEMO_RECORD_TYPE,
+  // Groomers onboard as verifiers → whitelist VERIFY:<purpose> per signer.
+  verifyPurposes: DEMO_VERIFY_PURPOSES,
   domain: "groomer.local",
   documentStore: DEMO_VACCINATION_DOCUMENT_STORE,
   usdaNan: "",

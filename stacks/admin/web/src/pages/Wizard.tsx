@@ -48,6 +48,7 @@ const EMPTY_APPLICATION: DemoIssuerApplication = {
   issuerEntityId: "",
   addresses: "",
   recordTypes: "",
+  verifyPurposes: "",
   domain: "",
   documentStore: "",
   usdaNan: "",
@@ -120,10 +121,12 @@ export function Wizard() {
     e.preventDefault();
     setAppBusy(true);
     try {
+      const verifyPurposes = app.verifyPurposes.split(",").map((s) => s.trim()).filter(Boolean);
       const r = await central.createApplication({
         issuerEntityId: app.issuerEntityId,
         addresses: app.addresses.split(",").map((s) => s.trim()).filter(Boolean),
         recordTypes: app.recordTypes.split(",").map((s) => s.trim()).filter(Boolean),
+        verifyPurposes: verifyPurposes.length ? verifyPurposes : undefined,
         domain: app.domain,
         documentStore: app.documentStore,
         usdaNan: app.usdaNan.trim() || undefined,
@@ -260,6 +263,7 @@ export function Wizard() {
             <Field label="Domain" value={app.domain} onChange={(v) => setApp({ ...app, domain: v })} required />
             <Field label="Addresses (comma)" value={app.addresses} onChange={(v) => setApp({ ...app, addresses: v })} required />
             <Field label="Record types (comma)" value={app.recordTypes} onChange={(v) => setApp({ ...app, recordTypes: v })} required />
+            <Field label="Verify purposes (comma, optional)" value={app.verifyPurposes} onChange={(v) => setApp({ ...app, verifyPurposes: v })} placeholder="grooming_intake, boarding_intake" />
             <Field label="Document store" value={app.documentStore} onChange={(v) => setApp({ ...app, documentStore: v })} required />
             <Field label="USDA NAN (optional)" value={app.usdaNan} onChange={(v) => setApp({ ...app, usdaNan: v })} placeholder="6 digits" />
             <div className="sm:col-span-2">

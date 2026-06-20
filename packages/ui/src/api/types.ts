@@ -145,6 +145,62 @@ export interface VerifySessionStatusResp {
   nullifier?: string | null;
 }
 
+// ---- profile / dog-tag issuance (operator session) ----
+/** Microchip standard accepted by the backend. */
+export type MicrochipStandard = "ISO_11784_11785" | "OTHER";
+export type PetSex = "male" | "female";
+export type NeuterStatus = "intact" | "neutered" | "spayed";
+
+export interface ProfileWeightEntry {
+  unit: string;
+  /** decimal string, e.g. "12.5" */
+  value: string;
+  measuredOn: string;
+}
+export interface ProfileMicrochip {
+  code: string;
+  standard: MicrochipStandard;
+  implantDate?: string;
+  bodyLocation?: string;
+}
+export interface ProfileOwnerIdentity {
+  countryOfIdentification: string;
+  identification: string;
+  name: string;
+}
+export interface ProfilePet {
+  /** required */
+  name: string;
+  species?: string;
+  breedVbo?: string;
+  breedLabel?: string;
+  sex?: PetSex;
+  neuterStatus?: NeuterStatus;
+  dateOfBirth?: string;
+  weightHistory?: ProfileWeightEntry[];
+  microchip?: ProfileMicrochip;
+}
+/** POST /profiles/issue/session/start body. */
+export interface ProfileIssueStartReq {
+  ownerIdentity: ProfileOwnerIdentity;
+  pet: ProfilePet;
+}
+/** POST /profiles/issue/session/start response. `qr` is the full <deployment_url>/p/<token> URL. */
+export interface ProfileIssueStartResp {
+  token: string;
+  dogTagId: string;
+  sessionId: string;
+  qr: string;
+}
+/** GET /profiles/issue/session/{sessionId} response. */
+export interface ProfileIssueStatusResp {
+  status: "pending" | "bound";
+  dogTagId: string;
+  walletAddress?: string | null;
+  root?: string | null;
+  txHash?: string | null;
+}
+
 // ---- central: issuer applications (admin/api §4.3) ----
 export interface CentralLicense {
   number: string;
@@ -155,6 +211,11 @@ export interface IssuerApplicationReq {
   issuerEntityId: string;
   addresses: string[];
   recordTypes: string[];
+  /**
+   * Optional VERIFY:<purpose> whitelist purposes. Approval whitelists VERIFY:<purpose> per address
+   * (in addition to the recordType issuance whitelist). e.g. ["grooming_intake", "boarding_intake"].
+   */
+  verifyPurposes?: string[];
   domain: string;
   documentStore: string;
   usdaNan?: string;
@@ -177,7 +238,12 @@ export interface ApiError extends Error {
 
 // ---- admin auth ----
 /** POST /v1/admin/login → { token } */
-export type AdminLoginResp = LoginResp;
+export interface AdminLoginResp extends LoginResp {
+  /** custody already initialized (seal present) -> route to Unlock, not Genesis. */
+  initialized?: boolean;
+  /** custody already unlocked this session. */
+  unlocked?: boolean;
+}
 
 // ---- business registry (§4.2) ----
 export interface BusinessGeo {
@@ -236,6 +302,8 @@ export interface IssuerApplicationListItem {
   issuerEntityId: string;
   addresses: string[];
   recordTypes: string[];
+  /** VERIFY:<purpose> purposes whitelisted on approval (may be empty/absent for issuer-only apps). */
+  verifyPurposes?: string[];
   domain: string;
   status: IssuerApplicationStatus;
 }
@@ -246,6 +314,13 @@ export interface IssuerApplicationsResp {
 export interface ApproveApplicationResp {
   status: "approved";
   whitelistTxs: string[];
+  /**
+   * True when the application is a dog-tag issuer (recordTypes include DOG_PROFILE): approval ALSO
+   * grants DogTagSBT.ISSUER_ROLE so the signer can mint dog tags. False for groomers / verify-only.
+   */
+  issuerRoleGranted: boolean;
+  /** The grantRole(ISSUER) tx hash, when a grant was broadcast (absent if already held / not a dog-tag issuer). */
+  issuerRoleTxHash?: string | null;
 }
 export interface RejectApplicationResp {
   status: "rejected";

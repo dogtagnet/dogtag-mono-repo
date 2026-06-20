@@ -13,8 +13,12 @@ import type {
   IssuerApplicationResp,
   IssuerSignersResp,
   LoginResp,
+  AdminLoginResp,
   PrepareReq,
   PrepareResp,
+  ProfileIssueStartReq,
+  ProfileIssueStartResp,
+  ProfileIssueStatusResp,
   RevokeResp,
   ShareResp,
   SigningMode,
@@ -116,7 +120,7 @@ export function createApiClient(opts: ApiClientOptions) {
     // ---- login ----
     login: (password: string) => request<LoginResp>("POST", "/login", { password }, "none"),
     adminLogin: (password: string) =>
-      request<LoginResp>("POST", "/admin/login", { password }, "none"),
+      request<AdminLoginResp>("POST", "/admin/login", { password }, "none"),
 
     // ---- genesis / custody (admin session) ----
     genesisStart: () => request<GenesisStartResp>("POST", "/admin/genesis/start", undefined, "admin"),
@@ -140,6 +144,13 @@ export function createApiClient(opts: ApiClientOptions) {
     /** record-JWT bearer (UNAUTHENTICATED by operator session) */
     getRecord: (id: string, recordJwt: string) =>
       request<Record<string, unknown>>("GET", `/records/${id}`, undefined, "bearer", recordJwt),
+
+    // ---- profile / dog-tag issuance (operator session, custody unlocked) ----
+    startProfileIssue: (body: ProfileIssueStartReq) =>
+      request<ProfileIssueStartResp>("POST", "/profiles/issue/session/start", body),
+    /** GET /profiles/issue/session/{sessionId} — operator-gated status poll (pending → bound). */
+    profileIssueStatus: (sessionId: string) =>
+      request<ProfileIssueStatusResp>("GET", `/profiles/issue/session/${sessionId}`),
 
     // ---- issuer signers ----
     issuerSigners: () => request<IssuerSignersResp>("GET", "/issuer/signers"),

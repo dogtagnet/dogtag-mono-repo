@@ -28,6 +28,10 @@ import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 import { shortAddr } from "../lib/format";
 
+/** A dog-tag issuer requests the DOG_PROFILE record type — approving it also grants mint rights. */
+const isDogTagIssuer = (recordTypes: string[]) =>
+  recordTypes.some((rt) => rt.toUpperCase() === "DOG_PROFILE");
+
 const statusVariant: Record<IssuerApplicationStatus, "warning" | "success" | "danger" | "neutral"> = {
   pending: "warning",
   approved: "success",
@@ -47,6 +51,7 @@ export function IssuerApplications() {
   const [apps, setApps] = useState<IssuerApplicationListItem[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [txs, setTxs] = useState<Record<string, string[]>>({});
+  const [issuerRole, setIssuerRole] = useState<Record<string, boolean>>({});
   const [createOpen, setCreateOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -68,9 +73,12 @@ export function IssuerApplications() {
     try {
       const r = await central.approveApplication(id);
       setTxs((p) => ({ ...p, [id]: r.whitelistTxs }));
+      setIssuerRole((p) => ({ ...p, [id]: r.issuerRoleGranted }));
       toast({
         title: "Approved",
-        description: `${r.whitelistTxs.length} whitelistFor tx(s) sent`,
+        description: r.issuerRoleGranted
+          ? `${r.whitelistTxs.length} whitelistFor tx(s) sent · DogTagSBT.ISSUER_ROLE granted (mint rights)`
+          : `${r.whitelistTxs.length} whitelistFor tx(s) sent`,
         variant: "success",
       });
       await load();
@@ -145,7 +153,12 @@ export function IssuerApplications() {
                   <div className="font-medium text-onSurface">{a.issuerEntityId}</div>
                   <div className="text-xs text-muted">{a.domain}</div>
                 </div>
-                <Badge variant={statusVariant[a.status]}>{a.status}</Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  {isDogTagIssuer(a.recordTypes) && (
+                    <Badge variant="default">Dog-tag issuer — will be granted ISSUER_ROLE</Badge>
+                  )}
+                  <Badge variant={statusVariant[a.status]}>{a.status}</Badge>
+                </div>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
@@ -169,12 +182,38 @@ export function IssuerApplications() {
                     ))}
                   </div>
                 </div>
+                {a.verifyPurposes && a.verifyPurposes.length > 0 && (
+                  <div className="sm:col-span-2">
+                    <div className="mb-1 text-xs font-medium text-muted">
+                      Verify purposes ({a.verifyPurposes.length})
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {a.verifyPurposes.map((vp) => (
+                        <Badge key={vp} variant="warning">
+                          VERIFY:{vp}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <p className="text-xs text-muted">
                 {a.addresses.length} × {a.recordTypes.length} ={" "}
                 {a.addresses.length * a.recordTypes.length} on-chain whitelist entries.
+                {isDogTagIssuer(a.recordTypes) &&
+                  " Plus DogTagSBT.ISSUER_ROLE (mint rights) per signer address."}
               </p>
+
+              {issuerRole[a.applicationId] !== undefined && (
+                <p className="text-xs">
+                  {issuerRole[a.applicationId] ? (
+                    <span className="text-success">ISSUER_ROLE granted — this issuer can mint dog tags.</span>
+                  ) : (
+                    <span className="text-muted">No ISSUER_ROLE granted (not a dog-tag issuer).</span>
+                  )}
+                </p>
+              )}
 
               {txs[a.applicationId]?.length ? (
                 <div className="flex flex-wrap gap-2">
@@ -241,7 +280,7 @@ function CreateApplicationDialog({
   const [form, setForm] = useState<DemoIssuerApplication>(() =>
     env.demoMode
       ? { ...DEMO_ISSUER_APPLICATION_VET }
-      : { issuerEntityId: "", addresses: "", recordTypes: "", domain: "", documentStore: "", usdaNan: "" },
+      : { issuerEntityId: "", addresses: "", recordTypes: "", verifyPurposes: "", domain: "", documentStore: "", usdaNan: "" },
   );
   const [busy, setBusy] = useState(false);
 
@@ -249,10 +288,12 @@ function CreateApplicationDialog({
     e.preventDefault();
     setBusy(true);
     try {
+      const verifyPurposes = form.verifyPurposes.split(",").map((s) => s.trim()).filter(Boolean);
       const r = await central.createApplication({
         issuerEntityId: form.issuerEntityId,
         addresses: form.addresses.split(",").map((s) => s.trim()).filter(Boolean),
         recordTypes: form.recordTypes.split(",").map((s) => s.trim()).filter(Boolean),
+        verifyPurposes: verifyPurposes.length ? verifyPurposes : undefined,
         domain: form.domain,
         documentStore: form.documentStore,
         usdaNan: form.usdaNan.trim() || undefined,
@@ -291,6 +332,7 @@ function CreateApplicationDialog({
           <AppField label="Domain" value={form.domain} onChange={(v) => setForm({ ...form, domain: v })} required />
           <AppField label="Addresses (comma)" value={form.addresses} onChange={(v) => setForm({ ...form, addresses: v })} required />
           <AppField label="Record types (comma)" value={form.recordTypes} onChange={(v) => setForm({ ...form, recordTypes: v })} required />
+          <AppField label="Verify purposes (comma, optional)" value={form.verifyPurposes} onChange={(v) => setForm({ ...form, verifyPurposes: v })} placeholder="grooming_intake, boarding_intake" />
           <AppField label="Document store" value={form.documentStore} onChange={(v) => setForm({ ...form, documentStore: v })} required />
           <AppField label="USDA NAN (optional)" value={form.usdaNan} onChange={(v) => setForm({ ...form, usdaNan: v })} placeholder="6 digits" />
           <div className="sm:col-span-2">

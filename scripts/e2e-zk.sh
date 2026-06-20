@@ -238,11 +238,34 @@ BODY=$(jq -nc --arg sessionId "$SID" --arg exportToken "$EXPORT_TOKEN" \
   '{sessionId:$sessionId,exportToken:$exportToken,consent:$consent,sig:"0x",mode:"zk",proof:$proof,bind:$bind}')
 RELAY=$(curl -sS --max-time 180 -X POST "$GROOMER/v1/verify/consent" \
   -H "authorization: Bearer $EXPORT_TOKEN" -H 'content-type: application/json' -d "$BODY")
-RECORDED=$(echo "$RELAY" | jq -r .recorded 2>/dev/null || echo null)
-VTX=$(echo "$RELAY" | jq -r .txHash 2>/dev/null || echo null)
-if [ "$RECORDED" != true ] || [ -z "$VTX" ] || [ "$VTX" = null ]; then
+# The consent POST is now ASYNC: it returns 200 {status:"recording", sessionId} immediately and
+# records on-chain in a background task. We must POLL the session status to completion.
+RSTATUS=$(echo "$RELAY" | jq -r .status 2>/dev/null || echo null)
+if [ "$RSTATUS" != recording ]; then
   printf 'relay response: %s\n--- last 30 backend log lines ---\n%s\n' "$RELAY" "$(tail -30 "$LOG")"
-  fail "relay did not record"
+  fail "consent POST did not return status=recording (got: $RSTATUS)"
+fi
+green "consent accepted (async): status=recording sid=$SID — polling for on-chain record…"
+# Poll the session via the OPERATOR bearer token — the one-time export token is consumed on a
+# successful record, so it can't be used to read status here. ~40 tries × 3s = 120s budget.
+VTX=null
+for i in $(seq 1 40); do
+  PS=$(curl -fsS --max-time 30 "$GROOMER/verify/session/$SID" -H "authorization: Bearer $OTOK" 2>/dev/null || echo '{}')
+  PSTATUS=$(echo "$PS" | jq -r .status 2>/dev/null || echo null)
+  case "$PSTATUS" in
+    recorded)
+      VTX=$(echo "$PS" | jq -r .txHash)
+      [ -n "$VTX" ] && [ "$VTX" != null ] || fail "session recorded but missing txHash: $PS"
+      break ;;
+    error)
+      printf 'session: %s\n--- last 30 backend log lines ---\n%s\n' "$PS" "$(tail -30 "$LOG")"
+      fail "session went to error while recording" ;;
+    *) sleep 3 ;;
+  esac
+done
+if [ "$VTX" = null ] || [ -z "$VTX" ]; then
+  printf 'last session: %s\n--- last 30 backend log lines ---\n%s\n' "$PS" "$(tail -30 "$LOG")"
+  fail "timed out waiting for session to reach status=recorded (120s)"
 fi
 green "relay recorded on-chain: recordVerificationZK txHash=$VTX"
 

@@ -24,6 +24,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 set -a; source "$ROOT/contracts/.env"; set +a
 RPC="$ROAX_RPC"; PK="$DEPLOYER_PRIVATE_KEY"
 IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c   # IssuerRegistry (deployments/roax.json)
+SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233  # DogTagSBT (the vet mints DOG_PROFILE here)
 
 # BN254 r — purpose (bytes32) = keccak256(label) mod r, matching e2e-smoke.sh:144 + the registry.
 R=21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -43,6 +44,22 @@ for RT in VACCINATION DOG_PROFILE SERVICE_ATTESTATION; do
   cast send "$IR" "whitelistFor(bytes32,address)" "$KEY" "$SIGNER" \
     --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
 done
+
+# --- DogTagSBT ISSUER_ROLE grant (the VET now ISSUES DOG_PROFILE SBTs) ------------------------------
+# CANONICAL grant is now the ADMIN PORTAL's "Approve application" flow: approving an issuer-application
+# whose recordTypes include DOG_PROFILE grants DogTagSBT.ISSUER_ROLE to the signer (see
+# stacks/admin/api/src/routes.rs::approve_application). This cast remains as an idempotent FALLBACK so
+# the demo still works if you bootstrap without click-through. Skipped if the signer already holds it.
+# The vet signer mints DogTagSBT.mint(to,id,root), which is onlyRole(ISSUER_ROLE).
+ISSUER_ROLE=$(cast keccak ISSUER)
+if [ "$(cast call "$SBT" 'hasRole(bytes32,address)(bool)' "$ISSUER_ROLE" "$SIGNER" --rpc-url "$RPC")" = "true" ]; then
+  echo "grantRole(ISSUER, $SIGNER) on DogTagSBT: already granted — skipping"
+else
+  echo "grantRole(ISSUER, $SIGNER) on DogTagSBT…"
+  cast send "$SBT" 'grantRole(bytes32,address)' "$ISSUER_ROLE" "$SIGNER" \
+    --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
+  echo "  hasRole(ISSUER): $(cast call "$SBT" 'hasRole(bytes32,address)(bool)' "$ISSUER_ROLE" "$SIGNER" --rpc-url "$RPC")"
+fi
 
 # --- VERIFY-key whitelist (groomer relayer can record `recordVerificationZK`) -----------------------
 # verify whitelist key = keccak256(abi.encode("VERIFY:", purpose)) where purpose = keccak256(label) mod r.

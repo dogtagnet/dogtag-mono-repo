@@ -1,4 +1,4 @@
-import { CheckCircle2, Lock, ShieldCheck, Sparkles } from "lucide-react";
+import { CheckCircle2, Lock, ShieldCheck, Sparkles, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api/client";
 import type { VerifyMode } from "../api/types";
@@ -43,7 +43,7 @@ export interface VerifyFlowProps {
   showDemo?: boolean;
 }
 
-type Phase = "idle" | "starting" | "awaiting" | "verified" | "error";
+type Phase = "idle" | "starting" | "awaiting" | "verified" | "error" | "failed";
 
 /**
  * On-chain proof-of-verification flow (impl §3.9 / §5.1):
@@ -108,7 +108,15 @@ export function VerifyFlow({
     timer.current = setInterval(async () => {
       try {
         const s = await pollSession!(id);
-        if (s.status === "recorded" || s.txHash) {
+        // True success is ONLY status === "recorded". On error the backend stores the
+        // failure message in the txHash field, so a non-empty txHash must NOT be treated
+        // as success — surface it as a FAILED panel instead.
+        if (s.status === "error") {
+          setError(s.txHash || "Verification failed.");
+          setTxHash(null);
+          setPhase("failed");
+          stopPolling();
+        } else if (s.status === "recorded") {
           setTxHash(s.txHash ?? null);
           setPhase("verified");
           stopPolling();
@@ -254,6 +262,19 @@ export function VerifyFlow({
             )}
             <Button variant="outline" size="sm" onClick={reset}>
               New export
+            </Button>
+          </div>
+        )}
+
+        {phase === "failed" && (
+          <div className="flex flex-col items-center gap-3 py-4 text-center">
+            <XCircle className="h-10 w-10 text-danger" />
+            <p className="text-lg font-semibold">Verification failed</p>
+            <p className="break-words text-sm text-danger">
+              {error ?? "The verification could not be recorded on chain."}
+            </p>
+            <Button variant="outline" size="sm" onClick={reset}>
+              Try again
             </Button>
           </div>
         )}

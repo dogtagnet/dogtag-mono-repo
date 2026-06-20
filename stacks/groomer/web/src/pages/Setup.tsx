@@ -21,10 +21,17 @@ import { env } from "../lib/env";
 
 type Step = "admin" | "genesis" | "confirm" | "unlock" | "accounts" | "apply" | "dns" | "done";
 
+// Demo-only passphrase (matches the vet portal) — used to auto-fill the genesis-confirm + unlock
+// steps under VITE_DEMO_MODE so the local demo is click-through. Never used in production.
+const DEMO_PASSPHRASE = "demo-pass-0000";
+
 export function Setup() {
   const { api, adminToken, setAdminToken, setUnlocked, setSignerAddress } = useApp();
   const { toast } = useToast();
-  const [step, setStep] = useState<Step>(adminToken ? "genesis" : "admin");
+  // Always start at the admin login: it reports the custody state and routes to Unlock (when the seal
+  // is already initialized — e.g. hydrated from disk after a backend restart) instead of Genesis. A
+  // stale token from a prior session can't be trusted to mean "uninitialized".
+  const [step, setStep] = useState<Step>("admin");
 
   // Stale-session recovery: if the admin (custody) token is cleared (e.g. a 401 after a backend
   // restart), drop back to the Custody admin login instead of stranding the user mid-wizard.
@@ -37,9 +44,18 @@ export function Setup() {
       <SetupProgress step={step} />
       {step === "admin" && (
         <AdminLogin
-          onDone={(tok) => {
+          onDone={(tok, initialized, unlocked) => {
             setAdminToken(tok);
-            setStep("genesis");
+            // route by custody state: already unlocked -> accounts; initialized-but-locked (seal
+            // hydrated after a restart) -> Unlock; fresh -> Genesis.
+            if (unlocked) {
+              setUnlocked(true);
+              setStep("accounts");
+            } else if (initialized) {
+              setStep("unlock");
+            } else {
+              setStep("genesis");
+            }
           }}
           login={api.adminLogin}
           toast={toast}
@@ -112,8 +128,8 @@ function AdminLogin({
   login,
   toast,
 }: {
-  onDone: (token: string) => void;
-  login: (pw: string) => Promise<{ token: string }>;
+  onDone: (token: string, initialized: boolean, unlocked: boolean) => void;
+  login: (pw: string) => Promise<{ token: string; initialized?: boolean; unlocked?: boolean }>;
   toast: Toast;
 }) {
   // Testnet demo: prefill the admin password so the operator just clicks Continue.
@@ -124,7 +140,7 @@ function AdminLogin({
     setBusy(true);
     try {
       const r = await login(pw);
-      onDone(r.token);
+      onDone(r.token, !!r.initialized, !!r.unlocked);
     } catch (err) {
       toast({ title: "Admin login failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -172,6 +188,9 @@ function GenesisStart({ onNext }: { onNext: () => void }) {
       const r = await api.genesisStart();
       setData(r);
       sessionStorage.setItem("groomer.challengeIndices", JSON.stringify(r.challengeIndices));
+      // demo only: stash the seed so the confirm step auto-fills (NEVER in production — the seed must
+      // stay offline). Gated on env.demoMode so a production build never writes it.
+      if (env.demoMode) sessionStorage.setItem("groomer.demoWords", JSON.stringify(r.words));
     } catch (err) {
       toast({ title: "Genesis failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -232,8 +251,11 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
   const indices: number[] = JSON.parse(sessionStorage.getItem("groomer.challengeIndices") ?? "[]");
-  const [words, setWords] = useState<string[]>(() => indices.map(() => ""));
-  const [passphrase, setPassphrase] = useState("");
+  const demoWords: string[] = env.demoMode
+    ? JSON.parse(sessionStorage.getItem("groomer.demoWords") ?? "[]")
+    : [];
+  const [words, setWords] = useState<string[]>(() => indices.map((idx) => demoWords[idx] ?? ""));
+  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_PASSPHRASE : "");
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -243,6 +265,7 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
       const r = await api.genesisConfirm({ words: words.map((w) => w.trim()), passphrase });
       toast({ title: "Custody initialized", description: r.address, variant: "success" });
       sessionStorage.removeItem("groomer.challengeIndices");
+      sessionStorage.removeItem("groomer.demoWords");
       onNext(r.address);
     } catch (err) {
       toast({ title: "Confirmation failed", description: (err as Error).message, variant: "danger" });
@@ -302,7 +325,7 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
 function Unlock({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
-  const [passphrase, setPassphrase] = useState("");
+  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_PASSPHRASE : "");
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
 
@@ -414,18 +437,36 @@ function DeriveAccounts({ onNext }: { onNext: () => void }) {
 function ApplyWhitelist({ onNext }: { onNext: () => void }) {
   const { api, signerAddress } = useApp();
   const { toast } = useToast();
-  const [form, setForm] = useState({
-    issuerEntityId: "",
-    // Auto-carry the genesis-derived signer so the operator never copies an address.
-    address: signerAddress ?? "",
-    recordTypes: "VACCINATION",
-    domain: "",
-    documentStore: "",
-    usdaNan: "",
-    licenseNumber: "",
-    licenseJurisdiction: "",
-    licenseExpiry: "",
-  });
+  // Demo mode pre-fills the whole application (parity with the vet portal) so Setup is click-through;
+  // production starts empty. The signer address is always auto-carried from genesis.
+  const [form, setForm] = useState(() =>
+    env.demoMode
+      ? {
+          issuerEntityId: DEMO_WHITELIST_APPLY_GROOMER.issuerEntityId,
+          address: signerAddress ?? "",
+          recordTypes: DEMO_WHITELIST_APPLY_GROOMER.recordTypes,
+          verifyPurposes: DEMO_WHITELIST_APPLY_GROOMER.verifyPurposes,
+          domain: DEMO_WHITELIST_APPLY_GROOMER.domain,
+          documentStore: env.dogtagIssuerAddr || DEMO_WHITELIST_APPLY_GROOMER.documentStore,
+          usdaNan: DEMO_WHITELIST_APPLY_GROOMER.usdaNan,
+          licenseNumber: DEMO_WHITELIST_APPLY_GROOMER.licenseNumber,
+          licenseJurisdiction: DEMO_WHITELIST_APPLY_GROOMER.licenseJurisdiction,
+          licenseExpiry: DEMO_WHITELIST_APPLY_GROOMER.licenseExpiry,
+        }
+      : {
+          issuerEntityId: "",
+          // Auto-carry the genesis-derived signer so the operator never copies an address.
+          address: signerAddress ?? "",
+          recordTypes: "VACCINATION",
+          verifyPurposes: "",
+          domain: "",
+          documentStore: "",
+          usdaNan: "",
+          licenseNumber: "",
+          licenseJurisdiction: "",
+          licenseExpiry: "",
+        },
+  );
   const [busy, setBusy] = useState(false);
   const [applicationId, setApplicationId] = useState<string | null>(null);
 
@@ -445,6 +486,7 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
       issuerEntityId: DEMO_WHITELIST_APPLY_GROOMER.issuerEntityId,
       address: p.address || signerAddress || "",
       recordTypes: DEMO_WHITELIST_APPLY_GROOMER.recordTypes,
+      verifyPurposes: DEMO_WHITELIST_APPLY_GROOMER.verifyPurposes,
       domain: DEMO_WHITELIST_APPLY_GROOMER.domain,
       documentStore: env.dogtagIssuerAddr || DEMO_WHITELIST_APPLY_GROOMER.documentStore,
       usdaNan: DEMO_WHITELIST_APPLY_GROOMER.usdaNan,
@@ -459,10 +501,12 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
     e.preventDefault();
     setBusy(true);
     try {
+      const verifyPurposes = form.verifyPurposes.split(",").map((s) => s.trim()).filter(Boolean);
       const r = await api.applyForWhitelist({
         issuerEntityId: form.issuerEntityId,
         addresses: [form.address],
         recordTypes: form.recordTypes.split(",").map((s) => s.trim()).filter(Boolean),
+        verifyPurposes: verifyPurposes.length ? verifyPurposes : undefined,
         domain: form.domain,
         documentStore: form.documentStore,
         usdaNan: form.usdaNan || undefined,
@@ -497,6 +541,7 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
           <Field label="Issuer entity id" required value={form.issuerEntityId} onChange={(v) => upd("issuerEntityId", v)} />
           <Field label="Signer address (auto-filled)" required value={form.address} onChange={(v) => upd("address", v)} placeholder="0x…" />
           <Field label="Record types (comma-separated)" required value={form.recordTypes} onChange={(v) => upd("recordTypes", v)} />
+          <Field label="Verify purposes (comma-separated)" value={form.verifyPurposes} onChange={(v) => upd("verifyPurposes", v)} placeholder="grooming_intake, boarding_intake, daycare_access" />
           <Field label="Domain" required value={form.domain} onChange={(v) => upd("domain", v)} placeholder="clinic.example.com" />
           <Field label="Document store address" required value={form.documentStore} onChange={(v) => upd("documentStore", v)} placeholder="0x…" />
           <Field label="USDA NAN (6 digits)" value={form.usdaNan} onChange={(v) => upd("usdaNan", v)} placeholder="123456" />
