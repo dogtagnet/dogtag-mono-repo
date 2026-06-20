@@ -404,7 +404,13 @@ async fn zk_client_proof_relayer_sponsored_bind() {
     assert_eq!(s, StatusCode::OK, "session start: {b}");
     let session_id = b["sessionId"].as_str().unwrap().to_string();
 
-    let subject = "0x00000000000000000000000000000000000000dd";
+    // The subject is the owner's secp256k1 wallet; it must SIGN the BindConsentKey EIP-712 digest so
+    // the backend's defensive pre-check (recover ownerSig == subject) passes before the relayer
+    // broadcasts bindConsentKeyFor. Derive `subject` from a real signer instead of a fixed string.
+    use alloy::signers::local::PrivateKeySigner;
+    let subject_signer = PrivateKeySigner::random();
+    let subject = format!("{:#x}", subject_signer.address());
+    let subject = subject.as_str();
     let rt = record_type_key("VACCINATION");
     let credential_root =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
@@ -458,7 +464,30 @@ async fn zk_client_proof_relayer_sponsored_bind() {
     );
 
     // (b) with a bind block -> bindConsentKeyFor + record. keyOf(subject) must end == keyHash.
-    let bind = serde_json::json!({ "subject": subject, "keyHash": key_hash, "ownerSig": "0xowner" });
+    // The owner signs the BindConsentKey EIP-712 digest the backend's pre-check recovers against:
+    // verifyingContract = the ConsentKeyRegistry (CONSENT_KEYS), nonce = the live on-chain bindNonce
+    // (0 for this still-unbound subject), chainId = DOGTAG_CHAIN_ID.
+    let owner_sig = {
+        use alloy::primitives::B256;
+        use alloy::signers::SignerSync;
+        let mut ckr = [0u8; 20];
+        ckr.copy_from_slice(&hex::decode(CONSENT_KEYS.trim_start_matches("0x")).unwrap());
+        let mut kh = [0u8; 32];
+        kh.copy_from_slice(&hex::decode(key_hash.trim_start_matches("0x")).unwrap());
+        let mut wallet = [0u8; 20];
+        wallet.copy_from_slice(subject_signer.address().as_slice());
+        let nonce = [0u8; 32]; // unbound subject -> bindNonce == 0.
+        let digest = dogtag_standard::consent::bind_consent_key_digest(
+            ckr,
+            &kh,
+            &wallet,
+            &nonce,
+            dogtag_standard::consent::DOGTAG_CHAIN_ID,
+        );
+        let sig = subject_signer.sign_hash_sync(&B256::from(digest)).expect("sign bind");
+        format!("0x{}", hex::encode(sig.as_bytes()))
+    };
+    let bind = serde_json::json!({ "subject": subject, "keyHash": key_hash, "ownerSig": owner_sig });
     let (s, b) = call(
         &app,
         "POST",
@@ -470,12 +499,24 @@ async fn zk_client_proof_relayer_sponsored_bind() {
         })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "bind + record must succeed: {b}");
-    assert_eq!(b["recorded"], true);
+    // The record is now ASYNC: submit returns `{status:"recording"}` immediately, then the spawned
+    // task runs bindConsentKeyFor + recordVerificationZK and flips the session to `recorded`.
+    assert_eq!(s, StatusCode::OK, "bind + record ack must succeed: {b}");
+    assert_eq!(b["status"], "recording", "submit must ack `recording` immediately: {b}");
+    assert!(b["txHash"].is_null(), "no txHash on the recording ack: {b}");
+    // poll the session until the background task finishes (MemChain returns immediately).
+    for _ in 0..100 {
+        let (_s, sb) = call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+        if sb["status"] == "recorded" {
+            break;
+        }
+        assert_ne!(sb["status"], "error", "async record must not error: {sb}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(
         mem.consent_key_of(CONSENT_KEYS, subject).await.unwrap().to_lowercase(),
         key_hash.to_lowercase(),
-        "keyOf(subject) bound to keyHash after submit"
+        "keyOf(subject) bound to keyHash after the async record"
     );
 
     // (c) already bound (set keyOf directly) -> a fresh session records WITHOUT a bind block.
@@ -505,12 +546,207 @@ async fn zk_client_proof_relayer_sponsored_bind() {
         })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "already-bound submit must succeed without bind block: {b}");
-    assert_eq!(b["recorded"], true);
+    assert_eq!(s, StatusCode::OK, "already-bound submit ack must succeed without bind block: {b}");
+    assert_eq!(b["status"], "recording", "already-bound submit must ack `recording`: {b}");
+    // poll until the async record lands.
+    let mut recorded2 = false;
+    for _ in 0..100 {
+        let (_s, sb) = call(&app, "GET", &format!("/verify/session/{session_id2}"), Some(&op), None).await;
+        if sb["status"] == "recorded" {
+            recorded2 = true;
+            break;
+        }
+        assert_ne!(sb["status"], "error", "async record must not error: {sb}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(recorded2, "already-bound async record must complete -> session recorded");
+}
+
+/// ASYNC on-chain record (the export-timeout fix): a CLIENT-PROOF ZK consent submit returns
+/// `{status:"recording"}` IMMEDIATELY (no txHash), then a spawned task records on-chain and flips the
+/// session to `recorded` with a txHash + nullifier — and the one-time export token is consumed only on
+/// that success. A forced record FAILURE leaves the session `error` and the token NOT consumed
+/// (retryable QR). Mirrors the phone: authenticate with the export token, poll GET /verify/session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zk_client_proof_records_async_and_consumes_token_on_success() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let state = state_with_verify_keys(
+        chain,
+        "memchain".to_string(),
+        REGISTRY.to_string(),
+        "0x0000000000000000000000000000000000000000".to_string(),
+        CONSENT_KEYS.to_string(),
+        ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+        Arc::new(vet_api::prover::StubProver),
+    );
+    let app = vet_api::router(state);
+    let (_admin, op, backend_addr) = boot_custody(&app).await;
+
+    let purpose = "boarding-checkin";
+    let vk = {
+        use vet_api::verify::verify_key;
+        verify_key(purpose)
+    };
+    mem.whitelist(REGISTRY, &vk, &backend_addr);
+
+    let subject = "0x00000000000000000000000000000000000000de";
+    let rt = record_type_key("VACCINATION");
+    let credential_root = "0x1111111111111111111111111111111111111111111111111111111111111111";
+    let key_hash = "0x3333333333333333333333333333333333333333333333333333333333333333";
+    let purpose_b32 = vet_api::verify::purpose_key(purpose);
+    // pre-bind the consent key so the submit takes the no-bind-block path (focus on the record).
+    mem.set_consent_key(CONSENT_KEYS, subject, key_hash);
+
+    let consent = serde_json::json!({
+        "dogTagId": "42",
+        "recordType": rt,
+        "purpose": purpose_b32,
+        "credentialRoot": credential_root,
+        "challenge": "0x00",
+        "relayer": backend_addr,
+        "subject": subject,
+        "nonce": "1",
+        "deadline": (common_now() + 300)
+    });
+    let nullifier = "0x4444444444444444444444444444444444444444444444444444444444444444";
+    let proof = serde_json::json!({
+        "a": ["1", "2"],
+        "b": [["1", "2"], ["3", "4"]],
+        "c": ["5", "6"],
+        "pubSignals": [
+            "42", purpose_b32, addr_field_dec(&backend_addr), addr_field_dec(subject),
+            nullifier, key_hash, credential_root
+        ]
+    });
+
+    // --- start an EXPORT session as the operator -> mints a one-time export token in the qrUrl ---
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/session/start",
+        Some(&op),
+        Some(serde_json::json!({"purpose": purpose, "recordType":"VACCINATION", "mode":"zk"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "export session start: {b}");
+    let session_id = b["sessionId"].as_str().unwrap().to_string();
+    let qr = b["qrUrl"].as_str().unwrap();
+    let token = export_token_from_qr(qr);
+    assert_eq!(token.len(), 32, "export token must be 32 hex chars: {token}");
+
+    // the token resolves the session (non-consuming) -> still valid before submit.
+    let (s, _b) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "export token must resolve before submit");
+
+    // --- the PHONE submits with the export token (no operator bearer) -> immediate `recording` ack ---
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/verify/consent",
+        None,
+        Some(serde_json::json!({
+            "consent": consent, "sig": "0xstub", "mode":"zk",
+            "proof": proof, "exportToken": token
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "consent submit ack: {b}");
+    assert_eq!(b["status"], "recording", "submit must ack `recording` immediately: {b}");
+    assert_eq!(b["sessionId"].as_str().unwrap(), session_id, "ack carries the sessionId");
+    assert!(b["txHash"].is_null(), "no txHash on the recording ack: {b}");
+
+    // --- poll the session until the async record lands. Poll as the OPERATOR (bearer): the export
+    //     token is consumed the instant the record succeeds, after which a token-gated poll 401s — the
+    //     phone detects completion via the on-chain nullifier / its token no longer resolving. ---
+    let mut recorded = serde_json::Value::Null;
+    for _ in 0..100 {
+        let (s, sb) =
+            call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+        assert_eq!(s, StatusCode::OK, "session poll: {sb}");
+        if sb["status"] == "recorded" {
+            recorded = sb;
+            break;
+        }
+        assert_ne!(sb["status"], "error", "async record must not error: {sb}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(recorded["status"], "recorded", "async record must complete -> session recorded");
+    assert!(recorded["txHash"].as_str().is_some(), "recorded session carries the record txHash");
+    assert_eq!(
+        recorded["nullifier"].as_str().unwrap().to_lowercase(),
+        nullifier.to_lowercase(),
+        "recorded session surfaces the consumed nullifier (pub[4])"
+    );
+    // on-chain effect: the nullifier was consumed by recordVerificationZK.
+    assert!(
+        mem.consumed("0x0000000000000000000000000000000000000000", nullifier).await.unwrap(),
+        "nullifier must be consumed on-chain after the async record"
+    );
+    // the one-time export token was CONSUMED on the record success -> resolves to a 404 now.
+    let (s, _b) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "export token must be consumed after a successful record");
+
+    // ---------------------------------------------------------------------------------------------
+    // FORCED RECORD FAILURE: a fresh session whose proof reuses the SAME nullifier -> MemChain's
+    // recordVerificationZK returns "replayed". The async task must set status=error and NOT consume
+    // the token (so the owner can retry the same QR).
+    // ---------------------------------------------------------------------------------------------
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/session/start",
+        Some(&op),
+        Some(serde_json::json!({"purpose": purpose, "recordType":"VACCINATION", "mode":"zk"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "export session start 2: {b}");
+    let session_id2 = b["sessionId"].as_str().unwrap().to_string();
+    let token2 = export_token_from_qr(b["qrUrl"].as_str().unwrap());
+
+    // reuse the consumed nullifier -> the record will fail on-chain.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/verify/consent",
+        None,
+        Some(serde_json::json!({
+            "consent": consent, "sig": "0xstub", "mode":"zk",
+            "proof": proof, "exportToken": token2
+        })),
+    )
+    .await;
+    // validation still passes (the replay is only detectable on-chain) -> we still ack `recording`.
+    assert_eq!(s, StatusCode::OK, "submit ack even when the record will fail: {b}");
+    assert_eq!(b["status"], "recording");
+
+    // poll until the async task records the failure.
+    let mut errored = serde_json::Value::Null;
+    for _ in 0..100 {
+        let (_s, sb) =
+            call(&app, "GET", &format!("/verify/session/{session_id2}"), Some(&op), None).await;
+        if sb["status"] == "error" {
+            errored = sb;
+            break;
+        }
+        assert_ne!(sb["status"], "recorded", "a replayed nullifier must NOT record: {sb}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(errored["status"], "error", "forced record failure -> session error");
+    // the export token was NOT consumed -> still resolves (the owner can retry the same QR).
+    let (s, _b) = call(&app, "GET", &format!("/x/{token2}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "export token must survive a failed record (retryable QR)");
 }
 
 fn common_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// Extract the 32-hex export token from an export qrUrl: `{deployment}/x/{token}?a={relayer}`.
+fn export_token_from_qr(qr: &str) -> String {
+    qr.split("/x/").nth(1).unwrap().split('?').next().unwrap().to_string()
 }
 
 fn extract_token(qr: &str) -> String {

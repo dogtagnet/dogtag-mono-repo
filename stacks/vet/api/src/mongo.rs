@@ -8,8 +8,8 @@ use mongodb::options::IndexOptions;
 use mongodb::{Client, Collection, Database, IndexModel};
 
 use crate::store::{
-    ApptReplica, CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, KeystoreMeta, Record,
-    Store, VerifySession,
+    ApptReplica, CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, KeystoreMeta,
+    ProfileIssueSession, Record, Store, VerifySession,
 };
 
 pub struct MongoStore {
@@ -149,6 +149,76 @@ impl Store for MongoStore {
     async fn take_export_token(&self, token: &str) -> Option<String> {
         // find_one_and_delete is atomic == one-time consume; then enforce expiry on the read.
         let coll: Collection<Document> = self.db.collection("export_tokens");
+        let d = coll.find_one_and_delete(doc! { "token": token }).await.ok().flatten()?;
+        let exp = d.get_i64("exp").unwrap_or(0) as u64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now > exp {
+            None
+        } else {
+            d.get_str("session_id").ok().map(|s| s.to_string())
+        }
+    }
+
+    async fn next_dog_tag_id(&self) -> u64 {
+        // atomic counter via findOneAndUpdate($inc) (mirrors admin mongo.rs:145).
+        use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
+        let coll: Collection<Document> = self.db.collection("counters");
+        let opts = FindOneAndUpdateOptions::builder()
+            .upsert(true)
+            .return_document(ReturnDocument::After)
+            .build();
+        let d = coll
+            .find_one_and_update(doc! { "_id": "dog_tag_id" }, doc! { "$inc": { "seq": 1i64 } })
+            .with_options(opts)
+            .await
+            .ok()
+            .flatten();
+        d.and_then(|d| d.get_i64("seq").ok()).unwrap_or(1) as u64
+    }
+    async fn put_profile_session(&self, s: ProfileIssueSession) {
+        let coll: Collection<ProfileIssueSession> = self.db.collection("profile_sessions");
+        let _ = coll
+            .replace_one(doc! { "session_id": &s.session_id }, &s)
+            .upsert(true)
+            .await;
+    }
+    async fn get_profile_session(&self, session_id: &str) -> Option<ProfileIssueSession> {
+        let coll: Collection<ProfileIssueSession> = self.db.collection("profile_sessions");
+        coll.find_one(doc! { "session_id": session_id }).await.ok().flatten()
+    }
+    async fn update_profile_session(&self, s: ProfileIssueSession) {
+        self.put_profile_session(s).await;
+    }
+    async fn put_bind_token(&self, token: &str, session_id: &str, exp: u64) {
+        let coll: Collection<Document> = self.db.collection("bind_tokens");
+        let _ = coll
+            .replace_one(
+                doc! { "token": token },
+                doc! { "token": token, "session_id": session_id, "exp": exp as i64 },
+            )
+            .upsert(true)
+            .await;
+    }
+    async fn peek_bind_token(&self, token: &str) -> Option<String> {
+        let coll: Collection<Document> = self.db.collection("bind_tokens");
+        let d = coll.find_one(doc! { "token": token }).await.ok().flatten()?;
+        let exp = d.get_i64("exp").unwrap_or(0) as u64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now > exp {
+            None
+        } else {
+            d.get_str("session_id").ok().map(|s| s.to_string())
+        }
+    }
+    async fn take_bind_token(&self, token: &str) -> Option<String> {
+        // find_one_and_delete is atomic == one-time consume; then enforce expiry.
+        let coll: Collection<Document> = self.db.collection("bind_tokens");
         let d = coll.find_one_and_delete(doc! { "token": token }).await.ok().flatten()?;
         let exp = d.get_i64("exp").unwrap_or(0) as u64;
         let now = std::time::SystemTime::now()

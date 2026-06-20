@@ -56,6 +56,26 @@ pub struct ShareClaims {
 // `ShareClaims` record-share JWT and the generic `sign_jwt`/`verify_jwt` below remain in use by
 // `GET /records/{id}`.
 
+/// The canonical message the device signs to prove wallet ownership at `POST /profiles/issue/bind`.
+/// The walletAddress is lowercased so the message is deterministic regardless of input checksum
+/// casing. MUST byte-match the admin stack's `register_message` (the mobile signs the same string).
+pub fn register_message(wallet_address: &str) -> String {
+    format!("DogTag wallet registration: {}", wallet_address.to_lowercase())
+}
+
+/// Recover the EIP-191 (`personal_sign`) signer of `message` from a 65-byte `0x..` signature,
+/// returning the recovered address as a lowercase `0x..` hex string. The digest is
+/// `keccak256("\x19Ethereum Signed Message:\n" + len(message) + message)` — alloy's
+/// `recover_address_from_msg` applies the prefix internally. Returns None on a malformed signature.
+/// Ported from the admin stack (`stacks/admin/api/src/auth.rs`).
+pub fn recover_personal_sign(message: &str, signature_hex: &str) -> Option<String> {
+    use alloy::primitives::PrimitiveSignature;
+    let raw = hex::decode(signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim())).ok()?;
+    let sig = PrimitiveSignature::from_raw(&raw).ok()?;
+    let addr = sig.recover_address_from_msg(message.as_bytes()).ok()?;
+    Some(format!("{addr:#x}"))
+}
+
 fn b64(bytes: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)

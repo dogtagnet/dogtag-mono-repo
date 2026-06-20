@@ -98,6 +98,99 @@ pub fn decrypt_seed(ciphertext: &[u8], passphrase: &str) -> Result<Zeroizing<Str
     Ok(plaintext)
 }
 
+// --------------------------------------------------------------------------------------------
+// On-disk seal persistence (so custody survives a backend restart). We persist ONLY the
+// age-encrypted seed ciphertext (already armored ASCII) + the non-secret keystore meta
+// (addresses/labels/state). NEVER the plaintext mnemonic, NEVER the passphrase. On restart the
+// store is hydrated to "initialized but locked"; the operator still supplies the passphrase to
+// decrypt the disk-loaded blob -> the SAME signer.
+// --------------------------------------------------------------------------------------------
+
+/// The serializable on-disk seal: base64 of the age-armored ciphertext + the keystore meta. This
+/// captures exactly what the store needs to later `unlock` (decrypt `sealed_b64`) and report
+/// accounts (`meta`).
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SealFile {
+    /// base64(standard) of the age-armored seed ciphertext (the `encrypted_seed` blob).
+    pub sealed_b64: String,
+    /// non-secret keystore meta: derived account addresses/labels + state.
+    pub meta: crate::store::KeystoreMeta,
+}
+
+/// Serialize `(ciphertext, meta)` to the on-disk seal JSON bytes.
+pub fn seal_to_json(encrypted_seed: &[u8], meta: &crate::store::KeystoreMeta) -> Result<Vec<u8>, CustodyError> {
+    use base64::Engine as _;
+    let sf = SealFile {
+        sealed_b64: base64::engine::general_purpose::STANDARD.encode(encrypted_seed),
+        meta: meta.clone(),
+    };
+    serde_json::to_vec_pretty(&sf).map_err(|e| CustodyError::Other(format!("seal serialize: {e}")))
+}
+
+/// Parse the on-disk seal JSON back into `(ciphertext, meta)`.
+pub fn seal_from_json(bytes: &[u8]) -> Result<(Vec<u8>, crate::store::KeystoreMeta), CustodyError> {
+    use base64::Engine as _;
+    let sf: SealFile =
+        serde_json::from_slice(bytes).map_err(|e| CustodyError::Other(format!("seal parse: {e}")))?;
+    let ct = base64::engine::general_purpose::STANDARD
+        .decode(sf.sealed_b64.as_bytes())
+        .map_err(|e| CustodyError::Other(format!("seal b64: {e}")))?;
+    Ok((ct, sf.meta))
+}
+
+/// Atomically persist the sealed custody to `path` (temp file + rename, 0600 perms). Writes ONLY
+/// the ciphertext + non-secret meta. Best surface for `genesis_confirm` to call after sealing.
+pub fn write_seal_file(
+    path: &str,
+    encrypted_seed: &[u8],
+    meta: &crate::store::KeystoreMeta,
+) -> Result<(), CustodyError> {
+    let bytes = seal_to_json(encrypted_seed, meta)?;
+    let p = std::path::Path::new(path);
+    if let Some(dir) = p.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| CustodyError::Other(format!("seal mkdir: {e}")))?;
+        }
+    }
+    // unique temp sibling so concurrent writers don't clobber each other.
+    let tmp = format!("{path}.tmp.{}", std::process::id());
+    {
+        let mut f = open_owner_only(&tmp)?;
+        f.write_all(&bytes)
+            .map_err(|e| CustodyError::Other(format!("seal write: {e}")))?;
+        f.flush()
+            .map_err(|e| CustodyError::Other(format!("seal flush: {e}")))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        CustodyError::Other(format!("seal rename: {e}"))
+    })?;
+    Ok(())
+}
+
+/// Load + parse the seal at `path` if it exists. `Ok(None)` when the file is absent (fresh boot).
+pub fn read_seal_file(path: &str) -> Result<Option<(Vec<u8>, crate::store::KeystoreMeta)>, CustodyError> {
+    match std::fs::read(path) {
+        Ok(bytes) => seal_from_json(&bytes).map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(CustodyError::Other(format!("seal read: {e}"))),
+    }
+}
+
+/// Create/truncate `path` with 0600 (owner-only) perms on unix; default perms elsewhere.
+fn open_owner_only(path: &str) -> Result<std::fs::File, CustodyError> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)
+        .map_err(|e| CustodyError::Other(format!("seal open: {e}")))
+}
+
 /// The unlocked custody: the seed phrase held in a SecretBox-like Zeroizing string + cached signers.
 #[derive(Clone, Default)]
 pub struct Custody {

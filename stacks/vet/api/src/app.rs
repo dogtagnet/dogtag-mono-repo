@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
+use dogtag_standard::schema::{validate_schema, DOGTAG_CONTEXT_URI};
 use dogtag_standard::wrap::{wrap_document, IssuerMeta, WrappedDoc};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::auth::JwtKeys;
 use crate::calendar::{CalendarProvider, CentralClient};
@@ -26,6 +27,15 @@ pub struct Config {
     pub issuer_addrs: std::collections::HashMap<String, String>,
     pub issuer_name: String,
     pub issuer_domain: String,
+    /// DogTagSBT contract address — the mint target for the DOG_PROFILE SBT (env `SBT_ADDR`). The vet
+    /// signer must hold ISSUER_ROLE on this contract.
+    pub sbt_addr: String,
+    /// the documentStore the DOG_PROFILE VC anchors to (the DogTagSBT contract acts as the profile
+    /// store; env `PROFILE_DOCUMENT_STORE`, conventionally == `sbt_addr`).
+    pub profile_document_store: String,
+    /// account index of the vet signer that mints the DOG_PROFILE SBT (holds ISSUER_ROLE). Index 0 is
+    /// the unlocked custody signer used everywhere else in the vet stack.
+    pub vet_signer_index: u32,
     /// operator portal password (in prod: hashed/secret-managed).
     pub operator_password: String,
     /// admin-session password for /admin/* custody routes.
@@ -36,6 +46,11 @@ pub struct Config {
     pub business_id: String,
     /// shared HMAC secret with central (verifies inbound PUTs; signs outbound appointment-events).
     pub central_hmac_secret: String,
+    /// OPTIONAL on-disk path where the SEALED custody (age-encrypted seed ciphertext + non-secret
+    /// keystore meta — NEVER the plaintext mnemonic, NEVER the passphrase) is persisted so the signer
+    /// survives a backend restart. `None` -> in-memory only (no file; demo/tests unchanged). Env
+    /// `CUSTODY_SEAL_PATH`.
+    pub custody_seal_path: Option<String>,
 }
 
 impl Config {
@@ -140,4 +155,163 @@ pub fn wrap(record_type: &str, issuer_meta: IssuerMeta, vc: &Value) -> Result<Wr
 /// Convenience: the bytes32 whitelist/issuer key for a record type.
 pub fn rt_key(record_type: &str) -> String {
     record_type_key(record_type)
+}
+
+// --------------------------------------------------------------------------------------------
+// DOG_PROFILE (SBT) build/wrap — ported from the admin stack (stacks/admin/api/src/app.rs). The vet
+// now ISSUES dog tags: it builds the DOG_PROFILE VC with the owner-identity baked into the merkle
+// leaves, computes the root, and mints the SBT to the device wallet.
+// --------------------------------------------------------------------------------------------
+
+/// The DOG_PROFILE record type the vet mints SBT profiles under.
+pub const DOG_PROFILE: &str = "DOG_PROFILE";
+
+/// Build the issuer metadata for the vet's DOG_PROFILE issuer (documentStore == the DogTagSBT
+/// contract, which acts as the profile store).
+pub fn profile_issuer_meta(cfg: &Config) -> IssuerMeta {
+    IssuerMeta {
+        name: cfg.issuer_name.clone(),
+        domain: cfg.issuer_domain.clone(),
+        document_store: cfg.profile_document_store.clone(),
+        record_type: DOG_PROFILE.to_string(),
+    }
+}
+
+/// Build a COMPLETE, valid DOG_PROFILE VC (plain JSON — the shape `validate_schema` operates on) from
+/// the session's pet record + owner identity (ported from admin `build_profile_vc`). Missing optional
+/// DOG_PROFILE subject fields fall back to sensible defaults. The returned VC passes `validate_schema`
+/// for recordType DOG_PROFILE; `wrap_vc` then converts it to typed-scalar leaves + the Merkle root.
+pub fn build_profile_vc(
+    cfg: &Config,
+    name: &str,
+    microchip: &crate::store::Microchip,
+    profile: &crate::store::PetProfile,
+    owner_identity: &crate::store::OwnerIdentity,
+    owner_address: &str,
+    dog_tag_id: &str,
+) -> Value {
+    let species = profile.species.clone().unwrap_or_else(|| "Canis lupus familiaris".to_string());
+    let breed_vbo = profile.breed_vbo.clone().unwrap_or_else(|| "VBO:0200000".to_string());
+    let breed_label = profile.breed_label.clone().unwrap_or_else(|| "Mixed Breed".to_string());
+    let sex = profile.sex.clone().unwrap_or_else(|| "male".to_string());
+    let neuter_status = profile.neuter_status.clone().unwrap_or_else(|| "intact".to_string());
+    let date_of_birth = profile.date_of_birth.clone().unwrap_or_else(|| "2020-01-01".to_string());
+
+    let weight_history: Vec<Value> = profile
+        .weight_history
+        .iter()
+        .map(|w| json!({ "unit": w.unit, "value": w.value, "measuredOn": w.measured_on }))
+        .collect();
+
+    let now = crate::auth::now();
+    let valid_from = iso_date_utc(now);
+
+    // dogTagId is a non-personal integer id; emit it as a JSON number when numeric so the typed
+    // projection wraps it as an INTEGER (tag 3), matching `build_vc`.
+    let dog_tag_id_val: Value = dog_tag_id
+        .parse::<u64>()
+        .map(|n| json!(n))
+        .unwrap_or_else(|_| json!(dog_tag_id));
+
+    json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2", DOGTAG_CONTEXT_URI],
+        "type": ["VerifiableCredential", "DogProfile"],
+        "id": format!("urn:dogtag:profile:{dog_tag_id}"),
+        "issuer": format!("did:web:{}", cfg.issuer_domain),
+        "validFrom": valid_from,
+        "credentialSchema": { "id": format!("https://{}/schemas/dog-profile", cfg.issuer_domain), "type": "JsonSchema" },
+        "credentialStatus": { "id": format!("https://{}/status/{dog_tag_id}", cfg.issuer_domain), "type": "DogTagStatus2025" },
+        "recordType": DOG_PROFILE,
+        // legal/trust meta (owner-asserted profile minted by the vet's issuer signer).
+        "attestationType": "identity",
+        "signatureTrustTier": "self_attested",
+        "legalEffect": "evidentiary",
+        "legalBasisVersion": "DOGTAG-PROFILE-v1",
+        "jurisdiction": "GLOBAL",
+        "credentialSubject": {
+            // subject/holder ownership is established on-chain by the SBT mint (ownerOf[dogTagId] ==
+            // the device wallet that scanned the vet's QR). The VC ALSO bakes the device wallet as the
+            // `ownerAddress` leaf + the 3 owner-identity leaves — committed (salted) record attestations
+            // in the DOG_PROFILE merkle root (the on-chain `ownerOf`/consent-key remain the ZK binding;
+            // these leaves do not feed the export circuit — verified safe).
+            "dogTagId": dog_tag_id_val,
+            // the device's wallet address (the on-chain owner), committed as a record-anchored leaf.
+            "ownerAddress": owner_address.to_lowercase(),
+            "name": name,
+            "species": species,
+            "breedVbo": breed_vbo,
+            "breedLabel": breed_label,
+            "sex": sex,
+            "neuterStatus": neuter_status,
+            "dateOfBirth": date_of_birth,
+            "weightHistory": weight_history,
+            "microchip": {
+                "code": microchip.code,
+                "standard": microchip.standard,
+                "implantDate": microchip.implant_date,
+                "bodyLocation": microchip.body_location,
+            },
+            // owner's official identity, entered by the vet operator at session-start (wrap_vc turns
+            // the 3 scalars into typed Merkle leaves automatically).
+            "ownerIdentity": {
+                "countryOfIdentification": owner_identity.country_of_identification,
+                "identification": owner_identity.identification,
+                "name": owner_identity.name,
+            },
+        },
+    })
+}
+
+/// Format a unix-seconds timestamp as ISO `YYYY-MM-DD` (UTC). Howard Hinnant's civil algorithm so we
+/// don't pull a date crate just for `validFrom` (ported from admin).
+fn iso_date_utc(unix_secs: u64) -> String {
+    let days = (unix_secs / 86_400) as i64; // days since 1970-01-01
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Convert a plain JSON VC into the SDK's typed-scalar wrap input (`{tag, value}` leaves). Mirrors the
+/// admin `to_typed_vc`. Tag mapping: 0=null, 1=bool, 2=string, 3=integer, 4=decimal.
+fn to_typed_vc(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut out = serde_json::Map::new();
+            for (k, val) in m {
+                out.insert(k.clone(), to_typed_vc(val));
+            }
+            Value::Object(out)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(to_typed_vc).collect()),
+        Value::Null => json!({ "tag": 0u8, "value": Value::Null }),
+        Value::Bool(b) => json!({ "tag": 1u8, "value": b }),
+        Value::String(s) => json!({ "tag": 2u8, "value": s }),
+        Value::Number(n) => {
+            let s = n.to_string();
+            let tag = if n.is_i64() || n.is_u64() { 3u8 } else { 4u8 };
+            json!({ "tag": tag, "value": s })
+        }
+    }
+}
+
+/// Validate a plain DOG_PROFILE VC against the SDK schema, then wrap it into a `WrappedDoc` (ported
+/// from admin `wrap_vc`). The validator runs on the plain VC; we wrap the typed-scalar projection so
+/// the on-chain root covers every field.
+pub fn wrap_vc(issuer_meta: IssuerMeta, vc: &Value) -> Result<WrappedDoc, String> {
+    validate_schema(vc).map_err(|violations| format!("schema: {}", violations.join("; ")))?;
+    let typed = to_typed_vc(vc);
+    let mut salt = || {
+        let mut s = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut s);
+        s
+    };
+    wrap_document(&typed, issuer_meta, &mut salt).map_err(|e| format!("wrap: {e}"))
 }

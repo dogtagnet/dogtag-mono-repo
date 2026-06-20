@@ -71,6 +71,7 @@ pub fn build_profile_vc(
     name: &str,
     microchip: &crate::store::Microchip,
     profile: &crate::store::PetProfile,
+    owner_identity: &crate::store::OwnerIdentity,
     dog_tag_id: &str,
 ) -> Value {
     let species = profile.species.clone().unwrap_or_else(|| "Canis lupus familiaris".to_string());
@@ -127,6 +128,13 @@ pub fn build_profile_vc(
                 "standard": microchip.standard,
                 "implantDate": microchip.implant_date,
                 "bodyLocation": microchip.body_location,
+            },
+            // owner's official identity, entered by the admin at mint time (wrap_vc turns the 3
+            // scalars into typed Merkle leaves automatically).
+            "ownerIdentity": {
+                "countryOfIdentification": owner_identity.country_of_identification,
+                "identification": owner_identity.identification,
+                "name": owner_identity.name,
             },
         },
     })

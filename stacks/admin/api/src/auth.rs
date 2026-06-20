@@ -212,6 +212,24 @@ pub fn keccak256_hex(s: &str) -> String {
     format!("0x{}", hex::encode(keccak256(s.as_bytes()).as_slice()))
 }
 
+/// The canonical message a device signs to prove wallet ownership. The walletAddress is lowercased
+/// so the message is deterministic regardless of input checksum casing.
+pub fn register_message(wallet_address: &str) -> String {
+    format!("DogTag wallet registration: {}", wallet_address.to_lowercase())
+}
+
+/// Recover the EIP-191 (`personal_sign`) signer of `message` from a 65-byte `0x..` signature, returning
+/// the recovered address as a lowercase `0x..` hex string. The digest is
+/// `keccak256("\x19Ethereum Signed Message:\n" + len(message) + message)` — alloy's
+/// `recover_address_from_msg` applies the prefix internally. Returns None on a malformed signature.
+pub fn recover_personal_sign(message: &str, signature_hex: &str) -> Option<String> {
+    use alloy::primitives::PrimitiveSignature;
+    let raw = hex::decode(signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim())).ok()?;
+    let sig = PrimitiveSignature::from_raw(&raw).ok()?;
+    let addr = sig.recover_address_from_msg(message.as_bytes()).ok()?;
+    Some(format!("{addr:#x}"))
+}
+
 // --------------------------------------------------------------------------------------------
 // In-memory rate limiter for the password endpoints (/v1/admin/login, etc.).
 //

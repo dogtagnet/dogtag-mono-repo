@@ -18,12 +18,17 @@ use crate::crypto::Sealed;
 // ---- owners / auth ----
 
 /// A mobile user. `password_hash` is the salted-hash store; `profile_pii` is the crypto-shred blob.
+///
+/// `email`/`password_hash` are OPTIONAL and defaulted on deserialize so existing persisted rows
+/// (which always carried non-null strings) still load. The email/password signup path sets both.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Owner {
     pub owner_id: String,
-    pub email: String,
-    pub password_hash: String,
-    /// self-custodial / embedded-MPC wallet address the SBT is minted to (§4.1).
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub password_hash: Option<String>,
+    /// self-custodial / embedded-MPC wallet address the SBT is minted to (§4.1), lowercased.
     pub wallet_address: String,
     pub push_token: Option<String>,
     /// encrypted owner PII (name etc.) under a per-record DEK — erasure shreds this.
@@ -40,6 +45,20 @@ pub struct Microchip {
     pub implant_date: String,
     #[serde(rename = "bodyLocation")]
     pub body_location: String,
+}
+
+/// The owner's official identity, entered by the admin at mint time and signed into the
+/// DOG_PROFILE `credentialSubject.ownerIdentity`. All three fields are free text; the schema
+/// requires the keys present as strings (empty allowed for non-admin mint paths).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerIdentity {
+    /// country that issued the owner's ID (e.g. "GB", "SG", or a country name).
+    pub country_of_identification: String,
+    /// owner's government ID / passport number (free text).
+    pub identification: String,
+    /// owner's official full name exactly as on the ID.
+    pub name: String,
 }
 
 /// One dated, unit-bearing weight measurement (DOG_PROFILE `weightHistory[i]`).
@@ -163,6 +182,10 @@ pub struct IssuerApplication {
     /// recordType human labels (keccak256'd on-chain).
     #[serde(rename = "recordTypes")]
     pub record_types: Vec<String>,
+    /// VERIFY:<purpose> labels this issuer/verifier may relay verifications for (e.g. "boarding_intake").
+    /// On approval each is reduced to `verify_key(purpose)` and whitelisted per signer address.
+    #[serde(rename = "verifyPurposes", default)]
+    pub verify_purposes: Vec<String>,
     pub domain: String,
     #[serde(rename = "usdaNan")]
     pub usda_nan: Option<String>,
@@ -370,7 +393,9 @@ impl MemStore {
 impl Store for MemStore {
     async fn put_owner(&self, o: Owner) {
         let mut g = self.inner.write().unwrap();
-        g.email_index.insert(o.email.to_lowercase(), o.owner_id.clone());
+        if let Some(email) = &o.email {
+            g.email_index.insert(email.to_lowercase(), o.owner_id.clone());
+        }
         g.owners.insert(o.owner_id.clone(), o);
     }
     async fn get_owner(&self, id: &str) -> Option<Owner> {

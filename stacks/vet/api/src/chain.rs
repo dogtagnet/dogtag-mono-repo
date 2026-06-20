@@ -31,6 +31,13 @@ sol! {
     }
 
     #[sol(rpc)]
+    contract IDogTagSBT {
+        function mint(address to, uint256 id, bytes32 root) external;
+        function ownerOf(uint256 id) external view returns (address);
+        function profileRoot(uint256 id) external view returns (bytes32);
+    }
+
+    #[sol(rpc)]
     contract IVerificationRegistry {
         struct VerificationConsent {
             uint256 dogTagId;
@@ -199,6 +206,29 @@ pub trait ChainClient: Send + Sync {
         let calldata = bind_consent_key_for_calldata(wallet, key_hash, ecdsa_sig);
         self.sign_and_send(account_index, registry_addr, &calldata).await
     }
+    /// DogTagSBT.mint(to, dogTagId, root) FROM the signer at `account_index` (the vet signer must hold
+    /// ISSUER_ROLE). The vet ISSUES the DOG_PROFILE SBT to the device wallet, baking the owner-identity
+    /// merkle root in as `profileRoot[id]`. Default = encode + sign_and_send (AlloyChain path); MemChain
+    /// overrides to emulate the ownerOf/profileRoot effect without a node.
+    async fn mint(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        to: &str,
+        dog_tag_id: &str,
+        root: &str,
+    ) -> Result<SentTx, ChainError> {
+        let calldata = mint_calldata(to, dog_tag_id, root);
+        self.sign_and_send(account_index, sbt_addr, &calldata).await
+    }
+    /// DogTagSBT.ownerOf(dogTagId) (lowercase 0x.. address; Err(NotFound) if unminted).
+    async fn owner_of(&self, _sbt_addr: &str, _dog_tag_id: &str) -> Result<String, ChainError> {
+        Err(ChainError::NotFound)
+    }
+    /// DogTagSBT.profileRoot(dogTagId) (0x.. bytes32 hex; 0x0..0 if unminted).
+    async fn profile_root_of(&self, _sbt_addr: &str, _dog_tag_id: &str) -> Result<String, ChainError> {
+        Err(ChainError::NotFound)
+    }
     /// Encode issue(bytes32) calldata for `root`.
     fn encode_issue(&self, root: &str) -> String {
         issue_calldata(root)
@@ -234,6 +264,21 @@ pub fn revoke_calldata(root: &str) -> String {
     use alloy::sol_types::SolCall;
     let call = IDogTagIssuer::revokeCall { r: parse_b256(root) };
     format!("0x{}", hex::encode(call.abi_encode()))
+}
+/// ABI-encode DogTagSBT.mint(to, dogTagId, root). Mirrors admin's `mint_calldata`.
+pub fn mint_calldata(to: &str, dog_tag_id: &str, root: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IDogTagSBT::mintCall {
+        to: parse_addr(to),
+        id: parse_u256_dec_or_hex(dog_tag_id),
+        root: parse_b256(root),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+/// Normalize a dogTagId (decimal or hex) into a canonical decimal string so MemChain keys collide
+/// regardless of input radix.
+fn normalize_id(dog_tag_id: &str) -> String {
+    parse_u256_dec_or_hex(dog_tag_id).to_string()
 }
 
 /// The 9-field VerificationConsent in the registry's struct order — all hex strings (uint256/bytes32
@@ -357,6 +402,10 @@ struct MemChainInner {
     consent_keys: HashMap<(String, String), String>,
     /// (consent_key_registry_addr, wallet) -> bindNonce (incremented on each successful bind).
     bind_nonce: HashMap<(String, String), u64>,
+    /// (sbt_addr, dog_tag_id) -> owner address (DogTagSBT.ownerOf).
+    sbt_owners: HashMap<(String, String), String>,
+    /// (sbt_addr, dog_tag_id) -> profileRoot (DogTagSBT.profileRoot).
+    sbt_roots: HashMap<(String, String), String>,
     nonce: u64,
     clock: u64,
 }
@@ -630,6 +679,45 @@ impl ChainClient for MemChain {
         g.nonce += 1;
         let tx_hash = format!("0x{:064x}", g.nonce);
         Ok(SentTx { tx_hash })
+    }
+    async fn mint(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        to: &str,
+        dog_tag_id: &str,
+        root: &str,
+    ) -> Result<SentTx, ChainError> {
+        // Emulate DogTagSBT.mint(to,id,root): set ownerOf[id]=to AND profileRoot[id]=root. Requires a
+        // registered signer at this index (the vet ISSUER signer). Re-mint of the same id reverts.
+        let mut g = self.inner.lock().unwrap();
+        g.signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no issuer signer for index".into()))?;
+        let key = (sbt_addr.to_lowercase(), normalize_id(dog_tag_id));
+        if g.sbt_owners.contains_key(&key) {
+            return Err(ChainError::Other("ERC721: token already minted".into()));
+        }
+        g.sbt_owners.insert(key.clone(), to.to_lowercase());
+        g.sbt_roots.insert(key, root.to_lowercase());
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        Ok(SentTx { tx_hash })
+    }
+    async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        g.sbt_owners
+            .get(&(sbt_addr.to_lowercase(), normalize_id(dog_tag_id)))
+            .cloned()
+            .ok_or(ChainError::NotFound)
+    }
+    async fn profile_root_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        g.sbt_roots
+            .get(&(sbt_addr.to_lowercase(), normalize_id(dog_tag_id)))
+            .cloned()
+            .ok_or(ChainError::NotFound)
     }
 }
 
@@ -970,6 +1058,39 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
+    }
+    async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagSBT::new(parse_addr(sbt_addr), provider);
+        match c.ownerOf(parse_u256_dec_or_hex(dog_tag_id)).call().await {
+            Ok(r) => Ok(format!("{:#x}", r._0)),
+            Err(e) => {
+                let s = e.to_string();
+                if s.contains("nonexistent") || s.contains("ERC721") || s.contains("revert") {
+                    Err(ChainError::NotFound)
+                } else {
+                    Err(ChainError::Rpc(s))
+                }
+            }
+        }
+    }
+    async fn profile_root_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagSBT::new(parse_addr(sbt_addr), provider);
+        let r = c
+            .profileRoot(parse_u256_dec_or_hex(dog_tag_id))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(format!("0x{}", hex::encode(r._0.as_slice())))
     }
 }
 

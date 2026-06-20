@@ -27,7 +27,17 @@ sol! {
     contract IDogTagSBT {
         function mint(address to, uint256 id, bytes32 root) external;
         function ownerOf(uint256 id) external view returns (address);
+        // AccessControl surface — the DEFAULT_ADMIN holder grants ISSUER_ROLE so a vet can mint.
+        function grantRole(bytes32 role, address account) external;
+        function hasRole(bytes32 role, address account) external view returns (bool);
     }
+}
+
+/// `DogTagSBT.ISSUER_ROLE = keccak256("ISSUER")` — the role that gates `mint`.
+pub fn issuer_role_key() -> String {
+    use alloy::primitives::keccak256;
+    let h: FixedBytes<32> = keccak256(b"ISSUER");
+    format!("0x{}", hex::encode(h.as_slice()))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +126,18 @@ pub trait ChainClient: Send + Sync {
 
     /// DogTagSBT.ownerOf(dogTagId) (lowercase 0x.. address; Err(NotFound) if unminted).
     async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError>;
+
+    /// DogTagSBT.grantRole(ISSUER_ROLE, grantee) — broadcast by the admin signer (which holds
+    /// DEFAULT_ADMIN_ROLE), granting the mint capability so `grantee` can call `DogTagSBT.mint`.
+    async fn grant_issuer_role(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        grantee: &str,
+    ) -> Result<SentTx, ChainError>;
+
+    /// DogTagSBT.hasRole(ISSUER_ROLE, account) — read so approve can skip an already-granted role.
+    async fn has_issuer_role(&self, sbt_addr: &str, account: &str) -> Result<bool, ChainError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -128,6 +150,8 @@ struct MemChainInner {
     whitelist: HashMap<(String, String, String), bool>,
     /// (sbt_addr, dog_tag_id) -> owner address.
     owners: HashMap<(String, String), String>,
+    /// (sbt_addr, account) holding DogTagSBT.ISSUER_ROLE.
+    issuer_roles: std::collections::HashSet<(String, String)>,
     /// admin signer addresses by account index.
     signers: HashMap<u32, String>,
     nonce: u64,
@@ -242,6 +266,28 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or(ChainError::NotFound)
     }
+
+    async fn grant_issuer_role(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        grantee: &str,
+    ) -> Result<SentTx, ChainError> {
+        let mut g = self.inner.lock().unwrap();
+        // emulate onlyRole(DEFAULT_ADMIN_ROLE): require a registered admin signer at this index.
+        g.signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
+        g.issuer_roles.insert((sbt_addr.to_lowercase(), grantee.to_lowercase()));
+        let tx_hash = Self::next_tx(&mut g);
+        Ok(SentTx { tx_hash })
+    }
+
+    async fn has_issuer_role(&self, sbt_addr: &str, account: &str) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.issuer_roles.contains(&(sbt_addr.to_lowercase(), account.to_lowercase())))
+    }
 }
 
 /// Normalize a dogTagId (decimal or hex) into a canonical decimal string so MemChain keys collide
@@ -268,6 +314,15 @@ pub fn delist_for_calldata(record_type: &str, signer: &str) -> String {
     let call = IIssuerRegistry::delistForCall {
         recordType: parse_b256(record_type),
         signer: parse_addr(signer),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+pub fn grant_issuer_role_calldata(grantee: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IDogTagSBT::grantRoleCall {
+        role: parse_b256(&issuer_role_key()),
+        account: parse_addr(grantee),
     };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
@@ -445,6 +500,31 @@ impl ChainClient for AlloyChain {
             }
         }
     }
+
+    async fn grant_issuer_role(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        grantee: &str,
+    ) -> Result<SentTx, ChainError> {
+        let calldata = grant_issuer_role_calldata(grantee);
+        self.sign_and_send(account_index, sbt_addr, &calldata).await
+    }
+
+    async fn has_issuer_role(&self, sbt_addr: &str, account: &str) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagSBT::new(parse_addr(sbt_addr), provider);
+        let r = c
+            .hasRole(parse_b256(&issuer_role_key()), parse_addr(account))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
 }
 
 /// Helper: normalize a record-type string into its keccak256 bytes32 (the whitelist / issuer key).
@@ -452,4 +532,63 @@ pub fn record_type_key(record_type: &str) -> String {
     use alloy::primitives::keccak256;
     let h: FixedBytes<32> = keccak256(record_type.as_bytes());
     format!("0x{}", hex::encode(h.as_slice()))
+}
+
+/// The purpose label reduced to the registry's bytes32 `purpose` field: keccak256(label) reduced mod
+/// the BN254 scalar field r (a field element, distinct from recordType). MUST byte-match the vet
+/// stack's `verify::purpose_key` and the on-chain `_verifyKey` input. (Mirrors stacks/vet/api verify.rs.)
+pub fn purpose_key(label: &str) -> String {
+    use alloy::primitives::{keccak256, U256};
+    // BN254 r.
+    let r = U256::from_str_radix(
+        "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+        10,
+    )
+    .unwrap();
+    let full = U256::from_be_bytes::<32>(keccak256(label.as_bytes()).0);
+    let reduced = full % r;
+    format!("0x{}", hex::encode(reduced.to_be_bytes::<32>()))
+}
+
+/// The IssuerRegistry whitelist key the VerificationRegistry checks for the relayer on a given purpose:
+/// `keccak256(abi.encode("VERIFY:", purpose))` where `purpose` is the bytes32 from `purpose_key(label)`
+/// (Solidity `abi.encode(string,bytes32)` = head[offset=0x40] ++ purpose ++ len(7) ++ "VERIFY:" padded).
+/// MUST byte-match the on-chain `VerificationRegistry._verifyKey` + the vet stack's `verify::verify_key`.
+/// (Mirrors stacks/vet/api verify.rs ~47-68.)
+pub fn verify_key(label: &str) -> String {
+    use alloy::primitives::keccak256;
+    let purpose_hex = purpose_key(label);
+    let purpose = hex::decode(purpose_hex.trim_start_matches("0x")).unwrap_or_default();
+    // abi.encode(string "VERIFY:", bytes32 purpose)
+    let mut buf = Vec::with_capacity(160);
+    // [0] offset to the string data = 0x40 (after the two head words).
+    let mut off = [0u8; 32];
+    off[31] = 0x40;
+    buf.extend_from_slice(&off);
+    // [1] the bytes32 purpose word.
+    buf.extend_from_slice(&purpose);
+    // [2] string length = 7 ("VERIFY:").
+    let mut len = [0u8; 32];
+    len[31] = 7;
+    buf.extend_from_slice(&len);
+    // [3] string bytes, right-padded to 32.
+    let mut data = [0u8; 32];
+    data[..7].copy_from_slice(b"VERIFY:");
+    buf.extend_from_slice(&data);
+    format!("0x{}", hex::encode(keccak256(&buf).as_slice()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `verify_key` must byte-match the on-chain `_verifyKey` + the demo-bootstrap value the vet stack
+    /// produces for "boarding_intake" — the verifier-onboarding whitelist parity guard (plan A3).
+    #[test]
+    fn verify_key_parity_boarding_intake() {
+        assert_eq!(
+            verify_key("boarding_intake"),
+            "0x9f894293e0cbaa46eca3cc026ad45e5012c10c4d3217ede0488ca0d2b5eaf764"
+        );
+    }
 }

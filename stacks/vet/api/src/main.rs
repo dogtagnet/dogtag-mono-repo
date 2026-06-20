@@ -53,11 +53,22 @@ async fn main() {
         issuer_addrs,
         issuer_name: env("ISSUER_NAME", "DogTag Vet"),
         issuer_domain: env("ISSUER_DOMAIN", "vet.example"),
+        // DogTagSBT mint target (the vet signer must hold ISSUER_ROLE). PROFILE_DOCUMENT_STORE
+        // conventionally == SBT_ADDR (the SBT contract acts as the DOG_PROFILE document store).
+        sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
+        profile_document_store: {
+            let sbt = env("SBT_ADDR", "0x0000000000000000000000000000000000000000");
+            env("PROFILE_DOCUMENT_STORE", &sbt)
+        },
+        vet_signer_index: 0,
         operator_password: env("OPERATOR_PASSWORD", "operator-dev-password"),
         admin_password: env("ADMIN_PASSWORD", "admin-dev-password"),
         confirmations: env("CONFIRMATIONS", "1").parse().unwrap_or(1),
         business_id: env("BUSINESS_ID", "biz-local"),
         central_hmac_secret: env("CENTRAL_HMAC_SECRET", "dev-central-hmac-secret"),
+        // OPTIONAL disk seal: when set, the sealed custody (ciphertext + meta) is persisted on
+        // genesis and re-loaded on startup so the signer survives a restart. Unset -> in-memory only.
+        custody_seal_path: std::env::var("CUSTODY_SEAL_PATH").ok().filter(|s| !s.trim().is_empty()),
     };
 
     let chain = AlloyChain::new(rpc_url).with_chain_id(chain_id);
@@ -94,6 +105,28 @@ async fn main() {
     // Store selection: persistent MongoStore when MONGO_URI is set (fail-closed), else ephemeral MemStore
     // (demo/local — unchanged). Demo behavior is byte-for-byte preserved when MONGO_URI is unset/empty.
     let store: Arc<dyn Store> = build_store().await;
+
+    // Hydrate the sealed custody from disk (if CUSTODY_SEAL_PATH is set and the file exists) so the
+    // store starts "initialized but locked" after a restart. We do NOT auto-unlock — there is no
+    // passphrase on disk; the operator still unlocks (the passphrase decrypts the disk-loaded blob ->
+    // the SAME signer). Skip if the store already has a custody blob (e.g. Mongo already persisted it).
+    if let Some(path) = cfg.custody_seal_path.as_deref() {
+        if store.get_custody().await.is_none() {
+            match vet_api::custody::read_seal_file(path) {
+                Ok(Some((encrypted_seed, meta))) => {
+                    store
+                        .put_custody(vet_api::store::CustodyBlob { encrypted_seed, meta })
+                        .await;
+                    tracing::info!("hydrated sealed custody from {path} (initialized but locked)");
+                }
+                Ok(None) => tracing::info!("no custody seal at {path}; starting uninitialized"),
+                Err(e) => {
+                    tracing::error!("CUSTODY_SEAL_PATH set but seal load failed: {e}; refusing to start");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
 
     let state = AppState {
         store,

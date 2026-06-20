@@ -40,6 +40,9 @@ fn ok(v: Value) -> Resp {
     (StatusCode::OK, Json(v))
 }
 fn err(code: StatusCode, msg: &str) -> Resp {
+    // stderr is captured to .demo/<svc>.log (demo-up redirects 2>&1) so failed requests surface the
+    // exact reason during the live demo, even without RUST_LOG.
+    eprintln!("[err {code}] {msg}");
     (code, Json(json!({ "error": msg })))
 }
 
@@ -179,7 +182,16 @@ async fn admin_login(
     st.ratelimit.record_success(&ip);
     let token = format!("admin_{}", auth::new_op_token());
     st.store.put_op_session(token.clone()).await;
-    ok(json!({ "token": token }))
+    // Report custody state so the portal routes correctly after a restart: an already-initialized
+    // custody (seal hydrated from disk) must go to Unlock, NOT re-genesis.
+    let initialized = st
+        .store
+        .get_custody()
+        .await
+        .map(|c| c.meta.state == "initialized")
+        .unwrap_or(false);
+    let unlocked = st.custody.is_unlocked();
+    ok(json!({ "token": token, "initialized": initialized, "unlocked": unlocked }))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -250,7 +262,16 @@ async fn genesis_confirm(
         address: addr0.clone(),
         label: "account0".to_string(),
     });
-    st.store.put_custody(blob).await;
+    st.store.put_custody(blob.clone()).await;
+    // ALSO persist the seal to disk (if configured) so the signer survives a backend restart. We
+    // write ONLY the ciphertext + non-secret meta (atomic temp+rename, 0600). A write failure here
+    // is fatal to the request: the operator must know the seal is NOT durable before they navigate
+    // away (otherwise a restart silently loses the just-genesised seed).
+    if let Some(path) = st.cfg.custody_seal_path.as_deref() {
+        if let Err(e) = crate::custody::write_seal_file(path, &blob.encrypted_seed, &blob.meta) {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("persist seal: {e}"));
+        }
+    }
     st.custody.clear_stash();
     ok(json!({ "address": addr0 }))
 }
@@ -789,7 +810,10 @@ async fn export_session_start(
     let mut bytes = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
     let token = hex::encode(bytes);
-    let exp = auth::now() + 180;
+    // 10-minute TTL: the export path includes a slow on-device Groth16 proof (tens of seconds) plus the
+    // owner's manual steps, so a 180s token can expire mid-flow. Still one-time (consumed on a
+    // successful record); the on-chain nullifier independently prevents replay.
+    let exp = auth::now() + 600;
     st.store.put_export_token(&token, &session_id, exp).await;
     let qr = format!("{}/x/{}?a={}", st.cfg.deployment_url, token, relayer);
     ok(json!({ "qrUrl": qr, "sessionId": session_id }))
@@ -819,7 +843,10 @@ async fn export_session_resolve(State(st): State<AppState>, Path(token): Path<St
 
 #[derive(Deserialize)]
 struct ConsentSubmitReq {
-    #[serde(rename = "sessionId")]
+    /// OPTIONAL: the phone authenticates with the one-time `exportToken`, which already maps to a
+    /// session, so it need not echo the sessionId. The operator portal still sends it. Resolved from
+    /// the token when absent.
+    #[serde(rename = "sessionId", default)]
     session_id: String,
     consent: Value,
     sig: String,
@@ -849,14 +876,30 @@ async fn verify_consent_submit(
     headers: HeaderMap,
     Json(body): Json<ConsentSubmitReq>,
 ) -> Resp {
-    // Dual gate: operator session OR a one-time export token (the owner's phone). The token is
-    // consumed once-only here so a captured submit can't be replayed.
+    // The phone authenticates with the one-time export token, which already maps to a session — so
+    // the sessionId in the body is optional; resolve it from the token (peek, non-consuming) when the
+    // phone omits it. The operator portal sends sessionId directly.
+    let session_id = if body.session_id.is_empty() {
+        match body.export_token.as_deref() {
+            Some(t) => st.store.peek_export_token(t).await.unwrap_or_default(),
+            None => String::new(),
+        }
+    } else {
+        body.session_id.clone()
+    };
+    // Dual gate: operator session OR a one-time export token (the owner's phone). PEEK the token
+    // (consume=false) so a FAILED verification does not burn the owner's one-time token — they can
+    // retry with the same QR. The token is consumed ONLY when the on-chain record SUCCEEDS — and that
+    // record is now ASYNC (it outlives the phone's 8s submit timeout), so the consume happens in the
+    // background task inside `consent_submit`, NOT here. We pass the token in and the task owns the
+    // consume-on-record-success (the on-chain nullifier independently prevents a recorded
+    // verification from being replayed).
     if let Err(e) = require_operator_or_export_token(
         &st,
         &headers,
-        &body.session_id,
+        &session_id,
         body.export_token.as_deref(),
-        true,
+        false,
     )
     .await
     {
@@ -864,13 +907,14 @@ async fn verify_consent_submit(
     }
     crate::verify::consent_submit(
         &st,
-        body.session_id,
+        session_id,
         body.consent,
         body.sig,
         body.mode,
         body.disclosed_doc,
         body.proof,
         body.bind,
+        body.export_token,
     )
     .await
 }
@@ -909,6 +953,452 @@ async fn verify_session_status(
         "mode": s.mode,
         "txHash": s.tx_hash,
         "nullifier": s.nullifier,
+    }))
+}
+
+// --------------------------------------------------------------------------------------------
+// SERVER-SIDE PROVING API (Workstream A — 32-bit Android fallback). Gated behind the `prover`
+// feature; the route is mounted only when compiled with `--features prover`.
+// --------------------------------------------------------------------------------------------
+
+/// `POST /prove-verification` body — the SAME inputs the on-device
+/// `dogtag_standard::prover_ffi::prove_verification` takes: the stored wrapped doc, the §1.10 consent
+/// JSON, and the EdDSA-BabyJubjub consent signature + public key.
+#[cfg(feature = "prover")]
+#[derive(Deserialize)]
+struct ProveVerificationReq {
+    /// The stored `WrappedDoc` (raw salted leaves; the WITNESS). Accepts either an embedded JSON
+    /// object or a stringified JSON document (the phone has it as a string).
+    #[serde(rename = "wrappedDoc")]
+    wrapped_doc: Value,
+    /// The §1.10 consent (all 0x.. hex fields), same shape as `eddsaConsentJson` / the POSTed consent.
+    consent: Value,
+    /// The EdDSA-BabyJubjub consent signature + public key: `{ r8xDec, r8yDec, sDec, axHex, ayHex }`.
+    #[serde(rename = "eddsaSig")]
+    eddsa_sig: EddsaSigReq,
+}
+
+/// The pass-through EdDSA signature fields (mirrors the on-device `EddsaSigInput` UniFFI record).
+#[cfg(feature = "prover")]
+#[derive(Deserialize)]
+struct EddsaSigReq {
+    #[serde(rename = "r8xDec")]
+    r8x_dec: String,
+    #[serde(rename = "r8yDec")]
+    r8y_dec: String,
+    #[serde(rename = "sDec")]
+    s_dec: String,
+    #[serde(rename = "axHex")]
+    ax_hex: String,
+    #[serde(rename = "ayHex")]
+    ay_hex: String,
+}
+
+/// `POST /prove-verification` — the TRUSTED PROVER SERVICE.
+///
+/// A 32-bit-only Android phone cannot generate a valid Groth16 proof on-device (no off-the-shelf
+/// 32-bit-ARM prover). It instead POSTs `{ wrappedDoc, consent, eddsaSig }` here; this handler
+/// assembles the 19 circuit inputs (REUSING the SAME `dogtag_standard::prover_assemble` assembly the
+/// on-device path uses) and generates the proof with the 64-bit-correct ark-0.6 Arkworks prover
+/// (`ArkProver`, the same one whose proofs cast-verify on the live `Groth16Verifier`). It returns the
+/// Solidity calldata `{ a, b, c, pub }` — the exact shape the groomer's `/v1/verify/consent` accepts
+/// as its `proof`. The phone then submits THAT proof to the groomer itself.
+///
+/// TRUST NOTE: this service sees the witness (the wrapped doc + the EdDSA sig). It is therefore NOT
+/// the groomer — the groomer never sees the witness, only the resulting proof. In PRODUCTION this is
+/// the OWNER's own trusted prover (or a service the owner trusts); the demo runs it as a platform
+/// service (a dedicated vet-api instance with `CIRCUITS_BUILD_DIR` set so the real `ArkProver` — not
+/// the `StubProver` — is loaded). The route is unauthenticated by design (anyone can ask for a proof
+/// of THEIR OWN record); it discloses nothing the caller did not already hold.
+#[cfg(feature = "prover")]
+async fn prove_verification(State(st): State<AppState>, Json(body): Json<ProveVerificationReq>) -> Resp {
+    // The wrapped doc / consent may arrive as an embedded object or a JSON string; normalize to text.
+    let as_text = |v: &Value| -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }
+    };
+    let wrapped_doc_json = as_text(&body.wrapped_doc);
+    let consent_json = as_text(&body.consent);
+
+    let sig = dogtag_standard::prover_assemble::EddsaSigInput {
+        r8x_dec: body.eddsa_sig.r8x_dec,
+        r8y_dec: body.eddsa_sig.r8y_dec,
+        s_dec: body.eddsa_sig.s_dec,
+        ax_hex: body.eddsa_sig.ax_hex,
+        ay_hex: body.eddsa_sig.ay_hex,
+    };
+
+    // Assemble the 19 named circuit inputs from the witness — the SAME assembly the on-device prover
+    // runs. (ark-0.5 field types stay internal to dogtag-standard; only decimal strings escape.) The
+    // returned Value is already in the `ProveInputs::from_circuit_input_json` shape.
+    let circuit_input_json =
+        match dogtag_standard::prover_assemble::assemble_circuit_input(&wrapped_doc_json, &consent_json, &sig) {
+            Ok(v) => v,
+            Err(e) => return err(StatusCode::BAD_REQUEST, &format!("assemble: {e}")),
+        };
+
+    // Prove with the backend's ark-0.6 Arkworks prover (the live-verifier-correct one). Driving it
+    // through the shared `ProverClient` with the assembled `circuit_input_json` runs the real
+    // `ArkProver`; if this instance has no `CIRCUITS_BUILD_DIR` it is the `StubProver` and returns a
+    // placeholder — so a real prover-service MUST set `CIRCUITS_BUILD_DIR` (demo-up.sh does).
+    let input = crate::prover::ProveInput {
+        circuit_input_json: Some(circuit_input_json),
+        ..Default::default()
+    };
+    let proof = match st.prover.prove(input).await {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("prover: {e}")),
+    };
+
+    // Return the Solidity calldata in the EXACT `{a, b, c, pub}` shape the groomer's
+    // `/v1/verify/consent` accepts as `proof` (mirrors `dogtag_prover::Groth16Output`). All decimal.
+    ok(json!({
+        "a": proof.a,
+        "b": proof.b,
+        "c": proof.c,
+        "pub": proof.pub_signals,
+    }))
+}
+
+// --------------------------------------------------------------------------------------------
+// DOG_PROFILE (SBT) issuance — the VET issues dog tags (operator starts a session showing a QR; the
+// device scans, posts its wallet + signature; the vet mints the DOG_PROFILE SBT to that wallet with
+// the owner-identity baked into the merkle leaves).
+// --------------------------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ProfileOwnerIdentityReq {
+    #[serde(rename = "countryOfIdentification", default)]
+    country_of_identification: String,
+    #[serde(default)]
+    identification: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct ProfilePetReq {
+    name: String,
+    #[serde(default)]
+    species: Option<String>,
+    #[serde(rename = "breedVbo", default)]
+    breed_vbo: Option<String>,
+    #[serde(rename = "breedLabel", default)]
+    breed_label: Option<String>,
+    #[serde(default)]
+    sex: Option<String>,
+    #[serde(rename = "neuterStatus", default)]
+    neuter_status: Option<String>,
+    #[serde(rename = "dateOfBirth", default)]
+    date_of_birth: Option<String>,
+    #[serde(rename = "weightHistory", default)]
+    weight_history: Vec<Value>,
+    #[serde(default)]
+    microchip: Option<ProfileMicrochipReq>,
+}
+
+#[derive(Deserialize)]
+struct ProfileMicrochipReq {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    standard: String,
+    #[serde(rename = "implantDate", default)]
+    implant_date: String,
+    #[serde(rename = "bodyLocation", default)]
+    body_location: String,
+}
+
+#[derive(Deserialize)]
+struct ProfileIssueStartReq {
+    #[serde(rename = "ownerIdentity")]
+    owner_identity: ProfileOwnerIdentityReq,
+    pet: ProfilePetReq,
+}
+
+/// The CANONICAL on-chain dogTagId = `field_of_value(Integer(handle))` — the verification circuit's
+/// `pub[0]` and the contract's `ownerOf`/`profileRoot` key. The DOG_PROFILE SBT MUST be minted under this
+/// (not the raw numeric handle), so the owner's later ZK export passes `ownerOf(pub[0])`. The raw handle
+/// stays the operator-facing id + the credential's `dogTagId` leaf (which the circuit field-hashes to
+/// exactly this). Mirrors the `field-hash` bin / `dog_tag_id_field_hex` FFI.
+fn onchain_dog_tag_id(handle: &str) -> Result<String, String> {
+    let scalar =
+        dogtag_standard::wrap::scalar_from_packed(dogtag_standard::types::TypeTag::Integer, handle)
+            .map_err(|e| e.to_string())?;
+    let f = dogtag_standard::leaf::field_of_value(&scalar).map_err(|e| e.to_string())?;
+    Ok(dogtag_standard::field::to_hex32(&f))
+}
+
+/// POST /profiles/issue/session/start — operator-session gated. Allocate a dogTagId, persist a
+/// ProfileIssueSession with a fresh 16-byte one-time bind token (180s TTL), and return the QR URL
+/// `<deployment_url>/p/<token>` the device scans. Returns `{ token, dogTagId, sessionId, qr }`.
+async fn profile_issue_session_start(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ProfileIssueStartReq>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    if !st.custody.is_unlocked() {
+        return err(StatusCode::CONFLICT, "not unlocked");
+    }
+    // Allocate a dogTagId that is NOT already minted on the (shared) DogTagSBT. The local counter
+    // resets on restart and the SBT is shared across issuers, so a fresh counter can collide with an
+    // already-minted id — `DogTagSBT.mint` reverts on a duplicate token. Skip taken ids: owner_of
+    // returns Err(NotFound) for an unminted id (free) and Ok(_) for a minted one (taken).
+    let mut dog_tag_id = st.store.next_dog_tag_id().await.to_string();
+    for _ in 0..256 {
+        // The SBT is minted under the field-hashed id, so the collision-check must query
+        // ownerOf(field_of_value(handle)), not the raw handle.
+        let onchain = match onchain_dog_tag_id(&dog_tag_id) {
+            Ok(v) => v,
+            Err(_) => break, // non-numeric handle can't collide via this path; proceed
+        };
+        match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
+            Err(crate::chain::ChainError::NotFound) => break, // unminted -> free
+            Ok(_) => dog_tag_id = st.store.next_dog_tag_id().await.to_string(), // taken -> next
+            Err(_) => break, // transient RPC error: proceed (a real dup would revert at mint)
+        }
+    }
+
+    let owner_identity = crate::store::OwnerIdentity {
+        country_of_identification: body.owner_identity.country_of_identification,
+        identification: body.owner_identity.identification,
+        name: body.owner_identity.name,
+    };
+    let microchip = match body.pet.microchip {
+        Some(m) => crate::store::Microchip {
+            code: m.code,
+            standard: m.standard,
+            implant_date: m.implant_date,
+            body_location: m.body_location,
+        },
+        None => crate::store::Microchip::default(),
+    };
+    let weight_history: Vec<crate::store::WeightEntry> = body
+        .pet
+        .weight_history
+        .iter()
+        .filter_map(|w| {
+            Some(crate::store::WeightEntry {
+                unit: w.get("unit").and_then(|v| v.as_str())?.to_string(),
+                value: w.get("value").and_then(|v| v.as_str())?.to_string(),
+                measured_on: w.get("measuredOn").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            })
+        })
+        .collect();
+    let profile = crate::store::PetProfile {
+        species: body.pet.species,
+        breed_vbo: body.pet.breed_vbo,
+        breed_label: body.pet.breed_label,
+        sex: body.pet.sex,
+        neuter_status: body.pet.neuter_status,
+        date_of_birth: body.pet.date_of_birth,
+        weight_history,
+    };
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    st.store
+        .put_profile_session(crate::store::ProfileIssueSession {
+            session_id: session_id.clone(),
+            dog_tag_id: dog_tag_id.clone(),
+            owner_identity,
+            pet_name: body.pet.name,
+            microchip,
+            profile,
+            status: "pending".to_string(),
+            created_at: auth::now(),
+            wallet_address: None,
+            root: None,
+            tx_hash: None,
+        })
+        .await;
+
+    // one-time 16-byte bind token (180s TTL) -> session; the QR carries `<deployment_url>/p/<token>`.
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    let token = hex::encode(bytes);
+    let exp = auth::now() + 180;
+    st.store.put_bind_token(&token, &session_id, exp).await;
+    let qr = format!("{}/p/{}", st.cfg.deployment_url, token);
+    ok(json!({ "token": token, "dogTagId": dog_tag_id, "sessionId": session_id, "qr": qr }))
+}
+
+/// GET /p/{token} — resolve a one-time bind token to the session metadata the device needs to build
+/// its registration signature ({ sessionId, dogTagId, registrationMessageWalletField }). Unauthenticated
+/// and NON-consuming (consumed only on bind). A missing/expired token is a 404. Symmetric with `/x/`.
+async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<String>) -> Resp {
+    let session_id = match st.store.peek_bind_token(&token).await {
+        Some(id) => id,
+        None => return err(StatusCode::NOT_FOUND, "bind token missing or expired"),
+    };
+    match st.store.get_profile_session(&session_id).await {
+        Some(s) => ok(json!({
+            "sessionId": s.session_id,
+            "dogTagId": s.dog_tag_id,
+            "status": s.status,
+            // the device signs `register_message(walletAddress)` = "DogTag wallet registration: <lc>".
+            "registrationMessagePrefix": "DogTag wallet registration: ",
+        })),
+        None => err(StatusCode::NOT_FOUND, "session not found"),
+    }
+}
+
+#[derive(Deserialize)]
+struct ProfileBindReq {
+    token: String,
+    #[serde(rename = "walletAddress")]
+    wallet_address: String,
+    signature: String,
+}
+
+/// POST /profiles/issue/bind — device, token-authenticated (unauthenticated by operator session). The
+/// device posts `{ token, walletAddress, signature }`; `signature` is an EIP-191 personal_sign over
+/// `register_message(walletAddress)`. Recover the signer; require it == walletAddress. Consume the
+/// token atomically (one-time). Build the DOG_PROFILE VC -> wrap -> root R (all off-chain, fast), then
+/// RESPOND IMMEDIATELY with `{ wrappedDoc, dogTagId, root, walletAddress, status: "minting" }` and mint
+/// the SBT to the wallet via the vet signer (ISSUER_ROLE) in the BACKGROUND (the on-chain receipt is
+/// ~12-24s, exceeding the phone's read timeout). The phone polls the chain until the mint lands; the
+/// operator portal polls `GET /profiles/issue/session/{id}` (pending -> bound+txHash, or error).
+async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<ProfileBindReq>) -> Resp {
+    let wallet = body.wallet_address.trim().to_lowercase();
+    // shape check: a 20-byte 0x address.
+    if wallet.len() != 42 || !wallet.starts_with("0x") || !wallet[2..].bytes().all(|b| b.is_ascii_hexdigit()) {
+        return err(StatusCode::BAD_REQUEST, "walletAddress must be a 0x.. 20-byte address");
+    }
+    // recover the EIP-191 signer of the canonical message; require it == walletAddress.
+    let message = auth::register_message(&wallet);
+    let recovered = match auth::recover_personal_sign(&message, &body.signature) {
+        Some(a) => a,
+        None => return err(StatusCode::BAD_REQUEST, "malformed signature"),
+    };
+    if !recovered.eq_ignore_ascii_case(&wallet) {
+        return err(StatusCode::UNAUTHORIZED, "signature does not match walletAddress");
+    }
+    if !st.custody.is_unlocked() {
+        return err(StatusCode::CONFLICT, "not unlocked");
+    }
+    // consume the one-time token atomically (second call -> 404/410).
+    let session_id = match st.store.take_bind_token(&body.token).await {
+        Some(id) => id,
+        None => return err(StatusCode::GONE, "bind token missing, expired or already used"),
+    };
+    let mut session = match st.store.get_profile_session(&session_id).await {
+        Some(s) if s.status == "pending" => s,
+        Some(_) => return err(StatusCode::CONFLICT, "session already bound"),
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+
+    // build the DOG_PROFILE VC with the owner-identity baked in, wrap -> root.
+    let meta = app::profile_issuer_meta(&st.cfg);
+    let vc = app::build_profile_vc(
+        &st.cfg,
+        &session.pet_name,
+        &session.microchip,
+        &session.profile,
+        &session.owner_identity,
+        &wallet,
+        &session.dog_tag_id,
+    );
+    let doc = match app::wrap_vc(meta, &vc) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &e),
+    };
+    let root = doc.signature.merkle_root.clone();
+
+    // Persist the wallet + root immediately (status stays "pending" until the async mint lands). This
+    // lets the portal/device observe the bound wallet/root before the on-chain receipt arrives.
+    session.wallet_address = Some(wallet.clone());
+    session.root = Some(root.clone());
+    st.store.update_profile_session(session.clone()).await;
+
+    // Mint the SBT to the device wallet ASYNC: ROAX blocks are ~12s apart so the on-chain receipt takes
+    // ~12-24s — far longer than the phone's HTTP read timeout. We RESPOND IMMEDIATELY with the wrapped
+    // doc (built off-chain) and `status: "minting"`, and run the mint in the background; the phone polls
+    // the chain until the mint lands. The spawned task updates the session (-> "bound"+txHash, or
+    // "error"+message) so the operator portal status poll keeps working.
+    //
+    // Clone the needed Arcs/values OUT of the app state before the spawn so the future is `Send + 'static`.
+    let chain = st.chain.clone();
+    let store = st.store.clone();
+    let sbt_addr = st.cfg.sbt_addr.clone();
+    let signer_index = st.cfg.vet_signer_index;
+    // Mint + read-back under the field-hashed on-chain id (== the export's pub[0]); the raw handle stays
+    // the credential's dogTagId. Computed here so a bad handle fails synchronously, before the spawn.
+    let onchain_id = match onchain_dog_tag_id(&session.dog_tag_id) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("dogTagId field-hash: {e}")),
+    };
+    let mint_wallet = wallet.clone();
+    let mint_root = root.clone();
+    let mut bg_session = session.clone();
+    tokio::spawn(async move {
+        match chain
+            .mint(signer_index, &sbt_addr, &mint_wallet, &onchain_id, &mint_root)
+            .await
+        {
+            Ok(sent) => {
+                // VERIFY ON-CHAIN before marking the issuance correct: the mint receipt is not enough —
+                // read back ownerOf(dogTagId)==device wallet AND profileRoot(dogTagId)==the issued root.
+                // Only a chain-confirmed match flips to "bound"; anything else is "error" (so the device
+                // never accepts an unverified issuance).
+                let owner_ok = matches!(
+                    chain.owner_of(&sbt_addr, &onchain_id).await,
+                    Ok(o) if o.eq_ignore_ascii_case(&mint_wallet)
+                );
+                let root_ok = matches!(
+                    chain.profile_root_of(&sbt_addr, &onchain_id).await,
+                    Ok(r) if r.eq_ignore_ascii_case(&mint_root)
+                );
+                if owner_ok && root_ok {
+                    bg_session.status = "bound".to_string();
+                    bg_session.tx_hash = Some(sent.tx_hash);
+                } else {
+                    bg_session.status = "error".to_string();
+                    bg_session.tx_hash =
+                        Some(format!("on-chain verify failed (owner_ok={owner_ok} root_ok={root_ok})"));
+                }
+            }
+            Err(e) => {
+                bg_session.status = "error".to_string();
+                bg_session.tx_hash = Some(format!("mint error: {e}"));
+            }
+        }
+        store.update_profile_session(bg_session).await;
+    });
+
+    ok(json!({
+        "wrappedDoc": serde_json::to_value(&doc).unwrap(),
+        "dogTagId": session.dog_tag_id,
+        "root": root,
+        "walletAddress": wallet,
+        "status": "minting",
+    }))
+}
+
+/// GET /profiles/issue/session/{id} — operator-gated status poll so the portal can show whether the
+/// device has bound + surface the txHash/root/wallet. Returns the stored session row's status.
+async fn profile_issue_session_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let s = match st.store.get_profile_session(&session_id).await {
+        Some(s) => s,
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+    ok(json!({
+        "status": s.status,
+        "dogTagId": s.dog_tag_id,
+        "walletAddress": s.wallet_address,
+        "root": s.root,
+        "txHash": s.tx_hash,
     }))
 }
 
@@ -1231,7 +1721,17 @@ pub fn admin_router(state: AppState) -> Router {
 
 /// The public (non-admin) routes. Always mounted on the public `0.0.0.0:PORT` listener.
 pub fn public_router(state: AppState) -> Router {
+    // SERVER-SIDE PROVING API (32-bit Android fallback). Mounted only when compiled with the
+    // `prover` feature AND this instance is the dedicated prover-service (CIRCUITS_BUILD_DIR set ->
+    // a real ArkProver). The groomer instance is built WITHOUT this feature, so it can never be asked
+    // to prove and therefore never sees a witness through this path. See `prove_verification`.
+    #[cfg(feature = "prover")]
+    let prove_route = Router::new().route("/prove-verification", post(prove_verification));
+    #[cfg(not(feature = "prover"))]
+    let prove_route = Router::<AppState>::new();
+
     Router::new()
+        .merge(prove_route)
         // health (no auth) — used by compose healthchecks
         .route("/health", get(health))
         // login
@@ -1249,6 +1749,12 @@ pub fn public_router(state: AppState) -> Router {
         .route("/r/:token", get(get_shared))
         // short one-time EXPORT token resolver (unauthenticated; NON-consuming — consume on submit)
         .route("/x/:token", get(export_session_resolve))
+        // DOG_PROFILE (SBT) issuance — vet issues dog tags
+        .route("/profiles/issue/session/start", post(profile_issue_session_start))
+        .route("/profiles/issue/session/:id", get(profile_issue_session_status))
+        .route("/profiles/issue/bind", post(profile_issue_bind))
+        // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
+        .route("/p/:token", get(profile_bind_resolve))
         // issuer signers
         .route("/issuer/signers", get(issuer_signers))
         // import

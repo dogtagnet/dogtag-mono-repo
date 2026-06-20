@@ -414,6 +414,69 @@ async fn pet_mint_fills_defaults_when_profile_omitted() {
     assert!(admin_api::verify::structural_valid(&doc), "defaulted DOG_PROFILE VC integrity must verify");
 }
 
+// ============================================================================================
+// (g) approve → grant DogTagSBT.ISSUER_ROLE for dog-tag issuers (DOG_PROFILE), NOT for groomers.
+// ============================================================================================
+
+/// Submit an issuer-application and return its applicationId.
+async fn submit_application(app: &axum::Router, body: serde_json::Value) -> String {
+    let (s, b) = call(app, "POST", "/v1/issuer-applications", None, Some(body)).await;
+    assert_eq!(s, StatusCode::OK, "submit application: {b}");
+    b["applicationId"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn approve_dog_profile_grants_issuer_role() {
+    use admin_api::chain::ChainClient;
+
+    let (state, chain, _vault, _biz) = hermetic_state();
+    let sbt = state.cfg.sbt_addr.clone();
+    let app = admin_api::router(state);
+    let admin = admin_token(&app).await;
+
+    let vet_addr = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
+    let groomer_addr = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+
+    // (1) a dog-tag issuer (recordTypes include DOG_PROFILE) — approve must grant ISSUER_ROLE.
+    let vet_app = submit_application(
+        &app,
+        serde_json::json!({
+            "issuerEntityId": "bayview-vet",
+            "addresses": [vet_addr],
+            "recordTypes": ["VACCINATION", "DOG_PROFILE"],
+            "domain": "vet.example",
+            "documentStore": "0x00000000000000000000000000000000000000cc",
+            "usdaNan": "123456",
+        }),
+    )
+    .await;
+    assert!(!chain.has_issuer_role(&sbt, vet_addr).await.unwrap(), "no role before approve");
+    let (s, b) = call(&app, "POST", &format!("/v1/issuer-applications/{vet_app}/approve"), Some(&admin), Some(serde_json::json!({}))).await;
+    assert_eq!(s, StatusCode::OK, "approve vet: {b}");
+    assert_eq!(b["issuerRoleGranted"], true, "dog-tag issuer must be granted ISSUER_ROLE");
+    assert!(b["issuerRoleTxHash"].as_str().is_some(), "issuerRoleTxHash present");
+    assert!(chain.has_issuer_role(&sbt, vet_addr).await.unwrap(), "ISSUER_ROLE granted on the SBT");
+
+    // (2) a groomer (VERIFY-only, no DOG_PROFILE) — approve must NOT grant ISSUER_ROLE.
+    let groomer_app = submit_application(
+        &app,
+        serde_json::json!({
+            "issuerEntityId": "pawsh-groomer",
+            "addresses": [groomer_addr],
+            "recordTypes": ["VACCINATION"],
+            "verifyPurposes": ["grooming_intake"],
+            "domain": "groomer.example",
+            "documentStore": "0x00000000000000000000000000000000000000cc",
+        }),
+    )
+    .await;
+    let (s, b) = call(&app, "POST", &format!("/v1/issuer-applications/{groomer_app}/approve"), Some(&admin), Some(serde_json::json!({}))).await;
+    assert_eq!(s, StatusCode::OK, "approve groomer: {b}");
+    assert_eq!(b["issuerRoleGranted"], false, "groomer (no DOG_PROFILE) must NOT get ISSUER_ROLE");
+    assert!(b["issuerRoleTxHash"].is_null(), "no issuer-role tx for a groomer");
+    assert!(!chain.has_issuer_role(&sbt, groomer_addr).await.unwrap(), "groomer holds no ISSUER_ROLE");
+}
+
 // --------------------------------------------------------------------------------------------
 // test helpers
 // --------------------------------------------------------------------------------------------

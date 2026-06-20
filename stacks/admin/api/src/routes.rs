@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::app::{self, AppState, DOG_PROFILE};
 use crate::auth::{self, keccak256_hex, ShareClaims};
-use crate::chain::record_type_key;
+use crate::chain::{record_type_key, verify_key};
 use crate::crypto;
 use crate::store::*;
 
@@ -101,8 +101,8 @@ async fn signup(State(st): State<AppState>, Json(body): Json<SignupReq>) -> Resp
     };
     let owner = Owner {
         owner_id: owner_id.clone(),
-        email: body.email.clone(),
-        password_hash: auth::hash_password(&body.password),
+        email: Some(body.email.clone()),
+        password_hash: Some(auth::hash_password(&body.password)),
         wallet_address: body.wallet_address.to_lowercase(),
         push_token: body.push_token,
         profile_pii,
@@ -138,7 +138,15 @@ async fn login(
             return err(StatusCode::UNAUTHORIZED, "bad credentials");
         }
     };
-    if !auth::verify_password(&body.password, &owner.password_hash) {
+    // wallet-only owners have no password_hash -> password login is not available for them.
+    let stored_hash = match &owner.password_hash {
+        Some(h) => h,
+        None => {
+            st.ratelimit.record_failure(&ip);
+            return err(StatusCode::UNAUTHORIZED, "bad credentials");
+        }
+    };
+    if !auth::verify_password(&body.password, stored_hash) {
         st.ratelimit.record_failure(&ip);
         return err(StatusCode::UNAUTHORIZED, "bad credentials");
     }
@@ -268,7 +276,10 @@ async fn mint_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path
     // allocate the non-personal dogTagId, build + wrap the DOG_PROFILE VC -> root.
     let dog_tag_id = st.store.next_dog_tag_id().await.to_string();
     let meta = app::profile_issuer_meta(&st.cfg);
-    let vc = app::build_profile_vc(&st.cfg, &pet.name, &pet.microchip, &pet.profile, &dog_tag_id);
+    // owner-session mint does not collect ownerIdentity; emit empty-string fields (schema only
+    // requires the keys present as strings).
+    let owner_identity = OwnerIdentity::default();
+    let vc = app::build_profile_vc(&st.cfg, &pet.name, &pet.microchip, &pet.profile, &owner_identity, &dog_tag_id);
     let doc = match app::wrap_vc(meta, &vc) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::BAD_REQUEST, &e),
@@ -574,6 +585,9 @@ struct IssuerApplicationReq {
     addresses: Vec<String>,
     #[serde(rename = "recordTypes")]
     record_types: Vec<String>,
+    /// VERIFY:<purpose> labels (e.g. "boarding_intake") this verifier may relay verifications for.
+    #[serde(rename = "verifyPurposes", default)]
+    verify_purposes: Vec<String>,
     domain: String,
     #[serde(rename = "documentStore")]
     document_store: String,
@@ -594,6 +608,7 @@ async fn create_application(State(st): State<AppState>, Json(body): Json<IssuerA
             issuer_entity_id: body.issuer_entity_id,
             addresses: body.addresses.iter().map(|a| a.to_lowercase()).collect(),
             record_types: body.record_types,
+            verify_purposes: body.verify_purposes,
             domain: body.domain,
             usda_nan: body.usda_nan,
             license: body.license,
@@ -617,6 +632,7 @@ async fn list_applications(State(st): State<AppState>, headers: HeaderMap) -> Re
         .map(|a| json!({
             "applicationId": a.application_id, "issuerEntityId": a.issuer_entity_id,
             "addresses": a.addresses, "recordTypes": a.record_types,
+            "verifyPurposes": a.verify_purposes,
             "domain": a.domain, "status": a.status,
         }))
         .collect();
@@ -672,10 +688,64 @@ async fn approve_application(State(st): State<AppState>, headers: HeaderMap, Pat
             }
         }
     }
+    // for EACH (address, verifyPurpose): admin signer calls whitelistFor(verify_key(purpose), address)
+    // so the verifier can relay VERIFY:<purpose> verifications (the on-chain VerificationRegistry checks
+    // this exact key against the relayer). verify_key byte-matches the on-chain `_verifyKey`.
+    for addr in &app_rec.addresses {
+        for purpose in &app_rec.verify_purposes {
+            let vk = verify_key(purpose);
+            match st
+                .chain
+                .whitelist_for(st.cfg.admin_signer_index, &st.cfg.issuer_registry_addr, &vk, addr)
+                .await
+            {
+                Ok(sent) => txs.push(sent.tx_hash),
+                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("whitelistFor(verify): {e}")),
+            }
+        }
+    }
+    // dog-tag issuer onboarding: if this application is for the DOG_PROFILE record type, ALSO grant
+    // DogTagSBT.ISSUER_ROLE to each signer address so it can mint dog tags (`DogTagSBT.mint`). The
+    // admin signer holds the SBT's DEFAULT_ADMIN_ROLE, so it can grantRole. Idempotent: skipped if the
+    // address already holds the role. (The DOG_PROFILE IssuerRegistry whitelist entry above stays —
+    // harmless.) Groomers have no DOG_PROFILE record type, so this is a no-op for them.
+    let is_dog_tag_issuer = app_rec
+        .record_types
+        .iter()
+        .any(|rt| rt.eq_ignore_ascii_case(DOG_PROFILE));
+    let mut issuer_role_granted = false;
+    let mut issuer_role_txs = Vec::new();
+    if is_dog_tag_issuer {
+        for addr in &app_rec.addresses {
+            match st.chain.has_issuer_role(&st.cfg.sbt_addr, addr).await {
+                Ok(true) => issuer_role_granted = true, // already granted — idempotent skip
+                Ok(false) => {
+                    match st
+                        .chain
+                        .grant_issuer_role(st.cfg.admin_signer_index, &st.cfg.sbt_addr, addr)
+                        .await
+                    {
+                        Ok(sent) => {
+                            issuer_role_granted = true;
+                            issuer_role_txs.push(sent.tx_hash);
+                        }
+                        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}")),
+                    }
+                }
+                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("hasRole(ISSUER): {e}")),
+            }
+        }
+    }
+
     app_rec.status = "approved".to_string();
     app_rec.whitelist_txs = txs.clone();
     st.store.put_application(app_rec).await;
-    ok(json!({ "status": "approved", "whitelistTxs": txs }))
+    ok(json!({
+        "status": "approved",
+        "whitelistTxs": txs,
+        "issuerRoleGranted": issuer_role_granted,
+        "issuerRoleTxHash": issuer_role_txs.first().cloned(),
+    }))
 }
 
 async fn reject_application(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {

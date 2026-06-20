@@ -23,6 +23,8 @@ pub const OPERATOR_PW: &str = "op-pw";
 pub const ADMIN_PW: &str = "admin-pw";
 pub const CENTRAL_HMAC_SECRET: &str = "central-shared-secret";
 pub const BUSINESS_ID: &str = "biz-test";
+/// The DogTagSBT mint target used by tests (DOG_PROFILE issuance).
+pub const SBT_ADDR: &str = "0x00000000000000000000000000000000000000cc";
 
 /// Build an AppState with the given chain client + issuer/registry addresses.
 pub fn state_with(
@@ -44,11 +46,15 @@ pub fn state_with(
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain,
+        sbt_addr: SBT_ADDR.to_string(),
+        profile_document_store: SBT_ADDR.to_string(),
+        vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
         confirmations,
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
+        custody_seal_path: None,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -113,11 +119,15 @@ pub fn state_with_verify_keys(
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain,
+        sbt_addr: SBT_ADDR.to_string(),
+        profile_document_store: SBT_ADDR.to_string(),
+        vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
         confirmations,
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
+        custody_seal_path: None,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -146,11 +156,15 @@ pub fn state_for_calendar(calendar: Arc<MockCalendar>, central: Arc<MockCentralC
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),
+        sbt_addr: SBT_ADDR.to_string(),
+        profile_document_store: SBT_ADDR.to_string(),
+        vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
         confirmations: 1,
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
+        custody_seal_path: None,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -158,6 +172,44 @@ pub fn state_for_calendar(calendar: Arc<MockCalendar>, central: Arc<MockCentralC
         prover: Arc::new(StubProver),
         calendar: calendar as Arc<dyn CalendarProvider>,
         central: central as Arc<dyn CentralClient>,
+        custody: Custody::new(),
+        jwt: JwtKeys::generate(),
+        cfg: Arc::new(cfg),
+        ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
+    }
+}
+
+/// Build a minimal AppState whose Config carries `custody_seal_path` (the on-disk seal path) so a
+/// test can exercise genesis-confirm -> disk seal -> "restart" (fresh state with the SAME path) ->
+/// unlock. Uses a `MemChain` stub (no live RPC). When `existing` is `Some`, that store is reused so a
+/// fresh AppState can be hydrated from disk by the test's own startup logic (mirrors `main.rs`).
+pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState {
+    let issuer_addrs = HashMap::new();
+    let cfg = Config {
+        deployment_url: "http://localhost:41874".to_string(),
+        rpc_url: "memchain".to_string(),
+        issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
+        verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
+        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
+        issuer_addrs,
+        issuer_name: "DogTag Vet".to_string(),
+        issuer_domain: "vet.example".to_string(),
+        sbt_addr: SBT_ADDR.to_string(),
+        profile_document_store: SBT_ADDR.to_string(),
+        vet_signer_index: 0,
+        operator_password: OPERATOR_PW.to_string(),
+        admin_password: ADMIN_PW.to_string(),
+        confirmations: 1,
+        business_id: BUSINESS_ID.to_string(),
+        central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
+        custody_seal_path: Some(seal_path),
+    };
+    AppState {
+        store: store as Arc<dyn vet_api::store::Store>,
+        chain: Arc::new(vet_api::chain::MemChain::new()),
+        prover: Arc::new(StubProver),
+        calendar: Arc::new(MockCalendar::new()),
+        central: Arc::new(MockCentralClient::new()),
         custody: Custody::new(),
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),

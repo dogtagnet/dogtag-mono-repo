@@ -304,6 +304,41 @@ fn pub_signal_eq(a: &str, b: &str) -> bool {
     }
 }
 
+/// Recover the secp256k1 signer of a RAW 32-byte EIP-712 digest from a 65-byte `0x..` r‖s‖v
+/// signature (v = 27/28), returning the address as a lowercase `0x..` hex string. This is a RAW
+/// digest recover (`recover_address_from_prehash`) — NO EIP-191 `personal_sign` prefix is applied,
+/// because the owner's wallet signed the already-hashed BindConsentKey `_hashTypedDataV4` digest
+/// (mirrors how the contract `ecrecover`s the bind digest). Returns None on a malformed signature.
+fn recover_digest_signer(digest: &[u8; 32], signature_hex: &str) -> Option<String> {
+    use alloy::primitives::{B256, PrimitiveSignature};
+    let raw = hex::decode(signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim())).ok()?;
+    let sig = PrimitiveSignature::from_raw(&raw).ok()?;
+    let addr = sig.recover_address_from_prehash(&B256::from(*digest)).ok()?;
+    Some(format!("{addr:#x}"))
+}
+
+/// Parse a lowercase/checksummed `0x..` 20-byte address string into a `[u8; 20]`.
+fn addr_to_bytes20(addr: &str) -> Option<[u8; 20]> {
+    let raw = hex::decode(addr.trim().strip_prefix("0x").unwrap_or(addr.trim())).ok()?;
+    if raw.len() != 20 {
+        return None;
+    }
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&raw);
+    Some(out)
+}
+
+/// Parse a `0x..` 32-byte word string (the keyHash) into a `[u8; 32]`.
+fn b32_to_bytes32(word: &str) -> Option<[u8; 32]> {
+    let raw = hex::decode(word.trim().strip_prefix("0x").unwrap_or(word.trim())).ok()?;
+    if raw.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&raw);
+    Some(out)
+}
+
 pub async fn consent_submit(
     st: &AppState,
     session_id: String,
@@ -313,6 +348,11 @@ pub async fn consent_submit(
     disclosed_doc: Option<Value>,
     proof: Option<Value>,
     bind: Option<Value>,
+    // The one-time EXPORT token the phone authenticated with. The CLIENT-PROOF ZK branch records
+    // ON-CHAIN ASYNC (it survives the phone's 8s submit timeout); the background task consumes this
+    // token only on a record SUCCESS, so a failed record leaves the owner's QR retryable. `None` for
+    // the operator-portal path (no token to consume).
+    export_token: Option<String>,
 ) -> Resp {
     let s: VerifySession = match st.store.get_session(&session_id).await {
         Some(s) if s.status == "pending" => s,
@@ -327,7 +367,20 @@ pub async fn consent_submit(
         return err(StatusCode::BAD_REQUEST, "consent.relayer != session relayer");
     }
     let now = crate::auth::now();
-    let deadline = consent.get("deadline").and_then(|v| v.as_u64()).unwrap_or(0);
+    // The phone encodes `deadline` as a 0x-hex string (Consent.kt), so `as_u64()` on the JSON value
+    // returns None -> 0 -> ALWAYS "expired". Parse the hex/decimal string (or a JSON number) to seconds.
+    let deadline = match consent.get("deadline") {
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if let Some(h) = t.strip_prefix("0x") {
+                u64::from_str_radix(h, 16).unwrap_or(0)
+            } else {
+                t.parse::<u64>().unwrap_or(0)
+            }
+        }
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(0),
+        _ => 0,
+    };
     if deadline < now {
         return err(StatusCode::BAD_REQUEST, "consent expired");
     }
@@ -340,8 +393,9 @@ pub async fn consent_submit(
     let consent_root = consent.get("credentialRoot").and_then(|v| v.as_str()).unwrap_or("");
 
     let tx_hash;
-    // Set by the client-supplied-proof ZK branch from pub[4] (the consumed nullifier).
-    let mut session_nullifier: Option<String> = None;
+    // The consumed nullifier surfaced on the session for the NORMAL / server-prove paths (the
+    // client-proof ZK branch sets it on the session ASYNC from its background task instead).
+    let session_nullifier: Option<String> = None;
     if mode == "normal" {
         // third-party verify the disclosed doc; require valid.
         let doc_val = match disclosed_doc {
@@ -454,6 +508,9 @@ pub async fn consent_submit(
                 Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("keyOf: {e}")),
             };
             let already_bound = pub_signal_eq(&current_key, &key_hash_hex);
+            // The owner's EIP-712 BindConsentKey sig (validated below); owned for the async bind task.
+            // Empty when already_bound (the bind broadcast is skipped entirely).
+            let mut owner_sig_for_bind = String::new();
             if !already_bound {
                 let bind_val = match bind.as_ref() {
                     Some(b) => b,
@@ -481,32 +538,151 @@ pub async fn consent_submit(
                 if !pub_signal_eq(bind_key_hash, &key_hash_hex) {
                     return err(StatusCode::BAD_REQUEST, "bind.keyHash != pubSignals.keyHash");
                 }
-                // Broadcast bindConsentKeyFor AS the relayer (backend signer at index 0) and AWAIT the
-                // receipt before recording, so keyOf(subject) reflects the bind on the record tx.
-                match st
-                    .chain
-                    .bind_consent_key_for(0, &registry, &subject_addr, &key_hash_hex, owner_sig)
+                // DEFENSIVE BIND-SIG PRE-CHECK (safety net): recover the owner's EIP-712 BindConsentKey
+                // signature against the EXACT digest the contract recovers, SYNCHRONOUSLY here — before
+                // the spawned task broadcasts bindConsentKeyFor. A bad ownerSig makes the on-chain
+                // `ecrecover != wallet` revert OPAQUELY ("bad sig") ~12-24s later, wasting the relayer's
+                // gas and stranding the session in `error`. Recovering up front lets us fail fast with a
+                // precise message and never spawn a doomed tx. The contract computes
+                //   digest = _hashTypedDataV4(keccak256(abi.encode(BIND_TYPEHASH, keyHash, wallet, nonce)))
+                // domain EIP712("DogTag","1"), chainId = block.chainid, verifyingContract = the CKR,
+                // nonce = bindNonce[wallet] — exactly what `bind_consent_key_digest` builds. Read the
+                // live on-chain bindNonce(subject) (the same `bind_nonce` reader the async bind relies on)
+                // and the chainId from cfg so the digest matches what the contract will check.
+                let ckr_bytes = match addr_to_bytes20(&registry) {
+                    Some(b) => b,
+                    None => return err(StatusCode::BAD_GATEWAY, "consent_key_registry_addr: bad address"),
+                };
+                let subject_bytes = match addr_to_bytes20(&subject_addr) {
+                    Some(b) => b,
+                    None => return err(StatusCode::BAD_REQUEST, "pubSignals[3]: bad subject address"),
+                };
+                let key_hash_bytes = match b32_to_bytes32(&key_hash_hex) {
+                    Some(b) => b,
+                    None => return err(StatusCode::BAD_REQUEST, "pubSignals[5]: bad keyHash word"),
+                };
+                let nonce_u256 = match st.chain.bind_nonce(&registry, &subject_addr).await {
+                    Ok(n) => n,
+                    Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("bindNonce: {e}")),
+                };
+                let nonce_bytes = nonce_u256.to_be_bytes::<32>();
+                let bind_digest = dogtag_standard::consent::bind_consent_key_digest(
+                    ckr_bytes,
+                    &key_hash_bytes,
+                    &subject_bytes,
+                    &nonce_bytes,
+                    // chainId = the contract's block.chainid (135), the same constant every other
+                    // EIP-712 digest in the vet stack (record_verification / sign_consent) uses.
+                    dogtag_standard::consent::DOGTAG_CHAIN_ID,
+                );
+                let recovered = match recover_digest_signer(&bind_digest, owner_sig) {
+                    Some(a) => a,
+                    None => return err(StatusCode::BAD_REQUEST, "bind.ownerSig: malformed signature"),
+                };
+                if !recovered.eq_ignore_ascii_case(&subject_addr) {
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        &format!("bind.ownerSig recovers to {recovered} != subject"),
+                    );
+                }
+                // (bind block validated + ownerSig pre-checked; the actual bindConsentKeyFor broadcast
+                // happens ASYNC below.)
+                owner_sig_for_bind = owner_sig.to_string();
+            }
+
+            // ---------------------------------------------------------------------------------------
+            // ASYNC ON-CHAIN RECORD (the fix). All fast validation above has passed. The two on-chain
+            // broadcasts — bindConsentKeyFor (if !already_bound) then recordVerificationZK — each AWAIT
+            // a receipt (~12-24s on ROAX), far exceeding the phone's 8s HTTP submit timeout. Done
+            // synchronously in the handler, the phone closes the TCP connection mid-broadcast and Axum
+            // CANCELS the future, so nothing records and the session is stuck `pending`. Mirror
+            // `profile_issue_bind`: persist `status="recording"`, RESPOND IMMEDIATELY (no txHash yet),
+            // and run both broadcasts in a `tokio::spawn` that updates the session on completion.
+            //
+            // Clone everything the task needs OUT of `AppState` first so the future is `Send + 'static`.
+            let chain = st.chain.clone();
+            let store = st.store.clone();
+            let _consent_key_registry_addr = registry.clone();
+            let verification_registry_addr = st.cfg.verification_registry_addr.clone();
+            let relayer_index: u32 = 0;
+            let bg_subject_addr = subject_addr.clone();
+            let bg_key_hash_hex = key_hash_hex.clone();
+            let bg_owner_sig = owner_sig_for_bind.clone();
+            let bg_registry = registry.clone();
+            let (bg_a, bg_b, bg_c, bg_pubs) = (a.clone(), b.clone(), c.clone(), pubs.clone());
+            let bg_nullifier = pubs[4].clone();
+            let bg_export_token = export_token.clone();
+            let mut bg_session = s.clone();
+
+            // Persist `recording` and RESPOND IMMEDIATELY — the phone/portal poll
+            // GET /verify/session/{id} for the terminal `recorded`/`error` status + txHash.
+            let mut recording = s.clone();
+            recording.status = "recording".to_string();
+            recording.tx_hash = None;
+            recording.nullifier = None;
+            st.store.update_session(recording).await;
+
+            tokio::spawn(async move {
+                // 1) bindConsentKeyFor (relayer-sponsored) — only when not already bound. AWAIT the
+                //    receipt so keyOf(subject) reflects the bind before the record tx.
+                if !already_bound {
+                    if let Err(e) = chain
+                        .bind_consent_key_for(
+                            relayer_index,
+                            &bg_registry,
+                            &bg_subject_addr,
+                            &bg_key_hash_hex,
+                            &bg_owner_sig,
+                        )
+                        .await
+                    {
+                        bg_session.status = "error".to_string();
+                        bg_session.tx_hash = Some(format!("bindConsentKeyFor: {e}"));
+                        store.update_session(bg_session).await;
+                        // DO NOT consume the export token -> the owner can retry the same QR.
+                        return;
+                    }
+                }
+                // 2) recordVerificationZK (the CLIENT proof) AS the relayer.
+                match chain
+                    .record_verification_zk(
+                        relayer_index,
+                        &verification_registry_addr,
+                        &bg_a,
+                        &bg_b,
+                        &bg_c,
+                        &bg_pubs,
+                    )
                     .await
                 {
-                    Ok(_) => {}
-                    Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("bindConsentKeyFor: {e}")),
+                    Ok(sent) => {
+                        bg_session.status = "recorded".to_string();
+                        bg_session.tx_hash = Some(sent.tx_hash);
+                        // The nullifier consumed on-chain is pub[4].
+                        bg_session.nullifier = Some(bg_nullifier);
+                        store.update_session(bg_session).await;
+                        // Consume the one-time export token ONLY on a fully successful record.
+                        if let Some(t) = bg_export_token.as_deref() {
+                            store.take_export_token(t).await;
+                        }
+                    }
+                    Err(e) => {
+                        bg_session.status = "error".to_string();
+                        bg_session.tx_hash = Some(format!("recordVerificationZK: {e}"));
+                        store.update_session(bg_session).await;
+                        // DO NOT consume the export token -> retryable QR.
+                    }
                 }
-            }
-            // Broadcast the CLIENT proof AS the relayer (backend signer at index 0).
-            let sent = match st
-                .chain
-                .record_verification_zk(0, &st.cfg.verification_registry_addr, &a, &b, &c, &pubs)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("recordVerificationZK: {e}")),
-            };
-            // The nullifier consumed on-chain is pub[4]; surface it on the session.
-            session_nullifier = Some(pubs[4].clone());
-            tx_hash = sent.tx_hash;
+            });
+
+            // The `recording` ack — no txHash yet; the phone polls the session for the terminal status.
+            return ok(json!({ "status": "recording", "sessionId": session_id }));
         } else {
             // FALLBACK: no client proof -> server-prove (stub/Ark) then broadcast. Used by tests + the
-            // e2e oracle; NOT the true-ZK path.
+            // e2e oracle; NOT the true-ZK path. DELIBERATELY LEFT SYNCHRONOUS: this is the
+            // non-canonical test-oracle path (no phone/8s-timeout in front of it), so it keeps awaiting
+            // the record receipt and falls through to the shared `recorded` session update below. Only
+            // the client-proof branch (the real on-device path) needed to go async.
             let dog = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("0").to_string();
             let subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let nonce = consent.get("nonce").and_then(|v| v.as_str()).unwrap_or("0").to_string();
@@ -557,4 +733,114 @@ pub async fn consent_submit(
     updated.nullifier = nullifier;
     st.store.update_session(updated).await;
     ok(json!({ "recorded": true, "txHash": tx_hash, "mode": mode }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::B256;
+    use alloy::signers::local::PrivateKeySigner;
+    use alloy::signers::SignerSync;
+
+    /// Sign the EXACT BindConsentKey EIP-712 digest the pre-check recovers against (raw `sign_hash`,
+    /// which yields a 65-byte r‖s‖v sig with v ∈ {27,28}), with the owner's wallet key.
+    fn sign_bind_digest(
+        signer: &PrivateKeySigner,
+        ckr: [u8; 20],
+        key_hash: &[u8; 32],
+        nonce: &[u8; 32],
+    ) -> String {
+        let mut wallet = [0u8; 20];
+        wallet.copy_from_slice(signer.address().as_slice());
+        let digest = dogtag_standard::consent::bind_consent_key_digest(
+            ckr,
+            key_hash,
+            &wallet,
+            nonce,
+            dogtag_standard::consent::DOGTAG_CHAIN_ID,
+        );
+        let sig = signer.sign_hash_sync(&B256::from(digest)).expect("sign bind");
+        format!("0x{}", hex::encode(sig.as_bytes()))
+    }
+
+    #[test]
+    fn bind_sig_precheck_recovers_to_signing_wallet() {
+        let signer = PrivateKeySigner::random();
+        let ckr = [0xABu8; 20];
+        let key_hash = [0x55u8; 32];
+        let mut nonce = [0u8; 32];
+        nonce[31] = 7; // a non-zero on-chain bindNonce must still recover.
+
+        let owner_sig = sign_bind_digest(&signer, ckr, &key_hash, &nonce);
+
+        // Recompute the digest the handler builds and recover the owner sig against it.
+        let mut wallet = [0u8; 20];
+        wallet.copy_from_slice(signer.address().as_slice());
+        let digest = dogtag_standard::consent::bind_consent_key_digest(
+            ckr,
+            &key_hash,
+            &wallet,
+            &nonce,
+            dogtag_standard::consent::DOGTAG_CHAIN_ID,
+        );
+        let recovered = recover_digest_signer(&digest, &owner_sig).expect("recover");
+
+        let expected = format!("{:#x}", signer.address());
+        assert!(
+            recovered.eq_ignore_ascii_case(&expected),
+            "recovered {recovered} must equal signing wallet {expected}"
+        );
+    }
+
+    #[test]
+    fn bind_sig_precheck_rejects_wrong_signature() {
+        // A signature over a DIFFERENT digest (wrong nonce) must NOT recover to the wallet — this is
+        // the regression the on-chain "bad sig" revert was; the pre-check catches it synchronously.
+        let signer = PrivateKeySigner::random();
+        let ckr = [0xABu8; 20];
+        let key_hash = [0x55u8; 32];
+        let mut signed_nonce = [0u8; 32];
+        signed_nonce[31] = 1;
+        let owner_sig = sign_bind_digest(&signer, ckr, &key_hash, &signed_nonce);
+
+        // The handler reads the live on-chain nonce (here 0) — different from what was signed.
+        let mut wallet = [0u8; 20];
+        wallet.copy_from_slice(signer.address().as_slice());
+        let onchain_nonce = [0u8; 32];
+        let digest = dogtag_standard::consent::bind_consent_key_digest(
+            ckr,
+            &key_hash,
+            &wallet,
+            &onchain_nonce,
+            dogtag_standard::consent::DOGTAG_CHAIN_ID,
+        );
+        let recovered = recover_digest_signer(&digest, &owner_sig).expect("recover");
+        let expected = format!("{:#x}", signer.address());
+        assert!(
+            !recovered.eq_ignore_ascii_case(&expected),
+            "a sig over the wrong nonce must NOT recover to the wallet (got {recovered})"
+        );
+
+        // And a structurally malformed signature is rejected outright.
+        assert!(
+            recover_digest_signer(&digest, "0xdeadbeef").is_none(),
+            "a malformed signature must return None"
+        );
+    }
+
+    #[test]
+    fn addr_and_b32_parsers_roundtrip() {
+        let a = "0x00112233445566778899aabbccddeeff00112233";
+        assert_eq!(
+            addr_to_bytes20(a).unwrap(),
+            [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff, 0x00, 0x11, 0x22, 0x33
+            ]
+        );
+        assert!(addr_to_bytes20("0x1234").is_none());
+        let w = format!("0x{}", "ab".repeat(32));
+        assert_eq!(b32_to_bytes32(&w).unwrap(), [0xABu8; 32]);
+        assert!(b32_to_bytes32("0xabcd").is_none());
+    }
 }

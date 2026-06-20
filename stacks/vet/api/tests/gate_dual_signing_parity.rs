@@ -159,10 +159,14 @@ fn cfg_for_build() -> vet_api::app::Config {
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),
+        sbt_addr: SBT_ADDR.to_string(),
+        profile_document_store: SBT_ADDR.to_string(),
+        vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
         confirmations: 1,
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
+        custody_seal_path: None,
     }
 }
