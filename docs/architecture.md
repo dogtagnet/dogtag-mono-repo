@@ -210,7 +210,7 @@ Record types map to the xlsx **Unique Events** (`recordType` on-chain = `keccak2
 
 **`Owner` entity — first-class, off-chain PII only, never on-chain.** `{name, addresses[], phones[], email, emergencyContact, contactUpdatedOn}`. The **record-custodian (the issuing vet/clinic — legal owner of the record) is distinct from the pet-owner** (information-access rights). `Dog.ownershipHistory[]{ownerId, from, to}`.
 
-**Dog identity** (`DOG_PROFILE`, mints the SBT): `dogTagId` (SBT tokenId), `name`, `species` (top-level), `breedVbo` (Vertebrate Breed Ontology id, e.g. `VBO:0200798`) + `breedLabel`, `sex` (`male`|`female`) **separate from** `neuterStatus` (`intact`|`neutered`|`spayed`), `dateOfBirth` (derive age — drop free-text age), `colour`, `distinctiveFeatures`, `weightHistory[]{value, unit:"kg"|"lb", measuredOn}` (unit-bearing + dated), `microchip`, `photoHashes[]` (off-chain blobs, hash only).
+**Dog identity** (`DOG_PROFILE`, mints the SBT): `dogTagId` (SBT tokenId), `name`, `species` (top-level), `breedVbo` (Vertebrate Breed Ontology id, e.g. `VBO:0200798`) + `breedLabel`, `sex` (`male`|`female`) **separate from** `neuterStatus` (`intact`|`neutered`|`spayed`), `dateOfBirth` (derive age — drop free-text age), `colour`, `distinctiveFeatures`, `weightHistory[]{value, unit:"kg"|"lb", measuredOn}` (unit-bearing + dated), `microchip`, `photoHashes[]` (off-chain blobs, hash only), **`ownerIdentity{countryOfIdentification, identification, name}`** — the human behind the device (ISO country + gov-ID/passport number + official name as on the ID), **vet-entered at issue time** (§4.3 vets-issue-dog-tags; implementation §3.11) — and **`ownerAddress`** (the device's secp256k1 wallet, `== ownerOf(dogTagId)` on-chain, bound when the device proves wallet ownership at `/profiles/issue/bind`). Like the rest of the profile these are salted, obfuscatable Merkle leaves — never on chain in cleartext. **These `DOG_PROFILE` leaves are additive and do NOT change the ZK verification circuit** (§4.7): the export proof is over the **VACCINATION** root, not `DOG_PROFILE`; the owner is bound on-chain via `ownerOf(dogTagId)==subject` + the in-circuit consent-key, and leaf assembly is variable-arity (`N=24` max, depth 5, `numLeaves` 1..24) so leaf count never changes the circuit's signals or depth.
 
 **`microchip` object** (never a float, never a bare number): `{code: string(15), standard: enum("ISO_11784_11785","OTHER"), implantDate, bodyLocation}`. `implantDate` mandatory (EU/VEHCS enforce "vaccination date ≥ implant date").
 
@@ -253,6 +253,26 @@ VerificationConsent {
 - **ZK path:** `credentialRoot = R` (the **same** issued Poseidon root, proven in-circuit); signed by the user's **EdDSA-BabyJubjub** consent key (cheap in-circuit), which is pre-bound to `subject` (the secp256k1 wallet) in `ConsentKeyRegistry` (§4.7).
 
 Both paths share one **canonical nullifier** so one consent = one recorded attestation: `nullifier = Poseidon(DS_NULLIFIER, dogTagId, purpose, relayer, subject, nonce)` (pinned Poseidon — §3.4), tracked in a single `consumed` set across both paths.
+
+### 3.7 `dogTagId` encoding — operator handle vs on-chain field element
+
+A dog tag has **two encodings of the same id**, and they must never be confused:
+
+- The **handle** — a small numeric, operator-facing id (e.g. `"3"`). It is what the vet wizard allocates, what the human reads, and **the value of the credential's `credentialSubject.dogTagId` leaf** (a tag-3 Integer scalar).
+- The **on-chain id** = `field_of_value(Integer(handle))` — a single BN254 field element obtained by hashing the handle's canonical encoded value through the §3.3 `fieldOf` map. This is the value used **everywhere on-chain and in-proof**.
+
+**Why they coincide in-circuit.** The `dogTagId` leaf's hashed value IS `field_of_value(...)` (`crates/dogtag-standard-rs/src/leaf.rs` — `field_of_value` + `hash_leaf`), and the circuit constrains the selected dogTagId leaf value to equal the public `dogTagId` signal **directly** (`selValuePartial[N] === dogTagId`, `circuits/verification.circom:434`). So the public `pub[0]` is exactly the field-hashed id — not the raw decimal. Anchoring the raw handle on-chain would break this binding.
+
+| Used as | Value |
+|---|---|
+| Operator-facing id / human-readable handle | raw handle (`"3"`) |
+| `credentialSubject.dogTagId` **leaf value** | raw handle (Integer scalar) |
+| DOG_PROFILE SBT **token id** (`mint`, `ownerOf`, `profileRoot`) | `field_of_value(handle)` |
+| Circuit **`pub[0]`** / §3.6 consent `dogTagId` | `field_of_value(handle)` |
+| EdDSA message term + Poseidon **nullifier** term | `field_of_value(handle)` |
+| Device **mint-confirmation poll key** (`ownerOf`/`profileRoot`) | `field_of_value(handle)` |
+
+**One implementation, reused everywhere:** the FFI `dog_tag_id_field_hex` (`crates/dogtag-standard-rs/src/ffi.rs`), the `field-hash` bin, the backend's `routes.rs::onchain_dog_tag_id` (drives mint, the collision-check `ownerOf` read, and the post-mint read-back), and `dogTagIdFieldHex` in the mobile `Consent` + `RecordImporter` (both Android and iOS) all compute the same field element. (This is **distinct from** the §11.1 rule that the handle must be a non-personal id — never any hash *of the microchip*. The handle is a random/sequential value; `field_of_value` is just its on-chain/in-circuit encoding.)
 
 ---
 
@@ -328,9 +348,11 @@ function isWhitelistedFor(bytes32 recordType, address signer) external view retu
 
 **Invariant:** the **active signer must be `isWhitelistedFor(recordType, signer)`** for the record being issued.
 
-Onboarding flow (off-chain → on-chain, also triggered on a signing-mode switch — see §6): a new signer address → vet submits `{issuerEntityId, address, mode, recordTypes, USDA#, license#}` to the **central/admin backend** → admin verifies accreditation off-chain → admin calls `whitelistFor(recordType, addr)` per record type → app polls `isWhitelistedFor` until live. Only then can that address issue. Delist inactive-mode addresses to avoid a stale, over-broad whitelist; backend key rotation = a new address to whitelist.
+Onboarding flow (off-chain → on-chain, also triggered on a signing-mode switch — see §6): a new signer address → vet submits `{issuerEntityId, address, mode, recordTypes, verifyPurposes[], USDA#, license#}` to the **central/admin backend** → admin verifies accreditation off-chain → admin calls `whitelistFor(recordType, addr)` per record type (and `whitelistFor(verify_key(purpose), addr)` per verify-purpose — see below) → app polls `isWhitelistedFor` until live. Only then can that address issue/verify. Delist inactive-mode addresses to avoid a stale, over-broad whitelist; backend key rotation = a new address to whitelist. **Whitelisting is the admin portal `approve_application`, not a script** — the only off-portal step is funding the signer with PLASMA gas.
 
-**`VERIFY:` whitelist namespace — verifier capability gated SEPARATELY from issuer roles.** The same per-(key, address) `isWhitelistedFor` machinery scopes who may record a verification: `VerificationRegistry` checks `IssuerRegistry.isWhitelistedFor(keccak256("VERIFY:" || purpose), relayer)`. Because verify-capability lives in its own `VERIFY:`-prefixed key space, a **groomer can be authorized to verify a given `purpose` without holding any issuer role** (and an issuer is not implicitly a verifier). Whitelisting follows the same admin-approval flow above, with `VERIFY:`-namespaced keys.
+**Vets issue dog tags (proper onboarding) — admin portal only approves + whitelists.** The admin/central portal does **NOT** register devices or mint dog tags: there is **no** `POST /v1/register`, **no** `GET/POST /v1/admin/owners`, **no** admin "Registered devices" / "Mint dog-tag" page, and the phone has **no** "Central API URL" setting — every host the device talks to comes from a scanned QR. The admin's only onboarding power is the apply→approve **whitelisting of vet/groomer signer addresses** (above). The dog tag is issued by the **vet**, mirroring import/export: the phone **creates a self-custodial wallet** (Profile → "Create embedded wallet" → 24-word seed → secp256k1 address, §6.4); the vet "Issue dog tag" wizard (operator enters `ownerIdentity{countryOfIdentification, identification, name}` + pet fields, demo-prefilled) → `POST /profiles/issue/session/start` → returns a one-time token + QR `<vetHost>/p/<token>` (32-hex, 180s TTL) + the allocated `dogTagId`; the device scans `/p/<token>` and POSTs `<vetHost>/profiles/issue/bind { token, walletAddress, signature }` where `signature` is an **EIP-191** `personal_sign` over `"DogTag wallet registration: " + lowercase(walletAddress)` (proving the device owns the address). The vet backend recovers the signer (`== walletAddress`), builds the `DOG_PROFILE` VC (with the `ownerIdentity` 3 fields + `ownerAddress` = the device wallet), and **mints on-chain**: `DogTagSBT.mint(to=walletAddress, dogTagId, root)` — which sets `ownerOf[dogTagId]=device` **and** `profileRoot[dogTagId]=root` — responding `{ wrappedDoc, dogTagId, root, txHash }`. The device verifies against the SBT (`profileRoot==root && ownerOf==wallet`) + offline integrity and imports its dog tag — **gasless for the device** (the vet pays). This requires the vet signer to hold **`DogTagSBT.ISSUER_ROLE`**, granted once by the protocol admin (demo: `scripts/demo-bootstrap.sh` does `grantRole(keccak256("ISSUER"), vetSigner)`); **`ISSUER_ROLE` is a trust escalation** — a holder can mint any id to any address — so in production it is granted **only to accredited vets**. See implementation §3.11.
+
+**`VERIFY:` whitelist namespace — verifier capability gated SEPARATELY from issuer roles.** The same per-(key, address) `isWhitelistedFor` machinery scopes who may record a verification: `VerificationRegistry` checks `IssuerRegistry.isWhitelistedFor(keccak256("VERIFY:" || purpose), relayer)`. Because verify-capability lives in its own `VERIFY:`-prefixed key space, a **groomer can be authorized to verify a given `purpose` without holding any issuer role** (and an issuer is not implicitly a verifier). **Verifiers onboard through the same apply→approve flow as issuers:** the issuer application carries `verifyPurposes[]` (e.g. `grooming_intake/boarding_intake/daycare_access`), and `approve_application` whitelists `VERIFY:<purpose>` per address **on-chain** — `verify_key = keccak256(abi.encode("VERIFY:", keccak256(label) mod r))`, the purpose reduced mod BN254 `r` (`purpose_key`) so the registry stores/nullifies the same reduced value (§11.8). No demo-bootstrap/script cast for VERIFY.
 
 ### 4.4 `DogTagIssuer` — record anchoring (cloned per record type)
 
@@ -369,7 +391,30 @@ function predictIssuer(bytes32 salt) external view returns (address);
 
 ### 4.6 On-chain ↔ off-chain interaction map
 
+**Pet-onboarding (dog-tag issuance) handshake — the operator types NO address.** The vet issues the dog tag; the **device supplies its own wallet address** by proving control of it. The vet's `ownerIdentity` 3 fields + the device wallet (`ownerAddress`) become committed `DOG_PROFILE` Merkle **leaves** (§3.6 — salted, obfuscatable, never on-chain in cleartext). Flow (verified against `stacks/vet/api/src/routes.rs`, `stacks/vet/web/src/pages/IssueDogTag.tsx`):
+
 ```
+PET ONBOARDING (vet "Issue Dog Tag" — device supplies its address):
+  vet operator → "Issue Dog Tag" wizard (enters ownerIdentity{country,identification,name} + pet fields)
+  vet web → vet API: POST /profiles/issue/session/start  (operator-session gated)
+  vet API: allocate a numeric HANDLE (skip ids already minted under field_of_value(handle))
+           persist ProfileIssueSession + a fresh 16-byte one-time BIND TOKEN (180s TTL)
+           → {token, dogTagId(handle), sessionId, qr = <vetHost>/p/<token>}
+  device scans /p/<token> → GET /p/{token} → session meta (NON-consuming)
+  device: EIP-191 personal_sign "DogTag wallet registration: <lowercase(addr)>"
+          POST /profiles/issue/bind {token, walletAddress, signature}
+  vet API: recover the EIP-191 signer; require == walletAddress; consume the token ATOMICALLY
+           build the DOG_PROFILE VC (ownerIdentity 3 fields + ownerAddress=device wallet) → wrap → root R
+           RESPOND IMMEDIATELY {wrappedDoc, dogTagId, root, walletAddress, status:"minting"}
+           THEN async (tokio::spawn): mint the SBT under field_of_value(handle) via the vet ISSUER_ROLE
+             signer, then read back ownerOf==wallet && profileRoot==R → session "bound"+txHash (else "error")
+  device polls the chain under field_of_value(handle) until the mint lands, verifies the SBT
+           (profileRoot==R && ownerOf==wallet) + offline integrity, imports the dog-tag record (pet appears)
+  operator portal polls GET /profiles/issue/session/{id} for pending → bound+txHash
+  ⇒ GASLESS for the device (the vet pays); requires DogTagSBT.ISSUER_ROLE on the vet signer
+    (demo: scripts/demo-bootstrap.sh grantRole(keccak256("ISSUER"), vetSigner) — a trust escalation,
+     production-granted only to accredited vets).
+
 ISSUE (vet issues a vaccination):
   vet frontend → vet API: POST /records {type:VACCINATION, fields, dogTagId}
   vet API: build wrapped doc (salt+leaves+merkle) → root
@@ -422,6 +467,10 @@ EXPORT (device → groomer; on-chain proof-of-verification — decoupled from im
 ```
 
 > **Import and verification are DECOUPLED.** `/import/pull` (off-chain operational data) stays as-is. The new `/verify/*` is the on-chain attestation: NORMAL mode can compose both (the disclosed doc drives import + attestation); **ZK mode = verification with no data import at all** (the default for sensitive purposes).
+
+> **Privacy model of the two EXPORT paths — what happens to the root `R`.**
+> - **NORMAL** path **discloses `R`**: the phone sends the **disclosed wrapped doc** to the groomer, who runs the 3-pillar third-party verify on it, and the registry commits `credentialRoot = R` **on-chain** (`recordVerification(consent, userSig)` — `R` is a signed field and a contract argument). So the groomer sees the raw record AND `R` lands on chain.
+> - **ZK** path **keeps `R` private from the groomer**: the phone proves leaves→`R` in-circuit and POSTs only `{proof, pubSignals, consent, bind}`. `R` is `pub[6]` — a public *signal* the chain range-checks and resolves a clone from — but the **raw record never reaches the groomer**, and no salted cleartext is disclosed to anyone. This is true zero-knowledge against the *groomer*, not merely against the chain (§13.8).
 
 ### 4.7 EXPORT contracts & ZK circuit (proof-of-verification)
 
@@ -477,6 +526,10 @@ function recordVerificationZK(uint[2] a, uint[2][2] b, uint[2] c, uint[7] pub) e
 
 **`ConsentKeyRegistry`** — `bindConsentKey(babyJubPubKey, ecdsaSig)`: `ecrecover` proves the secp256k1 wallet authorizes that BabyJubjub key; `keyOf[wallet]` is the ZK path's `subject`↔consent-key linkage.
 
+**Gasless consent-key bind (`bindConsentKeyFor`).** `recordVerificationZK` only succeeds when `keyOf(subject) == keyHash` (`pub[5]`). If the owner's consent key isn't yet bound, the owner **EIP-712-signs a `BindConsentKey` digest** (`BindConsentKey(bytes32 babyJubPubKeyHash, address wallet, uint256 nonce)`; domain reuses `("DogTag","1")` with `verifyingContract` = the `ConsentKeyRegistry`; `bind_consent_key_digest` in `crates/dogtag-standard-rs/src/consent.rs`) and the **relayer broadcasts `bindConsentKeyFor`** — the owner sig is just data, so the **owner pays no gas**. The backend (`stacks/vet/api/src/verify.rs`) reads the live on-chain `keyOf(subject)`; if it already matches `pub[5]` the bind is skipped, otherwise it requires a `bind` block and **pre-checks the owner sig synchronously** (recovers against the exact digest the contract `ecrecover`s, using the live `bindNonce(subject)`) to fail fast before paying gas.
+
+> **ASYNC-RECORD (the ROAX block-time fix).** ROAX blocks are ~12s apart, so each on-chain broadcast's receipt (~12–24s) exceeds the phone's HTTP submit timeout — a synchronous handler would have the phone close the TCP connection mid-broadcast, Axum cancels the future, and nothing records (session stuck `pending`). So the client-proof ZK submit handler validates everything fast, persists `status:"recording"`, **responds immediately (no txHash yet)**, and runs the broadcasts in a `tokio::spawn` that awaits receipts: `bindConsentKeyFor` (only when not already bound) → `recordVerificationZK`. The device polls the session + the chain `consumed(nullifier)` for the terminal status. The one-time export token is consumed **only on a fully successful record**, so a failed record leaves the owner's QR retryable. (The same response-then-spawn pattern drives the §4.6 onboarding mint and is mirrored there explicitly.)
+
 **The BN254 Groth16 circuit** (~12–18k constraints, sub-second proving; `ark-circom` + `ark-groth16` in `crates/dogtag-prover-rs/`, rapidsnark only as a documented escape hatch):
 
 - **Public signals (order):** `[ dogTagId, purpose, relayer, subject, nullifier, keyHash, R ]`.
@@ -484,6 +537,8 @@ function recordVerificationZK(uint[2] a, uint[2][2] b, uint[2] c, uint[7] pub) e
 - **Proves:** (a) the private leaves hash to the Poseidon root `R` (the same root anchored by `issue(R)`); (b) the credential's `dogTagId` leaf equals the public `dogTagId`; (c) `subject`'s consent key signed `(dogTagId, purpose, relayer, R, nonce)` (EdDSA, with `subject` bound into the message); (d) `keyHash == Poseidon(Ax, Ay)` of the consent pubkey; (e) `nullifier == Poseidon(DS_NULLIFIER, dogTagId, purpose, relayer, subject, nonce)`. The circuit **does NOT prove `isValid`** — the registry re-checks `isValid(R)` on-chain **directly** on the public root, and binds `keyHash==keyOf[subject]` + `ownerOf(dogTagId)==subject`.
 
 **ONE Poseidon root `R` (v4 — Poseidon unification).** `wrapDocument` computes a **single** Poseidon root `R`; the issuer calls `issue(R)`. The circuit proves that same `R` and the registry checks `isValid(R)` directly — there is no parallel keccak root, no `rZk`, and no `zkCommit`/`kecOf` mapping (CHANGESPEC-v4 §2). The §3 canonicalization standard (now Poseidon) and `isValid` are the single source of truth.
+
+**The new `DOG_PROFILE` `ownerIdentity`/`ownerAddress` leaves do NOT change this circuit.** They are **additive** committed leaves on the **`DOG_PROFILE`** credential, but the export proof proves over the **VACCINATION** root `R`, not the `DOG_PROFILE` root — so they never enter the witness. The owner↔pet binding is **on-chain** (`ownerOf(dogTagId)==subject`) + the in-circuit consent-key, not any dog-tag leaf. Because leaf assembly is **variable-arity** (`N=24` max leaves, `depth=5`, actual `numLeaves` 1..24 — `circuits/verification.circom`), adding leaves changes neither the public signals nor the Merkle depth. **Verified by running the prover — the circuit is unchanged.**
 
 **Trusted setup.** Reuse Hermez / Perpetual Powers of Tau (phase 1) + a **multi-party phase-2 (≥3 contributors) ending in a public random beacon**; publish the transcript, pin the `.zkey` hash, ship it in the prover image. A compromised phase-2 lets a party *forge attestations*, not leak data — and the core three-pillar trust model (§5) does not depend on the ZK setup at all.
 
@@ -654,6 +709,14 @@ Under **Settings**, like Telegram's TON Space — a low-friction, recoverable, s
 ### 10.2 Portal theming — light/dark
 
 The **vet, groomer, and admin web portals** get a real user-switchable **light/dark theme toggle** (persisted), via `packages/ui` semantic tokens gaining light + dark palettes. Matches the groomer reference aesthetic (dark sidebar / light content) but as switchable light/dark — **portals are light/dark only, not the 7 mobile colorways**.
+
+### 10.3 Mobile ZK proving — by target-width
+
+The export ZK proof (§4.7) is generated differently per device ABI, but **both branches feed ONE shared circuit-input assembly** (`prover_assemble::assemble_circuit_input`, the same 19 named inputs the backend uses) so the two paths are byte-identical in what they prove. The branch is chosen at scan time in `apps/android/.../ScanScreen.kt` via `Build.SUPPORTED_64_BIT_ABIS.isEmpty()`.
+
+- **64-bit (iOS + arm64 Android) — TRUE on-device proving (canonical).** The phone runs Groth16 locally via **circom-prover** (Arkworks `ProofLib::Arkworks`) with a **circom-witnesscalc GRAPH witness** (`WitnessFn::CircomWitnessCalc`, `crates/dogtag-standard-rs/src/prover_ffi.rs`) — a pure-Rust, integer-width-correct interpreter of the circuit's field ops, shipped as a runtime asset (`verification.graph`) loaded by absolute path like the zkey. This **replaced rust-witness/wasm2c (w2c2)**, which miscompiled the circuit's i64 BN254 arithmetic on 32-bit ARM (zeroing the last-computed nullifier/keyHash wires). The groomer never sees the raw record or the witness.
+- **32-bit-ONLY Android — trusted prover-service fallback.** A 32-bit-only device (no arm64 ABI) cannot run the on-device prover, so it POSTs `{wrappedDoc, consent, eddsaSig}` to a **trusted PROVER-SERVICE** — a `vet-api` instance compiled `--features prover` (`#[cfg(feature = "prover")] POST /prove-verification`, backed by the ark-0.6 `ArkProver`; stood up by `scripts/demo-up.sh`). The service assembles the inputs (same shared assembly) and returns the proof; **the phone submits the proof itself**, so the groomer still never sees the witness. The prover URL is baked in via `AppConfig.DEFAULT_PROVER_API` (override at runtime via the `prover_api` pref). In production this is the **owner's own trusted prover**, not the groomer's.
+- **rapidsnark is NOT viable** here (no armv7-android prebuilt) — the graph witness + Arkworks combination is what makes on-device proving correct on 64-bit ARM and the prover-service the only option on 32-bit.
 
 ---
 

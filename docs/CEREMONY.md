@@ -59,8 +59,8 @@ anyone can reproduce `snarkjs zkey verify`. Pin the sha256.
 ## Deploy & wire the verifier (on-chain)
 
 The dev `Groth16Verifier.sol` is already deployed only as part of the local/dev set; for production the
-ceremony output replaces it. The registry's `setZkVerifier` is behind a **2-day timelock**
-(`proposeZkVerifier` → wait → `executeZkVerifier`).
+ceremony output replaces it. Swapping the registry's ZK verifier is behind a **2-day timelock**:
+`proposeZkVerifier(addr)` → wait ≥ 2 days → `executeZkVerifier()` (there is no single `setZkVerifier`).
 
 ```bash
 cp circuits/Groth16Verifier.sol contracts/src/Groth16Verifier.sol

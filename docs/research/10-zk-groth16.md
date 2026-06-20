@@ -1,5 +1,55 @@
 # 10 — ZK / Groth16: Groomer-attested verification proof
 
+> ## ⚠️ SUPERSEDED — historical v1 research
+>
+> **This document is OLD v1 research and does NOT describe the shipped system.** It explores a
+> now-abandoned **dual-root** design (a keccak issuance root `R_kec` *plus* a parallel Poseidon root
+> `R_zk`, reconciled on-chain through a `ZkCommitmentRegistry` / `kecOf` mapping). **None of that
+> shipped.** The as-built design is a **single Poseidon credential root** (the v4 Poseidon-unification —
+> see [`research/13-poseidon-unification.md`](13-poseidon-unification.md) and
+> [`research/CHANGESPEC-v4.md`](CHANGESPEC-v4.md)). The body below is **kept verbatim as history** — do
+> not treat it as the spec. For the current design, read **[`architecture.md`](../architecture.md)** and
+> **[`implementation.md`](../implementation.md)**.
+>
+> ### v4 reconciliation (as-built)
+>
+> What actually shipped, vs. what this doc proposed:
+>
+> - **ONE Poseidon root, no dual-root, no `ZkCommitmentRegistry`.** There is a single Poseidon
+>   credential root `R`, proven in-circuit and anchored on-chain. `VerificationRegistry.recordVerificationZK`
+>   resolves the issuing clone from `R` and checks the issuer's **`isValid(R)` directly** — there is **no
+>   `ZkCommitmentRegistry`, no `R_kec`/`R_zk` duality, and no `kecOf`/`zkCommit` mapping** (the §2.3 / §6.1
+>   machinery below was dropped). See `contracts/src/VerificationRegistry.sol` — the contract's own header
+>   says *"Single Poseidon root `R` — no rKec/rZk, no zkCommit/kecOf/zkIndex (CHANGESPEC-v4)"*, and
+>   `_consumeAndResolve(nf, R)` does `rootIndex.rootIssuer(R)` → `IDogTagIssuer(clone).isValid(R)`.
+> - **On-chain `dogTagId` is the field-hash of the handle, not the raw number.** The canonical
+>   `dogTagId = field_of_value(Integer(handle))` — the SBT id, the `ownerOf(pub[0])` ownership key, the
+>   consent's `dogTagId`, and the nullifier all use this field element; the raw numeric handle is just the
+>   operator/credential id (it equals `leafValues[dogTagIdLeafIndex]`, which the circuit compares against
+>   directly). See `crates/dogtag-standard-rs/src/ffi.rs::dog_tag_id_field_hex` and
+>   `crates/dogtag-standard-rs/src/leaf.rs::field_of_value`.
+> - **Public signals & commitments (different from §1.2 / §5 / §7 below).** The Groth16 public-signal
+>   vector is `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]` (7 signals). The EdDSA consent
+>   message is `M = Poseidon6(dogTagId, purpose, relayer, subject, R, nonce)`, and the nullifier is
+>   `Poseidon(DS_NULLIFIER, dogTagId, purpose, relayer, subject, nonce)` (the v1 `H(dogTagId ‖ relayer ‖
+>   R_zk ‖ nonce)` consent message and the `Poseidon(nonce, wallet, dogTagId, relayer)` nullifier below are
+>   superseded). See `crates/dogtag-standard-rs/src/consent.rs`.
+> - **Prover is split by target word-width — and `ark-circom`/rapidsnark are NOT the on-device stack.**
+>   * **64-bit (on-device, canonical):** the **phone** proves locally with `circom-prover` (Arkworks
+>     Groth16) driven by a **`circom-witnesscalc` graph witness**, NOT `rust-witness`/`wasm2c` — the
+>     wasm2c path miscompiled the circuit's i64 BN254 field arithmetic on 32-bit ARM (armeabi-v7a), zeroing
+>     the last output wires (nullifier/keyHash); the graph calculator is integer-width-correct on any
+>     target. See `crates/dogtag-standard-rs/src/prover_ffi.rs`.
+>   * **32-bit-only Android (fallback):** such phones cannot prove on-device, so they POST the witness to a
+>     backend **prover-service** (`POST /prove-verification`, a dedicated `vet-api --features prover`
+>     instance) which proves with the 64-bit-correct backend Arkworks prover and returns Solidity calldata.
+>     See `stacks/vet/api/src/routes.rs` (the `prove_verification` handler) and `scripts/demo-up.sh`.
+>   * **rapidsnark was NOT used.** It only ships aarch64 / x86_64-android prebuilts (no armv7-android), so
+>     it could not be the universal on-device prover; the "rapidsnark escape hatch" framing in §3.2 / §8
+>     below does not reflect the shipped stack (on-device Arkworks + graph witness; backend prover-service
+>     for 32-bit). The **single Poseidon root R is also unchanged** vs. the keccak-issuance-root assumption
+>     baked into the problem framing below.
+
 > Status: v1 design. Companion to [`architecture.md`](../architecture.md) (§3 keccak salted-leaf
 > Merkle standard, §4 contracts, §5 verification) and [`implementation.md`](../implementation.md)
 > (§1 `hashLeaf`/`buildMerkle`, §11.x normative). Chain: **ROAX** (EVM, chainId **135**, gas token
