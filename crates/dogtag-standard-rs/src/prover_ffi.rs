@@ -61,11 +61,14 @@ const NUM_PUBLIC: usize = 7;
 // circuit is fixed. The bytes are interpreted in Rust by `circom_witnesscalc::calc_witness`, which
 // has no i64 codegen and is therefore correct on 32-bit ARM where wasm2c was not.
 
+/// The cached `(path, bytes)` of the most-recently-requested witness graph, guarded by a mutex.
+type GraphCell = Mutex<Option<(String, &'static [u8])>>;
+
 /// `(path, bytes)` of the most-recently-requested witness graph. Guarded by a mutex; the graph is
 /// (re)loaded from disk only when the path changes (effectively once per process).
-static GRAPH: OnceLock<Mutex<Option<(String, &'static [u8])>>> = OnceLock::new();
+static GRAPH: OnceLock<GraphCell> = OnceLock::new();
 
-fn graph_cell() -> &'static Mutex<Option<(String, &'static [u8])>> {
+fn graph_cell() -> &'static GraphCell {
     GRAPH.get_or_init(|| Mutex::new(None))
 }
 
@@ -122,7 +125,7 @@ pub struct ProofFfi {
 /// - `eddsa_sig`        — the EdDSA-BabyJubjub consent signature + public key.
 /// - `zkey_path`        — filesystem path to `verification_final.zkey` (bundled app asset).
 /// - `graph_path`       — filesystem path to `verification.graph`, the precompiled witness graph
-///                        (bundled app asset, loaded the same way as the zkey).
+///   (bundled app asset, loaded the same way as the zkey).
 ///
 /// Returns the proof as Solidity calldata (`a`, `b` with the snarkjs->Solidity swap, `c`) plus the
 /// 7 public signals `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]` (all decimal).

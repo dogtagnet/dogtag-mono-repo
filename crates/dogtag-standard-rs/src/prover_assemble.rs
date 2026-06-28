@@ -1,8 +1,8 @@
 //! Circuit-input ASSEMBLY (Workstream A, server-share) — the pure, prover-independent half of the
 //! on-device proving path, gated behind the lightweight `assemble` feature.
 //!
-//! This module assembles the circuit's 19 named inputs from a `WrappedDoc` + the §1.10 consent JSON
-//! + the pass-through EdDSA-BabyJubjub signature, and emits them as a name -> decimal-string map
+//! This module assembles the circuit's 19 named inputs from a `WrappedDoc` + the §1.10 consent JSON +
+//! the pass-through EdDSA-BabyJubjub signature, and emits them as a name -> decimal-string map
 //! (`input_map`) — exactly the shape `dogtag-prover-rs::ProveInputs::from_circuit_input_json`
 //! consumes. It is the SAME assembly the on-device `prover_ffi::prove_verification` runs.
 //!
@@ -497,16 +497,16 @@ mod tests {
 
         // sortedLeafHashes (active prefix) == ascending-sorted active order = layers[0]
         let sorted_active = &tree.layers[0];
-        for k in 0..pairs.len() {
+        for (k, sa) in sorted_active.iter().enumerate().take(pairs.len()) {
             assert_eq!(
                 asm.sorted_leaf_hashes[k],
-                fe_to_dec(&sorted_active[k]),
+                fe_to_dec(sa),
                 "sortedLeafHashes[{k}] mismatch"
             );
             // perm[k] maps back to the canonical leaf
             let p: usize = asm.perm[k].parse().unwrap();
             assert_eq!(
-                active[p], sorted_active[k],
+                active[p], *sa,
                 "perm[{k}] must point at the canonical leaf equal to sortedActive[{k}]"
             );
         }
