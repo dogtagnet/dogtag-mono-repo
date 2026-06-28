@@ -138,3 +138,101 @@ impl ProverClient for ArkProver {
         Ok(out.into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The stub echoes the four lean caller-supplied signals into pub_signals[0..4]
+    /// and R into pub_signals[6], zeroes the two circuit-output signals (nullifier,
+    /// keyHash) at [4]/[5], and returns an all-zero (a,b,c) proof.
+    #[tokio::test]
+    async fn stub_prove_echoes_lean_signals_and_zeros_proof() {
+        let input = ProveInput {
+            dog_tag_id: "111".to_string(),
+            purpose: "0xpurpose".to_string(),
+            relayer: "0xrelayer".to_string(),
+            subject: "0xsubject".to_string(),
+            nonce: "ignored-nonce".to_string(),
+            r: "0xroot".to_string(),
+            eddsa_sig: "ignored-sig".to_string(),
+            circuit_input_json: None,
+        };
+        let p = StubProver.prove(input).await.unwrap();
+
+        // (a,b,c) are all zero — it is NOT a real proof.
+        assert_eq!(p.a, ["0".to_string(), "0".to_string()]);
+        assert_eq!(
+            p.b,
+            [
+                ["0".to_string(), "0".to_string()],
+                ["0".to_string(), "0".to_string()]
+            ]
+        );
+        assert_eq!(p.c, ["0".to_string(), "0".to_string()]);
+
+        // Public signals: [dogTagId, purpose, relayer, subject, nullifier=0, keyHash=0, R].
+        assert_eq!(
+            p.pub_signals,
+            [
+                "111".to_string(),
+                "0xpurpose".to_string(),
+                "0xrelayer".to_string(),
+                "0xsubject".to_string(),
+                "0".to_string(),
+                "0".to_string(),
+                "0xroot".to_string(),
+            ]
+        );
+    }
+
+    /// The stub ignores `circuit_input_json`, `nonce`, and `eddsa_sig`; only the lean
+    /// fields drive the output, so supplying them does not change the result.
+    #[tokio::test]
+    async fn stub_prove_ignores_circuit_input_and_secret_fields() {
+        let base = ProveInput {
+            dog_tag_id: "7".to_string(),
+            purpose: "p".to_string(),
+            relayer: "rel".to_string(),
+            subject: "sub".to_string(),
+            r: "r".to_string(),
+            ..Default::default()
+        };
+        let mut with_extras = base.clone();
+        with_extras.nonce = "abc".to_string();
+        with_extras.eddsa_sig = "def".to_string();
+        with_extras.circuit_input_json = Some(serde_json::json!({"anything": 1}));
+
+        let a = StubProver.prove(base).await.unwrap();
+        let b = StubProver.prove(with_extras).await.unwrap();
+        assert_eq!(a.pub_signals, b.pub_signals);
+        assert_eq!(a.a, b.a);
+    }
+
+    /// `From<Groth16Output>` is a verbatim field copy into `ZkProof`.
+    #[test]
+    fn zkproof_from_groth16output_preserves_all_fields() {
+        let out = Groth16Output {
+            a: ["1".to_string(), "2".to_string()],
+            b: [
+                ["3".to_string(), "4".to_string()],
+                ["5".to_string(), "6".to_string()],
+            ],
+            c: ["7".to_string(), "8".to_string()],
+            public_signals: [
+                "s0".to_string(),
+                "s1".to_string(),
+                "s2".to_string(),
+                "s3".to_string(),
+                "s4".to_string(),
+                "s5".to_string(),
+                "s6".to_string(),
+            ],
+        };
+        let z: ZkProof = out.clone().into();
+        assert_eq!(z.a, out.a);
+        assert_eq!(z.b, out.b);
+        assert_eq!(z.c, out.c);
+        assert_eq!(z.pub_signals, out.public_signals);
+    }
+}
