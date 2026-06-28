@@ -10,12 +10,15 @@ use dogtag_standard::merkle::build_merkle;
 use dogtag_standard::types::{TypeTag, TypedScalar};
 use serde_json::Value;
 
-const VECTORS: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/dogtag-standard-ts/testvectors.json");
+const VECTORS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../packages/dogtag-standard-ts/testvectors.json"
+);
 
 fn load() -> Value {
-    let raw = std::fs::read_to_string(VECTORS)
-        .unwrap_or_else(|e| panic!("read {VECTORS}: {e} — run `pnpm --filter @dogtag/standard gen-vectors`"));
+    let raw = std::fs::read_to_string(VECTORS).unwrap_or_else(|e| {
+        panic!("read {VECTORS}: {e} — run `pnpm --filter @dogtag/standard gen-vectors`")
+    });
     serde_json::from_str(&raw).unwrap()
 }
 
@@ -67,7 +70,10 @@ fn leaf_vectors_parity() {
             saw_integer_five = Some(got.clone());
         }
     }
-    assert_ne!(saw_string_five, saw_integer_five, "tag 2 \"5\" must differ from tag 3 5");
+    assert_ne!(
+        saw_string_five, saw_integer_five,
+        "tag 2 \"5\" must differ from tag 3 5"
+    );
 }
 
 #[test]
@@ -77,7 +83,11 @@ fn bytes_to_field_parity() {
         let name = b["name"].as_str().unwrap();
         let input = hex::decode(b["inputHex"].as_str().unwrap()).unwrap();
         let got = to_hex32(&bytes_to_field(&input));
-        assert_eq!(got, b["expected_hex"].as_str().unwrap(), "bytesToField {name} mismatch");
+        assert_eq!(
+            got,
+            b["expected_hex"].as_str().unwrap(),
+            "bytesToField {name} mismatch"
+        );
     }
 }
 
@@ -93,11 +103,19 @@ fn merkle_vectors_parity() {
             .map(|h| fr_from_hex32(h.as_str().unwrap()))
             .collect();
         let root = to_hex32(&build_merkle(&leaves).root);
-        assert_eq!(root, m["root_hex"].as_str().unwrap(), "merkle {name} root mismatch");
+        assert_eq!(
+            root,
+            m["root_hex"].as_str().unwrap(),
+            "merkle {name} root mismatch"
+        );
         if let Some(rev) = m.get("reversed_root_hex").and_then(|x| x.as_str()) {
             let mut r = leaves.clone();
             r.reverse();
-            assert_eq!(to_hex32(&build_merkle(&r).root), rev, "merkle {name} commutativity");
+            assert_eq!(
+                to_hex32(&build_merkle(&r).root),
+                rev,
+                "merkle {name} commutativity"
+            );
         }
     }
 }

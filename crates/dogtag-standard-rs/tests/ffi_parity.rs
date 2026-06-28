@@ -35,8 +35,7 @@ fn ffi_leaf_vectors_parity() {
         let expected = leaf["expected_hex"].as_str().unwrap();
         let got = hash_leaf_hex(key_path, salt_hex, tag, value).expect("hash_leaf_hex");
         assert_eq!(
-            got,
-            expected,
+            got, expected,
             "FFI leaf hash mismatch for vector {}",
             leaf["name"]
         );

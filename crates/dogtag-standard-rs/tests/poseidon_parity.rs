@@ -54,7 +54,10 @@ fn num_from_dec(s: &str) -> Vec<u8> {
 
 #[test]
 fn poseidon_vectors_parity() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../circuits/poseidon-vectors.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../circuits/poseidon-vectors.json"
+    );
     let raw = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("read {path}: {e} — run `make parity` (circuits) first"));
     let v: Value = serde_json::from_str(&raw).unwrap();
@@ -71,7 +74,10 @@ fn poseidon_vectors_parity() {
     while rb.len() < mod_le.len() {
         rb.push(0);
     }
-    assert_eq!(rb, mod_le, "BN254 scalar field r mismatch (modulus confusion)");
+    assert_eq!(
+        rb, mod_le,
+        "BN254 scalar field r mismatch (modulus confusion)"
+    );
 
     let anchor_dec = v["anchor"]["dec"].as_str().unwrap();
     let mut anchor_checked = false;
@@ -98,6 +104,9 @@ fn poseidon_vectors_parity() {
             );
         }
     }
-    assert!(anchor_checked, "anchor vector missing from poseidon-vectors.json");
+    assert!(
+        anchor_checked,
+        "anchor vector missing from poseidon-vectors.json"
+    );
     eprintln!("Gate A (Rust leg) GREEN — light-poseidon new_circom == circom across all arities.");
 }
