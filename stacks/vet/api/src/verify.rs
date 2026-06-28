@@ -374,6 +374,11 @@ fn b32_to_bytes32(word: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+// Eight of the nine arguments are distinct request inputs forwarded verbatim from the single
+// `/verify/consent/submit` handler (the deserialized body's consent/sig/mode/disclosed_doc/proof/
+// bind/export_token plus the path session_id); bundling them into a params struct would only
+// artificially group unrelated request fields, so the lint is suppressed deliberately here.
+#[allow(clippy::too_many_arguments)]
 pub async fn consent_submit(
     st: &AppState,
     session_id: String,
