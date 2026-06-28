@@ -325,4 +325,109 @@ mod tests {
             "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
         );
     }
+
+    #[test]
+    fn derive_distinct_indices_differ() {
+        // Each account index walks a different HD path, so addresses must differ. anvil's
+        // well-known accounts 0/1 for this mnemonic pin the exact derivation.
+        let phrase = "test test test test test test test test test test test junk";
+        let a0 = derive_account(phrase, 0).unwrap();
+        let a1 = derive_account(phrase, 1).unwrap();
+        assert_ne!(a0.address(), a1.address());
+        assert_eq!(
+            format!("{:#x}", a1.address()),
+            "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
+        );
+    }
+
+    #[test]
+    fn words_of_splits_on_arbitrary_whitespace() {
+        // split_whitespace collapses runs and trims edges; empty/blank yields an empty vec.
+        assert_eq!(words_of("a b c"), vec!["a", "b", "c"]);
+        assert_eq!(words_of("  a   b\tc\n"), vec!["a", "b", "c"]);
+        assert_eq!(words_of("single"), vec!["single"]);
+        assert!(words_of("").is_empty());
+        assert!(words_of("   \t \n ").is_empty());
+    }
+
+    fn sample_meta() -> crate::store::KeystoreMeta {
+        crate::store::KeystoreMeta {
+            accounts: vec![crate::store::AccountMeta {
+                index: 0,
+                address: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266".to_string(),
+                label: "active".to_string(),
+            }],
+            state: "initialized".to_string(),
+        }
+    }
+
+    #[test]
+    fn seal_json_roundtrip_preserves_ciphertext_and_meta() {
+        let ct = encrypt_seed("some seed phrase", "pw").unwrap();
+        let meta = sample_meta();
+        let bytes = seal_to_json(&ct, &meta).unwrap();
+        let (ct2, meta2) = seal_from_json(&bytes).unwrap();
+        assert_eq!(ct, ct2);
+        assert_eq!(meta2.state, meta.state);
+        assert_eq!(meta2.accounts.len(), 1);
+        assert_eq!(meta2.accounts[0].address, meta.accounts[0].address);
+        assert_eq!(meta2.accounts[0].index, 0);
+        // the serialized form carries base64 ciphertext + meta, never raw plaintext.
+        let json = String::from_utf8(bytes).unwrap();
+        assert!(json.contains("sealed_b64"));
+        assert!(json.contains("meta"));
+    }
+
+    #[test]
+    fn seal_from_json_rejects_bad_json_and_bad_base64() {
+        // not valid JSON at all -> "seal parse".
+        let e = seal_from_json(b"not json").unwrap_err();
+        assert!(matches!(e, CustodyError::Other(ref m) if m.contains("seal parse")));
+        // valid JSON shape but sealed_b64 is not base64 -> "seal b64".
+        let bad = br#"{"sealed_b64":"!!!not-base64!!!","meta":{"accounts":[],"state":"x"}}"#;
+        let e = seal_from_json(bad).unwrap_err();
+        assert!(matches!(e, CustodyError::Other(ref m) if m.contains("seal b64")));
+    }
+
+    #[test]
+    fn write_then_read_seal_file_roundtrips_and_missing_is_none() {
+        let dir = std::env::temp_dir().join(format!("dogtag-custody-unit-{}", std::process::id()));
+        let path = dir.join("seal.json").to_str().unwrap().to_string();
+        let ct = encrypt_seed("disk seed phrase", "pw").unwrap();
+        let meta = sample_meta();
+
+        write_seal_file(&path, &ct, &meta).unwrap();
+        let (ct2, meta2) = read_seal_file(&path)
+            .unwrap()
+            .expect("seal present after write");
+        assert_eq!(ct, ct2);
+        assert_eq!(meta2.state, "initialized");
+
+        // 0600 owner-only perms on unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        // absent path -> Ok(None), not an error.
+        let missing = dir
+            .join("does-not-exist.json")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(read_seal_file(&missing).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn decrypt_seed_rejects_garbage_ciphertext() {
+        // not an age stream at all -> Decrypt error (not a panic).
+        assert!(matches!(
+            decrypt_seed(b"this is not age ciphertext", "pw"),
+            Err(CustodyError::Decrypt)
+        ));
+    }
 }
