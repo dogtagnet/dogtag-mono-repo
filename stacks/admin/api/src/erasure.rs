@@ -7,7 +7,14 @@
 
 use crate::app::AppState;
 
-/// Scopes a delete-request can target.
+/// Whether a delete-request `scope` covers record `kind`. A scope matches its own `kind`, and the
+/// special scope `"all"` matches every kind. Matching is exact and case-sensitive; an unknown scope
+/// (e.g. `""`) matches nothing.
+///
+/// Note the broader cascade is composed at the call sites in `erase`, not here: the `"credentials"`
+/// scope additionally shreds `verifications` and `receipts` (they reference the erased credentials),
+/// while `"verifications"` shreds receipts but leaves credentials, and owner PII is cleared only
+/// under `"all"`.
 fn in_scope(scope: &str, kind: &str) -> bool {
     scope == "all" || scope == kind
 }
@@ -77,4 +84,34 @@ pub async fn fulfill_due_deletions(st: &AppState, now: u64) -> usize {
         st.store.update_deletion(d).await;
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_scope;
+
+    #[test]
+    fn all_scope_matches_every_kind() {
+        assert!(in_scope("all", "credentials"));
+        assert!(in_scope("all", "verifications"));
+        assert!(in_scope("all", "receipts"));
+        // even an arbitrary/unknown kind is covered by the "all" scope.
+        assert!(in_scope("all", "anything"));
+    }
+
+    #[test]
+    fn specific_scope_matches_only_its_own_kind() {
+        assert!(in_scope("credentials", "credentials"));
+        assert!(!in_scope("credentials", "verifications"));
+        assert!(in_scope("verifications", "verifications"));
+        assert!(!in_scope("verifications", "credentials"));
+    }
+
+    #[test]
+    fn unknown_or_empty_scope_matches_nothing() {
+        assert!(!in_scope("", "credentials"));
+        assert!(!in_scope("bogus", "credentials"));
+        // matching is case-sensitive: "ALL" is not the special wildcard.
+        assert!(!in_scope("ALL", "credentials"));
+    }
 }
