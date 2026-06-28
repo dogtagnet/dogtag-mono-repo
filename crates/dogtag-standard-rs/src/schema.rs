@@ -617,4 +617,128 @@ mod tests {
         c["storage"] = json!("on_chain");
         assert_violation(&c, "storage must == \"off_chain\"");
     }
+
+    // ----- direct coverage for the pure date/decimal helpers -----
+
+    #[test]
+    fn days_from_civil_anchors() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1970, 1, 2), 1);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        // 30 years + 7 intervening Feb-29 leap days (1972..=1996).
+        assert_eq!(days_from_civil(2000, 1, 1), 10957);
+    }
+
+    #[test]
+    fn civil_from_days_is_inverse_of_days_from_civil() {
+        for &(y, m, d) in &[
+            (1970, 1, 1),
+            (1969, 12, 31), // pre-epoch (negative day count)
+            (2000, 2, 29),  // 400-divisible leap day
+            (2024, 2, 29),  // ordinary leap day
+            (2023, 12, 31),
+            (1, 1, 1),
+            (2027, 1, 11),
+        ] {
+            let days = days_from_civil(y, m, d);
+            assert_eq!(civil_from_days(days), (y, m, d), "round-trip for {y}-{m}-{d}");
+        }
+        // The epoch itself decodes correctly.
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn days_in_month_handles_leap_rules() {
+        assert_eq!(days_in_month(2024, 2), 29); // divisible by 4, not 100
+        assert_eq!(days_in_month(2023, 2), 28); // common year
+        assert_eq!(days_in_month(2000, 2), 29); // divisible by 400
+        assert_eq!(days_in_month(1900, 2), 28); // divisible by 100, not 400
+        assert_eq!(days_in_month(2024, 1), 31);
+        assert_eq!(days_in_month(2024, 4), 30);
+        assert_eq!(days_in_month(2024, 12), 31);
+    }
+
+    #[test]
+    fn add_months_clamps_day_of_month() {
+        let ymd = |days| civil_from_days(days);
+        // Jan 31 + 1mo clamps to leap-year Feb 29.
+        assert_eq!(ymd(add_months(days_from_civil(2024, 1, 31), 1)), (2024, 2, 29));
+        // Jan 31 + 1mo clamps to common-year Feb 28.
+        assert_eq!(ymd(add_months(days_from_civil(2023, 1, 31), 1)), (2023, 2, 28));
+        // +12mo crosses a year cleanly, no clamp.
+        assert_eq!(ymd(add_months(days_from_civil(2024, 1, 15), 12)), (2025, 1, 15));
+        // Negative months walk backwards (and still clamp): Mar 31 -1mo -> Feb 29.
+        assert_eq!(ymd(add_months(days_from_civil(2024, 3, 31), -1)), (2024, 2, 29));
+        // Adding zero months is identity.
+        let d = days_from_civil(2024, 6, 28);
+        assert_eq!(add_months(d, 0), d);
+    }
+
+    #[test]
+    fn iso_date_parses_and_rejects() {
+        assert_eq!(iso_date("2024-01-11"), Some(days_from_civil(2024, 1, 11)));
+        // Trailing time suffix (T... or space...) is ignored.
+        assert_eq!(iso_date("2024-01-11T10:30:00Z"), Some(days_from_civil(2024, 1, 11)));
+        assert_eq!(iso_date("2024-01-11 extra"), Some(days_from_civil(2024, 1, 11)));
+        // Out-of-range month / day.
+        assert_eq!(iso_date("2024-13-01"), None);
+        assert_eq!(iso_date("2024-01-32"), None);
+        assert_eq!(iso_date("2024-00-10"), None);
+        // Wrong shape / separators / too short.
+        assert_eq!(iso_date("2024-1-1"), None);
+        assert_eq!(iso_date("20240101"), None);
+        assert_eq!(iso_date("2024/01/11"), None);
+        // Non-digit in a numeric field.
+        assert_eq!(iso_date("20x4-01-11"), None);
+    }
+
+    #[test]
+    fn split_decimal_accepts_and_rejects() {
+        assert_eq!(split_decimal("0.5"), Some(("0", "5")));
+        assert_eq!(split_decimal("12"), Some(("12", "")));
+        assert_eq!(split_decimal("00.50"), Some(("00", "50")));
+        assert_eq!(split_decimal(""), None); // empty
+        assert_eq!(split_decimal("1."), None); // dot but empty fraction
+        assert_eq!(split_decimal(".5"), None); // empty integer part
+        assert_eq!(split_decimal("1.2.3"), None); // fraction carries a stray dot
+        assert_eq!(split_decimal("1a"), None); // non-digit integer
+        assert_eq!(split_decimal("1.2a"), None); // non-digit fraction
+    }
+
+    #[test]
+    fn is_decimal_string_mirrors_split() {
+        assert!(is_decimal_string("3.14"));
+        assert!(is_decimal_string("42"));
+        assert!(!is_decimal_string("3.14.15"));
+        assert!(!is_decimal_string(""));
+    }
+
+    #[test]
+    fn strip_zeros_collapses_leading_zeros() {
+        assert_eq!(strip_zeros("007"), "7");
+        assert_eq!(strip_zeros("0"), "0");
+        assert_eq!(strip_zeros("000"), "0");
+        assert_eq!(strip_zeros("100"), "100");
+        assert_eq!(strip_zeros(""), "0");
+    }
+
+    #[test]
+    fn compare_decimal_is_scale_insensitive() {
+        use std::cmp::Ordering;
+        assert_eq!(compare_decimal("0.5", "0.50"), Some(Ordering::Equal));
+        assert_eq!(compare_decimal("007", "7"), Some(Ordering::Equal));
+        assert_eq!(compare_decimal("0.7", "0.5"), Some(Ordering::Greater));
+        assert_eq!(compare_decimal("0.4", "0.5"), Some(Ordering::Less));
+        assert_eq!(compare_decimal("10", "9"), Some(Ordering::Greater)); // integer length wins
+        assert_eq!(compare_decimal("1.0", "0.9"), Some(Ordering::Greater));
+        assert_eq!(compare_decimal("x", "1"), None); // malformed input
+    }
+
+    #[test]
+    fn decimal_gte_treats_malformed_as_false() {
+        assert!(decimal_gte("0.5", "0.5"));
+        assert!(decimal_gte("0.7", "0.5"));
+        assert!(!decimal_gte("0.4", "0.5"));
+        assert!(!decimal_gte("x", "0.5")); // None compares as not-gte
+    }
 }
