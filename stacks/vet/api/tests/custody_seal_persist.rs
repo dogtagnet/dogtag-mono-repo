@@ -21,7 +21,10 @@ async fn hydrate_from_seal(store: &Arc<dyn Store>, path: &str) {
     if store.get_custody().await.is_none() {
         if let Some((encrypted_seed, meta)) = vet_api::custody::read_seal_file(path).unwrap() {
             store
-                .put_custody(vet_api::store::CustodyBlob { encrypted_seed, meta })
+                .put_custody(vet_api::store::CustodyBlob {
+                    encrypted_seed,
+                    meta,
+                })
                 .await;
         }
     }
@@ -29,10 +32,27 @@ async fn hydrate_from_seal(store: &Arc<dyn Store>, path: &str) {
 
 /// Run genesis on `app` (admin-gated) and return the freshly-genesised account-0 address.
 async fn run_genesis(app: &axum::Router, admin: &str, passphrase: &str) -> String {
-    let (s, b) = call(app, "POST", "/admin/genesis/start", Some(admin), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        app,
+        "POST",
+        "/admin/genesis/start",
+        Some(admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "genesis start: {b}");
-    let words: Vec<String> = b["words"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
-    let challenge: Vec<usize> = b["challengeIndices"].as_array().unwrap().iter().map(|w| w.as_u64().unwrap() as usize).collect();
+    let words: Vec<String> = b["words"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect();
+    let challenge: Vec<usize> = b["challengeIndices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_u64().unwrap() as usize)
+        .collect();
     let typed: Vec<String> = challenge.iter().map(|&i| words[i].clone()).collect();
 
     let (s, b) = call(
@@ -48,7 +68,14 @@ async fn run_genesis(app: &axum::Router, admin: &str, passphrase: &str) -> Strin
 }
 
 async fn admin_login(app: &axum::Router) -> String {
-    let (s, b) = call(app, "POST", "/admin/login", None, Some(serde_json::json!({"password": ADMIN_PW}))).await;
+    let (s, b) = call(
+        app,
+        "POST",
+        "/admin/login",
+        None,
+        Some(serde_json::json!({"password": ADMIN_PW})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "admin login: {b}");
     b["token"].as_str().unwrap().to_string()
 }
@@ -69,7 +96,10 @@ async fn seal_survives_restart_same_signer() {
     let addr_before = run_genesis(&app1, &admin1, passphrase).await;
 
     // the seal file now exists ...
-    assert!(std::path::Path::new(&seal_path).exists(), "seal file written on genesis_confirm");
+    assert!(
+        std::path::Path::new(&seal_path).exists(),
+        "seal file written on genesis_confirm"
+    );
     let raw = std::fs::read_to_string(&seal_path).unwrap();
     // ... and contains ONLY ciphertext + non-secret meta: no plaintext mnemonic, no passphrase.
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -94,10 +124,24 @@ async fn seal_survives_restart_same_signer() {
     let app2 = vet_api::router(st2.clone());
 
     // hydrated => "initialized but locked": genesis/start is a 409 (no re-genesis), and not unlocked yet.
-    assert!(!st2.custody.is_unlocked(), "custody starts LOCKED after restart");
+    assert!(
+        !st2.custody.is_unlocked(),
+        "custody starts LOCKED after restart"
+    );
     let admin2 = admin_login(&app2).await; // admin login works against a hydrated-but-locked custody
-    let (s, _b) = call(&app2, "POST", "/admin/genesis/start", Some(&admin2), Some(serde_json::json!({}))).await;
-    assert_eq!(s, StatusCode::CONFLICT, "already initialized -> no re-genesis");
+    let (s, _b) = call(
+        &app2,
+        "POST",
+        "/admin/genesis/start",
+        Some(&admin2),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "already initialized -> no re-genesis"
+    );
 
     // wrong passphrase still fails.
     let (s, _b) = call(
@@ -121,10 +165,20 @@ async fn seal_survives_restart_same_signer() {
     .await;
     assert_eq!(s, StatusCode::OK, "unlock with right passphrase: {b}");
     let addr_after = st2.custody.active_address().unwrap();
-    assert_eq!(addr_before, addr_after, "same signer re-derived after restart");
+    assert_eq!(
+        addr_before, addr_after,
+        "same signer re-derived after restart"
+    );
 
     // operator login also works post-restart (independent of genesis state).
-    let (s, _b) = call(&app2, "POST", "/login", None, Some(serde_json::json!({"password": OPERATOR_PW}))).await;
+    let (s, _b) = call(
+        &app2,
+        "POST",
+        "/login",
+        None,
+        Some(serde_json::json!({"password": OPERATOR_PW})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     let _ = std::fs::remove_dir_all(&dir);

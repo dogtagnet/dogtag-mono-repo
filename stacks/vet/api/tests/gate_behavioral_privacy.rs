@@ -66,7 +66,10 @@ async fn zk_is_the_default_mode_when_unspecified() {
     // low-density one-time TOKEN (no JWT); we resolve the session metadata via GET /x/<token> and read
     // its `mode`.
     let qr = b["qrUrl"].as_str().expect("qrUrl");
-    assert!(!qr.contains("t="), "export QR must not carry a JWT query string: {qr}");
+    assert!(
+        !qr.contains("t="),
+        "export QR must not carry a JWT query string: {qr}"
+    );
     let token = extract_token(qr);
     let (s, meta) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
     assert_eq!(s, StatusCode::OK, "GET /x/<token> resolve: {meta}");
@@ -75,7 +78,11 @@ async fn zk_is_the_default_mode_when_unspecified() {
         Some("zk"),
         "default export mode MUST be zk (sensitive default)"
     );
-    assert_eq!(meta["sessionId"].as_str(), Some(session_id.as_str()), "resolve binds the session");
+    assert_eq!(
+        meta["sessionId"].as_str(),
+        Some(session_id.as_str()),
+        "resolve binds the session"
+    );
 
     // sanity: the session id is opaque and the request carried NO owner identifier (only a purpose),
     // so the session itself does not bind the owner's portfolio — linkage is per-pet via `subject`.
@@ -106,10 +113,20 @@ async fn explicit_normal_mode_is_still_honoured() {
     let token = extract_token(b["qrUrl"].as_str().unwrap());
     let (s, meta) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
     assert_eq!(s, StatusCode::OK, "GET /x/<token> resolve: {meta}");
-    assert_eq!(meta["mode"].as_str(), Some("normal"), "explicit normal honoured");
+    assert_eq!(
+        meta["mode"].as_str(),
+        Some("normal"),
+        "explicit normal honoured"
+    );
 }
 
 /// Pull the one-time export TOKEN out of the export QR URL (`.../x/<token>?a=<relayer>`).
 fn extract_token(qr: &str) -> String {
-    qr.rsplit('/').next().unwrap().split('?').next().unwrap().to_string()
+    qr.rsplit('/')
+        .next()
+        .unwrap()
+        .split('?')
+        .next()
+        .unwrap()
+        .to_string()
 }

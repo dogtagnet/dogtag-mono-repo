@@ -58,16 +58,40 @@ async fn full_issuance_share_revoke_flow() {
 
     // record is now ISSUED on-chain — isValid(root) is true via the chain client (issuance pillar).
     // --- share: mint a SHORT one-time share token (low-density QR) ---
-    let (s, b) = call(&app, "POST", &format!("/records/{record_id}/share"), Some(&op), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/records/{record_id}/share"),
+        Some(&op),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "share: {b}");
-    assert_eq!(b["recordId"].as_str().unwrap(), record_id, "share still returns recordId");
+    assert_eq!(
+        b["recordId"].as_str().unwrap(),
+        record_id,
+        "share still returns recordId"
+    );
     let qr = b["qrUrl"].as_str().unwrap();
     // The QR is now a tiny `/r/<32hex>` path — NO embedded JWT, NO query string.
-    assert!(!qr.contains("t="), "qrUrl must not carry a JWT query string: {qr}");
+    assert!(
+        !qr.contains("t="),
+        "qrUrl must not carry a JWT query string: {qr}"
+    );
     let token = extract_token(qr);
-    assert_eq!(token.len(), 32, "share token must be 32 hex chars (16 random bytes): {token}");
-    assert!(token.chars().all(|c| c.is_ascii_hexdigit()), "token must be hex: {token}");
-    assert!(qr.ends_with(&format!("/r/{token}")), "qrUrl path must be /r/<token>: {qr}");
+    assert_eq!(
+        token.len(),
+        32,
+        "share token must be 32 hex chars (16 random bytes): {token}"
+    );
+    assert!(
+        token.chars().all(|c| c.is_ascii_hexdigit()),
+        "token must be hex: {token}"
+    );
+    assert!(
+        qr.ends_with(&format!("/r/{token}")),
+        "qrUrl path must be /r/<token>: {qr}"
+    );
 
     // --- GET /r/<token>: returns the wrapped doc; issuance verifies VALID ---
     let (s, doc) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
@@ -83,10 +107,21 @@ async fn full_issuance_share_revoke_flow() {
 
     // --- reused short token => 404 (one-time, deleted after first use) ---
     let (s, _b) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "reused share token must be 404 (one-time)");
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "reused share token must be 404 (one-time)"
+    );
 
     // --- revoke: re-verify issuance INVALID ---
-    let (s, b) = call(&app, "POST", &format!("/records/{record_id}/revoke"), Some(&op), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/records/{record_id}/revoke"),
+        Some(&op),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "revoke: {b}");
     assert!(
         !mem.is_valid(ISSUER, &merkle_root).await.unwrap(),
@@ -118,7 +153,11 @@ async fn non_whitelisted_signer_fails_preflight() {
         Some(serde_json::json!({"recordType":"VACCINATION","dogTagId":"7","fields":vaccination_fields()})),
     )
     .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "non-whitelisted signer must 403: {b}");
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "non-whitelisted signer must 403: {b}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -140,7 +179,14 @@ async fn confirm_refuses_bogus_txhash() {
     mem.whitelist(REGISTRY, &rt, &backend_addr);
 
     // switch to WALLET mode so prepare returns an unsigned tx WITHOUT confirming (leaves it prepared).
-    let (s, _b) = call(&app, "PUT", "/settings/signing-mode", Some(&op), Some(serde_json::json!({"mode":"wallet"}))).await;
+    let (s, _b) = call(
+        &app,
+        "PUT",
+        "/settings/signing-mode",
+        Some(&op),
+        Some(serde_json::json!({"mode":"wallet"})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     let (s, b) = call(
@@ -187,13 +233,31 @@ async fn auth_gates_and_settings_409() {
 
     // custody routes require admin session (operator token is NOT admin).
     let (_admin, op, backend_addr) = boot_custody(&app).await;
-    let (s, _b) = call(&app, "POST", "/admin/accounts", Some(&op), Some(serde_json::json!({"label":"x"}))).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "operator token must not pass admin gate");
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/admin/accounts",
+        Some(&op),
+        Some(serde_json::json!({"label":"x"})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "operator token must not pass admin gate"
+    );
 
     // settings 409 when a prepared record is outstanding.
     let rt = record_type_key("VACCINATION");
     mem.whitelist(REGISTRY, &rt, &backend_addr);
-    let (s, _b) = call(&app, "PUT", "/settings/signing-mode", Some(&op), Some(serde_json::json!({"mode":"wallet"}))).await;
+    let (s, _b) = call(
+        &app,
+        "PUT",
+        "/settings/signing-mode",
+        Some(&op),
+        Some(serde_json::json!({"mode":"wallet"})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let (s, _b) = call(
         &app,
@@ -204,7 +268,14 @@ async fn auth_gates_and_settings_409() {
     )
     .await;
     assert_eq!(s, StatusCode::OK); // wallet mode leaves a prepared record
-    let (s, b) = call(&app, "PUT", "/settings/signing-mode", Some(&op), Some(serde_json::json!({"mode":"backend"}))).await;
+    let (s, b) = call(
+        &app,
+        "PUT",
+        "/settings/signing-mode",
+        Some(&op),
+        Some(serde_json::json!({"mode":"backend"})),
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "prepared outstanding -> 409: {b}");
 }
 
@@ -303,15 +374,40 @@ async fn verify_session_status_polls_pending_to_recorded() {
     let session_id = b["sessionId"].as_str().unwrap().to_string();
 
     // status read is operator-gated: no session -> 401.
-    let (s, _b) = call(&app, "GET", &format!("/verify/session/{session_id}"), None, None).await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "status read must be operator-gated");
+    let (s, _b) = call(
+        &app,
+        "GET",
+        &format!("/verify/session/{session_id}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "status read must be operator-gated"
+    );
 
     // unknown session -> 404.
-    let (s, _b) = call(&app, "GET", "/verify/session/does-not-exist", Some(&op), None).await;
+    let (s, _b) = call(
+        &app,
+        "GET",
+        "/verify/session/does-not-exist",
+        Some(&op),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::NOT_FOUND, "unknown session -> 404");
 
     // before submit: status pending, no txHash.
-    let (s, b) = call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+    let (s, b) = call(
+        &app,
+        "GET",
+        &format!("/verify/session/{session_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "status pending: {b}");
     assert_eq!(b["status"], "pending");
     assert_eq!(b["mode"], "zk");
@@ -343,13 +439,23 @@ async fn verify_session_status_polls_pending_to_recorded() {
     let submit_tx = b["txHash"].as_str().unwrap().to_string();
 
     // after submit: status recorded + txHash + nullifier surfaced.
-    let (s, b) = call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+    let (s, b) = call(
+        &app,
+        "GET",
+        &format!("/verify/session/{session_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "status recorded: {b}");
     assert_eq!(b["status"], "recorded");
-    assert_eq!(b["txHash"].as_str().unwrap(), submit_tx, "txHash persisted on the session");
     assert_eq!(
-        b["nullifier"],
-        "0x2222222222222222222222222222222222222222222222222222222222222222",
+        b["txHash"].as_str().unwrap(),
+        submit_tx,
+        "txHash persisted on the session"
+    );
+    assert_eq!(
+        b["nullifier"], "0x2222222222222222222222222222222222222222222222222222222222222222",
         "nullifier surfaced",
     );
 }
@@ -412,8 +518,7 @@ async fn zk_client_proof_relayer_sponsored_bind() {
     let subject = format!("{:#x}", subject_signer.address());
     let subject = subject.as_str();
     let rt = record_type_key("VACCINATION");
-    let credential_root =
-        "0x1111111111111111111111111111111111111111111111111111111111111111";
+    let credential_root = "0x1111111111111111111111111111111111111111111111111111111111111111";
     let key_hash = "0x3333333333333333333333333333333333333333333333333333333333333333";
     // purpose as the registry's reduced bytes32 (purpose_key); pub[1] must equal it.
     let purpose_b32 = vet_api::verify::purpose_key(purpose);
@@ -457,9 +562,16 @@ async fn zk_client_proof_relayer_sponsored_bind() {
         })),
     )
     .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "unbound + no bind block must 400: {b}");
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "unbound + no bind block must 400: {b}"
+    );
     assert!(
-        b["error"].as_str().unwrap_or("").contains("consent key not bound"),
+        b["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("consent key not bound"),
         "clear 400 message: {b}"
     );
 
@@ -484,10 +596,13 @@ async fn zk_client_proof_relayer_sponsored_bind() {
             &nonce,
             dogtag_standard::consent::DOGTAG_CHAIN_ID,
         );
-        let sig = subject_signer.sign_hash_sync(&B256::from(digest)).expect("sign bind");
+        let sig = subject_signer
+            .sign_hash_sync(&B256::from(digest))
+            .expect("sign bind");
         format!("0x{}", hex::encode(sig.as_bytes()))
     };
-    let bind = serde_json::json!({ "subject": subject, "keyHash": key_hash, "ownerSig": owner_sig });
+    let bind =
+        serde_json::json!({ "subject": subject, "keyHash": key_hash, "ownerSig": owner_sig });
     let (s, b) = call(
         &app,
         "POST",
@@ -502,11 +617,21 @@ async fn zk_client_proof_relayer_sponsored_bind() {
     // The record is now ASYNC: submit returns `{status:"recording"}` immediately, then the spawned
     // task runs bindConsentKeyFor + recordVerificationZK and flips the session to `recorded`.
     assert_eq!(s, StatusCode::OK, "bind + record ack must succeed: {b}");
-    assert_eq!(b["status"], "recording", "submit must ack `recording` immediately: {b}");
+    assert_eq!(
+        b["status"], "recording",
+        "submit must ack `recording` immediately: {b}"
+    );
     assert!(b["txHash"].is_null(), "no txHash on the recording ack: {b}");
     // poll the session until the background task finishes (MemChain returns immediately).
     for _ in 0..100 {
-        let (_s, sb) = call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+        let (_s, sb) = call(
+            &app,
+            "GET",
+            &format!("/verify/session/{session_id}"),
+            Some(&op),
+            None,
+        )
+        .await;
         if sb["status"] == "recorded" {
             break;
         }
@@ -514,7 +639,10 @@ async fn zk_client_proof_relayer_sponsored_bind() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert_eq!(
-        mem.consent_key_of(CONSENT_KEYS, subject).await.unwrap().to_lowercase(),
+        mem.consent_key_of(CONSENT_KEYS, subject)
+            .await
+            .unwrap()
+            .to_lowercase(),
         key_hash.to_lowercase(),
         "keyOf(subject) bound to keyHash after the async record"
     );
@@ -546,12 +674,26 @@ async fn zk_client_proof_relayer_sponsored_bind() {
         })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "already-bound submit ack must succeed without bind block: {b}");
-    assert_eq!(b["status"], "recording", "already-bound submit must ack `recording`: {b}");
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "already-bound submit ack must succeed without bind block: {b}"
+    );
+    assert_eq!(
+        b["status"], "recording",
+        "already-bound submit must ack `recording`: {b}"
+    );
     // poll until the async record lands.
     let mut recorded2 = false;
     for _ in 0..100 {
-        let (_s, sb) = call(&app, "GET", &format!("/verify/session/{session_id2}"), Some(&op), None).await;
+        let (_s, sb) = call(
+            &app,
+            "GET",
+            &format!("/verify/session/{session_id2}"),
+            Some(&op),
+            None,
+        )
+        .await;
         if sb["status"] == "recorded" {
             recorded2 = true;
             break;
@@ -559,7 +701,10 @@ async fn zk_client_proof_relayer_sponsored_bind() {
         assert_ne!(sb["status"], "error", "async record must not error: {sb}");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(recorded2, "already-bound async record must complete -> session recorded");
+    assert!(
+        recorded2,
+        "already-bound async record must complete -> session recorded"
+    );
 }
 
 /// ASYNC on-chain record (the export-timeout fix): a CLIENT-PROOF ZK consent submit returns
@@ -635,7 +780,11 @@ async fn zk_client_proof_records_async_and_consumes_token_on_success() {
     let session_id = b["sessionId"].as_str().unwrap().to_string();
     let qr = b["qrUrl"].as_str().unwrap();
     let token = export_token_from_qr(qr);
-    assert_eq!(token.len(), 32, "export token must be 32 hex chars: {token}");
+    assert_eq!(
+        token.len(),
+        32,
+        "export token must be 32 hex chars: {token}"
+    );
 
     // the token resolves the session (non-consuming) -> still valid before submit.
     let (s, _b) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
@@ -654,8 +803,15 @@ async fn zk_client_proof_records_async_and_consumes_token_on_success() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "consent submit ack: {b}");
-    assert_eq!(b["status"], "recording", "submit must ack `recording` immediately: {b}");
-    assert_eq!(b["sessionId"].as_str().unwrap(), session_id, "ack carries the sessionId");
+    assert_eq!(
+        b["status"], "recording",
+        "submit must ack `recording` immediately: {b}"
+    );
+    assert_eq!(
+        b["sessionId"].as_str().unwrap(),
+        session_id,
+        "ack carries the sessionId"
+    );
     assert!(b["txHash"].is_null(), "no txHash on the recording ack: {b}");
 
     // --- poll the session until the async record lands. Poll as the OPERATOR (bearer): the export
@@ -663,8 +819,14 @@ async fn zk_client_proof_records_async_and_consumes_token_on_success() {
     //     phone detects completion via the on-chain nullifier / its token no longer resolving. ---
     let mut recorded = serde_json::Value::Null;
     for _ in 0..100 {
-        let (s, sb) =
-            call(&app, "GET", &format!("/verify/session/{session_id}"), Some(&op), None).await;
+        let (s, sb) = call(
+            &app,
+            "GET",
+            &format!("/verify/session/{session_id}"),
+            Some(&op),
+            None,
+        )
+        .await;
         assert_eq!(s, StatusCode::OK, "session poll: {sb}");
         if sb["status"] == "recorded" {
             recorded = sb;
@@ -673,8 +835,14 @@ async fn zk_client_proof_records_async_and_consumes_token_on_success() {
         assert_ne!(sb["status"], "error", "async record must not error: {sb}");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert_eq!(recorded["status"], "recorded", "async record must complete -> session recorded");
-    assert!(recorded["txHash"].as_str().is_some(), "recorded session carries the record txHash");
+    assert_eq!(
+        recorded["status"], "recorded",
+        "async record must complete -> session recorded"
+    );
+    assert!(
+        recorded["txHash"].as_str().is_some(),
+        "recorded session carries the record txHash"
+    );
     assert_eq!(
         recorded["nullifier"].as_str().unwrap().to_lowercase(),
         nullifier.to_lowercase(),
@@ -682,12 +850,18 @@ async fn zk_client_proof_records_async_and_consumes_token_on_success() {
     );
     // on-chain effect: the nullifier was consumed by recordVerificationZK.
     assert!(
-        mem.consumed("0x0000000000000000000000000000000000000000", nullifier).await.unwrap(),
+        mem.consumed("0x0000000000000000000000000000000000000000", nullifier)
+            .await
+            .unwrap(),
         "nullifier must be consumed on-chain after the async record"
     );
     // the one-time export token was CONSUMED on the record success -> resolves to a 404 now.
     let (s, _b) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "export token must be consumed after a successful record");
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "export token must be consumed after a successful record"
+    );
 
     // ---------------------------------------------------------------------------------------------
     // FORCED RECORD FAILURE: a fresh session whose proof reuses the SAME nullifier -> MemChain's
@@ -719,34 +893,63 @@ async fn zk_client_proof_records_async_and_consumes_token_on_success() {
     )
     .await;
     // validation still passes (the replay is only detectable on-chain) -> we still ack `recording`.
-    assert_eq!(s, StatusCode::OK, "submit ack even when the record will fail: {b}");
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "submit ack even when the record will fail: {b}"
+    );
     assert_eq!(b["status"], "recording");
 
     // poll until the async task records the failure.
     let mut errored = serde_json::Value::Null;
     for _ in 0..100 {
-        let (_s, sb) =
-            call(&app, "GET", &format!("/verify/session/{session_id2}"), Some(&op), None).await;
+        let (_s, sb) = call(
+            &app,
+            "GET",
+            &format!("/verify/session/{session_id2}"),
+            Some(&op),
+            None,
+        )
+        .await;
         if sb["status"] == "error" {
             errored = sb;
             break;
         }
-        assert_ne!(sb["status"], "recorded", "a replayed nullifier must NOT record: {sb}");
+        assert_ne!(
+            sb["status"], "recorded",
+            "a replayed nullifier must NOT record: {sb}"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert_eq!(errored["status"], "error", "forced record failure -> session error");
+    assert_eq!(
+        errored["status"], "error",
+        "forced record failure -> session error"
+    );
     // the export token was NOT consumed -> still resolves (the owner can retry the same QR).
     let (s, _b) = call(&app, "GET", &format!("/x/{token2}"), None, None).await;
-    assert_eq!(s, StatusCode::OK, "export token must survive a failed record (retryable QR)");
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "export token must survive a failed record (retryable QR)"
+    );
 }
 
 fn common_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 /// Extract the 32-hex export token from an export qrUrl: `{deployment}/x/{token}?a={relayer}`.
 fn export_token_from_qr(qr: &str) -> String {
-    qr.split("/x/").nth(1).unwrap().split('?').next().unwrap().to_string()
+    qr.split("/x/")
+        .nth(1)
+        .unwrap()
+        .split('?')
+        .next()
+        .unwrap()
+        .to_string()
 }
 
 fn extract_token(qr: &str) -> String {

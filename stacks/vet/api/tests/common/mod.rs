@@ -144,9 +144,15 @@ pub fn state_with_verify_keys(
 
 /// Build a Phase-7 AppState wired with the supplied `MockCalendar` + `MockCentralClient` so a test
 /// can program list responses, inspect the mirror, and assert appointment-event callbacks.
-pub fn state_for_calendar(calendar: Arc<MockCalendar>, central: Arc<MockCentralClient>) -> AppState {
+pub fn state_for_calendar(
+    calendar: Arc<MockCalendar>,
+    central: Arc<MockCentralClient>,
+) -> AppState {
     let mut issuer_addrs = HashMap::new();
-    issuer_addrs.insert("VACCINATION".to_string(), "0x00000000000000000000000000000000000000bb".to_string());
+    issuer_addrs.insert(
+        "VACCINATION".to_string(),
+        "0x00000000000000000000000000000000000000bb".to_string(),
+    );
     let cfg = Config {
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: "memchain".to_string(),
@@ -257,20 +263,51 @@ pub async fn call(
 /// Full genesis -> confirm -> unlock, returning (admin_token, operator_token, backend_signer_addr).
 pub async fn boot_custody(app: &axum::Router) -> (String, String, String) {
     // admin login
-    let (s, b) = call(app, "POST", "/admin/login", None, Some(serde_json::json!({"password": ADMIN_PW}))).await;
+    let (s, b) = call(
+        app,
+        "POST",
+        "/admin/login",
+        None,
+        Some(serde_json::json!({"password": ADMIN_PW})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "admin login: {b}");
     let admin = b["token"].as_str().unwrap().to_string();
 
     // operator login
-    let (s, b) = call(app, "POST", "/login", None, Some(serde_json::json!({"password": OPERATOR_PW}))).await;
+    let (s, b) = call(
+        app,
+        "POST",
+        "/login",
+        None,
+        Some(serde_json::json!({"password": OPERATOR_PW})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "op login: {b}");
     let operator = b["token"].as_str().unwrap().to_string();
 
     // genesis start
-    let (s, b) = call(app, "POST", "/admin/genesis/start", Some(&admin), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        app,
+        "POST",
+        "/admin/genesis/start",
+        Some(&admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "genesis start: {b}");
-    let words: Vec<String> = b["words"].as_array().unwrap().iter().map(|w| w.as_str().unwrap().to_string()).collect();
-    let challenge: Vec<usize> = b["challengeIndices"].as_array().unwrap().iter().map(|w| w.as_u64().unwrap() as usize).collect();
+    let words: Vec<String> = b["words"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect();
+    let challenge: Vec<usize> = b["challengeIndices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_u64().unwrap() as usize)
+        .collect();
     let typed: Vec<String> = challenge.iter().map(|&i| words[i].clone()).collect();
 
     // genesis confirm

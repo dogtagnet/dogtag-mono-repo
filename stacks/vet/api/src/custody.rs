@@ -70,7 +70,8 @@ pub fn derive_account(phrase: &str, index: u32) -> Result<PrivateKeySigner, Cust
 
 /// age-encrypt the mnemonic with a scrypt passphrase. Returns ASCII-armored ciphertext.
 pub fn encrypt_seed(phrase: &str, passphrase: &str) -> Result<Vec<u8>, CustodyError> {
-    let encryptor = age::Encryptor::with_user_passphrase(SecretString::from(passphrase.to_string()));
+    let encryptor =
+        age::Encryptor::with_user_passphrase(SecretString::from(passphrase.to_string()));
     let mut out = Vec::new();
     let mut writer = encryptor
         .wrap_output(&mut out)
@@ -85,7 +86,10 @@ pub fn encrypt_seed(phrase: &str, passphrase: &str) -> Result<Vec<u8>, CustodyEr
 }
 
 /// age-decrypt the mnemonic back into a zeroizing string.
-pub fn decrypt_seed(ciphertext: &[u8], passphrase: &str) -> Result<Zeroizing<String>, CustodyError> {
+pub fn decrypt_seed(
+    ciphertext: &[u8],
+    passphrase: &str,
+) -> Result<Zeroizing<String>, CustodyError> {
     let decryptor = age::Decryptor::new(ciphertext).map_err(|_| CustodyError::Decrypt)?;
     let identity = age::scrypt::Identity::new(SecretString::from(passphrase.to_string()));
     let mut reader = decryptor
@@ -118,7 +122,10 @@ pub struct SealFile {
 }
 
 /// Serialize `(ciphertext, meta)` to the on-disk seal JSON bytes.
-pub fn seal_to_json(encrypted_seed: &[u8], meta: &crate::store::KeystoreMeta) -> Result<Vec<u8>, CustodyError> {
+pub fn seal_to_json(
+    encrypted_seed: &[u8],
+    meta: &crate::store::KeystoreMeta,
+) -> Result<Vec<u8>, CustodyError> {
     use base64::Engine as _;
     let sf = SealFile {
         sealed_b64: base64::engine::general_purpose::STANDARD.encode(encrypted_seed),
@@ -130,8 +137,8 @@ pub fn seal_to_json(encrypted_seed: &[u8], meta: &crate::store::KeystoreMeta) ->
 /// Parse the on-disk seal JSON back into `(ciphertext, meta)`.
 pub fn seal_from_json(bytes: &[u8]) -> Result<(Vec<u8>, crate::store::KeystoreMeta), CustodyError> {
     use base64::Engine as _;
-    let sf: SealFile =
-        serde_json::from_slice(bytes).map_err(|e| CustodyError::Other(format!("seal parse: {e}")))?;
+    let sf: SealFile = serde_json::from_slice(bytes)
+        .map_err(|e| CustodyError::Other(format!("seal parse: {e}")))?;
     let ct = base64::engine::general_purpose::STANDARD
         .decode(sf.sealed_b64.as_bytes())
         .map_err(|e| CustodyError::Other(format!("seal b64: {e}")))?;
@@ -170,7 +177,9 @@ pub fn write_seal_file(
 }
 
 /// Load + parse the seal at `path` if it exists. `Ok(None)` when the file is absent (fresh boot).
-pub fn read_seal_file(path: &str) -> Result<Option<(Vec<u8>, crate::store::KeystoreMeta)>, CustodyError> {
+pub fn read_seal_file(
+    path: &str,
+) -> Result<Option<(Vec<u8>, crate::store::KeystoreMeta)>, CustodyError> {
     match std::fs::read(path) {
         Ok(bytes) => seal_from_json(&bytes).map(Some),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -306,8 +315,7 @@ mod tests {
 
     #[test]
     fn derive_is_deterministic() {
-        let phrase =
-            "test test test test test test test test test test test junk";
+        let phrase = "test test test test test test test test test test test junk";
         let a = derive_account(phrase, 0).unwrap();
         let b = derive_account(phrase, 0).unwrap();
         assert_eq!(a.address(), b.address());

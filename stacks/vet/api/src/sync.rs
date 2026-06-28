@@ -39,12 +39,18 @@ pub async fn run_sync(st: &AppState) -> SyncReport {
             state.sync_token = None;
             st.store.put_sync_state(state.clone()).await;
             match st.store_list(None).await {
-                ListOutcome::Page { events, next_sync_token } => (events, next_sync_token),
+                ListOutcome::Page {
+                    events,
+                    next_sync_token,
+                } => (events, next_sync_token),
                 // a 410 on a full list too — give up this pass without crashing.
                 ListOutcome::Gone => (vec![], String::new()),
             }
         }
-        ListOutcome::Page { events, next_sync_token } => (events, next_sync_token),
+        ListOutcome::Page {
+            events,
+            next_sync_token,
+        } => (events, next_sync_token),
     };
 
     for ev in events {
@@ -180,7 +186,10 @@ impl AppState {
             Ok(o) => o,
             Err(e) => {
                 tracing::warn!(err = %e, "events.list failed; treating as empty page");
-                ListOutcome::Page { events: vec![], next_sync_token: String::new() }
+                ListOutcome::Page {
+                    events: vec![],
+                    next_sync_token: String::new(),
+                }
             }
         }
     }
@@ -199,10 +208,22 @@ pub fn replica_from_json(v: &serde_json::Value, now: u64) -> Option<ApptReplica>
     Some(ApptReplica {
         appointment_id: v.get("id").and_then(|x| x.as_str())?.to_string(),
         business_id: v.get("businessId").and_then(|x| x.as_str())?.to_string(),
-        dog_tag_id: v.get("dogTagId").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-        slot: v.get("slot").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        dog_tag_id: v
+            .get("dogTagId")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        slot: v
+            .get("slot")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
         rev: v.get("rev").and_then(|x| x.as_u64())?,
-        state: v.get("state").and_then(|x| x.as_str()).unwrap_or("REQUESTED").to_string(),
+        state: v
+            .get("state")
+            .and_then(|x| x.as_str())
+            .unwrap_or("REQUESTED")
+            .to_string(),
         updated_at: v.get("updatedAt").and_then(|x| x.as_u64()).unwrap_or(now),
     })
 }

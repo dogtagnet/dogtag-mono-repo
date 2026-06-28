@@ -23,12 +23,16 @@ use ark_bn254::Fr;
 use ark_ff::PrimeField;
 use serde_json::json;
 
-use dogtag_standard::consent::{consent_nullifier, eddsa_consent_message, key_hash, VerificationConsent};
+use dogtag_standard::consent::{
+    consent_nullifier, eddsa_consent_message, key_hash, VerificationConsent,
+};
 use dogtag_standard::eddsa::{consent_key_from_raw_prv, sign_poseidon};
 use dogtag_standard::field::to_hex32;
 use dogtag_standard::leaf::field_of_value;
 use dogtag_standard::types::TypedScalar;
-use dogtag_standard::wrap::{flatten_data, parse_packed, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc};
+use dogtag_standard::wrap::{
+    flatten_data, parse_packed, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc,
+};
 
 use vet_api::chain::MemChain;
 use vet_api::prover::{ArkProver, ProverClient, StubProver};
@@ -230,11 +234,17 @@ fn assembled_input_parses_into_prove_inputs() {
         ax_hex: e["axHex"].as_str().unwrap().to_string(),
         ay_hex: e["ayHex"].as_str().unwrap().to_string(),
     };
-    let input =
-        dogtag_standard::prover_assemble::assemble_circuit_input(&wrapped_doc_json, &consent_json, &sig)
-            .expect("assemble");
+    let input = dogtag_standard::prover_assemble::assemble_circuit_input(
+        &wrapped_doc_json,
+        &consent_json,
+        &sig,
+    )
+    .expect("assemble");
     // The scalar fields must be bare strings (not arrays) for the ark parser.
-    assert!(input["dogTagId"].is_string(), "dogTagId must be a scalar string");
+    assert!(
+        input["dogTagId"].is_string(),
+        "dogTagId must be a scalar string"
+    );
     assert!(input["leafSalts"].is_array(), "leafSalts must be an array");
     // The decisive assertion: the ark-0.6 ProveInputs parser accepts it.
     vet_api::prover::ProveInputs::from_circuit_input_json(&input)
@@ -248,7 +258,8 @@ async fn prove_verification_returns_calldata_shape_and_echoes_inputs() {
     let (router, is_real) = router_with_best_prover();
     let (body, expected) = fixed_request();
 
-    let (status, resp) = common::call(&router, "POST", "/prove-verification", None, Some(body)).await;
+    let (status, resp) =
+        common::call(&router, "POST", "/prove-verification", None, Some(body)).await;
     assert_eq!(status, axum::http::StatusCode::OK, "resp: {resp}");
 
     // Shape: a:[2], b:[2][2], c:[2], pub:[7].
@@ -263,7 +274,10 @@ async fn prove_verification_returns_calldata_shape_and_echoes_inputs() {
     assert_eq!(c.len(), 2, "c must be [2]");
     assert_eq!(pubs.len(), 7, "pub must be the 7-vector");
 
-    let got: Vec<String> = pubs.iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    let got: Vec<String> = pubs
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
     // Input-derived columns: dogTagId, purpose, relayer, subject (0..4) and R (6) — produced by BOTH
     // the StubProver (echo) and the real ArkProver (binding).
     for i in [0usize, 1, 2, 3, 6] {
@@ -273,9 +287,18 @@ async fn prove_verification_returns_calldata_shape_and_echoes_inputs() {
     if is_real {
         // The real prover ALSO computes the nullifier + keyHash (pub[4], pub[5]). Assert the full
         // 7-vector — these are non-zero and exactly the independently-recomputed values.
-        assert_ne!(got[4], "0", "nullifier (pub[4]) must be non-zero with the real prover");
-        assert_ne!(got[5], "0", "keyHash (pub[5]) must be non-zero with the real prover");
-        assert_eq!(got, expected, "full public-signal 7-vector mismatch (real prover)");
+        assert_ne!(
+            got[4], "0",
+            "nullifier (pub[4]) must be non-zero with the real prover"
+        );
+        assert_ne!(
+            got[5], "0",
+            "keyHash (pub[5]) must be non-zero with the real prover"
+        );
+        assert_eq!(
+            got, expected,
+            "full public-signal 7-vector mismatch (real prover)"
+        );
     } else {
         eprintln!(
             "NOTE: ArkProver artifacts absent (circuits/build/verification_final.zkey) — ran the \
@@ -294,7 +317,8 @@ async fn prove_verification_proof_matches_and_optionally_verifies_on_chain() {
         return;
     }
     let (body, expected) = fixed_request();
-    let (status, resp) = common::call(&router, "POST", "/prove-verification", None, Some(body)).await;
+    let (status, resp) =
+        common::call(&router, "POST", "/prove-verification", None, Some(body)).await;
     assert_eq!(status, axum::http::StatusCode::OK, "resp: {resp}");
 
     let got: Vec<String> = resp["pub"]
@@ -309,13 +333,29 @@ async fn prove_verification_proof_matches_and_optionally_verifies_on_chain() {
         eprintln!("skipping live-verifier cast call (set DOGTAG_LIVE_VERIFIER=1 to run)");
         return;
     }
-    let a: Vec<String> = resp["a"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
-    let c: Vec<String> = resp["c"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    let a: Vec<String> = resp["a"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let c: Vec<String> = resp["c"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
     let b: Vec<Vec<String>> = resp["b"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|row| row.as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect())
+        .map(|row| {
+            row.as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect()
+        })
         .collect();
     let p = &got;
     let out = std::process::Command::new("cast")
@@ -327,7 +367,10 @@ async fn prove_verification_proof_matches_and_optionally_verifies_on_chain() {
             &format!("[{},{}]", a[0], a[1]),
             &format!("[[{},{}],[{},{}]]", b[0][0], b[0][1], b[1][0], b[1][1]),
             &format!("[{},{}]", c[0], c[1]),
-            &format!("[{},{},{},{},{},{},{}]", p[0], p[1], p[2], p[3], p[4], p[5], p[6]),
+            &format!(
+                "[{},{},{},{},{},{},{}]",
+                p[0], p[1], p[2], p[3], p[4], p[5], p[6]
+            ),
             "--rpc-url",
             "https://devrpc.roax.net",
         ])

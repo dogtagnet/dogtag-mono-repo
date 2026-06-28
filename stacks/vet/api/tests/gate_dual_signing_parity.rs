@@ -42,11 +42,7 @@ fn dual_signing_build_is_byte_identical() {
     // the SAME VC twice (modelling the wallet path and the backend path) with the SAME salts.
     let dog_tag_id = "42";
     let fields = vaccination_fields();
-    let meta_w = vet_api::app::issuer_meta(
-        &cfg_for_build(),
-        "VACCINATION",
-        ISSUER,
-    );
+    let meta_w = vet_api::app::issuer_meta(&cfg_for_build(), "VACCINATION", ISSUER);
     let meta_b = vet_api::app::issuer_meta(&cfg_for_build(), "VACCINATION", ISSUER);
     let vc_w = vet_api::app::build_vc("VACCINATION", &fields, dog_tag_id);
     let vc_b = vet_api::app::build_vc("VACCINATION", &fields, dog_tag_id);
@@ -54,8 +50,10 @@ fn dual_signing_build_is_byte_identical() {
 
     let mut salt_w = det_salt();
     let mut salt_b = det_salt();
-    let doc_w = dogtag_standard::wrap::wrap_document(&vc_w, meta_w, &mut salt_w).expect("wrap wallet");
-    let doc_b = dogtag_standard::wrap::wrap_document(&vc_b, meta_b, &mut salt_b).expect("wrap backend");
+    let doc_w =
+        dogtag_standard::wrap::wrap_document(&vc_w, meta_w, &mut salt_w).expect("wrap wallet");
+    let doc_b =
+        dogtag_standard::wrap::wrap_document(&vc_b, meta_b, &mut salt_b).expect("wrap backend");
 
     // BYTE-EQUAL roots/targetHash across modes.
     assert_eq!(
@@ -135,13 +133,20 @@ async fn dual_signing_http_both_modes_reach_identical_build() {
 
     // Both are well-formed 0x bytes32 roots produced by the SAME build path.
     for r in [w_root, b_root] {
-        assert!(r.starts_with("0x") && r.len() == 66, "root is bytes32 hex: {r}");
+        assert!(
+            r.starts_with("0x") && r.len() == 66,
+            "root is bytes32 hex: {r}"
+        );
     }
     // Wallet mode also returns the unsigned tx (mode-specific) — its calldata embeds THIS root,
     // proving the post-build wiring uses the server-built root, not a client value.
-    let calldata = wallet["unsignedTx"]["data"].as_str().expect("wallet unsignedTx.data");
+    let calldata = wallet["unsignedTx"]["data"]
+        .as_str()
+        .expect("wallet unsignedTx.data");
     assert!(
-        calldata.to_lowercase().contains(&w_root.trim_start_matches("0x").to_lowercase()),
+        calldata
+            .to_lowercase()
+            .contains(&w_root.trim_start_matches("0x").to_lowercase()),
         "wallet-mode calldata must embed the server-built root"
     );
 }

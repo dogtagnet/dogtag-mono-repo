@@ -52,7 +52,10 @@ pub struct CalEvent {
 /// Result of an incremental `events.list(syncToken)`.
 pub enum ListOutcome {
     /// Normal page: the changed events + the next sync token to persist.
-    Page { events: Vec<CalEvent>, next_sync_token: String },
+    Page {
+        events: Vec<CalEvent>,
+        next_sync_token: String,
+    },
     /// HTTP 410 Gone — the sync token expired. The caller MUST discard the token, wipe the mirror,
     /// and perform a full resync (§3.6 / §8.1).
     Gone,
@@ -128,7 +131,12 @@ pub struct GoogleCalendar {
 }
 
 impl GoogleCalendar {
-    pub fn new(client_id: String, client_secret: String, redirect_uri: String, calendar_id: String) -> Self {
+    pub fn new(
+        client_id: String,
+        client_secret: String,
+        redirect_uri: String,
+        calendar_id: String,
+    ) -> Self {
         GoogleCalendar {
             client_id,
             client_secret,
@@ -162,7 +170,10 @@ impl GoogleCalendar {
             .send()
             .await
             .map_err(|e| CalendarError::Http(e.to_string()))?;
-        let v: Value = resp.json().await.map_err(|e| CalendarError::Http(e.to_string()))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| CalendarError::Http(e.to_string()))?;
         v.get("access_token")
             .and_then(|t| t.as_str())
             .map(|s| s.to_string())
@@ -176,20 +187,47 @@ impl GoogleCalendar {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let owned = priv_props.get("dogtag.owned").and_then(|v| v.as_str()) == Some("1");
-        let appt_id = priv_props.get("dogtag.apptId").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let rev = priv_props
-            .get("dogtag.rev")
-            .and_then(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()).or_else(|| v.as_u64()));
+        let appt_id = priv_props
+            .get("dogtag.apptId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let rev = priv_props.get("dogtag.rev").and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .or_else(|| v.as_u64())
+        });
         CalEvent {
-            id: item.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            etag: item.get("etag").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            id: item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            etag: item
+                .get("etag")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             owned,
             appt_id,
             rev,
             cancelled: item.get("status").and_then(|v| v.as_str()) == Some("cancelled"),
-            summary: item.get("summary").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            start: item.get("start").and_then(|s| s.get("dateTime")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            end: item.get("end").and_then(|s| s.get("dateTime")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            summary: item
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            start: item
+                .get("start")
+                .and_then(|s| s.get("dateTime"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            end: item
+                .get("end")
+                .and_then(|s| s.get("dateTime"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
         }
     }
 
@@ -239,11 +277,16 @@ impl CalendarProvider for GoogleCalendar {
             .send()
             .await
             .map_err(|e| CalendarError::Http(e.to_string()))?;
-        let v: Value = resp.json().await.map_err(|e| CalendarError::Http(e.to_string()))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| CalendarError::Http(e.to_string()))?;
         let rt = v
             .get("refresh_token")
             .and_then(|t| t.as_str())
-            .ok_or_else(|| CalendarError::OAuth(format!("no refresh_token in token response: {v}")))?
+            .ok_or_else(|| {
+                CalendarError::OAuth(format!("no refresh_token in token response: {v}"))
+            })?
             .to_string();
         self.set_refresh_token(rt.clone());
         Ok(rt)
@@ -251,20 +294,37 @@ impl CalendarProvider for GoogleCalendar {
 
     async fn list_events(&self, sync_token: Option<&str>) -> Result<ListOutcome, CalendarError> {
         let token = self.access_token().await?;
-        let url = format!("{}/calendars/{}/events", GOOGLE_CALENDAR_BASE, urlencoding(&self.calendar_id));
-        let mut req = self.http.get(&url).bearer_auth(&token).query(&[("showDeleted", "true")]);
+        let url = format!(
+            "{}/calendars/{}/events",
+            GOOGLE_CALENDAR_BASE,
+            urlencoding(&self.calendar_id)
+        );
+        let mut req = self
+            .http
+            .get(&url)
+            .bearer_auth(&token)
+            .query(&[("showDeleted", "true")]);
         if let Some(st) = sync_token {
             req = req.query(&[("syncToken", st)]);
         }
-        let resp = req.send().await.map_err(|e| CalendarError::Http(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| CalendarError::Http(e.to_string()))?;
         // 410 Gone -> the sync token expired; caller wipes the mirror + full resync.
         if resp.status().as_u16() == 410 {
             return Ok(ListOutcome::Gone);
         }
         if !resp.status().is_success() {
-            return Err(CalendarError::Http(format!("events.list {}", resp.status())));
+            return Err(CalendarError::Http(format!(
+                "events.list {}",
+                resp.status()
+            )));
         }
-        let v: Value = resp.json().await.map_err(|e| CalendarError::Http(e.to_string()))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| CalendarError::Http(e.to_string()))?;
         let events = v
             .get("items")
             .and_then(|i| i.as_array())
@@ -275,7 +335,10 @@ impl CalendarProvider for GoogleCalendar {
             .and_then(|t| t.as_str())
             .unwrap_or_default()
             .to_string();
-        Ok(ListOutcome::Page { events, next_sync_token: next })
+        Ok(ListOutcome::Page {
+            events,
+            next_sync_token: next,
+        })
     }
 
     async fn upsert_event(&self, ev: &UpsertEvent) -> Result<UpsertResult, CalendarError> {
@@ -289,27 +352,59 @@ impl CalendarProvider for GoogleCalendar {
                     urlencoding(&self.calendar_id),
                     urlencoding(id)
                 );
-                self.http.put(&url).bearer_auth(&token).json(&body).send().await
+                self.http
+                    .put(&url)
+                    .bearer_auth(&token)
+                    .json(&body)
+                    .send()
+                    .await
             }
             None => {
-                let url = format!("{}/calendars/{}/events", GOOGLE_CALENDAR_BASE, urlencoding(&self.calendar_id));
-                self.http.post(&url).bearer_auth(&token).json(&body).send().await
+                let url = format!(
+                    "{}/calendars/{}/events",
+                    GOOGLE_CALENDAR_BASE,
+                    urlencoding(&self.calendar_id)
+                );
+                self.http
+                    .post(&url)
+                    .bearer_auth(&token)
+                    .json(&body)
+                    .send()
+                    .await
             }
         }
         .map_err(|e| CalendarError::Http(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(CalendarError::Http(format!("events.upsert {}", resp.status())));
+            return Err(CalendarError::Http(format!(
+                "events.upsert {}",
+                resp.status()
+            )));
         }
-        let v: Value = resp.json().await.map_err(|e| CalendarError::Http(e.to_string()))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| CalendarError::Http(e.to_string()))?;
         Ok(UpsertResult {
-            google_event_id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            etag: v.get("etag").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            google_event_id: v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            etag: v
+                .get("etag")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
         })
     }
 
     async fn watch(&self) -> Result<(String, String), CalendarError> {
         let token = self.access_token().await?;
-        let url = format!("{}/calendars/{}/events/watch", GOOGLE_CALENDAR_BASE, urlencoding(&self.calendar_id));
+        let url = format!(
+            "{}/calendars/{}/events/watch",
+            GOOGLE_CALENDAR_BASE,
+            urlencoding(&self.calendar_id)
+        );
         let channel_id = uuid::Uuid::new_v4().to_string();
         let body = json!({ "id": channel_id, "type": "web_hook", "address": self.redirect_uri });
         let resp = self
@@ -321,12 +416,24 @@ impl CalendarProvider for GoogleCalendar {
             .await
             .map_err(|e| CalendarError::Http(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(CalendarError::Http(format!("events.watch {}", resp.status())));
+            return Err(CalendarError::Http(format!(
+                "events.watch {}",
+                resp.status()
+            )));
         }
-        let v: Value = resp.json().await.map_err(|e| CalendarError::Http(e.to_string()))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| CalendarError::Http(e.to_string()))?;
         Ok((
-            v.get("id").and_then(|x| x.as_str()).unwrap_or(&channel_id).to_string(),
-            v.get("resourceId").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            v.get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&channel_id)
+                .to_string(),
+            v.get("resourceId")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string(),
         ))
     }
 
@@ -353,7 +460,10 @@ impl CalendarProvider for GoogleCalendar {
         if !resp.status().is_success() {
             return Err(CalendarError::Http(format!("freeBusy {}", resp.status())));
         }
-        let v: Value = resp.json().await.map_err(|e| CalendarError::Http(e.to_string()))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| CalendarError::Http(e.to_string()))?;
         let busy = v
             .get("calendars")
             .and_then(|c| c.get(&self.calendar_id))
@@ -420,7 +530,11 @@ impl MockCalendar {
     }
     /// Queue an HTTP-410 outcome for the next `events.list`.
     pub fn queue_gone(&self) {
-        self.inner.lock().unwrap().queued.push_back(MockListResp::Gone);
+        self.inner
+            .lock()
+            .unwrap()
+            .queued
+            .push_back(MockListResp::Gone);
     }
     /// Snapshot the current mirrored event (as Google would return it on the next sync).
     pub fn get_event(&self, id: &str) -> Option<CalEvent> {
@@ -428,7 +542,13 @@ impl MockCalendar {
     }
     /// All events currently in the mock Google mirror.
     pub fn all_events(&self) -> Vec<CalEvent> {
-        self.inner.lock().unwrap().events.values().cloned().collect()
+        self.inner
+            .lock()
+            .unwrap()
+            .events
+            .values()
+            .cloned()
+            .collect()
     }
     /// How many upserts were recorded.
     pub fn upsert_count(&self) -> usize {
@@ -454,11 +574,15 @@ impl CalendarProvider for MockCalendar {
         let mut g = self.inner.lock().unwrap();
         match g.queued.pop_front() {
             Some(MockListResp::Gone) => Ok(ListOutcome::Gone),
-            Some(MockListResp::Page(events, token)) => {
-                Ok(ListOutcome::Page { events, next_sync_token: token })
-            }
+            Some(MockListResp::Page(events, token)) => Ok(ListOutcome::Page {
+                events,
+                next_sync_token: token,
+            }),
             // no queued response -> an empty page with a fresh token (steady state).
-            None => Ok(ListOutcome::Page { events: vec![], next_sync_token: "mock-sync-empty".to_string() }),
+            None => Ok(ListOutcome::Page {
+                events: vec![],
+                next_sync_token: "mock-sync-empty".to_string(),
+            }),
         }
     }
     async fn upsert_event(&self, ev: &UpsertEvent) -> Result<UpsertResult, CalendarError> {
@@ -485,12 +609,18 @@ impl CalendarProvider for MockCalendar {
             end: ev.end.clone(),
         };
         g.events.insert(id.clone(), stored);
-        Ok(UpsertResult { google_event_id: id, etag })
+        Ok(UpsertResult {
+            google_event_id: id,
+            etag,
+        })
     }
     async fn watch(&self) -> Result<(String, String), CalendarError> {
         let mut g = self.inner.lock().unwrap();
         g.watch_channels += 1;
-        Ok((format!("mock-channel-{}", g.watch_channels), "mock-resource".to_string()))
+        Ok((
+            format!("mock-channel-{}", g.watch_channels),
+            "mock-resource".to_string(),
+        ))
     }
     async fn free_busy(
         &self,
@@ -498,8 +628,7 @@ impl CalendarProvider for MockCalendar {
         _time_max: &str,
     ) -> Result<Vec<(String, String)>, CalendarError> {
         let g = self.inner.lock().unwrap();
-        Ok(g
-            .events
+        Ok(g.events
             .values()
             .filter(|e| !e.cancelled)
             .map(|e| (e.start.clone(), e.end.clone()))
@@ -551,7 +680,11 @@ pub struct ReqwestCentralClient {
 
 impl ReqwestCentralClient {
     pub fn new(central_base_url: String, hmac_secret: String) -> Self {
-        ReqwestCentralClient { central_base_url, hmac_secret, http: reqwest::Client::new() }
+        ReqwestCentralClient {
+            central_base_url,
+            hmac_secret,
+            http: reqwest::Client::new(),
+        }
     }
 }
 
@@ -588,10 +721,20 @@ impl CentralClient for ReqwestCentralClient {
         if !resp.status().is_success() {
             return Err(CentralError::Status(resp.status().as_u16()));
         }
-        let v: Value = resp.json().await.map_err(|e| CentralError::Http(e.to_string()))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| CentralError::Http(e.to_string()))?;
         Ok(EventAck {
-            rev: v.get("rev").and_then(|r| r.as_u64()).unwrap_or(last_rev + 1),
-            state: v.get("state").and_then(|s| s.as_str()).unwrap_or(event).to_string(),
+            rev: v
+                .get("rev")
+                .and_then(|r| r.as_u64())
+                .unwrap_or(last_rev + 1),
+            state: v
+                .get("state")
+                .and_then(|s| s.as_str())
+                .unwrap_or(event)
+                .to_string(),
         })
     }
 }
@@ -622,18 +765,30 @@ impl MockCentralClient {
     /// Seed central's authoritative ownership + rev/state for an appointment.
     pub fn seed(&self, appointment_id: &str, business_id: &str, rev: u64, state: &str) {
         let mut g = self.inner.lock().unwrap();
-        g.owner.insert(appointment_id.to_string(), business_id.to_string());
-        g.state.insert(appointment_id.to_string(), (rev, state.to_string()));
+        g.owner
+            .insert(appointment_id.to_string(), business_id.to_string());
+        g.state
+            .insert(appointment_id.to_string(), (rev, state.to_string()));
     }
     pub fn calls(&self) -> Vec<(String, String, u64, String, u64)> {
         self.inner.lock().unwrap().calls.clone()
     }
     /// The rev central currently holds for an appointment.
     pub fn rev_of(&self, appointment_id: &str) -> Option<u64> {
-        self.inner.lock().unwrap().state.get(appointment_id).map(|(r, _)| *r)
+        self.inner
+            .lock()
+            .unwrap()
+            .state
+            .get(appointment_id)
+            .map(|(r, _)| *r)
     }
     pub fn state_of(&self, appointment_id: &str) -> Option<String> {
-        self.inner.lock().unwrap().state.get(appointment_id).map(|(_, s)| s.clone())
+        self.inner
+            .lock()
+            .unwrap()
+            .state
+            .get(appointment_id)
+            .map(|(_, s)| s.clone())
     }
 }
 
@@ -676,8 +831,16 @@ impl CentralClient for MockCentralClient {
             .unwrap_or((last_rev, "REQUESTED".to_string()));
         let new_rev = cur_rev + 1;
         // terminal wins: never move OUT of a terminal state.
-        let new_state = if is_terminal(&cur_state) { cur_state.clone() } else { event.to_string() };
-        g.state.insert(appointment_id.to_string(), (new_rev, new_state.clone()));
-        Ok(EventAck { rev: new_rev, state: new_state })
+        let new_state = if is_terminal(&cur_state) {
+            cur_state.clone()
+        } else {
+            event.to_string()
+        };
+        g.state
+            .insert(appointment_id.to_string(), (new_rev, new_state.clone()));
+        Ok(EventAck {
+            rev: new_rev,
+            state: new_state,
+        })
     }
 }

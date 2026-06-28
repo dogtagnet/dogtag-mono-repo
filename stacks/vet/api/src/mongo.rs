@@ -54,7 +54,11 @@ impl Store for MongoStore {
             .await;
     }
     async fn get_record(&self, id: &str) -> Option<Record> {
-        self.records().find_one(doc! { "record_id": id }).await.ok().flatten()
+        self.records()
+            .find_one(doc! { "record_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn update_record(&self, r: Record) {
         self.put_record(r).await;
@@ -83,7 +87,11 @@ impl Store for MongoStore {
             .await;
     }
     async fn get_session(&self, id: &str) -> Option<VerifySession> {
-        self.sessions().find_one(doc! { "session_id": id }).await.ok().flatten()
+        self.sessions()
+            .find_one(doc! { "session_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn update_session(&self, s: VerifySession) {
         self.put_session(s).await;
@@ -108,7 +116,11 @@ impl Store for MongoStore {
     async fn take_share_token(&self, token: &str) -> Option<String> {
         // find_one_and_delete is atomic == one-time consume; then enforce expiry on the read.
         let coll: Collection<Document> = self.db.collection("share_tokens");
-        let d = coll.find_one_and_delete(doc! { "token": token }).await.ok().flatten()?;
+        let d = coll
+            .find_one_and_delete(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
         let exp = d.get_i64("exp").unwrap_or(0) as u64;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -134,7 +146,11 @@ impl Store for MongoStore {
     async fn peek_export_token(&self, token: &str) -> Option<String> {
         // NON-consuming read; enforce expiry.
         let coll: Collection<Document> = self.db.collection("export_tokens");
-        let d = coll.find_one(doc! { "token": token }).await.ok().flatten()?;
+        let d = coll
+            .find_one(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
         let exp = d.get_i64("exp").unwrap_or(0) as u64;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -149,7 +165,11 @@ impl Store for MongoStore {
     async fn take_export_token(&self, token: &str) -> Option<String> {
         // find_one_and_delete is atomic == one-time consume; then enforce expiry on the read.
         let coll: Collection<Document> = self.db.collection("export_tokens");
-        let d = coll.find_one_and_delete(doc! { "token": token }).await.ok().flatten()?;
+        let d = coll
+            .find_one_and_delete(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
         let exp = d.get_i64("exp").unwrap_or(0) as u64;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -171,7 +191,10 @@ impl Store for MongoStore {
             .return_document(ReturnDocument::After)
             .build();
         let d = coll
-            .find_one_and_update(doc! { "_id": "dog_tag_id" }, doc! { "$inc": { "seq": 1i64 } })
+            .find_one_and_update(
+                doc! { "_id": "dog_tag_id" },
+                doc! { "$inc": { "seq": 1i64 } },
+            )
             .with_options(opts)
             .await
             .ok()
@@ -187,7 +210,10 @@ impl Store for MongoStore {
     }
     async fn get_profile_session(&self, session_id: &str) -> Option<ProfileIssueSession> {
         let coll: Collection<ProfileIssueSession> = self.db.collection("profile_sessions");
-        coll.find_one(doc! { "session_id": session_id }).await.ok().flatten()
+        coll.find_one(doc! { "session_id": session_id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn update_profile_session(&self, s: ProfileIssueSession) {
         self.put_profile_session(s).await;
@@ -204,7 +230,11 @@ impl Store for MongoStore {
     }
     async fn peek_bind_token(&self, token: &str) -> Option<String> {
         let coll: Collection<Document> = self.db.collection("bind_tokens");
-        let d = coll.find_one(doc! { "token": token }).await.ok().flatten()?;
+        let d = coll
+            .find_one(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
         let exp = d.get_i64("exp").unwrap_or(0) as u64;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -219,7 +249,11 @@ impl Store for MongoStore {
     async fn take_bind_token(&self, token: &str) -> Option<String> {
         // find_one_and_delete is atomic == one-time consume; then enforce expiry.
         let coll: Collection<Document> = self.db.collection("bind_tokens");
-        let d = coll.find_one_and_delete(doc! { "token": token }).await.ok().flatten()?;
+        let d = coll
+            .find_one_and_delete(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
         let exp = d.get_i64("exp").unwrap_or(0) as u64;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -249,7 +283,11 @@ impl Store for MongoStore {
     }
 
     async fn get_custody(&self) -> Option<CustodyBlob> {
-        self.custody().find_one(doc! { "_id": "singleton" }).await.ok().flatten()
+        self.custody()
+            .find_one(doc! { "_id": "singleton" })
+            .await
+            .ok()
+            .flatten()
     }
     async fn put_custody(&self, blob: CustodyBlob) {
         let _ = self
@@ -265,7 +303,11 @@ impl Store for MongoStore {
     }
     async fn has_op_session(&self, token: &str) -> bool {
         let coll: Collection<Document> = self.db.collection("op_sessions");
-        coll.find_one(doc! { "token": token }).await.ok().flatten().is_some()
+        coll.find_one(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     async fn upsert_client_cache(&self, dog_tag_id: String, doc_v: serde_json::Value) {
@@ -281,14 +323,22 @@ impl Store for MongoStore {
     }
     async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value> {
         let coll: Collection<Document> = self.db.collection("client_cache");
-        let d = coll.find_one(doc! { "dog_tag_id": dog_tag_id }).await.ok().flatten()?;
-        d.get("doc").and_then(|b| mongodb::bson::from_bson(b.clone()).ok())
+        let d = coll
+            .find_one(doc! { "dog_tag_id": dog_tag_id })
+            .await
+            .ok()
+            .flatten()?;
+        d.get("doc")
+            .and_then(|b| mongodb::bson::from_bson(b.clone()).ok())
     }
 
     // ---- appointment replica (Phase 7) ----
     async fn get_appt(&self, id: &str) -> Option<ApptReplica> {
         let coll: Collection<ApptReplica> = self.db.collection("appt_replica");
-        coll.find_one(doc! { "appointment_id": id }).await.ok().flatten()
+        coll.find_one(doc! { "appointment_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn put_appt(&self, a: ApptReplica) {
         let coll: Collection<ApptReplica> = self.db.collection("appt_replica");
@@ -300,7 +350,10 @@ impl Store for MongoStore {
     async fn appts_updated_since(&self, since: u64) -> Vec<ApptReplica> {
         let coll: Collection<ApptReplica> = self.db.collection("appt_replica");
         let mut out = Vec::new();
-        if let Ok(mut cur) = coll.find(doc! { "updatedAt": { "$gte": since as i64 } }).await {
+        if let Ok(mut cur) = coll
+            .find(doc! { "updatedAt": { "$gte": since as i64 } })
+            .await
+        {
             use futures::StreamExt;
             while let Some(Ok(a)) = cur.next().await {
                 out.push(a);
@@ -329,11 +382,17 @@ impl Store for MongoStore {
     }
     async fn get_gcal_map_by_appt(&self, appointment_id: &str) -> Option<GcalEventMap> {
         let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
-        coll.find_one(doc! { "appointment_id": appointment_id }).await.ok().flatten()
+        coll.find_one(doc! { "appointment_id": appointment_id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn get_gcal_map_by_event(&self, google_event_id: &str) -> Option<GcalEventMap> {
         let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
-        coll.find_one(doc! { "google_event_id": google_event_id }).await.ok().flatten()
+        coll.find_one(doc! { "google_event_id": google_event_id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn all_gcal_maps(&self) -> Vec<GcalEventMap> {
         let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
@@ -348,7 +407,9 @@ impl Store for MongoStore {
     }
     async fn delete_gcal_map_by_event(&self, google_event_id: &str) {
         let coll: Collection<GcalEventMap> = self.db.collection("gcal_event_map");
-        let _ = coll.delete_one(doc! { "google_event_id": google_event_id }).await;
+        let _ = coll
+            .delete_one(doc! { "google_event_id": google_event_id })
+            .await;
     }
     async fn wipe_gcal_mirror(&self) {
         let coll: Collection<Document> = self.db.collection("gcal_event_map");
@@ -356,11 +417,18 @@ impl Store for MongoStore {
     }
     async fn get_sync_state(&self) -> GcalSyncState {
         let coll: Collection<GcalSyncState> = self.db.collection("gcal_sync_state");
-        coll.find_one(doc! { "_id": "singleton" }).await.ok().flatten().unwrap_or_default()
+        coll.find_one(doc! { "_id": "singleton" })
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
     }
     async fn put_sync_state(&self, s: GcalSyncState) {
         let coll: Collection<GcalSyncState> = self.db.collection("gcal_sync_state");
-        let _ = coll.replace_one(doc! { "_id": "singleton" }, &s).upsert(true).await;
+        let _ = coll
+            .replace_one(doc! { "_id": "singleton" }, &s)
+            .upsert(true)
+            .await;
     }
 }
 

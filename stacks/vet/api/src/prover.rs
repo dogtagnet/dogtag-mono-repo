@@ -103,9 +103,11 @@ pub struct ArkProver {
 impl ArkProver {
     /// Load the circuit artifacts from `build_dir` (the `circuits/build` directory).
     pub fn load(build_dir: impl AsRef<std::path::Path>) -> Result<Self, ProverError> {
-        let inner = ArkInnerProver::load(build_dir)
-            .map_err(|e| ProverError::Unavailable(e.to_string()))?;
-        Ok(ArkProver { inner: Arc::new(inner) })
+        let inner =
+            ArkInnerProver::load(build_dir).map_err(|e| ProverError::Unavailable(e.to_string()))?;
+        Ok(ArkProver {
+            inner: Arc::new(inner),
+        })
     }
 
     /// Direct full-fidelity prove from the complete circuit inputs (used by tests / the real ZK leg).

@@ -6,8 +6,8 @@ use axum::{http::StatusCode, Json};
 use serde_json::{json, Value};
 
 use dogtag_standard::verify::{
-    verify as sdk_verify, AdapterError, DnsAdapter, RegistryAdapter, RpcAdapter, VerifyMode,
-    VerifyOpts, Verdict, FragmentState,
+    verify as sdk_verify, AdapterError, DnsAdapter, FragmentState, RegistryAdapter, RpcAdapter,
+    Verdict, VerifyMode, VerifyOpts,
 };
 use dogtag_standard::wrap::WrappedDoc;
 
@@ -80,12 +80,18 @@ fn consent_input_from_json(consent: &Value) -> Result<crate::chain::ConsentInput
                     U256::from_str_radix(t, 10).map_err(|e| format!("{key}: {e}"))
                 }
             }
-            Some(Value::Number(n)) => Ok(U256::from(n.as_u64().ok_or_else(|| format!("{key}: not u64"))?)),
+            Some(Value::Number(n)) => Ok(U256::from(
+                n.as_u64().ok_or_else(|| format!("{key}: not u64"))?,
+            )),
             _ => Err(format!("{key}: missing")),
         }
     };
     let hexs = |key: &str| -> Result<String, String> {
-        consent.get(key).and_then(|v| v.as_str()).map(|s| s.to_string()).ok_or_else(|| format!("{key}: missing"))
+        consent
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("{key}: missing"))
     };
     Ok(crate::chain::ConsentInput {
         dog_tag_id: u256("dogTagId")?,
@@ -135,7 +141,12 @@ struct ChainRpcAdapter<'a> {
     rt: tokio::runtime::Handle,
 }
 impl<'a> RpcAdapter for ChainRpcAdapter<'a> {
-    fn is_valid(&self, document_store: &str, merkle_root: &str, _conf: u32) -> Result<bool, AdapterError> {
+    fn is_valid(
+        &self,
+        document_store: &str,
+        merkle_root: &str,
+        _conf: u32,
+    ) -> Result<bool, AdapterError> {
         let st = self.st.clone();
         let ds = document_store.to_string();
         let mr = merkle_root.to_string();
@@ -159,7 +170,12 @@ struct ConfigDnsAdapter<'a> {
     st: &'a AppState,
 }
 impl<'a> DnsAdapter for ConfigDnsAdapter<'a> {
-    fn txt_matches(&self, domain: &str, document_store: &str, _chain_id: u64) -> Result<bool, AdapterError> {
+    fn txt_matches(
+        &self,
+        domain: &str,
+        document_store: &str,
+        _chain_id: u64,
+    ) -> Result<bool, AdapterError> {
         let known = self.st.cfg.issuer_domain.eq_ignore_ascii_case(domain)
             && self
                 .st
@@ -189,7 +205,10 @@ impl<'a> RegistryAdapter for ConfigRegistryAdapter<'a> {
 /// Run the SDK's three-pillar verify in third-party mode against our chain + config identity.
 pub async fn third_party_verify(st: &AppState, doc: &WrappedDoc) -> Verdict {
     let handle = tokio::runtime::Handle::current();
-    let rpc = ChainRpcAdapter { st, rt: handle.clone() };
+    let rpc = ChainRpcAdapter {
+        st,
+        rt: handle.clone(),
+    };
     let dns = ConfigDnsAdapter { st };
     let registry = ConfigRegistryAdapter { st };
     // run on a blocking-friendly context.
@@ -226,7 +245,10 @@ fn parse_client_proof(
         }
     };
     let arr2 = |key: &str| -> Result<[String; 2], String> {
-        let a = v.get(key).and_then(|x| x.as_array()).ok_or_else(|| format!("{key}: missing/!array"))?;
+        let a = v
+            .get(key)
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| format!("{key}: missing/!array"))?;
         if a.len() != 2 {
             return Err(format!("{key}: expected len 2"));
         }
@@ -235,7 +257,10 @@ fn parse_client_proof(
     let a = arr2("a")?;
     let c = arr2("c")?;
     // b is [2][2].
-    let bv = v.get("b").and_then(|x| x.as_array()).ok_or_else(|| "b: missing/!array".to_string())?;
+    let bv = v
+        .get("b")
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| "b: missing/!array".to_string())?;
     if bv.len() != 2 {
         return Err("b: expected len 2".to_string());
     }
@@ -310,10 +335,18 @@ fn pub_signal_eq(a: &str, b: &str) -> bool {
 /// because the owner's wallet signed the already-hashed BindConsentKey `_hashTypedDataV4` digest
 /// (mirrors how the contract `ecrecover`s the bind digest). Returns None on a malformed signature.
 fn recover_digest_signer(digest: &[u8; 32], signature_hex: &str) -> Option<String> {
-    use alloy::primitives::{B256, PrimitiveSignature};
-    let raw = hex::decode(signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim())).ok()?;
+    use alloy::primitives::{PrimitiveSignature, B256};
+    let raw = hex::decode(
+        signature_hex
+            .trim()
+            .strip_prefix("0x")
+            .unwrap_or(signature_hex.trim()),
+    )
+    .ok()?;
     let sig = PrimitiveSignature::from_raw(&raw).ok()?;
-    let addr = sig.recover_address_from_prehash(&B256::from(*digest)).ok()?;
+    let addr = sig
+        .recover_address_from_prehash(&B256::from(*digest))
+        .ok()?;
     Some(format!("{addr:#x}"))
 }
 
@@ -362,9 +395,15 @@ pub async fn consent_submit(
     let mode = mode_override.unwrap_or_else(|| s.mode.clone());
 
     // relayer binding + deadline.
-    let consent_relayer = consent.get("relayer").and_then(|v| v.as_str()).unwrap_or("");
+    let consent_relayer = consent
+        .get("relayer")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !consent_relayer.eq_ignore_ascii_case(&s.relayer) {
-        return err(StatusCode::BAD_REQUEST, "consent.relayer != session relayer");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "consent.relayer != session relayer",
+        );
     }
     let now = crate::auth::now();
     // The phone encodes `deadline` as a 0x-hex string (Consent.kt), so `as_u64()` on the JSON value
@@ -386,11 +425,17 @@ pub async fn consent_submit(
     }
     // recordType binding: consent.recordType == keccak256(s.recordType).
     let expected_rt = crate::app::rt_key(&s.record_type);
-    let consent_rt = consent.get("recordType").and_then(|v| v.as_str()).unwrap_or("");
+    let consent_rt = consent
+        .get("recordType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !consent_rt.eq_ignore_ascii_case(&expected_rt) {
         return err(StatusCode::BAD_REQUEST, "consent.recordType mismatch");
     }
-    let consent_root = consent.get("credentialRoot").and_then(|v| v.as_str()).unwrap_or("");
+    let consent_root = consent
+        .get("credentialRoot")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     let tx_hash;
     // The consumed nullifier surfaced on the session for the NORMAL / server-prove paths (the
@@ -408,11 +453,17 @@ pub async fn consent_submit(
         };
         let verdict = third_party_verify(st, &doc).await;
         if !verdict.valid {
-            return err(StatusCode::UNPROCESSABLE_ENTITY, "disclosed doc third-party verify invalid");
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "disclosed doc third-party verify invalid",
+            );
         }
         // require consent.credentialRoot == R.
         if !consent_root.eq_ignore_ascii_case(&doc.signature.merkle_root) {
-            return err(StatusCode::BAD_REQUEST, "consent.credentialRoot != doc root");
+            return err(
+                StatusCode::BAD_REQUEST,
+                "consent.credentialRoot != doc root",
+            );
         }
         // NORMAL submission: ABI-encode recordVerification(consent, userSig) and broadcast to the
         // VerificationRegistry AS the relayer (the backend custody signer at index 0). The registry
@@ -434,7 +485,10 @@ pub async fn consent_submit(
     } else {
         // ZK path: require consent.credentialRoot == R.
         if consent_root.is_empty() {
-            return err(StatusCode::BAD_REQUEST, "zk mode requires consent.credentialRoot");
+            return err(
+                StatusCode::BAD_REQUEST,
+                "zk mode requires consent.credentialRoot",
+            );
         }
 
         if let Some(proof_val) = proof.as_ref() {
@@ -453,22 +507,43 @@ pub async fn consent_submit(
                 None => return err(StatusCode::BAD_REQUEST, "pubSignals[2]: bad relayer"),
             };
             if !pub_relayer.eq_ignore_ascii_case(&s.relayer) {
-                return err(StatusCode::BAD_REQUEST, "pubSignals.relayer != session relayer");
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "pubSignals.relayer != session relayer",
+                );
             }
             let expected_purpose = purpose_key(&s.purpose);
             if !pub_signal_eq(&pubs[1], &expected_purpose) {
-                return err(StatusCode::BAD_REQUEST, "pubSignals.purpose != purpose_key(session.purpose)");
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "pubSignals.purpose != purpose_key(session.purpose)",
+                );
             }
-            let dog = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("");
+            let dog = consent
+                .get("dogTagId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if !pub_signal_eq(&pubs[0], dog) {
-                return err(StatusCode::BAD_REQUEST, "pubSignals.dogTagId != consent.dogTagId");
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "pubSignals.dogTagId != consent.dogTagId",
+                );
             }
             if consent_root.is_empty() || !pub_signal_eq(&pubs[6], consent_root) {
-                return err(StatusCode::BAD_REQUEST, "pubSignals.credentialRoot != consent.credentialRoot");
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "pubSignals.credentialRoot != consent.credentialRoot",
+                );
             }
-            let subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+            let subject = consent
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if !pub_signal_eq(&pubs[3], subject) {
-                return err(StatusCode::BAD_REQUEST, "pubSignals.subject != consent.subject");
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "pubSignals.subject != consent.subject",
+                );
             }
             if !pub_signal_is_nonzero(&pubs[4]) {
                 return err(StatusCode::BAD_REQUEST, "pubSignals.nullifier is zero");
@@ -521,22 +596,40 @@ pub async fn consent_submit(
                         )
                     }
                 };
-                let bind_subject = bind_val.get("subject").and_then(|v| v.as_str()).unwrap_or("");
-                let bind_key_hash = bind_val.get("keyHash").and_then(|v| v.as_str()).unwrap_or("");
-                let owner_sig = bind_val.get("ownerSig").and_then(|v| v.as_str()).unwrap_or("");
+                let bind_subject = bind_val
+                    .get("subject")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let bind_key_hash = bind_val
+                    .get("keyHash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let owner_sig = bind_val
+                    .get("ownerSig")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if owner_sig.is_empty() {
                     return err(StatusCode::BAD_REQUEST, "bind.ownerSig: missing");
                 }
                 // bind.subject == consent.subject == pub[3] (all the same wallet).
-                let consent_subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                let consent_subject = consent
+                    .get("subject")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if !bind_subject.eq_ignore_ascii_case(&subject_addr)
                     || !bind_subject.eq_ignore_ascii_case(consent_subject)
                 {
-                    return err(StatusCode::BAD_REQUEST, "bind.subject != consent.subject/pubSignals[3]");
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        "bind.subject != consent.subject/pubSignals[3]",
+                    );
                 }
                 // bind.keyHash == pub[5].
                 if !pub_signal_eq(bind_key_hash, &key_hash_hex) {
-                    return err(StatusCode::BAD_REQUEST, "bind.keyHash != pubSignals.keyHash");
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        "bind.keyHash != pubSignals.keyHash",
+                    );
                 }
                 // DEFENSIVE BIND-SIG PRE-CHECK (safety net): recover the owner's EIP-712 BindConsentKey
                 // signature against the EXACT digest the contract recovers, SYNCHRONOUSLY here — before
@@ -551,11 +644,21 @@ pub async fn consent_submit(
                 // and the chainId from cfg so the digest matches what the contract will check.
                 let ckr_bytes = match addr_to_bytes20(&registry) {
                     Some(b) => b,
-                    None => return err(StatusCode::BAD_GATEWAY, "consent_key_registry_addr: bad address"),
+                    None => {
+                        return err(
+                            StatusCode::BAD_GATEWAY,
+                            "consent_key_registry_addr: bad address",
+                        )
+                    }
                 };
                 let subject_bytes = match addr_to_bytes20(&subject_addr) {
                     Some(b) => b,
-                    None => return err(StatusCode::BAD_REQUEST, "pubSignals[3]: bad subject address"),
+                    None => {
+                        return err(
+                            StatusCode::BAD_REQUEST,
+                            "pubSignals[3]: bad subject address",
+                        )
+                    }
                 };
                 let key_hash_bytes = match b32_to_bytes32(&key_hash_hex) {
                     Some(b) => b,
@@ -577,7 +680,12 @@ pub async fn consent_submit(
                 );
                 let recovered = match recover_digest_signer(&bind_digest, owner_sig) {
                     Some(a) => a,
-                    None => return err(StatusCode::BAD_REQUEST, "bind.ownerSig: malformed signature"),
+                    None => {
+                        return err(
+                            StatusCode::BAD_REQUEST,
+                            "bind.ownerSig: malformed signature",
+                        )
+                    }
                 };
                 if !recovered.eq_ignore_ascii_case(&subject_addr) {
                     return err(
@@ -683,15 +791,31 @@ pub async fn consent_submit(
             // non-canonical test-oracle path (no phone/8s-timeout in front of it), so it keeps awaiting
             // the record receipt and falls through to the shared `recorded` session update below. Only
             // the client-proof branch (the real on-device path) needed to go async.
-            let dog = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("0").to_string();
-            let subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let nonce = consent.get("nonce").and_then(|v| v.as_str()).unwrap_or("0").to_string();
+            let dog = consent
+                .get("dogTagId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string();
+            let subject = consent
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let nonce = consent
+                .get("nonce")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0")
+                .to_string();
             // The full circuit input (19 named signals) may be supplied so the REAL prover can run; the
             // StubProver ignores it. Passed through `consent.circuitInput` when present.
             let circuit_input_json = consent.get("circuitInput").cloned();
             let input = crate::prover::ProveInput {
                 dog_tag_id: dog,
-                purpose: consent.get("purpose").and_then(|v| v.as_str()).unwrap_or("0x0").to_string(),
+                purpose: consent
+                    .get("purpose")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0x0")
+                    .to_string(),
                 relayer: s.relayer.clone(),
                 subject,
                 nonce,
@@ -717,7 +841,12 @@ pub async fn consent_submit(
                 .await
             {
                 Ok(s) => s,
-                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("recordVerificationZK: {e}")),
+                Err(e) => {
+                    return err(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("recordVerificationZK: {e}"),
+                    )
+                }
             };
             tx_hash = sent.tx_hash;
         }
@@ -725,8 +854,12 @@ pub async fn consent_submit(
 
     // expose the consumed nullifier: from the client proof's pub[4] if present, else the explicit
     // consent.nullifier signal (server-prove / NORMAL paths).
-    let nullifier = session_nullifier
-        .or_else(|| consent.get("nullifier").and_then(|v| v.as_str()).map(|s| s.to_string()));
+    let nullifier = session_nullifier.or_else(|| {
+        consent
+            .get("nullifier")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    });
     let mut updated = s;
     updated.status = "recorded".to_string();
     updated.tx_hash = Some(tx_hash.clone());
@@ -759,7 +892,9 @@ mod tests {
             nonce,
             dogtag_standard::consent::DOGTAG_CHAIN_ID,
         );
-        let sig = signer.sign_hash_sync(&B256::from(digest)).expect("sign bind");
+        let sig = signer
+            .sign_hash_sync(&B256::from(digest))
+            .expect("sign bind");
         format!("0x{}", hex::encode(sig.as_bytes()))
     }
 

@@ -190,12 +190,27 @@ pub fn build_profile_vc(
     owner_address: &str,
     dog_tag_id: &str,
 ) -> Value {
-    let species = profile.species.clone().unwrap_or_else(|| "Canis lupus familiaris".to_string());
-    let breed_vbo = profile.breed_vbo.clone().unwrap_or_else(|| "VBO:0200000".to_string());
-    let breed_label = profile.breed_label.clone().unwrap_or_else(|| "Mixed Breed".to_string());
+    let species = profile
+        .species
+        .clone()
+        .unwrap_or_else(|| "Canis lupus familiaris".to_string());
+    let breed_vbo = profile
+        .breed_vbo
+        .clone()
+        .unwrap_or_else(|| "VBO:0200000".to_string());
+    let breed_label = profile
+        .breed_label
+        .clone()
+        .unwrap_or_else(|| "Mixed Breed".to_string());
     let sex = profile.sex.clone().unwrap_or_else(|| "male".to_string());
-    let neuter_status = profile.neuter_status.clone().unwrap_or_else(|| "intact".to_string());
-    let date_of_birth = profile.date_of_birth.clone().unwrap_or_else(|| "2020-01-01".to_string());
+    let neuter_status = profile
+        .neuter_status
+        .clone()
+        .unwrap_or_else(|| "intact".to_string());
+    let date_of_birth = profile
+        .date_of_birth
+        .clone()
+        .unwrap_or_else(|| "2020-01-01".to_string());
 
     let weight_history: Vec<Value> = profile
         .weight_history

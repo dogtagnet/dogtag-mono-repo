@@ -45,7 +45,11 @@ async fn signed_call(
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: Value = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
+    let v: Value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
     (status, v)
 }
 
@@ -58,7 +62,10 @@ fn appt_body(id: &str, rev: u64, state: &str, slot: &str) -> Value {
 }
 
 fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 // --------------------------------------------------------------------------------------------
@@ -76,11 +83,21 @@ async fn echo_loop_avoided_and_human_edit_not_dropped() {
 
     // central PUTs an appointment -> the business upserts the replica AND mirrors it to (mock) Google
     // with a dogtag.owned tag + a stored etag.
-    let (s, _b) = signed_call(&app, "PUT", "/v1/appointments/appt-1", "idem-1", &appt_body("appt-1", 1, "REQUESTED", "2026-07-01T10:00:00Z")).await;
+    let (s, _b) = signed_call(
+        &app,
+        "PUT",
+        "/v1/appointments/appt-1",
+        "idem-1",
+        &appt_body("appt-1", 1, "REQUESTED", "2026-07-01T10:00:00Z"),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     // the mirror created exactly one Google event, mapping stored with an etag.
-    let map = store.get_gcal_map_by_appt("appt-1").await.expect("mapping created");
+    let map = store
+        .get_gcal_map_by_appt("appt-1")
+        .await
+        .expect("mapping created");
     let gevent_id = map.google_event_id.clone();
     let echo_etag = map.etag.clone();
     assert_eq!(cal.upsert_count(), 1, "exactly one mirror write");
@@ -109,7 +126,11 @@ async fn echo_loop_avoided_and_human_edit_not_dropped() {
     assert_eq!(b["echoesSkipped"], 1, "our own echo must be SKIPPED");
     assert_eq!(b["humanEdits"], 0);
     // no duplicate appointment created.
-    assert_eq!(store.appts_updated_since(0).await.len(), before, "echo must not create a duplicate");
+    assert_eq!(
+        store.appts_updated_since(0).await.len(),
+        before,
+        "echo must not create a duplicate"
+    );
     let mirror_writes_after_echo = cal.upsert_count();
 
     // ---- HUMAN EDIT: same event comes back with a CHANGED etag (a human edited it in Google) ----
@@ -130,10 +151,19 @@ async fn echo_loop_avoided_and_human_edit_not_dropped() {
     let (s, b) = call(&app, "POST", "/calendar/sync", Some(&op), None).await;
     assert_eq!(s, StatusCode::OK, "sync: {b}");
     assert_eq!(b["echoesSkipped"], 0, "a changed etag is NOT an echo");
-    assert_eq!(b["humanEdits"], 1, "the human edit must be DETECTED, not silently dropped");
-    assert_eq!(b["reconciled"], 1, "platform-wins: the edit is reconciled (re-mirrored)");
+    assert_eq!(
+        b["humanEdits"], 1,
+        "the human edit must be DETECTED, not silently dropped"
+    );
+    assert_eq!(
+        b["reconciled"], 1,
+        "platform-wins: the edit is reconciled (re-mirrored)"
+    );
     // platform-wins => we re-mirrored over the human edit (one more upsert).
-    assert!(cal.upsert_count() > mirror_writes_after_echo, "human edit triggers a re-mirror (platform wins)");
+    assert!(
+        cal.upsert_count() > mirror_writes_after_echo,
+        "human edit triggers a re-mirror (platform wins)"
+    );
 }
 
 // --------------------------------------------------------------------------------------------
@@ -150,7 +180,14 @@ async fn http_410_triggers_full_resync() {
     let app = vet_api::router(state);
 
     // seed a mirror entry + an external busy block so we can prove the wipe.
-    signed_call(&app, "PUT", "/v1/appointments/appt-x", "idem-x", &appt_body("appt-x", 1, "REQUESTED", "2026-07-02T09:00:00Z")).await;
+    signed_call(
+        &app,
+        "PUT",
+        "/v1/appointments/appt-x",
+        "idem-x",
+        &appt_body("appt-x", 1, "REQUESTED", "2026-07-02T09:00:00Z"),
+    )
+    .await;
     assert!(!store.all_gcal_maps().await.is_empty(), "mirror seeded");
 
     // queue a 410, then the full-list response that follows the wipe (one external busy block).
@@ -173,14 +210,23 @@ async fn http_410_triggers_full_resync() {
     let (s, b) = call(&app, "POST", "/calendar/sync", Some(&op), None).await;
     assert_eq!(s, StatusCode::OK, "sync must not crash on 410: {b}");
     assert_eq!(b["fullResync"], true, "410 must trigger a full resync");
-    assert_eq!(b["busyBlocks"], 1, "the external event becomes a read-only busy block");
+    assert_eq!(
+        b["busyBlocks"], 1,
+        "the external event becomes a read-only busy block"
+    );
 
     // the old mirror entry was WIPED; only the post-resync busy block remains.
     let maps = store.all_gcal_maps().await;
     assert_eq!(maps.len(), 1, "mirror wiped + rebuilt");
-    assert_eq!(maps[0].direction, "in", "the rebuilt entry is the external busy block");
+    assert_eq!(
+        maps[0].direction, "in",
+        "the rebuilt entry is the external busy block"
+    );
     // token advanced to the fresh one.
-    assert_eq!(store.get_sync_state().await.sync_token.as_deref(), Some("fresh-token-after-resync"));
+    assert_eq!(
+        store.get_sync_state().await.sync_token.as_deref(),
+        Some("fresh-token-after-resync")
+    );
 }
 
 // --------------------------------------------------------------------------------------------
@@ -197,24 +243,54 @@ async fn reschedule_and_cancel_consistency() {
     let app = vet_api::router(state);
 
     // rev 1: create.
-    let (s, _b) = signed_call(&app, "PUT", "/v1/appointments/appt-2", "i1", &appt_body("appt-2", 1, "REQUESTED", "2026-07-04T09:00:00Z")).await;
+    let (s, _b) = signed_call(
+        &app,
+        "PUT",
+        "/v1/appointments/appt-2",
+        "i1",
+        &appt_body("appt-2", 1, "REQUESTED", "2026-07-04T09:00:00Z"),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let writes_after_create = cal.upsert_count();
 
     // central reschedule at rev 2 (newer) -> updates the replica + re-mirrors to Google.
     let resched = json!({ "rev": 2u64, "slot": "2026-07-04T15:00:00Z", "state": "REQUESTED" });
-    let (s, b) = signed_call(&app, "POST", "/v1/appointments/appt-2/reschedule", "i2", &resched).await;
+    let (s, b) = signed_call(
+        &app,
+        "POST",
+        "/v1/appointments/appt-2/reschedule",
+        "i2",
+        &resched,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "reschedule: {b}");
     assert_eq!(b["rev"], 2);
-    assert_eq!(b["slot"], "2026-07-04T15:00:00Z", "replica reflects the new slot");
-    assert!(cal.upsert_count() > writes_after_create, "reschedule re-mirrors to Google");
+    assert_eq!(
+        b["slot"], "2026-07-04T15:00:00Z",
+        "replica reflects the new slot"
+    );
+    assert!(
+        cal.upsert_count() > writes_after_create,
+        "reschedule re-mirrors to Google"
+    );
     // the Google mirror reflects the updated slot.
     let map = store.get_gcal_map_by_appt("appt-2").await.unwrap();
-    assert_eq!(cal.get_event(&map.google_event_id).unwrap().start, "2026-07-04T15:00:00Z");
+    assert_eq!(
+        cal.get_event(&map.google_event_id).unwrap().start,
+        "2026-07-04T15:00:00Z"
+    );
 
     // central cancel at rev 3 (terminal).
     let cancel = json!({ "rev": 3u64, "state": "CANCELLED" });
-    let (s, b) = signed_call(&app, "POST", "/v1/appointments/appt-2/cancel", "i3", &cancel).await;
+    let (s, b) = signed_call(
+        &app,
+        "POST",
+        "/v1/appointments/appt-2/cancel",
+        "i3",
+        &cancel,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "cancel: {b}");
     assert_eq!(b["state"], "CANCELLED");
 
@@ -226,9 +302,20 @@ async fn reschedule_and_cancel_consistency() {
 
     // even a NEWER rev CONFIRMED cannot move OUT of the terminal CANCELLED state (terminal wins).
     let newer_confirmed = appt_body("appt-2", 4, "CONFIRMED", "2026-07-04T15:00:00Z");
-    let (s, _b) = signed_call(&app, "PUT", "/v1/appointments/appt-2", "i5", &newer_confirmed).await;
+    let (s, _b) = signed_call(
+        &app,
+        "PUT",
+        "/v1/appointments/appt-2",
+        "i5",
+        &newer_confirmed,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(store.get_appt("appt-2").await.unwrap().state, "CANCELLED", "terminal wins over later CONFIRMED");
+    assert_eq!(
+        store.get_appt("appt-2").await.unwrap().state,
+        "CANCELLED",
+        "terminal wins over later CONFIRMED"
+    );
 }
 
 // --------------------------------------------------------------------------------------------
@@ -278,7 +365,11 @@ async fn appointment_events_ownership_and_rev_allocation() {
     assert_eq!(cb_appt, "appt-3");
     assert_eq!(*cb_last_rev, 5, "business sends lastRev, never a new rev");
     assert_eq!(cb_event, "CONFIRMED");
-    assert_eq!(central.rev_of("appt-3"), Some(6), "central is the SOLE rev allocator (5 -> 6)");
+    assert_eq!(
+        central.rev_of("appt-3"),
+        Some(6),
+        "central is the SOLE rev allocator (5 -> 6)"
+    );
     assert_eq!(b["rev"], 6, "replica reflects the central-allocated rev");
     assert_eq!(store.get_appt("appt-3").await.unwrap().rev, 6);
 
@@ -304,7 +395,11 @@ async fn appointment_events_ownership_and_rev_allocation() {
         Some(json!({ "event": "CONFIRMED" })),
     )
     .await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "a mismatched businessId must be rejected by central");
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "a mismatched businessId must be rejected by central"
+    );
 }
 
 // --------------------------------------------------------------------------------------------
@@ -329,17 +424,33 @@ async fn oauth_connect_callback_and_watch_renewal() {
     assert!(url.contains("calendar.events"));
 
     // callback -> token exchange stores the refresh token + stands up a watch channel.
-    let (s, b) = call(&app, "GET", "/calendar/google/callback?code=test-code", Some(&op), None).await;
+    let (s, b) = call(
+        &app,
+        "GET",
+        "/calendar/google/callback?code=test-code",
+        Some(&op),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "callback: {b}");
     assert_eq!(b["connected"], true);
-    assert!(store.get_sync_state().await.refresh_token.is_some(), "refresh token stored");
+    assert!(
+        store.get_sync_state().await.refresh_token.is_some(),
+        "refresh token stored"
+    );
     assert_eq!(cal.watch_count(), 1, "watch channel created on connect");
 
     // the renewal cron is a no-op when not yet due (channel just created)...
-    assert!(!vet_api::sync::renew_watch_if_due(&state, now()).await, "not due yet");
+    assert!(
+        !vet_api::sync::renew_watch_if_due(&state, now()).await,
+        "not due yet"
+    );
     // ...but re-creates the channel once ~6 days have elapsed.
     let future = now() + vet_api::sync::WATCH_RENEW_SECS + 1;
-    assert!(vet_api::sync::renew_watch_if_due(&state, future).await, "due after 6 days");
+    assert!(
+        vet_api::sync::renew_watch_if_due(&state, future).await,
+        "due after 6 days"
+    );
     assert_eq!(cal.watch_count(), 2, "watch channel renewed");
 }
 
@@ -378,5 +489,9 @@ async fn inbound_hmac_and_idempotency_enforced() {
     let newer = appt_body("appt-9", 2, "CONFIRMED", "2026-07-07T09:00:00Z");
     let (s, b) = signed_call(&app, "PUT", "/v1/appointments/appt-9", "k2", &newer).await;
     assert_eq!(s, StatusCode::OK, "idempotent replay: {b}");
-    assert_eq!(store.get_appt("appt-9").await.unwrap().rev, 1, "replayed key must NOT re-apply");
+    assert_eq!(
+        store.get_appt("appt-9").await.unwrap().rev,
+        1,
+        "replayed key must NOT re-apply"
+    );
 }

@@ -189,7 +189,8 @@ pub trait ChainClient: Send + Sync {
     /// VerificationRegistry.consumed(nullifier).
     async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError>;
     /// ConsentKeyRegistry.keyOf(wallet) — the bound babyJubPubKeyHash (0x0..0 if unbound). Hex string.
-    async fn consent_key_of(&self, registry_addr: &str, wallet: &str) -> Result<String, ChainError>;
+    async fn consent_key_of(&self, registry_addr: &str, wallet: &str)
+        -> Result<String, ChainError>;
     /// ConsentKeyRegistry.bindNonce(wallet) — the next bind nonce the owner's EIP-712 sig must use.
     async fn bind_nonce(&self, registry_addr: &str, wallet: &str) -> Result<U256, ChainError>;
     /// Broadcast bindConsentKeyFor(wallet, keyHash, ecdsaSig) to the ConsentKeyRegistry FROM the
@@ -204,7 +205,8 @@ pub trait ChainClient: Send + Sync {
         ecdsa_sig: &str,
     ) -> Result<SentTx, ChainError> {
         let calldata = bind_consent_key_for_calldata(wallet, key_hash, ecdsa_sig);
-        self.sign_and_send(account_index, registry_addr, &calldata).await
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
     }
     /// DogTagSBT.mint(to, dogTagId, root) FROM the signer at `account_index` (the vet signer must hold
     /// ISSUER_ROLE). The vet ISSUES the DOG_PROFILE SBT to the device wallet, baking the owner-identity
@@ -226,7 +228,11 @@ pub trait ChainClient: Send + Sync {
         Err(ChainError::NotFound)
     }
     /// DogTagSBT.profileRoot(dogTagId) (0x.. bytes32 hex; 0x0..0 if unminted).
-    async fn profile_root_of(&self, _sbt_addr: &str, _dog_tag_id: &str) -> Result<String, ChainError> {
+    async fn profile_root_of(
+        &self,
+        _sbt_addr: &str,
+        _dog_tag_id: &str,
+    ) -> Result<String, ChainError> {
         Err(ChainError::NotFound)
     }
     /// Encode issue(bytes32) calldata for `root`.
@@ -257,12 +263,16 @@ fn parse_addr(h: &str) -> Address {
 /// Exact typed calldata encoders (canonical selectors).
 pub fn issue_calldata(root: &str) -> String {
     use alloy::sol_types::SolCall;
-    let call = IDogTagIssuer::issueCall { r: parse_b256(root) };
+    let call = IDogTagIssuer::issueCall {
+        r: parse_b256(root),
+    };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 pub fn revoke_calldata(root: &str) -> String {
     use alloy::sol_types::SolCall;
-    let call = IDogTagIssuer::revokeCall { r: parse_b256(root) };
+    let call = IDogTagIssuer::revokeCall {
+        r: parse_b256(root),
+    };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 /// ABI-encode DogTagSBT.mint(to, dogTagId, root). Mirrors admin's `mint_calldata`.
@@ -324,8 +334,13 @@ fn parse_u256_dec_or_hex(s: &str) -> U256 {
 /// ABI-encode recordVerification(consent, userSig).
 pub fn record_verification_calldata(consent: &ConsentInput, user_sig: &str) -> String {
     use alloy::sol_types::SolCall;
-    let sig = Bytes::from(hex::decode(user_sig.strip_prefix("0x").unwrap_or(user_sig)).unwrap_or_default());
-    let call = IVerificationRegistry::recordVerificationCall { c: consent.to_sol(), userSig: sig };
+    let sig = Bytes::from(
+        hex::decode(user_sig.strip_prefix("0x").unwrap_or(user_sig)).unwrap_or_default(),
+    );
+    let call = IVerificationRegistry::recordVerificationCall {
+        c: consent.to_sol(),
+        userSig: sig,
+    };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
@@ -357,7 +372,9 @@ pub fn record_verification_zk_calldata(
 /// ABI-encode bindConsentKey(babyJubPubKeyHash, ecdsaSig).
 pub fn bind_consent_key_calldata(key_hash: &str, ecdsa_sig: &str) -> String {
     use alloy::sol_types::SolCall;
-    let sig = Bytes::from(hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default());
+    let sig = Bytes::from(
+        hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default(),
+    );
     let call = IConsentKeyRegistry::bindConsentKeyCall {
         babyJubPubKeyHash: parse_b256(key_hash),
         ecdsaSig: sig,
@@ -370,7 +387,9 @@ pub fn bind_consent_key_calldata(key_hash: &str, ecdsa_sig: &str) -> String {
 /// signature (recover == wallet on-chain), so the owner never pays gas.
 pub fn bind_consent_key_for_calldata(wallet: &str, key_hash: &str, ecdsa_sig: &str) -> String {
     use alloy::sol_types::SolCall;
-    let sig = Bytes::from(hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default());
+    let sig = Bytes::from(
+        hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default(),
+    );
     let call = IConsentKeyRegistry::bindConsentKeyForCall {
         wallet: parse_addr(wallet),
         babyJubPubKeyHash: parse_b256(key_hash),
@@ -421,22 +440,29 @@ impl MemChain {
     }
     /// Register a backend signer address for an account index (test harness wires this from custody).
     pub fn set_signer(&self, index: u32, address: &str) {
-        self.inner.lock().unwrap().signers.insert(index, address.to_lowercase());
+        self.inner
+            .lock()
+            .unwrap()
+            .signers
+            .insert(index, address.to_lowercase());
     }
     /// Whitelist a signer for a (registry, recordType, signer) tuple.
     pub fn whitelist(&self, registry: &str, record_type: &str, signer: &str) {
         self.inner.lock().unwrap().whitelist.insert(
-            (registry.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()),
+            (
+                registry.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ),
             true,
         );
     }
     /// Pre-bind a consent key (test harness): set `keyOf[wallet]` in the given ConsentKeyRegistry.
     pub fn set_consent_key(&self, registry: &str, wallet: &str, key_hash: &str) {
-        self.inner
-            .lock()
-            .unwrap()
-            .consent_keys
-            .insert((registry.to_lowercase(), wallet.to_lowercase()), key_hash.to_lowercase());
+        self.inner.lock().unwrap().consent_keys.insert(
+            (registry.to_lowercase(), wallet.to_lowercase()),
+            key_hash.to_lowercase(),
+        );
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
     fn decode_b32_call(calldata: &str) -> Option<(bool, String)> {
@@ -462,7 +488,11 @@ impl MemChain {
 #[async_trait]
 impl ChainClient for MemChain {
     async fn register_signer(&self, index: u32, _private_key: [u8; 32], address: String) {
-        self.inner.lock().unwrap().signers.insert(index, address.to_lowercase());
+        self.inner
+            .lock()
+            .unwrap()
+            .signers
+            .insert(index, address.to_lowercase());
     }
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
@@ -473,7 +503,11 @@ impl ChainClient for MemChain {
     }
     async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError> {
         let g = self.inner.lock().unwrap();
-        let v = g.issued.get(&(issuer_addr.to_lowercase(), root.to_lowercase())).copied().unwrap_or(0);
+        let v = g
+            .issued
+            .get(&(issuer_addr.to_lowercase(), root.to_lowercase()))
+            .copied()
+            .unwrap_or(0);
         Ok(U256::from(v))
     }
     async fn is_whitelisted_for(
@@ -483,9 +517,12 @@ impl ChainClient for MemChain {
         signer: &str,
     ) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g
-            .whitelist
-            .get(&(registry_addr.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()))
+        Ok(g.whitelist
+            .get(&(
+                registry_addr.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ))
             .copied()
             .unwrap_or(false))
     }
@@ -568,7 +605,11 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
         let reg = registry_addr.to_lowercase();
-        if g.consumed.get(&(reg.clone(), nf.clone())).copied().unwrap_or(false) {
+        if g.consumed
+            .get(&(reg.clone(), nf.clone()))
+            .copied()
+            .unwrap_or(false)
+        {
             return Err(ChainError::Other("replayed".into()));
         }
         g.consumed.insert((reg.clone(), nf.clone()), true);
@@ -604,7 +645,11 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
         let reg = registry_addr.to_lowercase();
-        if g.consumed.get(&(reg.clone(), nf.clone())).copied().unwrap_or(false) {
+        if g.consumed
+            .get(&(reg.clone(), nf.clone()))
+            .copied()
+            .unwrap_or(false)
+        {
             return Err(ChainError::Other("replayed".into()));
         }
         g.consumed.insert((reg.clone(), nf.clone()), true);
@@ -633,16 +678,18 @@ impl ChainClient for MemChain {
     }
     async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g
-            .consumed
+        Ok(g.consumed
             .get(&(registry_addr.to_lowercase(), nullifier.to_lowercase()))
             .copied()
             .unwrap_or(false))
     }
-    async fn consent_key_of(&self, registry_addr: &str, wallet: &str) -> Result<String, ChainError> {
+    async fn consent_key_of(
+        &self,
+        registry_addr: &str,
+        wallet: &str,
+    ) -> Result<String, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g
-            .consent_keys
+        Ok(g.consent_keys
             .get(&(registry_addr.to_lowercase(), wallet.to_lowercase()))
             .cloned()
             .unwrap_or_else(|| format!("0x{}", "0".repeat(64))))
@@ -674,7 +721,8 @@ impl ChainClient for MemChain {
             .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
         let reg = registry_addr.to_lowercase();
         let w = wallet.to_lowercase();
-        g.consent_keys.insert((reg.clone(), w.clone()), key_hash.to_lowercase());
+        g.consent_keys
+            .insert((reg.clone(), w.clone()), key_hash.to_lowercase());
         *g.bind_nonce.entry((reg, w)).or_insert(0) += 1;
         g.nonce += 1;
         let tx_hash = format!("0x{:064x}", g.nonce);
@@ -712,7 +760,11 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or(ChainError::NotFound)
     }
-    async fn profile_root_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
+    async fn profile_root_of(
+        &self,
+        sbt_addr: &str,
+        dog_tag_id: &str,
+    ) -> Result<String, ChainError> {
         let g = self.inner.lock().unwrap();
         g.sbt_roots
             .get(&(sbt_addr.to_lowercase(), normalize_id(dog_tag_id)))
@@ -770,7 +822,11 @@ pub struct AlloyChain {
 
 impl AlloyChain {
     pub fn new(rpc_url: String) -> Self {
-        AlloyChain { rpc_url, chain_id: ROAX_CHAIN_ID, signers: Mutex::new(HashMap::new()) }
+        AlloyChain {
+            rpc_url,
+            chain_id: ROAX_CHAIN_ID,
+            signers: Mutex::new(HashMap::new()),
+        }
     }
     /// Override the EIP-155 chain id (config-only chain swap; default stays `ROAX_CHAIN_ID` = 135).
     pub fn with_chain_id(mut self, chain_id: u64) -> Self {
@@ -788,7 +844,8 @@ impl ChainClient for AlloyChain {
         self.chain_id
     }
     async fn register_signer(&self, index: u32, private_key: [u8; 32], _address: String) {
-        if let Ok(s) = alloy::signers::local::PrivateKeySigner::from_bytes(&B256::from(private_key)) {
+        if let Ok(s) = alloy::signers::local::PrivateKeySigner::from_bytes(&B256::from(private_key))
+        {
             self.signers.lock().unwrap().insert(index, s);
         }
     }
@@ -846,9 +903,9 @@ impl ChainClient for AlloyChain {
         calldata: &str,
     ) -> Result<SentTx, ChainError> {
         use alloy::network::EthereumWallet;
+        use alloy::network::TransactionBuilder;
         use alloy::providers::{Provider, ProviderBuilder};
         use alloy::rpc::types::TransactionRequest;
-        use alloy::network::TransactionBuilder;
 
         let signer = self
             .signer(account_index)
@@ -869,7 +926,10 @@ impl ChainClient for AlloyChain {
         // ~1 gwei eth_gasPrice. Alloy's EIP-1559 filler derives maxFeePerGas from the (tiny) base fee,
         // producing an underpriced tx that the node ACCEPTS but never mines (stuck forever). Read
         // eth_gasPrice and send a legacy tx (mirrors the working `cast send --legacy`).
-        let gp = provider.get_gas_price().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let gp = provider
+            .get_gas_price()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         let tx = TransactionRequest::default()
             .with_to(parse_addr(to))
             .with_input(data)
@@ -922,7 +982,10 @@ impl ChainClient for AlloyChain {
         if confirmations > 1 {
             if let Some(bn) = receipt.block_number {
                 loop {
-                    let head = provider.get_block_number().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+                    let head = provider
+                        .get_block_number()
+                        .await
+                        .map_err(|e| ChainError::Rpc(e.to_string()))?;
                     if head.saturating_sub(bn) + 1 >= confirmations {
                         break;
                     }
@@ -965,7 +1028,8 @@ impl ChainClient for AlloyChain {
         user_sig: &str,
     ) -> Result<SentTx, ChainError> {
         let calldata = record_verification_calldata(consent, user_sig);
-        self.sign_and_send(account_index, registry_addr, &calldata).await
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
     }
     async fn record_verification_zk(
         &self,
@@ -977,7 +1041,8 @@ impl ChainClient for AlloyChain {
         pub_signals: &[String; 7],
     ) -> Result<SentTx, ChainError> {
         let calldata = record_verification_zk_calldata(a, b, c, pub_signals);
-        self.sign_and_send(account_index, registry_addr, &calldata).await
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
     }
     async fn get_verified_event(
         &self,
@@ -1031,7 +1096,11 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
-    async fn consent_key_of(&self, registry_addr: &str, wallet: &str) -> Result<String, ChainError> {
+    async fn consent_key_of(
+        &self,
+        registry_addr: &str,
+        wallet: &str,
+    ) -> Result<String, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
             .on_builtin(&self.rpc_url)
@@ -1078,7 +1147,11 @@ impl ChainClient for AlloyChain {
             }
         }
     }
-    async fn profile_root_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
+    async fn profile_root_of(
+        &self,
+        sbt_addr: &str,
+        dog_tag_id: &str,
+    ) -> Result<String, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
             .on_builtin(&self.rpc_url)

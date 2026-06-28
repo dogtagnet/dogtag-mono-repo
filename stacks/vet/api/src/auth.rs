@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 
 /// Now (unix seconds).
 pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 // --------------------------------------------------------------------------------------------
@@ -60,7 +63,10 @@ pub struct ShareClaims {
 /// The walletAddress is lowercased so the message is deterministic regardless of input checksum
 /// casing. MUST byte-match the admin stack's `register_message` (the mobile signs the same string).
 pub fn register_message(wallet_address: &str) -> String {
-    format!("DogTag wallet registration: {}", wallet_address.to_lowercase())
+    format!(
+        "DogTag wallet registration: {}",
+        wallet_address.to_lowercase()
+    )
 }
 
 /// Recover the EIP-191 (`personal_sign`) signer of `message` from a 65-byte `0x..` signature,
@@ -70,7 +76,13 @@ pub fn register_message(wallet_address: &str) -> String {
 /// Ported from the admin stack (`stacks/admin/api/src/auth.rs`).
 pub fn recover_personal_sign(message: &str, signature_hex: &str) -> Option<String> {
     use alloy::primitives::PrimitiveSignature;
-    let raw = hex::decode(signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim())).ok()?;
+    let raw = hex::decode(
+        signature_hex
+            .trim()
+            .strip_prefix("0x")
+            .unwrap_or(signature_hex.trim()),
+    )
+    .ok()?;
     let sig = PrimitiveSignature::from_raw(&raw).ok()?;
     let addr = sig.recover_address_from_msg(message.as_bytes()).ok()?;
     Some(format!("{addr:#x}"))
@@ -120,13 +132,15 @@ pub fn verify_jwt<T: for<'de> Deserialize<'de>>(
     }
     let signing_input = format!("{}.{}", parts[0], parts[1]);
     let sig_bytes = b64d(parts[2])?;
-    let sig = ed25519_dalek::Signature::from_slice(&sig_bytes).map_err(|_| AuthError::BadSignature)?;
+    let sig =
+        ed25519_dalek::Signature::from_slice(&sig_bytes).map_err(|_| AuthError::BadSignature)?;
     keys.verifying
         .verify(signing_input.as_bytes(), &sig)
         .map_err(|_| AuthError::BadSignature)?;
     let payload = b64d(parts[1])?;
     // Validate exp/nbf generically by re-parsing as a map.
-    let map: serde_json::Value = serde_json::from_slice(&payload).map_err(|_| AuthError::BadToken)?;
+    let map: serde_json::Value =
+        serde_json::from_slice(&payload).map_err(|_| AuthError::BadToken)?;
     let n = now();
     if let Some(exp) = map.get("exp").and_then(|v| v.as_u64()) {
         if n > exp + leeway {
@@ -260,7 +274,8 @@ impl RateLimiter {
         }
         let mut map = self.inner.lock().unwrap();
         let st = map.entry(ip.to_string()).or_default();
-        st.failures.retain(|t| now.saturating_sub(*t) < self.window_secs);
+        st.failures
+            .retain(|t| now.saturating_sub(*t) < self.window_secs);
         st.failures.push(now);
         if st.failures.len() >= self.per_ip_max {
             st.locked_until = Some(now + self.lockout_secs);
@@ -314,12 +329,42 @@ mod tests {
     #[test]
     fn hmac_roundtrip_and_tamper() {
         let sig = hmac_sign("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":1}");
-        assert!(hmac_verify("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
+        assert!(hmac_verify(
+            "secret",
+            "PUT",
+            "/v1/appointments/a1",
+            b"{\"rev\":1}",
+            &sig
+        ));
         // tampered body / path / method / key all fail.
-        assert!(!hmac_verify("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":2}", &sig));
-        assert!(!hmac_verify("secret", "PUT", "/v1/appointments/a2", b"{\"rev\":1}", &sig));
-        assert!(!hmac_verify("secret", "POST", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
-        assert!(!hmac_verify("other", "PUT", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
+        assert!(!hmac_verify(
+            "secret",
+            "PUT",
+            "/v1/appointments/a1",
+            b"{\"rev\":2}",
+            &sig
+        ));
+        assert!(!hmac_verify(
+            "secret",
+            "PUT",
+            "/v1/appointments/a2",
+            b"{\"rev\":1}",
+            &sig
+        ));
+        assert!(!hmac_verify(
+            "secret",
+            "POST",
+            "/v1/appointments/a1",
+            b"{\"rev\":1}",
+            &sig
+        ));
+        assert!(!hmac_verify(
+            "other",
+            "PUT",
+            "/v1/appointments/a1",
+            b"{\"rev\":1}",
+            &sig
+        ));
     }
 
     #[test]
