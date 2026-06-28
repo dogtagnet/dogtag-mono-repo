@@ -3,14 +3,17 @@ pragma solidity 0.8.28;
 
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {AccessControlDefaultAdminRules} from
-    "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
 interface IGroth16Verifier {
-    function verifyProof(uint256[2] calldata a, uint256[2][2] calldata b, uint256[2] calldata c, uint256[7] calldata pub)
-        external
-        view
-        returns (bool);
+    function verifyProof(
+        uint256[2] calldata a,
+        uint256[2][2] calldata b,
+        uint256[2] calldata c,
+        uint256[7] calldata pub
+    ) external view returns (bool);
 }
 
 interface IIssuerRegistry {
@@ -106,7 +109,11 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
         EIP712("DogTag", "1")
         AccessControlDefaultAdminRules(2 days, admin)
     {
-        require(ir != address(0) && sbt_ != address(0) && ck != address(0) && ridx != address(0) && pos6 != address(0), "zero");
+        require(
+            ir != address(0) && sbt_ != address(0) && ck != address(0) && ridx != address(0)
+                && pos6 != address(0),
+            "zero"
+        );
         issuerRegistry = IIssuerRegistry(ir);
         sbt = IDogTagSBT(sbt_);
         zkVerifier = IGroth16Verifier(zk);
@@ -136,7 +143,11 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
             require(issuerRegistry.isWhitelistedFor(_verifyKey(c.purpose), msg.sender), "!verify-wl");
         }
         // §11.10(c): pin inputs into the scalar field BEFORE Poseidon so ids congruent mod r can't collide.
-        require(c.dogTagId < SNARK_SCALAR_FIELD && c.nonce < SNARK_SCALAR_FIELD && uint256(c.purpose) < SNARK_SCALAR_FIELD, "!field");
+        require(
+            c.dogTagId < SNARK_SCALAR_FIELD && c.nonce < SNARK_SCALAR_FIELD
+                && uint256(c.purpose) < SNARK_SCALAR_FIELD,
+            "!field"
+        );
 
         bytes32 digest = _hashTypedDataV4(
             keccak256(
@@ -159,7 +170,14 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
 
         bytes32 nf = bytes32(
             poseidon6.poseidon(
-                [DS_NULLIFIER, c.dogTagId, uint256(c.purpose), uint160(c.relayer), uint160(c.subject), c.nonce]
+                [
+                    DS_NULLIFIER,
+                    c.dogTagId,
+                    uint256(c.purpose),
+                    uint160(c.relayer),
+                    uint160(c.subject),
+                    c.nonce
+                ]
             )
         );
         _consumeAndResolve(nf, c.credentialRoot);

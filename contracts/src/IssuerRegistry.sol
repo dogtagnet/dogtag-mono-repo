@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
 
-import {AccessControlDefaultAdminRules} from
-    "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
 /// @title IssuerRegistry — the central whitelist gate (impl §11.1, architecture §4.3, §13.1 C-2/H-3).
 /// @notice Per-recordType, per-signer scoping (no global boolean). One logical issuer entity may map
