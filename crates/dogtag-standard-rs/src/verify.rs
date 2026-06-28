@@ -340,4 +340,225 @@ mod tests {
         doc.privacy.obfuscated.push("0xdeadbeef".to_string()); // not 32 bytes
         assert_eq!(check_integrity(&doc).0, FragmentState::Invalid);
     }
+
+    // --- verify() orchestration via injected mock adapters ------------------
+    //
+    // The pure orchestration shape (mode gating, ownership semantics, ERROR
+    // propagation) is exercised here with deterministic mocks. `Result<_, ()>`
+    // is mapped to AdapterError so an `Err` arm models a transient adapter
+    // failure exactly as the trait contract requires.
+
+    struct MockRpc {
+        is_valid_res: Result<bool, ()>,
+        owner_res: Result<String, ()>,
+    }
+    impl RpcAdapter for MockRpc {
+        fn is_valid(&self, _ds: &str, _root: &str, _conf: u32) -> Result<bool, AdapterError> {
+            self.is_valid_res.map_err(|_| AdapterError("rpc".into()))
+        }
+        fn owner_of(&self, _id: &str) -> Result<String, AdapterError> {
+            self.owner_res.clone().map_err(|_| AdapterError("rpc".into()))
+        }
+    }
+
+    struct MockDns(Result<bool, ()>);
+    impl DnsAdapter for MockDns {
+        fn txt_matches(&self, _d: &str, _ds: &str, _c: u64) -> Result<bool, AdapterError> {
+            self.0.map_err(|_| AdapterError("dns".into()))
+        }
+    }
+
+    struct MockRegistry(Result<bool, ()>);
+    impl RegistryAdapter for MockRegistry {
+        fn knows(&self, _d: &str, _ds: &str) -> Result<bool, AdapterError> {
+            self.0.map_err(|_| AdapterError("reg".into()))
+        }
+    }
+
+    fn good_doc() -> WrappedDoc {
+        let mut sp = fixed_salts();
+        wrap_document(&sample_credential(), issuer(), &mut sp).unwrap()
+    }
+
+    // sample_credential's dogTagId value is "42"; owner_of receives that id.
+    const OWNER: &str = "0xAbC0000000000000000000000000000000000001";
+
+    #[test]
+    fn self_import_all_pillars_valid() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::SelfImport,
+            user_wallet_address: Some(OWNER.to_lowercase()), // case-insensitive match
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.integrity, FragmentState::Valid);
+        assert_eq!(v.issuance, FragmentState::Valid);
+        assert_eq!(v.identity, FragmentState::Valid);
+        assert_eq!(v.ownership, FragmentState::Valid);
+        assert!(v.valid);
+    }
+
+    #[test]
+    fn self_import_owner_mismatch_gates_validity() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::SelfImport,
+            user_wallet_address: Some("0xdead".to_string()),
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.ownership, FragmentState::Invalid);
+        assert!(!v.valid); // credential pillars valid, but ownership gates self-import
+    }
+
+    #[test]
+    fn self_import_owner_lookup_error_is_error_not_invalid() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Err(()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::SelfImport,
+            user_wallet_address: Some(OWNER.to_string()),
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.ownership, FragmentState::Error);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn third_party_without_wallet_is_not_applicable_and_does_not_gate() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.ownership, FragmentState::NotApplicable);
+        assert!(v.valid); // third-party validity = credential pillars only
+    }
+
+    #[test]
+    fn third_party_owner_mismatch_does_not_gate_validity() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: Some("0xother".to_string()),
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.ownership, FragmentState::Invalid);
+        assert!(v.valid); // ownership Invalid but still valid for third parties
+    }
+
+    #[test]
+    fn issuance_false_makes_invalid() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(false), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.issuance, FragmentState::Invalid);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn issuance_adapter_error_is_error_state() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Err(()), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.issuance, FragmentState::Error);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn identity_requires_both_txt_and_registry() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        // TXT matches but registry does not know -> Invalid (not Error)
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(false)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.identity, FragmentState::Invalid);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn identity_adapter_error_is_error_state() {
+        let doc = good_doc();
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Err(())), // transient DNS failure
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.identity, FragmentState::Error);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn tampered_doc_invalid_integrity_gates_all_modes() {
+        let mut doc = good_doc();
+        // tamper dogTagId value so integrity recomputation fails
+        let subj = doc.data["credentialSubject"].as_object_mut().unwrap();
+        let packed = subj["name"].as_str().unwrap();
+        let parts: Vec<&str> = packed.splitn(3, ':').collect();
+        subj.insert("name".to_string(), Value::String(format!("{}:{}:Max", parts[0], parts[1])));
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.integrity, FragmentState::Invalid);
+        assert!(!v.valid);
+    }
 }
