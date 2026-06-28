@@ -33,11 +33,17 @@ async fn main() {
     let cfg = Config {
         deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{PORT}")),
         rpc_url: rpc_url.clone(),
-        issuer_registry_addr: env("ISSUER_REGISTRY_ADDR", "0x0000000000000000000000000000000000000000"),
+        issuer_registry_addr: env(
+            "ISSUER_REGISTRY_ADDR",
+            "0x0000000000000000000000000000000000000000",
+        ),
         sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
         issuer_name: env("ISSUER_NAME", "DogTag Central"),
         issuer_domain: env("ISSUER_DOMAIN", "dogtag.example"),
-        profile_document_store: env("PROFILE_DOCUMENT_STORE", "0x0000000000000000000000000000000000000000"),
+        profile_document_store: env(
+            "PROFILE_DOCUMENT_STORE",
+            "0x0000000000000000000000000000000000000000",
+        ),
         admin_password: env("ADMIN_PASSWORD", "admin-pw"),
         admin_signer_index: 0,
     };
@@ -54,13 +60,22 @@ async fn main() {
                 let mut pk = [0u8; 32];
                 pk.copy_from_slice(&bytes);
                 let addr = std::env::var("ADMIN_ADDRESS").unwrap_or_default();
-                chain.register_signer(cfg.admin_signer_index, pk, addr).await;
-                tracing::info!("admin signer registered at index {}", cfg.admin_signer_index);
+                chain
+                    .register_signer(cfg.admin_signer_index, pk, addr)
+                    .await;
+                tracing::info!(
+                    "admin signer registered at index {}",
+                    cfg.admin_signer_index
+                );
             }
-            _ => tracing::warn!("ADMIN_PRIVATE_KEY set but not a 32-byte hex key; admin writes will fail"),
+            _ => tracing::warn!(
+                "ADMIN_PRIVATE_KEY set but not a 32-byte hex key; admin writes will fail"
+            ),
         }
     } else {
-        tracing::warn!("ADMIN_PRIVATE_KEY unset; on-chain admin writes (whitelistFor/mint) will fail");
+        tracing::warn!(
+            "ADMIN_PRIVATE_KEY unset; on-chain admin writes (whitelistFor/mint) will fail"
+        );
     }
 
     // DNS legitimacy check: real DoH in prod; set DNS_CHECK=skip for the local demo where the
@@ -108,8 +123,12 @@ async fn main() {
         let admin_addr = std::net::SocketAddr::from(([127, 0, 0, 1], admin_port));
         tracing::info!(%public_addr, %admin_addr, "admin-api public + loopback-only admin console listening");
 
-        let public_listener = tokio::net::TcpListener::bind(public_addr).await.expect("bind public");
-        let admin_listener = tokio::net::TcpListener::bind(admin_addr).await.expect("bind admin");
+        let public_listener = tokio::net::TcpListener::bind(public_addr)
+            .await
+            .expect("bind public");
+        let admin_listener = tokio::net::TcpListener::bind(admin_addr)
+            .await
+            .expect("bind admin");
 
         let public_srv = axum::serve(
             public_listener,
@@ -153,7 +172,9 @@ async fn build_store() -> Arc<dyn Store> {
                 Arc::new(s)
             }
             Err(e) => {
-                tracing::error!("MONGO_URI set but MongoStore::connect failed: {e}; refusing to start");
+                tracing::error!(
+                    "MONGO_URI set but MongoStore::connect failed: {e}; refusing to start"
+                );
                 std::process::exit(1);
             }
         }
