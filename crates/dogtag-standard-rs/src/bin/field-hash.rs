@@ -2,7 +2,7 @@
 //! This is the CANONICAL on-chain dogTagId: the DOG_PROFILE SBT must be minted with THIS value (so
 //! `ownerOf` matches the circuit's `pub[0]`), and the §1.10 consent / EdDSA message / nullifier use it
 //! too. The raw numeric is only an off-chain handle (what the operator types into the vaccination form).
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::PrimeField;
 use dogtag_standard::leaf::field_of_value;
 use dogtag_standard::types::TypeTag;
 use dogtag_standard::wrap::scalar_from_packed;
