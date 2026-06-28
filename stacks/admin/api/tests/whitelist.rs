@@ -94,7 +94,10 @@ fn start_anvil() -> Anvil {
 }
 
 fn run(cmd: &mut Command) -> String {
-    let out = cmd.current_dir(CONTRACTS_DIR).output().expect("run command");
+    let out = cmd
+        .current_dir(CONTRACTS_DIR)
+        .output()
+        .expect("run command");
     if !out.status.success() {
         panic!(
             "command failed: {:?}\nstdout: {}\nstderr: {}",
@@ -108,7 +111,15 @@ fn run(cmd: &mut Command) -> String {
 
 fn forge_create(rpc: &str, contract: &str, args: &[&str]) -> String {
     let mut cmd = Command::new("forge");
-    cmd.args(["create", "--rpc-url", rpc, "--private-key", PK0, "--broadcast", contract]);
+    cmd.args([
+        "create",
+        "--rpc-url",
+        rpc,
+        "--private-key",
+        PK0,
+        "--broadcast",
+        contract,
+    ]);
     if !args.is_empty() {
         cmd.arg("--constructor-args").args(args);
     }
@@ -131,7 +142,10 @@ fn cast_call(rpc: &str, to: &str, sig: &str, args: &[&str]) -> String {
 async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
     let chain = AlloyChain::new(rpc.to_string());
     // register ACC0's key as the admin signer (index 0).
-    let pk: [u8; 32] = hex::decode(PK0.trim_start_matches("0x")).unwrap().try_into().unwrap();
+    let pk: [u8; 32] = hex::decode(PK0.trim_start_matches("0x"))
+        .unwrap()
+        .try_into()
+        .unwrap();
     chain.register_signer(0, pk, ACC0.to_lowercase()).await;
     let cfg = Config {
         deployment_url: "http://localhost:39742".to_string(),
@@ -200,16 +214,32 @@ async fn anvil_whitelist_multi_address() {
     let app_id = b["applicationId"].as_str().unwrap().to_string();
 
     // approve (mock DnsChecker returns ok) -> admin signer writes whitelistFor for EACH pair.
-    let (s, b) = call(&app, "POST", &format!("/v1/issuer-applications/{app_id}/approve"), Some(&admin), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/v1/issuer-applications/{app_id}/approve"),
+        Some(&admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "approve: {b}");
     // 2 addresses x 2 recordTypes = 4 whitelist txs.
-    assert_eq!(b["whitelistTxs"].as_array().unwrap().len(), 4, "one tx per (address,recordType)");
+    assert_eq!(
+        b["whitelistTxs"].as_array().unwrap().len(),
+        4,
+        "one tx per (address,recordType)"
+    );
 
     // assert isWhitelistedFor == true ON-CHAIN for EACH (address, recordType) pair.
     for addr in [ADDR1, ADDR2] {
         for rt in [&rt_vacc, &rt_titer] {
             assert_eq!(
-                cast_call(&rpc, &registry, "isWhitelistedFor(bytes32,address)(bool)", &[rt, addr]),
+                cast_call(
+                    &rpc,
+                    &registry,
+                    "isWhitelistedFor(bytes32,address)(bool)",
+                    &[rt, addr]
+                ),
                 "true",
                 "addr {addr} must be whitelisted on-chain for {rt}"
             );
@@ -217,15 +247,32 @@ async fn anvil_whitelist_multi_address() {
     }
 
     // delist the application -> admin signer delists EACH pair; one pair flips to false.
-    let (s, b) = call(&app, "POST", &format!("/v1/issuer-applications/{app_id}/delist"), Some(&admin), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/v1/issuer-applications/{app_id}/delist"),
+        Some(&admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "delist: {b}");
     assert_eq!(
-        cast_call(&rpc, &registry, "isWhitelistedFor(bytes32,address)(bool)", &[&rt_vacc, ADDR1]),
+        cast_call(
+            &rpc,
+            &registry,
+            "isWhitelistedFor(bytes32,address)(bool)",
+            &[&rt_vacc, ADDR1]
+        ),
         "false",
         "after delist, isWhitelistedFor must be false on-chain"
     );
     assert_eq!(
-        cast_call(&rpc, &registry, "isWhitelistedFor(bytes32,address)(bool)", &[&rt_titer, ADDR2]),
+        cast_call(
+            &rpc,
+            &registry,
+            "isWhitelistedFor(bytes32,address)(bool)",
+            &[&rt_titer, ADDR2]
+        ),
         "false",
         "all pairs delisted"
     );

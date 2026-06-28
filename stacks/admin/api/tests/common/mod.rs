@@ -92,7 +92,10 @@ pub async fn call_raw(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> (StatusCode, Value) {
-    let mut req = Request::builder().method(method).uri(path).header("content-type", "application/json");
+    let mut req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json");
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
@@ -113,7 +116,14 @@ pub async fn call_raw(
 
 /// Admin-login -> token.
 pub async fn admin_token(app: &axum::Router) -> String {
-    let (s, b) = call(app, "POST", "/v1/admin/login", None, Some(serde_json::json!({"password": ADMIN_PW}))).await;
+    let (s, b) = call(
+        app,
+        "POST",
+        "/v1/admin/login",
+        None,
+        Some(serde_json::json!({"password": ADMIN_PW})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "admin login: {b}");
     b["token"].as_str().unwrap().to_string()
 }
@@ -131,5 +141,8 @@ pub async fn signup(app: &axum::Router, email: &str, wallet: &str) -> (String, S
     )
     .await;
     assert_eq!(s, StatusCode::OK, "signup: {b}");
-    (b["ownerId"].as_str().unwrap().to_string(), b["token"].as_str().unwrap().to_string())
+    (
+        b["ownerId"].as_str().unwrap().to_string(),
+        b["token"].as_str().unwrap().to_string(),
+    )
 }

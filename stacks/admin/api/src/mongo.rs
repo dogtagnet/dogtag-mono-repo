@@ -85,18 +85,33 @@ impl MongoStore {
 #[async_trait]
 impl Store for MongoStore {
     async fn put_owner(&self, o: Owner) {
-        let _ = self.owners().replace_one(doc! { "owner_id": &o.owner_id }, &o).upsert(true).await;
+        let _ = self
+            .owners()
+            .replace_one(doc! { "owner_id": &o.owner_id }, &o)
+            .upsert(true)
+            .await;
     }
     async fn get_owner(&self, id: &str) -> Option<Owner> {
-        self.owners().find_one(doc! { "owner_id": id }).await.ok().flatten()
+        self.owners()
+            .find_one(doc! { "owner_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn get_owner_by_email(&self, email: &str) -> Option<Owner> {
-        self.owners().find_one(doc! { "email": email }).await.ok().flatten()
+        self.owners()
+            .find_one(doc! { "email": email })
+            .await
+            .ok()
+            .flatten()
     }
     async fn put_session(&self, token: String, owner_id: String) {
         let coll: Collection<Document> = self.db.collection("sessions");
         let _ = coll
-            .replace_one(doc! { "token": &token }, doc! { "token": token, "owner_id": owner_id })
+            .replace_one(
+                doc! { "token": &token },
+                doc! { "token": token, "owner_id": owner_id },
+            )
             .upsert(true)
             .await;
     }
@@ -114,21 +129,37 @@ impl Store for MongoStore {
     }
     async fn has_admin_session(&self, token: &str) -> bool {
         let coll: Collection<Document> = self.db.collection("admin_sessions");
-        coll.find_one(doc! { "token": token }).await.ok().flatten().is_some()
+        coll.find_one(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     async fn put_pet(&self, p: Pet) {
-        let _ = self.pets().replace_one(doc! { "pet_id": &p.pet_id }, &p).upsert(true).await;
+        let _ = self
+            .pets()
+            .replace_one(doc! { "pet_id": &p.pet_id }, &p)
+            .upsert(true)
+            .await;
     }
     async fn get_pet(&self, id: &str) -> Option<Pet> {
-        self.pets().find_one(doc! { "pet_id": id }).await.ok().flatten()
+        self.pets()
+            .find_one(doc! { "pet_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn pets_of_owner(&self, owner_id: &str) -> Vec<Pet> {
         Self::collect(self.pets(), doc! { "owner_id": owner_id }).await
     }
     async fn microchip_exists(&self, code: &str) -> bool {
         let coll: Collection<Document> = self.db.collection("microchips");
-        coll.find_one(doc! { "code": code }).await.ok().flatten().is_some()
+        coll.find_one(doc! { "code": code })
+            .await
+            .ok()
+            .flatten()
+            .is_some()
     }
     async fn reserve_microchip(&self, code: &str) -> bool {
         // unique-index insert-or-fail == atomic uniqueness.
@@ -144,7 +175,10 @@ impl Store for MongoStore {
             .return_document(ReturnDocument::After)
             .build();
         let d = coll
-            .find_one_and_update(doc! { "_id": "dog_tag_id" }, doc! { "$inc": { "seq": 1i64 } })
+            .find_one_and_update(
+                doc! { "_id": "dog_tag_id" },
+                doc! { "$inc": { "seq": 1i64 } },
+            )
             .with_options(opts)
             .await
             .ok()
@@ -153,20 +187,36 @@ impl Store for MongoStore {
     }
 
     async fn put_credential(&self, c: Credential) {
-        let _ = self.credentials().replace_one(doc! { "credential_id": &c.credential_id }, &c).upsert(true).await;
+        let _ = self
+            .credentials()
+            .replace_one(doc! { "credential_id": &c.credential_id }, &c)
+            .upsert(true)
+            .await;
     }
     async fn get_credential(&self, id: &str) -> Option<Credential> {
-        self.credentials().find_one(doc! { "credential_id": id }).await.ok().flatten()
+        self.credentials()
+            .find_one(doc! { "credential_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn credentials_of_owner(&self, owner_id: &str) -> Vec<Credential> {
         Self::collect(self.credentials(), doc! { "owner_id": owner_id }).await
     }
 
     async fn put_share_ref(&self, s: ShareRef) {
-        let _ = self.share_refs().replace_one(doc! { "ref_id": &s.ref_id }, &s).upsert(true).await;
+        let _ = self
+            .share_refs()
+            .replace_one(doc! { "ref_id": &s.ref_id }, &s)
+            .upsert(true)
+            .await;
     }
     async fn get_share_ref(&self, ref_id: &str) -> Option<ShareRef> {
-        self.share_refs().find_one(doc! { "ref_id": ref_id }).await.ok().flatten()
+        self.share_refs()
+            .find_one(doc! { "ref_id": ref_id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn consume_jti(&self, jti: &str) -> bool {
         let coll: Collection<Document> = self.db.collection("jwt_jti");
@@ -174,30 +224,54 @@ impl Store for MongoStore {
     }
 
     async fn put_business(&self, b: Business) {
-        let _ = self.businesses().replace_one(doc! { "business_id": &b.business_id }, &b).upsert(true).await;
+        let _ = self
+            .businesses()
+            .replace_one(doc! { "business_id": &b.business_id }, &b)
+            .upsert(true)
+            .await;
     }
     async fn get_business(&self, id: &str) -> Option<Business> {
-        self.businesses().find_one(doc! { "business_id": id }).await.ok().flatten()
+        self.businesses()
+            .find_one(doc! { "business_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn all_businesses(&self) -> Vec<Business> {
         Self::collect(self.businesses(), doc! {}).await
     }
 
     async fn put_application(&self, a: IssuerApplication) {
-        let _ = self.applications().replace_one(doc! { "application_id": &a.application_id }, &a).upsert(true).await;
+        let _ = self
+            .applications()
+            .replace_one(doc! { "application_id": &a.application_id }, &a)
+            .upsert(true)
+            .await;
     }
     async fn get_application(&self, id: &str) -> Option<IssuerApplication> {
-        self.applications().find_one(doc! { "application_id": id }).await.ok().flatten()
+        self.applications()
+            .find_one(doc! { "application_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn all_applications(&self) -> Vec<IssuerApplication> {
         Self::collect(self.applications(), doc! {}).await
     }
 
     async fn put_appointment(&self, a: Appointment) {
-        let _ = self.appointments().replace_one(doc! { "appointment_id": &a.appointment_id }, &a).upsert(true).await;
+        let _ = self
+            .appointments()
+            .replace_one(doc! { "appointment_id": &a.appointment_id }, &a)
+            .upsert(true)
+            .await;
     }
     async fn get_appointment(&self, id: &str) -> Option<Appointment> {
-        self.appointments().find_one(doc! { "appointment_id": id }).await.ok().flatten()
+        self.appointments()
+            .find_one(doc! { "appointment_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn appointments_updated_since(&self, owner_id: &str, since: u64) -> Vec<Appointment> {
         Self::collect(
@@ -219,10 +293,16 @@ impl Store for MongoStore {
         let coll = self.appointments();
         let outcome = match observed_rev {
             Some(r) => {
-                coll.replace_one(doc! { "appointment_id": appointment_id, "rev": r as i64 }, &result).await
+                coll.replace_one(
+                    doc! { "appointment_id": appointment_id, "rev": r as i64 },
+                    &result,
+                )
+                .await
             }
             None => {
-                coll.replace_one(doc! { "appointment_id": appointment_id }, &result).upsert(true).await
+                coll.replace_one(doc! { "appointment_id": appointment_id }, &result)
+                    .upsert(true)
+                    .await
             }
         };
         match outcome {
@@ -232,28 +312,48 @@ impl Store for MongoStore {
     }
 
     async fn put_consent(&self, c: Consent) {
-        let _ = self.consents().replace_one(doc! { "consent_id": &c.consent_id }, &c).upsert(true).await;
+        let _ = self
+            .consents()
+            .replace_one(doc! { "consent_id": &c.consent_id }, &c)
+            .upsert(true)
+            .await;
     }
     async fn get_consent(&self, id: &str) -> Option<Consent> {
-        self.consents().find_one(doc! { "consent_id": id }).await.ok().flatten()
+        self.consents()
+            .find_one(doc! { "consent_id": id })
+            .await
+            .ok()
+            .flatten()
     }
     async fn consents_of_owner(&self, owner_id: &str) -> Vec<Consent> {
         Self::collect(self.consents(), doc! { "owner_id": owner_id }).await
     }
     async fn put_consent_receipt(&self, r: ConsentReceipt) {
-        let _ = self.receipts().replace_one(doc! { "receipt_id": &r.receipt_id }, &r).upsert(true).await;
+        let _ = self
+            .receipts()
+            .replace_one(doc! { "receipt_id": &r.receipt_id }, &r)
+            .upsert(true)
+            .await;
     }
     async fn receipts_of_owner(&self, owner_id: &str) -> Vec<ConsentReceipt> {
         Self::collect(self.receipts(), doc! { "owner_id": owner_id }).await
     }
     async fn put_verification_record(&self, v: VerificationRecord) {
-        let _ = self.verification_records().replace_one(doc! { "record_id": &v.record_id }, &v).upsert(true).await;
+        let _ = self
+            .verification_records()
+            .replace_one(doc! { "record_id": &v.record_id }, &v)
+            .upsert(true)
+            .await;
     }
     async fn verification_records_of_owner(&self, owner_id: &str) -> Vec<VerificationRecord> {
         Self::collect(self.verification_records(), doc! { "owner_id": owner_id }).await
     }
     async fn put_deletion(&self, d: Deletion) {
-        let _ = self.deletions().replace_one(doc! { "request_id": &d.request_id }, &d).upsert(true).await;
+        let _ = self
+            .deletions()
+            .replace_one(doc! { "request_id": &d.request_id }, &d)
+            .upsert(true)
+            .await;
     }
     async fn due_deletions(&self, now: u64) -> Vec<Deletion> {
         Self::collect(
@@ -267,10 +367,16 @@ impl Store for MongoStore {
     }
 
     async fn delete_credential(&self, id: &str) {
-        let _ = self.credentials().delete_one(doc! { "credential_id": id }).await;
+        let _ = self
+            .credentials()
+            .delete_one(doc! { "credential_id": id })
+            .await;
     }
     async fn delete_verification_record(&self, id: &str) {
-        let _ = self.verification_records().delete_one(doc! { "record_id": id }).await;
+        let _ = self
+            .verification_records()
+            .delete_one(doc! { "record_id": id })
+            .await;
     }
     async fn delete_consent_receipt(&self, id: &str) {
         let _ = self.receipts().delete_one(doc! { "receipt_id": id }).await;
@@ -278,13 +384,19 @@ impl Store for MongoStore {
     async fn clear_owner_pii(&self, owner_id: &str) {
         let _ = self
             .owners()
-            .update_one(doc! { "owner_id": owner_id }, doc! { "$set": { "profile_pii": null } })
+            .update_one(
+                doc! { "owner_id": owner_id },
+                doc! { "$set": { "profile_pii": null } },
+            )
             .await;
     }
     async fn clear_pet_doc(&self, pet_id: &str) {
         let _ = self
             .pets()
-            .update_one(doc! { "pet_id": pet_id }, doc! { "$set": { "sealed_doc": null } })
+            .update_one(
+                doc! { "pet_id": pet_id },
+                doc! { "$set": { "sealed_doc": null } },
+            )
             .await;
     }
 }

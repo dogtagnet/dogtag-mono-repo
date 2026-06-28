@@ -322,11 +322,7 @@ pub trait Store: Send + Sync {
     /// appointment under the same lock (or create it). Returns the resulting appointment. The closure
     /// is given (current_appt, allocated_rev). Returns None if the appointment is absent and `create`
     /// is None.
-    async fn alloc_rev_and_apply(
-        &self,
-        appointment_id: &str,
-        f: RevApply,
-    ) -> Option<Appointment>;
+    async fn alloc_rev_and_apply(&self, appointment_id: &str, f: RevApply) -> Option<Appointment>;
 
     // consent / receipts / verification records / deletions
     async fn put_consent(&self, c: Consent);
@@ -351,7 +347,8 @@ pub trait Store: Send + Sync {
 /// A closure that, given the current appointment (if any) and the freshly-allocated rev, returns the
 /// appointment to persist (or None to abort). Boxed `'static` so the trait stays object-safe and the
 /// async_trait future owns it.
-pub type RevApply = Box<dyn FnOnce(Option<Appointment>, u64) -> Option<Appointment> + Send + 'static>;
+pub type RevApply =
+    Box<dyn FnOnce(Option<Appointment>, u64) -> Option<Appointment> + Send + 'static>;
 
 // --------------------------------------------------------------------------------------------
 // MemStore
@@ -394,7 +391,8 @@ impl Store for MemStore {
     async fn put_owner(&self, o: Owner) {
         let mut g = self.inner.write().unwrap();
         if let Some(email) = &o.email {
-            g.email_index.insert(email.to_lowercase(), o.owner_id.clone());
+            g.email_index
+                .insert(email.to_lowercase(), o.owner_id.clone());
         }
         g.owners.insert(o.owner_id.clone(), o);
     }
@@ -439,7 +437,11 @@ impl Store for MemStore {
         self.inner.read().unwrap().microchips.contains(code)
     }
     async fn reserve_microchip(&self, code: &str) -> bool {
-        self.inner.write().unwrap().microchips.insert(code.to_string())
+        self.inner
+            .write()
+            .unwrap()
+            .microchips
+            .insert(code.to_string())
     }
     async fn next_dog_tag_id(&self) -> u64 {
         let mut g = self.inner.write().unwrap();
@@ -448,7 +450,11 @@ impl Store for MemStore {
     }
 
     async fn put_credential(&self, c: Credential) {
-        self.inner.write().unwrap().credentials.insert(c.credential_id.clone(), c);
+        self.inner
+            .write()
+            .unwrap()
+            .credentials
+            .insert(c.credential_id.clone(), c);
     }
     async fn get_credential(&self, id: &str) -> Option<Credential> {
         self.inner.read().unwrap().credentials.get(id).cloned()
@@ -465,7 +471,11 @@ impl Store for MemStore {
     }
 
     async fn put_share_ref(&self, s: ShareRef) {
-        self.inner.write().unwrap().share_refs.insert(s.ref_id.clone(), s);
+        self.inner
+            .write()
+            .unwrap()
+            .share_refs
+            .insert(s.ref_id.clone(), s);
     }
     async fn get_share_ref(&self, ref_id: &str) -> Option<ShareRef> {
         self.inner.read().unwrap().share_refs.get(ref_id).cloned()
@@ -475,27 +485,51 @@ impl Store for MemStore {
     }
 
     async fn put_business(&self, b: Business) {
-        self.inner.write().unwrap().businesses.insert(b.business_id.clone(), b);
+        self.inner
+            .write()
+            .unwrap()
+            .businesses
+            .insert(b.business_id.clone(), b);
     }
     async fn get_business(&self, id: &str) -> Option<Business> {
         self.inner.read().unwrap().businesses.get(id).cloned()
     }
     async fn all_businesses(&self) -> Vec<Business> {
-        self.inner.read().unwrap().businesses.values().cloned().collect()
+        self.inner
+            .read()
+            .unwrap()
+            .businesses
+            .values()
+            .cloned()
+            .collect()
     }
 
     async fn put_application(&self, a: IssuerApplication) {
-        self.inner.write().unwrap().applications.insert(a.application_id.clone(), a);
+        self.inner
+            .write()
+            .unwrap()
+            .applications
+            .insert(a.application_id.clone(), a);
     }
     async fn get_application(&self, id: &str) -> Option<IssuerApplication> {
         self.inner.read().unwrap().applications.get(id).cloned()
     }
     async fn all_applications(&self) -> Vec<IssuerApplication> {
-        self.inner.read().unwrap().applications.values().cloned().collect()
+        self.inner
+            .read()
+            .unwrap()
+            .applications
+            .values()
+            .cloned()
+            .collect()
     }
 
     async fn put_appointment(&self, a: Appointment) {
-        self.inner.write().unwrap().appointments.insert(a.appointment_id.clone(), a);
+        self.inner
+            .write()
+            .unwrap()
+            .appointments
+            .insert(a.appointment_id.clone(), a);
     }
     async fn get_appointment(&self, id: &str) -> Option<Appointment> {
         self.inner.read().unwrap().appointments.get(id).cloned()
@@ -517,12 +551,17 @@ impl Store for MemStore {
         let current = g.appointments.get(appointment_id).cloned();
         let next_rev = current.as_ref().map(|a| a.rev + 1).unwrap_or(1);
         let result = f(current, next_rev)?;
-        g.appointments.insert(result.appointment_id.clone(), result.clone());
+        g.appointments
+            .insert(result.appointment_id.clone(), result.clone());
         Some(result)
     }
 
     async fn put_consent(&self, c: Consent) {
-        self.inner.write().unwrap().consents.insert(c.consent_id.clone(), c);
+        self.inner
+            .write()
+            .unwrap()
+            .consents
+            .insert(c.consent_id.clone(), c);
     }
     async fn get_consent(&self, id: &str) -> Option<Consent> {
         self.inner.read().unwrap().consents.get(id).cloned()
@@ -538,7 +577,11 @@ impl Store for MemStore {
             .collect()
     }
     async fn put_consent_receipt(&self, r: ConsentReceipt) {
-        self.inner.write().unwrap().receipts.insert(r.receipt_id.clone(), r);
+        self.inner
+            .write()
+            .unwrap()
+            .receipts
+            .insert(r.receipt_id.clone(), r);
     }
     async fn receipts_of_owner(&self, owner_id: &str) -> Vec<ConsentReceipt> {
         self.inner
@@ -551,7 +594,11 @@ impl Store for MemStore {
             .collect()
     }
     async fn put_verification_record(&self, v: VerificationRecord) {
-        self.inner.write().unwrap().verification_records.insert(v.record_id.clone(), v);
+        self.inner
+            .write()
+            .unwrap()
+            .verification_records
+            .insert(v.record_id.clone(), v);
     }
     async fn verification_records_of_owner(&self, owner_id: &str) -> Vec<VerificationRecord> {
         self.inner
@@ -564,7 +611,11 @@ impl Store for MemStore {
             .collect()
     }
     async fn put_deletion(&self, d: Deletion) {
-        self.inner.write().unwrap().deletions.insert(d.request_id.clone(), d);
+        self.inner
+            .write()
+            .unwrap()
+            .deletions
+            .insert(d.request_id.clone(), d);
     }
     async fn due_deletions(&self, now: u64) -> Vec<Deletion> {
         self.inner
@@ -577,7 +628,11 @@ impl Store for MemStore {
             .collect()
     }
     async fn update_deletion(&self, d: Deletion) {
-        self.inner.write().unwrap().deletions.insert(d.request_id.clone(), d);
+        self.inner
+            .write()
+            .unwrap()
+            .deletions
+            .insert(d.request_id.clone(), d);
     }
 
     async fn delete_credential(&self, id: &str) {

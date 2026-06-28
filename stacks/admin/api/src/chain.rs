@@ -168,7 +168,11 @@ impl MemChain {
     }
     /// Register an admin signer address for an account index (test harness wires this from custody).
     pub fn set_signer(&self, index: u32, address: &str) {
-        self.inner.lock().unwrap().signers.insert(index, address.to_lowercase());
+        self.inner
+            .lock()
+            .unwrap()
+            .signers
+            .insert(index, address.to_lowercase());
     }
     fn next_tx(g: &mut MemChainInner) -> String {
         g.nonce += 1;
@@ -179,7 +183,11 @@ impl MemChain {
 #[async_trait]
 impl ChainClient for MemChain {
     async fn register_signer(&self, index: u32, _private_key: [u8; 32], address: String) {
-        self.inner.lock().unwrap().signers.insert(index, address.to_lowercase());
+        self.inner
+            .lock()
+            .unwrap()
+            .signers
+            .insert(index, address.to_lowercase());
     }
 
     async fn whitelist_for(
@@ -196,7 +204,11 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
         g.whitelist.insert(
-            (registry_addr.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()),
+            (
+                registry_addr.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ),
             true,
         );
         let tx_hash = Self::next_tx(&mut g);
@@ -216,7 +228,11 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
         g.whitelist.insert(
-            (registry_addr.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()),
+            (
+                registry_addr.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ),
             false,
         );
         let tx_hash = Self::next_tx(&mut g);
@@ -230,9 +246,12 @@ impl ChainClient for MemChain {
         signer: &str,
     ) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g
-            .whitelist
-            .get(&(registry_addr.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()))
+        Ok(g.whitelist
+            .get(&(
+                registry_addr.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ))
             .copied()
             .unwrap_or(false))
     }
@@ -279,14 +298,16 @@ impl ChainClient for MemChain {
             .get(&account_index)
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
-        g.issuer_roles.insert((sbt_addr.to_lowercase(), grantee.to_lowercase()));
+        g.issuer_roles
+            .insert((sbt_addr.to_lowercase(), grantee.to_lowercase()));
         let tx_hash = Self::next_tx(&mut g);
         Ok(SentTx { tx_hash })
     }
 
     async fn has_issuer_role(&self, sbt_addr: &str, account: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g.issuer_roles.contains(&(sbt_addr.to_lowercase(), account.to_lowercase())))
+        Ok(g.issuer_roles
+            .contains(&(sbt_addr.to_lowercase(), account.to_lowercase())))
     }
 }
 
@@ -351,7 +372,11 @@ pub struct AlloyChain {
 
 impl AlloyChain {
     pub fn new(rpc_url: String) -> Self {
-        AlloyChain { rpc_url, chain_id: ROAX_CHAIN_ID, signers: Mutex::new(HashMap::new()) }
+        AlloyChain {
+            rpc_url,
+            chain_id: ROAX_CHAIN_ID,
+            signers: Mutex::new(HashMap::new()),
+        }
     }
     /// Override the EIP-155 chain id (config-only chain swap; default stays `ROAX_CHAIN_ID` = 135).
     pub fn with_chain_id(mut self, chain_id: u64) -> Self {
@@ -394,7 +419,10 @@ impl AlloyChain {
         // ~1 gwei eth_gasPrice. Alloy's EIP-1559 filler derives maxFeePerGas from the (tiny) base fee,
         // producing an underpriced tx that the node ACCEPTS but never mines (stuck forever). Read
         // eth_gasPrice and send a legacy tx (mirrors the working `cast send --legacy`).
-        let gp = provider.get_gas_price().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let gp = provider
+            .get_gas_price()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         let tx = TransactionRequest::default()
             .with_to(parse_addr(to))
             .with_input(data)
@@ -422,7 +450,8 @@ impl AlloyChain {
 #[async_trait]
 impl ChainClient for AlloyChain {
     async fn register_signer(&self, index: u32, private_key: [u8; 32], _address: String) {
-        if let Ok(s) = alloy::signers::local::PrivateKeySigner::from_bytes(&B256::from(private_key)) {
+        if let Ok(s) = alloy::signers::local::PrivateKeySigner::from_bytes(&B256::from(private_key))
+        {
             self.signers.lock().unwrap().insert(index, s);
         }
     }
@@ -435,7 +464,8 @@ impl ChainClient for AlloyChain {
         signer: &str,
     ) -> Result<SentTx, ChainError> {
         let calldata = whitelist_for_calldata(record_type, signer);
-        self.sign_and_send(account_index, registry_addr, &calldata).await
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
     }
 
     async fn delist_for(
@@ -446,7 +476,8 @@ impl ChainClient for AlloyChain {
         signer: &str,
     ) -> Result<SentTx, ChainError> {
         let calldata = delist_for_calldata(record_type, signer);
-        self.sign_and_send(account_index, registry_addr, &calldata).await
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
     }
 
     async fn is_whitelisted_for(

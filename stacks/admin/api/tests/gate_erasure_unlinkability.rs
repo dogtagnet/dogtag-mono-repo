@@ -62,14 +62,26 @@ async fn after_erase_dek_destroyed_and_salts_pii_unrecoverable() {
         .await;
 
     // ---- PRE-erasure: everything is recoverable (the salt + PII decrypt cleanly).
-    assert!(vault.has_dek(&cred_dek).await, "credential DEK present pre-erase");
-    assert!(vault.has_dek(&vr_dek).await, "verification_record DEK present pre-erase");
-    let pre_cred = vault.open(&cred_sealed).await.expect("credential salts decryptable pre-erase");
+    assert!(
+        vault.has_dek(&cred_dek).await,
+        "credential DEK present pre-erase"
+    );
+    assert!(
+        vault.has_dek(&vr_dek).await,
+        "verification_record DEK present pre-erase"
+    );
+    let pre_cred = vault
+        .open(&cred_sealed)
+        .await
+        .expect("credential salts decryptable pre-erase");
     assert!(
         String::from_utf8_lossy(&pre_cred).contains("985141006580319"),
         "PRE-erase: the salt+microchip are recoverable"
     );
-    assert!(vault.open(&vr_sealed).await.is_ok(), "PRE-erase: verification_record decryptable");
+    assert!(
+        vault.open(&vr_sealed).await.is_ok(),
+        "PRE-erase: verification_record decryptable"
+    );
 
     // ---- ERASE (scope: all -> credentials + verification_records).
     let (creds, vers, _receipts) = erase(&state, OWNER, "all").await;
@@ -78,7 +90,10 @@ async fn after_erase_dek_destroyed_and_salts_pii_unrecoverable() {
 
     // ---- POST-erasure GATE: the DEKs are gone AND decrypt now FAILS (KeyGone) — UNRECOVERABLE.
     assert!(!vault.has_dek(&cred_dek).await, "credential DEK DESTROYED");
-    assert!(!vault.has_dek(&vr_dek).await, "verification_record DEK DESTROYED");
+    assert!(
+        !vault.has_dek(&vr_dek).await,
+        "verification_record DEK DESTROYED"
+    );
 
     assert!(
         matches!(vault.open(&cred_sealed).await, Err(CryptoError::KeyGone)),
@@ -95,7 +110,11 @@ async fn after_erase_dek_destroyed_and_salts_pii_unrecoverable() {
         "credential rows deleted"
     );
     assert!(
-        state.store.verification_records_of_owner(OWNER).await.is_empty(),
+        state
+            .store
+            .verification_records_of_owner(OWNER)
+            .await
+            .is_empty(),
         "verification_record rows deleted"
     );
 }
