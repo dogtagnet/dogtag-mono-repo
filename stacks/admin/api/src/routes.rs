@@ -1307,3 +1307,97 @@ pub fn public_router(state: AppState) -> Router {
 pub fn router(state: AppState) -> Router {
     public_router(state.clone()).merge(admin_router(state))
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit coverage for the pure request-parsing / geo / validation helpers that previously had no
+    //! direct tests (they were exercised only end-to-end through the HTTP handlers).
+    use super::*;
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn bearer_extracts_token_after_scheme() {
+        assert_eq!(
+            bearer(&headers(&[("authorization", "Bearer tok123")])),
+            Some("tok123".to_string())
+        );
+    }
+
+    #[test]
+    fn bearer_is_scheme_sensitive_and_absent_is_none() {
+        // No header at all.
+        assert_eq!(bearer(&headers(&[])), None);
+        // The prefix is the exact ASCII "Bearer " (capital B, trailing space); a lowercase scheme
+        // or a bare token does not match.
+        assert_eq!(bearer(&headers(&[("authorization", "bearer tok")])), None);
+        assert_eq!(bearer(&headers(&[("authorization", "tok")])), None);
+        // An empty token after the scheme is still Some("").
+        assert_eq!(
+            bearer(&headers(&[("authorization", "Bearer ")])),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn client_ip_prefers_first_forwarded_hop() {
+        // The first comma-separated hop is the originating client; later hops are proxies.
+        let h = headers(&[("x-forwarded-for", "1.2.3.4, 5.6.7.8")]);
+        assert_eq!(client_ip(&h, None), "1.2.3.4");
+        // Surrounding whitespace on the chosen hop is trimmed.
+        let h = headers(&[("x-forwarded-for", "  9.9.9.9  ,10.0.0.1")]);
+        assert_eq!(client_ip(&h, None), "9.9.9.9");
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_peer_then_unknown() {
+        let peer: SocketAddr = "203.0.113.7:55000".parse().unwrap();
+        // No XFF -> raw socket peer IP (port dropped).
+        assert_eq!(client_ip(&headers(&[]), Some(peer)), "203.0.113.7");
+        // An empty XFF value is filtered out, so it still falls through to the peer.
+        let h = headers(&[("x-forwarded-for", "")]);
+        assert_eq!(client_ip(&h, Some(peer)), "203.0.113.7");
+        // No XFF and no peer (in-process tests) -> stable "unknown" key.
+        assert_eq!(client_ip(&headers(&[]), None), "unknown");
+    }
+
+    #[test]
+    fn haversine_km_is_zero_for_identical_points_and_symmetric() {
+        assert!(haversine_km(40.7, -74.0, 40.7, -74.0).abs() < 1e-9);
+        let ab = haversine_km(0.0, 0.0, 51.5, -0.12);
+        let ba = haversine_km(51.5, -0.12, 0.0, 0.0);
+        assert!((ab - ba).abs() < 1e-9);
+    }
+
+    #[test]
+    fn haversine_km_matches_known_one_degree_arc() {
+        // One degree of longitude at the equator is ~111.19 km on a 6371 km sphere.
+        let d = haversine_km(0.0, 0.0, 0.0, 1.0);
+        assert!((d - 111.19).abs() < 0.5, "got {d}");
+    }
+
+    #[test]
+    fn usda_nan_valid_requires_exactly_six_digits() {
+        assert!(usda_nan_valid("123456"));
+        assert!(!usda_nan_valid("12345")); // too short
+        assert!(!usda_nan_valid("1234567")); // too long
+        assert!(!usda_nan_valid("12345a")); // non-digit
+        assert!(!usda_nan_valid("")); // empty
+    }
+
+    #[test]
+    fn is_terminal_matches_only_the_four_terminal_states() {
+        for s in ["DECLINED", "CANCELLED", "COMPLETED", "NO_SHOW"] {
+            assert!(is_terminal(s), "{s} should be terminal");
+        }
+        for s in ["PENDING", "APPROVED", "REQUESTED", "", "declined"] {
+            assert!(!is_terminal(s), "{s} should not be terminal");
+        }
+    }
+}
