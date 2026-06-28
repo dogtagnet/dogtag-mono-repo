@@ -8,8 +8,8 @@ use mongodb::options::IndexOptions;
 use mongodb::{Client, Collection, Database, IndexModel};
 
 use crate::store::{
-    ApptReplica, CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, KeystoreMeta,
-    ProfileIssueSession, Record, Store, VerifySession,
+    ApptReplica, CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, ProfileIssueSession,
+    Record, Store, VerifySession,
 };
 
 pub struct MongoStore {
@@ -431,7 +431,3 @@ impl Store for MongoStore {
             .await;
     }
 }
-
-// keep KeystoreMeta referenced so the import is meaningful across feature configs.
-#[allow(dead_code)]
-fn _meta_ref(_m: &KeystoreMeta) {}
