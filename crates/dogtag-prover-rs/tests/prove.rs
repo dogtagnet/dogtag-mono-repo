@@ -176,3 +176,32 @@ fn zkey_hash_is_stable_and_hex() {
     assert_eq!(prover.zkey_hash_hex().len(), 64);
     assert_eq!(hex::encode(h1), prover.zkey_hash_hex());
 }
+
+/// Audit M4: `Prover::load` enforces the pinned zkey hash — the bundled artifact matches the pinned
+/// constant, so a swapped key would be the only way the hashes diverge.
+#[test]
+fn load_enforces_pinned_zkey_hash() {
+    let build_dir = repo_root().join("circuits").join("build");
+    let prover = Prover::load(&build_dir).expect("load must accept the pinned zkey");
+    assert_eq!(
+        prover.zkey_hash_hex(),
+        dogtag_prover::EXPECTED_ZKEY_SHA256_HEX,
+        "loaded zkey hash must equal the pinned constant"
+    );
+}
+
+/// Audit M4: a zkey whose hash differs from the expected one is rejected (fail-closed), proving a
+/// swapped/corrupt proving key cannot be loaded.
+#[test]
+fn load_rejects_unexpected_zkey_hash() {
+    let build_dir = repo_root().join("circuits").join("build");
+    let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
+    match Prover::load_with_expected_zkey(&build_dir, wrong) {
+        Ok(_) => panic!("load must reject a zkey whose hash differs from the pinned value"),
+        Err(dogtag_prover::ProverError::ZkeyHashMismatch { expected, got }) => {
+            assert_eq!(expected, wrong);
+            assert_eq!(got, dogtag_prover::EXPECTED_ZKEY_SHA256_HEX);
+        }
+        Err(other) => panic!("expected ZkeyHashMismatch, got {other:?}"),
+    }
+}
