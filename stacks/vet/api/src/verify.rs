@@ -230,12 +230,14 @@ pub async fn third_party_verify(st: &AppState, doc: &WrappedDoc) -> Verdict {
 // /verify/consent/submit orchestration
 // --------------------------------------------------------------------------------------------
 
+/// A Groth16 proof parsed into the typed field-element arrays `record_verification_zk` expects:
+/// `(a[2], b[2][2], c[2], pubSignals[7])`.
+type ClientProof = ([String; 2], [[String; 2]; 2], [String; 2], [String; 7]);
+
 /// Parse a Groth16 proof JSON `{a:[2], b:[2][2], c:[2], pubSignals:[7]}` (decimal or 0x-hex strings,
 /// or JSON numbers) into the typed arrays `record_verification_zk` expects. Returns Err on any shape
 /// mismatch (wrong arity, non-string/number elements, etc.).
-fn parse_client_proof(
-    v: &Value,
-) -> Result<([String; 2], [[String; 2]; 2], [String; 2], [String; 7]), String> {
+fn parse_client_proof(v: &Value) -> Result<ClientProof, String> {
     // Normalize a single field element to a 0x-less decimal/hex string as the chain layer accepts.
     let one = |x: &Value, what: &str| -> Result<String, String> {
         match x {
@@ -1029,5 +1031,95 @@ mod tests {
         let w = format!("0x{}", "ab".repeat(32));
         assert_eq!(b32_to_bytes32(&w).unwrap(), [0xABu8; 32]);
         assert!(b32_to_bytes32("0xabcd").is_none());
+    }
+
+    /// `parse_client_proof` reads a well-formed `{a,b,c,pubSignals}` proof and threads element
+    /// strings through verbatim (trimmed), accepting both string and JSON-number elements and
+    /// stringifying numbers.
+    #[test]
+    fn parse_client_proof_accepts_strings_and_numbers() {
+        let v = serde_json::json!({
+            "a": [" 1 ", "0x2"],
+            "b": [["3", "4"], ["5", "6"]],
+            "c": ["7", "8"],
+            "pubSignals": ["9", 10, "0xb", "12", "13", "14", "15"],
+        });
+        let (a, b, c, pubs) = parse_client_proof(&v).expect("well-formed proof parses");
+        // String elements are trimmed; numbers are stringified.
+        assert_eq!(a, ["1".to_string(), "0x2".to_string()]);
+        assert_eq!(
+            b,
+            [
+                ["3".to_string(), "4".to_string()],
+                ["5".to_string(), "6".to_string()]
+            ]
+        );
+        assert_eq!(c, ["7".to_string(), "8".to_string()]);
+        assert_eq!(pubs[1], "10"); // JSON number 10 -> "10"
+        assert_eq!(pubs[2], "0xb"); // hex string passes through
+        assert_eq!(pubs.len(), 7);
+    }
+
+    /// `parse_client_proof` rejects each structural defect with a descriptive Err: missing/short
+    /// arrays, wrong pubSignals arity, and non-string/number elements.
+    #[test]
+    fn parse_client_proof_rejects_malformed_shapes() {
+        let base = serde_json::json!({
+            "a": ["1", "2"],
+            "b": [["3", "4"], ["5", "6"]],
+            "c": ["7", "8"],
+            "pubSignals": ["9", "10", "11", "12", "13", "14", "15"],
+        });
+        // Sanity: the base is valid.
+        assert!(parse_client_proof(&base).is_ok());
+
+        // Missing `a`.
+        let mut v = base.clone();
+        v["a"] = serde_json::Value::Null;
+        assert!(parse_client_proof(&v).unwrap_err().starts_with("a:"));
+
+        // `a` too short.
+        let mut v = base.clone();
+        v["a"] = serde_json::json!(["1"]);
+        assert!(parse_client_proof(&v).is_err());
+
+        // `b` inner row wrong arity.
+        let mut v = base.clone();
+        v["b"] = serde_json::json!([["3"], ["5", "6"]]);
+        assert!(parse_client_proof(&v).is_err());
+
+        // pubSignals wrong arity (6, not 7) — error names the count.
+        let mut v = base.clone();
+        v["pubSignals"] = serde_json::json!(["1", "2", "3", "4", "5", "6"]);
+        let err = parse_client_proof(&v).unwrap_err();
+        assert!(err.contains("pubSignals") && err.contains("got 6"), "{err}");
+
+        // A non-string/number element (bool) is rejected.
+        let mut v = base.clone();
+        v["c"] = serde_json::json!([true, "8"]);
+        assert!(parse_client_proof(&v)
+            .unwrap_err()
+            .contains("not a string/number"));
+    }
+
+    /// `pub_signal_is_nonzero` is true only for parseable, strictly-positive field elements
+    /// (decimal or 0x-hex); zero and unparseable input are false.
+    #[test]
+    fn pub_signal_is_nonzero_semantics() {
+        assert!(pub_signal_is_nonzero("1"));
+        assert!(pub_signal_is_nonzero(" 0x01 ")); // trimmed + hex
+        assert!(!pub_signal_is_nonzero("0"));
+        assert!(!pub_signal_is_nonzero("0x0"));
+        assert!(!pub_signal_is_nonzero("not-a-number")); // unparseable -> false
+    }
+
+    /// `pub_signal_eq` compares values across decimal/hex spellings and returns false when either
+    /// side is unparseable.
+    #[test]
+    fn pub_signal_eq_is_encoding_agnostic() {
+        assert!(pub_signal_eq("255", "0xff"));
+        assert!(pub_signal_eq(" 0x0a ", "10")); // whitespace + mixed encodings
+        assert!(!pub_signal_eq("255", "256"));
+        assert!(!pub_signal_eq("1", "garbage")); // unparseable side -> false
     }
 }
