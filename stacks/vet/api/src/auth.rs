@@ -368,6 +368,80 @@ mod tests {
     }
 
     #[test]
+    fn register_message_lowercases_wallet() {
+        // Mixed-case and already-lowercase wallets must yield the identical message so the
+        // device signature is deterministic regardless of input checksum casing. MUST byte-match
+        // the admin stack's `register_message`.
+        let mixed = register_message("0xAbCdEf0123456789");
+        let lower = register_message("0xabcdef0123456789");
+        assert_eq!(mixed, lower);
+        assert_eq!(mixed, "DogTag wallet registration: 0xabcdef0123456789");
+    }
+
+    #[test]
+    fn new_op_token_shape_and_uniqueness() {
+        let a = new_op_token();
+        let b = new_op_token();
+        assert!(a.starts_with("op_"));
+        // "op_" + 32 random bytes hex-encoded = 64 hex chars.
+        assert_eq!(a.len(), "op_".len() + 64);
+        assert!(a["op_".len()..].chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b); // fresh randomness each call
+    }
+
+    #[test]
+    fn recover_personal_sign_rejects_malformed_signature() {
+        // Non-hex and wrong-length signatures must return None, never panic.
+        assert!(recover_personal_sign("msg", "not-hex").is_none());
+        assert!(recover_personal_sign("msg", "0x1234").is_none());
+    }
+
+    #[test]
+    fn verify_jwt_rejects_malformed_and_future_nbf() {
+        let keys = JwtKeys::generate();
+        // Wrong number of compact-JWS segments -> BadToken before any crypto.
+        assert!(matches!(
+            verify_jwt::<ShareClaims>(&keys, "only.two", 30),
+            Err(AuthError::BadToken)
+        ));
+        // A not-yet-valid token (nbf far in the future, beyond leeway) -> BadToken.
+        let claims = ShareClaims {
+            iss: "i".into(),
+            sub: "s".into(),
+            aud: "dogtag-mobile".into(),
+            scope: "read:record".into(),
+            iat: now(),
+            nbf: now() + 10_000,
+            exp: now() + 20_000,
+            jti: "j".into(),
+        };
+        let token = sign_jwt(&keys, &claims);
+        assert!(matches!(
+            verify_jwt::<ShareClaims>(&keys, &token, 30),
+            Err(AuthError::BadToken)
+        ));
+    }
+
+    #[test]
+    fn rate_limiter_locks_after_threshold_and_clears_on_success() {
+        let rl = RateLimiter::new();
+        let ip = "203.0.113.7";
+        assert!(!rl.is_locked(ip)); // fresh IP is not locked
+                                    // default per_ip_max is 10: the first 9 failures stay under the threshold.
+        for _ in 0..9 {
+            rl.record_failure(ip);
+        }
+        assert!(!rl.is_locked(ip)); // 9 < 10, still allowed
+        rl.record_failure(ip); // 10th failure crosses the threshold
+        assert!(rl.is_locked(ip));
+        // a successful auth clears the IP's failure record and lockout.
+        rl.record_success(ip);
+        assert!(!rl.is_locked(ip));
+        // lockout is per-IP: a different IP is unaffected by the first IP's failures.
+        assert!(!rl.is_locked("198.51.100.9"));
+    }
+
+    #[test]
     fn jwt_expiry_enforced() {
         let keys = JwtKeys::generate();
         let claims = ShareClaims {
