@@ -241,7 +241,7 @@ async fn genesis_confirm(
         return err(StatusCode::BAD_REQUEST, "wrong number of challenge words");
     }
     for (typed, &idx) in body.words.iter().zip(stash.challenge_indices.iter()) {
-        if all.get(idx).map(|w| w == typed).unwrap_or(false) == false {
+        if !all.get(idx).map(|w| w == typed).unwrap_or(false) {
             return err(StatusCode::BAD_REQUEST, "challenge words do not match");
         }
     }
@@ -254,14 +254,17 @@ async fn genesis_confirm(
         Ok(c) => c,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let mut blob = crate::store::CustodyBlob::default();
-    blob.encrypted_seed = ct;
-    blob.meta.state = "initialized".to_string();
-    blob.meta.accounts.push(crate::store::AccountMeta {
-        index: 0,
-        address: addr0.clone(),
-        label: "account0".to_string(),
-    });
+    let blob = crate::store::CustodyBlob {
+        encrypted_seed: ct,
+        meta: crate::store::KeystoreMeta {
+            accounts: vec![crate::store::AccountMeta {
+                index: 0,
+                address: addr0.clone(),
+                label: "account0".to_string(),
+            }],
+            state: "initialized".to_string(),
+        },
+    };
     st.store.put_custody(blob.clone()).await;
     // ALSO persist the seal to disk (if configured) so the signer survives a backend restart. We
     // write ONLY the ciphertext + non-secret meta (atomic temp+rename, 0600). A write failure here

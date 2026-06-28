@@ -77,7 +77,7 @@ async fn seal_survives_restart_same_signer() {
     assert!(parsed.get("meta").is_some(), "seal has meta");
     assert!(!raw.contains(passphrase), "passphrase must NOT be on disk");
     // age-armored ciphertext header sanity + no obvious BIP39 word leakage (the address is fine; it's public).
-    assert!(parsed["sealed_b64"].as_str().unwrap().len() > 0);
+    assert!(!parsed["sealed_b64"].as_str().unwrap().is_empty());
     // 0600 perms on unix.
     #[cfg(unix)]
     {
