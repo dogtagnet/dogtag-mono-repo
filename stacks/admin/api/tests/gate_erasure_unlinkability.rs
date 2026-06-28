@@ -18,7 +18,7 @@ use common::*;
 
 use admin_api::crypto::{seal_json, CryptoError, KeyVault, Sealed};
 use admin_api::erasure::erase;
-use admin_api::store::{Credential, Store, VerificationRecord};
+use admin_api::store::{Credential, VerificationRecord};
 
 const OWNER: &str = "owner-erase-gate";
 
