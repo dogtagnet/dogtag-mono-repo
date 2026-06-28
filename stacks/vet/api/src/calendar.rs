@@ -844,3 +844,164 @@ impl CentralClient for MockCentralClient {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- parse_event: Google Event JSON -> CalEvent (pure projection) -------------------------
+
+    #[test]
+    fn parse_event_extracts_dogtag_private_props_with_string_rev() {
+        let item = json!({
+            "id": "ev1",
+            "etag": "\"tag-abc\"",
+            "summary": "Checkup",
+            "status": "confirmed",
+            "start": { "dateTime": "2026-01-02T09:00:00Z" },
+            "end": { "dateTime": "2026-01-02T09:30:00Z" },
+            "extendedProperties": { "private": {
+                "dogtag.owned": "1",
+                "dogtag.apptId": "appt-7",
+                "dogtag.rev": "5",
+            }},
+        });
+        let ev = GoogleCalendar::parse_event(&item);
+        assert_eq!(ev.id, "ev1");
+        assert_eq!(ev.etag, "\"tag-abc\"");
+        assert_eq!(ev.summary, "Checkup");
+        assert!(ev.owned);
+        assert_eq!(ev.appt_id.as_deref(), Some("appt-7"));
+        assert_eq!(ev.rev, Some(5));
+        assert!(!ev.cancelled);
+        assert_eq!(ev.start, "2026-01-02T09:00:00Z");
+        assert_eq!(ev.end, "2026-01-02T09:30:00Z");
+    }
+
+    #[test]
+    fn parse_event_accepts_numeric_rev() {
+        // dogtag.rev may arrive as a JSON number, not a string.
+        let item = json!({
+            "id": "ev2",
+            "extendedProperties": { "private": {
+                "dogtag.owned": "1",
+                "dogtag.rev": 9u64,
+            }},
+        });
+        let ev = GoogleCalendar::parse_event(&item);
+        assert_eq!(ev.rev, Some(9));
+        assert_eq!(ev.appt_id, None);
+    }
+
+    #[test]
+    fn parse_event_unowned_cancelled_and_missing_fields_default() {
+        // A human-created event: no extendedProperties, a Google tombstone status.
+        let item = json!({ "id": "ev3", "status": "cancelled" });
+        let ev = GoogleCalendar::parse_event(&item);
+        assert!(!ev.owned);
+        assert_eq!(ev.appt_id, None);
+        assert_eq!(ev.rev, None);
+        assert!(ev.cancelled);
+        // Absent string fields collapse to empty, not panic.
+        assert_eq!(ev.etag, "");
+        assert_eq!(ev.summary, "");
+        assert_eq!(ev.start, "");
+        assert_eq!(ev.end, "");
+    }
+
+    #[test]
+    fn parse_event_owned_flag_requires_exact_string_one() {
+        // dogtag.owned is matched against the string "1" exactly; anything else is unowned.
+        let item = json!({ "extendedProperties": { "private": { "dogtag.owned": 1u64 } } });
+        assert!(!GoogleCalendar::parse_event(&item).owned);
+        let item2 = json!({ "extendedProperties": { "private": { "dogtag.owned": "true" } } });
+        assert!(!GoogleCalendar::parse_event(&item2).owned);
+    }
+
+    // ---- event_body: UpsertEvent -> Google Event JSON (pure projection) ----------------------
+
+    fn sample_upsert(cancelled: bool) -> UpsertEvent {
+        UpsertEvent {
+            google_event_id: Some("g1".into()),
+            appt_id: "appt-42".into(),
+            rev: 3,
+            summary: "Grooming".into(),
+            start: "2026-03-01T10:00:00Z".into(),
+            end: "2026-03-01T11:00:00Z".into(),
+            cancelled,
+        }
+    }
+
+    #[test]
+    fn event_body_maps_all_fields_and_stamps_ownership() {
+        let body = GoogleCalendar::event_body(&sample_upsert(false));
+        assert_eq!(body["summary"], "Grooming");
+        assert_eq!(body["start"]["dateTime"], "2026-03-01T10:00:00Z");
+        assert_eq!(body["end"]["dateTime"], "2026-03-01T11:00:00Z");
+        assert_eq!(body["status"], "confirmed");
+        let priv_props = &body["extendedProperties"]["private"];
+        assert_eq!(priv_props["dogtag.owned"], "1");
+        assert_eq!(priv_props["dogtag.apptId"], "appt-42");
+        // rev is always stamped as a string so parse_event's round-trip is symmetric.
+        assert_eq!(priv_props["dogtag.rev"], "3");
+    }
+
+    #[test]
+    fn event_body_cancelled_sets_cancelled_status() {
+        let body = GoogleCalendar::event_body(&sample_upsert(true));
+        assert_eq!(body["status"], "cancelled");
+    }
+
+    #[test]
+    fn event_body_then_parse_event_round_trips_owned_metadata() {
+        // event_body's ownership stamp must be recognized by parse_event (echo-loop avoidance).
+        let body = GoogleCalendar::event_body(&sample_upsert(false));
+        let parsed = GoogleCalendar::parse_event(&body);
+        assert!(parsed.owned);
+        assert_eq!(parsed.appt_id.as_deref(), Some("appt-42"));
+        assert_eq!(parsed.rev, Some(3));
+    }
+
+    // ---- consent_url: deterministic OAuth URL builder ---------------------------------------
+
+    #[test]
+    fn consent_url_carries_all_oauth_params() {
+        let gc = GoogleCalendar::new(
+            "cid-123".into(),
+            "secret".into(),
+            "https://app.example/cb".into(),
+            "primary".into(),
+        );
+        let url = gc.consent_url("state-xyz");
+        assert!(url.starts_with(GOOGLE_AUTH_ENDPOINT));
+        assert!(url.contains("client_id=cid-123"));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("access_type=offline"));
+        assert!(url.contains("prompt=consent"));
+        assert!(url.contains("state=state-xyz"));
+        // redirect_uri and scope are percent-encoded.
+        assert!(url.contains("redirect_uri=https%3A%2F%2Fapp.example%2Fcb"));
+        assert!(url.contains("calendar.events"));
+    }
+
+    // ---- urlencoding: form byte-serialization ----------------------------------------------
+
+    #[test]
+    fn urlencoding_escapes_reserved_chars() {
+        assert_eq!(urlencoding("a b/c"), "a+b%2Fc");
+        assert_eq!(urlencoding("plain"), "plain");
+        assert_eq!(urlencoding("a=b&c"), "a%3Db%26c");
+    }
+
+    // ---- is_terminal: terminal appointment-state predicate ----------------------------------
+
+    #[test]
+    fn is_terminal_only_for_terminal_states() {
+        for s in ["DECLINED", "CANCELLED", "COMPLETED", "NO_SHOW"] {
+            assert!(is_terminal(s), "{s} should be terminal");
+        }
+        for s in ["REQUESTED", "CONFIRMED", "completed", "", "PENDING"] {
+            assert!(!is_terminal(s), "{s} should not be terminal");
+        }
+    }
+}
