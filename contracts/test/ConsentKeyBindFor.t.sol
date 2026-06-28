@@ -25,7 +25,9 @@ contract ConsentKeyBindForTest is Test {
     function _bindDigest(address wallet, bytes32 h, uint256 nonce) internal view returns (bytes32) {
         bytes32 domainSep = keccak256(
             abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
                 keccak256(bytes("DogTag")),
                 keccak256(bytes("1")),
                 block.chainid,

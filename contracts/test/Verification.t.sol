@@ -60,7 +60,13 @@ contract VerificationTest is Test {
 
         vm.prank(admin);
         vr = new VerificationRegistry(
-            address(registry), address(sbt), address(mockZk), address(consentKeys), address(factory), p6, admin
+            address(registry),
+            address(sbt),
+            address(mockZk),
+            address(consentKeys),
+            address(factory),
+            p6,
+            admin
         );
 
         // issue a credential root on a VACCINATION clone
@@ -97,10 +103,16 @@ contract VerificationTest is Test {
         });
     }
 
-    function _consentDigest(VerificationRegistry.VerificationConsent memory c) internal view returns (bytes32) {
+    function _consentDigest(VerificationRegistry.VerificationConsent memory c)
+        internal
+        view
+        returns (bytes32)
+    {
         bytes32 domainSep = keccak256(
             abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
                 keccak256(bytes("DogTag")),
                 keccak256(bytes("1")),
                 block.chainid,
@@ -129,9 +141,19 @@ contract VerificationTest is Test {
         return abi.encodePacked(r, s, v);
     }
 
-    function _expectedNullifier(VerificationRegistry.VerificationConsent memory c) internal view returns (bytes32) {
-        uint256[6] memory in_ =
-            [uint256(4), c.dogTagId, uint256(c.purpose), uint256(uint160(c.relayer)), uint256(uint160(c.subject)), c.nonce];
+    function _expectedNullifier(VerificationRegistry.VerificationConsent memory c)
+        internal
+        view
+        returns (bytes32)
+    {
+        uint256[6] memory in_ = [
+            uint256(4),
+            c.dogTagId,
+            uint256(c.purpose),
+            uint256(uint160(c.relayer)),
+            uint256(uint160(c.subject)),
+            c.nonce
+        ];
         return bytes32(poseidon6.poseidon(in_));
     }
 
@@ -229,7 +251,9 @@ contract VerificationTest is Test {
         uint256 nonce = consentKeys.bindNonce(subject);
         bytes32 domainSep = keccak256(
             abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
                 keccak256(bytes("DogTag")),
                 keccak256(bytes("1")),
                 block.chainid,
@@ -260,7 +284,11 @@ contract VerificationTest is Test {
         pub[6] = uint256(root);
     }
 
-    function _zeroProof() internal pure returns (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) {}
+    function _zeroProof()
+        internal
+        pure
+        returns (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c)
+    {}
 
     function test_zk_path_records_verified() public {
         _bindKey();

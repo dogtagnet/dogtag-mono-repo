@@ -13,11 +13,12 @@ contract MockGroth16Verifier is IGroth16Verifier {
         result = r;
     }
 
-    function verifyProof(uint256[2] calldata, uint256[2][2] calldata, uint256[2] calldata, uint256[7] calldata)
-        external
-        view
-        returns (bool)
-    {
+    function verifyProof(
+        uint256[2] calldata,
+        uint256[2][2] calldata,
+        uint256[2] calldata,
+        uint256[7] calldata
+    ) external view returns (bool) {
         return result;
     }
 }

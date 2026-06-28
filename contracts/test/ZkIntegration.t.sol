@@ -82,7 +82,13 @@ contract ZkIntegrationTest is Test {
 
         vm.prank(admin);
         vr = new VerificationRegistry(
-            address(registry), address(sbt), address(verifier), address(consentKeys), address(factory), p6, admin
+            address(registry),
+            address(sbt),
+            address(verifier),
+            address(consentKeys),
+            address(factory),
+            p6,
+            admin
         );
 
         // issue the credential root R on a VACCINATION clone
@@ -111,7 +117,9 @@ contract ZkIntegrationTest is Test {
         uint256 nonce = consentKeys.bindNonce(subject);
         bytes32 domainSep = keccak256(
             abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
                 keccak256(bytes("DogTag")),
                 keccak256(bytes("1")),
                 block.chainid,
@@ -136,7 +144,9 @@ contract ZkIntegrationTest is Test {
         assertTrue(verifier.verifyProof(a, b, c, pub), "real proof must verify");
 
         vm.expectEmit(true, true, true, true);
-        emit VerificationRegistry.Verified(dogTagId, relayer, subject, purpose, bytes32(pub[4]), block.timestamp);
+        emit VerificationRegistry.Verified(
+            dogTagId, relayer, subject, purpose, bytes32(pub[4]), block.timestamp
+        );
         vm.prank(relayer);
         vr.recordVerificationZK(a, b, c, pub);
         assertTrue(vr.consumed(bytes32(pub[4])));

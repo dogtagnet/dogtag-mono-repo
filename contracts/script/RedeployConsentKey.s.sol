@@ -35,7 +35,9 @@ contract RedeployConsentKey is Script {
         vm.startBroadcast();
         consentKeys = address(new ConsentKeyRegistry());
         verification = address(
-            new VerificationRegistry(issuerRegistry, sbt, zkVerifier, consentKeys, rootIndex, poseidon6, admin)
+            new VerificationRegistry(
+                issuerRegistry, sbt, zkVerifier, consentKeys, rootIndex, poseidon6, admin
+            )
         );
         vm.stopBroadcast();
 
