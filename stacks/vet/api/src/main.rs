@@ -71,6 +71,33 @@ async fn main() {
         custody_seal_path: std::env::var("CUSTODY_SEAL_PATH").ok().filter(|s| !s.trim().is_empty()),
     };
 
+    // Fail-closed (audit H2): refuse to boot in production with unset/dev-default secrets. The
+    // local/demo path (DEMO_MODE / VITE_DEMO_MODE set) keeps the convenient defaults.
+    let demo = vet_api::startup::is_demo_mode();
+    if let Err(e) = vet_api::startup::validate_production_secrets(
+        demo,
+        &[
+            vet_api::startup::SecretSpec {
+                name: "OPERATOR_PASSWORD",
+                value: cfg.operator_password.as_str(),
+                dev_default: "operator-dev-password",
+            },
+            vet_api::startup::SecretSpec {
+                name: "ADMIN_PASSWORD",
+                value: cfg.admin_password.as_str(),
+                dev_default: "admin-dev-password",
+            },
+            vet_api::startup::SecretSpec {
+                name: "CENTRAL_HMAC_SECRET",
+                value: cfg.central_hmac_secret.as_str(),
+                dev_default: "dev-central-hmac-secret",
+            },
+        ],
+    ) {
+        eprintln!("FATAL: {e}");
+        std::process::exit(1);
+    }
+
     let chain = AlloyChain::new(rpc_url).with_chain_id(chain_id);
 
     // Google Calendar provider (real reqwest impl; UNtested against live Google without OAuth creds).
@@ -95,8 +122,13 @@ async fn main() {
                 Arc::new(p)
             }
             Err(e) => {
-                tracing::warn!("CIRCUITS_BUILD_DIR set but prover load failed ({e}); using StubProver");
-                Arc::new(StubProver)
+                // Fail-closed (audit M1): a configured real prover that fails to load must NOT silently
+                // degrade to the StubProver (which emits zeroed proofs the chain would reject). A
+                // prover-service whose whole job is real proofs has no business booting without them.
+                eprintln!(
+                    "FATAL: CIRCUITS_BUILD_DIR is set but the real Groth16 prover failed to load: {e}"
+                );
+                std::process::exit(1);
             }
         },
         _ => Arc::new(StubProver),

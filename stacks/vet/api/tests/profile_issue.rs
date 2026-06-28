@@ -127,9 +127,13 @@ async fn profile_issue_session_start_bind_mints_to_wallet() {
     assert!(bound["txHash"].as_str().is_some(), "bound session must carry the mint txHash");
 
     // --- on-chain effect: SBT minted to the wallet, profileRoot == root ---
-    let owner = chain.owner_of(SBT_ADDR, &dog_tag_id).await.unwrap();
+    // The SBT is keyed by the CANONICAL on-chain dogTagId (the field element the circuit emits as
+    // pub[0]), NOT the raw operator handle returned by the API. Resolve it the same way the mint
+    // route does (`routes::onchain_dog_tag_id`) before querying ownerOf/profileRoot.
+    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+    let owner = chain.owner_of(SBT_ADDR, &onchain_id).await.unwrap();
     assert_eq!(owner.to_lowercase(), wallet.to_lowercase(), "SBT ownerOf must be the device wallet");
-    let sbt_root = chain.profile_root_of(SBT_ADDR, &dog_tag_id).await.unwrap();
+    let sbt_root = chain.profile_root_of(SBT_ADDR, &onchain_id).await.unwrap();
     assert_eq!(sbt_root.to_lowercase(), root.to_lowercase(), "wrappedDoc root must == SBT profileRoot");
 
     // --- token is one-time: a second bind on the same token is 410/404 ---

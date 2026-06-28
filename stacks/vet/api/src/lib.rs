@@ -18,6 +18,7 @@ pub mod chain;
 pub mod custody;
 pub mod prover;
 pub mod routes;
+pub mod startup;
 pub mod store;
 pub mod sync;
 pub mod verify;
