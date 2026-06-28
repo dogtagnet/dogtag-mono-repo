@@ -330,3 +330,184 @@ pub fn wrap_vc(issuer_meta: IssuerMeta, vc: &Value) -> Result<WrappedDoc, String
     };
     wrap_document(&typed, issuer_meta, &mut salt).map_err(|e| format!("wrap: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- build_vc: dogTagId injection + INTEGER/STRING tag selection ----
+
+    #[test]
+    fn build_vc_injects_numeric_dog_tag_id_as_integer() {
+        let fields = json!({ "credentialSubject": { "name": { "tag": 2u8, "value": "Rex" } } });
+        let vc = build_vc("DOG_PROFILE", &fields, "42");
+        let id = &vc["credentialSubject"]["dogTagId"];
+        assert_eq!(id["tag"], 3, "all-digit id -> INTEGER (tag 3)");
+        assert_eq!(id["value"], "42");
+        // pre-existing sibling leaf is preserved untouched
+        assert_eq!(vc["credentialSubject"]["name"]["value"], "Rex");
+    }
+
+    #[test]
+    fn build_vc_injects_nonnumeric_dog_tag_id_as_string() {
+        let vc = build_vc("DOG_PROFILE", &json!({}), "abc-1");
+        assert_eq!(
+            vc["credentialSubject"]["dogTagId"]["tag"], 2,
+            "non-digit -> STRING (tag 2)"
+        );
+        assert_eq!(vc["credentialSubject"]["dogTagId"]["value"], "abc-1");
+    }
+
+    #[test]
+    fn build_vc_treats_empty_id_as_string_not_integer() {
+        // is_int requires non-empty AND all-ascii-digit; "" must fall to STRING.
+        let vc = build_vc("DOG_PROFILE", &json!({}), "");
+        assert_eq!(vc["credentialSubject"]["dogTagId"]["tag"], 2);
+        assert_eq!(vc["credentialSubject"]["dogTagId"]["value"], "");
+    }
+
+    #[test]
+    fn build_vc_creates_credential_subject_when_missing() {
+        let vc = build_vc("DOG_PROFILE", &json!({ "other": 1 }), "7");
+        assert!(vc["credentialSubject"].is_object());
+        assert_eq!(vc["credentialSubject"]["dogTagId"]["value"], "7");
+    }
+
+    #[test]
+    fn build_vc_replaces_non_object_fields_with_empty_object() {
+        // A non-object `fields` is discarded; we still get a well-formed subject.
+        let vc = build_vc("DOG_PROFILE", &json!("not-an-object"), "9");
+        assert!(vc.is_object());
+        assert_eq!(vc["credentialSubject"]["dogTagId"]["value"], "9");
+    }
+
+    // ---- to_typed: PRESERVES already-typed {tag,value} leaves ----
+
+    #[test]
+    fn to_typed_preserves_pretyped_scalar_and_types_plain_leaves() {
+        let input = json!({
+            "pre": { "tag": 3u8, "value": "5" },
+            "name": "Rex",
+            "alive": true,
+            "weight": 4.5,
+            "count": 3,
+            "missing": Value::Null,
+        });
+        let out = to_typed(&input);
+        // a 2-key {tag,value} object is kept verbatim, not re-wrapped
+        assert_eq!(out["pre"], json!({ "tag": 3u8, "value": "5" }));
+        assert_eq!(out["name"], json!({ "tag": 2u8, "value": "Rex" }));
+        assert_eq!(out["alive"], json!({ "tag": 1u8, "value": true }));
+        assert_eq!(out["weight"], json!({ "tag": 4u8, "value": "4.5" }));
+        assert_eq!(out["count"], json!({ "tag": 3u8, "value": "3" }));
+        assert_eq!(out["missing"], json!({ "tag": 0u8, "value": Value::Null }));
+    }
+
+    #[test]
+    fn to_typed_recurses_into_arrays() {
+        let out = to_typed(&json!(["a", 2]));
+        assert_eq!(
+            out,
+            json!([{ "tag": 2u8, "value": "a" }, { "tag": 3u8, "value": "2" }])
+        );
+    }
+
+    // ---- to_typed_vc: does NOT preserve pre-typed leaves (re-wraps every scalar) ----
+
+    #[test]
+    fn to_typed_vc_maps_every_scalar_kind() {
+        let input = json!({ "s": "x", "b": false, "i": 10, "d": 1.5, "n": Value::Null });
+        let out = to_typed_vc(&input);
+        assert_eq!(out["s"], json!({ "tag": 2u8, "value": "x" }));
+        assert_eq!(out["b"], json!({ "tag": 1u8, "value": false }));
+        assert_eq!(out["i"], json!({ "tag": 3u8, "value": "10" }));
+        assert_eq!(out["d"], json!({ "tag": 4u8, "value": "1.5" }));
+        assert_eq!(out["n"], json!({ "tag": 0u8, "value": Value::Null }));
+    }
+
+    #[test]
+    fn to_typed_vc_double_wraps_a_pretyped_leaf_unlike_to_typed() {
+        // Documented divergence: to_typed_vc has no is-typed-scalar short-circuit, so a
+        // {tag,value} object is walked as a plain object and each member re-typed. build_profile_vc
+        // never feeds it pre-typed leaves, so this divergence is safe in practice.
+        let pretyped = json!({ "tag": 3u8, "value": "5" });
+        let out = to_typed_vc(&pretyped);
+        assert_eq!(out["tag"], json!({ "tag": 3u8, "value": "3" }));
+        assert_eq!(out["value"], json!({ "tag": 2u8, "value": "5" }));
+        // to_typed, by contrast, keeps it verbatim
+        assert_eq!(to_typed(&pretyped), pretyped);
+    }
+
+    // ---- iso_date_utc: Howard Hinnant civil-date algorithm ----
+
+    #[test]
+    fn iso_date_utc_anchors() {
+        assert_eq!(iso_date_utc(0), "1970-01-01");
+        assert_eq!(iso_date_utc(1_700_000_000), "2023-11-14");
+        // leap day: 2020-02-29T00:00:00Z
+        assert_eq!(iso_date_utc(1_582_934_400), "2020-02-29");
+        // intra-day seconds are truncated to the day
+        assert_eq!(iso_date_utc(86_400 - 1), "1970-01-01");
+        assert_eq!(iso_date_utc(86_400), "1970-01-02");
+    }
+
+    // ---- issuer metadata helpers ----
+
+    #[test]
+    fn issuer_meta_copies_identity_and_record_type() {
+        let cfg = test_cfg();
+        let m = issuer_meta(&cfg, "BOARDING", "0xstore");
+        assert_eq!(m.name, "Test Vet");
+        assert_eq!(m.domain, "vet.example");
+        assert_eq!(m.document_store, "0xstore");
+        assert_eq!(m.record_type, "BOARDING");
+    }
+
+    #[test]
+    fn profile_issuer_meta_uses_profile_document_store_and_dog_profile() {
+        let cfg = test_cfg();
+        let m = profile_issuer_meta(&cfg);
+        assert_eq!(m.document_store, "0xprofilestore");
+        assert_eq!(m.record_type, DOG_PROFILE);
+        assert_eq!(m.record_type, "DOG_PROFILE");
+    }
+
+    #[test]
+    fn issuer_addr_for_returns_mapped_or_none() {
+        let mut cfg = test_cfg();
+        cfg.issuer_addrs
+            .insert("BOARDING".to_string(), "0xboarding".to_string());
+        assert_eq!(
+            cfg.issuer_addr_for("BOARDING").as_deref(),
+            Some("0xboarding")
+        );
+        assert_eq!(cfg.issuer_addr_for("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn rt_key_matches_record_type_key() {
+        assert_eq!(rt_key("BOARDING"), record_type_key("BOARDING"));
+    }
+
+    fn test_cfg() -> Config {
+        Config {
+            deployment_url: String::new(),
+            rpc_url: String::new(),
+            issuer_registry_addr: String::new(),
+            verification_registry_addr: String::new(),
+            consent_key_registry_addr: String::new(),
+            issuer_addrs: std::collections::HashMap::new(),
+            issuer_name: "Test Vet".to_string(),
+            issuer_domain: "vet.example".to_string(),
+            sbt_addr: String::new(),
+            profile_document_store: "0xprofilestore".to_string(),
+            vet_signer_index: 0,
+            operator_password: String::new(),
+            admin_password: String::new(),
+            confirmations: 0,
+            business_id: String::new(),
+            central_hmac_secret: String::new(),
+            custody_seal_path: None,
+        }
+    }
+}
