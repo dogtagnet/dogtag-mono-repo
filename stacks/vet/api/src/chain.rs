@@ -1173,3 +1173,148 @@ pub fn record_type_key(record_type: &str) -> String {
     let h: FixedBytes<32> = keccak256(record_type.as_bytes());
     format!("0x{}", hex::encode(h.as_slice()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The first 4 bytes of any calldata are the canonical function selector
+    // (keccak256(signature)[..4]). These are pinned independently (via `cast sig`)
+    // so a drift in the sol! ABI or an accidental signature change breaks the build.
+    fn selector(calldata: &str) -> String {
+        let s = calldata.strip_prefix("0x").unwrap();
+        s[..8].to_string()
+    }
+
+    #[test]
+    fn calldata_encoders_use_canonical_selectors() {
+        // issue(bytes32) / revoke(bytes32)
+        assert_eq!(selector(&issue_calldata("0x00")), "0f75e81f");
+        assert_eq!(selector(&revoke_calldata("0x00")), "b75c7dc6");
+        // mint(address,uint256,bytes32)
+        assert_eq!(
+            selector(&mint_calldata(
+                "0x0000000000000000000000000000000000000001",
+                "1",
+                "0x00"
+            )),
+            "1e458bee"
+        );
+        // bindConsentKey(bytes32,bytes) / bindConsentKeyFor(address,bytes32,bytes)
+        assert_eq!(
+            selector(&bind_consent_key_calldata("0x00", "0x")),
+            "79f75077"
+        );
+        assert_eq!(
+            selector(&bind_consent_key_for_calldata(
+                "0x0000000000000000000000000000000000000001",
+                "0x00",
+                "0x"
+            )),
+            "7fe27b21"
+        );
+        // recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7])
+        let a = ["0".to_string(), "0".to_string()];
+        let b = [
+            ["0".to_string(), "0".to_string()],
+            ["0".to_string(), "0".to_string()],
+        ];
+        let c = ["0".to_string(), "0".to_string()];
+        let pubs = [
+            "0".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+            "0".to_string(),
+        ];
+        assert_eq!(
+            selector(&record_verification_zk_calldata(&a, &b, &c, &pubs)),
+            "dd080593"
+        );
+    }
+
+    #[test]
+    fn record_verification_calldata_uses_canonical_selector() {
+        let consent = ConsentInput {
+            dog_tag_id: U256::from(1u64),
+            record_type: "0x00".to_string(),
+            purpose: "0x00".to_string(),
+            credential_root: "0x00".to_string(),
+            challenge: "0x00".to_string(),
+            relayer: "0x0000000000000000000000000000000000000001".to_string(),
+            subject: "0x0000000000000000000000000000000000000002".to_string(),
+            nonce: U256::ZERO,
+            deadline: U256::ZERO,
+        };
+        // recordVerification((uint256,bytes32,bytes32,bytes32,bytes32,address,address,uint256,uint256),bytes)
+        assert_eq!(
+            selector(&record_verification_calldata(&consent, "0x")),
+            "627946ab"
+        );
+    }
+
+    #[test]
+    fn issue_calldata_is_selector_plus_one_word_and_deterministic() {
+        let root = "0x1111111111111111111111111111111111111111111111111111111111111111";
+        let cd = issue_calldata(root);
+        // 0x + 4-byte selector + one 32-byte word = 2 + 8 + 64 hex chars.
+        assert_eq!(cd.len(), 2 + 8 + 64);
+        assert!(cd.ends_with(&"1".repeat(64)));
+        assert_eq!(cd, issue_calldata(root));
+        // The 0x prefix is optional on the root and yields identical encoding.
+        let bare = &root[2..];
+        assert_eq!(issue_calldata(bare), cd);
+    }
+
+    #[test]
+    fn parse_b256_tolerates_bad_and_short_input() {
+        let valid = "0x2222222222222222222222222222222222222222222222222222222222222222";
+        assert_eq!(parse_b256(valid), parse_b256(&valid[2..])); // prefix optional
+        assert_ne!(parse_b256(valid), B256::ZERO);
+        // Non-hex, wrong-length, and empty all collapse to the zero word (never panic).
+        assert_eq!(parse_b256("0xzz"), B256::ZERO);
+        assert_eq!(parse_b256("0x1234"), B256::ZERO); // not 32 bytes
+        assert_eq!(parse_b256(""), B256::ZERO);
+    }
+
+    #[test]
+    fn parse_addr_falls_back_to_zero_on_garbage() {
+        let a = "0x00000000000000000000000000000000000000aB";
+        assert_ne!(parse_addr(a), Address::ZERO);
+        assert_eq!(parse_addr("not-an-address"), Address::ZERO);
+        assert_eq!(parse_addr(""), Address::ZERO);
+    }
+
+    #[test]
+    fn parse_u256_dec_or_hex_handles_radix_and_fallback() {
+        assert_eq!(parse_u256_dec_or_hex("255"), U256::from(255u64));
+        assert_eq!(parse_u256_dec_or_hex("0xff"), U256::from(255u64));
+        assert_eq!(parse_u256_dec_or_hex("  42  "), U256::from(42u64)); // trims
+                                                                        // Unparseable input falls back to zero rather than panicking.
+        assert_eq!(parse_u256_dec_or_hex("0xnothex"), U256::ZERO);
+        assert_eq!(parse_u256_dec_or_hex("notdec"), U256::ZERO);
+    }
+
+    #[test]
+    fn normalize_id_collapses_radix_to_canonical_decimal() {
+        assert_eq!(normalize_id("0x10"), "16");
+        assert_eq!(normalize_id("16"), "16");
+        assert_eq!(normalize_id("0x10"), normalize_id("16"));
+        assert_eq!(normalize_id("garbage"), "0"); // fallback
+    }
+
+    #[test]
+    fn record_type_key_anchors_keccak_of_empty_string() {
+        // keccak256("") — the canonical empty-input digest, mirroring the admin stack.
+        assert_eq!(
+            record_type_key(""),
+            "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+        );
+        // Distinct labels hash distinctly; output is always a 0x + 64-hex bytes32.
+        let k = record_type_key("boarding_intake");
+        assert_eq!(k.len(), 66);
+        assert_ne!(k, record_type_key(""));
+    }
+}
