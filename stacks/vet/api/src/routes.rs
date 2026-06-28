@@ -1968,3 +1968,105 @@ pub fn public_router(state: AppState) -> Router {
 pub fn router(state: AppState) -> Router {
     public_router(state.clone()).merge(admin_router(state))
 }
+
+// Behavior-preserving unit tests for the pure request-parsing/validation free helpers
+// (client_ip / bearer / onchain_dog_tag_id / is_terminal). Mirrors admin-api routes.rs coverage.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_from(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    fn peer(s: &str) -> Option<SocketAddr> {
+        Some(s.parse().unwrap())
+    }
+
+    #[test]
+    fn client_ip_prefers_first_forwarded_hop_trimmed() {
+        let h = headers_from(&[("x-forwarded-for", "  203.0.113.7 , 10.0.0.1 , 10.0.0.2")]);
+        // first hop wins, whitespace trimmed, peer ignored when XFF present
+        assert_eq!(client_ip(&h, peer("198.51.100.9:443")), "203.0.113.7");
+    }
+
+    #[test]
+    fn client_ip_empty_forwarded_falls_through_to_peer() {
+        // a present-but-empty XFF value is filtered, so the socket peer is used instead of ""
+        let h = headers_from(&[("x-forwarded-for", "")]);
+        assert_eq!(client_ip(&h, peer("198.51.100.9:443")), "198.51.100.9");
+    }
+
+    #[test]
+    fn client_ip_no_headers_no_peer_defaults_unknown() {
+        let h = HeaderMap::new();
+        assert_eq!(client_ip(&h, None), "unknown");
+        // peer-only path (no XFF) returns the peer ip without the port
+        assert_eq!(client_ip(&h, peer("127.0.0.1:8080")), "127.0.0.1");
+    }
+
+    #[test]
+    fn bearer_requires_exact_scheme_and_extracts_token() {
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "Bearer op_abc123")])),
+            Some("op_abc123".to_string())
+        );
+        // scheme is case-sensitive and the trailing space is part of the prefix
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "bearer op_abc123")])),
+            None
+        );
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "Bearertoken")])),
+            None
+        );
+        // empty token after the scheme is returned verbatim (empty string), and absent header -> None
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "Bearer ")])),
+            Some(String::new())
+        );
+        assert_eq!(bearer(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn onchain_dog_tag_id_is_deterministic_and_canonically_shaped() {
+        // field_of_value Poseidon-hashes the encoded integer (not a raw interpretation), so the
+        // output is opaque; pin the contract structurally rather than couple to a Poseidon constant.
+        let a = onchain_dog_tag_id("123456789").unwrap();
+        let b = onchain_dog_tag_id("123456789").unwrap();
+        assert_eq!(a, b, "same handle -> same hashed id");
+        assert!(a.starts_with("0x"));
+        assert_eq!(
+            a.len(),
+            66,
+            "0x + 64 hex nibbles = canonical 32-byte field element"
+        );
+        assert!(a[2..].chars().all(|c| c.is_ascii_hexdigit()));
+        // distinct handles produce distinct ids
+        assert_ne!(
+            onchain_dog_tag_id("1").unwrap(),
+            onchain_dog_tag_id("2").unwrap()
+        );
+    }
+
+    #[test]
+    fn onchain_dog_tag_id_rejects_non_integer_handle() {
+        // a non-numeric handle fails the Integer field decode rather than panicking
+        assert!(onchain_dog_tag_id("not-a-number").is_err());
+        assert!(onchain_dog_tag_id("").is_err());
+    }
+
+    #[test]
+    fn is_terminal_matches_only_the_four_terminal_states() {
+        for s in ["DECLINED", "CANCELLED", "COMPLETED", "NO_SHOW"] {
+            assert!(is_terminal(s), "{s} should be terminal");
+        }
+        for s in ["CONFIRMED", "PENDING", "declined", "no_show", ""] {
+            assert!(!is_terminal(s), "{s} should not be terminal");
+        }
+    }
+}
