@@ -963,6 +963,58 @@ mod tests {
         );
     }
 
+    /// `purpose_key`/`verify_key` MUST byte-match the admin stack (`chain::purpose_key`/`chain::verify_key`)
+    /// and the on-chain `_verifyKey` for the same label. These anchors mirror the admin stack's chain.rs
+    /// tests for "boarding_intake"; if either stack drifts, both anchors break and the parity bug surfaces.
+    #[test]
+    fn purpose_and_verify_key_parity_boarding_intake() {
+        assert_eq!(
+            purpose_key("boarding_intake"),
+            "0x0d35de973921c6fca6d7ad626fe13c4017a093733a6a21689b631b2c61b1c18d"
+        );
+        assert_eq!(
+            verify_key("boarding_intake"),
+            "0x9f894293e0cbaa46eca3cc026ad45e5012c10c4d3217ede0488ca0d2b5eaf764"
+        );
+    }
+
+    /// `pub_signal_to_address` keeps the low 20 bytes of a field-element pubSignal (decimal or 0x-hex),
+    /// rejecting non-numeric input.
+    #[test]
+    fn pub_signal_to_address_low20_bytes() {
+        // A full 32-byte word whose low 20 bytes are the address; the high 12 bytes are dropped.
+        let word = "0x000000000000000000000000112233445566778899aabbccddeeff0011223344";
+        assert_eq!(
+            pub_signal_to_address(word).unwrap(),
+            "0x112233445566778899aabbccddeeff0011223344"
+        );
+        // Decimal and hex spellings of the same value agree.
+        assert_eq!(pub_signal_to_address("0"), pub_signal_to_address("0x0"));
+        assert_eq!(
+            pub_signal_to_address("0").unwrap(),
+            "0x0000000000000000000000000000000000000000"
+        );
+        assert!(pub_signal_to_address("not-a-number").is_none());
+    }
+
+    /// `verdict_json` maps each `FragmentState` to its wire string and threads the `valid` bool through.
+    #[test]
+    fn verdict_json_maps_fragment_states() {
+        let v = Verdict {
+            valid: true,
+            integrity: FragmentState::Valid,
+            issuance: FragmentState::Invalid,
+            identity: FragmentState::Error,
+            ownership: FragmentState::NotApplicable,
+        };
+        let j = verdict_json(&v);
+        assert_eq!(j["valid"], serde_json::json!(true));
+        assert_eq!(j["integrity"], "VALID");
+        assert_eq!(j["issuance"], "INVALID");
+        assert_eq!(j["identity"], "ERROR");
+        assert_eq!(j["ownership"], "NOT_APPLICABLE");
+    }
+
     #[test]
     fn addr_and_b32_parsers_roundtrip() {
         let a = "0x00112233445566778899aabbccddeeff00112233";
