@@ -1,0 +1,106 @@
+# Android mobile end-to-end — on-device ZK proof flow (Maestro).
+#
+# WHAT THIS RUNS
+#   Builds the DogTag Android debug app (native Rust prover via cargo-ndk + UniFFI) and runs the
+#   Maestro flow `apps/android/maestro/zk_e2e.yaml`, which exercises the REAL on-device Groth16
+#   prover (issuance/import trust core → on-device prove → public-signal verify → consent-key bind)
+#   on an Android emulator. See apps/android/AGENTS.md and docs/MOBILE_BUILD.md.
+#
+# WHY `workflow_dispatch` ONLY (not push/PR)
+#   This job has two hard requirements that GitHub-HOSTED runners cannot satisfy today, so wiring it
+#   to push/PR would produce a perpetually-red check — a faked signal. It is therefore manual-only,
+#   and intended for a SELF-HOSTED arm64 runner (or any host that meets both requirements):
+#
+#     1. An *arm64* Android emulator. The on-device prover ships ONLY as arm64-v8a / armeabi-v7a
+#        native libraries (`app/build.gradle.kts` `abiFilters`); an x86_64 emulator (the only kind
+#        with KVM acceleration on GitHub's ubuntu runners) cannot load them. A hardware-accelerated
+#        arm64 emulator needs an Apple-Silicon host with the emulator's native hypervisor — which
+#        GitHub's hosted macOS-arm64 runners do not expose (no nested virtualization). A self-hosted
+#        Apple-Silicon Mac (or Linux arm64 with KVM) runs it fine — that is what we validated against.
+#     2. The proving artifacts. `verification_final.zkey` (~65 MB) and `verification.graph` (~3 MB)
+#        are gitignored (see apps/.gitignore) and NOT in a checkout. They must be provided to the
+#        runner (cache, artifact, release asset, or self-hosted working tree) — see the vendor step.
+#
+#   On a runner that meets both, this workflow goes green exactly as the local run does.
+name: android-mobile-e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label set (must provide an arm64 Android emulator + the proving artifacts)"
+        required: false
+        default: "self-hosted,macOS,ARM64"
+
+jobs:
+  android-zk-e2e:
+    # Comma-separated label set from the dispatch input (default: a self-hosted Apple-Silicon Mac).
+    runs-on: ${{ fromJSON(format('[{0}]', join(split(inputs.runner, ','), ','))) }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Rust + Android targets
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-linux-android armv7-linux-androideabi
+          cargo install cargo-ndk --version ^4 --locked || cargo install cargo-ndk --locked
+
+      # The witness graph is built from circuits/verification.circom by iden3's build-circuit (it is
+      # NOT in the published circom-witnesscalc crate). Skipped if already vendored (self-hosted).
+      - name: Ensure proving artifacts (zkey + witness graph)
+        env:
+          # Optional: a base URL / cache that holds the two gitignored blobs for this circuit commit.
+          DOGTAG_ARTIFACTS_URL: ${{ secrets.DOGTAG_ARTIFACTS_URL }}
+        run: |
+          set -euo pipefail
+          zkey=circuits/build/verification_final.zkey
+          graph=circuits/build/verification.graph
+          if [ -s "$zkey" ] && [ -s "$graph" ]; then
+            echo "Proving artifacts already present (self-hosted working tree)."
+          elif [ -n "${DOGTAG_ARTIFACTS_URL:-}" ]; then
+            mkdir -p circuits/build
+            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification_final.zkey" -o "$zkey"
+            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification.graph"      -o "$graph"
+          else
+            echo "::error::Missing $zkey / $graph. They are gitignored; provide them on a self-hosted" \
+                 "runner's working tree or set the DOGTAG_ARTIFACTS_URL secret. See docs/MOBILE_BUILD.md §4."
+            exit 1
+          fi
+          # Vendor into the app bundle (gitignored copies, exactly like docs/MOBILE_BUILD.md §4).
+          cp "$zkey"  apps/android/app/src/main/assets/verification_final.zkey
+          cp "$graph" apps/android/app/src/main/assets/verification.graph
+
+      - name: Build native prover libs (cargo-ndk → jniLibs)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a -o apps/android/app/src/main/jniLibs \
+            build --release -p dogtag-standard-rs --features prover
+
+      - name: Build debug APK
+        run: |
+          echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > apps/android/local.properties
+          # The wrapper jar is gitignored (global *.jar); regenerate it, then build.
+          ( cd apps/android && gradle wrapper --gradle-version 9.5.1 && ./gradlew :app:assembleDebug )
+
+      - name: Run Maestro mobile e2e on an arm64 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: arm64-v8a
+          target: google_apis
+          force-avd-creation: true
+          emulator-options: -no-window -no-audio -no-snapshot -gpu swiftshader_indirect -no-boot-anim
+          disable-animations: true
+          script: |
+            adb install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
+            curl -Ls "https://get.maestro.mobile.dev" | bash
+            export PATH="$PATH:$HOME/.maestro/bin"
+            maestro test apps/android/maestro/zk_e2e.yaml

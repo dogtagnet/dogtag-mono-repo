@@ -40,6 +40,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // `BuildConfig.DEBUG` gates the debug-only on-device ZK self-test (Profile screen) that the
+        // Maestro mobile e2e drives — it must never appear in a release build.
+        buildConfig = true
     }
 
     // The ~65 MB Groth16 proving key and the ~3 MB witness graph are bundled as raw assets and read
