@@ -55,9 +55,14 @@ keyHash, R]`.
 ## Build + test
 
 ```
-npm run build-circuit   # compile + DEV trusted setup -> Groth16Verifier.sol
-npm run test-circuit    # round-trip proof + R-parity + negative tests
+npm run compile-circuit # COMPILE ONLY -> build/verification.r1cs (+ wasm/sym); no trusted setup
+npm run build-circuit    # compile + DEV trusted setup -> Groth16Verifier.sol
+npm run test-circuit     # round-trip proof + R-parity + negative tests
 ```
+
+> The PRODUCTION ceremony uses `compile-circuit` (it only needs the r1cs) followed by
+> `scripts/ceremony.sh` — never `build-circuit`, which would overwrite the verifier/zkey with a
+> forgeable dev key (see [`../docs/CEREMONY_RUNBOOK.md`](../docs/CEREMONY_RUNBOOK.md)).
 
 ## DEV-vs-PRODUCTION simplifications (be honest)
 

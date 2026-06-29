@@ -604,7 +604,8 @@ ceremony**, the verifier wired via the registry's **2-day timelock**, edge harde
 mobile apps for the new addresses) is **Tier 3**:
 
 ➡ **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** — the go-live delta over REMOTE (chain-swap
-checklist, ceremony + timelock runbook). The ceremony itself is **[CEREMONY.md](./CEREMONY.md)**.
+checklist, ceremony + timelock runbook). The ceremony itself is **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)**
+(concise version: **[CEREMONY.md](./CEREMONY.md)**).
 
 ---
 
@@ -634,6 +635,7 @@ checklist, ceremony + timelock runbook). The ceremony itself is **[CEREMONY.md](
 - **[MOBILE_BUILD.md](./MOBILE_BUILD.md)** — build/install iOS & Android, endpoint model, `prover_api`.
 - **[TUNNELING.md](./TUNNELING.md)** — public HTTPS for phones + the prover's own TLS host.
 - **[DEPLOY.md](./DEPLOY.md)** — ROAX contract deploy + Docker bring-up runbook.
-- **[CEREMONY.md](./CEREMONY.md)** — production ZK trusted-setup ceremony.
+- **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** — production ZK trusted-setup ceremony (expanded runbook;
+  **[CEREMONY.md](./CEREMONY.md)** is the concise version).
 - **[DPIA.md](./DPIA.md)** — Data Protection Impact Assessment.
 - **[`deploy/Caddyfile`](../deploy/Caddyfile)** · **[`scripts/remote-up.sh`](../scripts/remote-up.sh)** — TLS proxy + production bring-up.

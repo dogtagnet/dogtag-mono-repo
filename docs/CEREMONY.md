@@ -1,5 +1,9 @@
 # DogTag — ZK Trusted-Setup Ceremony (production)
 
+> **See also** [`CEREMONY_RUNBOOK.md`](./CEREMONY_RUNBOOK.md) — the expanded, captain-fill-in production
+> runbook (participant slot table, attestation/transcript format, air-gapped step detail). This file is the
+> concise version; `ceremony.sh` points operators at the runbook for the deploy hand-off.
+
 The Groth16 proof-of-verification path needs a circuit-specific **proving/verifying key** produced by a
 **multi-party ceremony**. The dev key shipped in `circuits/build` (from `scripts/setup.sh`) is a
 single-contributor setup for TESTS ONLY and must NOT secure a real deployment — a sole contributor
@@ -25,9 +29,13 @@ Circuit: `DogTagVerification(24,5)`, ~94,459 constraints → **2^17** powers of 
 ### 1. Coordinator — initialize
 ```bash
 cd circuits
-npm run build-circuit          # ensure build/verification.r1cs exists (or just the r1cs)
+npm run compile-circuit        # COMPILE ONLY: produces build/verification.r1cs (+ wasm/sym)
 bash scripts/ceremony.sh init  # downloads Hermez ptau (2^17) + makes contribution #0
 ```
+> Use `compile-circuit`, **not** `build-circuit`. `build-circuit` (`scripts/setup.sh`) is the DEV
+> single-contributor setup: it generates a local, insecure ptau and **overwrites**
+> `Groth16Verifier.sol` / `build/verification_final.zkey` with a forgeable dev key. The ceremony only
+> needs the r1cs; the keys come from `ceremony.sh`.
 Publish `build/ceremony_0000.zkey` and send it to contributor #1.
 
 ### 2. Each contributor (in sequence, ≥3)
@@ -50,7 +58,9 @@ bash scripts/ceremony.sh beacon ceremony_lastN.zkey 0x<beaconHash> "final beacon
 ### 4. Coordinator — finalize
 ```bash
 bash scripts/ceremony.sh finalize build/ceremony_final.zkey
-# -> verifies (ZKey Ok!), exports circuits/Groth16Verifier.sol, copies to build/verification_final.zkey,
+# -> verifies (ZKey Ok!), exports circuits/Groth16Verifier.sol,
+#    exports circuits/build/verification_key.json (for independent `snarkjs groth16 verify`),
+#    copies to build/verification_final.zkey,
 #    prints the final zkey sha256 to PIN in CI + the prover image (§11.8(f)).
 ```
 Publish the full transcript (every `ceremony_*.zkey`, contributor names, the beacon value + source) so

@@ -7,6 +7,7 @@
   "scripts": {
     "parity": "node scripts/gen-vectors.mjs",
     "gen-vectors": "node scripts/gen-vectors.mjs",
+    "compile-circuit": "circom verification.circom --r1cs --wasm --sym -l node_modules/circomlib/circuits -o build",
     "build-circuit": "bash scripts/setup.sh",
     "test-circuit": "node scripts/test-circuit.mjs"
   },
