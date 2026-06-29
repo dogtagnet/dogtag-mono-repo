@@ -121,7 +121,15 @@ The public round is **closed and made unforgeable by a public verifiable beacon*
   ```bash
   cd circuits
   npm ci
-  npm run build-circuit     # produces build/verification.r1cs (+ wasm), deterministic from verification.circom
+  npm run compile-circuit   # COMPILE ONLY: produces build/verification.r1cs (+ wasm/sym), deterministic from verification.circom
+  ```
+  > **Do NOT run `npm run build-circuit` here.** That script (`scripts/setup.sh`) is the DEV single-contributor setup: it generates a *local, insecure* ptau and **overwrites** `Groth16Verifier.sol` / `build/verification_final.zkey` with a forgeable dev key. The ceremony needs only the r1cs from compilation; the keys come from `ceremony.sh`.
+- The **same Hermez phase-1 ptau** every other machine uses, at `circuits/ptau/powersOfTau28_hez_final_17.ptau`. `ceremony.sh contribute` runs `snarkjs zkey verify "$R1CS" "$PTAU" …`, so the ptau must be present on **every** contributor/verifier machine, not just the coordinator. Obtain it (download or receive it alongside the zkey) and confirm it matches before contributing:
+  ```bash
+  cd circuits && mkdir -p ptau
+  curl -L --fail -o ptau/powersOfTau28_hez_final_17.ptau \
+    https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_17.ptau
+  shasum -a 256 ptau/powersOfTau28_hez_final_17.ptau   # must match the coordinator's published ptau sha256
   ```
 - A secure file-transfer channel for handing the `zkey` from one contributor to the next (the zkey is public; the channel just needs integrity, not secrecy).
 
@@ -226,8 +234,9 @@ Also record: circuit hash, ptau file (Hermez `powersOfTau28_hez_final_17.ptau`),
 
 ```bash
 cd circuits
-# 1. Reproduce the r1cs deterministically from the committed circuit:
-npm run build-circuit
+# 1. Reproduce the r1cs deterministically from the committed circuit (COMPILE ONLY — never `build-circuit`,
+#    which would overwrite the verifier/zkey with a forgeable dev key):
+npm run compile-circuit
 
 # 2. Verify the final zkey against circuit + ptau (replays the whole contribution chain):
 node_modules/.bin/snarkjs zkey verify build/verification.r1cs ptau/powersOfTau28_hez_final_17.ptau build/verification_final.zkey

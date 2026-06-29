@@ -32,7 +32,7 @@ cmd="${1:-}"; shift || true
 
 case "$cmd" in
   init)
-    [ -f "$R1CS" ] || { echo "missing $R1CS — run 'npm run build-circuit' first"; exit 1; }
+    [ -f "$R1CS" ] || { echo "missing $R1CS — run 'npm run compile-circuit' first (compile only; NOT 'build-circuit', which runs the dev setup)"; exit 1; }
     mkdir -p "$ROOT/ptau"
     if [ ! -f "$PTAU" ]; then
       echo "Downloading Hermez phase-1 powers-of-tau (2^${PTAU_POW})…"
