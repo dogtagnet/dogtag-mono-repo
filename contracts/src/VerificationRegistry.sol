@@ -51,6 +51,10 @@ interface IPoseidon6 {
 contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
     uint256 internal constant SNARK_SCALAR_FIELD =
         21888242871839275222246405745257275088548364400416034343698204186575808495617; // BN254 r
+    // 2^160 — the address space. A field element `< r` can still exceed 2^160, so `uint160(pub[i])`
+    // truncates the high bits. Requiring the address-typed signals `< TWO_POW_160` keeps the on-chain
+    // truncation bit-identical to the full field element the proof witnesses (audit L1).
+    uint256 internal constant TWO_POW_160 = 1 << 160;
     uint256 internal constant DS_NULLIFIER = 4;
     uint256 internal constant ZK_TIMELOCK = 2 days;
 
@@ -185,12 +189,21 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
     }
 
     // ---- ZK path: Groth16 over pub = [dogTagId, purpose, relayer, subject, nullifier, keyHash, R] ----
+    // `recordType`/`deadline` are NOT public signals (not bound to the proof): the relayer == msg.sender
+    // supplies them, so these two guards are DEFENSE-IN-DEPTH early reverts that mirror the normal path
+    // (:132,:134), not cryptographic bindings. The binding protections remain the proof itself, the
+    // `keyOf`/`ownerOf` checks, and the `_consumeAndResolve` root resolution (which already rejects an
+    // Art. 9 SERVICE_ATTESTATION as "unknown root" because it has no on-chain root). Audit L2.
     function recordVerificationZK(
         uint256[2] calldata a,
         uint256[2][2] calldata b,
         uint256[2] calldata c,
-        uint256[7] calldata pub
+        uint256[7] calldata pub,
+        bytes32 recordType,
+        uint256 deadline
     ) external {
+        require(block.timestamp <= deadline, "expired"); // mirror normal path (:132)
+        require(recordType != SERVICE_ATTESTATION, "art9"); // §11.9(h), mirror normal path (:134)
         require(address(uint160(pub[2])) == msg.sender, "not relayer");
         if (restrictToWhitelistedRelayers) {
             require(issuerRegistry.isWhitelistedFor(_verifyKey(bytes32(pub[1])), msg.sender), "!verify-wl");
@@ -198,6 +211,10 @@ contract VerificationRegistry is EIP712, AccessControlDefaultAdminRules {
         for (uint256 i; i < 7; i++) {
             require(pub[i] < SNARK_SCALAR_FIELD, "!field"); // range-check ALL signals (#358)
         }
+        // L1: the address-typed signals must fit in 160 bits so `uint160(pub[2/3])` below (and at :189)
+        // cannot alias a victim address via `pub = victim + k·2^160 < r` while the proof witnesses the
+        // full field element.
+        require(pub[2] < TWO_POW_160 && pub[3] < TWO_POW_160, "addr range");
         require(consentKeys.keyOf(address(uint160(pub[3]))) == bytes32(pub[5]), "subject !key"); // subject<->key
         require(sbt.ownerOf(pub[0]) == address(uint160(pub[3])), "subject !owner");
 

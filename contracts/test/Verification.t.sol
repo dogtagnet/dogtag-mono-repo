@@ -295,7 +295,7 @@ contract VerificationTest is Test {
         uint256[7] memory pub = _pub();
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(relayer);
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
         assertTrue(vr.consumed(bytes32(pub[4])));
     }
 
@@ -305,7 +305,7 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(address(0xDEAD));
         vm.expectRevert("not relayer");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     function test_zk_out_of_field_reverts() public {
@@ -315,7 +315,7 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(relayer);
         vm.expectRevert("!field");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     function test_zk_wrong_keyhash_reverts() public {
@@ -325,7 +325,7 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(relayer);
         vm.expectRevert("subject !key");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     function test_zk_wrong_owner_reverts() public {
@@ -335,7 +335,7 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(relayer);
         vm.expectRevert(); // ownerOf reverts (nonexistent) or subject !owner
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     function test_zk_wrong_purpose_reverts() public {
@@ -345,7 +345,7 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(relayer);
         vm.expectRevert("!verify-wl");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     function test_zk_bad_proof_reverts() public {
@@ -355,7 +355,7 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(relayer);
         vm.expectRevert("bad proof");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     function test_zk_unknown_root_reverts() public {
@@ -365,7 +365,51 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
         vm.prank(relayer);
         vm.expectRevert("unknown root");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
+    }
+
+    // ---------- audit L1: address-typed signals must fit in 160 bits ----------
+    function test_zk_aliased_relayer_pub_reverts() public {
+        _bindKey();
+        uint256[7] memory pub = _pub();
+        pub[2] = uint160(relayer) + (1 << 160); // truncates to relayer, but >= 2^160
+        assertEq(address(uint160(pub[2])), relayer, "alias precondition");
+        assertLt(pub[2], R_FIELD, "alias precondition: < r");
+        (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
+        vm.prank(relayer);
+        vm.expectRevert("addr range");
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
+    }
+
+    function test_zk_aliased_subject_pub_reverts() public {
+        _bindKey();
+        uint256[7] memory pub = _pub();
+        pub[3] = uint160(subject) + (1 << 160); // truncates to subject, but >= 2^160
+        assertEq(address(uint160(pub[3])), subject, "alias precondition");
+        (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
+        vm.prank(relayer);
+        vm.expectRevert("addr range");
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
+    }
+
+    // ---------- audit L2: explicit deadline + Art. 9 exclusion (mirror the normal path) ----------
+    function test_zk_expired_deadline_reverts() public {
+        _bindKey();
+        uint256[7] memory pub = _pub();
+        (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
+        vm.warp(1000);
+        vm.prank(relayer);
+        vm.expectRevert("expired");
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, 999);
+    }
+
+    function test_zk_service_attestation_record_type_reverts() public {
+        _bindKey();
+        uint256[7] memory pub = _pub();
+        (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) = _zeroProof();
+        vm.prank(relayer);
+        vm.expectRevert(bytes("art9"));
+        vr.recordVerificationZK(a, b, c, pub, keccak256("SERVICE_ATTESTATION"), block.timestamp + 1 hours);
     }
 
     // ---------- shared nullifier double-spend across paths ----------
@@ -383,7 +427,7 @@ contract VerificationTest is Test {
         (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory cc) = _zeroProof();
         vm.prank(relayer);
         vm.expectRevert("replayed");
-        vr.recordVerificationZK(a, b, cc, pub);
+        vr.recordVerificationZK(a, b, cc, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     // ---------- timelock on verifier swap ----------

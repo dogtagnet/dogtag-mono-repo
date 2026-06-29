@@ -22,6 +22,15 @@ fn err(code: StatusCode, msg: &str) -> Resp {
     (code, Json(json!({ "error": msg })))
 }
 
+/// Unix-seconds `deadline` for the on-chain `recordVerificationZK` call. This is a defense-in-depth
+/// freshness bound the relayer supplies (NOT a proof-bound signal — see the contract). The ZK record is
+/// broadcast from a background task ~24-48s after the request and may retry, so use a generous 1h
+/// window to avoid a spurious "expired" revert on a legitimate, slow broadcast.
+fn zk_record_deadline() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) + 3600
+}
+
 /// The purpose label reduced to the registry's bytes32 `purpose` field: keccak256(label) reduced mod
 /// the BN254 scalar field r (VerificationRegistry §11.10(c): `purpose` is a field element, distinct
 /// from recordType). This MUST match the `c.purpose` the relayer broadcasts, the nullifier input, and
@@ -727,6 +736,12 @@ pub async fn consent_submit(
             let (bg_a, bg_b, bg_c, bg_pubs) = (a.clone(), b.clone(), c.clone(), pubs.clone());
             let bg_nullifier = pubs[4].clone();
             let bg_export_token = export_token.clone();
+            let bg_record_type = s.record_type.clone();
+            // On-chain `deadline` is a defense-in-depth freshness bound (the relayer supplies it; it is
+            // NOT a proof-bound signal — see VerificationRegistry.recordVerificationZK). The broadcast
+            // runs in a background task ~24-48s later and may retry, so use a generous 1h window to
+            // avoid a spurious "expired" revert.
+            let bg_deadline = zk_record_deadline();
             let mut bg_session = s.clone();
 
             // Persist `recording` and RESPOND IMMEDIATELY — the phone/portal poll
@@ -767,6 +782,8 @@ pub async fn consent_submit(
                         &bg_b,
                         &bg_c,
                         &bg_pubs,
+                        &bg_record_type,
+                        bg_deadline,
                     )
                     .await
                 {
@@ -844,6 +861,8 @@ pub async fn consent_submit(
                     &proof.b,
                     &proof.c,
                     &proof.pub_signals,
+                    &s.record_type,
+                    zk_record_deadline(),
                 )
                 .await
             {

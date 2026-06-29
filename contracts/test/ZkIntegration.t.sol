@@ -29,6 +29,8 @@ contract ZkIntegrationTest is Test {
     address admin = address(0xA11CE);
     address vetSigner = address(0xBEEF);
     bytes32 constant VACCINATION = keccak256("VACCINATION");
+    bytes32 constant SERVICE_ATTESTATION = keccak256("SERVICE_ATTESTATION");
+    uint256 constant TWO_POW_160 = 1 << 160;
 
     uint256[2] a;
     uint256[2][2] b;
@@ -148,22 +150,69 @@ contract ZkIntegrationTest is Test {
             dogTagId, relayer, subject, purpose, bytes32(pub[4]), block.timestamp
         );
         vm.prank(relayer);
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
         assertTrue(vr.consumed(bytes32(pub[4])));
     }
 
     function test_real_proof_replay_reverts() public {
         vm.prank(relayer);
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
         vm.prank(relayer);
         vm.expectRevert("replayed");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, block.timestamp + 1 hours);
     }
 
     function test_malleated_proof_rejected_by_verifier() public {
         uint256[2] memory aBad = [a[0] ^ 1, a[1]]; // flip a bit -> not a valid proof point
         vm.prank(relayer);
         vm.expectRevert(); // Groth16Verifier reverts on a malformed point, or verifyProof returns false -> "bad proof"
-        vr.recordVerificationZK(aBad, b, c, pub);
+        vr.recordVerificationZK(aBad, b, c, pub, VACCINATION, block.timestamp + 1 hours);
+    }
+
+    // ---- audit L1: address-typed signals must fit in 160 bits ----
+    // A prover can pick `pub[i] = victim + k·2^160 < r`: the on-chain `uint160(pub[i])` truncation
+    // aliases `victim` (so the relayer/owner checks pass) while the proof witnesses the FULL field
+    // element. The `pub[2/3] < TWO_POW_160` guard rejects this before any address cast is trusted.
+    function test_aliased_relayer_pub_reverts() public {
+        uint256[7] memory p = _pubCopy();
+        p[2] = pub[2] + TWO_POW_160; // truncates back to `relayer`, but is now >= 2^160
+        require(address(uint160(p[2])) == relayer, "alias precondition: truncates to relayer");
+        require(p[2] < vrField(), "alias precondition: still < r");
+        vm.prank(relayer);
+        vm.expectRevert("addr range");
+        vr.recordVerificationZK(a, b, c, p, VACCINATION, block.timestamp + 1 hours);
+    }
+
+    function test_aliased_subject_pub_reverts() public {
+        uint256[7] memory p = _pubCopy();
+        p[3] = pub[3] + TWO_POW_160; // truncates back to `subject`, but is now >= 2^160
+        require(address(uint160(p[3])) == subject, "alias precondition: truncates to subject");
+        vm.prank(relayer);
+        vm.expectRevert("addr range");
+        vr.recordVerificationZK(a, b, c, p, VACCINATION, block.timestamp + 1 hours);
+    }
+
+    // ---- audit L2: explicit deadline + Art. 9 exclusion mirroring the normal path ----
+    function test_expired_deadline_reverts() public {
+        vm.warp(1000);
+        vm.prank(relayer);
+        vm.expectRevert("expired");
+        vr.recordVerificationZK(a, b, c, pub, VACCINATION, 999);
+    }
+
+    function test_service_attestation_record_type_reverts() public {
+        vm.prank(relayer);
+        vm.expectRevert(bytes("art9"));
+        vr.recordVerificationZK(a, b, c, pub, SERVICE_ATTESTATION, block.timestamp + 1 hours);
+    }
+
+    function _pubCopy() internal view returns (uint256[7] memory p) {
+        for (uint256 i; i < 7; i++) {
+            p[i] = pub[i];
+        }
+    }
+
+    function vrField() internal pure returns (uint256) {
+        return 21888242871839275222246405745257275088548364400416034343698204186575808495617; // BN254 r
     }
 }

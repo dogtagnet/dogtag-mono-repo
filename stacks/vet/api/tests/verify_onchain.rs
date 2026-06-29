@@ -614,6 +614,8 @@ async fn zk_path_records_verified_onchain() {
         &out.b,
         &out.c,
         &out.public_signals,
+        &vacc_rt,
+        4_102_444_800, // year 2100 — far-future deadline for the test broadcast
     );
     let tx_hash = anvil_impersonate_send(&rpc, &relayer_addr, &stack.verification, &zk_calldata);
 

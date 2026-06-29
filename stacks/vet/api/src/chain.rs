@@ -65,7 +65,9 @@ sol! {
             uint256[2] a,
             uint256[2][2] b,
             uint256[2] c,
-            uint256[7] pub
+            uint256[7] pub,
+            bytes32 recordType,
+            uint256 deadline
         ) external;
         function consumed(bytes32 nf) external view returns (bool);
     }
@@ -178,6 +180,8 @@ pub trait ChainClient: Send + Sync {
         b: &[[String; 2]; 2],
         c: &[String; 2],
         pub_signals: &[String; 7],
+        record_type: &str,
+        deadline: u64,
     ) -> Result<SentTx, ChainError>;
     /// Read the `Verified(dogTagId,relayer,subject,purpose,nullifier,ts)` event emitted by
     /// `registry_addr` in the given tx's receipt. Err(NotFound) if absent/unmined.
@@ -344,12 +348,16 @@ pub fn record_verification_calldata(consent: &ConsentInput, user_sig: &str) -> S
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
-/// ABI-encode recordVerificationZK(a,b,c,pub) from decimal-string proof components.
+/// ABI-encode recordVerificationZK(a,b,c,pub,recordType,deadline) from decimal-string proof
+/// components. `record_type` is the credential recordType (Art. 9 exclusion) and `deadline` is a
+/// unix-seconds freshness bound — both defense-in-depth guards the relayer supplies (see the contract).
 pub fn record_verification_zk_calldata(
     a: &[String; 2],
     b: &[[String; 2]; 2],
     c: &[String; 2],
     pub_signals: &[String; 7],
+    record_type: &str,
+    deadline: u64,
 ) -> String {
     use alloy::sol_types::SolCall;
     let g = |s: &str| parse_u256_dec_or_hex(s);
@@ -365,6 +373,8 @@ pub fn record_verification_zk_calldata(
         b: b_arr,
         c: c_arr,
         r#pub: pub_arr,
+        recordType: parse_b256(record_type),
+        deadline: U256::from(deadline),
     };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
@@ -636,6 +646,8 @@ impl ChainClient for MemChain {
         _b: &[[String; 2]; 2],
         _c: &[String; 2],
         pub_signals: &[String; 7],
+        _record_type: &str,
+        _deadline: u64,
     ) -> Result<SentTx, ChainError> {
         let nf = format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[4])));
         let mut g = self.inner.lock().unwrap();
@@ -1039,8 +1051,10 @@ impl ChainClient for AlloyChain {
         b: &[[String; 2]; 2],
         c: &[String; 2],
         pub_signals: &[String; 7],
+        record_type: &str,
+        deadline: u64,
     ) -> Result<SentTx, ChainError> {
-        let calldata = record_verification_zk_calldata(a, b, c, pub_signals);
+        let calldata = record_verification_zk_calldata(a, b, c, pub_signals, record_type, deadline);
         self.sign_and_send(account_index, registry_addr, &calldata)
             .await
     }
@@ -1213,7 +1227,7 @@ mod tests {
             )),
             "7fe27b21"
         );
-        // recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7])
+        // recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7],bytes32,uint256)
         let a = ["0".to_string(), "0".to_string()];
         let b = [
             ["0".to_string(), "0".to_string()],
@@ -1230,8 +1244,8 @@ mod tests {
             "0".to_string(),
         ];
         assert_eq!(
-            selector(&record_verification_zk_calldata(&a, &b, &c, &pubs)),
-            "dd080593"
+            selector(&record_verification_zk_calldata(&a, &b, &c, &pubs, "0x00", 0)),
+            "423a45b6"
         );
     }
 
