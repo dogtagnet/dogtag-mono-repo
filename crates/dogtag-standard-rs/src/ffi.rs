@@ -430,7 +430,9 @@ pub fn verify_consent_eddsa(
         &deadline_hex,
     )?;
     let m = crate::consent::eddsa_consent_message(&c);
-    Ok(crate::eddsa::verify_poseidon(&ax, &ay, &r8x, &r8y, &s, &m))
+    // An off-curve / small-subgroup point is malformed input -> FfiError::Invalid (no panic).
+    crate::eddsa::verify_poseidon(&ax, &ay, &r8x, &r8y, &s, &m)
+        .map_err(|e| FfiError::Invalid(e.to_string()))
 }
 
 /// NFC-normalize a string (exposed for cross-language canonicalization sanity checks).
