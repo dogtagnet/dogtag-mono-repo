@@ -48,6 +48,15 @@ pub const N: usize = 24;
 /// `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]`.
 pub const NUM_PUBLIC: usize = 7;
 
+/// Expected SHA-256 (lowercase hex) of the pinned `verification_final.zkey` — the testnet self-run
+/// ceremony output recorded in `contracts/deployments/roax.json` (`_zk_ceremony`) and
+/// `docs/CEREMONY_TRANSCRIPT.md`. [`Prover::load`] refuses any zkey whose hash differs, so a swapped
+/// or corrupt proving key fails closed instead of silently producing proofs against the wrong key
+/// (audit M4). A deployment pinning a DIFFERENT zkey (e.g. a production ceremony output) loads it via
+/// [`Prover::load_with_expected_zkey`].
+pub const EXPECTED_ZKEY_SHA256_HEX: &str =
+    "45d0b6fb78591548f5763e86f614d1c04cf48a80d35445d1740c0ba561fdc03e";
+
 /// Errors that can arise while loading artifacts or proving.
 #[derive(Debug, thiserror::Error)]
 pub enum ProverError {
@@ -65,6 +74,8 @@ pub enum ProverError {
     Prove(String),
     #[error("self-verification of generated proof failed")]
     Verify,
+    #[error("zkey hash mismatch: expected {expected}, got {got}")]
+    ZkeyHashMismatch { expected: String, got: String },
     #[error("unexpected public-signal count: got {got}, expected {expected}")]
     PublicSignals { got: usize, expected: usize },
 }
@@ -131,13 +142,25 @@ pub struct Prover {
 }
 
 impl Prover {
-    /// Load the circuit artifacts from `build_dir` (the `circuits/build` directory).
+    /// Load the circuit artifacts from `build_dir` (the `circuits/build` directory), enforcing the
+    /// pinned [`EXPECTED_ZKEY_SHA256_HEX`] — a zkey whose hash differs is rejected (audit M4).
     ///
     /// Expects:
     /// - `verification.r1cs`
     /// - `verification_js/verification.wasm`
     /// - `verification_final.zkey`
     pub fn load(build_dir: impl AsRef<Path>) -> Result<Self, ProverError> {
+        Self::load_with_expected_zkey(build_dir, EXPECTED_ZKEY_SHA256_HEX)
+    }
+
+    /// Like [`Prover::load`] but pins an explicit expected zkey SHA-256 (lowercase hex). Use this when
+    /// a deployment ships a different proving key (e.g. a production ceremony output) than the bundled
+    /// testnet one. The hash is checked BEFORE the (expensive) proving-key parse, so a wrong artifact
+    /// fails fast and closed.
+    pub fn load_with_expected_zkey(
+        build_dir: impl AsRef<Path>,
+        expected_zkey_sha256_hex: &str,
+    ) -> Result<Self, ProverError> {
         let build_dir = build_dir.as_ref().to_path_buf();
         let r1cs_path = build_dir.join("verification.r1cs");
         let wasm_path = build_dir.join("verification_js").join("verification.wasm");
@@ -149,7 +172,7 @@ impl Prover {
             }
         }
 
-        // Pin the zkey hash at load (impl §11.8(f)).
+        // Pin the zkey hash at load (impl §11.8(f)) and ENFORCE it: reject a swapped/corrupt key.
         let zkey_bytes = std::fs::read(&zkey_path).map_err(|e| ProverError::Io {
             path: zkey_path.display().to_string(),
             source: e,
@@ -157,6 +180,13 @@ impl Prover {
         let mut hasher = Sha256::new();
         hasher.update(&zkey_bytes);
         let zkey_sha256: [u8; 32] = hasher.finalize().into();
+        let got_hex = hex::encode(zkey_sha256);
+        if !got_hex.eq_ignore_ascii_case(expected_zkey_sha256_hex) {
+            return Err(ProverError::ZkeyHashMismatch {
+                expected: expected_zkey_sha256_hex.to_ascii_lowercase(),
+                got: got_hex,
+            });
+        }
 
         // Parse the proving key once.
         let mut zkey_reader = std::io::Cursor::new(zkey_bytes);

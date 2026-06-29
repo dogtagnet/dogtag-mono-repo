@@ -193,8 +193,10 @@ contract DogTagContractsTest is Test {
 
     function test_sbt_recover_preserves_tokenId_and_issuer() public {
         uint256 id = 7;
-        address oldOwner = address(0xD06);
-        _mintTo(oldOwner, id);
+        // current owner keypair (must sign its own consent — audit H1)
+        uint256 curPk = 0xC0FFEE;
+        address curOwner = vm.addr(curPk);
+        _mintTo(curOwner, id);
         address origIssuer = sbt.issuerOf(id);
 
         // destination owner keypair
@@ -207,28 +209,92 @@ contract DogTagContractsTest is Test {
 
         uint256 nonce = sbt.recoverNonce(id);
         uint256 deadline = block.timestamp + 1 hours;
-        bytes32 digest = _claimDigest(id, newOwner, nonce, deadline);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        bytes memory curSig = _sign(curPk, _consentDigest(id, curOwner, newOwner, nonce, deadline));
+        bytes memory newSig = _sign(pk, _claimDigest(id, newOwner, nonce, deadline));
 
-        sbt.recover(id, newOwner, nonce, deadline, abi.encodePacked(r, s, v));
+        sbt.recover(id, newOwner, nonce, deadline, curSig, newSig);
         assertEq(sbt.ownerOf(id), newOwner);
         assertEq(sbt.issuerOf(id), origIssuer); // preserved
         assertEq(uint8(sbt.status(id)), uint8(DogTagSBT.Status.Active));
     }
 
+    /// Audit H1: RECOVERY_ROLE alone cannot confiscate a token — without the CURRENT owner's consent
+    /// signature the recovery reverts, even with a valid destination acceptance signature.
+    function test_sbt_recover_without_current_owner_auth_reverts() public {
+        uint256 id = 9;
+        uint256 curPk = 0xC0FFEE;
+        address curOwner = vm.addr(curPk);
+        _mintTo(curOwner, id);
+
+        bytes32 recRole = sbt.RECOVERY_ROLE();
+        vm.prank(admin);
+        sbt.grantRole(recRole, address(this));
+
+        uint256 pk = 0xA11CE2;
+        address newOwner = vm.addr(pk);
+        uint256 nonce = sbt.recoverNonce(id);
+        uint256 deadline = block.timestamp + 1 hours;
+
+        // consent signed by an ATTACKER (not the current owner), acceptance by the destination.
+        bytes memory forgedConsent = _sign(uint256(0xBAD), _consentDigest(id, curOwner, newOwner, nonce, deadline));
+        bytes memory newSig = _sign(pk, _claimDigest(id, newOwner, nonce, deadline));
+        vm.expectRevert("bad current-owner sig");
+        sbt.recover(id, newOwner, nonce, deadline, forgedConsent, newSig);
+
+        // and the token did not move.
+        assertEq(sbt.ownerOf(id), curOwner);
+    }
+
     function test_sbt_recover_wrong_signer_reverts() public {
         uint256 id = 8;
-        _mintTo(address(0xD06), id);
+        uint256 curPk = 0xC0FFEE;
+        address curOwner = vm.addr(curPk);
+        _mintTo(curOwner, id);
         bytes32 recRole = sbt.RECOVERY_ROLE();
         vm.prank(admin);
         sbt.grantRole(recRole, address(this));
         address newOwner = vm.addr(0xBEEF1);
         uint256 nonce = sbt.recoverNonce(id);
         uint256 deadline = block.timestamp + 1 hours;
-        bytes32 digest = _claimDigest(id, newOwner, nonce, deadline);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(uint256(0xBAD), digest); // not newOwner
+        // valid current-owner consent, but the destination acceptance is signed by the wrong key.
+        bytes memory curSig = _sign(curPk, _consentDigest(id, curOwner, newOwner, nonce, deadline));
+        bytes memory badNewSig = _sign(uint256(0xBAD), _claimDigest(id, newOwner, nonce, deadline)); // not newOwner
         vm.expectRevert("bad sig");
-        sbt.recover(id, newOwner, nonce, deadline, abi.encodePacked(r, s, v));
+        sbt.recover(id, newOwner, nonce, deadline, curSig, badNewSig);
+    }
+
+    function _sign(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return abi.encodePacked(r, s, v);
+    }
+
+    function _consentDigest(uint256 id, address currentOwner, address newOwner, uint256 nonce, uint256 deadline)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 domainSep = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes("DogTag")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(sbt)
+            )
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "RecoverConsent(uint256 dogTagId,address currentOwner,address newOwner,uint256 nonce,uint256 deadline)"
+                ),
+                id,
+                currentOwner,
+                newOwner,
+                nonce,
+                deadline
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", domainSep, structHash));
     }
 
     function _claimDigest(uint256 id, address newOwner, uint256 nonce, uint256 deadline)

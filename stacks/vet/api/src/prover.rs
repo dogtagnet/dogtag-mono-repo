@@ -101,9 +101,22 @@ pub struct ArkProver {
 }
 
 impl ArkProver {
-    /// Load the circuit artifacts from `build_dir` (the `circuits/build` directory).
+    /// Load the circuit artifacts from `build_dir` (the `circuits/build` directory), enforcing the
+    /// crate-pinned testnet zkey hash.
     pub fn load(build_dir: impl AsRef<std::path::Path>) -> Result<Self, ProverError> {
         let inner = ArkInnerProver::load(build_dir)
+            .map_err(|e| ProverError::Unavailable(e.to_string()))?;
+        Ok(ArkProver { inner: Arc::new(inner) })
+    }
+
+    /// Like [`ArkProver::load`] but pins an explicit expected zkey SHA-256 (lowercase hex), so a
+    /// deployment shipping a different proving key (e.g. a production ceremony output) is not blocked
+    /// by the crate's hardcoded testnet hash.
+    pub fn load_with_expected_zkey(
+        build_dir: impl AsRef<std::path::Path>,
+        expected_zkey_sha256_hex: &str,
+    ) -> Result<Self, ProverError> {
+        let inner = ArkInnerProver::load_with_expected_zkey(build_dir, expected_zkey_sha256_hex)
             .map_err(|e| ProverError::Unavailable(e.to_string()))?;
         Ok(ArkProver { inner: Arc::new(inner) })
     }

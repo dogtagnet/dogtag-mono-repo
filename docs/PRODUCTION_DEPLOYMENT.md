@@ -390,8 +390,14 @@ cargo build --release -p vet-api --features prover --target-dir target/prover
 # Run it with the PRODUCTION circuits dir so the REAL ArkProver loads (must contain the §3 ceremony
 # verification_final.zkey + verification.graph). If CIRCUITS_BUILD_DIR is UNSET it silently loads the
 # StubProver, whose proofs are NOT chain-valid. If it is SET but the real prover fails to load
-# (missing/corrupt zkey or graph), the service is fail-closed and EXITS with a FATAL error instead:
+# (missing/corrupt zkey or graph), the service is fail-closed and EXITS with a FATAL error instead.
+#
+# The prover ENFORCES a pinned zkey sha256 (audit M4): its hardcoded default is the TESTNET hash, so a
+# production ceremony zkey would be REJECTED at load (hash mismatch -> FATAL) unless you tell it the new
+# hash. Set EXPECTED_ZKEY_SHA256 to your §3 ceremony zkey's sha256 (the value scripts/ceremony.sh finalize
+# printed; also re-vendored into the apps in §2.4). This is a pure config swap, not a code change.
 CIRCUITS_BUILD_DIR=<path to circuits/build with the ceremony zkey+graph> \
+EXPECTED_ZKEY_SHA256=<sha256 of the §3 ceremony verification_final.zkey> \
 ROAX_RPC=<NEW_RPC> \
 PORT=<owner-chosen> \
   target/prover/release/vet-api
@@ -404,11 +410,14 @@ app's `prover_api` override (Android SharedPrefs) — see [MOBILE_BUILD.md](./MO
 set `prover_api` to your live prover host.
 
 **Verify.** `CIRCUITS_BUILD_DIR` points at a dir containing the **ceremony** `verification_final.zkey`
-(matching the §3.1 pinned sha256) + `verification.graph`. A proof produced by this service is accepted by
-`recordVerificationZK` on the new chain (i.e. it was built by ArkProver, not StubProver).
+(matching the §3.1 pinned sha256) + `verification.graph`, and `EXPECTED_ZKEY_SHA256` is set to that same
+ceremony sha256 (so the prover's pin check passes instead of fail-closing on the testnet default). A proof
+produced by this service is accepted by `recordVerificationZK` on the new chain (i.e. it was built by
+ArkProver, not StubProver).
 
 **STOP if** `CIRCUITS_BUILD_DIR` is unset or points at the **testnet** zkey → StubProver / forgeable
-proofs. Only run with the ceremony key from §3.
+proofs, or if the service FATALs on a zkey-hash mismatch → set `EXPECTED_ZKEY_SHA256` to the ceremony
+hash. Only run with the ceremony key from §3.
 
 ---
 

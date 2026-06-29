@@ -28,6 +28,11 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, EIP712, IERC5192 {
 
     bytes32 private constant CLAIM_TYPEHASH =
         keccak256("Claim(uint256 dogTagId,address newOwner,uint256 nonce,uint256 deadline)");
+    // The CURRENT holder's explicit consent to a recovery/rebind (audit H1). Distinct typehash so a
+    // destination's acceptance signature can never double as a current-owner authorization.
+    bytes32 private constant RECOVER_CONSENT_TYPEHASH = keccak256(
+        "RecoverConsent(uint256 dogTagId,address currentOwner,address newOwner,uint256 nonce,uint256 deadline)"
+    );
 
     mapping(uint256 => address) public issuerOf; // immutable, set at mint
     mapping(uint256 => bytes32) public profileRoot;
@@ -76,16 +81,38 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, EIP712, IERC5192 {
         emit StatusChanged(id, f, s, msg.sender, reason);
     }
 
-    /// @notice Lost-key / sale recovery — PRESERVES tokenId + issuerOf so referencing creds survive.
-    /// EIP-712 signature from the DESTINATION owner (binds chainId + this contract via the domain).
-    function recover(uint256 id, address newOwner, uint256 nonce, uint256 deadline, bytes calldata ownerSig)
-        external
-        onlyRole(RECOVERY_ROLE)
-    {
+    /// @notice Consensual rebind (sale / key rotation) — PRESERVES tokenId + issuerOf so referencing
+    /// creds survive.
+    /// @dev Requires TWO EIP-712 authorizations, both binding chainId + this contract (domain) and the
+    /// per-token nonce + deadline: `currentOwnerSig` is the CURRENT holder consenting to the rebind, and
+    /// `ownerSig` is the DESTINATION accepting it. RECOVERY_ROLE can only EXECUTE a recovery the current
+    /// holder has explicitly authorized — it can no longer unilaterally confiscate a soulbound token
+    /// (audit H1). This intentionally means there is NO on-chain rebind for a genuinely lost key (a
+    /// holder who can no longer sign): re-enabling that would reintroduce the H1 confiscation vector.
+    /// The only admin action for such a token is `burn` (DEFAULT_ADMIN, GDPR-erasure), after which the
+    /// issuer re-mints a fresh tokenId to the new wallet.
+    function recover(
+        uint256 id,
+        address newOwner,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata currentOwnerSig,
+        bytes calldata ownerSig
+    ) external onlyRole(RECOVERY_ROLE) {
         require(block.timestamp <= deadline, "expired");
+        require(newOwner != address(0), "zero newOwner");
         require(nonce == recoverNonce[id]++, "bad nonce");
-        bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(CLAIM_TYPEHASH, id, newOwner, nonce, deadline)));
-        require(ECDSA.recover(digest, ownerSig) == newOwner, "bad sig");
+        address currentOwner = ownerOf(id); // reverts if the token does not exist
+
+        bytes32 consentDigest = _hashTypedDataV4(
+            keccak256(abi.encode(RECOVER_CONSENT_TYPEHASH, id, currentOwner, newOwner, nonce, deadline))
+        );
+        require(ECDSA.recover(consentDigest, currentOwnerSig) == currentOwner, "bad current-owner sig");
+
+        bytes32 acceptDigest =
+            _hashTypedDataV4(keccak256(abi.encode(CLAIM_TYPEHASH, id, newOwner, nonce, deadline)));
+        require(ECDSA.recover(acceptDigest, ownerSig) == newOwner, "bad sig");
+
         Status f = status[id];
         status[id] = Status.TransferPending;
         _recoveryRebind(newOwner, id);

@@ -744,7 +744,8 @@ never touches it. Same loaded artifacts as the on-device prover.
 
 ```
 # crates/dogtag-prover-rs — ark-circom + ark-groth16 (pure Rust, integrated witness-gen, no native deps)
-boot:  load circuits/verification.{r1cs,wasm} + the phase-2 verification.zkey ONCE; pin the .zkey hash
+boot:  load circuits/verification.{r1cs,wasm} + the phase-2 verification.zkey ONCE; ENFORCE the pinned
+       .zkey hash (EXPECTED_ZKEY_SHA256_HEX, env-overridable) — a mismatched/corrupt key fails closed (M4)
 prove({ dogTagId, purpose, relayer, subject, nonce, R, eddsaSig, leafValues, leafSalts, merklePath, babyJubPubKey }):
    witness = build_witness(private:{ leaves/salts/typeTags/keyPathHashes, poseidon merklePath,
                                      consentNonce:nonce, eddsaSig{R8x,R8y,S}, babyJubPubKey{Ax,Ay} },
@@ -1174,8 +1175,10 @@ WalletModule (Settings -> Wallet):
         non-crypto owners; DogTag's EIP-712 Claim is signed ONLY via the in-app recover() flow, never a dApp.
 
   # --- recovery / transfer: recover() preserves tokenId + issuerOf (NOT burn-and-remint) — §11.7(a)/(f) ---
-  # RECOVERY_ROLE + EIP-712 destination signature {dogTagId,newOwner,nonce,deadline,chainId:135}.
-  # Lost-key (no key): RECOVERY_ROLE after off-chain identity proof to the protocol — does not need the lost key.
+  # RECOVERY_ROLE EXECUTES; needs TWO EIP-712 sigs over {dogTagId,nonce,deadline,chainId:135}:
+  #   currentOwnerSig = current holder's RecoverConsent (consents to the rebind), ownerSig = destination's Claim.
+  # RECOVERY_ROLE can no longer unilaterally confiscate (audit H1); a genuinely lost key (no signing ability)
+  # has NO on-chain rebind — admin burn (GDPR) + re-mint a fresh tokenId is the only path.
 ```
 
 ### 6.5 Import verification — 4 checks (CHANGESPEC §4 — research 08 B)
@@ -1625,6 +1628,7 @@ contract DogTagSBT is ERC721, IERC5192, AccessControlEnumerable, EIP712 {
     mapping(uint256=>uint256) public recoverNonce;
     error Soulbound(); error NotIssuerOrAuthority(); error Terminal();
     bytes32 constant CLAIM=keccak256("Claim(uint256 dogTagId,address newOwner,uint256 nonce,uint256 deadline)");
+    bytes32 constant RECOVER_CONSENT=keccak256("RecoverConsent(uint256 dogTagId,address currentOwner,address newOwner,uint256 nonce,uint256 deadline)");
     modifier issuerOrAuthority(uint256 id){ if(msg.sender!=issuerOf[id] && !hasRole(AUTHORITY_ROLE,msg.sender)) revert NotIssuerOrAuthority(); _; }
 
     function mint(address to,uint256 id,bytes32 root) external onlyRole(ISSUER_ROLE){
@@ -1636,11 +1640,18 @@ contract DogTagSBT is ERC721, IERC5192, AccessControlEnumerable, EIP712 {
         Status f=status[id]; if(f==Status.Deceased||f==Status.Revoked) revert Terminal();   // terminal, irreversible
         status[id]=s; emit StatusChanged(id,f,s,msg.sender,reason);                          // owner can NEVER call this
     }
-    // lost-key / sale recovery: PRESERVES tokenId + issuerOf (referencing creds survive). EIP-712 by destination.
-    function recover(uint256 id,address newOwner,uint256 nonce,uint256 deadline,bytes calldata ownerSig) external onlyRole(RECOVERY_ROLE){
-        require(block.timestamp<=deadline && nonce==recoverNonce[id]++);
+    // consensual rebind (sale / key rotation): PRESERVES tokenId + issuerOf (referencing creds survive).
+    // TWO EIP-712 sigs (both bind chainId 135 + this contract via the domain): currentOwnerSig = current
+    // holder's RecoverConsent, ownerSig = destination's Claim acceptance. RECOVERY_ROLE only EXECUTES a
+    // rebind the holder signed — it cannot unilaterally confiscate (audit H1). No on-chain rebind for a
+    // genuinely lost key; admin burn (GDPR) + re-mint is the only path.
+    function recover(uint256 id,address newOwner,uint256 nonce,uint256 deadline,bytes calldata currentOwnerSig,bytes calldata ownerSig) external onlyRole(RECOVERY_ROLE){
+        require(block.timestamp<=deadline && newOwner!=address(0) && nonce==recoverNonce[id]++);
+        address cur=ownerOf(id);                         // reverts if the token does not exist
+        bytes32 c=_hashTypedDataV4(keccak256(abi.encode(RECOVER_CONSENT,id,cur,newOwner,nonce,deadline)));
+        require(ECDSA.recover(c,currentOwnerSig)==cur);  // current holder CONSENTS to the rebind
         bytes32 d=_hashTypedDataV4(keccak256(abi.encode(CLAIM,id,newOwner,nonce,deadline)));
-        require(ECDSA.recover(d,ownerSig)==newOwner);    // proves control of DESTINATION (binds chainId 135 + this contract via EIP712 domain)
+        require(ECDSA.recover(d,ownerSig)==newOwner);    // proves control of DESTINATION
         status[id]=Status.TransferPending; _recoveryRebind(_ownerOf(id),newOwner,id); status[id]=Status.Active; emit Recovered(id,newOwner);
     }
     function burn(uint256 id) external onlyRole(DEFAULT_ADMIN_ROLE){ _burn(id); emit Burned(id); } // GDPR erasure ONLY
@@ -1684,7 +1695,7 @@ PUT /settings/signing-mode: 409 if any status=="prepared" record outstanding (no
 
 **(f) mobile wallet: funds-custody acknowledgment + recovery (audit-06 §3.2/§3.5):**
 - **Default to gas sponsorship / account abstraction (ERC-4337/7702)** so pet owners **never hold PLASMA**: issuance gas is the issuer-backend's; the only user-side on-chain action is read-only import + occasional `recover`. **Omit native send/receive from v1** → removes most wallet attack surface + the money-transmission question (get a legal read if funds custody is ever added).
-- **MPC key-loss recovery (normative):** primary = the embedded-MPC provider's passkey/email-share recovery (Privy/MetaMask Embedded). Catastrophic loss (no key at all) = `RECOVERY_ROLE` executes `recover()` after an **off-chain identity proof to the protocol** (central knows `userId↔dogTagId↔ownerAddress`) — does **not** require the lost key. dApp-connect (Reown WalletKit) is **off by default** for non-crypto owners; DogTag's own EIP-712 `Claim` is only ever signed via the in-app recovery flow (distinct domain), never a connected dApp.
+- **MPC key-loss recovery (normative):** primary = the embedded-MPC provider's passkey/email-share recovery (Privy/MetaMask Embedded), which **restores the holder's signing ability** — they can then co-sign a `recover()` rebind to a fresh wallet. `recover()` itself requires the **current holder's** `RecoverConsent` signature, so `RECOVERY_ROLE` can no longer rebind a token whose key is **catastrophically** lost (no signing ability at all): re-enabling that would reintroduce the audit-H1 confiscation vector. For a truly lost key the only path is admin `burn` (DEFAULT_ADMIN, GDPR-erasure) followed by the issuer re-minting a fresh `dogTagId` to the new wallet. dApp-connect (Reown WalletKit) is **off by default** for non-crypto owners; DogTag's own EIP-712 `Claim` is only ever signed via the in-app recovery flow (distinct domain), never a connected dApp.
 
 ### 11.8 On-chain proof-of-verification — consent + Groth16 (NORMATIVE — CHANGESPEC §0-§5; research 10/11/12)
 
@@ -1866,7 +1877,13 @@ proving flow as a **test oracle** for `scripts/e2e-zk.sh` (no phone). Sub-second
 **(f) trusted setup (NORMATIVE):** reuse the **Hermez / Perpetual Powers of Tau** phase-1 `.ptau`
 (do NOT run phase 1) + run a **multi-party phase-2 (≥3 independent contributors) ending in a public
 random beacon**; publish the transcript (anyone can `zkey verify`), pin the final `.zkey` hash in CI,
-ship it in the prover image. A compromised phase-2 lets a party **forge attestations, not leak data**
+ship it in the prover image. The pin is **ENFORCED, not just asserted in CI** (audit M4): the prover
+crate hardcodes the testnet zkey SHA-256 as `EXPECTED_ZKEY_SHA256_HEX` and `Prover::load` **rejects**
+any zkey whose hash differs (fail-closed) — a swapped or corrupt proving key never silently produces
+proofs against the wrong key. A deployment shipping a **different** zkey (a production ceremony output)
+loads it via `Prover::load_with_expected_zkey(dir, hash)`; the `vet-api` prover-service exposes this as
+the **`EXPECTED_ZKEY_SHA256`** env var, so a production-ceremony swap is a pure config change (set it to
+the ceremony zkey's sha256) rather than a code edit — leave it unset to enforce the bundled testnet hash. A compromised phase-2 lets a party **forge attestations, not leak data**
 (Groth16 ZK holds regardless), and the **core three-pillar trust model (§11.3) does not depend on the ZK
 setup at all** — a forged attestation is still constrained by the shared nullifier + the on-chain
 `isValid(R)` re-check (directly on the public root — no `kecOf` mapping).
