@@ -132,3 +132,89 @@ maestro test apps/android/maestro/zk_e2e.yaml
 provide a hardware-accelerated arm64 Android emulator (the x86_64 emulators they accelerate can't load
 the ARM-only prover `.so`), and the proving artifacts are gitignored. Wiring it to push/PR would make a
 perpetually-red check. The validated signal is the local run above.
+
+## Mobile end-to-end testing (iOS, on-device ZK proof)
+
+The iOS app mirrors the Android e2e exactly: a Maestro flow `apps/ios/maestro/zk_e2e.yaml` drives the
+SAME native code path the privacy-preserving groomer export uses — UniFFI → Swift bindings →
+`DogTagFFI.xcframework` (Rust SDK + circom-prover graph witness calculator + the bundled proving key)
+— with no camera, biometric, or network. It asserts the Verify tab's `mobile root == server root:
+PASS` (import/issuance trust core) and the Profile screen's `ZK-SELFTEST: PASS`.
+
+### The iOS ZK self-test
+
+`apps/ios/DogTag/ZkSelfTestScreen.swift` (`ZkSelfTestCard`) is the Swift port of Android
+`ui/screens/ZkSelfTest.kt`, wrapped in `#if DEBUG` so it never ships in a release build. It runs, on
+the device's own arm64 code: `signConsentEddsa` → `proveVerification` (the REAL on-device Groth16
+proof) → public-signal check (7/7 == the server-recomputed vector, plus the nullifier/keyHash non-zero
+guard) → `keyHashHex` + `bindConsentKeyDigestHex`. It reads the SAME fixed vector both apps share,
+`apps/ios/DogTag/zk_selftest.json`, which is byte-for-byte identical to the Android fixture and emitted
+by the SAME test (`crates/dogtag-standard-rs/tests/prove_parity.rs::dump_selftest_fixture`, which now
+writes both apps' copies):
+
+```bash
+cargo test -p dogtag-standard-rs --features prover dump_selftest_fixture -- --nocapture
+```
+
+### Building the on-device prover xcframework + running the e2e locally
+
+`DogTagFFI.xcframework` is gitignored and is NOT produced by a plain Xcode build — build it from the
+Rust crate (`--features prover`) for the iOS Simulator, regenerate the Swift bindings (keeping the
+committed `apps/ios/DogTag/dogtag_standard.swift` ABI-consistent), then assemble it. On an
+Apple-Silicon Mac:
+
+```bash
+# 1. Vendor the gitignored proving artifacts into the app bundle (docs/MOBILE_BUILD.md §4).
+cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
+cp circuits/build/verification.graph      apps/ios/DogTag/verification.graph
+
+# 2. Build the prover static lib for the arm64 iOS Simulator + a host build for bindgen.
+rustup target add aarch64-apple-ios-sim
+cargo build -p dogtag-standard-rs --features prover --release --target aarch64-apple-ios-sim --lib
+cargo build -p dogtag-standard-rs --features prover --release --lib
+
+# 3. Regenerate Swift bindings (header + modulemap + the committed .swift, all checksum-consistent).
+gen=$(mktemp -d); cargo run --features uniffi/cli --release --bin uniffi-bindgen -- \
+  generate --library target/release/libdogtag_standard.dylib --language swift --out-dir "$gen"
+cp "$gen/dogtag_standard.swift" apps/ios/DogTag/dogtag_standard.swift
+
+# 4. Assemble the xcframework (simulator slice). The headers dir needs the .h + a `module.modulemap`.
+hdr=$(mktemp -d); cp "$gen/dogtag_standardFFI.h" "$hdr/"; cp "$gen/dogtag_standardFFI.modulemap" "$hdr/module.modulemap"
+rm -rf apps/ios/DogTagFFI.xcframework
+xcodebuild -create-xcframework \
+  -library target/aarch64-apple-ios-sim/release/libdogtag_standard.a -headers "$hdr" \
+  -output apps/ios/DogTagFFI.xcframework
+
+# 5. Generate the Xcode project, build the debug app, install on a booted arm64 sim, run the flow.
+( cd apps/ios && xcodegen )
+SIM=$(xcrun simctl list devices available | awk -F'[()]' '/iPhone 16 \(/{print $2; exit}')
+xcrun simctl boot "$SIM"; xcrun simctl bootstatus "$SIM" -b
+( cd apps/ios && xcodebuild -project DogTag.xcodeproj -scheme DogTag -configuration Debug \
+    -sdk iphonesimulator -destination "platform=iOS Simulator,id=$SIM" -derivedDataPath /tmp/dtbuild build )
+xcrun simctl install "$SIM" /tmp/dtbuild/Build/Products/Debug-iphonesimulator/DogTag.app
+maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow waits up to 180s for PASS
+```
+
+### Sharp edges / gotchas (iOS)
+
+- **xcframework is built `--features prover`** — without it the FFI surface has no `proveVerification`
+  and the app won't link the prover symbols. The Swift binding is generated from a host dylib but MUST
+  match the linked static lib's ABI; regenerate the `.swift` from the same crate build (step 3) so the
+  embedded UniFFI checksums agree, otherwise the app traps at the first FFI call.
+- **Simulator slice only** — the committed build path makes a `aarch64-apple-ios-sim` xcframework, so
+  building for a *device* destination fails until you add an `aarch64-apple-ios` slice (+ signing). The
+  e2e runs on the Simulator, which needs no Apple team.
+- **Generated `DogTag.xcodeproj` is committed** — it is produced by `xcodegen` from
+  `apps/ios/project.yml`; re-run `xcodegen` (don't hand-edit the project) after adding/removing source
+  files, and commit the regenerated `project.pbxproj`.
+- **zkey + graph are gitignored** (`apps/.gitignore`) — a fresh checkout has neither; vendor them from
+  `circuits/build/` (step 1) or the e2e fails to prove. Validate the graph/zkey pair on the host with
+  `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
+
+### CI (iOS)
+
+`.github/workflows/ios-mobile-e2e.yml` builds the xcframework + app and runs this Maestro flow, but is
+**`workflow_dispatch`-only** and targets a **self-hosted Apple-Silicon (arm64) macOS runner**:
+GitHub-hosted runners don't reliably provide the arm64 Simulator prover slice, and the proving
+artifacts are gitignored. Wiring it to push/PR would make a perpetually-red check. The validated signal
+is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `ZK-SELFTEST: PASS`).
