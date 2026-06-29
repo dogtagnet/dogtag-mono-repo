@@ -50,7 +50,10 @@ async fn dog_tag_id_is_never_a_hash_of_the_microchip() {
         dog_tag_id.bytes().all(|c| c.is_ascii_digit()),
         "dogTagId is a plain non-personal numeric id, not a hash digest: {dog_tag_id}"
     );
-    assert!(dog_tag_id.len() < 20, "dogTagId is a small sequential id, not a hash");
+    assert!(
+        dog_tag_id.len() < 20,
+        "dogTagId is a small sequential id, not a hash"
+    );
 
     // (B) the microchip only ever enters the commitment as a SALTED leaf. A salted leaf of the chip
     //     does NOT equal an unsalted Poseidon/keccak of the chip, and two fresh salts give different
@@ -58,10 +61,15 @@ async fn dog_tag_id_is_never_a_hash_of_the_microchip() {
     let scalar = TypedScalar::Str(MICROCHIP.to_string());
     let salt_a: [u8; 16] = [0x11; 16];
     let salt_b: [u8; 16] = [0x22; 16];
-    let leaf_a = to_hex32(&hash_leaf("credentialSubject.microchip.code", &salt_a, &scalar).unwrap());
-    let leaf_b = to_hex32(&hash_leaf("credentialSubject.microchip.code", &salt_b, &scalar).unwrap());
+    let leaf_a =
+        to_hex32(&hash_leaf("credentialSubject.microchip.code", &salt_a, &scalar).unwrap());
+    let leaf_b =
+        to_hex32(&hash_leaf("credentialSubject.microchip.code", &salt_b, &scalar).unwrap());
 
-    assert_ne!(leaf_a, leaf_b, "different salts MUST give different leaves (salting works)");
+    assert_ne!(
+        leaf_a, leaf_b,
+        "different salts MUST give different leaves (salting works)"
+    );
     assert!(
         !same_numeric(&leaf_a, &poseidon_chip) && !same_numeric(&leaf_a, &keccak_chip),
         "the salted leaf must NOT equal an unsalted hash of the microchip"

@@ -19,7 +19,7 @@ pub struct MerkleTree {
 pub fn build_merkle(leaf_hashes: &[Fr]) -> MerkleTree {
     assert!(!leaf_hashes.is_empty(), "build_merkle: empty leaf set");
     let mut level: Vec<Fr> = leaf_hashes.to_vec();
-    level.sort_by(|a, b| to_be_bytes32(a).cmp(&to_be_bytes32(b)));
+    level.sort_by_key(to_be_bytes32);
     let mut layers = vec![level.clone()];
     while level.len() > 1 {
         let mut next = Vec::with_capacity(level.len().div_ceil(2));
@@ -46,10 +46,10 @@ pub fn merkle_proof(layers: &[Vec<Fr>], leaf_hash: Fr) -> Vec<Fr> {
         .position(|h| *h == leaf_hash)
         .expect("leaf not in tree");
     let mut proof = Vec::new();
-    for l in 0..layers.len().saturating_sub(1) {
+    for layer in layers.iter().take(layers.len().saturating_sub(1)) {
         let sib = idx ^ 1;
-        if sib < layers[l].len() {
-            proof.push(layers[l][sib]);
+        if sib < layer.len() {
+            proof.push(layer[sib]);
         }
         idx >>= 1;
     }

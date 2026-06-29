@@ -81,7 +81,11 @@ impl KeyVault for MemVault {
             .map_err(|_| CryptoError::Encrypt)?;
 
         let dek_id = uuid::Uuid::new_v4().to_string();
-        self.inner.write().unwrap().deks.insert(dek_id.clone(), key_bytes);
+        self.inner
+            .write()
+            .unwrap()
+            .deks
+            .insert(dek_id.clone(), key_bytes);
         Ok(Sealed {
             dek_id,
             nonce: hex::encode(nonce_bytes),
@@ -121,7 +125,10 @@ impl KeyVault for MemVault {
 }
 
 /// Convenience: JSON-seal a serializable value.
-pub async fn seal_json<T: Serialize>(vault: &dyn KeyVault, value: &T) -> Result<Sealed, CryptoError> {
+pub async fn seal_json<T: Serialize>(
+    vault: &dyn KeyVault,
+    value: &T,
+) -> Result<Sealed, CryptoError> {
     let bytes = serde_json::to_vec(value).map_err(|_| CryptoError::Encrypt)?;
     vault.seal(&bytes).await
 }
@@ -148,6 +155,9 @@ mod tests {
         vault.shred(&sealed.dek_id).await;
         assert!(!vault.has_dek(&sealed.dek_id).await);
         // the ciphertext copy is now permanently undecryptable.
-        assert!(matches!(vault.open(&sealed).await, Err(CryptoError::KeyGone)));
+        assert!(matches!(
+            vault.open(&sealed).await,
+            Err(CryptoError::KeyGone)
+        ));
     }
 }

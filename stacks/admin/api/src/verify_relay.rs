@@ -52,7 +52,10 @@ pub struct VerifyClaims {
 /// documentStores. Falls back to the JWT-carried `verifierApiBase`.
 async fn resolve_verifier_api_base(st: &AppState, claims: &VerifyClaims) -> Option<String> {
     for b in st.store.all_businesses().await {
-        if b.document_stores.iter().any(|d| d.eq_ignore_ascii_case(&claims.relayer)) {
+        if b.document_stores
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(&claims.relayer))
+        {
             return Some(b.api_base_url);
         }
     }
@@ -87,27 +90,46 @@ pub async fn relay(
     };
 
     // asserts (impl §4.1).
-    let consent_relayer = consent.get("relayer").and_then(|v| v.as_str()).unwrap_or("");
+    let consent_relayer = consent
+        .get("relayer")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !consent_relayer.eq_ignore_ascii_case(&claims.relayer) {
         return err(StatusCode::BAD_REQUEST, "consent.relayer != claims.relayer");
     }
-    let consent_subject = consent.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+    let consent_subject = consent
+        .get("subject")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !consent_subject.eq_ignore_ascii_case(&owner.wallet_address) {
         return err(StatusCode::BAD_REQUEST, "consent.subject != caller wallet");
     }
     let expected_rt = keccak256_hex(&claims.record_type);
-    let consent_rt = consent.get("recordType").and_then(|v| v.as_str()).unwrap_or("");
+    let consent_rt = consent
+        .get("recordType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !consent_rt.eq_ignore_ascii_case(&expected_rt) {
-        return err(StatusCode::BAD_REQUEST, "consent.recordType != keccak256(claims.recordType)");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "consent.recordType != keccak256(claims.recordType)",
+        );
     }
     let now = crate::auth::now();
-    let deadline = consent.get("deadline").and_then(|v| v.as_u64()).unwrap_or(0);
+    let deadline = consent
+        .get("deadline")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if deadline < now {
         return err(StatusCode::BAD_REQUEST, "consent deadline passed");
     }
 
     let mode = mode_override.unwrap_or_else(|| claims.mode.clone());
-    let dog_tag_id = consent.get("dogTagId").and_then(|v| v.as_str()).unwrap_or("0").to_string();
+    let dog_tag_id = consent
+        .get("dogTagId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0")
+        .to_string();
     let nonce = consent.get("nonce").cloned().unwrap_or(json!("0"));
 
     // ConsentReceipt (off-chain, deletable — erasure scope).
@@ -163,8 +185,13 @@ pub async fn relay(
         Some(b) => b,
         None => return err(StatusCode::BAD_GATEWAY, "cannot resolve verifierApiBase"),
     };
-    let submit_body = json!({ "sessionId": claims.sub, "consent": consent, "sig": sig, "mode": mode });
-    match st.business.relay_consent(&verifier_api_base, &submit_body).await {
+    let submit_body =
+        json!({ "sessionId": claims.sub, "consent": consent, "sig": sig, "mode": mode });
+    match st
+        .business
+        .relay_consent(&verifier_api_base, &submit_body)
+        .await
+    {
         Ok(_) => ok(json!({
             "relayed": true,
             "recordId": record_id,

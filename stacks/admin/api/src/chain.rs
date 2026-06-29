@@ -168,7 +168,11 @@ impl MemChain {
     }
     /// Register an admin signer address for an account index (test harness wires this from custody).
     pub fn set_signer(&self, index: u32, address: &str) {
-        self.inner.lock().unwrap().signers.insert(index, address.to_lowercase());
+        self.inner
+            .lock()
+            .unwrap()
+            .signers
+            .insert(index, address.to_lowercase());
     }
     fn next_tx(g: &mut MemChainInner) -> String {
         g.nonce += 1;
@@ -179,7 +183,11 @@ impl MemChain {
 #[async_trait]
 impl ChainClient for MemChain {
     async fn register_signer(&self, index: u32, _private_key: [u8; 32], address: String) {
-        self.inner.lock().unwrap().signers.insert(index, address.to_lowercase());
+        self.inner
+            .lock()
+            .unwrap()
+            .signers
+            .insert(index, address.to_lowercase());
     }
 
     async fn whitelist_for(
@@ -196,7 +204,11 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
         g.whitelist.insert(
-            (registry_addr.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()),
+            (
+                registry_addr.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ),
             true,
         );
         let tx_hash = Self::next_tx(&mut g);
@@ -216,7 +228,11 @@ impl ChainClient for MemChain {
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
         g.whitelist.insert(
-            (registry_addr.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()),
+            (
+                registry_addr.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ),
             false,
         );
         let tx_hash = Self::next_tx(&mut g);
@@ -230,9 +246,12 @@ impl ChainClient for MemChain {
         signer: &str,
     ) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g
-            .whitelist
-            .get(&(registry_addr.to_lowercase(), record_type.to_lowercase(), signer.to_lowercase()))
+        Ok(g.whitelist
+            .get(&(
+                registry_addr.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ))
             .copied()
             .unwrap_or(false))
     }
@@ -279,14 +298,16 @@ impl ChainClient for MemChain {
             .get(&account_index)
             .cloned()
             .ok_or_else(|| ChainError::Other("no admin signer for index".into()))?;
-        g.issuer_roles.insert((sbt_addr.to_lowercase(), grantee.to_lowercase()));
+        g.issuer_roles
+            .insert((sbt_addr.to_lowercase(), grantee.to_lowercase()));
         let tx_hash = Self::next_tx(&mut g);
         Ok(SentTx { tx_hash })
     }
 
     async fn has_issuer_role(&self, sbt_addr: &str, account: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g.issuer_roles.contains(&(sbt_addr.to_lowercase(), account.to_lowercase())))
+        Ok(g.issuer_roles
+            .contains(&(sbt_addr.to_lowercase(), account.to_lowercase())))
     }
 }
 
@@ -351,7 +372,11 @@ pub struct AlloyChain {
 
 impl AlloyChain {
     pub fn new(rpc_url: String) -> Self {
-        AlloyChain { rpc_url, chain_id: ROAX_CHAIN_ID, signers: Mutex::new(HashMap::new()) }
+        AlloyChain {
+            rpc_url,
+            chain_id: ROAX_CHAIN_ID,
+            signers: Mutex::new(HashMap::new()),
+        }
     }
     /// Override the EIP-155 chain id (config-only chain swap; default stays `ROAX_CHAIN_ID` = 135).
     pub fn with_chain_id(mut self, chain_id: u64) -> Self {
@@ -394,7 +419,10 @@ impl AlloyChain {
         // ~1 gwei eth_gasPrice. Alloy's EIP-1559 filler derives maxFeePerGas from the (tiny) base fee,
         // producing an underpriced tx that the node ACCEPTS but never mines (stuck forever). Read
         // eth_gasPrice and send a legacy tx (mirrors the working `cast send --legacy`).
-        let gp = provider.get_gas_price().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let gp = provider
+            .get_gas_price()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         let tx = TransactionRequest::default()
             .with_to(parse_addr(to))
             .with_input(data)
@@ -422,7 +450,8 @@ impl AlloyChain {
 #[async_trait]
 impl ChainClient for AlloyChain {
     async fn register_signer(&self, index: u32, private_key: [u8; 32], _address: String) {
-        if let Ok(s) = alloy::signers::local::PrivateKeySigner::from_bytes(&B256::from(private_key)) {
+        if let Ok(s) = alloy::signers::local::PrivateKeySigner::from_bytes(&B256::from(private_key))
+        {
             self.signers.lock().unwrap().insert(index, s);
         }
     }
@@ -435,7 +464,8 @@ impl ChainClient for AlloyChain {
         signer: &str,
     ) -> Result<SentTx, ChainError> {
         let calldata = whitelist_for_calldata(record_type, signer);
-        self.sign_and_send(account_index, registry_addr, &calldata).await
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
     }
 
     async fn delist_for(
@@ -446,7 +476,8 @@ impl ChainClient for AlloyChain {
         signer: &str,
     ) -> Result<SentTx, ChainError> {
         let calldata = delist_for_calldata(record_type, signer);
-        self.sign_and_send(account_index, registry_addr, &calldata).await
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
     }
 
     async fn is_whitelisted_for(
@@ -590,5 +621,82 @@ mod tests {
             verify_key("boarding_intake"),
             "0x9f894293e0cbaa46eca3cc026ad45e5012c10c4d3217ede0488ca0d2b5eaf764"
         );
+    }
+
+    /// `purpose_key` is the bytes32 field element fed into `verify_key`, the relayer broadcast, and the
+    /// nullifier. It MUST byte-match the vet stack's `verify::purpose_key` for the same label; this anchor
+    /// is the parity guard (the matching value lives in the vet stack's verify.rs tests).
+    #[test]
+    fn purpose_key_parity_boarding_intake() {
+        assert_eq!(
+            purpose_key("boarding_intake"),
+            "0x0d35de973921c6fca6d7ad626fe13c4017a093733a6a21689b631b2c61b1c18d"
+        );
+    }
+
+    /// `purpose_key` must always be a 32-byte field element strictly less than the BN254 scalar field r,
+    /// since it is reduced `mod r` before use as a circuit/registry input.
+    #[test]
+    fn purpose_key_is_reduced_field_element() {
+        use alloy::primitives::U256;
+        let r = U256::from_str_radix(
+            "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+            10,
+        )
+        .unwrap();
+        for label in [
+            "",
+            "boarding_intake",
+            "grooming",
+            "a-very-long-purpose-label-xyz",
+        ] {
+            let hex = purpose_key(label);
+            assert_eq!(hex.len(), 66, "{label}: want 0x + 64 hex chars");
+            let v = U256::from_str_radix(hex.trim_start_matches("0x"), 16).unwrap();
+            assert!(
+                v < r,
+                "{label}: purpose_key must be reduced mod the BN254 field r"
+            );
+        }
+    }
+
+    /// `record_type_key` is the raw keccak256 of the label (NOT reduced mod r), so the empty string
+    /// anchors to the well-known `keccak256("")`. Because that value exceeds the BN254 field r it gets
+    /// reduced by `purpose_key`, so the two keys diverge for the empty label.
+    #[test]
+    fn record_type_key_anchors_and_differs_from_purpose() {
+        assert_eq!(
+            record_type_key(""),
+            "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+        );
+        // keccak256("") > r, so reduction is observable: raw recordType key != reduced purpose key.
+        assert_ne!(record_type_key(""), purpose_key(""));
+        // Deterministic and 0x + 64 hex chars.
+        assert_eq!(record_type_key("grooming"), record_type_key("grooming"));
+        assert_eq!(record_type_key("grooming").len(), 66);
+    }
+
+    /// `parse_u256_dec_or_hex` accepts decimal or `0x`-hex (trimming whitespace) and falls back to ZERO on
+    /// garbage; decimal and hex spellings of the same number must parse equal.
+    #[test]
+    fn parse_u256_dec_or_hex_radix_and_fallback() {
+        use alloy::primitives::U256;
+        assert_eq!(parse_u256_dec_or_hex("42"), U256::from(42u64));
+        assert_eq!(parse_u256_dec_or_hex("0x2a"), U256::from(42u64));
+        assert_eq!(parse_u256_dec_or_hex("  0x2a  "), U256::from(42u64));
+        assert_eq!(parse_u256_dec_or_hex("42"), parse_u256_dec_or_hex("0x2a"));
+        assert_eq!(parse_u256_dec_or_hex(""), U256::ZERO);
+        assert_eq!(parse_u256_dec_or_hex("not-a-number"), U256::ZERO);
+        assert_eq!(parse_u256_dec_or_hex("0xzz"), U256::ZERO);
+    }
+
+    /// `normalize_id` canonicalizes any radix into the decimal string so MemChain keys collide regardless
+    /// of how the caller spelled the dogTagId.
+    #[test]
+    fn normalize_id_collapses_radix() {
+        assert_eq!(normalize_id("42"), "42");
+        assert_eq!(normalize_id("0x2a"), "42");
+        assert_eq!(normalize_id("42"), normalize_id("0x2a"));
+        assert_eq!(normalize_id("garbage"), "0");
     }
 }

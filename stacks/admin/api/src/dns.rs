@@ -58,7 +58,10 @@ impl DnsChecker for DohDnsChecker {
         if !resp.status().is_success() {
             return Err(DnsError::Lookup(format!("status {}", resp.status())));
         }
-        let body: serde_json::Value = resp.json().await.map_err(|e| DnsError::Lookup(e.to_string()))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| DnsError::Lookup(e.to_string()))?;
         let answers = body.get("Answer").and_then(|a| a.as_array());
         let found = answers
             .map(|arr| {

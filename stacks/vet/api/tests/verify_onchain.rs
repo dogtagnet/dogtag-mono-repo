@@ -40,7 +40,8 @@ const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../..");
 const PK0: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const ACC0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
-const BN254_R: &str = "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+const BN254_R: &str =
+    "21888242871839275222246405745257275088548364400416034343698204186575808495617";
 
 struct Anvil {
     child: Child,
@@ -117,7 +118,10 @@ fn start_anvil() -> Anvil {
 }
 
 fn run(cmd: &mut Command) -> String {
-    let out = cmd.current_dir(CONTRACTS_DIR).output().expect("run command");
+    let out = cmd
+        .current_dir(CONTRACTS_DIR)
+        .output()
+        .expect("run command");
     if !out.status.success() {
         panic!(
             "command failed: {:?}\nstdout: {}\nstderr: {}",
@@ -131,7 +135,15 @@ fn run(cmd: &mut Command) -> String {
 
 fn forge_create(rpc: &str, contract: &str, args: &[&str]) -> String {
     let mut cmd = Command::new("forge");
-    cmd.args(["create", "--rpc-url", rpc, "--private-key", PK0, "--broadcast", contract]);
+    cmd.args([
+        "create",
+        "--rpc-url",
+        rpc,
+        "--private-key",
+        PK0,
+        "--broadcast",
+        contract,
+    ]);
     if !args.is_empty() {
         cmd.arg("--constructor-args").args(args);
     }
@@ -150,15 +162,28 @@ fn deploy_poseidon6(rpc: &str) -> String {
         .expect("read poseidon6.initcode");
     let initcode = initcode.trim();
     let mut cmd = Command::new("cast");
-    cmd.args(["send", "--rpc-url", rpc, "--private-key", PK0, "--create", initcode, "--json"]);
+    cmd.args([
+        "send",
+        "--rpc-url",
+        rpc,
+        "--private-key",
+        PK0,
+        "--create",
+        initcode,
+        "--json",
+    ]);
     let out = run(&mut cmd);
     let v: serde_json::Value = serde_json::from_str(&out).expect("cast send --json");
-    v["contractAddress"].as_str().expect("contractAddress").to_lowercase()
+    v["contractAddress"]
+        .as_str()
+        .expect("contractAddress")
+        .to_lowercase()
 }
 
 fn cast_send(rpc: &str, pk: &str, to: &str, sig: &str, args: &[&str]) {
     let mut cmd = Command::new("cast");
-    cmd.args(["send", "--rpc-url", rpc, "--private-key", pk, to, sig]).args(args);
+    cmd.args(["send", "--rpc-url", rpc, "--private-key", pk, to, sig])
+        .args(args);
     run(&mut cmd);
 }
 
@@ -189,7 +214,16 @@ fn wait_mined(rpc: &str, tx_hash: &str) {
 
 fn fund(rpc: &str, to: &str, wei: &str) {
     let mut cmd = Command::new("cast");
-    cmd.args(["send", "--rpc-url", rpc, "--private-key", PK0, to, "--value", wei]);
+    cmd.args([
+        "send",
+        "--rpc-url",
+        rpc,
+        "--private-key",
+        PK0,
+        to,
+        "--value",
+        wei,
+    ]);
     run(&mut cmd);
 }
 
@@ -222,9 +256,23 @@ fn deploy_stack(rpc: &str) -> Stack {
     let verification = forge_create(
         rpc,
         "src/VerificationRegistry.sol:VerificationRegistry",
-        &[&registry, &sbt, &verifier, &consent_keys, &factory, &poseidon6, ACC0],
+        &[
+            &registry,
+            &sbt,
+            &verifier,
+            &consent_keys,
+            &factory,
+            &poseidon6,
+            ACC0,
+        ],
     );
-    Stack { registry, factory, sbt, consent_keys, verification }
+    Stack {
+        registry,
+        factory,
+        sbt,
+        consent_keys,
+        verification,
+    }
 }
 
 /// node tests/gen_input.mjs -> the circuit input JSON + expected pub (decimal).
@@ -269,30 +317,63 @@ async fn normal_path_records_verified_onchain() {
     let vacc_rt = record_type_key("VACCINATION"); // bytes32
 
     // VACCINATION clone owned by ACC0; whitelist ACC0 to issue on it.
-    cast_send(&rpc, PK0, &stack.factory, "createIssuer(string,bytes32,address)", &["VACC", &vacc_rt, ACC0]);
-    let clone = cast_call(&rpc, &stack.factory, "predictIssuer(bytes32,address)(address)", &[&vacc_rt, ACC0]).to_lowercase();
-    cast_send(&rpc, PK0, &stack.registry, "whitelistFor(bytes32,address)", &[&vacc_rt, ACC0]);
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.factory,
+        "createIssuer(string,bytes32,address)",
+        &["VACC", &vacc_rt, ACC0],
+    );
+    let clone = cast_call(
+        &rpc,
+        &stack.factory,
+        "predictIssuer(bytes32,address)(address)",
+        &[&vacc_rt, ACC0],
+    )
+    .to_lowercase();
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.registry,
+        "whitelistFor(bytes32,address)",
+        &[&vacc_rt, ACC0],
+    );
 
     // issue a credential root R on the clone.
     let root = "0x1100000000000000000000000000000000000000000000000000000000000011";
     cast_send(&rpc, PK0, &clone, "issue(bytes32)", &[root]);
-    assert_eq!(cast_call(&rpc, &clone, "isValid(bytes32)(bool)", &[root]), "true");
+    assert_eq!(
+        cast_call(&rpc, &clone, "isValid(bytes32)(bool)", &[root]),
+        "true"
+    );
 
     // subject — an alloy LocalSigner whose secp256k1 key we control.
     let subject_signer: PrivateKeySigner =
-        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d".parse().unwrap();
+        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+            .parse()
+            .unwrap();
     let subject_addr = format!("{:#x}", subject_signer.address());
 
     // mint the pet SBT (dogTagId) to the subject (grant ACC0 the ISSUER_ROLE first).
     let issuer_role = cast_call(&rpc, &stack.sbt, "ISSUER_ROLE()(bytes32)", &[]);
-    cast_send(&rpc, PK0, &stack.sbt, "grantRole(bytes32,address)", &[&issuer_role, ACC0]);
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.sbt,
+        "grantRole(bytes32,address)",
+        &[&issuer_role, ACC0],
+    );
     let dog_tag_id: u64 = 4242;
     cast_send(
         &rpc,
         PK0,
         &stack.sbt,
         "mint(address,uint256,bytes32)",
-        &[&subject_addr, &dog_tag_id.to_string(), &keccak_hex("profile")],
+        &[
+            &subject_addr,
+            &dog_tag_id.to_string(),
+            &keccak_hex("profile"),
+        ],
     );
 
     // purpose reduced mod r (the registry compares uint256(purpose) < r).
@@ -316,9 +397,20 @@ async fn normal_path_records_verified_onchain() {
     fund(&rpc, &relayer_addr, "1000000000000000000"); // 1 ETH for gas
 
     // whitelist the relayer for keccak256(abi.encode("VERIFY:", purpose)).
-    cast_send(&rpc, PK0, &stack.registry, "whitelistFor(bytes32,address)", &[&verify_key, &relayer_addr]);
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.registry,
+        "whitelistFor(bytes32,address)",
+        &[&verify_key, &relayer_addr],
+    );
     assert_eq!(
-        cast_call(&rpc, &stack.registry, "isWhitelistedFor(bytes32,address)(bool)", &[&verify_key, &relayer_addr]),
+        cast_call(
+            &rpc,
+            &stack.registry,
+            "isWhitelistedFor(bytes32,address)(bool)",
+            &[&verify_key, &relayer_addr]
+        ),
         "true"
     );
 
@@ -355,14 +447,21 @@ async fn normal_path_records_verified_onchain() {
         .await
         .expect("Verified event present");
     let expected_nf = expected_nullifier(&consent);
-    assert_eq!(ev.nullifier.to_lowercase(), expected_nf.to_lowercase(), "nullifier mismatch");
+    assert_eq!(
+        ev.nullifier.to_lowercase(),
+        expected_nf.to_lowercase(),
+        "nullifier mismatch"
+    );
     assert_eq!(ev.dog_tag_id, U256::from(dog_tag_id));
     assert!(ev.relayer.eq_ignore_ascii_case(&relayer_addr));
     assert!(ev.subject.eq_ignore_ascii_case(&subject_addr));
 
     // consumed[nullifier] == true on-chain.
     assert!(
-        chain.consumed(&stack.verification, &expected_nf).await.unwrap(),
+        chain
+            .consumed(&stack.verification, &expected_nf)
+            .await
+            .unwrap(),
         "nullifier must be consumed on-chain"
     );
 }
@@ -413,7 +512,9 @@ async fn zk_path_records_verified_onchain() {
 
     // subject == vm.addr(1): the key is 1.
     let subject_signer: PrivateKeySigner =
-        "0x0000000000000000000000000000000000000000000000000000000000000001".parse().unwrap();
+        "0x0000000000000000000000000000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
     assert!(
         format!("{:#x}", subject_signer.address()).eq_ignore_ascii_case(&subject_addr),
         "subject != vm.addr(1)"
@@ -422,21 +523,52 @@ async fn zk_path_records_verified_onchain() {
     // 2. on-chain state to satisfy recordVerificationZK:
     // issue root=pub[6] on a VACCINATION clone.
     let vacc_rt = record_type_key("VACCINATION");
-    cast_send(&rpc, PK0, &stack.factory, "createIssuer(string,bytes32,address)", &["VACC", &vacc_rt, ACC0]);
-    let clone = cast_call(&rpc, &stack.factory, "predictIssuer(bytes32,address)(address)", &[&vacc_rt, ACC0]).to_lowercase();
-    cast_send(&rpc, PK0, &stack.registry, "whitelistFor(bytes32,address)", &[&vacc_rt, ACC0]);
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.factory,
+        "createIssuer(string,bytes32,address)",
+        &["VACC", &vacc_rt, ACC0],
+    );
+    let clone = cast_call(
+        &rpc,
+        &stack.factory,
+        "predictIssuer(bytes32,address)(address)",
+        &[&vacc_rt, ACC0],
+    )
+    .to_lowercase();
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.registry,
+        "whitelistFor(bytes32,address)",
+        &[&vacc_rt, ACC0],
+    );
     cast_send(&rpc, PK0, &clone, "issue(bytes32)", &[&root]);
-    assert_eq!(cast_call(&rpc, &clone, "isValid(bytes32)(bool)", &[&root]), "true");
+    assert_eq!(
+        cast_call(&rpc, &clone, "isValid(bytes32)(bool)", &[&root]),
+        "true"
+    );
 
     // mint dogTagId=pub[0] to subject=address(pub[3]).
     let issuer_role = cast_call(&rpc, &stack.sbt, "ISSUER_ROLE()(bytes32)", &[]);
-    cast_send(&rpc, PK0, &stack.sbt, "grantRole(bytes32,address)", &[&issuer_role, ACC0]);
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.sbt,
+        "grantRole(bytes32,address)",
+        &[&issuer_role, ACC0],
+    );
     cast_send(
         &rpc,
         PK0,
         &stack.sbt,
         "mint(address,uint256,bytes32)",
-        &[&subject_addr, &dog_tag_id.to_string(), &keccak_hex("profile")],
+        &[
+            &subject_addr,
+            &dog_tag_id.to_string(),
+            &keccak_hex("profile"),
+        ],
     );
 
     // bind keyHash=pub[5] for the subject via ConsentKeyRegistry.bindConsentKey (EIP-712, key=1).
@@ -453,20 +585,36 @@ async fn zk_path_records_verified_onchain() {
         .await
         .expect("bindConsentKey");
     assert_eq!(
-        cast_call(&rpc, &stack.consent_keys, "keyOf(address)(bytes32)", &[&subject_addr]).to_lowercase(),
+        cast_call(
+            &rpc,
+            &stack.consent_keys,
+            "keyOf(address)(bytes32)",
+            &[&subject_addr]
+        )
+        .to_lowercase(),
         key_hash.to_lowercase(),
         "consent key bound"
     );
 
     // whitelist relayer=address(pub[2]) for VERIFY:purpose.
-    cast_send(&rpc, PK0, &stack.registry, "whitelistFor(bytes32,address)", &[&verify_key, &relayer_addr]);
+    cast_send(
+        &rpc,
+        PK0,
+        &stack.registry,
+        "whitelistFor(bytes32,address)",
+        &[&verify_key, &relayer_addr],
+    );
 
     // 3. broadcast recordVerificationZK(a,b,c,pub) AS the relayer (pub[2]).
     // The relayer is fixed by the proof (0x1111...), whose key we do not hold — impersonate it on
     // anvil and broadcast the chain client's ABI-encoded calldata.
     fund(&rpc, &relayer_addr, "1000000000000000000");
-    let zk_calldata =
-        vet_api::chain::record_verification_zk_calldata(&out.a, &out.b, &out.c, &out.public_signals);
+    let zk_calldata = vet_api::chain::record_verification_zk_calldata(
+        &out.a,
+        &out.b,
+        &out.c,
+        &out.public_signals,
+    );
     let tx_hash = anvil_impersonate_send(&rpc, &relayer_addr, &stack.verification, &zk_calldata);
 
     // 4. assert the on-chain Verified event + consumed[nullifier], read via the chain client.
@@ -475,12 +623,19 @@ async fn zk_path_records_verified_onchain() {
         .get_verified_event(&tx_hash, &stack.verification)
         .await
         .expect("Verified event present");
-    assert_eq!(ev.nullifier.to_lowercase(), nullifier.to_lowercase(), "zk nullifier mismatch");
+    assert_eq!(
+        ev.nullifier.to_lowercase(),
+        nullifier.to_lowercase(),
+        "zk nullifier mismatch"
+    );
     assert_eq!(ev.dog_tag_id, dog_tag_id);
     assert!(ev.relayer.eq_ignore_ascii_case(&relayer_addr));
     assert!(ev.subject.eq_ignore_ascii_case(&subject_addr));
     assert!(
-        chain.consumed(&stack.verification, &nullifier).await.unwrap(),
+        chain
+            .consumed(&stack.verification, &nullifier)
+            .await
+            .unwrap(),
         "zk nullifier must be consumed on-chain"
     );
 }
@@ -550,7 +705,12 @@ fn to_std_consent(c: &ConsentInput) -> dogtag_standard::consent::VerificationCon
 }
 
 fn expected_nullifier(c: &ConsentInput) -> String {
-    format!("0x{}", hex::encode(dogtag_standard::consent::consent_nullifier(&to_std_consent(c))))
+    format!(
+        "0x{}",
+        hex::encode(dogtag_standard::consent::consent_nullifier(
+            &to_std_consent(c)
+        ))
+    )
 }
 
 /// EIP-712 sign the VerificationConsent digest with the subject key (verifyingContract = registry).
@@ -559,15 +719,23 @@ fn sign_consent(signer: &PrivateKeySigner, c: &ConsentInput, verifying_contract:
     let mut vc = [0u8; 20];
     vc.copy_from_slice(addr.as_slice());
     let digest = dogtag_standard::consent::hash_typed_consent(&to_std_consent(c), vc, 135);
-    let sig = signer.sign_hash_sync(&alloy::primitives::B256::from(digest)).expect("sign");
+    let sig = signer
+        .sign_hash_sync(&alloy::primitives::B256::from(digest))
+        .expect("sign");
     format!("0x{}", hex::encode(sig.as_bytes()))
 }
 
 /// EIP-712 sign BindConsentKey(babyJubPubKeyHash, wallet, nonce) for ConsentKeyRegistry (chainId 135).
-fn sign_bind_key(signer: &PrivateKeySigner, consent_keys: &str, key_hash: &str, nonce: U256) -> String {
+fn sign_bind_key(
+    signer: &PrivateKeySigner,
+    consent_keys: &str,
+    key_hash: &str,
+    nonce: U256,
+) -> String {
     use alloy::primitives::B256;
     let domain_typehash = keccak256(
-        b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)".as_slice(),
+        b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+            .as_slice(),
     );
     let name_hash = keccak256(b"DogTag".as_slice());
     let version_hash = keccak256(b"1".as_slice());
@@ -582,8 +750,9 @@ fn sign_bind_key(signer: &PrivateKeySigner, consent_keys: &str, key_hash: &str, 
     ds_buf.extend_from_slice(&ckw);
     let domain_sep = keccak256(&ds_buf);
 
-    let bind_typehash =
-        keccak256(b"BindConsentKey(bytes32 babyJubPubKeyHash,address wallet,uint256 nonce)".as_slice());
+    let bind_typehash = keccak256(
+        b"BindConsentKey(bytes32 babyJubPubKeyHash,address wallet,uint256 nonce)".as_slice(),
+    );
     let mut sh_buf = Vec::new();
     sh_buf.extend_from_slice(bind_typehash.as_slice());
     sh_buf.extend_from_slice(parse_b32(key_hash).as_slice());
@@ -598,7 +767,9 @@ fn sign_bind_key(signer: &PrivateKeySigner, consent_keys: &str, key_hash: &str, 
     buf.extend_from_slice(domain_sep.as_slice());
     buf.extend_from_slice(struct_hash.as_slice());
     let digest = keccak256(&buf);
-    let sig = signer.sign_hash_sync(&B256::from(digest)).expect("sign bind");
+    let sig = signer
+        .sign_hash_sync(&B256::from(digest))
+        .expect("sign bind");
     format!("0x{}", hex::encode(sig.as_bytes()))
 }
 
@@ -607,10 +778,27 @@ fn anvil_impersonate_send(rpc: &str, from: &str, to: &str, calldata: &str) -> St
     // anvil_impersonateAccount
     run(Command::new("cast").args(["rpc", "--rpc-url", rpc, "anvil_impersonateAccount", from]));
     let out = run(Command::new("cast").args([
-        "send", "--rpc-url", rpc, "--from", from, "--unlocked", to, calldata, "--json",
+        "send",
+        "--rpc-url",
+        rpc,
+        "--from",
+        from,
+        "--unlocked",
+        to,
+        calldata,
+        "--json",
     ]));
     let v: serde_json::Value = serde_json::from_str(&out).expect("cast send --json");
-    let tx = v["transactionHash"].as_str().expect("transactionHash").to_string();
-    run(Command::new("cast").args(["rpc", "--rpc-url", rpc, "anvil_stopImpersonatingAccount", from]));
+    let tx = v["transactionHash"]
+        .as_str()
+        .expect("transactionHash")
+        .to_string();
+    run(Command::new("cast").args([
+        "rpc",
+        "--rpc-url",
+        rpc,
+        "anvil_stopImpersonatingAccount",
+        from,
+    ]));
     tx
 }

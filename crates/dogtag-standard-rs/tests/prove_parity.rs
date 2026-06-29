@@ -24,14 +24,18 @@ use ark_ff::PrimeField;
 use ark_groth16::{Groth16, Proof, VerifyingKey};
 use num_bigint::BigUint;
 
-use dogtag_standard::consent::{consent_nullifier, eddsa_consent_message, key_hash, VerificationConsent};
+use dogtag_standard::consent::{
+    consent_nullifier, eddsa_consent_message, key_hash, VerificationConsent,
+};
 use dogtag_standard::eddsa::{consent_key_from_raw_prv, sign_poseidon};
 use dogtag_standard::field::to_hex32;
 use dogtag_standard::leaf::field_of_value;
 use dogtag_standard::poseidon::to_be_bytes32;
 use dogtag_standard::prover_ffi::{prove_verification, EddsaSigInput};
 use dogtag_standard::types::TypedScalar;
-use dogtag_standard::wrap::{flatten_data, parse_packed, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc};
+use dogtag_standard::wrap::{
+    flatten_data, parse_packed, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc,
+};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -83,7 +87,11 @@ fn proof_from_parts(a: &[String], b: &[Vec<String>], c: &[String]) -> Proof<Bn25
     let bx = Fq2::new(fq(&b[0][1]), fq(&b[0][0]));
     let by = Fq2::new(fq(&b[1][1]), fq(&b[1][0]));
     let pb = G2Affine::new(bx, by);
-    Proof { a: pa, b: pb, c: pc }
+    Proof {
+        a: pa,
+        b: pb,
+        c: pc,
+    }
 }
 
 /// Deterministic 16-byte salts: each call returns [n;16], n increments from 1.
@@ -225,7 +233,14 @@ fn fixed_prove_inputs() -> (String, String, EddsaSigInput, PathBuf, PathBuf, Vec
         .map(|f| f.into_bigint().to_string())
         .collect();
 
-    (wrapped_doc_json, consent_json, eddsa_sig, zkey, graph, expected)
+    (
+        wrapped_doc_json,
+        consent_json,
+        eddsa_sig,
+        zkey,
+        graph,
+        expected,
+    )
 }
 
 /// LIVE-VERIFIER BISECT DUMP: generate a real `prove_verification` proof over the fixed inputs and
@@ -246,7 +261,10 @@ fn dump_proof_for_live_verifier() {
     .expect("prove_verification");
 
     assert_eq!(proof.pub_signals.len(), 7, "expected 7 public signals");
-    assert_eq!(proof.pub_signals, expected, "public signals mismatch (snarkjs order)");
+    assert_eq!(
+        proof.pub_signals, expected,
+        "public signals mismatch (snarkjs order)"
+    );
 
     let a = &proof.a;
     let b = &proof.b;
@@ -255,7 +273,10 @@ fn dump_proof_for_live_verifier() {
 
     println!("\n===PROOF_DUMP_BEGIN===");
     println!("a = [{}, {}]", a[0], a[1]);
-    println!("b = [[{}, {}], [{}, {}]]", b[0][0], b[0][1], b[1][0], b[1][1]);
+    println!(
+        "b = [[{}, {}], [{}, {}]]",
+        b[0][0], b[0][1], b[1][0], b[1][1]
+    );
     println!("c = [{}, {}]", c[0], c[1]);
     println!("pub = [{}]", p.join(", "));
     // Ready-to-run cast call (current prover_ffi formatting).
@@ -264,10 +285,21 @@ fn dump_proof_for_live_verifier() {
          'verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])(bool)' \
          '[{},{}]' '[[{},{}],[{},{}]]' '[{},{}]' '[{},{},{},{},{},{},{}]' \
          --rpc-url https://devrpc.roax.net",
-        a[0], a[1],
-        b[0][0], b[0][1], b[1][0], b[1][1],
-        c[0], c[1],
-        p[0], p[1], p[2], p[3], p[4], p[5], p[6],
+        a[0],
+        a[1],
+        b[0][0],
+        b[0][1],
+        b[1][0],
+        b[1][1],
+        c[0],
+        c[1],
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+        p[6],
     );
     println!("===PROOF_DUMP_END===\n");
 }
@@ -303,7 +335,10 @@ fn on_device_proof_verifies_on_live_chain() {
             &format!("[{},{}]", a[0], a[1]),
             &format!("[[{},{}],[{},{}]]", b[0][0], b[0][1], b[1][0], b[1][1]),
             &format!("[{},{}]", c[0], c[1]),
-            &format!("[{},{},{},{},{},{},{}]", p[0], p[1], p[2], p[3], p[4], p[5], p[6]),
+            &format!(
+                "[{},{},{},{},{},{},{}]",
+                p[0], p[1], p[2], p[3], p[4], p[5], p[6]
+            ),
             "--rpc-url",
             "https://devrpc.roax.net",
         ])
@@ -443,8 +478,14 @@ fn on_device_proof_verifies_and_pub_matches() {
     // The 32-bit-ARM regression this fix targets: wasm2c zeroed the last-computed output wires.
     // pub[4]=nullifier and pub[5]=keyHash are derived from the REAL (large Ax/Ay) consent key + a
     // realistic nonce above, so they must be NON-ZERO with the graph calculator.
-    assert_ne!(proof.pub_signals[4], "0", "nullifier (pub[4]) must be non-zero");
-    assert_ne!(proof.pub_signals[5], "0", "keyHash (pub[5]) must be non-zero");
+    assert_ne!(
+        proof.pub_signals[4], "0",
+        "nullifier (pub[4]) must be non-zero"
+    );
+    assert_ne!(
+        proof.pub_signals[5], "0",
+        "keyHash (pub[5]) must be non-zero"
+    );
 
     // 5. Recompute expected public signals independently.
     let nullifier = Fr::from_be_bytes_mod_order(&consent_nullifier(&consent));
@@ -473,7 +514,10 @@ fn on_device_proof_verifies_and_pub_matches() {
     let public_inputs: Vec<Fr> = proof.pub_signals.iter().map(|s| fr(s)).collect();
     let verified =
         Groth16::<Bn254>::verify_with_processed_vk(&pvk, &public_inputs, &ark_proof).unwrap();
-    assert!(verified, "on-device proof failed verification under verification_key.json");
+    assert!(
+        verified,
+        "on-device proof failed verification under verification_key.json"
+    );
 
     // sanity: hashing round-trips
     let _ = to_be_bytes32(&root_fr);

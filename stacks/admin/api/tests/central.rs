@@ -30,7 +30,10 @@ async fn register_business(app: &axum::Router, admin: &str, name: &str) -> (Stri
     )
     .await;
     assert_eq!(s, StatusCode::OK, "register business: {b}");
-    (b["businessId"].as_str().unwrap().to_string(), b["hmacSecret"].as_str().unwrap().to_string())
+    (
+        b["businessId"].as_str().unwrap().to_string(),
+        b["hmacSecret"].as_str().unwrap().to_string(),
+    )
 }
 
 // ============================================================================================
@@ -53,7 +56,9 @@ async fn appointment_ownership_and_rev_allocation() {
         "POST",
         "/v1/appointments",
         Some(&sess),
-        Some(serde_json::json!({ "businessId": biz_a, "dogTagId": "7", "slot": "2026-07-01T10:00" })),
+        Some(
+            serde_json::json!({ "businessId": biz_a, "dogTagId": "7", "slot": "2026-07-01T10:00" }),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "create appt: {appt}");
@@ -61,7 +66,10 @@ async fn appointment_ownership_and_rev_allocation() {
     assert_eq!(appt["state"], "REQUESTED");
     let appt_id = appt["id"].as_str().unwrap().to_string();
     // the PUT-to-business was issued.
-    assert!(business.calls().iter().any(|c| c.method == "PUT"), "PUT to business A expected");
+    assert!(
+        business.calls().iter().any(|c| c.method == "PUT"),
+        "PUT to business A expected"
+    );
 
     // biz B's HMAC key CANNOT post an event for biz A's appointment (ownership C-2).
     let path_b = format!("/v1/businesses/{biz_b}/appointment-events");
@@ -71,7 +79,11 @@ async fn appointment_ownership_and_rev_allocation() {
     .unwrap();
     let sig_b = hmac_sign(&secret_b, "POST", &path_b, &body_b);
     let (s, b) = call_raw(&app, "POST", &path_b, &[("X-DogTag-HMAC", &sig_b)], &body_b).await;
-    assert_eq!(s, StatusCode::FORBIDDEN, "biz B must NOT act on biz A's appt: {b}");
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "biz B must NOT act on biz A's appt: {b}"
+    );
 
     // a VALID event from biz A bumps rev 1 -> 2 and applies CONFIRMED.
     let path_a = format!("/v1/businesses/{biz_a}/appointment-events");
@@ -86,7 +98,14 @@ async fn appointment_ownership_and_rev_allocation() {
     assert_eq!(b["state"], "CONFIRMED");
 
     // a tampered/bad HMAC is rejected.
-    let (s, _b) = call_raw(&app, "POST", &path_a, &[("X-DogTag-HMAC", "deadbeef")], &body_a).await;
+    let (s, _b) = call_raw(
+        &app,
+        "POST",
+        &path_a,
+        &[("X-DogTag-HMAC", "deadbeef")],
+        &body_a,
+    )
+    .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "bad HMAC must be 401");
 
     // rev never collides under concurrent-ish creates: many appts each start at distinct revs and
@@ -119,7 +138,14 @@ async fn one_time_share_jwt() {
     // import a credential so there is something to share.
     let cred_id = import_a_credential(&app, &sess).await;
 
-    let (s, b) = call(&app, "POST", &format!("/v1/share/{cred_id}"), Some(&sess), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/v1/share/{cred_id}"),
+        Some(&sess),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "share: {b}");
     let ref_id = b["ref"].as_str().unwrap().to_string();
     let token = b["token"].as_str().unwrap().to_string();
@@ -150,13 +176,38 @@ async fn microchip_uniqueness() {
             "microchip": { "code": code, "standard": "ISO_11784_11785", "implantDate": "2024-01-01", "bodyLocation": "neck" }
         })
     };
-    let (s, _b) = call(&app, "POST", "/v1/pets", Some(&sess), Some(pet("985141006580319"))).await;
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/v1/pets",
+        Some(&sess),
+        Some(pet("985141006580319")),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "first pet");
     // second pet with the SAME microchip code -> 409.
-    let (s, b) = call(&app, "POST", "/v1/pets", Some(&sess), Some(pet("985141006580319"))).await;
-    assert_eq!(s, StatusCode::CONFLICT, "duplicate microchip must be rejected: {b}");
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/pets",
+        Some(&sess),
+        Some(pet("985141006580319")),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "duplicate microchip must be rejected: {b}"
+    );
     // a different code is fine.
-    let (s, _b) = call(&app, "POST", "/v1/pets", Some(&sess), Some(pet("985141006580320"))).await;
+    let (s, _b) = call(
+        &app,
+        "POST",
+        "/v1/pets",
+        Some(&sess),
+        Some(pet("985141006580320")),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "distinct microchip ok");
 }
 
@@ -178,7 +229,10 @@ async fn erasure_crypto_shreds_records_and_deks() {
     let cred_id = import_a_credential(&app, &sess).await;
     let cred = store.get_credential(&cred_id).await.unwrap();
     let cred_dek = cred.sealed_doc.dek_id.clone();
-    assert!(vault.has_dek(&cred_dek).await, "credential DEK exists pre-erasure");
+    assert!(
+        vault.has_dek(&cred_dek).await,
+        "credential DEK exists pre-erasure"
+    );
 
     // a verification_records row (sealed under a DEK) via the REAL relay path (consent receipt + record).
     let admin = admin_token(&app).await;
@@ -186,9 +240,16 @@ async fn erasure_crypto_shreds_records_and_deks() {
     let relayer = "0x00000000000000000000000000000000000000cc";
     let n = auth::now();
     let claims = admin_api::verify_relay::VerifyClaims {
-        iss: "verifier".into(), sub: "sess-x".into(), aud: "dogtag-mobile".into(),
-        relayer: relayer.into(), purpose: "BOARDING".into(), record_type: "VACCINATION".into(),
-        challenge: "0x00".into(), mode: "normal".into(), exp: n + 180, jti: "vjti-erase".into(),
+        iss: "verifier".into(),
+        sub: "sess-x".into(),
+        aud: "dogtag-mobile".into(),
+        relayer: relayer.into(),
+        purpose: "BOARDING".into(),
+        record_type: "VACCINATION".into(),
+        challenge: "0x00".into(),
+        mode: "normal".into(),
+        exp: n + 180,
+        jti: "vjti-erase".into(),
         verifier_api_base: Some("http://biz.example".into()),
     };
     let session_jwt = sign_jwt(&state.jwt, &claims);
@@ -202,17 +263,30 @@ async fn erasure_crypto_shreds_records_and_deks() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(business.calls().iter().any(|c| c.url.ends_with("/verify/consent/submit")));
+    assert!(business
+        .calls()
+        .iter()
+        .any(|c| c.url.ends_with("/verify/consent/submit")));
     let vrs = store.verification_records_of_owner(&owner_id).await;
     assert_eq!(vrs.len(), 1, "one verification_record");
     let vr_dek = vrs[0].sealed.dek_id.clone();
     let receipts = store.receipts_of_owner(&owner_id).await;
     assert_eq!(receipts.len(), 1, "one consent receipt");
     let receipt_dek = receipts[0].sealed.dek_id.clone();
-    assert!(vault.has_dek(&vr_dek).await && vault.has_dek(&receipt_dek).await, "DEKs exist pre-erasure");
+    assert!(
+        vault.has_dek(&vr_dek).await && vault.has_dek(&receipt_dek).await,
+        "DEKs exist pre-erasure"
+    );
 
     // delete-request -> deletion{ dueBy: now+45d }.
-    let (s, b) = call(&app, "POST", "/v1/privacy/delete-request", Some(&sess), Some(serde_json::json!({ "scope": "all" }))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/privacy/delete-request",
+        Some(&sess),
+        Some(serde_json::json!({ "scope": "all" })),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "delete-request: {b}");
     let due_by = b["dueBy"].as_u64().unwrap();
     assert!(due_by >= auth::now() + 44 * 24 * 3600, "dueBy ~ now+45d");
@@ -220,7 +294,10 @@ async fn erasure_crypto_shreds_records_and_deks() {
     // not yet due -> fulfill does nothing (cron at `now`).
     let fulfilled = admin_api::erasure::fulfill_due_deletions(&state, auth::now()).await;
     assert_eq!(fulfilled, 0, "nothing due yet");
-    assert!(store.get_credential(&cred_id).await.is_some(), "credential present pre-due");
+    assert!(
+        store.get_credential(&cred_id).await.is_some(),
+        "credential present pre-due"
+    );
     assert!(vault.has_dek(&cred_dek).await, "DEK intact pre-due");
 
     // at/after dueBy -> fulfill runs erase: crypto-shred everything in scope incl. verification_records.
@@ -229,12 +306,30 @@ async fn erasure_crypto_shreds_records_and_deks() {
 
     // DEKs destroyed -> ciphertext permanently undecryptable.
     assert!(!vault.has_dek(&cred_dek).await, "credential DEK DESTROYED");
-    assert!(!vault.has_dek(&vr_dek).await, "verification_records DEK DESTROYED");
-    assert!(!vault.has_dek(&receipt_dek).await, "consent receipt DEK DESTROYED");
+    assert!(
+        !vault.has_dek(&vr_dek).await,
+        "verification_records DEK DESTROYED"
+    );
+    assert!(
+        !vault.has_dek(&receipt_dek).await,
+        "consent receipt DEK DESTROYED"
+    );
     // rows deleted.
-    assert!(store.get_credential(&cred_id).await.is_none(), "credential row deleted");
-    assert!(store.verification_records_of_owner(&owner_id).await.is_empty(), "verification_records deleted");
-    assert!(store.receipts_of_owner(&owner_id).await.is_empty(), "consent receipts deleted");
+    assert!(
+        store.get_credential(&cred_id).await.is_none(),
+        "credential row deleted"
+    );
+    assert!(
+        store
+            .verification_records_of_owner(&owner_id)
+            .await
+            .is_empty(),
+        "verification_records deleted"
+    );
+    assert!(
+        store.receipts_of_owner(&owner_id).await.is_empty(),
+        "consent receipts deleted"
+    );
 }
 
 // ============================================================================================
@@ -293,12 +388,23 @@ async fn verify_consent_relay_stores_receipt() {
 
     // relayed to the verifier's /verify/consent/submit.
     assert!(
-        business.calls().iter().any(|c| c.url.ends_with("/verify/consent/submit")),
+        business
+            .calls()
+            .iter()
+            .any(|c| c.url.ends_with("/verify/consent/submit")),
         "relayed to verifier submit endpoint"
     );
     // a receipt + verification_record were stored (off-chain, deletable).
-    assert_eq!(store.receipts_of_owner(&owner_id).await.len(), 1, "consent receipt stored");
-    assert_eq!(store.verification_records_of_owner(&owner_id).await.len(), 1, "verification_record stored");
+    assert_eq!(
+        store.receipts_of_owner(&owner_id).await.len(),
+        1,
+        "consent receipt stored"
+    );
+    assert_eq!(
+        store.verification_records_of_owner(&owner_id).await.len(),
+        1,
+        "verification_record stored"
+    );
 
     // reusing the SAME session JWT (same jti) -> 401 (one-time consume).
     let (s, _b) = call(
@@ -309,7 +415,11 @@ async fn verify_consent_relay_stores_receipt() {
         Some(serde_json::json!({ "sessionJwt": session_jwt, "consent": consent, "sig": "0xdead", "mode": "normal" })),
     )
     .await;
-    assert_eq!(s, StatusCode::UNAUTHORIZED, "reused session jti must be 401");
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "reused session jti must be 401"
+    );
 }
 
 // ============================================================================================
@@ -355,7 +465,14 @@ async fn pet_mint_produces_valid_dog_profile_sbt() {
     let pet_id = pet["id"].as_str().unwrap().to_string();
 
     // mint SUCCEEDS and returns {dogTagId, root, txHash}.
-    let (s, m) = call(&app, "POST", &format!("/v1/pets/{pet_id}/mint"), Some(&sess), Some(serde_json::json!({}))).await;
+    let (s, m) = call(
+        &app,
+        "POST",
+        &format!("/v1/pets/{pet_id}/mint"),
+        Some(&sess),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "mint must succeed: {m}");
     assert!(m["dogTagId"].as_str().is_some(), "dogTagId present");
     assert!(m["root"].as_str().is_some(), "root present");
@@ -367,12 +484,20 @@ async fn pet_mint_produces_valid_dog_profile_sbt() {
     assert_eq!(stored.dog_tag_id.as_deref(), m["dogTagId"].as_str());
     assert_eq!(stored.root.as_deref(), m["root"].as_str());
     let sealed = stored.sealed_doc.expect("sealed doc stored");
-    let doc_val: serde_json::Value =
-        admin_api::crypto::open_json(&vault, &sealed).await.expect("open sealed doc");
+    let doc_val: serde_json::Value = admin_api::crypto::open_json(&vault, &sealed)
+        .await
+        .expect("open sealed doc");
     let doc: dogtag_standard::wrap::WrappedDoc =
         serde_json::from_value(doc_val).expect("stored doc is a WrappedDoc");
-    assert_eq!(doc.signature.merkle_root, m["root"].as_str().unwrap(), "stored root == returned root");
-    assert!(admin_api::verify::structural_valid(&doc), "wrapped DOG_PROFILE VC integrity must verify");
+    assert_eq!(
+        doc.signature.merkle_root,
+        m["root"].as_str().unwrap(),
+        "stored root == returned root"
+    );
+    assert!(
+        admin_api::verify::structural_valid(&doc),
+        "wrapped DOG_PROFILE VC integrity must verify"
+    );
     // the non-personal dogTagId is the disclosed reference identity.
     assert_eq!(
         admin_api::verify::dog_tag_id_of(&doc).as_deref(),
@@ -387,7 +512,12 @@ async fn pet_mint_fills_defaults_when_profile_omitted() {
     let (state, _chain, vault, _biz) = hermetic_state();
     let store = state.store.clone();
     let app = admin_api::router(state.clone());
-    let (_oid, sess) = signup(&app, "mint2@x.io", "0x00000000000000000000000000000000000000f2").await;
+    let (_oid, sess) = signup(
+        &app,
+        "mint2@x.io",
+        "0x00000000000000000000000000000000000000f2",
+    )
+    .await;
 
     let (s, pet) = call(
         &app,
@@ -403,15 +533,31 @@ async fn pet_mint_fills_defaults_when_profile_omitted() {
     assert_eq!(s, StatusCode::OK, "create pet: {pet}");
     let pet_id = pet["id"].as_str().unwrap().to_string();
 
-    let (s, m) = call(&app, "POST", &format!("/v1/pets/{pet_id}/mint"), Some(&sess), Some(serde_json::json!({}))).await;
-    assert_eq!(s, StatusCode::OK, "mint with default profile must succeed: {m}");
+    let (s, m) = call(
+        &app,
+        "POST",
+        &format!("/v1/pets/{pet_id}/mint"),
+        Some(&sess),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "mint with default profile must succeed: {m}"
+    );
 
     let stored = store.get_pet(&pet_id).await.unwrap();
     let sealed = stored.sealed_doc.expect("sealed doc stored");
-    let doc_val: serde_json::Value =
-        admin_api::crypto::open_json(&vault, &sealed).await.expect("open sealed doc");
-    let doc: dogtag_standard::wrap::WrappedDoc = serde_json::from_value(doc_val).expect("WrappedDoc");
-    assert!(admin_api::verify::structural_valid(&doc), "defaulted DOG_PROFILE VC integrity must verify");
+    let doc_val: serde_json::Value = admin_api::crypto::open_json(&vault, &sealed)
+        .await
+        .expect("open sealed doc");
+    let doc: dogtag_standard::wrap::WrappedDoc =
+        serde_json::from_value(doc_val).expect("WrappedDoc");
+    assert!(
+        admin_api::verify::structural_valid(&doc),
+        "defaulted DOG_PROFILE VC integrity must verify"
+    );
 }
 
 // ============================================================================================
@@ -450,12 +596,31 @@ async fn approve_dog_profile_grants_issuer_role() {
         }),
     )
     .await;
-    assert!(!chain.has_issuer_role(&sbt, vet_addr).await.unwrap(), "no role before approve");
-    let (s, b) = call(&app, "POST", &format!("/v1/issuer-applications/{vet_app}/approve"), Some(&admin), Some(serde_json::json!({}))).await;
+    assert!(
+        !chain.has_issuer_role(&sbt, vet_addr).await.unwrap(),
+        "no role before approve"
+    );
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/v1/issuer-applications/{vet_app}/approve"),
+        Some(&admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "approve vet: {b}");
-    assert_eq!(b["issuerRoleGranted"], true, "dog-tag issuer must be granted ISSUER_ROLE");
-    assert!(b["issuerRoleTxHash"].as_str().is_some(), "issuerRoleTxHash present");
-    assert!(chain.has_issuer_role(&sbt, vet_addr).await.unwrap(), "ISSUER_ROLE granted on the SBT");
+    assert_eq!(
+        b["issuerRoleGranted"], true,
+        "dog-tag issuer must be granted ISSUER_ROLE"
+    );
+    assert!(
+        b["issuerRoleTxHash"].as_str().is_some(),
+        "issuerRoleTxHash present"
+    );
+    assert!(
+        chain.has_issuer_role(&sbt, vet_addr).await.unwrap(),
+        "ISSUER_ROLE granted on the SBT"
+    );
 
     // (2) a groomer (VERIFY-only, no DOG_PROFILE) — approve must NOT grant ISSUER_ROLE.
     let groomer_app = submit_application(
@@ -470,11 +635,27 @@ async fn approve_dog_profile_grants_issuer_role() {
         }),
     )
     .await;
-    let (s, b) = call(&app, "POST", &format!("/v1/issuer-applications/{groomer_app}/approve"), Some(&admin), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/v1/issuer-applications/{groomer_app}/approve"),
+        Some(&admin),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "approve groomer: {b}");
-    assert_eq!(b["issuerRoleGranted"], false, "groomer (no DOG_PROFILE) must NOT get ISSUER_ROLE");
-    assert!(b["issuerRoleTxHash"].is_null(), "no issuer-role tx for a groomer");
-    assert!(!chain.has_issuer_role(&sbt, groomer_addr).await.unwrap(), "groomer holds no ISSUER_ROLE");
+    assert_eq!(
+        b["issuerRoleGranted"], false,
+        "groomer (no DOG_PROFILE) must NOT get ISSUER_ROLE"
+    );
+    assert!(
+        b["issuerRoleTxHash"].is_null(),
+        "no issuer-role tx for a groomer"
+    );
+    assert!(
+        !chain.has_issuer_role(&sbt, groomer_addr).await.unwrap(),
+        "groomer holds no ISSUER_ROLE"
+    );
 }
 
 // --------------------------------------------------------------------------------------------
@@ -520,4 +701,3 @@ fn build_sample_wrapped_doc() -> serde_json::Value {
     let doc = wrap_document(&vc, meta, &mut salt).unwrap();
     serde_json::to_value(&doc).unwrap()
 }
-

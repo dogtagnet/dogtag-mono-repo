@@ -148,7 +148,9 @@ pub struct IssuerSettings {
 
 impl Default for IssuerSettings {
     fn default() -> Self {
-        IssuerSettings { signing_mode: "backend".to_string() }
+        IssuerSettings {
+            signing_mode: "backend".to_string(),
+        }
     }
 }
 
@@ -358,13 +360,21 @@ impl MemStore {
 #[async_trait]
 impl Store for MemStore {
     async fn put_record(&self, r: Record) {
-        self.inner.write().unwrap().records.insert(r.record_id.clone(), r);
+        self.inner
+            .write()
+            .unwrap()
+            .records
+            .insert(r.record_id.clone(), r);
     }
     async fn get_record(&self, id: &str) -> Option<Record> {
         self.inner.read().unwrap().records.get(id).cloned()
     }
     async fn update_record(&self, r: Record) {
-        self.inner.write().unwrap().records.insert(r.record_id.clone(), r);
+        self.inner
+            .write()
+            .unwrap()
+            .records
+            .insert(r.record_id.clone(), r);
     }
     async fn has_prepared(&self) -> bool {
         self.inner
@@ -385,13 +395,21 @@ impl Store for MemStore {
     }
 
     async fn put_session(&self, s: VerifySession) {
-        self.inner.write().unwrap().sessions.insert(s.session_id.clone(), s);
+        self.inner
+            .write()
+            .unwrap()
+            .sessions
+            .insert(s.session_id.clone(), s);
     }
     async fn get_session(&self, id: &str) -> Option<VerifySession> {
         self.inner.read().unwrap().sessions.get(id).cloned()
     }
     async fn update_session(&self, s: VerifySession) {
-        self.inner.write().unwrap().sessions.insert(s.session_id.clone(), s);
+        self.inner
+            .write()
+            .unwrap()
+            .sessions
+            .insert(s.session_id.clone(), s);
     }
 
     async fn consume_jti(&self, jti: &str) -> bool {
@@ -463,13 +481,26 @@ impl Store for MemStore {
         g.dog_tag_seq
     }
     async fn put_profile_session(&self, s: ProfileIssueSession) {
-        self.inner.write().unwrap().profile_sessions.insert(s.session_id.clone(), s);
+        self.inner
+            .write()
+            .unwrap()
+            .profile_sessions
+            .insert(s.session_id.clone(), s);
     }
     async fn get_profile_session(&self, session_id: &str) -> Option<ProfileIssueSession> {
-        self.inner.read().unwrap().profile_sessions.get(session_id).cloned()
+        self.inner
+            .read()
+            .unwrap()
+            .profile_sessions
+            .get(session_id)
+            .cloned()
     }
     async fn update_profile_session(&self, s: ProfileIssueSession) {
-        self.inner.write().unwrap().profile_sessions.insert(s.session_id.clone(), s);
+        self.inner
+            .write()
+            .unwrap()
+            .profile_sessions
+            .insert(s.session_id.clone(), s);
     }
     async fn put_bind_token(&self, token: &str, session_id: &str, exp: u64) {
         self.inner
@@ -507,7 +538,12 @@ impl Store for MemStore {
     }
 
     async fn get_settings(&self) -> IssuerSettings {
-        self.inner.read().unwrap().settings.clone().unwrap_or_default()
+        self.inner
+            .read()
+            .unwrap()
+            .settings
+            .clone()
+            .unwrap_or_default()
     }
     async fn put_settings(&self, s: IssuerSettings) {
         self.inner.write().unwrap().settings = Some(s);
@@ -528,10 +564,19 @@ impl Store for MemStore {
     }
 
     async fn upsert_client_cache(&self, dog_tag_id: String, doc: serde_json::Value) {
-        self.inner.write().unwrap().client_cache.insert(dog_tag_id, doc);
+        self.inner
+            .write()
+            .unwrap()
+            .client_cache
+            .insert(dog_tag_id, doc);
     }
     async fn get_client_cache(&self, dog_tag_id: &str) -> Option<serde_json::Value> {
-        self.inner.read().unwrap().client_cache.get(dog_tag_id).cloned()
+        self.inner
+            .read()
+            .unwrap()
+            .client_cache
+            .get(dog_tag_id)
+            .cloned()
     }
 
     // ---- appointment replica ----
@@ -539,7 +584,11 @@ impl Store for MemStore {
         self.inner.read().unwrap().appts.get(id).cloned()
     }
     async fn put_appt(&self, a: ApptReplica) {
-        self.inner.write().unwrap().appts.insert(a.appointment_id.clone(), a);
+        self.inner
+            .write()
+            .unwrap()
+            .appts
+            .insert(a.appointment_id.clone(), a);
     }
     async fn appts_updated_since(&self, since: u64) -> Vec<ApptReplica> {
         let mut v: Vec<ApptReplica> = self
@@ -556,12 +605,20 @@ impl Store for MemStore {
     }
     async fn record_idempotency_key(&self, key: &str) -> bool {
         // atomic under the write lock: insert returns true iff newly inserted.
-        self.inner.write().unwrap().idempotency_keys.insert(key.to_string())
+        self.inner
+            .write()
+            .unwrap()
+            .idempotency_keys
+            .insert(key.to_string())
     }
 
     // ---- gcal mapping + sync state ----
     async fn put_gcal_map(&self, m: GcalEventMap) {
-        self.inner.write().unwrap().gcal_maps.insert(m.google_event_id.clone(), m);
+        self.inner
+            .write()
+            .unwrap()
+            .gcal_maps
+            .insert(m.google_event_id.clone(), m);
     }
     async fn get_gcal_map_by_appt(&self, appointment_id: &str) -> Option<GcalEventMap> {
         self.inner
@@ -573,13 +630,28 @@ impl Store for MemStore {
             .cloned()
     }
     async fn get_gcal_map_by_event(&self, google_event_id: &str) -> Option<GcalEventMap> {
-        self.inner.read().unwrap().gcal_maps.get(google_event_id).cloned()
+        self.inner
+            .read()
+            .unwrap()
+            .gcal_maps
+            .get(google_event_id)
+            .cloned()
     }
     async fn all_gcal_maps(&self) -> Vec<GcalEventMap> {
-        self.inner.read().unwrap().gcal_maps.values().cloned().collect()
+        self.inner
+            .read()
+            .unwrap()
+            .gcal_maps
+            .values()
+            .cloned()
+            .collect()
     }
     async fn delete_gcal_map_by_event(&self, google_event_id: &str) {
-        self.inner.write().unwrap().gcal_maps.remove(google_event_id);
+        self.inner
+            .write()
+            .unwrap()
+            .gcal_maps
+            .remove(google_event_id);
     }
     async fn wipe_gcal_mirror(&self) {
         self.inner.write().unwrap().gcal_maps.clear();

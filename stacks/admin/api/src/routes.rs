@@ -65,7 +65,8 @@ async fn require_owner(st: &AppState, headers: &HeaderMap) -> Result<String, Res
 
 /// Require a valid admin session bearer.
 async fn require_admin(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
-    let token = bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing admin session"))?;
+    let token =
+        bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing admin session"))?;
     if st.store.has_admin_session(&token).await {
         Ok(())
     } else {
@@ -95,7 +96,9 @@ async fn signup(State(st): State<AppState>, Json(body): Json<SignupReq>) -> Resp
     }
     let owner_id = uuid::Uuid::new_v4().to_string();
     let profile_pii = if let Some(name) = &body.name {
-        crypto::seal_json(st.vault.as_ref(), &json!({ "name": name })).await.ok()
+        crypto::seal_json(st.vault.as_ref(), &json!({ "name": name }))
+            .await
+            .ok()
     } else {
         None
     };
@@ -129,7 +132,10 @@ async fn login(
 ) -> Resp {
     let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
     if st.ratelimit.is_locked(&ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts; try again later",
+        );
     }
     let owner = match st.store.get_owner_by_email(&body.email).await {
         Some(o) => o,
@@ -157,7 +163,9 @@ async fn login(
         st.store.put_owner(o).await;
     }
     let token = auth::new_session_token("sess");
-    st.store.put_session(token.clone(), owner.owner_id.clone()).await;
+    st.store
+        .put_session(token.clone(), owner.owner_id.clone())
+        .await;
     ok(json!({ "ownerId": owner.owner_id, "token": token }))
 }
 
@@ -174,7 +182,10 @@ async fn admin_login(
 ) -> Resp {
     let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
     if st.ratelimit.is_locked(&ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts; try again later",
+        );
     }
     if !auth::verify_password(&body.password, &auth::hash_password(&st.cfg.admin_password))
         && body.password != st.cfg.admin_password
@@ -232,7 +243,11 @@ fn pet_json(p: Pet) -> Value {
     })
 }
 
-async fn create_pet(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<CreatePetReq>) -> Resp {
+async fn create_pet(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreatePetReq>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
@@ -279,7 +294,14 @@ async fn mint_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path
     // owner-session mint does not collect ownerIdentity; emit empty-string fields (schema only
     // requires the keys present as strings).
     let owner_identity = OwnerIdentity::default();
-    let vc = app::build_profile_vc(&st.cfg, &pet.name, &pet.microchip, &pet.profile, &owner_identity, &dog_tag_id);
+    let vc = app::build_profile_vc(
+        &st.cfg,
+        &pet.name,
+        &pet.microchip,
+        &pet.profile,
+        &owner_identity,
+        &dog_tag_id,
+    );
     let doc = match app::wrap_vc(meta, &vc) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::BAD_REQUEST, &e),
@@ -288,7 +310,13 @@ async fn mint_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path
     // central protocol signer mints the SBT to the USER'S wallet.
     let sent = match st
         .chain
-        .mint(st.cfg.admin_signer_index, &st.cfg.sbt_addr, &owner.wallet_address, &dog_tag_id, &root)
+        .mint(
+            st.cfg.admin_signer_index,
+            &st.cfg.sbt_addr,
+            &owner.wallet_address,
+            &dog_tag_id,
+            &root,
+        )
         .await
     {
         Ok(s) => s,
@@ -338,7 +366,11 @@ struct ImportReq {
     wrapped_doc: Value,
 }
 
-async fn import_credential(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<ImportReq>) -> Resp {
+async fn import_credential(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ImportReq>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
@@ -346,12 +378,16 @@ async fn import_credential(State(st): State<AppState>, headers: HeaderMap, Json(
     // parse + minimally verify via the SDK (structural integrity check; full on-chain verify needs a
     // live RPC which the hermetic path lacks — we assert the doc is a well-formed WrappedDoc whose
     // recomputed root matches the embedded merkleRoot).
-    let doc: dogtag_standard::wrap::WrappedDoc = match serde_json::from_value(body.wrapped_doc.clone()) {
-        Ok(d) => d,
-        Err(e) => return err(StatusCode::BAD_REQUEST, &format!("not a WrappedDoc: {e}")),
-    };
+    let doc: dogtag_standard::wrap::WrappedDoc =
+        match serde_json::from_value(body.wrapped_doc.clone()) {
+            Ok(d) => d,
+            Err(e) => return err(StatusCode::BAD_REQUEST, &format!("not a WrappedDoc: {e}")),
+        };
     if !crate::verify::structural_valid(&doc) {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "wrapped doc integrity invalid");
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "wrapped doc integrity invalid",
+        );
     }
     let dog_tag_id = crate::verify::dog_tag_id_of(&doc).unwrap_or_else(|| "unknown".to_string());
     let sealed = match crypto::seal_json(st.vault.as_ref(), &body.wrapped_doc).await {
@@ -372,7 +408,11 @@ async fn import_credential(State(st): State<AppState>, headers: HeaderMap, Json(
 }
 
 /// POST /v1/share/{credentialId} — mint a one-time JWT (aud dogtag-business) + a share ref.
-async fn share_credential(State(st): State<AppState>, headers: HeaderMap, Path(cred_id): Path<String>) -> Resp {
+async fn share_credential(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(cred_id): Path<String>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
@@ -407,7 +447,11 @@ async fn share_credential(State(st): State<AppState>, headers: HeaderMap, Path(c
 
 /// GET /share/{ref} Bearer<jwt> — mirrors the business-side asserts (impl §11.4 C-1):
 /// sub==ref && aud=="dogtag-business" && scope check && atomic one-time jti consume (401 if reused).
-async fn get_share(State(st): State<AppState>, headers: HeaderMap, Path(ref_id): Path<String>) -> Resp {
+async fn get_share(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(ref_id): Path<String>,
+) -> Resp {
     let token = match bearer(&headers) {
         Some(t) => t,
         None => return err(StatusCode::UNAUTHORIZED, "missing share JWT"),
@@ -457,12 +501,24 @@ struct VerifyConsentReq {
     mode: Option<String>,
 }
 
-async fn verify_consent(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<VerifyConsentReq>) -> Resp {
+async fn verify_consent(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VerifyConsentReq>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
     };
-    crate::verify_relay::relay(&st, &owner_id, body.session_jwt, body.consent, body.sig, body.mode).await
+    crate::verify_relay::relay(
+        &st,
+        &owner_id,
+        body.session_jwt,
+        body.consent,
+        body.sig,
+        body.mode,
+    )
+    .await
 }
 
 async fn verify_receipts(State(st): State<AppState>, headers: HeaderMap) -> Resp {
@@ -475,10 +531,12 @@ async fn verify_receipts(State(st): State<AppState>, headers: HeaderMap) -> Resp
         .verification_records_of_owner(&owner_id)
         .await
         .into_iter()
-        .map(|v| json!({
-            "id": v.record_id, "dogTagId": v.dog_tag_id, "purpose": v.purpose,
-            "relayer": v.relayer, "mode": v.mode, "status": v.status,
-        }))
+        .map(|v| {
+            json!({
+                "id": v.record_id, "dogTagId": v.dog_tag_id, "purpose": v.purpose,
+                "relayer": v.relayer, "mode": v.mode, "status": v.status,
+            })
+        })
         .collect();
     ok(json!({ "receipts": recs }))
 }
@@ -491,8 +549,8 @@ async fn verify_receipts(State(st): State<AppState>, headers: HeaderMap) -> Resp
 struct BusinessesQuery {
     #[serde(rename = "type")]
     kind: Option<String>,
-    near: Option<String>,   // "lat,lng"
-    radius: Option<f64>,    // km
+    near: Option<String>, // "lat,lng"
+    radius: Option<f64>,  // km
 }
 
 fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
@@ -507,7 +565,10 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 async fn list_businesses(State(st): State<AppState>, Query(q): Query<BusinessesQuery>) -> Resp {
     let near = q.near.as_ref().and_then(|s| {
         let mut it = s.split(',');
-        Some((it.next()?.trim().parse::<f64>().ok()?, it.next()?.trim().parse::<f64>().ok()?))
+        Some((
+            it.next()?.trim().parse::<f64>().ok()?,
+            it.next()?.trim().parse::<f64>().ok()?,
+        ))
     });
     let radius = q.radius.unwrap_or(50.0);
     let out: Vec<Value> = st
@@ -549,7 +610,11 @@ struct RegisterBusinessReq {
     document_stores: Vec<String>,
 }
 
-async fn register_business(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<RegisterBusinessReq>) -> Resp {
+async fn register_business(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterBusinessReq>,
+) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
     }
@@ -597,9 +662,15 @@ struct IssuerApplicationReq {
     license: Option<License>,
 }
 
-async fn create_application(State(st): State<AppState>, Json(body): Json<IssuerApplicationReq>) -> Resp {
+async fn create_application(
+    State(st): State<AppState>,
+    Json(body): Json<IssuerApplicationReq>,
+) -> Resp {
     if body.addresses.is_empty() || body.record_types.is_empty() {
-        return err(StatusCode::BAD_REQUEST, "addresses[] and recordTypes[] required");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "addresses[] and recordTypes[] required",
+        );
     }
     let application_id = uuid::Uuid::new_v4().to_string();
     st.store
@@ -629,12 +700,14 @@ async fn list_applications(State(st): State<AppState>, headers: HeaderMap) -> Re
         .all_applications()
         .await
         .into_iter()
-        .map(|a| json!({
-            "applicationId": a.application_id, "issuerEntityId": a.issuer_entity_id,
-            "addresses": a.addresses, "recordTypes": a.record_types,
-            "verifyPurposes": a.verify_purposes,
-            "domain": a.domain, "status": a.status,
-        }))
+        .map(|a| {
+            json!({
+                "applicationId": a.application_id, "issuerEntityId": a.issuer_entity_id,
+                "addresses": a.addresses, "recordTypes": a.record_types,
+                "verifyPurposes": a.verify_purposes,
+                "domain": a.domain, "status": a.status,
+            })
+        })
         .collect();
     ok(json!({ "applications": apps }))
 }
@@ -644,7 +717,11 @@ fn usda_nan_valid(nan: &str) -> bool {
     nan.len() == 6 && nan.bytes().all(|b| b.is_ascii_digit())
 }
 
-async fn approve_application(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
+async fn approve_application(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
     }
@@ -663,7 +740,10 @@ async fn approve_application(State(st): State<AppState>, headers: HeaderMap, Pat
     }
     if let Some(lic) = &app_rec.license {
         if lic.number.is_empty() || lic.jurisdiction.is_empty() || lic.expiry.is_empty() {
-            return err(StatusCode::BAD_REQUEST, "license{number,jurisdiction,expiry} required");
+            return err(
+                StatusCode::BAD_REQUEST,
+                "license{number,jurisdiction,expiry} required",
+            );
         }
     }
     // verify the business's DNS TXT BEFORE whitelisting (architecture §13.3 H).
@@ -680,7 +760,12 @@ async fn approve_application(State(st): State<AppState>, headers: HeaderMap, Pat
             let rt_key = record_type_key(rt);
             match st
                 .chain
-                .whitelist_for(st.cfg.admin_signer_index, &st.cfg.issuer_registry_addr, &rt_key, addr)
+                .whitelist_for(
+                    st.cfg.admin_signer_index,
+                    &st.cfg.issuer_registry_addr,
+                    &rt_key,
+                    addr,
+                )
                 .await
             {
                 Ok(sent) => txs.push(sent.tx_hash),
@@ -696,11 +781,21 @@ async fn approve_application(State(st): State<AppState>, headers: HeaderMap, Pat
             let vk = verify_key(purpose);
             match st
                 .chain
-                .whitelist_for(st.cfg.admin_signer_index, &st.cfg.issuer_registry_addr, &vk, addr)
+                .whitelist_for(
+                    st.cfg.admin_signer_index,
+                    &st.cfg.issuer_registry_addr,
+                    &vk,
+                    addr,
+                )
                 .await
             {
                 Ok(sent) => txs.push(sent.tx_hash),
-                Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("whitelistFor(verify): {e}")),
+                Err(e) => {
+                    return err(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("whitelistFor(verify): {e}"),
+                    )
+                }
             }
         }
     }
@@ -729,7 +824,9 @@ async fn approve_application(State(st): State<AppState>, headers: HeaderMap, Pat
                             issuer_role_granted = true;
                             issuer_role_txs.push(sent.tx_hash);
                         }
-                        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}")),
+                        Err(e) => {
+                            return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}"))
+                        }
                     }
                 }
                 Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("hasRole(ISSUER): {e}")),
@@ -748,7 +845,11 @@ async fn approve_application(State(st): State<AppState>, headers: HeaderMap, Pat
     }))
 }
 
-async fn reject_application(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
+async fn reject_application(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
     }
@@ -761,7 +862,11 @@ async fn reject_application(State(st): State<AppState>, headers: HeaderMap, Path
     ok(json!({ "status": "rejected" }))
 }
 
-async fn delist_application(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
+async fn delist_application(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
     }
@@ -775,7 +880,12 @@ async fn delist_application(State(st): State<AppState>, headers: HeaderMap, Path
             let rt_key = record_type_key(rt);
             match st
                 .chain
-                .delist_for(st.cfg.admin_signer_index, &st.cfg.issuer_registry_addr, &rt_key, addr)
+                .delist_for(
+                    st.cfg.admin_signer_index,
+                    &st.cfg.issuer_registry_addr,
+                    &rt_key,
+                    addr,
+                )
                 .await
             {
                 Ok(sent) => txs.push(sent.tx_hash),
@@ -801,7 +911,11 @@ struct CreateAppointmentReq {
     slot: String,
 }
 
-async fn create_appointment(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<CreateAppointmentReq>) -> Resp {
+async fn create_appointment(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateAppointmentReq>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
@@ -844,7 +958,13 @@ async fn create_appointment(State(st): State<AppState>, headers: HeaderMap, Json
     let body_json = appointment_json(&appt);
     let _ = st
         .business
-        .put_appointment(&biz.api_base_url, &biz.hmac_secret, &appt.appointment_id, &appt.appointment_id, &body_json)
+        .put_appointment(
+            &biz.api_base_url,
+            &biz.hmac_secret,
+            &appt.appointment_id,
+            &appt.appointment_id,
+            &body_json,
+        )
         .await;
     ok(appointment_json(&appt))
 }
@@ -919,7 +1039,9 @@ async fn appointment_event(
         )
         .await;
     match result {
-        Some(a) if a.business_id != bid => err(StatusCode::FORBIDDEN, "appointment not owned by business"),
+        Some(a) if a.business_id != bid => {
+            err(StatusCode::FORBIDDEN, "appointment not owned by business")
+        }
         Some(a) => {
             // push-notify the owner (best-effort; we record intent).
             tracing::info!(owner = %a.owner_id, appt = %a.appointment_id, state = %a.state, "push notify");
@@ -943,7 +1065,11 @@ struct ApptQuery {
     updated_since: Option<u64>,
 }
 
-async fn list_appointments(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<ApptQuery>) -> Resp {
+async fn list_appointments(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ApptQuery>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
@@ -970,7 +1096,11 @@ struct ConsentReq {
     lawful_basis: String,
 }
 
-async fn create_consent(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<ConsentReq>) -> Resp {
+async fn create_consent(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ConsentReq>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
@@ -1008,7 +1138,9 @@ async fn create_consent(State(st): State<AppState>, headers: HeaderMap, Json(bod
             sealed,
         })
         .await;
-    ok(json!({ "consentId": consent_id, "receipt": { "receiptId": receipt_id, "hash": hash, "issuedAt": n } }))
+    ok(
+        json!({ "consentId": consent_id, "receipt": { "receiptId": receipt_id, "hash": hash, "issuedAt": n } }),
+    )
 }
 
 async fn list_consents(State(st): State<AppState>, headers: HeaderMap) -> Resp {
@@ -1021,15 +1153,21 @@ async fn list_consents(State(st): State<AppState>, headers: HeaderMap) -> Resp {
         .consents_of_owner(&owner_id)
         .await
         .into_iter()
-        .map(|c| json!({
-            "consentId": c.consent_id, "purpose": c.purpose, "lawfulBasis": c.lawful_basis,
-            "grantedAt": c.granted_at, "withdrawn": c.withdrawn,
-        }))
+        .map(|c| {
+            json!({
+                "consentId": c.consent_id, "purpose": c.purpose, "lawfulBasis": c.lawful_basis,
+                "grantedAt": c.granted_at, "withdrawn": c.withdrawn,
+            })
+        })
         .collect();
     ok(json!({ "consents": out }))
 }
 
-async fn withdraw_consent(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
+async fn withdraw_consent(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
         Err(e) => return e,
@@ -1051,7 +1189,11 @@ struct DeleteReq {
     scope: String,
 }
 
-async fn delete_request(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<DeleteReq>) -> Resp {
+async fn delete_request(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DeleteReq>,
+) -> Resp {
     // owner self-service (session) OR admin-on-behalf.
     let owner_id = match require_owner(&st, &headers).await {
         Ok(o) => o,
@@ -1097,9 +1239,18 @@ pub fn admin_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/admin/login", post(admin_login))
         // issuer whitelisting (admin-session writes)
-        .route("/v1/issuer-applications/:id/approve", post(approve_application))
-        .route("/v1/issuer-applications/:id/reject", post(reject_application))
-        .route("/v1/issuer-applications/:id/delist", post(delist_application))
+        .route(
+            "/v1/issuer-applications/:id/approve",
+            post(approve_application),
+        )
+        .route(
+            "/v1/issuer-applications/:id/reject",
+            post(reject_application),
+        )
+        .route(
+            "/v1/issuer-applications/:id/delist",
+            post(delist_application),
+        )
         // erasure cron trigger (admin)
         .route("/v1/privacy/fulfill-deletions", post(fulfill_deletions))
         .with_state(state)
@@ -1126,12 +1277,24 @@ pub fn public_router(state: AppState) -> Router {
         .route("/v1/verify/consent", post(verify_consent))
         .route("/v1/verify/receipts", get(verify_receipts))
         // registry / discovery
-        .route("/v1/businesses", get(list_businesses).post(register_business))
+        .route(
+            "/v1/businesses",
+            get(list_businesses).post(register_business),
+        )
         // issuer applications (list + business submission)
-        .route("/v1/issuer-applications", get(list_applications).post(create_application))
+        .route(
+            "/v1/issuer-applications",
+            get(list_applications).post(create_application),
+        )
         // appointments
-        .route("/v1/appointments", get(list_appointments).post(create_appointment))
-        .route("/v1/businesses/:bid/appointment-events", post(appointment_event))
+        .route(
+            "/v1/appointments",
+            get(list_appointments).post(create_appointment),
+        )
+        .route(
+            "/v1/businesses/:bid/appointment-events",
+            post(appointment_event),
+        )
         // consent / erasure
         .route("/v1/consents", get(list_consents).post(create_consent))
         .route("/v1/consents/:id/withdraw", post(withdraw_consent))
@@ -1143,4 +1306,98 @@ pub fn public_router(state: AppState) -> Router {
 /// When `ADMIN_LOOPBACK_ONLY` is set, `main.rs` serves `public_router` and `admin_router` separately.
 pub fn router(state: AppState) -> Router {
     public_router(state.clone()).merge(admin_router(state))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit coverage for the pure request-parsing / geo / validation helpers that previously had no
+    //! direct tests (they were exercised only end-to-end through the HTTP handlers).
+    use super::*;
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn bearer_extracts_token_after_scheme() {
+        assert_eq!(
+            bearer(&headers(&[("authorization", "Bearer tok123")])),
+            Some("tok123".to_string())
+        );
+    }
+
+    #[test]
+    fn bearer_is_scheme_sensitive_and_absent_is_none() {
+        // No header at all.
+        assert_eq!(bearer(&headers(&[])), None);
+        // The prefix is the exact ASCII "Bearer " (capital B, trailing space); a lowercase scheme
+        // or a bare token does not match.
+        assert_eq!(bearer(&headers(&[("authorization", "bearer tok")])), None);
+        assert_eq!(bearer(&headers(&[("authorization", "tok")])), None);
+        // An empty token after the scheme is still Some("").
+        assert_eq!(
+            bearer(&headers(&[("authorization", "Bearer ")])),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn client_ip_prefers_first_forwarded_hop() {
+        // The first comma-separated hop is the originating client; later hops are proxies.
+        let h = headers(&[("x-forwarded-for", "1.2.3.4, 5.6.7.8")]);
+        assert_eq!(client_ip(&h, None), "1.2.3.4");
+        // Surrounding whitespace on the chosen hop is trimmed.
+        let h = headers(&[("x-forwarded-for", "  9.9.9.9  ,10.0.0.1")]);
+        assert_eq!(client_ip(&h, None), "9.9.9.9");
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_peer_then_unknown() {
+        let peer: SocketAddr = "203.0.113.7:55000".parse().unwrap();
+        // No XFF -> raw socket peer IP (port dropped).
+        assert_eq!(client_ip(&headers(&[]), Some(peer)), "203.0.113.7");
+        // An empty XFF value is filtered out, so it still falls through to the peer.
+        let h = headers(&[("x-forwarded-for", "")]);
+        assert_eq!(client_ip(&h, Some(peer)), "203.0.113.7");
+        // No XFF and no peer (in-process tests) -> stable "unknown" key.
+        assert_eq!(client_ip(&headers(&[]), None), "unknown");
+    }
+
+    #[test]
+    fn haversine_km_is_zero_for_identical_points_and_symmetric() {
+        assert!(haversine_km(40.7, -74.0, 40.7, -74.0).abs() < 1e-9);
+        let ab = haversine_km(0.0, 0.0, 51.5, -0.12);
+        let ba = haversine_km(51.5, -0.12, 0.0, 0.0);
+        assert!((ab - ba).abs() < 1e-9);
+    }
+
+    #[test]
+    fn haversine_km_matches_known_one_degree_arc() {
+        // One degree of longitude at the equator is ~111.19 km on a 6371 km sphere.
+        let d = haversine_km(0.0, 0.0, 0.0, 1.0);
+        assert!((d - 111.19).abs() < 0.5, "got {d}");
+    }
+
+    #[test]
+    fn usda_nan_valid_requires_exactly_six_digits() {
+        assert!(usda_nan_valid("123456"));
+        assert!(!usda_nan_valid("12345")); // too short
+        assert!(!usda_nan_valid("1234567")); // too long
+        assert!(!usda_nan_valid("12345a")); // non-digit
+        assert!(!usda_nan_valid("")); // empty
+    }
+
+    #[test]
+    fn is_terminal_matches_only_the_four_terminal_states() {
+        for s in ["DECLINED", "CANCELLED", "COMPLETED", "NO_SHOW"] {
+            assert!(is_terminal(s), "{s} should be terminal");
+        }
+        for s in ["PENDING", "APPROVED", "REQUESTED", "", "declined"] {
+            assert!(!is_terminal(s), "{s} should not be terminal");
+        }
+    }
 }

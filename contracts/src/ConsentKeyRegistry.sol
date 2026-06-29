@@ -43,7 +43,8 @@ contract ConsentKeyRegistry is EIP712 {
     function bindConsentKeyFor(address wallet, bytes32 babyJubPubKeyHash, bytes calldata ecdsaSig) external {
         require(wallet != address(0), "zero wallet");
         uint256 nonce = bindNonce[wallet];
-        bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(BIND_TYPEHASH, babyJubPubKeyHash, wallet, nonce)));
+        bytes32 digest =
+            _hashTypedDataV4(keccak256(abi.encode(BIND_TYPEHASH, babyJubPubKeyHash, wallet, nonce)));
         require(ECDSA.recover(digest, ecdsaSig) == wallet, "bad sig");
         keyOf[wallet] = babyJubPubKeyHash;
         bindNonce[wallet] = nonce + 1;

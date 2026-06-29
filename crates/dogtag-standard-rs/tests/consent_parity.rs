@@ -11,8 +11,10 @@ use dogtag_standard::consent::{
 };
 use serde_json::Value;
 
-const VECTORS: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/dogtag-standard-ts/consent-vectors.json");
+const VECTORS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../packages/dogtag-standard-ts/consent-vectors.json"
+);
 
 fn load() -> Value {
     let raw = std::fs::read_to_string(VECTORS).unwrap_or_else(|e| {
@@ -107,7 +109,11 @@ fn typehash_and_type_string_match_ts() {
         "EIP-712 type string mismatch (field order!)"
     );
     let got = format!("0x{}", hex::encode(verification_consent_typehash()));
-    assert_eq!(got, v["typehash"].as_str().unwrap(), "typehash mismatch (TS != Rust)");
+    assert_eq!(
+        got,
+        v["typehash"].as_str().unwrap(),
+        "typehash mismatch (TS != Rust)"
+    );
 }
 
 #[test]
@@ -117,7 +123,11 @@ fn domain_separator_matches_ts() {
     assert_eq!(chain_id, DOGTAG_CHAIN_ID);
     let vc = addr_of(v["verifying_contract"].as_str().unwrap());
     let got = format!("0x{}", hex::encode(domain_separator(vc, chain_id)));
-    assert_eq!(got, v["domain_separator"].as_str().unwrap(), "domainSeparator mismatch");
+    assert_eq!(
+        got,
+        v["domain_separator"].as_str().unwrap(),
+        "domainSeparator mismatch"
+    );
 }
 
 #[test]
@@ -130,14 +140,29 @@ fn consent_vectors_parity() {
         let name = vec["name"].as_str().unwrap();
         let consent = consent_of(&vec["consent"]);
 
-        let digest = format!("0x{}", hex::encode(hash_typed_consent(&consent, vc, chain_id)));
-        assert_eq!(digest, hex32(vec["eip712_digest"].as_str().unwrap()), "EIP-712 digest {name}");
+        let digest = format!(
+            "0x{}",
+            hex::encode(hash_typed_consent(&consent, vc, chain_id))
+        );
+        assert_eq!(
+            digest,
+            hex32(vec["eip712_digest"].as_str().unwrap()),
+            "EIP-712 digest {name}"
+        );
 
         let null = format!("0x{}", hex::encode(consent_nullifier(&consent)));
-        assert_eq!(null, hex32(vec["nullifier"].as_str().unwrap()), "nullifier {name}");
+        assert_eq!(
+            null,
+            hex32(vec["nullifier"].as_str().unwrap()),
+            "nullifier {name}"
+        );
 
         let msg = eddsa_consent_message(&consent);
-        assert_eq!(msg, fr_from_dec(vec["eddsa_message_dec"].as_str().unwrap()), "eddsa message {name}");
+        assert_eq!(
+            msg,
+            fr_from_dec(vec["eddsa_message_dec"].as_str().unwrap()),
+            "eddsa message {name}"
+        );
     }
 }
 

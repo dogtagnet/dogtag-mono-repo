@@ -37,9 +37,15 @@ impl Drop for Anvil {
 }
 
 fn have_foundry() -> bool {
-    ["forge", "cast", "anvil"]
-        .iter()
-        .all(|b| Command::new(b).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false))
+    ["forge", "cast", "anvil"].iter().all(|b| {
+        Command::new(b)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
 }
 
 fn start_anvil() -> Anvil {
@@ -81,7 +87,10 @@ fn cast_ok(rpc: &str, args: &[&str]) -> bool {
 }
 
 fn run(cmd: &mut Command) -> String {
-    let out = cmd.current_dir(CONTRACTS_DIR).output().expect("run command");
+    let out = cmd
+        .current_dir(CONTRACTS_DIR)
+        .output()
+        .expect("run command");
     if !out.status.success() {
         panic!(
             "command failed: {:?}\nstdout: {}\nstderr: {}",
@@ -96,7 +105,15 @@ fn run(cmd: &mut Command) -> String {
 /// `forge create ... --broadcast` and parse the "Deployed to:" address.
 fn forge_create(rpc: &str, contract: &str, args: &[&str]) -> String {
     let mut cmd = Command::new("forge");
-    cmd.args(["create", "--rpc-url", rpc, "--private-key", PK0, "--broadcast", contract]);
+    cmd.args([
+        "create",
+        "--rpc-url",
+        rpc,
+        "--private-key",
+        PK0,
+        "--broadcast",
+        contract,
+    ]);
     if !args.is_empty() {
         cmd.arg("--constructor-args").args(args);
     }
@@ -110,7 +127,8 @@ fn forge_create(rpc: &str, contract: &str, args: &[&str]) -> String {
 
 fn cast_send(rpc: &str, pk: &str, to: &str, sig: &str, args: &[&str]) {
     let mut cmd = Command::new("cast");
-    cmd.args(["send", "--rpc-url", rpc, "--private-key", pk, to, sig]).args(args);
+    cmd.args(["send", "--rpc-url", rpc, "--private-key", pk, to, sig])
+        .args(args);
     run(&mut cmd);
 }
 
@@ -136,11 +154,26 @@ async fn anvil_full_flow() {
     // --- deploy contract set ---
     let registry = forge_create(&rpc, "src/IssuerRegistry.sol:IssuerRegistry", &[ACC0]);
     let impl_addr = forge_create(&rpc, "src/DogTagIssuer.sol:DogTagIssuer", &[]);
-    let factory = forge_create(&rpc, "src/DogTagIssuerFactory.sol:DogTagIssuerFactory", &[&impl_addr, &registry, ACC0]);
+    let factory = forge_create(
+        &rpc,
+        "src/DogTagIssuerFactory.sol:DogTagIssuerFactory",
+        &[&impl_addr, &registry, ACC0],
+    );
 
     // create the VACCINATION clone (onlyOwner == ACC0) and resolve its address.
-    cast_send(&rpc, PK0, &factory, "createIssuer(string,bytes32,address)", &["VACC", &rt, ACC0]);
-    let clone = cast_call(&rpc, &factory, "predictIssuer(bytes32,address)(address)", &[&rt, ACC0]);
+    cast_send(
+        &rpc,
+        PK0,
+        &factory,
+        "createIssuer(string,bytes32,address)",
+        &["VACC", &rt, ACC0],
+    );
+    let clone = cast_call(
+        &rpc,
+        &factory,
+        "predictIssuer(bytes32,address)(address)",
+        &[&rt, ACC0],
+    );
     let clone = clone.to_lowercase();
 
     // --- backend state: real AlloyChain on anvil + MemStore ---
@@ -160,9 +193,20 @@ async fn anvil_full_flow() {
 
     // fund the backend signer from anvil acct 0, and whitelist it on-chain for VACCINATION.
     fund(&rpc, &backend_addr, "100000000000000000"); // 0.1 ETH
-    cast_send(&rpc, PK0, &registry, "whitelistFor(bytes32,address)", &[&rt, &backend_addr]);
+    cast_send(
+        &rpc,
+        PK0,
+        &registry,
+        "whitelistFor(bytes32,address)",
+        &[&rt, &backend_addr],
+    );
     assert_eq!(
-        cast_call(&rpc, &registry, "isWhitelistedFor(bytes32,address)(bool)", &[&rt, &backend_addr]),
+        cast_call(
+            &rpc,
+            &registry,
+            "isWhitelistedFor(bytes32,address)(bool)",
+            &[&rt, &backend_addr]
+        ),
         "true",
         "backend signer must be whitelisted on-chain"
     );
@@ -170,7 +214,12 @@ async fn anvil_full_flow() {
     // --- non-whitelisted signer fails preflight: query a random unwhitelisted addr ---
     let random_addr = "0x000000000000000000000000000000000000dead";
     assert_eq!(
-        cast_call(&rpc, &registry, "isWhitelistedFor(bytes32,address)(bool)", &[&rt, random_addr]),
+        cast_call(
+            &rpc,
+            &registry,
+            "isWhitelistedFor(bytes32,address)(bool)",
+            &[&rt, random_addr]
+        ),
         "false"
     );
 
@@ -195,13 +244,26 @@ async fn anvil_full_flow() {
         "true",
         "root must be issued+valid on-chain"
     );
-    assert!(chain.is_valid(&clone, &root).await.unwrap(), "AlloyChain.isValid agrees");
+    assert!(
+        chain.is_valid(&clone, &root).await.unwrap(),
+        "AlloyChain.isValid agrees"
+    );
 
     // --- share -> GET /r/<token> with the SHORT one-time token -> doc returned; issuance VALID ---
-    let (s, b) = call(&app, "POST", &format!("/records/{record_id}/share"), Some(&op), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/records/{record_id}/share"),
+        Some(&op),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "share: {b}");
     let qr = b["qrUrl"].as_str().unwrap();
-    assert!(!qr.contains("t="), "qrUrl must not carry a JWT query string: {qr}");
+    assert!(
+        !qr.contains("t="),
+        "qrUrl must not carry a JWT query string: {qr}"
+    );
     let token = extract_token(qr);
 
     let (s, doc) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
@@ -215,30 +277,57 @@ async fn anvil_full_flow() {
 
     // reused short token => 404 (one-time, deleted after first use).
     let (s, _b) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "reused share token must be 404 (one-time)");
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "reused share token must be 404 (one-time)"
+    );
 
     // --- confirm REFUSES a bogus txHash (independent prepared record) ---
     // prepare a wallet-mode record so confirm is callable separately.
     let (s, _b) = call(&app, "POST", "/credentials/confirm", Some(&op),
         Some(serde_json::json!({"recordId": record_id, "txHash": "0x0000000000000000000000000000000000000000000000000000000000000bad"}))).await;
     // already issued + idempotency: not OK with a different/bogus hash.
-    assert_ne!(s, StatusCode::OK, "confirm of an issued record with a bogus hash must not succeed");
+    assert_ne!(
+        s,
+        StatusCode::OK,
+        "confirm of an issued record with a bogus hash must not succeed"
+    );
     let _ = tx_hash;
 
     // --- revoke -> issuance INVALID on re-verify ---
-    let (s, b) = call(&app, "POST", &format!("/records/{record_id}/revoke"), Some(&op), Some(serde_json::json!({}))).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/records/{record_id}/revoke"),
+        Some(&op),
+        Some(serde_json::json!({})),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "revoke: {b}");
     assert_eq!(
         cast_call(&rpc, &clone, "isValid(bytes32)(bool)", &[&root]),
         "false",
         "after revoke, isValid must be false on-chain"
     );
-    assert!(!chain.is_valid(&clone, &root).await.unwrap(), "issuance pillar now INVALID");
+    assert!(
+        !chain.is_valid(&clone, &root).await.unwrap(),
+        "issuance pillar now INVALID"
+    );
 }
 
 fn fund(rpc: &str, to: &str, wei: &str) {
     let mut cmd = Command::new("cast");
-    cmd.args(["send", "--rpc-url", rpc, "--private-key", PK0, to, "--value", wei]);
+    cmd.args([
+        "send",
+        "--rpc-url",
+        rpc,
+        "--private-key",
+        PK0,
+        to,
+        "--value",
+        wei,
+    ]);
     run(&mut cmd);
 }
 

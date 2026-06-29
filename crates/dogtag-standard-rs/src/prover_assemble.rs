@@ -1,8 +1,8 @@
 //! Circuit-input ASSEMBLY (Workstream A, server-share) — the pure, prover-independent half of the
 //! on-device proving path, gated behind the lightweight `assemble` feature.
 //!
-//! This module assembles the circuit's 19 named inputs from a `WrappedDoc` + the §1.10 consent JSON
-//! + the pass-through EdDSA-BabyJubjub signature, and emits them as a name -> decimal-string map
+//! This module assembles the circuit's 19 named inputs from a `WrappedDoc` + the §1.10 consent JSON +
+//! the pass-through EdDSA-BabyJubjub signature, and emits them as a name -> decimal-string map
 //! (`input_map`) — exactly the shape `dogtag-prover-rs::ProveInputs::from_circuit_input_json`
 //! consumes. It is the SAME assembly the on-device `prover_ffi::prove_verification` runs.
 //!
@@ -497,16 +497,16 @@ mod tests {
 
         // sortedLeafHashes (active prefix) == ascending-sorted active order = layers[0]
         let sorted_active = &tree.layers[0];
-        for k in 0..pairs.len() {
+        for (k, sa) in sorted_active.iter().enumerate().take(pairs.len()) {
             assert_eq!(
                 asm.sorted_leaf_hashes[k],
-                fe_to_dec(&sorted_active[k]),
+                fe_to_dec(sa),
                 "sortedLeafHashes[{k}] mismatch"
             );
             // perm[k] maps back to the canonical leaf
             let p: usize = asm.perm[k].parse().unwrap();
             assert_eq!(
-                active[p], sorted_active[k],
+                active[p], *sa,
                 "perm[{k}] must point at the canonical leaf equal to sortedActive[{k}]"
             );
         }
@@ -544,5 +544,104 @@ mod tests {
         };
         let res = assemble(&doc, &consent, &sig);
         assert!(res.is_err(), "must reject when root != credentialRoot");
+    }
+
+    fn invalid_msg(e: &FfiError) -> String {
+        match e {
+            FfiError::Invalid(m) => m.clone(),
+        }
+    }
+
+    #[test]
+    fn field_from_hex_round_trips_and_strips_prefix() {
+        // 0x.. and bare hex of the same 32-byte word decode to the same field element.
+        let with = field_from_hex("x", &to_hex32(&Fr::from(7u64))).unwrap();
+        let bare = field_from_hex("x", to_hex32(&Fr::from(7u64)).strip_prefix("0x").unwrap()).unwrap();
+        assert_eq!(with, Fr::from(7u64));
+        assert_eq!(bare, Fr::from(7u64));
+    }
+
+    #[test]
+    fn field_from_hex_reduces_mod_order_instead_of_rejecting() {
+        // Unlike wrap::from_hex32's strict canonical guard, field_from_hex silently reduces an
+        // at-or-above-modulus input mod the BN254 scalar field (from_be_bytes_mod_order).
+        let all_ones = field_from_hex("x", &format!("0x{}", "ff".repeat(32))).unwrap();
+        // 2^256 mod r is a small, well-known reduced value; just assert it did NOT error and is a
+        // canonical (already-reduced) element by re-encoding through to_hex32 round-trip stability.
+        let re = field_from_hex("x", &to_hex32(&all_ones)).unwrap();
+        assert_eq!(all_ones, re);
+    }
+
+    #[test]
+    fn field_from_hex_rejects_bad_hex_and_wrong_length() {
+        assert!(invalid_msg(&field_from_hex("sig", "0xzz").unwrap_err()).contains("bad sig hex"));
+        let short = format!("0x{}", "00".repeat(31));
+        assert!(invalid_msg(&field_from_hex("sig", &short).unwrap_err())
+            .contains("sig hex must be 32 bytes (got 31)"));
+    }
+
+    #[test]
+    fn decode_word_exact_length_and_errors() {
+        // 20-byte address, with prefix.
+        let addr = decode_word::<20>("relayer", "0x1111111111111111111111111111111111111111").unwrap();
+        assert_eq!(addr, [0x11u8; 20]);
+        // Bare hex (no 0x) of a 32-byte word.
+        let w = decode_word::<32>("nonce", &"00".repeat(32)).unwrap();
+        assert_eq!(w, [0u8; 32]);
+        // Wrong length embeds the actual byte count.
+        assert!(invalid_msg(&decode_word::<32>("nonce", "0x00").unwrap_err())
+            .contains("nonce must be 32 bytes (got 1)"));
+        // Bad hex.
+        assert!(invalid_msg(&decode_word::<20>("relayer", "0xgg").unwrap_err())
+            .contains("bad relayer hex"));
+    }
+
+    #[test]
+    fn parse_dec_preserves_string_and_rejects_non_integers() {
+        // Returned verbatim, leading zeros and sign preserved.
+        assert_eq!(parse_dec("n", "12345").unwrap(), "12345");
+        assert_eq!(parse_dec("n", "007").unwrap(), "007");
+        assert_eq!(parse_dec("n", "-5").unwrap(), "-5");
+        // Non base-10 integers rejected with the field label.
+        assert!(invalid_msg(&parse_dec("Ax", "12a").unwrap_err())
+            .contains("Ax: not a decimal integer"));
+        assert!(parse_dec("Ax", "").is_err());
+        assert!(parse_dec("Ax", " 5 ").is_err());
+    }
+
+    #[test]
+    fn consent_from_json_validates_fields() {
+        let base = serde_json::json!({
+            "dogTagId": "0x".to_string() + &"00".repeat(32),
+            "recordType": "0x".to_string() + &"00".repeat(32),
+            "purpose": "0x".to_string() + &"00".repeat(32),
+            "credentialRoot": "0x".to_string() + &"00".repeat(32),
+            "challenge": "0x".to_string() + &"00".repeat(32),
+            "relayer": "0x".to_string() + &"11".repeat(20),
+            "subject": "0x".to_string() + &"22".repeat(20),
+            "nonce": "0x".to_string() + &"00".repeat(32),
+            "deadline": "0x".to_string() + &"00".repeat(32),
+        });
+        let c = consent_from_json(&base).unwrap();
+        assert_eq!(c.relayer, [0x11u8; 20]);
+        assert_eq!(c.subject, [0x22u8; 20]);
+
+        // Missing field -> "consent.<k>: missing or not a string".
+        let mut missing = base.clone();
+        missing.as_object_mut().unwrap().remove("relayer");
+        assert!(invalid_msg(&consent_from_json(&missing).unwrap_err())
+            .contains("consent.relayer: missing or not a string"));
+
+        // Non-string field is treated the same as missing.
+        let mut non_str = base.clone();
+        non_str["nonce"] = serde_json::json!(7);
+        assert!(invalid_msg(&consent_from_json(&non_str).unwrap_err())
+            .contains("consent.nonce: missing or not a string"));
+
+        // 32-byte word supplied for the 20-byte relayer slot -> length error.
+        let mut wrong_len = base.clone();
+        wrong_len["relayer"] = serde_json::json!("0x".to_string() + &"11".repeat(32));
+        assert!(invalid_msg(&consent_from_json(&wrong_len).unwrap_err())
+            .contains("relayer must be 20 bytes (got 32)"));
     }
 }

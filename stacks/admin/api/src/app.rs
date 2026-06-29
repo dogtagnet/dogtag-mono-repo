@@ -74,12 +74,27 @@ pub fn build_profile_vc(
     owner_identity: &crate::store::OwnerIdentity,
     dog_tag_id: &str,
 ) -> Value {
-    let species = profile.species.clone().unwrap_or_else(|| "Canis lupus familiaris".to_string());
-    let breed_vbo = profile.breed_vbo.clone().unwrap_or_else(|| "VBO:0200000".to_string());
-    let breed_label = profile.breed_label.clone().unwrap_or_else(|| "Mixed Breed".to_string());
+    let species = profile
+        .species
+        .clone()
+        .unwrap_or_else(|| "Canis lupus familiaris".to_string());
+    let breed_vbo = profile
+        .breed_vbo
+        .clone()
+        .unwrap_or_else(|| "VBO:0200000".to_string());
+    let breed_label = profile
+        .breed_label
+        .clone()
+        .unwrap_or_else(|| "Mixed Breed".to_string());
     let sex = profile.sex.clone().unwrap_or_else(|| "male".to_string());
-    let neuter_status = profile.neuter_status.clone().unwrap_or_else(|| "intact".to_string());
-    let date_of_birth = profile.date_of_birth.clone().unwrap_or_else(|| "2020-01-01".to_string());
+    let neuter_status = profile
+        .neuter_status
+        .clone()
+        .unwrap_or_else(|| "intact".to_string());
+    let date_of_birth = profile
+        .date_of_birth
+        .clone()
+        .unwrap_or_else(|| "2020-01-01".to_string());
 
     let weight_history: Vec<Value> = profile
         .weight_history
@@ -200,4 +215,213 @@ pub fn wrap_vc(issuer_meta: IssuerMeta, vc: &Value) -> Result<WrappedDoc, String
         s
     };
     wrap_document(&typed, issuer_meta, &mut salt).map_err(|e| format!("wrap: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Microchip, OwnerIdentity, PetProfile, WeightEntry};
+
+    fn test_cfg() -> Config {
+        Config {
+            deployment_url: "http://localhost:8080".to_string(),
+            rpc_url: "http://localhost:8545".to_string(),
+            issuer_registry_addr: "0x1111".to_string(),
+            sbt_addr: "0x2222".to_string(),
+            issuer_name: "DogTag Central".to_string(),
+            issuer_domain: "central.dogtag.test".to_string(),
+            profile_document_store: "0x3333".to_string(),
+            admin_password: "pw".to_string(),
+            admin_signer_index: 0,
+        }
+    }
+
+    fn test_microchip() -> Microchip {
+        Microchip {
+            code: "900012345678901".to_string(),
+            standard: "ISO_11784_11785".to_string(),
+            implant_date: "2021-05-01".to_string(),
+            body_location: "left neck".to_string(),
+        }
+    }
+
+    fn test_owner() -> OwnerIdentity {
+        OwnerIdentity {
+            country_of_identification: "GB".to_string(),
+            identification: "P12345".to_string(),
+            name: "Jane Doe".to_string(),
+        }
+    }
+
+    // ---- profile_issuer_meta ----
+
+    #[test]
+    fn profile_issuer_meta_copies_config_and_pins_record_type() {
+        let cfg = test_cfg();
+        let m = profile_issuer_meta(&cfg);
+        assert_eq!(m.name, "DogTag Central");
+        assert_eq!(m.domain, "central.dogtag.test");
+        assert_eq!(m.document_store, "0x3333");
+        // record_type is always the DOG_PROFILE constant, never config-derived.
+        assert_eq!(m.record_type, DOG_PROFILE);
+        assert_eq!(m.record_type, "DOG_PROFILE");
+    }
+
+    // ---- iso_date_utc (Howard Hinnant civil algorithm) ----
+
+    #[test]
+    fn iso_date_utc_anchors() {
+        assert_eq!(iso_date_utc(0), "1970-01-01");
+        assert_eq!(iso_date_utc(1_700_000_000), "2023-11-14");
+        // 2020 is a leap year: 1_582_934_400 is exactly 2020-02-29 00:00:00 UTC.
+        assert_eq!(iso_date_utc(1_582_934_400), "2020-02-29");
+    }
+
+    #[test]
+    fn iso_date_utc_truncates_intra_day_seconds() {
+        // 1_582_934_400 is exactly 2020-02-29 00:00:00 UTC; any second within that day maps to
+        // the same date, and the first second of the next day rolls over.
+        assert_eq!(iso_date_utc(1_582_934_400 + 86_399), "2020-02-29");
+        assert_eq!(iso_date_utc(1_582_934_400 + 86_400), "2020-03-01");
+    }
+
+    // ---- to_typed_vc (plain JSON -> {tag,value} typed leaves) ----
+
+    #[test]
+    fn to_typed_vc_maps_each_scalar_to_its_tag() {
+        assert_eq!(
+            to_typed_vc(&Value::Null),
+            json!({ "tag": 0u8, "value": Value::Null })
+        );
+        assert_eq!(
+            to_typed_vc(&json!(true)),
+            json!({ "tag": 1u8, "value": true })
+        );
+        assert_eq!(
+            to_typed_vc(&json!("hi")),
+            json!({ "tag": 2u8, "value": "hi" })
+        );
+        // integer numbers -> tag 3 with stringified value.
+        assert_eq!(
+            to_typed_vc(&json!(42)),
+            json!({ "tag": 3u8, "value": "42" })
+        );
+        // fractional numbers -> tag 4 (decimal).
+        assert_eq!(
+            to_typed_vc(&json!(1.5)),
+            json!({ "tag": 4u8, "value": "1.5" })
+        );
+    }
+
+    #[test]
+    fn to_typed_vc_recurses_into_objects_and_arrays() {
+        let v = json!({ "a": "x", "b": [1, "y"] });
+        let typed = to_typed_vc(&v);
+        assert_eq!(typed["a"], json!({ "tag": 2u8, "value": "x" }));
+        assert_eq!(typed["b"][0], json!({ "tag": 3u8, "value": "1" }));
+        assert_eq!(typed["b"][1], json!({ "tag": 2u8, "value": "y" }));
+    }
+
+    // ---- build_profile_vc ----
+
+    #[test]
+    fn build_profile_vc_numeric_id_emits_json_number_and_string_id_stays_string() {
+        let cfg = test_cfg();
+        let mc = test_microchip();
+        let owner = test_owner();
+        let profile = PetProfile::default();
+
+        let vc = build_profile_vc(&cfg, "Rex", &mc, &profile, &owner, "12345");
+        // numeric dogTagId is emitted as a JSON number so to_typed_vc wraps it as INTEGER (tag 3).
+        assert_eq!(vc["credentialSubject"]["dogTagId"], json!(12345u64));
+        assert!(vc["credentialSubject"]["dogTagId"].is_number());
+
+        let vc2 = build_profile_vc(&cfg, "Rex", &mc, &profile, &owner, "tag-abc");
+        assert_eq!(vc2["credentialSubject"]["dogTagId"], json!("tag-abc"));
+        assert!(vc2["credentialSubject"]["dogTagId"].is_string());
+    }
+
+    #[test]
+    fn build_profile_vc_fills_defaults_for_empty_profile() {
+        let cfg = test_cfg();
+        let vc = build_profile_vc(
+            &cfg,
+            "Rex",
+            &test_microchip(),
+            &PetProfile::default(),
+            &test_owner(),
+            "1",
+        );
+        let cs = &vc["credentialSubject"];
+        assert_eq!(cs["species"], "Canis lupus familiaris");
+        assert_eq!(cs["breedVbo"], "VBO:0200000");
+        assert_eq!(cs["breedLabel"], "Mixed Breed");
+        assert_eq!(cs["sex"], "male");
+        assert_eq!(cs["neuterStatus"], "intact");
+        assert_eq!(cs["dateOfBirth"], "2020-01-01");
+        assert_eq!(cs["weightHistory"], json!([]));
+        // envelope/identity fields pull from config + the DOG_PROFILE constant.
+        assert_eq!(vc["recordType"], "DOG_PROFILE");
+        assert_eq!(vc["issuer"], "did:web:central.dogtag.test");
+        assert_eq!(vc["id"], "urn:dogtag:profile:1");
+        assert_eq!(vc["signatureTrustTier"], "self_attested");
+        assert_eq!(vc["legalEffect"], "evidentiary");
+    }
+
+    #[test]
+    fn build_profile_vc_maps_weight_history_and_owner_identity() {
+        let cfg = test_cfg();
+        let profile = PetProfile {
+            species: Some("Felis catus".to_string()),
+            weight_history: vec![WeightEntry {
+                unit: "kg".to_string(),
+                value: "22.7".to_string(),
+                measured_on: "2024-01-02".to_string(),
+            }],
+            ..PetProfile::default()
+        };
+        let vc = build_profile_vc(&cfg, "Rex", &test_microchip(), &profile, &test_owner(), "7");
+        let cs = &vc["credentialSubject"];
+        // supplied profile fields override defaults.
+        assert_eq!(cs["species"], "Felis catus");
+        assert_eq!(cs["weightHistory"][0]["unit"], "kg");
+        assert_eq!(cs["weightHistory"][0]["value"], "22.7");
+        assert_eq!(cs["weightHistory"][0]["measuredOn"], "2024-01-02");
+        // owner identity is copied verbatim (wrap_vc later turns these into typed leaves).
+        assert_eq!(cs["ownerIdentity"]["countryOfIdentification"], "GB");
+        assert_eq!(cs["ownerIdentity"]["identification"], "P12345");
+        assert_eq!(cs["ownerIdentity"]["name"], "Jane Doe");
+        assert_eq!(cs["microchip"]["code"], "900012345678901");
+    }
+
+    // ---- wrap_vc (validate_schema then wrap_document) ----
+
+    #[test]
+    fn wrap_vc_validates_and_wraps_a_built_profile() {
+        let cfg = test_cfg();
+        let vc = build_profile_vc(
+            &cfg,
+            "Rex",
+            &test_microchip(),
+            &PetProfile::default(),
+            &test_owner(),
+            "12345",
+        );
+        let meta = profile_issuer_meta(&cfg);
+        let wrapped = wrap_vc(meta, &vc).expect("a complete DOG_PROFILE VC must wrap cleanly");
+        assert!(wrapped.signature.merkle_root.starts_with("0x"));
+        assert_eq!(wrapped.signature.type_, "DogTagMerkleProof");
+        assert_eq!(wrapped.issuer.record_type, "DOG_PROFILE");
+        // the wrapped data carries typed-scalar leaves, not the plain VC strings.
+        assert!(wrapped.data.is_object());
+    }
+
+    #[test]
+    fn wrap_vc_surfaces_schema_violations_with_a_schema_prefix() {
+        let cfg = test_cfg();
+        // a VC missing every required field fails validate_schema before any wrapping happens.
+        let bad = json!({ "recordType": DOG_PROFILE });
+        let err = wrap_vc(profile_issuer_meta(&cfg), &bad).unwrap_err();
+        assert!(err.starts_with("schema:"), "got: {err}");
+    }
 }

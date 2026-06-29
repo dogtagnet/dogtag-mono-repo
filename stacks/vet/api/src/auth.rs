@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 
 /// Now (unix seconds).
 pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 // --------------------------------------------------------------------------------------------
@@ -60,7 +63,10 @@ pub struct ShareClaims {
 /// The walletAddress is lowercased so the message is deterministic regardless of input checksum
 /// casing. MUST byte-match the admin stack's `register_message` (the mobile signs the same string).
 pub fn register_message(wallet_address: &str) -> String {
-    format!("DogTag wallet registration: {}", wallet_address.to_lowercase())
+    format!(
+        "DogTag wallet registration: {}",
+        wallet_address.to_lowercase()
+    )
 }
 
 /// Recover the EIP-191 (`personal_sign`) signer of `message` from a 65-byte `0x..` signature,
@@ -70,7 +76,13 @@ pub fn register_message(wallet_address: &str) -> String {
 /// Ported from the admin stack (`stacks/admin/api/src/auth.rs`).
 pub fn recover_personal_sign(message: &str, signature_hex: &str) -> Option<String> {
     use alloy::primitives::PrimitiveSignature;
-    let raw = hex::decode(signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim())).ok()?;
+    let raw = hex::decode(
+        signature_hex
+            .trim()
+            .strip_prefix("0x")
+            .unwrap_or(signature_hex.trim()),
+    )
+    .ok()?;
     let sig = PrimitiveSignature::from_raw(&raw).ok()?;
     let addr = sig.recover_address_from_msg(message.as_bytes()).ok()?;
     Some(format!("{addr:#x}"))
@@ -120,13 +132,15 @@ pub fn verify_jwt<T: for<'de> Deserialize<'de>>(
     }
     let signing_input = format!("{}.{}", parts[0], parts[1]);
     let sig_bytes = b64d(parts[2])?;
-    let sig = ed25519_dalek::Signature::from_slice(&sig_bytes).map_err(|_| AuthError::BadSignature)?;
+    let sig =
+        ed25519_dalek::Signature::from_slice(&sig_bytes).map_err(|_| AuthError::BadSignature)?;
     keys.verifying
         .verify(signing_input.as_bytes(), &sig)
         .map_err(|_| AuthError::BadSignature)?;
     let payload = b64d(parts[1])?;
     // Validate exp/nbf generically by re-parsing as a map.
-    let map: serde_json::Value = serde_json::from_slice(&payload).map_err(|_| AuthError::BadToken)?;
+    let map: serde_json::Value =
+        serde_json::from_slice(&payload).map_err(|_| AuthError::BadToken)?;
     let n = now();
     if let Some(exp) = map.get("exp").and_then(|v| v.as_u64()) {
         if n > exp + leeway {
@@ -260,7 +274,8 @@ impl RateLimiter {
         }
         let mut map = self.inner.lock().unwrap();
         let st = map.entry(ip.to_string()).or_default();
-        st.failures.retain(|t| now.saturating_sub(*t) < self.window_secs);
+        st.failures
+            .retain(|t| now.saturating_sub(*t) < self.window_secs);
         st.failures.push(now);
         if st.failures.len() >= self.per_ip_max {
             st.locked_until = Some(now + self.lockout_secs);
@@ -314,12 +329,116 @@ mod tests {
     #[test]
     fn hmac_roundtrip_and_tamper() {
         let sig = hmac_sign("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":1}");
-        assert!(hmac_verify("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
+        assert!(hmac_verify(
+            "secret",
+            "PUT",
+            "/v1/appointments/a1",
+            b"{\"rev\":1}",
+            &sig
+        ));
         // tampered body / path / method / key all fail.
-        assert!(!hmac_verify("secret", "PUT", "/v1/appointments/a1", b"{\"rev\":2}", &sig));
-        assert!(!hmac_verify("secret", "PUT", "/v1/appointments/a2", b"{\"rev\":1}", &sig));
-        assert!(!hmac_verify("secret", "POST", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
-        assert!(!hmac_verify("other", "PUT", "/v1/appointments/a1", b"{\"rev\":1}", &sig));
+        assert!(!hmac_verify(
+            "secret",
+            "PUT",
+            "/v1/appointments/a1",
+            b"{\"rev\":2}",
+            &sig
+        ));
+        assert!(!hmac_verify(
+            "secret",
+            "PUT",
+            "/v1/appointments/a2",
+            b"{\"rev\":1}",
+            &sig
+        ));
+        assert!(!hmac_verify(
+            "secret",
+            "POST",
+            "/v1/appointments/a1",
+            b"{\"rev\":1}",
+            &sig
+        ));
+        assert!(!hmac_verify(
+            "other",
+            "PUT",
+            "/v1/appointments/a1",
+            b"{\"rev\":1}",
+            &sig
+        ));
+    }
+
+    #[test]
+    fn register_message_lowercases_wallet() {
+        // Mixed-case and already-lowercase wallets must yield the identical message so the
+        // device signature is deterministic regardless of input checksum casing. MUST byte-match
+        // the admin stack's `register_message`.
+        let mixed = register_message("0xAbCdEf0123456789");
+        let lower = register_message("0xabcdef0123456789");
+        assert_eq!(mixed, lower);
+        assert_eq!(mixed, "DogTag wallet registration: 0xabcdef0123456789");
+    }
+
+    #[test]
+    fn new_op_token_shape_and_uniqueness() {
+        let a = new_op_token();
+        let b = new_op_token();
+        assert!(a.starts_with("op_"));
+        // "op_" + 32 random bytes hex-encoded = 64 hex chars.
+        assert_eq!(a.len(), "op_".len() + 64);
+        assert!(a["op_".len()..].chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b); // fresh randomness each call
+    }
+
+    #[test]
+    fn recover_personal_sign_rejects_malformed_signature() {
+        // Non-hex and wrong-length signatures must return None, never panic.
+        assert!(recover_personal_sign("msg", "not-hex").is_none());
+        assert!(recover_personal_sign("msg", "0x1234").is_none());
+    }
+
+    #[test]
+    fn verify_jwt_rejects_malformed_and_future_nbf() {
+        let keys = JwtKeys::generate();
+        // Wrong number of compact-JWS segments -> BadToken before any crypto.
+        assert!(matches!(
+            verify_jwt::<ShareClaims>(&keys, "only.two", 30),
+            Err(AuthError::BadToken)
+        ));
+        // A not-yet-valid token (nbf far in the future, beyond leeway) -> BadToken.
+        let claims = ShareClaims {
+            iss: "i".into(),
+            sub: "s".into(),
+            aud: "dogtag-mobile".into(),
+            scope: "read:record".into(),
+            iat: now(),
+            nbf: now() + 10_000,
+            exp: now() + 20_000,
+            jti: "j".into(),
+        };
+        let token = sign_jwt(&keys, &claims);
+        assert!(matches!(
+            verify_jwt::<ShareClaims>(&keys, &token, 30),
+            Err(AuthError::BadToken)
+        ));
+    }
+
+    #[test]
+    fn rate_limiter_locks_after_threshold_and_clears_on_success() {
+        let rl = RateLimiter::new();
+        let ip = "203.0.113.7";
+        assert!(!rl.is_locked(ip)); // fresh IP is not locked
+                                    // default per_ip_max is 10: the first 9 failures stay under the threshold.
+        for _ in 0..9 {
+            rl.record_failure(ip);
+        }
+        assert!(!rl.is_locked(ip)); // 9 < 10, still allowed
+        rl.record_failure(ip); // 10th failure crosses the threshold
+        assert!(rl.is_locked(ip));
+        // a successful auth clears the IP's failure record and lockout.
+        rl.record_success(ip);
+        assert!(!rl.is_locked(ip));
+        // lockout is per-IP: a different IP is unaffected by the first IP's failures.
+        assert!(!rl.is_locked("198.51.100.9"));
     }
 
     #[test]

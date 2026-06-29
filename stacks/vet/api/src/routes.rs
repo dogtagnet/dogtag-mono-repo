@@ -78,7 +78,8 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 
 /// Require a valid operator session bearer token.
 async fn require_operator(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
-    let token = bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing operator session"))?;
+    let token =
+        bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing operator session"))?;
     if st.store.has_op_session(&token).await {
         Ok(())
     } else {
@@ -112,23 +113,37 @@ async fn require_operator_or_export_token(
     let token = body_token
         .map(|s| s.to_string())
         .or_else(|| bearer(headers))
-        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing operator session or export token"))?;
+        .ok_or_else(|| {
+            err(
+                StatusCode::UNAUTHORIZED,
+                "missing operator session or export token",
+            )
+        })?;
     // SUBMIT consumes the token once-only; the status read peeks without consuming.
     let mapped = if consume {
         st.store.take_export_token(&token).await
     } else {
         st.store.peek_export_token(&token).await
     };
-    let mapped = mapped.ok_or_else(|| err(StatusCode::UNAUTHORIZED, "export token missing, expired or already used"))?;
+    let mapped = mapped.ok_or_else(|| {
+        err(
+            StatusCode::UNAUTHORIZED,
+            "export token missing, expired or already used",
+        )
+    })?;
     if mapped != session_id {
-        return Err(err(StatusCode::UNAUTHORIZED, "export token does not match session"));
+        return Err(err(
+            StatusCode::UNAUTHORIZED,
+            "export token does not match session",
+        ));
     }
     Ok(true)
 }
 
 /// Require a valid admin session bearer (custody gate). Same mechanism, distinct token prefix.
 async fn require_admin(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
-    let token = bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing admin session"))?;
+    let token =
+        bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing admin session"))?;
     if token.starts_with("admin_") && st.store.has_op_session(&token).await {
         Ok(())
     } else {
@@ -153,7 +168,10 @@ async fn login(
 ) -> Resp {
     let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
     if st.ratelimit.is_locked(&ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts; try again later",
+        );
     }
     if body.password != st.cfg.operator_password {
         st.ratelimit.record_failure(&ip);
@@ -173,7 +191,10 @@ async fn admin_login(
 ) -> Resp {
     let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
     if st.ratelimit.is_locked(&ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts; try again later",
+        );
     }
     if body.password != st.cfg.admin_password {
         st.ratelimit.record_failure(&ip);
@@ -203,7 +224,13 @@ async fn genesis_start(State(st): State<AppState>, headers: HeaderMap) -> Resp {
         return e;
     }
     // 409 unless uninitialized.
-    if st.store.get_custody().await.map(|c| c.meta.state == "initialized").unwrap_or(false) {
+    if st
+        .store
+        .get_custody()
+        .await
+        .map(|c| c.meta.state == "initialized")
+        .unwrap_or(false)
+    {
         return err(StatusCode::CONFLICT, "already initialized");
     }
     let stash = match crate::custody::genesis_generate() {
@@ -241,7 +268,7 @@ async fn genesis_confirm(
         return err(StatusCode::BAD_REQUEST, "wrong number of challenge words");
     }
     for (typed, &idx) in body.words.iter().zip(stash.challenge_indices.iter()) {
-        if all.get(idx).map(|w| w == typed).unwrap_or(false) == false {
+        if !all.get(idx).map(|w| w == typed).unwrap_or(false) {
             return err(StatusCode::BAD_REQUEST, "challenge words do not match");
         }
     }
@@ -254,14 +281,17 @@ async fn genesis_confirm(
         Ok(c) => c,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };
-    let mut blob = crate::store::CustodyBlob::default();
-    blob.encrypted_seed = ct;
-    blob.meta.state = "initialized".to_string();
-    blob.meta.accounts.push(crate::store::AccountMeta {
-        index: 0,
-        address: addr0.clone(),
-        label: "account0".to_string(),
-    });
+    let blob = crate::store::CustodyBlob {
+        encrypted_seed: ct,
+        meta: crate::store::KeystoreMeta {
+            accounts: vec![crate::store::AccountMeta {
+                index: 0,
+                address: addr0.clone(),
+                label: "account0".to_string(),
+            }],
+            state: "initialized".to_string(),
+        },
+    };
     st.store.put_custody(blob.clone()).await;
     // ALSO persist the seal to disk (if configured) so the signer survives a backend restart. We
     // write ONLY the ciphertext + non-secret meta (atomic temp+rename, 0600). A write failure here
@@ -269,7 +299,10 @@ async fn genesis_confirm(
     // away (otherwise a restart silently loses the just-genesised seed).
     if let Some(path) = st.cfg.custody_seal_path.as_deref() {
         if let Err(e) = crate::custody::write_seal_file(path, &blob.encrypted_seed, &blob.meta) {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("persist seal: {e}"));
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("persist seal: {e}"),
+            );
         }
     }
     st.custody.clear_stash();
@@ -292,7 +325,10 @@ async fn unlock(
     }
     let ip = client_ip(&headers, peer.map(|ConnectInfo(p)| p));
     if st.ratelimit.is_locked(&ip) {
-        return err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again later");
+        return err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts; try again later",
+        );
     }
     let blob = match st.store.get_custody().await {
         Some(b) if b.meta.state == "initialized" => b,
@@ -329,7 +365,11 @@ struct AccountsReq {
     label: String,
 }
 
-async fn accounts(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<AccountsReq>) -> Resp {
+async fn accounts(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AccountsReq>,
+) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
     }
@@ -337,7 +377,14 @@ async fn accounts(State(st): State<AppState>, headers: HeaderMap, Json(body): Js
         return err(StatusCode::CONFLICT, "not unlocked");
     }
     let mut blob = st.store.get_custody().await.unwrap_or_default();
-    let next = blob.meta.accounts.iter().map(|a| a.index).max().map(|m| m + 1).unwrap_or(0);
+    let next = blob
+        .meta
+        .accounts
+        .iter()
+        .map(|a| a.index)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
     let signer = match st.custody.signer(next) {
         Ok(s) => s,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -382,9 +429,16 @@ async fn put_signing_mode(
     }
     // 409 if any prepared record outstanding (no mid-flight split — §11.7e / audit-06 §2.3).
     if st.store.has_prepared().await {
-        return err(StatusCode::CONFLICT, "prepared record outstanding; cannot switch mode");
+        return err(
+            StatusCode::CONFLICT,
+            "prepared record outstanding; cannot switch mode",
+        );
     }
-    st.store.put_settings(IssuerSettings { signing_mode: body.mode.clone() }).await;
+    st.store
+        .put_settings(IssuerSettings {
+            signing_mode: body.mode.clone(),
+        })
+        .await;
     ok(json!({ "signingMode": body.mode }))
 }
 
@@ -401,7 +455,11 @@ struct PrepareReq {
     fields: Value,
 }
 
-async fn prepare(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<PrepareReq>) -> Resp {
+async fn prepare(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PrepareReq>,
+) -> Resp {
     if let Err(e) = require_operator(&st, &headers).await {
         return e;
     }
@@ -410,7 +468,12 @@ async fn prepare(State(st): State<AppState>, headers: HeaderMap, Json(body): Jso
     }
     let issuer_addr = match st.cfg.issuer_addr_for(&body.record_type) {
         Some(a) => a,
-        None => return err(StatusCode::BAD_REQUEST, "unknown recordType / no issuer address"),
+        None => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "unknown recordType / no issuer address",
+            )
+        }
     };
     // build (ALWAYS server-side, identical both modes).
     let meta = app::issuer_meta(&st.cfg, &body.record_type, &issuer_addr);
@@ -463,7 +526,12 @@ async fn prepare(State(st): State<AppState>, headers: HeaderMap, Json(body): Jso
         .await
     {
         Ok(true) => {}
-        Ok(false) => return err(StatusCode::FORBIDDEN, "address not approved for this recordType yet"),
+        Ok(false) => {
+            return err(
+                StatusCode::FORBIDDEN,
+                "address not approved for this recordType yet",
+            )
+        }
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("preflight: {e}")),
     }
     let sent = match st.chain.sign_and_send(0, &issuer_addr, &calldata).await {
@@ -494,7 +562,11 @@ struct ConfirmReq {
     tx_hash: String,
 }
 
-async fn confirm(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<ConfirmReq>) -> Resp {
+async fn confirm(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ConfirmReq>,
+) -> Resp {
     if let Err(e) = require_operator(&st, &headers).await {
         return e;
     }
@@ -539,13 +611,19 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
         return Err(err(StatusCode::BAD_REQUEST, "tx.to mismatch"));
     }
     if view.input.to_lowercase() != r.prepared_calldata.to_lowercase() {
-        return Err(err(StatusCode::BAD_REQUEST, "tx.input mismatch (not this draft)"));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "tx.input mismatch (not this draft)",
+        ));
     }
     if !view.value.is_zero() {
         return Err(err(StatusCode::BAD_REQUEST, "tx.value != 0"));
     }
     if view.chain_id != Some(st.chain.chain_id()) {
-        return Err(err(StatusCode::BAD_REQUEST, "tx.chainId mismatch (wrong chain)"));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "tx.chainId mismatch (wrong chain)",
+        ));
     }
     // DERIVE signer from the tx (never the body).
     let signer = view.from.to_lowercase();
@@ -557,14 +635,18 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
         .await
     {
         Ok(true) => {}
-        Ok(false) => return Err(err(StatusCode::FORBIDDEN, "signer not whitelisted at confirm")),
+        Ok(false) => {
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                "signer not whitelisted at confirm",
+            ))
+        }
         Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &format!("whitelist: {e}"))),
     }
     // RootIssued(root,by) from the pinned issuer; ev.root==r.root && ev.by==signer.
-    let matched = view
-        .root_issued_logs
-        .iter()
-        .any(|(root, by)| root.to_lowercase() == r.root.to_lowercase() && by.to_lowercase() == signer);
+    let matched = view.root_issued_logs.iter().any(|(root, by)| {
+        root.to_lowercase() == r.root.to_lowercase() && by.to_lowercase() == signer
+    });
     if !matched {
         return Err(err(
             StatusCode::BAD_REQUEST,
@@ -650,7 +732,11 @@ async fn get_shared(State(st): State<AppState>, Path(token): Path<String>) -> Re
 }
 
 /// GET /records/{id} — record-JWT bearer; UNAUTHENTICATED by operator session (§11.7e).
-async fn get_record(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
+async fn get_record(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Resp {
     let token = match bearer(&headers) {
         Some(t) => t,
         None => return err(StatusCode::UNAUTHORIZED, "missing record JWT"),
@@ -712,23 +798,32 @@ struct ImportPullReq {
     record_ref: String,
 }
 
-async fn import_pull(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<ImportPullReq>) -> Resp {
+async fn import_pull(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ImportPullReq>,
+) -> Resp {
     if let Err(e) = require_operator(&st, &headers).await {
         return e;
     }
-    let url = format!("{}/share/{}", body.user_api_base.trim_end_matches('/'), body.record_ref);
+    let url = format!(
+        "{}/share/{}",
+        body.user_api_base.trim_end_matches('/'),
+        body.record_ref
+    );
     let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .bearer_auth(&body.user_jwt)
-        .send()
-        .await;
+    let resp = client.get(&url).bearer_auth(&body.user_jwt).send().await;
     let doc_val: Value = match resp {
         Ok(r) if r.status().is_success() => match r.json().await {
             Ok(v) => v,
             Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("bad doc json: {e}")),
         },
-        Ok(r) => return err(StatusCode::BAD_GATEWAY, &format!("fetch failed: {}", r.status())),
+        Ok(r) => {
+            return err(
+                StatusCode::BAD_GATEWAY,
+                &format!("fetch failed: {}", r.status()),
+            )
+        }
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("fetch error: {e}")),
     };
     // third-party verify via the SDK.
@@ -738,7 +833,10 @@ async fn import_pull(State(st): State<AppState>, headers: HeaderMap, Json(body):
     };
     let verdict = crate::verify::third_party_verify(&st, &doc).await;
     if !verdict.valid {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "third-party verify invalid");
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "third-party verify invalid",
+        );
     }
     // upsert client cache keyed by dogTagId.
     let dog = crate::verify::dog_tag_id_of(&doc).unwrap_or_else(|| "unknown".to_string());
@@ -782,7 +880,12 @@ async fn export_session_start(
         .await
     {
         Ok(true) => {}
-        Ok(false) => return err(StatusCode::FORBIDDEN, "relayer not whitelisted for this purpose"),
+        Ok(false) => {
+            return err(
+                StatusCode::FORBIDDEN,
+                "relayer not whitelisted for this purpose",
+            )
+        }
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("verify-wl: {e}")),
     }
     let mode = body.mode.clone().unwrap_or_else(|| "zk".to_string());
@@ -940,7 +1043,8 @@ async fn verify_session_status(
     // — status reads are idempotent and polled repeatedly (peek only). The token arrives via the
     // `?token=` query or the Bearer header.
     if let Err(e) =
-        require_operator_or_export_token(&st, &headers, &session_id, q.token.as_deref(), false).await
+        require_operator_or_export_token(&st, &headers, &session_id, q.token.as_deref(), false)
+            .await
     {
         return e;
     }
@@ -1011,7 +1115,10 @@ struct EddsaSigReq {
 /// the `StubProver` — is loaded). The route is unauthenticated by design (anyone can ask for a proof
 /// of THEIR OWN record); it discloses nothing the caller did not already hold.
 #[cfg(feature = "prover")]
-async fn prove_verification(State(st): State<AppState>, Json(body): Json<ProveVerificationReq>) -> Resp {
+async fn prove_verification(
+    State(st): State<AppState>,
+    Json(body): Json<ProveVerificationReq>,
+) -> Resp {
     // The wrapped doc / consent may arrive as an embedded object or a JSON string; normalize to text.
     let as_text = |v: &Value| -> String {
         match v {
@@ -1033,11 +1140,14 @@ async fn prove_verification(State(st): State<AppState>, Json(body): Json<ProveVe
     // Assemble the 19 named circuit inputs from the witness — the SAME assembly the on-device prover
     // runs. (ark-0.5 field types stay internal to dogtag-standard; only decimal strings escape.) The
     // returned Value is already in the `ProveInputs::from_circuit_input_json` shape.
-    let circuit_input_json =
-        match dogtag_standard::prover_assemble::assemble_circuit_input(&wrapped_doc_json, &consent_json, &sig) {
-            Ok(v) => v,
-            Err(e) => return err(StatusCode::BAD_REQUEST, &format!("assemble: {e}")),
-        };
+    let circuit_input_json = match dogtag_standard::prover_assemble::assemble_circuit_input(
+        &wrapped_doc_json,
+        &consent_json,
+        &sig,
+    ) {
+        Ok(v) => v,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &format!("assemble: {e}")),
+    };
 
     // Prove with the backend's ark-0.6 Arkworks prover (the live-verifier-correct one). Driving it
     // through the shared `ProverClient` with the assembled `circuit_input_json` runs the real
@@ -1189,7 +1299,11 @@ async fn profile_issue_session_start(
             Some(crate::store::WeightEntry {
                 unit: w.get("unit").and_then(|v| v.as_str())?.to_string(),
                 value: w.get("value").and_then(|v| v.as_str())?.to_string(),
-                measured_on: w.get("measuredOn").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                measured_on: w
+                    .get("measuredOn")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             })
         })
         .collect();
@@ -1269,8 +1383,14 @@ struct ProfileBindReq {
 async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<ProfileBindReq>) -> Resp {
     let wallet = body.wallet_address.trim().to_lowercase();
     // shape check: a 20-byte 0x address.
-    if wallet.len() != 42 || !wallet.starts_with("0x") || !wallet[2..].bytes().all(|b| b.is_ascii_hexdigit()) {
-        return err(StatusCode::BAD_REQUEST, "walletAddress must be a 0x.. 20-byte address");
+    if wallet.len() != 42
+        || !wallet.starts_with("0x")
+        || !wallet[2..].bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "walletAddress must be a 0x.. 20-byte address",
+        );
     }
     // recover the EIP-191 signer of the canonical message; require it == walletAddress.
     let message = auth::register_message(&wallet);
@@ -1279,7 +1399,10 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
         None => return err(StatusCode::BAD_REQUEST, "malformed signature"),
     };
     if !recovered.eq_ignore_ascii_case(&wallet) {
-        return err(StatusCode::UNAUTHORIZED, "signature does not match walletAddress");
+        return err(
+            StatusCode::UNAUTHORIZED,
+            "signature does not match walletAddress",
+        );
     }
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
@@ -1287,7 +1410,12 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
     // consume the one-time token atomically (second call -> 404/410).
     let session_id = match st.store.take_bind_token(&body.token).await {
         Some(id) => id,
-        None => return err(StatusCode::GONE, "bind token missing, expired or already used"),
+        None => {
+            return err(
+                StatusCode::GONE,
+                "bind token missing, expired or already used",
+            )
+        }
     };
     let mut session = match st.store.get_profile_session(&session_id).await {
         Some(s) if s.status == "pending" => s,
@@ -1333,14 +1461,25 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
     // the credential's dogTagId. Computed here so a bad handle fails synchronously, before the spawn.
     let onchain_id = match onchain_dog_tag_id(&session.dog_tag_id) {
         Ok(v) => v,
-        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("dogTagId field-hash: {e}")),
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("dogTagId field-hash: {e}"),
+            )
+        }
     };
     let mint_wallet = wallet.clone();
     let mint_root = root.clone();
     let mut bg_session = session.clone();
     tokio::spawn(async move {
         match chain
-            .mint(signer_index, &sbt_addr, &mint_wallet, &onchain_id, &mint_root)
+            .mint(
+                signer_index,
+                &sbt_addr,
+                &mint_wallet,
+                &onchain_id,
+                &mint_root,
+            )
             .await
         {
             Ok(sent) => {
@@ -1361,8 +1500,9 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
                     bg_session.tx_hash = Some(sent.tx_hash);
                 } else {
                     bg_session.status = "error".to_string();
-                    bg_session.tx_hash =
-                        Some(format!("on-chain verify failed (owner_ok={owner_ok} root_ok={root_ok})"));
+                    bg_session.tx_hash = Some(format!(
+                        "on-chain verify failed (owner_ok={owner_ok} root_ok={root_ok})"
+                    ));
                 }
             }
             Err(e) => {
@@ -1599,7 +1739,12 @@ async fn reschedule_appointment(
 }
 
 /// Apply a central-driven transition (cancel/reschedule) carrying a `rev` + optional `slot`/`state`.
-async fn apply_central_transition(st: &AppState, id: &str, body: &Value, default_state: &str) -> Resp {
+async fn apply_central_transition(
+    st: &AppState,
+    id: &str,
+    body: &Value,
+    default_state: &str,
+) -> Resp {
     let rev = match body.get("rev").and_then(|v| v.as_u64()) {
         Some(r) => r,
         None => return err(StatusCode::BAD_REQUEST, "rev required"),
@@ -1610,14 +1755,32 @@ async fn apply_central_transition(st: &AppState, id: &str, body: &Value, default
         Some(e) => (
             e.business_id.clone(),
             e.dog_tag_id.clone(),
-            body.get("slot").and_then(|v| v.as_str()).unwrap_or(&e.slot).to_string(),
-            body.get("state").and_then(|v| v.as_str()).unwrap_or(default_state).to_string(),
+            body.get("slot")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&e.slot)
+                .to_string(),
+            body.get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or(default_state)
+                .to_string(),
         ),
         None => (
-            body.get("businessId").and_then(|v| v.as_str()).unwrap_or(&st.cfg.business_id).to_string(),
-            body.get("dogTagId").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            body.get("slot").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            body.get("state").and_then(|v| v.as_str()).unwrap_or(default_state).to_string(),
+            body.get("businessId")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&st.cfg.business_id)
+                .to_string(),
+            body.get("dogTagId")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            body.get("slot")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            body.get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or(default_state)
+                .to_string(),
         ),
     };
     let incoming = ApptReplica {
@@ -1648,7 +1811,13 @@ async fn list_appointments(
         return e;
     }
     let since = q.updated_since.unwrap_or(0);
-    let appts: Vec<Value> = st.store.appts_updated_since(since).await.iter().map(appt_json).collect();
+    let appts: Vec<Value> = st
+        .store
+        .appts_updated_since(since)
+        .await
+        .iter()
+        .map(appt_json)
+        .collect();
     ok(json!({ "appointments": appts }))
 }
 
@@ -1678,7 +1847,10 @@ async fn staff_action(
         return err(StatusCode::FORBIDDEN, "appointment not owned by business");
     }
     // validate the event is an allowed business-driven transition.
-    if !matches!(body.event.as_str(), "CONFIRMED" | "DECLINED" | "COMPLETED" | "NO_SHOW") {
+    if !matches!(
+        body.event.as_str(),
+        "CONFIRMED" | "DECLINED" | "COMPLETED" | "NO_SHOW"
+    ) {
         return err(StatusCode::BAD_REQUEST, "invalid staff event");
     }
     let now = auth::now();
@@ -1740,7 +1912,10 @@ pub fn public_router(state: AppState) -> Router {
         // login
         .route("/login", post(login))
         // settings
-        .route("/settings/signing-mode", get(get_signing_mode).put(put_signing_mode))
+        .route(
+            "/settings/signing-mode",
+            get(get_signing_mode).put(put_signing_mode),
+        )
         // credentials
         .route("/credentials/prepare", post(prepare))
         .route("/credentials/confirm", post(confirm))
@@ -1753,8 +1928,14 @@ pub fn public_router(state: AppState) -> Router {
         // short one-time EXPORT token resolver (unauthenticated; NON-consuming — consume on submit)
         .route("/x/:token", get(export_session_resolve))
         // DOG_PROFILE (SBT) issuance — vet issues dog tags
-        .route("/profiles/issue/session/start", post(profile_issue_session_start))
-        .route("/profiles/issue/session/:id", get(profile_issue_session_status))
+        .route(
+            "/profiles/issue/session/start",
+            post(profile_issue_session_start),
+        )
+        .route(
+            "/profiles/issue/session/:id",
+            get(profile_issue_session_status),
+        )
         .route("/profiles/issue/bind", post(profile_issue_bind))
         // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
         .route("/p/:token", get(profile_bind_resolve))
@@ -1775,7 +1956,10 @@ pub fn public_router(state: AppState) -> Router {
         // appointment replica (Phase 7, §3.7) — inbound from central (HMAC) + business-driven actions
         .route("/v1/appointments/:id", put(put_appointment))
         .route("/v1/appointments/:id/cancel", post(cancel_appointment))
-        .route("/v1/appointments/:id/reschedule", post(reschedule_appointment))
+        .route(
+            "/v1/appointments/:id/reschedule",
+            post(reschedule_appointment),
+        )
         .route("/v1/appointments/:id/staff-action", post(staff_action))
         .route("/v1/appointments", get(list_appointments))
         .with_state(state)
@@ -1786,4 +1970,106 @@ pub fn public_router(state: AppState) -> Router {
 /// serves `public_router` and `admin_router` on separate listeners instead of calling this.
 pub fn router(state: AppState) -> Router {
     public_router(state.clone()).merge(admin_router(state))
+}
+
+// Behavior-preserving unit tests for the pure request-parsing/validation free helpers
+// (client_ip / bearer / onchain_dog_tag_id / is_terminal). Mirrors admin-api routes.rs coverage.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_from(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    fn peer(s: &str) -> Option<SocketAddr> {
+        Some(s.parse().unwrap())
+    }
+
+    #[test]
+    fn client_ip_prefers_first_forwarded_hop_trimmed() {
+        let h = headers_from(&[("x-forwarded-for", "  203.0.113.7 , 10.0.0.1 , 10.0.0.2")]);
+        // first hop wins, whitespace trimmed, peer ignored when XFF present
+        assert_eq!(client_ip(&h, peer("198.51.100.9:443")), "203.0.113.7");
+    }
+
+    #[test]
+    fn client_ip_empty_forwarded_falls_through_to_peer() {
+        // a present-but-empty XFF value is filtered, so the socket peer is used instead of ""
+        let h = headers_from(&[("x-forwarded-for", "")]);
+        assert_eq!(client_ip(&h, peer("198.51.100.9:443")), "198.51.100.9");
+    }
+
+    #[test]
+    fn client_ip_no_headers_no_peer_defaults_unknown() {
+        let h = HeaderMap::new();
+        assert_eq!(client_ip(&h, None), "unknown");
+        // peer-only path (no XFF) returns the peer ip without the port
+        assert_eq!(client_ip(&h, peer("127.0.0.1:8080")), "127.0.0.1");
+    }
+
+    #[test]
+    fn bearer_requires_exact_scheme_and_extracts_token() {
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "Bearer op_abc123")])),
+            Some("op_abc123".to_string())
+        );
+        // scheme is case-sensitive and the trailing space is part of the prefix
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "bearer op_abc123")])),
+            None
+        );
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "Bearertoken")])),
+            None
+        );
+        // empty token after the scheme is returned verbatim (empty string), and absent header -> None
+        assert_eq!(
+            bearer(&headers_from(&[("authorization", "Bearer ")])),
+            Some(String::new())
+        );
+        assert_eq!(bearer(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn onchain_dog_tag_id_is_deterministic_and_canonically_shaped() {
+        // field_of_value Poseidon-hashes the encoded integer (not a raw interpretation), so the
+        // output is opaque; pin the contract structurally rather than couple to a Poseidon constant.
+        let a = onchain_dog_tag_id("123456789").unwrap();
+        let b = onchain_dog_tag_id("123456789").unwrap();
+        assert_eq!(a, b, "same handle -> same hashed id");
+        assert!(a.starts_with("0x"));
+        assert_eq!(
+            a.len(),
+            66,
+            "0x + 64 hex nibbles = canonical 32-byte field element"
+        );
+        assert!(a[2..].chars().all(|c| c.is_ascii_hexdigit()));
+        // distinct handles produce distinct ids
+        assert_ne!(
+            onchain_dog_tag_id("1").unwrap(),
+            onchain_dog_tag_id("2").unwrap()
+        );
+    }
+
+    #[test]
+    fn onchain_dog_tag_id_rejects_non_integer_handle() {
+        // a non-numeric handle fails the Integer field decode rather than panicking
+        assert!(onchain_dog_tag_id("not-a-number").is_err());
+        assert!(onchain_dog_tag_id("").is_err());
+    }
+
+    #[test]
+    fn is_terminal_matches_only_the_four_terminal_states() {
+        for s in ["DECLINED", "CANCELLED", "COMPLETED", "NO_SHOW"] {
+            assert!(is_terminal(s), "{s} should be terminal");
+        }
+        for s in ["CONFIRMED", "PENDING", "declined", "no_show", ""] {
+            assert!(!is_terminal(s), "{s} should not be terminal");
+        }
+    }
 }

@@ -53,7 +53,8 @@ contract PoseidonParityTest is Test {
     }
 
     function _callPoseidon6(uint256[6] memory in_) internal view returns (uint256 out) {
-        (bool ok, bytes memory ret) = poseidon6.staticcall(abi.encodeWithSignature("poseidon(uint256[6])", in_));
+        (bool ok, bytes memory ret) =
+            poseidon6.staticcall(abi.encodeWithSignature("poseidon(uint256[6])", in_));
         require(ok, "poseidon6 call failed");
         out = abi.decode(ret, (uint256));
     }

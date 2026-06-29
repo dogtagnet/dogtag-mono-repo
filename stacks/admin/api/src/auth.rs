@@ -15,7 +15,10 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Now (unix seconds).
 pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 // --------------------------------------------------------------------------------------------
@@ -156,12 +159,14 @@ pub fn verify_jwt<T: for<'de> Deserialize<'de>>(
     }
     let signing_input = format!("{}.{}", parts[0], parts[1]);
     let sig_bytes = b64d(parts[2])?;
-    let sig = ed25519_dalek::Signature::from_slice(&sig_bytes).map_err(|_| AuthError::BadSignature)?;
+    let sig =
+        ed25519_dalek::Signature::from_slice(&sig_bytes).map_err(|_| AuthError::BadSignature)?;
     keys.verifying
         .verify(signing_input.as_bytes(), &sig)
         .map_err(|_| AuthError::BadSignature)?;
     let payload = b64d(parts[1])?;
-    let map: serde_json::Value = serde_json::from_slice(&payload).map_err(|_| AuthError::BadToken)?;
+    let map: serde_json::Value =
+        serde_json::from_slice(&payload).map_err(|_| AuthError::BadToken)?;
     let n = now();
     if let Some(exp) = map.get("exp").and_then(|v| v.as_u64()) {
         if n > exp + leeway {
@@ -215,7 +220,10 @@ pub fn keccak256_hex(s: &str) -> String {
 /// The canonical message a device signs to prove wallet ownership. The walletAddress is lowercased
 /// so the message is deterministic regardless of input checksum casing.
 pub fn register_message(wallet_address: &str) -> String {
-    format!("DogTag wallet registration: {}", wallet_address.to_lowercase())
+    format!(
+        "DogTag wallet registration: {}",
+        wallet_address.to_lowercase()
+    )
 }
 
 /// Recover the EIP-191 (`personal_sign`) signer of `message` from a 65-byte `0x..` signature, returning
@@ -224,7 +232,13 @@ pub fn register_message(wallet_address: &str) -> String {
 /// `recover_address_from_msg` applies the prefix internally. Returns None on a malformed signature.
 pub fn recover_personal_sign(message: &str, signature_hex: &str) -> Option<String> {
     use alloy::primitives::PrimitiveSignature;
-    let raw = hex::decode(signature_hex.trim().strip_prefix("0x").unwrap_or(signature_hex.trim())).ok()?;
+    let raw = hex::decode(
+        signature_hex
+            .trim()
+            .strip_prefix("0x")
+            .unwrap_or(signature_hex.trim()),
+    )
+    .ok()?;
     let sig = PrimitiveSignature::from_raw(&raw).ok()?;
     let addr = sig.recover_address_from_msg(message.as_bytes()).ok()?;
     Some(format!("{addr:#x}"))
@@ -307,7 +321,8 @@ impl RateLimiter {
         }
         let mut map = self.inner.lock().unwrap();
         let st = map.entry(ip.to_string()).or_default();
-        st.failures.retain(|t| now.saturating_sub(*t) < self.window_secs);
+        st.failures
+            .retain(|t| now.saturating_sub(*t) < self.window_secs);
         st.failures.push(now);
         if st.failures.len() >= self.per_ip_max {
             st.locked_until = Some(now + self.lockout_secs);
@@ -360,5 +375,107 @@ mod tests {
         assert!(hmac_verify("secret", "POST", "/p", body, &sig));
         assert!(!hmac_verify("secret", "POST", "/p", b"tampered", &sig));
         assert!(!hmac_verify("other", "POST", "/p", body, &sig));
+    }
+
+    #[test]
+    fn hmac_verify_rejects_non_hex_signature() {
+        // A signature that is not valid hex fails at decode (the `is_ok` guard) rather than panicking.
+        assert!(!hmac_verify("secret", "POST", "/p", b"{}", "not-hex"));
+    }
+
+    #[test]
+    fn verify_password_rejects_malformed_stored() {
+        // No `$` separator -> the destructuring `let-else` returns false.
+        assert!(!verify_password("hunter2", "no-separator"));
+        // Separator present but non-hex halves -> hex::decode fails -> false.
+        assert!(!verify_password("hunter2", "zz$zz"));
+        // Well-formed shape but wrong hash bytes -> constant_time_eq mismatch -> false.
+        assert!(!verify_password("hunter2", "00$00"));
+    }
+
+    #[test]
+    fn keccak256_hex_anchors_empty_and_shape() {
+        // keccak256("") is a fixed, well-known constant; pin it so any digest swap is caught.
+        assert_eq!(
+            keccak256_hex(""),
+            "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+        );
+        let h = keccak256_hex("boarding_intake");
+        assert!(h.starts_with("0x"));
+        assert_eq!(h.len(), 66); // "0x" + 32 bytes * 2 hex chars
+                                 // Distinct labels hash to distinct keys.
+        assert_ne!(keccak256_hex("a"), keccak256_hex("b"));
+    }
+
+    #[test]
+    fn register_message_lowercases_wallet() {
+        // The signed message is checksum-casing-independent (the address is lowercased).
+        let mixed = register_message("0xAbCdEf0123456789");
+        let lower = register_message("0xabcdef0123456789");
+        assert_eq!(mixed, lower);
+        assert_eq!(mixed, "DogTag wallet registration: 0xabcdef0123456789");
+    }
+
+    #[test]
+    fn new_session_token_shape_and_uniqueness() {
+        let a = new_session_token("sess");
+        let b = new_session_token("sess");
+        assert!(a.starts_with("sess_"));
+        // "sess_" + 32 random bytes hex-encoded.
+        assert_eq!(a.len(), "sess_".len() + 64);
+        assert!(a["sess_".len()..].chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b); // fresh randomness each call
+    }
+
+    #[test]
+    fn recover_personal_sign_rejects_malformed_signature() {
+        // Non-hex and wrong-length signatures both yield None rather than panicking.
+        assert!(recover_personal_sign("msg", "not-hex").is_none());
+        assert!(recover_personal_sign("msg", "0x1234").is_none());
+    }
+
+    #[test]
+    fn verify_jwt_rejects_expired_and_malformed() {
+        let keys = JwtKeys::generate();
+        let n = now();
+        let expired = ShareClaims {
+            iss: "https://central".into(),
+            sub: "cred-1".into(),
+            aud: "dogtag-business".into(),
+            scope: "read:credential".into(),
+            iat: n - 600,
+            nbf: n - 600,
+            exp: n - 300, // already past, beyond any small leeway
+            jti: "jti-x".into(),
+        };
+        let token = sign_jwt(&keys, &expired);
+        assert!(matches!(
+            verify_jwt::<ShareClaims>(&keys, &token, 30),
+            Err(AuthError::Expired)
+        ));
+        // A token without three dot-separated parts is a BadToken.
+        assert!(matches!(
+            verify_jwt::<ShareClaims>(&keys, "only.two", 30),
+            Err(AuthError::BadToken)
+        ));
+    }
+
+    #[test]
+    fn rate_limiter_locks_after_threshold_and_clears_on_success() {
+        let rl = RateLimiter::new();
+        let ip = "203.0.113.7";
+        assert!(!rl.is_locked(ip)); // fresh IP is not locked
+                                    // The default per-IP threshold is 10 failures inside the window.
+        for _ in 0..9 {
+            rl.record_failure(ip);
+        }
+        assert!(!rl.is_locked(ip)); // 9 < 10, still allowed
+        rl.record_failure(ip); // 10th failure crosses the threshold
+        assert!(rl.is_locked(ip));
+        // A successful auth clears the IP's failure record, unlocking it.
+        rl.record_success(ip);
+        assert!(!rl.is_locked(ip));
+        // An unrelated IP is unaffected throughout.
+        assert!(!rl.is_locked("198.51.100.2"));
     }
 }

@@ -97,7 +97,10 @@ impl BusinessClient for ReqwestBusinessClient {
         verifier_api_base: &str,
         body: &Value,
     ) -> Result<Value, BusinessError> {
-        let url = format!("{}/verify/consent/submit", verifier_api_base.trim_end_matches('/'));
+        let url = format!(
+            "{}/verify/consent/submit",
+            verifier_api_base.trim_end_matches('/')
+        );
         let resp = self
             .client
             .post(&url)
@@ -108,7 +111,9 @@ impl BusinessClient for ReqwestBusinessClient {
         if !resp.status().is_success() {
             return Err(BusinessError::Status(resp.status().as_u16()));
         }
-        resp.json().await.map_err(|e| BusinessError::Http(e.to_string()))
+        resp.json()
+            .await
+            .map_err(|e| BusinessError::Http(e.to_string()))
     }
 }
 
@@ -125,7 +130,10 @@ pub struct MockBusinessClient {
 
 impl MockBusinessClient {
     pub fn new(ok: bool) -> Self {
-        MockBusinessClient { calls: Arc::new(Mutex::new(Vec::new())), ok }
+        MockBusinessClient {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            ok,
+        }
     }
     pub fn calls(&self) -> Vec<CallRecord> {
         self.calls.lock().unwrap().clone()
