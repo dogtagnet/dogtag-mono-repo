@@ -12,6 +12,11 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cd contracts && forge build && forge test` — 44 tests incl. `ZkIntegration.t.sol` (real Groth16 proof verified on-chain) and `Verification.t.sol`.
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
+- `cargo test -p vet-api --test verify_onchain` — on-chain integration (self-spawns anvil). The ZK-path
+  test (`zk_path_records_verified_onchain`, real Groth16 proof, ~270s) needs forge/cast/anvil on PATH AND
+  the JS toolchain built first: `pnpm install` in `circuits/` plus `pnpm install && pnpm run build` in
+  `packages/dogtag-standard-ts/` (`crates/dogtag-prover-rs/tests/gen_input.mjs` imports its `dist/`). It
+  does NOT skip gracefully when those are missing.
 
 ### Sharp edges learned
 - **The parity gate is `circuits/scripts/gen-vectors.mjs`.** It is the source of truth: it computes the circom witness (reference-of-record) and cross-checks `poseidon-lite` (TS) and `circomlibjs`, then writes `circuits/poseidon-vectors.json` which Rust (`sdk_parity.rs`/`poseidon_parity.rs`) and Solidity (`PoseidonParity.t.sol`) assert. The "4-language" gate is the union of `make parity` + `test-rs` + `test-contracts`. (`circuits/scripts/check-ts.mjs` was referenced by `package.json` but never existed; it was removed — `gen-vectors.mjs` already covers TS↔circom.)
@@ -34,6 +39,8 @@ The operator-facing **handle** is a small integer. The **on-chain** dogTagId min
 - Both backends call `startup::validate_production_secrets(...)` at boot: in production they **refuse to start** if `OPERATOR_PASSWORD`/`ADMIN_PASSWORD`/`CENTRAL_HMAC_SECRET` (vet) or `ADMIN_PASSWORD`/`ADMIN_PRIVATE_KEY` (admin) are unset or equal to the known dev defaults. Set `DEMO_MODE=1` to keep the convenient demo defaults.
 - vet-api: if `CIRCUITS_BUILD_DIR` is set but the real `ArkProver` fails to load, the process **exits** (it must not silently degrade to `StubProver`, which emits zeroed proofs the chain rejects). Unset `CIRCUITS_BUILD_DIR` still uses `StubProver` (demo / on-device-proof production model).
 - The prover **enforces a pinned zkey sha256** (`dogtag-prover-rs::EXPECTED_ZKEY_SHA256_HEX`, the testnet ceremony hash): `Prover::load` rejects any zkey whose hash differs, so a swapped/corrupt key fails closed instead of proving against the wrong key (audit M4). A deployment shipping a **different** zkey (a production ceremony output) sets the `EXPECTED_ZKEY_SHA256` env var on vet-api (→ `load_with_expected_zkey`) — a config swap, not a code change. Leave it unset to enforce the bundled testnet hash.
+- **Shared JWT signing key** (`SHARE_JWT_SIGNING_KEY`, 32-byte hex; vet + admin): the Ed25519 share/record JWT key. MUST be identical across restarts and horizontally-scaled instances or tokens break (audit L4). `load_jwt_keys` requires it (fail-closed) in production (same `DEMO_MODE` signal as the secret guard above), and uses an ephemeral key + warning in demo. `JwtKeys::generate()` alone is per-process/ephemeral — never the production path.
+- **Admin password hashing** (`ADMIN_PASSWORD_HASH`, `"<salt_hex>$<hash_hex>"` from `auth::hash_password`; admin): the stored hash `admin_login` verifies against with `auth::verify_password` (audit L4 — replaces the old cosmetic plaintext compare). Optional; unset → the H2-required `ADMIN_PASSWORD` plaintext is hashed once at startup.
 
 ## ZK trusted-setup ceremony
 
@@ -218,3 +225,10 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
 GitHub-hosted runners don't reliably provide the arm64 Simulator prover slice, and the proving
 artifacts are gitignored. Wiring it to push/PR would make a perpetually-red check. The validated signal
 is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `ZK-SELFTEST: PASS`).
+## Contract sharp edges
+
+- `VerificationRegistry.recordVerificationZK(a, b, c, pub[7], bytes32 recordType, uint256 deadline)` —
+  the trailing `recordType`/`deadline` are defense-in-depth guards supplied by the relayer (NOT bound to
+  the proof; audit L2). Address-typed public signals `pub[2]` (relayer) and `pub[3]` (subject) are
+  range-checked `< 2^160` so `uint160(..)` truncation can't alias a victim address (audit L1). The Rust
+  relay ABI (`stacks/vet/api/src/chain.rs`) must stay in sync with this signature.

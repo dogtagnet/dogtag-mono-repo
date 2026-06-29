@@ -30,6 +30,9 @@ async fn main() {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(135);
 
+    // Kept as a local (not a Config field) so the H2 boot-guard can check the plaintext while Config
+    // stores only the hash (audit L4).
+    let admin_password = env("ADMIN_PASSWORD", "admin-pw");
     let cfg = Config {
         deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{PORT}")),
         rpc_url: rpc_url.clone(),
@@ -44,7 +47,15 @@ async fn main() {
             "PROFILE_DOCUMENT_STORE",
             "0x0000000000000000000000000000000000000000",
         ),
-        admin_password: env("ADMIN_PASSWORD", "admin-pw"),
+        // Store a real password HASH, never the plaintext (audit L4) — admin_login verifies against
+        // this with auth::verify_password. Optional `ADMIN_PASSWORD_HASH` ("<salt_hex>$<hash_hex>")
+        // overrides; otherwise the ADMIN_PASSWORD plaintext (still required non-default in prod by the
+        // H2 boot-guard below) is hashed once here at startup.
+        admin_password_hash: std::env::var("ADMIN_PASSWORD_HASH")
+            .ok()
+            .filter(|h| !h.trim().is_empty())
+            .map(|h| h.trim().to_string())
+            .unwrap_or_else(|| admin_api::auth::hash_password(&admin_password)),
         admin_signer_index: 0,
     };
 
@@ -58,7 +69,7 @@ async fn main() {
         &[
             admin_api::startup::SecretSpec {
                 name: "ADMIN_PASSWORD",
-                value: cfg.admin_password.as_str(),
+                value: admin_password.as_str(),
                 dev_default: "admin-pw",
             },
             admin_api::startup::SecretSpec {
@@ -124,7 +135,10 @@ async fn main() {
         dns,
         business: Arc::new(ReqwestBusinessClient::new()),
         vault: Arc::new(MemVault::new()),
-        jwt: JwtKeys::generate(),
+        // Shared JWT signing key from SHARE_JWT_SIGNING_KEY (audit L4) so share tokens survive restart
+        // and work across instances; fail closed when missing in production (same DEMO_MODE signal as
+        // the H2 secret guard above).
+        jwt: load_jwt_keys(!demo),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(admin_api::auth::RateLimiter::new()),
     };
@@ -179,6 +193,38 @@ async fn main() {
         )
         .await
         .expect("serve");
+    }
+}
+
+/// Resolve the JWT signing key (audit L4). `SHARE_JWT_SIGNING_KEY` (32-byte hex) is the shared,
+/// restart- and instance-stable key. Malformed -> fail closed. Missing in a persistent deployment
+/// (`prod`, i.e. DEMO_MODE/VITE_DEMO_MODE unset) -> fail closed. Demo/local -> ephemeral key + warning.
+fn load_jwt_keys(prod: bool) -> JwtKeys {
+    match std::env::var("SHARE_JWT_SIGNING_KEY").ok().filter(|s| !s.trim().is_empty()) {
+        Some(seed) => match JwtKeys::from_seed_hex(&seed) {
+            Ok(k) => {
+                tracing::info!("loaded shared JWT signing key from SHARE_JWT_SIGNING_KEY");
+                k
+            }
+            Err(e) => {
+                tracing::error!("SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start");
+                std::process::exit(1);
+            }
+        },
+        None if prod => {
+            tracing::error!(
+                "SHARE_JWT_SIGNING_KEY is required in production (DEMO_MODE unset) so share tokens \
+                 survive restart and work across horizontally-scaled instances; refusing to start"
+            );
+            std::process::exit(1);
+        }
+        None => {
+            tracing::warn!(
+                "SHARE_JWT_SIGNING_KEY unset; using an EPHEMERAL JWT key (demo/local only — tokens \
+                 will NOT survive restart or work across horizontally-scaled instances)"
+            );
+            JwtKeys::generate()
+        }
     }
 }
 

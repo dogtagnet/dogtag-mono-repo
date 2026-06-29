@@ -177,7 +177,10 @@ async fn main() {
         calendar,
         central,
         custody: Custody::new(),
-        jwt: JwtKeys::generate(),
+        // Shared JWT signing key from SHARE_JWT_SIGNING_KEY (audit L4) so share/record tokens survive
+        // restart and work across instances; fail closed when missing in production (same DEMO_MODE
+        // signal as the H2 secret guard above).
+        jwt: load_jwt_keys(!demo),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
     };
@@ -228,6 +231,39 @@ async fn main() {
         )
         .await
         .expect("serve");
+    }
+}
+
+/// Resolve the JWT signing key (audit L4). `SHARE_JWT_SIGNING_KEY` (32-byte hex) is the shared,
+/// restart- and instance-stable key. Malformed -> fail closed. Missing in a persistent deployment
+/// (`prod`, i.e. DEMO_MODE/VITE_DEMO_MODE unset) -> fail closed, because per-process ephemeral keys
+/// break tokens across restarts/instances. Demo/local -> ephemeral key + a loud warning.
+fn load_jwt_keys(prod: bool) -> JwtKeys {
+    match std::env::var("SHARE_JWT_SIGNING_KEY").ok().filter(|s| !s.trim().is_empty()) {
+        Some(seed) => match JwtKeys::from_seed_hex(&seed) {
+            Ok(k) => {
+                tracing::info!("loaded shared JWT signing key from SHARE_JWT_SIGNING_KEY");
+                k
+            }
+            Err(e) => {
+                tracing::error!("SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start");
+                std::process::exit(1);
+            }
+        },
+        None if prod => {
+            tracing::error!(
+                "SHARE_JWT_SIGNING_KEY is required in production (DEMO_MODE unset) so share/record \
+                 tokens survive restart and work across horizontally-scaled instances; refusing to start"
+            );
+            std::process::exit(1);
+        }
+        None => {
+            tracing::warn!(
+                "SHARE_JWT_SIGNING_KEY unset; using an EPHEMERAL JWT key (demo/local only — tokens \
+                 will NOT survive restart or work across horizontally-scaled instances)"
+            );
+            JwtKeys::generate()
+        }
     }
 }
 

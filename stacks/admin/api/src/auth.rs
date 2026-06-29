@@ -93,12 +93,29 @@ pub struct JwtKeys {
 }
 
 impl JwtKeys {
+    /// Generate an EPHEMERAL keypair. Per-process: tokens it signs do NOT survive a restart and are
+    /// not accepted by a sibling instance. Use ONLY for demo/local; production loads a shared key via
+    /// [`JwtKeys::from_seed_hex`] (audit L4).
     pub fn generate() -> Self {
         let mut bytes = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
         let signing = SigningKey::from_bytes(&bytes);
         let verifying = signing.verifying_key();
         JwtKeys { signing, verifying }
+    }
+
+    /// Load a FIXED Ed25519 signing key from a 32-byte hex seed (`0x`-prefix optional). A deployment
+    /// sets the same seed across restarts and across horizontally-scaled instances so share tokens
+    /// remain verifiable everywhere (audit L4). Errors on non-hex / wrong-length input so the caller
+    /// can fail closed.
+    pub fn from_seed_hex(seed_hex: &str) -> Result<Self, String> {
+        let s = seed_hex.trim();
+        let raw = hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| format!("not hex: {e}"))?;
+        let bytes: [u8; 32] =
+            raw.as_slice().try_into().map_err(|_| format!("expected 32 bytes, got {}", raw.len()))?;
+        let signing = SigningKey::from_bytes(&bytes);
+        let verifying = signing.verifying_key();
+        Ok(JwtKeys { signing, verifying })
     }
 }
 
@@ -345,6 +362,26 @@ mod tests {
         let stored = hash_password("hunter2");
         assert!(verify_password("hunter2", &stored));
         assert!(!verify_password("wrong", &stored));
+    }
+
+    #[test]
+    fn jwt_from_seed_is_stable_across_instances() {
+        // audit L4: same seed -> same key on two instances, so a token signed by one verifies on the
+        // other (survives restart / horizontal scaling). Malformed seeds fail closed.
+        let seed = "0x".to_string() + &"ab".repeat(32);
+        let a = JwtKeys::from_seed_hex(&seed).unwrap();
+        let b = JwtKeys::from_seed_hex(&seed).unwrap();
+        let claims = ShareClaims {
+            iss: "i".into(), sub: "s".into(), aud: "dogtag-business".into(),
+            scope: "read:credential".into(), iat: now(), nbf: now(), exp: now() + 180, jti: "j".into(),
+        };
+        let token = sign_jwt(&a, &claims);
+        let decoded: ShareClaims = verify_jwt(&b, &token, 30).expect("cross-instance verify");
+        assert_eq!(decoded.sub, "s");
+        let other = JwtKeys::from_seed_hex(&("cd".repeat(32))).unwrap();
+        assert!(verify_jwt::<ShareClaims>(&other, &token, 30).is_err());
+        assert!(JwtKeys::from_seed_hex("zz").is_err());
+        assert!(JwtKeys::from_seed_hex(&"ab".repeat(16)).is_err(), "wrong length");
     }
 
     #[test]

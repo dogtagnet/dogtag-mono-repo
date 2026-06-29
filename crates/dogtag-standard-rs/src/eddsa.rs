@@ -73,6 +73,28 @@ fn fr_to_biguint(f: &Fr) -> BigUint {
     BigUint::from_bytes_be(&f.into_bigint().to_bytes_be())
 }
 
+/// Error returned when a caller-supplied point fails validation. Surfaced (instead of a panic) so
+/// untrusted signature bytes from mobile cannot DoS the verifier with an off-curve / zero-denominator
+/// input (audit L3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EddsaError {
+    /// The point does not satisfy the BabyJubjub curve equation.
+    NotOnCurve,
+    /// The point is on-curve but outside the prime-order subgroup (small-subgroup / cofactor input).
+    NotInSubgroup,
+}
+
+impl core::fmt::Display for EddsaError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            EddsaError::NotOnCurve => write!(f, "point not on BabyJubjub curve"),
+            EddsaError::NotInSubgroup => write!(f, "point not in BabyJubjub prime-order subgroup"),
+        }
+    }
+}
+
+impl std::error::Error for EddsaError {}
+
 /// A point on BabyJubjub in affine coordinates (x, y) over BN254 Fr.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Point {
@@ -87,7 +109,11 @@ impl Point {
     }
 
     /// Complete twisted-Edwards addition (a=168700, d=168696). Valid for all inputs (no special
-    /// cases), matching circomlibjs `addPoint`.
+    /// cases), matching circomlibjs `addPoint`. NOTE: the `.expect("nonzero denom")` below is
+    /// unreachable for ON-CURVE inputs — BabyJubjub is a *complete* twisted Edwards curve (`a` a
+    /// square, `d` a non-square in Fr), so `1 ± d·x1·x2·y1·y2 ≠ 0` for all on-curve points. Callers
+    /// MUST validate untrusted points with `is_on_curve` before doing arithmetic; the trusted signing
+    /// path only ever feeds Base8-derived points.
     fn add(&self, q: &Point) -> Point {
         let a = coeff_a();
         let d = coeff_d();
@@ -101,7 +127,9 @@ impl Point {
         Point { x: x3, y: y3 }
     }
 
-    /// Scalar multiplication `n * self` via double-and-add over the big-endian bits of `n`.
+    /// Variable-time scalar multiplication `n * self` via double-and-add. The branch on each bit makes
+    /// this a timing/power side-channel on `n` — use ONLY for PUBLIC scalars (e.g. the verifier path).
+    /// For secret scalars use [`Point::mul_scalar_ct`].
     fn mul_scalar(&self, n: &BigUint) -> Point {
         let mut result = Point::identity();
         let mut addend = *self;
@@ -118,6 +146,61 @@ impl Point {
             }
         }
         result
+    }
+
+    /// Constant-time scalar multiplication `n * self` for SECRET scalars (the on-device consent key
+    /// and per-signature nonce). Unlike [`Point::mul_scalar`], the control flow is independent of the
+    /// bits of `n`: every step performs the same doubling and a branchless masked select, and the loop
+    /// runs a fixed 256 iterations (our secret scalars are `< 2^253`). The mathematical result is
+    /// bit-identical to `mul_scalar`, so circomlibjs / in-circuit `EdDSAPoseidonVerifier` parity is
+    /// preserved (asserted by the fixed-vector tests). Audit L3.
+    fn mul_scalar_ct(&self, n: &BigUint) -> Point {
+        let mut result = Point::identity();
+        let mut addend = *self;
+        let mut bytes = n.to_bytes_le();
+        // Fixed width: pad to >= 32 bytes so the iteration count does not depend on n's bit length.
+        // (Never truncates: callers only pass scalars < 2^253, i.e. <= 32 bytes.)
+        if bytes.len() < 32 {
+            bytes.resize(32, 0);
+        }
+        for byte in bytes {
+            for i in 0..8u32 {
+                let bit = (byte >> i) & 1;
+                let summed = result.add(&addend);
+                // Branchless select: result = bit ? summed : result. Multiplication by the {0,1} mask
+                // uses the same (Montgomery) field path regardless of the bit value -> no data branch.
+                let m = Fr::from(bit as u64);
+                let nm = Fr::one() - m;
+                result = Point { x: summed.x * m + result.x * nm, y: summed.y * m + result.y * nm };
+                addend = addend.add(&addend);
+            }
+        }
+        result
+    }
+
+    /// BabyJubjub curve membership: `a·x² + y² == 1 + d·x²·y²`.
+    fn is_on_curve(&self) -> bool {
+        let xx = self.x * self.x;
+        let yy = self.y * self.y;
+        coeff_a() * xx + yy == Fr::one() + coeff_d() * xx * yy
+    }
+
+    /// Prime-order subgroup membership: `subOrder · P == identity`. MUST only be called on a point that
+    /// is already known to be on-curve (otherwise the scalar mul could hit a zero denominator).
+    fn is_in_subgroup(&self) -> bool {
+        self.mul_scalar(&sub_order()) == Point::identity()
+    }
+
+    /// Validate a caller-supplied point: on-curve AND in the prime-order subgroup. Returns a typed
+    /// error (instead of a downstream panic) for untrusted input. Audit L3.
+    fn validate(&self) -> Result<(), EddsaError> {
+        if !self.is_on_curve() {
+            return Err(EddsaError::NotOnCurve);
+        }
+        if !self.is_in_subgroup() {
+            return Err(EddsaError::NotInSubgroup);
+        }
+        Ok(())
     }
 }
 
@@ -157,7 +240,7 @@ fn prv2pub(prv: &[u8; 32]) -> Point {
     prune(&mut sbuff);
     let s = scalar_from_low(&sbuff);
     let s_shr3 = &s >> 3u32;
-    base8().mul_scalar(&s_shr3)
+    base8().mul_scalar_ct(&s_shr3) // secret scalar -> constant-time
 }
 
 /// Derive a deterministic BabyJubjub consent key from a hex seed.
@@ -188,7 +271,7 @@ pub fn sign_poseidon(prv: &[u8; 32], m: &Fr) -> EddsaSignature {
     let mut sbuff = blake512(prv);
     prune(&mut sbuff);
     let s = scalar_from_low(&sbuff);
-    let a = base8().mul_scalar(&(&s >> 3u32)); // A = Base8 * (s>>3)
+    let a = base8().mul_scalar_ct(&(&s >> 3u32)); // A = Base8 * (s>>3); secret scalar -> constant-time
 
     // composeBuff = sBuff[32..64] || LE(m, 32 bytes); r = LE(blake512(composeBuff)) mod subOrder
     let mut compose = Vec::with_capacity(64);
@@ -199,7 +282,7 @@ pub fn sign_poseidon(prv: &[u8; 32], m: &Fr) -> EddsaSignature {
 
     let rbuff = blake512(&compose);
     let r = BigUint::from_bytes_le(&rbuff) % sub_order();
-    let r8 = base8().mul_scalar(&r);
+    let r8 = base8().mul_scalar_ct(&r); // secret nonce scalar -> constant-time
 
     // hm = Poseidon5([R8x, R8y, Ax, Ay, m])
     let hm = poseidon(&[r8.x, r8.y, a.x, a.y, *m]);
@@ -212,21 +295,40 @@ pub fn sign_poseidon(prv: &[u8; 32], m: &Fr) -> EddsaSignature {
 }
 
 /// Verify an EdDSA-BabyJubjub Poseidon signature against public key A and message m
-/// (circomlibjs `verifyPoseidon`). Used for the round-trip parity assertion.
-pub fn verify_poseidon(ax: &Fr, ay: &Fr, r8x: &Fr, r8y: &Fr, s: &BigUint, m: &Fr) -> bool {
-    if s >= &sub_order() {
-        return false;
-    }
+/// (circomlibjs `verifyPoseidon`).
+///
+/// The public key `A` and the signature point `R8` are CALLER-SUPPLIED (untrusted bytes from mobile),
+/// so they are validated as on-curve + prime-order-subgroup points BEFORE any arithmetic. An off-curve
+/// / small-subgroup point returns `Err` instead of panicking on a zero denominator (audit L3, reachable
+/// DoS). `Ok(false)` means well-formed inputs whose signature simply does not verify (incl. `s` out of
+/// range), matching the prior reject behavior.
+pub fn verify_poseidon(
+    ax: &Fr,
+    ay: &Fr,
+    r8x: &Fr,
+    r8y: &Fr,
+    s: &BigUint,
+    m: &Fr,
+) -> Result<bool, EddsaError> {
     let a = Point { x: *ax, y: *ay };
     let r8 = Point { x: *r8x, y: *r8y };
+    // Validate untrusted points first — this is also what makes the `add` denominators provably
+    // nonzero (curve completeness), so no downstream panic is reachable from this path.
+    a.validate()?;
+    r8.validate()?;
+
+    if s >= &sub_order() {
+        return Ok(false);
+    }
     let hm = poseidon(&[r8.x, r8.y, a.x, a.y, *m]);
     let hm_big = fr_to_biguint(&hm);
 
-    // Check: Base8 * S == R8 + (8*hm)*A  (exactly circomlibjs `verifyPoseidon`).
+    // Check: Base8 * S == R8 + (8*hm)*A  (exactly circomlibjs `verifyPoseidon`). Scalars here are
+    // PUBLIC (S, hm), so variable-time mul_scalar is fine.
     let lhs = base8().mul_scalar(s);
     let a_hm = a.mul_scalar(&(&hm_big * BigUint::from(8u32)));
     let rhs = r8.add(&a_hm);
-    lhs == rhs
+    Ok(lhs == rhs)
 }
 
 /// Convenience: Fr -> decimal string (for FFI / parity output).
@@ -269,16 +371,64 @@ mod tests {
         let key = consent_key_from_raw_prv(&SEED7);
         let m = fr_from_dec(MSG);
         let sig = sign_poseidon(&SEED7, &m);
-        assert!(
+        assert_eq!(
             verify_poseidon(&key.ax, &key.ay, &sig.r8x, &sig.r8y, &sig.s, &m),
+            Ok(true),
             "self-verify must succeed"
         );
-        // tamper -> reject
+        // tamper -> reject (well-formed inputs, signature mismatch)
         let bad_m = fr_from_dec("123");
-        assert!(
-            !verify_poseidon(&key.ax, &key.ay, &sig.r8x, &sig.r8y, &sig.s, &bad_m),
+        assert_eq!(
+            verify_poseidon(&key.ax, &key.ay, &sig.r8x, &sig.r8y, &sig.s, &bad_m),
+            Ok(false),
             "tampered message must be rejected"
         );
+    }
+
+    // ---- audit L3: constant-time secret-scalar mul is bit-identical to the variable-time path ----
+    // The fixed circomlibjs vectors above already pin sign/prv2pub output; this asserts the CT and
+    // VT muls agree directly so in-circuit EdDSAPoseidonVerifier parity cannot silently drift.
+    #[test]
+    fn mul_scalar_ct_matches_variable_time() {
+        let scalars = [
+            BigUint::from(0u32),
+            BigUint::from(1u32),
+            BigUint::from(2u32),
+            BigUint::from(255u32),
+            BigUint::parse_bytes(b"123456789012345678901234567890", 10).unwrap(),
+            sub_order() - BigUint::from(1u32),
+        ];
+        for n in scalars {
+            assert_eq!(base8().mul_scalar(&n), base8().mul_scalar_ct(&n), "CT vs VT mismatch for {n}");
+        }
+    }
+
+    // ---- audit L3: caller-supplied off-curve / small-subgroup points return Err, never panic ----
+    #[test]
+    fn verify_rejects_off_curve_point_without_panic() {
+        let key = consent_key_from_raw_prv(&SEED7);
+        let m = fr_from_dec(MSG);
+        let sig = sign_poseidon(&SEED7, &m);
+        // (1, 1) is not on BabyJubjub: a·1 + 1 = 168701 != 1 + d·1 = 168697.
+        let off = Fr::one();
+        assert_eq!(
+            verify_poseidon(&off, &off, &sig.r8x, &sig.r8y, &sig.s, &m),
+            Err(EddsaError::NotOnCurve),
+            "off-curve public key must error, not panic"
+        );
+        // off-curve R8 too
+        assert_eq!(
+            verify_poseidon(&key.ax, &key.ay, &off, &off, &sig.s, &m),
+            Err(EddsaError::NotOnCurve),
+            "off-curve R8 must error, not panic"
+        );
+    }
+
+    #[test]
+    fn point_validation_basics() {
+        assert!(base8().is_on_curve() && base8().is_in_subgroup(), "Base8 must validate");
+        assert!(Point::identity().validate().is_ok(), "identity must validate");
+        assert_eq!(Point { x: Fr::one(), y: Fr::one() }.validate(), Err(EddsaError::NotOnCurve));
     }
 
     #[test]

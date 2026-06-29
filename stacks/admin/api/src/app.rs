@@ -28,8 +28,10 @@ pub struct Config {
     pub issuer_domain: String,
     /// the documentStore the profile VC anchors to (the SBT contract acts as the profile store).
     pub profile_document_store: String,
-    /// admin-session password (admin routes: businesses register, applications, deletions).
-    pub admin_password: String,
+    /// admin-session password HASH ("<salt_hex>$<hash_hex>", audit L4) — never the plaintext. Set from
+    /// `ADMIN_PASSWORD_HASH` (prod) or computed once at startup from `ADMIN_PASSWORD` (demo). `admin_login`
+    /// verifies the submitted password against this with `auth::verify_password`.
+    pub admin_password_hash: String,
     /// account index of the admin signer (WHITELIST_ADMIN + ISSUER/PROFILE_ISSUER roles).
     pub admin_signer_index: u32,
 }
@@ -231,7 +233,7 @@ mod tests {
             issuer_name: "DogTag Central".to_string(),
             issuer_domain: "central.dogtag.test".to_string(),
             profile_document_store: "0x3333".to_string(),
-            admin_password: "pw".to_string(),
+            admin_password_hash: crate::auth::hash_password("pw"),
             admin_signer_index: 0,
         }
     }
