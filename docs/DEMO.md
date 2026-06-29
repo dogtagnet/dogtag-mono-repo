@@ -220,4 +220,4 @@ General:
 - CORS is enabled on the backends; the groomer api is the **same `vet-api` binary** with
   `BUSINESS_TYPE=groomer` and `PORT` from env (`43618`).
 - This is **testnet**; the ZK trusted setup is a documented single-operator run
-  (`docs/CEREMONY_TRANSCRIPT.md`). Mainnet requires the multi-party ceremony (`docs/CEREMONY.md`).
+  (`docs/CEREMONY_TRANSCRIPT.md`). Mainnet requires the multi-party ceremony (`docs/CEREMONY_RUNBOOK.md`).

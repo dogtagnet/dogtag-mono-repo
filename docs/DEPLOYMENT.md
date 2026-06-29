@@ -182,5 +182,5 @@ Read these in order for your tier; each is self-contained and runnable top-to-bo
 | [TUNNELING.md](./TUNNELING.md) | …a phone can't reach your Mac — the 3-tunnel reference, phone networking, ephemerality. |
 | [DEPLOY.md](./DEPLOY.md) | …you're deploying the contract set itself — the contract-deploy runbook (already live on testnet). |
 | [DEMO.md](./DEMO.md) · [DEMO_CLICKS.md](./DEMO_CLICKS.md) · [GROOMER_ZK_DEMO.md](./GROOMER_ZK_DEMO.md) | …you're driving a live demo — narrative runbook, click-by-click script, and the groomer ZK-verify flow. |
-| [CEREMONY.md](./CEREMONY.md) | …you're running the ZK trusted-setup ceremony for production (≥3 contributors + public beacon). |
+| [CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md) · [CEREMONY.md](./CEREMONY.md) | …you're running the ZK trusted-setup ceremony for production (≥3 contributors + public beacon) — the expanded captain-fill-in runbook, plus the concise version. |
 | [DPIA.md](./DPIA.md) | …you need the data-protection impact assessment (privacy/compliance). |

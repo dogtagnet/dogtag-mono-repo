@@ -120,7 +120,8 @@ forge verify-contract --rpc-url $ROAX_RPC \
    (preMetaTx) → `0x8bA836eCe9…` (current) — and `0x19C1B5f8…` is NOT the current registry.
 
    The testnet trusted setup (3 contributions + beacon) is recorded in `docs/CEREMONY_TRANSCRIPT.md`
-   (zkey sha256 `45d0b6fb…`); the on-chain wiring + the prod timelock procedure are in `docs/CEREMONY.md`.
+   (zkey sha256 `45d0b6fb…`); the on-chain wiring + the prod timelock procedure are in `docs/CEREMONY_RUNBOOK.md`
+   (concise version: `docs/CEREMONY.md`).
 
 ## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
 

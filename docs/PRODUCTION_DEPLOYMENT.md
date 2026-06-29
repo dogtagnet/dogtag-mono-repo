@@ -203,7 +203,8 @@ or vice versa) produces "unknown root" / signature-verification failures that lo
 ## 3. ZK trusted setup (BLOCKING) — ceremony + verifier timelock
 
 > This doc OWNS the ceremony/timelock runbook (the step-by-step ceremony itself is in
-> [CEREMONY.md](./CEREMONY.md); the on-chain wiring procedure is here).
+> [CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md) — the expanded captain-fill-in runbook, with
+> [CEREMONY.md](./CEREMONY.md) as the concise version; the on-chain wiring procedure is here).
 
 The zkey shipped in `circuits/build` (and the one bundled in the testnet apps) is a **single-operator**
 setup — fine for testnet, **NOT production**. A sole contributor who kept the toxic waste could **forge ZK
@@ -214,14 +215,14 @@ ceremony key and wire it through the registry's on-chain timelock.
 > this ceremony. Only the ZK path (`recordVerificationZK`) is gated by it. Until the ceremony completes,
 > leave the registry's `zkVerifier` unchanged / `0x0` for the ZK path.
 
-### 3.1 Run the ceremony (per CEREMONY.md)
+### 3.1 Run the ceremony (per CEREMONY_RUNBOOK.md)
 
-Follow **[CEREMONY.md](./CEREMONY.md)** exactly: **≥3 independent contributors** each add and destroy
+Follow **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** exactly: **≥3 independent contributors** each add and destroy
 secret entropy in sequence, then the coordinator applies a **public random beacon** (a value unpredictable
 at contribution time — e.g. a future Bitcoin block hash or a drand round) and finalizes.
 
 ```bash
-# (Coordinator) finalize, per CEREMONY.md — produces the production artefacts:
+# (Coordinator) finalize, per CEREMONY_RUNBOOK.md — produces the production artefacts:
 cd circuits
 bash scripts/ceremony.sh finalize build/ceremony_final.zkey
 #  -> exports circuits/Groth16Verifier.sol
@@ -487,7 +488,8 @@ Run this last, after §§2–5. Every box must pass before real users.
 - **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)** — the base bring-up this doc deltas over (backend
   `.env` + portal `VITE_*` tables; prover-service §8).
 - **[DEPLOYMENT.md](./DEPLOYMENT.md)** — index, Address Book, service/port tables, tier decision-guide.
-- **[CEREMONY.md](./CEREMONY.md)** — the multi-party ZK trusted-setup ceremony, step by step.
+- **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** — the multi-party ZK trusted-setup ceremony, step by step
+  (expanded captain-fill-in runbook; **[CEREMONY.md](./CEREMONY.md)** is the concise version).
 - **[DEPLOY.md](./DEPLOY.md)** — contract deploy runbook (writes `contracts/deployments/<chain>.json`;
   §3.2 verifier wiring).
 - **[MOBILE_BUILD.md](./MOBILE_BUILD.md)** — build + install the iOS/Android apps and rebuild on chain swap.
