@@ -223,6 +223,12 @@ SPA bundle at `docker compose build`).
 - **Secrets via `openssl rand -hex 32`** for `OPERATOR_PASSWORD`, `ADMIN_PASSWORD`,
   `CENTRAL_HMAC_SECRET`, and a dedicated funded `ADMIN_PRIVATE_KEY` (with its `ADMIN_ADDRESS`). Never
   reuse the demo defaults; never commit secrets.
+- **The backends are fail-closed on boot.** Beyond `remote-up.sh`'s env preflight, each api binary itself
+  **refuses to start in production** (neither `DEMO_MODE` nor `VITE_DEMO_MODE` set) if a required secret is
+  unset/empty or still equal to its built-in dev default — `OPERATOR_PASSWORD` / `ADMIN_PASSWORD` /
+  `CENTRAL_HMAC_SECRET` (vet, groomer) or `ADMIN_PASSWORD` / `ADMIN_PRIVATE_KEY` (admin). It exits with a
+  `FATAL:` message naming every offending secret. Set `DEMO_MODE=1` to keep the convenient defaults for a
+  local/demo run.
 - **`CENTRAL_HMAC_SECRET` must be IDENTICAL across all stacks** (admin, vet, groomer). It signs the
   central↔business appointment-event HMAC. This is **distinct** from the per-business `hmacSecret` that
   `register_business` returns **once** at registration (§7) — keep both.
@@ -505,8 +511,11 @@ cargo build --release -p vet-api --features prover --target-dir target/prover
 
 **Run.** Set **`CIRCUITS_BUILD_DIR`** to a directory holding **`verification_final.zkey`** +
 **`verification.graph`** so the real **ArkProver** loads. If `CIRCUITS_BUILD_DIR` is unset, the binary
-**silently loads `StubProver`**, which emits placeholder proofs that are **NOT chain-valid**. Also pass
-the usual chain env (`ROAX_RPC` and the `*_ADDR` contract addresses).
+**silently loads `StubProver`**, which emits placeholder proofs that are **NOT chain-valid**. If it is
+**set but the real prover fails to load** (missing/corrupt zkey or graph), the process is **fail-closed**
+and **exits with a FATAL error** rather than degrading to `StubProver` — so a misconfigured prover-service
+never silently ships forgeable proofs. Also pass the usual chain env (`ROAX_RPC` and the `*_ADDR`
+contract addresses).
 
 ```bash
 CIRCUITS_BUILD_DIR=/circuits/build \
@@ -537,7 +546,8 @@ curl -fsS https://<PROVER_DOMAIN>/health     # {"status":"ok"}
 **STOP if** 32-bit-Android proofs are rejected on-chain:
 - **Symptom:** the groomer's verification reverts / `isValid` stays false for proofs from a 32-bit phone.
 - **Cause:** the prover loaded **`StubProver`** (placeholder proofs) because `CIRCUITS_BUILD_DIR` was
-  unset or missing the zkey/graph.
+  **unset**. (If it was **set** but the zkey/graph were missing/corrupt, the prover-service would have
+  **refused to boot** — see the FATAL log — rather than degrade to `StubProver`.)
 - **Fix:** set `CIRCUITS_BUILD_DIR` to a dir containing `verification_final.zkey` + `verification.graph`
   and restart the prover.
 
