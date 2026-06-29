@@ -244,17 +244,19 @@ fn fixed_prove_inputs() -> (String, String, EddsaSigInput, PathBuf, PathBuf, Vec
 }
 
 /// SELF-TEST FIXTURE DUMP: emit the deterministic on-device ZK-prover self-test vector consumed by
-/// the Android app's debug ZK self-test (the Maestro mobile e2e — see `apps/android/maestro/` and
-/// `docs/MOBILE_BUILD.md`). The vector mirrors `fixed_prove_inputs` EXACTLY, so the in-app prover
-/// (`proveVerification` over the bundled zkey + graph) must reproduce `expectedPubSignals` on the
-/// device. Regenerate the committed asset with:
+/// BOTH mobile apps' debug ZK self-test (the Maestro mobile e2e — see `apps/android/maestro/`,
+/// `apps/ios/maestro/`, and `docs/MOBILE_BUILD.md`). The vector mirrors `fixed_prove_inputs`
+/// EXACTLY, so each in-app prover (`proveVerification` over the bundled zkey + graph) must reproduce
+/// `expectedPubSignals` on the device. Regenerate the committed assets with:
 ///   cargo test -p dogtag-standard-rs --features prover dump_selftest_fixture -- --nocapture
-/// (writes `apps/android/app/src/main/assets/zk_selftest.json` — small, committed).
+/// (writes `apps/android/app/src/main/assets/zk_selftest.json` and `apps/ios/DogTag/zk_selftest.json`
+/// — small, committed; the iOS and Android fixtures are byte-for-byte identical).
 #[test]
 fn dump_selftest_fixture() {
     let (wrapped_doc_json, consent_json, eddsa_sig, _zkey, _graph, expected) = fixed_prove_inputs();
-    // The same fixed consent private key `fixed_prove_inputs` signs with; the app re-signs in-app via
-    // `signConsentEddsa(prvHex, …)` and must derive the identical (R8, S), hence the identical proof.
+    // The same fixed consent private key `fixed_prove_inputs` signs with; each app re-signs in-app
+    // via `signConsentEddsa(prvHex, …)` and must derive the identical (R8, S), hence the identical
+    // proof.
     let prv_hex = "0001020304050607080900010203040506070809000102030405060708090001";
     let fixture = serde_json::json!({
         "_comment": "Deterministic on-device ZK-prover self-test vector. Mirrors \
@@ -267,10 +269,17 @@ fn dump_selftest_fixture() {
         "consentAyHex": eddsa_sig.ay_hex,
         "expectedPubSignals": expected,
     });
-    let out = repo_root().join("apps/android/app/src/main/assets/zk_selftest.json");
-    std::fs::write(&out, serde_json::to_string_pretty(&fixture).unwrap() + "\n")
-        .expect("write zk_selftest.json");
-    eprintln!("wrote {}", out.display());
+    let body = serde_json::to_string_pretty(&fixture).unwrap() + "\n";
+    for rel in [
+        "apps/android/app/src/main/assets/zk_selftest.json",
+        "apps/ios/DogTag/zk_selftest.json",
+    ] {
+        let out = repo_root().join(rel);
+        if out.parent().map(|p| p.exists()).unwrap_or(false) {
+            std::fs::write(&out, &body).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
+            eprintln!("wrote {}", out.display());
+        }
+    }
 }
 
 /// LIVE-VERIFIER BISECT DUMP: generate a real `prove_verification` proof over the fixed inputs and

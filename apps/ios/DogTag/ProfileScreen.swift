@@ -18,6 +18,11 @@ struct ProfileScreen: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Profile").font(.system(size: 26, weight: .bold)).foregroundColor(c.onBackground)
 
+                #if DEBUG
+                // Debug-only on-device ZK self-test (drives the real Groth16 prover; never in release).
+                ZkSelfTestCard()
+                #endif
+
                 // ---- Appearance ----
                 SectionTitle(text: "Appearance")
                 Text("Theme").font(.system(size: 13)).foregroundColor(c.muted)

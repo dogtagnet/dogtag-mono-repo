@@ -10,6 +10,7 @@
 		01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A35C55F156CE4480CF763C /* HomeScreen.swift */; };
 		01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21052A141B470C3ACE0815DA /* LocalStore.swift */; };
 		069536323699D7A1734E92A9 /* CredentialDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */; };
+		07F3701552ACB02D59CD8698 /* zk_selftest.json in Resources */ = {isa = PBXBuildFile; fileRef = BAA8FE871C7EFE8AAB555A6C /* zk_selftest.json */; };
 		0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AB4F26FEB853C4B49F7988 /* Consent.swift */; };
 		0FAAB8287B508C32516CFDE9 /* RecordImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0236E3495680C88FA6DA3FD /* RecordImporter.swift */; };
 		20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */; };
@@ -33,6 +34,7 @@
 		D5B0677DB22C2B06A76051B5 /* ProfileScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */; };
 		D9732C3C315A3C5DE6D4A3BE /* QrPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 685707046DC0696308DB5C8D /* QrPayload.swift */; };
 		E8D82ED92A758B3C7A009A2B /* Net.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409155A71A31BD791C0561AD /* Net.swift */; };
+		EF0AD58CCCEF572174247AFF /* ZkSelfTestScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50C45D5C665E86BCBC686B3 /* ZkSelfTestScreen.swift */; };
 		F71346870BDDB878D094DEFE /* BigUInt.swift in Sources */ = {isa = PBXBuildFile; fileRef = D015751D851C794DC4128BC7 /* BigUInt.swift */; };
 		F99C7D3CA52E6CCBE02EB6A5 /* Wallet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35FCC686C0AAD6B317376C7 /* Wallet.swift */; };
 /* End PBXBuildFile section */
@@ -43,7 +45,7 @@
 		21052A141B470C3ACE0815DA /* LocalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStore.swift; sourceTree = "<group>"; };
 		3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagApp.swift; sourceTree = "<group>"; };
 		409155A71A31BD791C0561AD /* Net.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Net.swift; sourceTree = "<group>"; };
-		41B690C8C0288E6D92C49B1A /* verification_final.zkey */ = {isa = PBXFileReference; lastKnownFileType = file; path = verification_final.zkey; sourceTree = "<group>"; };
+		41B690C8C0288E6D92C49B1A /* verification_final.zkey */ = {isa = PBXFileReference; path = verification_final.zkey; sourceTree = "<group>"; };
 		4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileScreen.swift; sourceTree = "<group>"; };
 		49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialDetailScreen.swift; sourceTree = "<group>"; };
 		58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = dogtag_standard.swift; sourceTree = "<group>"; };
@@ -55,11 +57,13 @@
 		85DFF42E4A240519092B9764 /* Keccak256.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keccak256.swift; sourceTree = "<group>"; };
 		8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secp256k1.swift; sourceTree = "<group>"; };
 		9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkeyAsset.swift; sourceTree = "<group>"; };
-		9DE95B9868DF2B01687427E7 /* verification.graph */ = {isa = PBXFileReference; lastKnownFileType = file; path = verification.graph; sourceTree = "<group>"; };
+		9DE95B9868DF2B01687427E7 /* verification.graph */ = {isa = PBXFileReference; path = verification.graph; sourceTree = "<group>"; };
 		A7926F506647E68F6A59FDAF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		BAA8FE871C7EFE8AAB555A6C /* zk_selftest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = zk_selftest.json; sourceTree = "<group>"; };
 		BBCC68456C4002493E9519A5 /* testvectors.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = testvectors.json; sourceTree = "<group>"; };
-		C3AF3EC614608D5979DC48A2 /* DogTag.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DogTag.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3AF3EC614608D5979DC48A2 /* DogTag.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = DogTag.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C48A2C71E910181EB8484314 /* QR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QR.swift; sourceTree = "<group>"; };
+		C50C45D5C665E86BCBC686B3 /* ZkSelfTestScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkSelfTestScreen.swift; sourceTree = "<group>"; };
 		C8AB4F26FEB853C4B49F7988 /* Consent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Consent.swift; sourceTree = "<group>"; };
 		D015751D851C794DC4128BC7 /* BigUInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BigUInt.swift; sourceTree = "<group>"; };
 		D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifyScreen.swift; sourceTree = "<group>"; };
@@ -118,7 +122,9 @@
 				D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */,
 				E35FCC686C0AAD6B317376C7 /* Wallet.swift */,
 				E35067E42CB675A6C8D77F8D /* Wordlist.swift */,
+				BAA8FE871C7EFE8AAB555A6C /* zk_selftest.json */,
 				9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */,
+				C50C45D5C665E86BCBC686B3 /* ZkSelfTestScreen.swift */,
 			);
 			path = DogTag;
 			sourceTree = "<group>";
@@ -172,6 +178,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					E5DC45AFEE7006A70B907F39 = {
+						DevelopmentTeam = AYDBUX9433;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -204,6 +211,7 @@
 				6C880A8C57CA3473792895CB /* testvectors.json in Resources */,
 				A35B34283194640E9BFBB803 /* verification.graph in Resources */,
 				2EACE30CA5B71E766879B375 /* verification_final.zkey in Resources */,
+				07F3701552ACB02D59CD8698 /* zk_selftest.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -235,6 +243,7 @@
 				D0F8DCB58714F356E47D7CBE /* VerifyScreen.swift in Sources */,
 				F99C7D3CA52E6CCBE02EB6A5 /* Wallet.swift in Sources */,
 				49DE2EAF2A416E46CC4633B1 /* Wordlist.swift in Sources */,
+				EF0AD58CCCEF572174247AFF /* ZkSelfTestScreen.swift in Sources */,
 				25DE54A9AD9062ED98EEC699 /* ZkeyAsset.swift in Sources */,
 				3195F181C655ED2791616210 /* dogtag_standard.swift in Sources */,
 			);
@@ -249,7 +258,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 39EXN63988;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",
@@ -277,7 +285,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 39EXN63988;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",

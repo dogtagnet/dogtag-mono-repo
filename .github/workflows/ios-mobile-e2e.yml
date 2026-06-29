@@ -1,0 +1,121 @@
+# iOS mobile end-to-end — on-device ZK proof flow (Maestro).
+#
+# WHAT THIS RUNS
+#   Builds the DogTag iOS debug app (native Rust prover via cargo + UniFFI → DogTagFFI.xcframework)
+#   and runs the Maestro flow `apps/ios/maestro/zk_e2e.yaml`, which exercises the REAL on-device
+#   Groth16 prover (issuance/import trust core → on-device prove → public-signal verify → consent-key
+#   bind) on an iOS Simulator. See apps/ios/AGENTS.md and docs/MOBILE_BUILD.md.
+#
+# WHY `workflow_dispatch` ONLY (not push/PR)
+#   This job has hard requirements GitHub-HOSTED runners cannot satisfy today, so wiring it to push/PR
+#   would produce a perpetually-red check — a faked signal. It is therefore manual-only, and intended
+#   for a SELF-HOSTED Apple-Silicon (arm64) macOS runner that meets all of:
+#
+#     1. macOS + Xcode + an iOS Simulator. The DogTag app builds with xcodegen + xcodebuild and runs
+#        on the Simulator. GitHub's hosted macOS runners are usable in principle, but see (2)/(3).
+#     2. An *arm64* iOS Simulator slice of the prover. DogTagFFI.xcframework here is built for
+#        `aarch64-apple-ios-sim` only; an Apple-Silicon host runs that slice natively. (Add an
+#        `aarch64-apple-ios` device slice + signing if you target a physical device.)
+#     3. The proving artifacts. `verification_final.zkey` (~65 MB) and `verification.graph` (~3 MB)
+#        are gitignored (see apps/.gitignore) and NOT in a checkout. They must be provided to the
+#        runner (cache, artifact, release asset, or self-hosted working tree) — see the vendor step.
+#
+#   On a runner that meets all three, this workflow goes green exactly as the local run does.
+name: ios-mobile-e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label set (must provide Xcode + an arm64 iOS Simulator + the proving artifacts)"
+        required: false
+        default: "self-hosted,macOS,ARM64"
+      simulator:
+        description: "iOS Simulator device name to boot"
+        required: false
+        default: "iPhone 16"
+
+jobs:
+  ios-zk-e2e:
+    # Comma-separated label set from the dispatch input (default: a self-hosted Apple-Silicon Mac).
+    runs-on: ${{ fromJSON(format('[{0}]', join(split(inputs.runner, ','), ','))) }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust + iOS simulator target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-apple-ios-sim
+
+      - name: Install xcodegen + Maestro
+        run: |
+          brew install xcodegen || true
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+
+      # The witness graph is built from circuits/verification.circom by iden3's build-circuit (it is
+      # NOT in the published circom-witnesscalc crate). Skipped if already vendored (self-hosted).
+      - name: Ensure proving artifacts (zkey + witness graph)
+        env:
+          # Optional: a base URL / cache that holds the two gitignored blobs for this circuit commit.
+          DOGTAG_ARTIFACTS_URL: ${{ secrets.DOGTAG_ARTIFACTS_URL }}
+        run: |
+          set -euo pipefail
+          zkey=circuits/build/verification_final.zkey
+          graph=circuits/build/verification.graph
+          if [ -s "$zkey" ] && [ -s "$graph" ]; then
+            echo "Proving artifacts already present (self-hosted working tree)."
+          elif [ -n "${DOGTAG_ARTIFACTS_URL:-}" ]; then
+            mkdir -p circuits/build
+            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification_final.zkey" -o "$zkey"
+            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification.graph"      -o "$graph"
+          else
+            echo "::error::Missing $zkey / $graph. They are gitignored; provide them on a self-hosted" \
+                 "runner's working tree or set the DOGTAG_ARTIFACTS_URL secret. See docs/MOBILE_BUILD.md §4."
+            exit 1
+          fi
+          # Vendor into the app bundle (gitignored copies, exactly like docs/MOBILE_BUILD.md §4).
+          cp "$zkey"  apps/ios/DogTag/verification_final.zkey
+          cp "$graph" apps/ios/DogTag/verification.graph
+
+      - name: Build the on-device prover xcframework (cargo → UniFFI → DogTagFFI.xcframework)
+        run: |
+          set -euo pipefail
+          # 1. Static lib for the arm64 iOS Simulator, with the on-device prover feature.
+          cargo build -p dogtag-standard-rs --features prover --release \
+            --target aarch64-apple-ios-sim --lib
+          # 2. Regenerate the Swift bindings (header + modulemap) from a host build of the same crate,
+          #    keeping the committed apps/ios/DogTag/dogtag_standard.swift ABI-consistent.
+          cargo build -p dogtag-standard-rs --features prover --release --lib
+          gen="$RUNNER_TEMP/dtffi_gen"; rm -rf "$gen"; mkdir -p "$gen"
+          cargo run --features uniffi/cli --release --bin uniffi-bindgen -- \
+            generate --library target/release/libdogtag_standard.dylib --language swift --out-dir "$gen"
+          cp "$gen/dogtag_standard.swift" apps/ios/DogTag/dogtag_standard.swift
+          # 3. Assemble the xcframework (simulator slice).
+          hdr="$RUNNER_TEMP/dtffi_headers"; rm -rf "$hdr"; mkdir -p "$hdr"
+          cp "$gen/dogtag_standardFFI.h" "$hdr/"
+          cp "$gen/dogtag_standardFFI.modulemap" "$hdr/module.modulemap"
+          rm -rf apps/ios/DogTagFFI.xcframework
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios-sim/release/libdogtag_standard.a -headers "$hdr" \
+            -output apps/ios/DogTagFFI.xcframework
+
+      - name: Generate the Xcode project + build the debug app
+        run: |
+          set -euo pipefail
+          ( cd apps/ios && xcodegen )
+          udid=$(xcrun simctl list devices available | awk -F'[()]' '/${{ inputs.simulator }} \(/{print $2; exit}')
+          [ -n "$udid" ] || { echo "::error::simulator '${{ inputs.simulator }}' not found"; exit 1; }
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          ( cd apps/ios && xcodebuild -project DogTag.xcodeproj -scheme DogTag -configuration Debug \
+              -sdk iphonesimulator -destination "platform=iOS Simulator,id=$udid" \
+              -derivedDataPath "$RUNNER_TEMP/dtbuild" build )
+          xcrun simctl install "$udid" \
+            "$RUNNER_TEMP/dtbuild/Build/Products/Debug-iphonesimulator/DogTag.app"
+          echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
+
+      - name: Run Maestro mobile e2e on the iOS Simulator
+        run: |
+          export PATH="$PATH:$HOME/.maestro/bin"
+          maestro test apps/ios/maestro/zk_e2e.yaml
