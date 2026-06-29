@@ -225,16 +225,19 @@ at contribution time — e.g. a future Bitcoin block hash or a drand round) and 
 cd circuits
 bash scripts/ceremony.sh finalize build/ceremony_final.zkey
 #  -> exports circuits/Groth16Verifier.sol
+#  -> exports circuits/build/verification_key.json   (for independent `snarkjs groth16 verify`)
 #  -> copies build/verification_final.zkey   (the ~65 MB production key to vendor into the apps in §2.4)
 #  -> prints the final zkey sha256 to PIN (CI + the prover image)
 ```
 
-Finalize produces three things you carry forward:
+Finalize produces these things you carry forward:
 
 1. `circuits/Groth16Verifier.sol` — the verifier contract for **this** key.
 2. `circuits/build/verification_final.zkey` — the production proving key (re-vendor into both apps, §2.4,
    and into the owner's prover-service, §5).
-3. A pinned **sha256** of the final zkey — publish it in the transcript, pin it in CI and the prover image.
+3. `circuits/build/verification_key.json` — the JSON verification key so anyone can independently run
+   `snarkjs groth16 verify`; publish it alongside the transcript.
+4. A pinned **sha256** of the final zkey — publish it in the transcript, pin it in CI and the prover image.
 
 **STOP: do not use the testnet zkey in production.** The testnet key's sha256 is recorded in
 [CEREMONY_TRANSCRIPT.md](./CEREMONY_TRANSCRIPT.md) (single-operator). If your apps/prover are serving that

@@ -77,7 +77,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 - **[`docs/implementation.md`](docs/implementation.md)** — per-function pseudocode, contract bodies, endpoints, Docker, deploy (§11 = normative corrected code).
 - **[`docs/BUILD_PROMPT.md`](docs/BUILD_PROMPT.md)** — the phased build-out prompt.
 - **[`docs/DEPLOY.md`](docs/DEPLOY.md)** — ROAX deploy runbook (already deployed; Gate B prechecks, ceremony, Docker bring-up).
-- **[`docs/CEREMONY.md`](docs/CEREMONY.md)** / **[`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md)** — ZK trusted-setup (prod runbook + the testnet transcript).
+- **[`docs/CEREMONY_RUNBOOK.md`](docs/CEREMONY_RUNBOOK.md)** / **[`docs/CEREMONY.md`](docs/CEREMONY.md)** / **[`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md)** — ZK trusted-setup (the captain-fill-in production runbook + concise version + the testnet transcript).
 - **[`docs/DPIA.md`](docs/DPIA.md)** — mandatory Data Protection Impact Assessment.
 - **[`docs/research/`](docs/research)** — research briefs + security audits behind every decision.
 
