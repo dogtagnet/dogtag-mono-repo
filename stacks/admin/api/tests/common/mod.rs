@@ -38,7 +38,7 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         issuer_name: "DogTag Central".to_string(),
         issuer_domain: "dogtag.example".to_string(),
         profile_document_store: SBT.to_string(),
-        admin_password: ADMIN_PW.to_string(),
+        admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
     };
     let state = AppState {

@@ -187,9 +187,11 @@ async fn admin_login(
             "too many attempts; try again later",
         );
     }
-    if !auth::verify_password(&body.password, &auth::hash_password(&st.cfg.admin_password))
-        && body.password != st.cfg.admin_password
-    {
+    // Real password-hash verify against the STORED hash (audit L4). The previous code hashed the
+    // plaintext fresh on every call and fell back to a plaintext `!=` compare — cosmetic hashing.
+    // `verify_password` re-derives the salted/iterated hash of the submitted password and compares it
+    // constant-time against the stored "<salt_hex>$<hash_hex>".
+    if !auth::verify_password(&body.password, &st.cfg.admin_password_hash) {
         st.ratelimit.record_failure(&ip);
         return err(StatusCode::UNAUTHORIZED, "bad password");
     }
