@@ -185,6 +185,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `BUSINESS_TYPE` | groomer | run `vet-api` as groomer | `groomer` | `groomer` |
 | `CENTRAL_BASE_URL` | vet, groomer | central api base for HMAC events | `http://localhost:39742` | `https://api.<DOMAIN>` (your admin stack) |
 | `CIRCUITS_BUILD_DIR` | **prover only** | load real ArkProver vs StubProver | `circuits/build` | set **only** on the prover-service (§8) |
+| `EXPECTED_ZKEY_SHA256` | **prover only** | override the crate's pinned testnet zkey hash | unset (enforce testnet hash) | leave **unset** with the bundled testnet zkey; set to the ceremony zkey's sha256 only if you ship a different key (§8) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALENDAR_ID` | vet, groomer | Phase-7 calendar OAuth | unset / `primary` | optional |
 
 > **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`, `VERIFICATION_REGISTRY_ADDR`,
@@ -512,10 +513,12 @@ cargo build --release -p vet-api --features prover --target-dir target/prover
 **Run.** Set **`CIRCUITS_BUILD_DIR`** to a directory holding **`verification_final.zkey`** +
 **`verification.graph`** so the real **ArkProver** loads. If `CIRCUITS_BUILD_DIR` is unset, the binary
 **silently loads `StubProver`**, which emits placeholder proofs that are **NOT chain-valid**. If it is
-**set but the real prover fails to load** (missing/corrupt zkey or graph), the process is **fail-closed**
-and **exits with a FATAL error** rather than degrading to `StubProver` — so a misconfigured prover-service
-never silently ships forgeable proofs. Also pass the usual chain env (`ROAX_RPC` and the `*_ADDR`
-contract addresses).
+**set but the real prover fails to load** (missing/corrupt zkey or graph, **or a zkey whose sha256 does
+not match the pinned hash** — audit M4), the process is **fail-closed** and **exits with a FATAL error**
+rather than degrading to `StubProver` — so a misconfigured prover-service never silently ships forgeable
+proofs. REMOTE ships the **bundled testnet zkey**, which matches the crate's pinned hash, so you leave
+`EXPECTED_ZKEY_SHA256` unset; set it to the zkey's sha256 only if you swap in a different proving key.
+Also pass the usual chain env (`ROAX_RPC` and the `*_ADDR` contract addresses).
 
 ```bash
 CIRCUITS_BUILD_DIR=/circuits/build \
