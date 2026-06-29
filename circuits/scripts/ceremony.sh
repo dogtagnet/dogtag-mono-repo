@@ -75,14 +75,17 @@ case "$cmd" in
     "$SNARKJS" zkey verify "$R1CS" "$PTAU" "$FINAL"   # must print 'ZKey Ok!'
     echo "Exporting Groth16Verifier.sol…"
     "$SNARKJS" zkey export solidityverifier "$FINAL" "$ROOT/Groth16Verifier.sol"
+    echo "Exporting verification_key.json (lets anyone run 'snarkjs groth16 verify')…"
+    "$SNARKJS" zkey export verificationkey "$FINAL" "$BUILD/verification_key.json"
     cp "$FINAL" "$BUILD/verification_final.zkey"      # the prover loads this name
     HASH=$(shasum -a 256 "$FINAL" | awk '{print $1}')
     echo
     echo "CEREMONY COMPLETE."
     echo "  final zkey sha256: $HASH   <-- PIN THIS in CI + the prover image (§11.8(f))"
     echo "  verifier:          circuits/Groth16Verifier.sol"
+    echo "  vkey:              circuits/build/verification_key.json"
     echo "Next (coordinator): copy the verifier into contracts/src/, deploy it, and wire it into the"
-    echo "  live VerificationRegistry via the 2-day timelock — see docs/CEREMONY.md §Deploy."
+    echo "  live VerificationRegistry via the 2-day timelock — see docs/CEREMONY_RUNBOOK.md §5."
     ;;
 
   *)
