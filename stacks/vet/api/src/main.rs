@@ -115,8 +115,18 @@ async fn main() {
 
     // Choose the prover: if CIRCUITS_BUILD_DIR points at a circuits `build` dir, load the REAL
     // ark-circom Groth16 prover; otherwise fall back to the StubProver (ZK control-flow only).
+    // EXPECTED_ZKEY_SHA256, when set, overrides the crate's hardcoded testnet zkey hash so a
+    // production ceremony output (a different zkey) is a pure config swap — not a code change that
+    // would otherwise make this fail-closed boot path refuse to start.
+    let expected_zkey = std::env::var("EXPECTED_ZKEY_SHA256")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let prover: Arc<dyn ProverClient> = match std::env::var("CIRCUITS_BUILD_DIR") {
-        Ok(dir) if !dir.is_empty() => match ArkProver::load(&dir) {
+        Ok(dir) if !dir.is_empty() => match expected_zkey
+            .as_deref()
+            .map(|hash| ArkProver::load_with_expected_zkey(&dir, hash))
+            .unwrap_or_else(|| ArkProver::load(&dir))
+        {
             Ok(p) => {
                 tracing::info!("loaded real Groth16 prover from {dir} (zkey {})", p.zkey_hash_hex());
                 Arc::new(p)

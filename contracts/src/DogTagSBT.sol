@@ -81,13 +81,16 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, EIP712, IERC5192 {
         emit StatusChanged(id, f, s, msg.sender, reason);
     }
 
-    /// @notice Lost-key / sale recovery — PRESERVES tokenId + issuerOf so referencing creds survive.
+    /// @notice Consensual rebind (sale / key rotation) — PRESERVES tokenId + issuerOf so referencing
+    /// creds survive.
     /// @dev Requires TWO EIP-712 authorizations, both binding chainId + this contract (domain) and the
     /// per-token nonce + deadline: `currentOwnerSig` is the CURRENT holder consenting to the rebind, and
     /// `ownerSig` is the DESTINATION accepting it. RECOVERY_ROLE can only EXECUTE a recovery the current
     /// holder has explicitly authorized — it can no longer unilaterally confiscate a soulbound token
-    /// (audit H1). A genuinely lost key (holder cannot sign) is therefore an admin/AUTHORITY concern,
-    /// not a RECOVERY_ROLE one.
+    /// (audit H1). This intentionally means there is NO on-chain rebind for a genuinely lost key (a
+    /// holder who can no longer sign): re-enabling that would reintroduce the H1 confiscation vector.
+    /// The only admin action for such a token is `burn` (DEFAULT_ADMIN, GDPR-erasure), after which the
+    /// issuer re-mints a fresh tokenId to the new wallet.
     function recover(
         uint256 id,
         address newOwner,
