@@ -54,8 +54,9 @@ It all runs against the **live ROAX testnet** (chainId **135**, gas token **PLAS
 >   (and `ROAX_RPC`). `demo-up.sh` wires this as the central stack's signer; `demo-bootstrap.sh` and
 >   `demo-prepare-phone.sh` also use it to pay gas. **`contracts/.env` is LOCAL-only.**
 > - **a populated `circuits/build/`** — must contain `verification_final.zkey` **and** `verification.graph`
->   so the prover-service loads the real **ArkProver** (without them it silently loads the StubProver, whose
->   proofs are **not chain-valid**).
+>   so the prover-service loads the real **ArkProver**. `demo-up.sh` sets `CIRCUITS_BUILD_DIR=circuits/build`
+>   on the prover, so if those files are missing the prover-service is **fail-closed** and **exits on boot**
+>   (it never degrades to the chain-invalid StubProver). Build them first (§2.2 in PREREQUISITES).
 
 Run this single block to confirm the toolchain and inputs are present.
 

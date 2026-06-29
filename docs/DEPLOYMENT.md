@@ -164,6 +164,7 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 | **ephemeral tunnel** | A free `trycloudflare.com` URL: changes every run and drops overnight. After any change, re-boot with the new vet/groomer URLs and re-set the phone's `prover_api`. |
 | **field-hashed dogTagId** | The on-chain id is `field_of_value(handle)` — the SBT is owned at `ownerOf(field_of_value(dogTagId))`. The human-typed handle is hashed into the field element used as the on-chain key. |
 | **MemStore vs MongoStore** | MemStore = in-memory, ephemeral (records/sessions/op-sessions lost on restart) — the LOCAL default. MongoStore = persistent, **fail-closed** (api refuses to boot if `MONGO_URI` is set but unreachable) — REMOTE/PROD. |
+| **fail-closed boot** | In production (neither `DEMO_MODE` nor `VITE_DEMO_MODE` set) the api binary **refuses to start** on an unset/dev-default secret (`OPERATOR_PASSWORD`/`ADMIN_PASSWORD`/`CENTRAL_HMAC_SECRET`, or `ADMIN_PASSWORD`/`ADMIN_PRIVATE_KEY` on admin), on an unreachable `MONGO_URI`, or — for the prover-service — when `CIRCUITS_BUILD_DIR` is set but the real ArkProver fails to load. It exits with a `FATAL:` log rather than booting degraded. |
 
 ---
 

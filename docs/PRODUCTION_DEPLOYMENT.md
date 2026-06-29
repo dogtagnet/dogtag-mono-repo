@@ -318,6 +318,12 @@ openssl rand -hex 32
 > appointment events). It is **distinct** from the per-business `hmacSecret` that `register_business`
 > returns **once** at registration — keep both; they are not interchangeable.
 
+> **Fail-closed boot.** In production (neither `DEMO_MODE` nor `VITE_DEMO_MODE` set) each api binary
+> **refuses to start** if any of these is unset/empty or still equal to its built-in dev default
+> (`OPERATOR_PASSWORD` / `ADMIN_PASSWORD` / `CENTRAL_HMAC_SECRET` on vet+groomer; `ADMIN_PASSWORD` /
+> `ADMIN_PRIVATE_KEY` on admin). It exits with a `FATAL:` message naming every offending secret, so a
+> half-rotated `.env` can never boot a production stack on a demo credential.
+
 ### 4.2 Dedicated funded admin EOA (never the demo deployer)
 
 `ADMIN_PRIVATE_KEY` / `ADMIN_ADDRESS` in `stacks/admin/.env` is the on-chain signer that broadcasts
@@ -383,7 +389,8 @@ cargo build --release -p vet-api --features prover --target-dir target/prover
 
 # Run it with the PRODUCTION circuits dir so the REAL ArkProver loads (must contain the §3 ceremony
 # verification_final.zkey + verification.graph). If CIRCUITS_BUILD_DIR is UNSET it silently loads the
-# StubProver, whose proofs are NOT chain-valid:
+# StubProver, whose proofs are NOT chain-valid. If it is SET but the real prover fails to load
+# (missing/corrupt zkey or graph), the service is fail-closed and EXITS with a FATAL error instead:
 CIRCUITS_BUILD_DIR=<path to circuits/build with the ceremony zkey+graph> \
 ROAX_RPC=<NEW_RPC> \
 PORT=<owner-chosen> \

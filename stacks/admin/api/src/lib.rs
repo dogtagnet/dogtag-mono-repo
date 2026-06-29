@@ -22,6 +22,7 @@ pub mod crypto;
 pub mod dns;
 pub mod erasure;
 pub mod routes;
+pub mod startup;
 pub mod store;
 pub mod verify;
 pub mod verify_relay;

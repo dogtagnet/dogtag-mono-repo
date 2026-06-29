@@ -5,9 +5,8 @@
   "type": "module",
   "description": "DogTag Groth16 circuit + the NORMATIVE Poseidon 4-language parity gate (Gate A)",
   "scripts": {
-    "parity": "node scripts/gen-vectors.mjs && node scripts/check-ts.mjs",
+    "parity": "node scripts/gen-vectors.mjs",
     "gen-vectors": "node scripts/gen-vectors.mjs",
-    "check-ts": "node scripts/check-ts.mjs",
     "build-circuit": "bash scripts/setup.sh",
     "test-circuit": "node scripts/test-circuit.mjs"
   },

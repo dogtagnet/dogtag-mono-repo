@@ -175,8 +175,9 @@ ls -la circuits/build/verification_final.zkey circuits/build/verification.graph
 - **Symptom:** `ls: … No such file or directory`.
 - **Likely cause:** the circuit hasn't been built / the artifacts weren't checked out.
 - **Fix:** build them (`pnpm --filter @dogtag/circuits build-circuit`) or obtain them from the
-  ceremony output. Without these, the prover-service silently loads the **StubProver** (proofs are
-  NOT chain-valid) and the apps cannot prove on-device.
+  ceremony output. Without these, a prover-service started **without** `CIRCUITS_BUILD_DIR` silently loads
+  the **StubProver** (proofs are NOT chain-valid); one started **with** `CIRCUITS_BUILD_DIR` pointing at the
+  empty dir is **fail-closed** and **exits on boot**. Either way the apps cannot prove on-device.
 
 ### 2.3 REMOTE / PROD — `stacks/<x>/.env`
 

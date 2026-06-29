@@ -1123,7 +1123,10 @@ struct ProfileIssueStartReq {
 /// (not the raw numeric handle), so the owner's later ZK export passes `ownerOf(pub[0])`. The raw handle
 /// stays the operator-facing id + the credential's `dogTagId` leaf (which the circuit field-hashes to
 /// exactly this). Mirrors the `field-hash` bin / `dog_tag_id_field_hex` FFI.
-fn onchain_dog_tag_id(handle: &str) -> Result<String, String> {
+///
+/// Public so integration tests resolve the SBT under the SAME key the mint route uses (the field
+/// element), rather than the raw handle — keeping the test bound to production behaviour.
+pub fn onchain_dog_tag_id(handle: &str) -> Result<String, String> {
     let scalar =
         dogtag_standard::wrap::scalar_from_packed(dogtag_standard::types::TypeTag::Integer, handle)
             .map_err(|e| e.to_string())?;

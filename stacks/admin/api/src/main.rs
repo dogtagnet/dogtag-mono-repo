@@ -42,13 +42,40 @@ async fn main() {
         admin_signer_index: 0,
     };
 
+    // Fail-closed (audit H2): refuse to boot in production with an unset/dev-default ADMIN_PASSWORD or
+    // an unset ADMIN_PRIVATE_KEY (they guard whitelisting, erasure, and every on-chain admin write).
+    // The local/demo path (DEMO_MODE / VITE_DEMO_MODE set) keeps the convenient defaults.
+    let admin_private_key = std::env::var("ADMIN_PRIVATE_KEY").unwrap_or_default();
+    let demo = admin_api::startup::is_demo_mode();
+    if let Err(e) = admin_api::startup::validate_production_secrets(
+        demo,
+        &[
+            admin_api::startup::SecretSpec {
+                name: "ADMIN_PASSWORD",
+                value: cfg.admin_password.as_str(),
+                dev_default: "admin-pw",
+            },
+            admin_api::startup::SecretSpec {
+                name: "ADMIN_PRIVATE_KEY",
+                value: admin_private_key.as_str(),
+                dev_default: "",
+            },
+        ],
+    ) {
+        eprintln!("FATAL: {e}");
+        std::process::exit(1);
+    }
+
     // Wire the admin/WHITELIST_ADMIN+ISSUER signer at the configured index from ADMIN_PRIVATE_KEY so
     // whitelistFor/delistFor/mint can broadcast on-chain. Without this the chain client has no signer
     // and every admin write fails with "no signer for index". (The custody stacks unlock their own
     // signers; the central stack's signer is a static deployer key supplied at boot.)
     let chain = AlloyChain::new(rpc_url).with_chain_id(chain_id);
-    if let Ok(pk_hex) = std::env::var("ADMIN_PRIVATE_KEY") {
-        let pk_hex = pk_hex.trim().strip_prefix("0x").unwrap_or(pk_hex.trim());
+    if !admin_private_key.trim().is_empty() {
+        let pk_hex = admin_private_key
+            .trim()
+            .strip_prefix("0x")
+            .unwrap_or(admin_private_key.trim());
         match hex::decode(pk_hex) {
             Ok(bytes) if bytes.len() == 32 => {
                 let mut pk = [0u8; 32];
