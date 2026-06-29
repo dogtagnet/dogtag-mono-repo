@@ -72,7 +72,10 @@ async fn main() {
     // signers; the central stack's signer is a static deployer key supplied at boot.)
     let chain = AlloyChain::new(rpc_url).with_chain_id(chain_id);
     if !admin_private_key.trim().is_empty() {
-        let pk_hex = admin_private_key.trim().strip_prefix("0x").unwrap_or(admin_private_key.trim());
+        let pk_hex = admin_private_key
+            .trim()
+            .strip_prefix("0x")
+            .unwrap_or(admin_private_key.trim());
         match hex::decode(pk_hex) {
             Ok(bytes) if bytes.len() == 32 => {
                 let mut pk = [0u8; 32];

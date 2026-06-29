@@ -61,7 +61,11 @@ mod tests {
     use super::*;
 
     fn spec<'a>(name: &'a str, value: &'a str, def: &'a str) -> SecretSpec<'a> {
-        SecretSpec { name, value, dev_default: def }
+        SecretSpec {
+            name,
+            value,
+            dev_default: def,
+        }
     }
 
     #[test]

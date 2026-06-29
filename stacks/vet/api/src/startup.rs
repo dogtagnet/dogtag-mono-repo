@@ -60,21 +60,37 @@ mod tests {
     use super::*;
 
     fn spec<'a>(name: &'a str, value: &'a str, def: &'a str) -> SecretSpec<'a> {
-        SecretSpec { name, value, dev_default: def }
+        SecretSpec {
+            name,
+            value,
+            dev_default: def,
+        }
     }
 
     #[test]
     fn demo_mode_skips_all_checks() {
         // Even all-default secrets are fine in demo mode.
-        let s = [spec("OPERATOR_PASSWORD", "operator-dev-password", "operator-dev-password")];
+        let s = [spec(
+            "OPERATOR_PASSWORD",
+            "operator-dev-password",
+            "operator-dev-password",
+        )];
         assert!(validate_production_secrets(true, &s).is_ok());
     }
 
     #[test]
     fn production_rejects_dev_defaults() {
         let s = [
-            spec("OPERATOR_PASSWORD", "operator-dev-password", "operator-dev-password"),
-            spec("CENTRAL_HMAC_SECRET", "a-real-secret", "dev-central-hmac-secret"),
+            spec(
+                "OPERATOR_PASSWORD",
+                "operator-dev-password",
+                "operator-dev-password",
+            ),
+            spec(
+                "CENTRAL_HMAC_SECRET",
+                "a-real-secret",
+                "dev-central-hmac-secret",
+            ),
         ];
         let err = validate_production_secrets(false, &s).unwrap_err();
         assert!(err.contains("OPERATOR_PASSWORD"), "{err}");
@@ -94,7 +110,11 @@ mod tests {
         let s = [
             spec("OPERATOR_PASSWORD", "s3cret-op", "operator-dev-password"),
             spec("ADMIN_PASSWORD", "s3cret-admin", "admin-dev-password"),
-            spec("CENTRAL_HMAC_SECRET", "s3cret-hmac", "dev-central-hmac-secret"),
+            spec(
+                "CENTRAL_HMAC_SECRET",
+                "s3cret-hmac",
+                "dev-central-hmac-secret",
+            ),
         ];
         assert!(validate_production_secrets(false, &s).is_ok());
     }
