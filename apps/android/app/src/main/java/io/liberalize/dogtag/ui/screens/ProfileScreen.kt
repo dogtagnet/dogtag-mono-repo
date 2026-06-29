@@ -214,6 +214,14 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             KV("ConsentKeyRegistry", roax.consentKeyRegistry.take(16) + "…")
             KV("IssuerRegistry", roax.issuerRegistry.take(16) + "…")
         }
+
+        // ---- Developer · on-device ZK self-test (debug builds only) ----
+        // Exercises the REAL on-device Groth16 prover end to end (see [ZkSelfTestCard]); the Maestro
+        // mobile e2e drives this. Never present in a release build.
+        if (io.liberalize.dogtag.BuildConfig.DEBUG) {
+            ZkSelfTestCard()
+        }
+
         Spacer(Modifier.size(24.dp))
     }
 }
