@@ -96,22 +96,35 @@ node_modules/.bin/snarkjs groth16 verify build/verification_key.json <public.jso
 `snarkjs zkey verify` printing **`ZKey Ok!`** and listing the contribution hashes **in the same order**
 as the table above is the end-to-end proof the chain is intact.
 
-## On-chain wiring (HONEST status — swap deferred to the captain)
-This v2 ceremony key is **vendored into the repo** (prover crate pin, both app bundles, prover-service)
-but the **live on-chain `Groth16Verifier` has NOT been swapped yet**. As of this run:
+## On-chain wiring (CUTOVER STARTED — deploy + propose done, execute pending the 2-day timelock)
+This v2 ceremony key is **vendored into the repo** (prover crate pin, both app bundles, prover-service).
+The captain has **authorized the cutover**; the v2 verifier has now been **deployed and proposed** on the
+live registry, **starting the 2-day timelock**. The final `executeZkVerifier()` swap is **NOT yet done** —
+it is deferred to firstmate/captain after the wait. As of this run:
 
-- Live `VerificationRegistry` `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` still points at the **prior**
-  verifier `0x138b433071Ad806E841B5AD53623290a9bf21761` (the earlier testnet key, sha
-  `45d0b6fb…03e`). A proof from the v2 key will **not** be accepted on-chain until the verifier is
-  swapped — so `scripts/e2e-zk.sh` (which hits the LIVE chain) stays on the old verifier until then;
-  local validation uses the Rust prover self-verify oracle (`cargo test -p dogtag-prover-rs`),
-  `snarkjs groth16 verify`, and the on-chain `forge test` (`ZkIntegration.t.sol`) against the new
-  verifier source + regenerated fixture.
+- **v2 `Groth16Verifier` DEPLOYED** at `0xEEFCfAF026931b7325472A88fd14Ee780Da13559`
+  (zkey sha `9e3636b9…d992`), ROAX `--legacy`, deploy tx
+  `0x8204fb78957a87d5cdc775012b89cdc516cfed0755ab6d8501b968848cfa3f54` (block 88968, status success,
+  codesize 1932 bytes).
+- **`proposeZkVerifier(0xEEFCfAF0…)` SENT** on the live `VerificationRegistry`
+  `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` (single deployer EOA / DEFAULT_ADMIN), propose tx
+  `0xa0d0d1f94a65716999bccccb1b1e33c92a78d797bafaa87f9f654278fe4e08ce` (block 88971, status success).
+  This **started ZK_TIMELOCK = 2 days**: `zkVerifierEta = 1782988652` → earliest `executeZkVerifier()`
+  at **`2026-07-02T10:37:32Z`**. Verified post-state: `pendingZkVerifier() == 0xEEFCfAF0…`,
+  `zkVerifier()` STILL `0x138b433071Ad806E841B5AD53623290a9bf21761`.
+- **`executeZkVerifier()` HAS NOT BEEN CALLED** — the timelock is cancellable until then; the swap is the
+  irreversible step and is left for firstmate/captain after ≥2 days.
+- Until execute, the live registry still verifies with the **prior** verifier
+  `0x138b433071Ad806E841B5AD53623290a9bf21761` (the earlier testnet key, sha `45d0b6fb…03e`). A proof from
+  the v2 key will **not** be accepted on-chain until the swap executes — so `scripts/e2e-zk.sh` (which hits
+  the LIVE chain) stays on the old verifier until then; local validation uses the Rust prover self-verify
+  oracle (`cargo test -p dogtag-prover-rs`), `snarkjs groth16 verify`, and the on-chain `forge test`
+  (`ZkIntegration.t.sol`) against the new verifier source + regenerated fixture.
 - **Governance stays the single deployer EOA** (`0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`) for
   testnet — the multisig migration was deferred by the captain.
 
-The deploy + 2-day-timelock swap is an **irreversible on-chain action pending the captain's go** and the
-funded deployer key. Exact commands (single deployer EOA, ROAX `--legacy`):
+The deploy + propose above are done. The remaining **`executeZkVerifier()` is the irreversible on-chain
+swap** and runs after the timelock. Exact commands (single deployer EOA, ROAX `--legacy`):
 
 ```bash
 # 1. Stage the v2 verifier source (already done in this PR) + build:
