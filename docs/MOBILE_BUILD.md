@@ -201,7 +201,7 @@ cp circuits/build/verification.graph apps/android/app/src/main/assets/verificati
 ```bash
 ls -l apps/ios/DogTag/verification_final.zkey \
       apps/android/app/src/main/assets/verification_final.zkey
-# → two lines, each ~65 MB (≈ 64570945 bytes)
+# → two lines, each ~65 MB (≈ 64571044 bytes for the v2-ceremony zkey, sha256 9e3636b9…d992)
 ls -l apps/ios/DogTag/verification.graph \
       apps/android/app/src/main/assets/verification.graph
 # → two lines, each ~3 MB (≈ 2991853 bytes)

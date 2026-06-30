@@ -55,7 +55,7 @@ pub const NUM_PUBLIC: usize = 7;
 /// (audit M4). A deployment pinning a DIFFERENT zkey (e.g. a production ceremony output) loads it via
 /// [`Prover::load_with_expected_zkey`].
 pub const EXPECTED_ZKEY_SHA256_HEX: &str =
-    "45d0b6fb78591548f5763e86f614d1c04cf48a80d35445d1740c0ba561fdc03e";
+    "9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992";
 
 /// Errors that can arise while loading artifacts or proving.
 #[derive(Debug, thiserror::Error)]

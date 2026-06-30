@@ -10,7 +10,7 @@
   "VerificationRegistry": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
   "VerificationRegistry_preMetaTx_legacy": "0x19C1B5f80c41EE864149500bdF998Dd18aec2a43",
   "VerificationRegistry_zk0_legacy": "0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8",
-  "_zk_ceremony": "testnet self-run; zkey sha256 45d0b6fb78591548f5763e86f614d1c04cf48a80d35445d1740c0ba561fdc03e; see docs/CEREMONY_TRANSCRIPT.md",
+  "_zk_ceremony": "Repo ships testnet self-run v2 (public Hermez ptau + 3 contributions + drand beacon round 6245947); zkey sha256 9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992; see docs/CEREMONY_TRANSCRIPT.md. ON-CHAIN Groth16Verifier 0x138b433071Ad806E841B5AD53623290a9bf21761 still verifies the PRIOR key (sha 45d0b6fb...03e); deploy + 2-day-timelock swap to the v2 verifier is PENDING captain go (single deployer EOA) - see docs/PRODUCTION_DEPLOYMENT.md §3.2.",
   "admin": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
   "chainId": 135,
   "demo_clones": {
