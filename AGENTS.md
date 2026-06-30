@@ -9,7 +9,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cargo check --workspace` / `cargo build` — Rust workspace: `dogtag-standard-rs`, `dogtag-prover-rs`, `vet-api`, `admin-api`.
 - `cargo test -p dogtag-standard-rs` — trust-core crypto + cross-language parity vectors.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge build && forge test` — 44 tests incl. `ZkIntegration.t.sol` (real Groth16 proof verified on-chain) and `Verification.t.sol`.
+- `cd contracts && forge test` — 55 tests incl. `ZkIntegration.t.sol` (real Groth16 proof verified on-chain), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" — a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
 - `cargo test -p vet-api --test verify_onchain` — on-chain integration (self-spawns anvil). The ZK-path
@@ -30,6 +30,12 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **single-operator testnet** trusted setup — NOT production-secure (run `circuits/scripts/ceremony.sh` with ≥3 independent contributors before mainnet).
 - `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
+
+### Governance / admin (audit H-3)
+- Governed contracts split admin two ways: `IssuerRegistry` (3-day), `VerificationRegistry` (2-day), and `DogTagSBT` (3-day) use OZ `AccessControlDefaultAdminRules` (two-step `begin`/`acceptDefaultAdminTransfer` + timelock); `DogTagIssuerFactory` uses `Ownable2Step`. `DogTagIssuer` clones have no own admin — they read `IssuerRegistry.hasRole(0x00)`. `ConsentKeyRegistry`/`Groth16Verifier`/`Poseidon6` have no admin.
+- `DogTagSBT` inherits BOTH `AccessControlEnumerable` and `AccessControlDefaultAdminRules`, so it must explicitly override `grantRole`/`revokeRole`/`renounceRole`/`_setRoleAdmin` (`override(AccessControl, IAccessControl, AccessControlDefaultAdminRules)`) plus `_grantRole`/`_revokeRole`/`supportsInterface` — `super` resolves to the ACDAR rules first, then chains the enumerable bookkeeping. Do NOT `_grantRole(DEFAULT_ADMIN_ROLE,...)` in the constructor; the `AccessControlDefaultAdminRules(delay, admin)` base already does, and a second grant reverts (`AccessControlEnforcedDefaultAdminRules`).
+- **The live ROAX admin is still the single deployer EOA** (`roax.json:admin` `0x119F8c7F…`), NOT a multisig. The EOA→multisig migration is shipped as code only (`contracts/script/GovernanceMigration.sol` library + `MigrateGovernance.s.sol` two-phase scripts + `GovernanceMigration.t.sol`), gated on a captain ceremony — see `docs/GOVERNANCE_MIGRATION.md`. The **live** `DogTagSBT` (`0x1FB8…`) predates the two-step upgrade and is still plain `AccessControlEnumerable`; it can't be retrofitted without a state-orphaning redeploy, so the migration hands it over with an atomic `grantRole`→`revokeRole` (the script's `supportsTwoStep` auto-picks the branch). Never execute the migration on live testnet without explicit captain approval.
+- Removed dead governance surface: `IssuerRegistry.PROFILE_ISSUER_ROLE` and `DogTagSBT.UPDATER_ROLE` were declared but never enforced (SBT mint = `ISSUER_ROLE`; `setProfileRoot` = originator-or-`AUTHORITY_ROLE`). Don't re-add them.
 
 ### dogTagId encoding (easy to get wrong)
 The operator-facing **handle** is a small integer. The **on-chain** dogTagId minted into `DogTagSBT` and emitted as the circuit's `pub[0]` is the Poseidon **field-hash** of that handle: `routes::onchain_dog_tag_id(handle)` = `to_hex32(field_of_value(Integer(handle)))` (mirrors the `dog_tag_id_field_hex` FFI / `field-hash` bin). The SBT is keyed by the field element, NOT the raw handle — `ownerOf`/`profileRoot` lookups (and tests) must field-hash first.
@@ -232,3 +238,33 @@ is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `Z
   the proof; audit L2). Address-typed public signals `pub[2]` (relayer) and `pub[3]` (subject) are
   range-checked `< 2^160` so `uint160(..)` truncation can't alias a victim address (audit L1). The Rust
   relay ABI (`stacks/vet/api/src/chain.rs`) must stay in sync with this signature.
+
+## Captain's conventions & vocabulary
+
+(Folded in from the firstmate-private canonical record so any agent in this repo shares the captain's conventions and vocabulary.)
+
+### Working environment
+
+- Each project is developed in a **dedicated WezTerm terminal tab**, supervised via **tmux**.
+- A crewmate working on a repo runs in its own tmux window and **may spawn as many additional tmux
+  windows as it needs** - builds, tests, logs, watchers, REPLs - so the work stays observable to the
+  captain.
+- Prefer giving long-running or noisy processes (servers, watchers, test loops, dev builds) **their own
+  tmux window** rather than blocking the main one. Keep the work visible.
+
+### Common vocabulary the captain uses
+
+- **Codex** - OpenAI's Codex coding agent / CLI; an alternative agent harness to Claude Code.
+- **Claude** - Anthropic's Claude: the models and the Claude Code agent / CLI.
+- **GPT** - OpenAI's GPT family of models.
+- **axi** - the "agent-ergonomic" wrapper convention: a CLI suffixed `-axi` exposes an agent-friendly
+  interface over an underlying tool. **Prefer the `-axi` wrapper over the raw tool.**
+- **gh-axi** - agent-ergonomic GitHub CLI wrapper; use it for all GitHub operations instead of raw `gh`.
+- **chrome-devtools-axi** - agent-ergonomic Chrome DevTools / browser-control CLI; use it for browser
+  automation instead of raw browser tooling.
+- **lavish-axi** - Lavish Editor CLI; turns HTML artifacts into collaborative, annotatable human-review
+  surfaces.
+- **gnhf** - the captain's code-cleanup framework / workflow: cleanup passes, typically run in isolated
+  clones and staged as PRs for review. (Functional description - confirm exact definition with the
+  captain if precision is needed.)
+- **tmux** - terminal multiplexer used to run and observe agent work across windows and panes.

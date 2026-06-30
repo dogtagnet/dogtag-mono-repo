@@ -2,7 +2,12 @@
 pragma solidity 0.8.28;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {IERC5192} from "./IERC5192.sol";
@@ -12,7 +17,11 @@ import {IERC5192} from "./IERC5192.sol";
 /// soft status (NEVER burn for lifecycle) + signature-authorized recovery preserving tokenId
 /// (impl §11.7(a), architecture §4.2/§13.6). `dogTagId` is a non-personal random/sequential id —
 /// NEVER any hash of the microchip (allocated off-chain; asserted by CI).
-contract DogTagSBT is ERC721, AccessControlEnumerable, EIP712, IERC5192 {
+/// @dev `DEFAULT_ADMIN_ROLE` is governed by `AccessControlDefaultAdminRules` (two-step transfer +
+/// {ADMIN_TRANSFER_DELAY} timelock) so the admin can only be moved to the protocol multisig via the
+/// same begin/accept handover as `IssuerRegistry`/`VerificationRegistry` (audit H-3). The role still
+/// enumerates via `AccessControlEnumerable`, so the accredited set stays publicly auditable.
+contract DogTagSBT is ERC721, AccessControlEnumerable, AccessControlDefaultAdminRules, EIP712, IERC5192 {
     enum Status {
         Active,
         Lost,
@@ -21,8 +30,12 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, EIP712, IERC5192 {
         Revoked
     }
 
+    /// @dev Two-step admin handover timelock (matches IssuerRegistry's 3-day delay; §13.1 H-3).
+    uint48 public constant ADMIN_TRANSFER_DELAY = 3 days;
+
     bytes32 public constant ISSUER_ROLE = keccak256("ISSUER");
-    bytes32 public constant UPDATER_ROLE = keccak256("UPDATER");
+    // NOTE: profile-root updates are gated by `issuerOrAuthority` (originator binding, §13.6), NOT a
+    // standalone updater role — the previously-declared `UPDATER_ROLE` was never enforced and is removed.
     bytes32 public constant AUTHORITY_ROLE = keccak256("AUTHORITY");
     bytes32 public constant RECOVERY_ROLE = keccak256("RECOVERY");
 
@@ -50,12 +63,16 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, EIP712, IERC5192 {
     error NotIssuerOrAuthority();
     error Terminal();
 
-    constructor(address admin) ERC721("DogTag", "DTAG") EIP712("DogTag", "1") {
-        _grantRole(DEFAULT_ADMIN_ROLE, admin); // protocol multisig
-    }
+    constructor(address admin)
+        ERC721("DogTag", "DTAG")
+        AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin) // grants DEFAULT_ADMIN to the multisig
+        EIP712("DogTag", "1")
+    {}
 
     modifier issuerOrAuthority(uint256 id) {
-        if (msg.sender != issuerOf[id] && !hasRole(AUTHORITY_ROLE, msg.sender)) revert NotIssuerOrAuthority();
+        if (msg.sender != issuerOf[id] && !hasRole(AUTHORITY_ROLE, msg.sender)) {
+            revert NotIssuerOrAuthority();
+        }
         _;
     }
 
@@ -147,9 +164,56 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, EIP712, IERC5192 {
     function supportsInterface(bytes4 i)
         public
         view
-        override(ERC721, AccessControlEnumerable)
+        override(ERC721, AccessControlEnumerable, AccessControlDefaultAdminRules)
         returns (bool)
     {
         return i == 0xb45a3c0e || super.supportsInterface(i); // ERC-5192
+    }
+
+    // ---- multi-base override plumbing: route role bookkeeping through BOTH the enumerable set and the
+    // default-admin rules. `super` resolves to AccessControlDefaultAdminRules first (it enforces the
+    // two-step DEFAULT_ADMIN handover), which then chains into AccessControlEnumerable's set bookkeeping. ----
+    function grantRole(bytes32 role, address account)
+        public
+        override(AccessControl, IAccessControl, AccessControlDefaultAdminRules)
+    {
+        super.grantRole(role, account);
+    }
+
+    function revokeRole(bytes32 role, address account)
+        public
+        override(AccessControl, IAccessControl, AccessControlDefaultAdminRules)
+    {
+        super.revokeRole(role, account);
+    }
+
+    function renounceRole(bytes32 role, address account)
+        public
+        override(AccessControl, IAccessControl, AccessControlDefaultAdminRules)
+    {
+        super.renounceRole(role, account);
+    }
+
+    function _setRoleAdmin(bytes32 role, bytes32 adminRole)
+        internal
+        override(AccessControl, AccessControlDefaultAdminRules)
+    {
+        super._setRoleAdmin(role, adminRole);
+    }
+
+    function _grantRole(bytes32 role, address account)
+        internal
+        override(AccessControlEnumerable, AccessControlDefaultAdminRules)
+        returns (bool)
+    {
+        return super._grantRole(role, account);
+    }
+
+    function _revokeRole(bytes32 role, address account)
+        internal
+        override(AccessControlEnumerable, AccessControlDefaultAdminRules)
+        returns (bool)
+    {
+        return super._revokeRole(role, account);
     }
 }

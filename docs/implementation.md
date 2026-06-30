@@ -1322,7 +1322,8 @@ Resolves the findings in `docs/research/audit-01/02/03`. Use these versions when
 // IssuerRegistry: per-record-type scoping + hardened admin (fixes C-2, H-3, M-registry)
 contract IssuerRegistry is AccessControlDefaultAdminRules {
     bytes32 public constant WHITELIST_ADMIN = keccak256("WHITELIST_ADMIN");
-    bytes32 public constant PROFILE_ISSUER_ROLE = keccak256("PROFILE_ISSUER_ROLE");
+    // PROFILE_ISSUER_ROLE removed: SBT mint/profile capability is enforced on DogTagSBT (ISSUER_ROLE +
+    // originator binding, §11.7), never read here. The early sketch below is superseded by §11.7(a).
     mapping(bytes32 => mapping(address => bool)) private _wl;  // recordType => signer => ok
     event Whitelisted(bytes32 indexed recordType, address indexed signer);
     event Delisted(bytes32 indexed recordType, address indexed signer);
@@ -1619,9 +1620,11 @@ Resolves `research/09-sbt-lifecycle.md` + audit-04/05/06 v2 items.
 
 **(a) DogTagSBT with granular roles + issuerOf + soft status + recover (replaces §11.1 burn-and-remint):**
 ```solidity
-contract DogTagSBT is ERC721, IERC5192, AccessControlEnumerable, EIP712 {
+// AccessControlDefaultAdminRules gives DEFAULT_ADMIN a two-step + 3-day timelocked hand-off (H-3, matches
+// IssuerRegistry/VerificationRegistry); AccessControlEnumerable keeps the accredited set publicly auditable.
+contract DogTagSBT is ERC721, IERC5192, AccessControlEnumerable, AccessControlDefaultAdminRules, EIP712 {
     enum Status { Active, Lost, TransferPending, Deceased, Revoked }
-    bytes32 constant ISSUER_ROLE=keccak256("ISSUER"); bytes32 constant UPDATER_ROLE=keccak256("UPDATER");
+    bytes32 constant ISSUER_ROLE=keccak256("ISSUER"); // NOTE: no UPDATER_ROLE — setProfileRoot reuses issuerOrAuthority
     bytes32 constant AUTHORITY_ROLE=keccak256("AUTHORITY"); bytes32 constant RECOVERY_ROLE=keccak256("RECOVERY");
     mapping(uint256=>address) public issuerOf;     // immutable, set at mint
     mapping(uint256=>Status)  public status;

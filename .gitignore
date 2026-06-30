@@ -31,3 +31,6 @@ circuits/log_*.txt
 # os
 .DS_Store
 .demo/
+
+# agent memory symlink (AGENTS.md is the committed standard)
+CLAUDE.md
