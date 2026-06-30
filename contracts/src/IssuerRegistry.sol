@@ -13,8 +13,9 @@ import {
 /// groomer can verify a purpose without holding any issuer role.
 contract IssuerRegistry is AccessControlDefaultAdminRules {
     bytes32 public constant WHITELIST_ADMIN = keccak256("WHITELIST_ADMIN");
-    /// @notice Dedicated role for SBT profile mint/update — distinct from record issuers (§13.1 C-2).
-    bytes32 public constant PROFILE_ISSUER_ROLE = keccak256("PROFILE_ISSUER_ROLE");
+    // NOTE: SBT mint/profile capability is enforced on DogTagSBT directly (ISSUER_ROLE + originator
+    // binding, §13.6), not in this registry. The previously-declared `PROFILE_ISSUER_ROLE` here was
+    // never read by any contract and is removed (dead governance surface).
 
     mapping(bytes32 => mapping(address => bool)) private _wl; // recordType (or VERIFY:key) => signer => ok
 
