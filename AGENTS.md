@@ -238,3 +238,33 @@ is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `Z
   the proof; audit L2). Address-typed public signals `pub[2]` (relayer) and `pub[3]` (subject) are
   range-checked `< 2^160` so `uint160(..)` truncation can't alias a victim address (audit L1). The Rust
   relay ABI (`stacks/vet/api/src/chain.rs`) must stay in sync with this signature.
+
+## Captain's conventions & vocabulary
+
+(Folded in from the firstmate-private canonical record so any agent in this repo shares the captain's conventions and vocabulary.)
+
+### Working environment
+
+- Each project is developed in a **dedicated WezTerm terminal tab**, supervised via **tmux**.
+- A crewmate working on a repo runs in its own tmux window and **may spawn as many additional tmux
+  windows as it needs** - builds, tests, logs, watchers, REPLs - so the work stays observable to the
+  captain.
+- Prefer giving long-running or noisy processes (servers, watchers, test loops, dev builds) **their own
+  tmux window** rather than blocking the main one. Keep the work visible.
+
+### Common vocabulary the captain uses
+
+- **Codex** - OpenAI's Codex coding agent / CLI; an alternative agent harness to Claude Code.
+- **Claude** - Anthropic's Claude: the models and the Claude Code agent / CLI.
+- **GPT** - OpenAI's GPT family of models.
+- **axi** - the "agent-ergonomic" wrapper convention: a CLI suffixed `-axi` exposes an agent-friendly
+  interface over an underlying tool. **Prefer the `-axi` wrapper over the raw tool.**
+- **gh-axi** - agent-ergonomic GitHub CLI wrapper; use it for all GitHub operations instead of raw `gh`.
+- **chrome-devtools-axi** - agent-ergonomic Chrome DevTools / browser-control CLI; use it for browser
+  automation instead of raw browser tooling.
+- **lavish-axi** - Lavish Editor CLI; turns HTML artifacts into collaborative, annotatable human-review
+  surfaces.
+- **gnhf** - the captain's code-cleanup framework / workflow: cleanup passes, typically run in isolated
+  clones and staged as PRs for review. (Functional description - confirm exact definition with the
+  captain if precision is needed.)
+- **tmux** - terminal multiplexer used to run and observe agent work across windows and panes.
