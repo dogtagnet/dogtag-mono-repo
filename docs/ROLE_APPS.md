@@ -37,6 +37,8 @@ The three roles differ only in **which record types they issue**, **what off-cha
 
 The vet and groomer stacks are **already real and already separately deployable** (see §5); the government stack is **net-new** and is what this PR begins building (§4).
 
+> **Not a role stack: the holder.** This doc covers the **issuer/verifier** roles. The **pet-owner (holder)** side (the counterpart that receives, holds, and *presents* these credentials) is a separate component with no backend and no database: the native `apps/android`/`apps/ios` wallets and their web mirror `stacks/owner/web` (`@dogtag/owner-web`, port **45931**). See [`../stacks/owner/web/README.md`](../stacks/owner/web/README.md).
+
 ---
 
 ## 3. Per-role design

@@ -1,9 +1,10 @@
 # DogTag — LOCAL deployment (Tier 1: the whole system on one Mac)
 
 **Goal / you'll end with:** the entire DogTag stack running on a single Mac — **4 backends**
-(admin/central + vet + groomer + a ZK **prover-service**) **+ 3 web portals** + a **real phone scanning a
-live QR** and (optionally) generating a zero-knowledge proof against the **live ROAX testnet** (chainId
-**135**, addresses in [`../contracts/deployments/roax.json`](../contracts/deployments/roax.json)).
+(admin/central + vet + groomer + a ZK **prover-service**) **+ 3 web portals** + the **browser-based
+pet-owner (holder) wallet** (`stacks/owner/web`, http://localhost:45931, no backend of its own) + a
+**real phone scanning a live QR** and (optionally) generating a zero-knowledge proof against the **live
+ROAX testnet** (chainId **135**, addresses in [`../contracts/deployments/roax.json`](../contracts/deployments/roax.json)).
 
 **Audience:** an AI agent runs the fenced blocks top-to-bottom; a human follows the same steps. In demo
 mode every portal form is pre-filled, demo buttons are shown, and passwords/passphrases auto-fill — **you
@@ -114,6 +115,7 @@ LOCAL service + port map:
 | **vet** | http://localhost:41873 | http://localhost:41874 | `target/release/vet-api`, `PORT=41874` | issues profiles + vaccination credentials |
 | **groomer** | http://localhost:43617 | http://localhost:43618 | `target/release/vet-api` + `BUSINESS_TYPE=groomer`, `PORT=43618` | **same binary as vet** |
 | **prover-service** | — | http://localhost:41875 | `target/prover/release/vet-api` (`--features prover`) + `CIRCUITS_BUILD_DIR=circuits/build`, `PORT=41875` | `POST /prove-verification`; 32-bit-Android ZK fallback |
+| **owner-wallet** (holder) | http://localhost:45931 | — (no backend) | `pnpm --filter @dogtag/owner-web dev` (Vite) | browser-only holder wallet; state in localStorage; `VITE_OWNER_PROVER_URL`→prover :41875; verifier host comes from the scanned `/x/<token>` link |
 
 **Verify.** Health-check each backend (admin, vet, groomer, prover):
 

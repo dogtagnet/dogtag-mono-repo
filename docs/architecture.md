@@ -22,6 +22,7 @@ DogTag is a **pet-credentialing ecosystem**. Pet owners hold their pets' identit
 |---|---|---|---|
 | Pet-owner app (Android) | Kotlin + Jetpack Compose | End users | `apps/android` |
 | Pet-owner app (iOS) | Swift + SwiftUI | End users | `apps/ios` |
+| Pet-owner (holder) wallet (web) | React+Vite SPA, **no backend** (holds credentials in localStorage) | End users (browser) | `stacks/owner/web` |
 | Vet portal stack | React+Vite SPA + Rust API + MongoDB | **Each vet, self-hosted** (or we host) | `stacks/vet` |
 | Groomer portal stack | React+Vite SPA + Rust API + MongoDB | **Each groomer, self-hosted** (or we host) | `stacks/groomer` |
 | Admin / central stack | React+Vite SPA + Rust API + MongoDB | **We (protocol)** | `stacks/admin` |

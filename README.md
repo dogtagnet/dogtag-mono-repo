@@ -85,6 +85,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | Path | What | Runs where |
 |---|---|---|
 | `apps/android`, `apps/ios` | Pet-owner apps (Kotlin/Compose, Swift/SwiftUI), 7 themes, self-custodial MPC wallet | User devices |
+| `stacks/owner/web` | Pet-owner (**holder**) wallet - the web mirror of the native apps: **no backend**, receives/holds a wrapped credential, displays it, and presents a client-side ZK proof to a verifier (delegating only Groth16 to a trusted prover) - see [`stacks/owner/web/README.md`](stacks/owner/web/README.md) | Owner's browser |
 | `stacks/vet` | Self-hosted vet stack — React+Vite SPA + Rust `vet-api` + Mongo (issue/share/verify/calendar) | Each vet |
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
@@ -102,12 +103,17 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | **vet** | **41873** | **41874** | internal only |
 | **groomer** | **43617** | **43618** | internal only |
 | **government** | **44831** | **44832** | internal only |
+| **owner-wallet** (holder) | **45931** | — (no backend) | — (localStorage) |
 
-Each stack is `web` (nginx serving the Vite build) + `api` (Rust binary, multi-stage build) +
+Each **role** stack is `web` (nginx serving the Vite build) + `api` (Rust binary, multi-stage build) +
 `mongo` (compose-network-internal). The groomer `api` runs the **`vet-api`** binary with
 `BUSINESS_TYPE=groomer` (host `43618` → container `43618`). The **government** `api` runs its **own**
 `government-api` binary (a genuinely separate deployable — not a `vet-api` re-run); see
 [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) for the three-role separation design.
+The **owner-wallet** is the odd one out: the pet-owner (holder) front has **no backend and no Mongo**
+(state lives in the browser's localStorage), so `scripts/demo-up.sh` runs it as a plain Vite dev server
+on `45931`; it talks only to a trusted prover (`VITE_OWNER_PROVER_URL`, `:41875`) and the verifier host
+from the `…/x/<token>` link it scans.
 
 ## Build & test
 
@@ -131,6 +137,8 @@ pnpm --filter @dogtag/vet-web build
 pnpm --filter @dogtag/groomer-web build
 pnpm --filter @dogtag/admin-web build
 pnpm --filter @dogtag/government-web build
+# Pet-owner (holder) wallet - the backend-less web mirror of the native apps:
+pnpm --filter @dogtag/owner-web build
 # Contracts:
 cd contracts && forge test
 ```

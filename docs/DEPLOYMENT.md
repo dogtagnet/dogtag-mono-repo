@@ -75,7 +75,7 @@ PRODUCTION is a **delta over REMOTE**, not a separate stack: do REMOTE first, th
 | **Backends** | `admin-api` (central) + `vet-api` (vet) + `vet-api`+`BUSINESS_TYPE=groomer` (groomer) | LOCAL: inline env in `scripts/demo-up.sh`. REMOTE/PROD: `stacks/{admin,vet,groomer}/.env` (see [REMOTE](./REMOTE_DEPLOYMENT.md)) |
 | **Portals** | 3 Vite web apps (admin/vet/groomer) | LOCAL: `VITE_DEMO_MODE=1` inline. REMOTE/PROD: `stacks/<x>/web/.env` (`VITE_*`) |
 | **Chain** | ROAX testnet contract set | `contracts/deployments/roax.json` (source of truth); backend `*_ADDR` + portal `VITE_*_ADDR` reference it |
-| **Apps** | iOS + Android phone apps | Bundled `roax.json` + baked RPC constant + UniFFI lib; rebuilt to change (see [MOBILE](./MOBILE_BUILD.md)) |
+| **Apps** (holder) | iOS + Android phone apps **+ the browser holder wallet** (`stacks/owner/web`, :45931, no backend, state in localStorage) | Phone apps: bundled `roax.json` + baked RPC constant + UniFFI lib, rebuilt to change (see [MOBILE](./MOBILE_BUILD.md)). Web wallet: `VITE_OWNER_PROVER_URL` (→ prover :41875); verifier host from the scanned `/x/<token>` link |
 | **Tunnels** | 3 public HTTPS tunnels for phones | `VET_PUBLIC_URL` / `GROOMER_PUBLIC_URL` / `PROVER_PUBLIC_URL` on `demo-up.sh` (see [TUNNELING](./TUNNELING.md)) |
 | **Custody** | The sealed signer keystore | LOCAL: `.demo/*-custody.json` via `CUSTODY_SEAL_PATH`. REMOTE/PROD: `CustodyBlob` in Mongo |
 | **Prover** | `vet-api --features prover`, `POST /prove-verification` | LOCAL: auto on :41875. REMOTE: run it yourself. PROD: owner-trusted. Needs `CIRCUITS_BUILD_DIR` |
@@ -122,6 +122,7 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 | vet | 41873 | 41874 | `target/release/vet-api`, `PORT=41874` | |
 | groomer | 43617 | 43618 | `target/release/vet-api` + `BUSINESS_TYPE=groomer`, `PORT=43618` | **same binary as vet** |
 | prover-service | — | 41875 | `target/prover/release/vet-api` (`--features prover`) + `CIRCUITS_BUILD_DIR=circuits/build`, `PORT=41875` | `POST /prove-verification`; 32-bit-Android fallback |
+| owner-wallet (holder) | 45931 | — | `pnpm --filter @dogtag/owner-web dev` (Vite; no backend) | browser holder wallet; `VITE_OWNER_PROVER_URL`→prover :41875; verifier host from scanned `/x/<token>` link; state in localStorage |
 
 #### REMOTE / PROD — `scripts/remote-up.sh` (docker compose; mongo internal-only)
 

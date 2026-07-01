@@ -89,11 +89,15 @@ run admin-web ":39741" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/admin-web dev
 run vet-web    ":41873" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/vet-web dev
 run groomer-web ":43617" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/groomer-web dev
 run government-web ":44831" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/government-web dev
+# OWNER (holder) wallet - the consumer front. No backend; its prover URL points at the prover svc
+# (:41875) and the verifier host comes from the /x/<token> link the owner pastes/scans.
+run owner-web ":45931" env VITE_OWNER_PROVER_URL="${PROVER_PUBLIC_URL:-http://localhost:41875}" pnpm --filter @dogtag/owner-web dev
 
 echo
-echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617  government http://localhost:44831"
+echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617  government http://localhost:44831  owner-wallet http://localhost:45931"
 echo "Backends:     admin :39742  vet :41874  groomer :43618  government :44832  prover :41875   (ROAX chainId 135)"
 echo "Three-role showcase: scripts/e2e-roles.sh --live   (vet ISSUES -> government VERIFIES -> government ISSUES)"
 echo "Prover svc:   POST :41875/prove-verification  (32-bit-Android fallback; set PROVER_PUBLIC_URL to tunnel it)"
+echo "Owner wallet: http://localhost:45931  (Receive an issued wrapped doc -> Present a ZK proof to a verifier's /x/<token> link)"
 echo "Next: docs/DEMO.md  (genesis the vet -> demo-bootstrap.sh <signer> -> Issue -> Create QR -> scan on phone)"
 echo "For the PHONE: set its server base to this Mac's LAN IP (not localhost) — see docs/DEMO.md."
