@@ -64,6 +64,8 @@ export interface PresentOptions {
   fetchImpl?: typeof fetch;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
+  /** aborts in-flight fetches and stops the poll loop (e.g. on page unmount). */
+  signal?: AbortSignal;
 }
 
 /** A field element (bigint) -> 0x + 64-hex big-endian word. */
@@ -172,12 +174,13 @@ export async function presentCredential(opts: PresentOptions): Promise<PresentRe
     fetchImpl = fetch,
     pollIntervalMs = 3000,
     pollTimeoutMs = 150_000,
+    signal,
   } = opts;
   const { base, token } = parseVerifyLink(link);
 
   // 1. Resolve the verify session the owner scanned.
   onProgress({ step: "resolving", note: "Reading the verifier's request…" });
-  const sres = await fetchImpl(`${base}/x/${token}`);
+  const sres = await fetchImpl(`${base}/x/${token}`, { signal });
   if (!sres.ok) throw new Error(`Verify link expired or invalid (HTTP ${sres.status}).`);
   const session = (await sres.json()) as VerifySession;
 
@@ -216,6 +219,7 @@ export async function presentCredential(opts: PresentOptions): Promise<PresentRe
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ wrappedDoc: doc, consent: consentHex, eddsaSig }),
+    signal,
   });
   if (!pres.ok) {
     throw new Error(`Prover failed (HTTP ${pres.status}). Check your prover-service URL.`);
@@ -241,6 +245,7 @@ export async function presentCredential(opts: PresentOptions): Promise<PresentRe
       proof: { a: proof.a, b: proof.b, c: proof.c, pubSignals: proof.pub },
       bind,
     }),
+    signal,
   });
   if (!subRes.ok) {
     let msg = `Verifier rejected the submission (HTTP ${subRes.status}).`;
@@ -257,7 +262,8 @@ export async function presentCredential(opts: PresentOptions): Promise<PresentRe
   onProgress({ step: "polling", note: "Waiting for on-chain confirmation…" });
   const deadlineAt = Date.now() + pollTimeoutMs;
   for (;;) {
-    const stat = await fetchImpl(`${base}/verify/session/${session.sessionId}?token=${token}`);
+    signal?.throwIfAborted();
+    const stat = await fetchImpl(`${base}/verify/session/${session.sessionId}?token=${token}`, { signal });
     if (stat.ok) {
       const s = (await stat.json()) as { status: string; txHash?: string | null; nullifier?: string | null };
       if (s.status === "recorded") {
@@ -269,6 +275,25 @@ export async function presentCredential(opts: PresentOptions): Promise<PresentRe
       }
     }
     if (Date.now() >= deadlineAt) throw new Error("Timed out waiting for on-chain confirmation.");
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
+    await sleep(pollIntervalMs, signal);
   }
+}
+
+/** A cancellable delay: resolves after `ms`, or rejects immediately if `signal` aborts. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

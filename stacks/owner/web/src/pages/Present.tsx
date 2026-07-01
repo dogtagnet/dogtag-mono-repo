@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { summarize } from "../lib/credential";
 import { useCredentials } from "../lib/hooks";
@@ -37,25 +37,35 @@ export function Present({ wallet }: { wallet: OwnerWallet | null }) {
   const selected = useMemo(() => credentials.find((c) => c.id === credId), [credentials, credId]);
   const running = outcome.kind === "running";
 
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
   async function run() {
     if (!wallet || !selected) return;
-    setOutcome({ kind: "running", step: "resolving" });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+    let step: PresentStep = "resolving";
+    setOutcome({ kind: "running", step });
     try {
       const result = await presentCredential({
         link,
         wallet,
         doc: selected.wrappedDoc,
         proverUrl: proverUrl.replace(/\/+$/, ""),
+        signal,
         onProgress: (p: PresentProgress) => {
           if (p.step !== "verified" && p.step !== "failed") {
-            setOutcome({ kind: "running", step: p.step, note: p.note });
+            step = p.step;
+            if (!signal.aborted) setOutcome({ kind: "running", step: p.step, note: p.note });
           }
         },
       });
-      setOutcome({ kind: "verified", txHash: result.txHash, nullifier: result.nullifier });
+      if (!signal.aborted) setOutcome({ kind: "verified", txHash: result.txHash, nullifier: result.nullifier });
     } catch (e) {
-      const step = outcome.kind === "running" ? outcome.step : "resolving";
-      setOutcome({ kind: "error", message: (e as Error).message, step });
+      if (!signal.aborted) setOutcome({ kind: "error", message: (e as Error).message, step });
     }
   }
 
