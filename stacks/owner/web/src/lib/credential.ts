@@ -86,8 +86,21 @@ function categoryOf(recordType: string): Category {
   return "Other";
 }
 
+// WrappedDoc objects are immutable in the store (replaced, never mutated), so a per-object cache is
+// collision-free and lets `checkIntegrity`'s Poseidon Merkle rebuild run once per credential instead
+// of on every unrelated re-render (e.g. each present-flow progress tick re-renders the dropdown).
+const summaryCache = new WeakMap<WrappedDoc, CredentialSummary>();
+
 /** The at-a-glance summary the wallet card + detail header render. */
 export function summarize(doc: WrappedDoc): CredentialSummary {
+  const cached = summaryCache.get(doc);
+  if (cached) return cached;
+  const summary = computeSummary(doc);
+  summaryCache.set(doc, summary);
+  return summary;
+}
+
+function computeSummary(doc: WrappedDoc): CredentialSummary {
   const recordType = doc.issuer.recordType || fieldValue(doc, "recordType") || "CREDENTIAL";
   return {
     dogTagId: fieldValue(doc, "credentialSubject.dogTagId", "dogTagId"),
