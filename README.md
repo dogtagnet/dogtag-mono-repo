@@ -87,6 +87,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `apps/android`, `apps/ios` | Pet-owner apps (Kotlin/Compose, Swift/SwiftUI), 7 themes, self-custodial MPC wallet | User devices |
 | `stacks/vet` | Self-hosted vet stack — React+Vite SPA + Rust `vet-api` + Mongo (issue/share/verify/calendar) | Each vet |
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
+| `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
 | `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` · `ConsentKeyRegistry` | ROAX |
 | `circuits` | Groth16 Poseidon-Merkle + EdDSA-BabyJubjub consent circuit (N=24, depth 5) | Prover image |
@@ -100,10 +101,13 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | **admin** (central) | **39741** | **39742** | internal only |
 | **vet** | **41873** | **41874** | internal only |
 | **groomer** | **43617** | **43618** | internal only |
+| **government** | **44831** | **44832** | internal only |
 
 Each stack is `web` (nginx serving the Vite build) + `api` (Rust binary, multi-stage build) +
 `mongo` (compose-network-internal). The groomer `api` runs the **`vet-api`** binary with
-`BUSINESS_TYPE=groomer` (host `43618` → container `43618`).
+`BUSINESS_TYPE=groomer` (host `43618` → container `43618`). The **government** `api` runs its **own**
+`government-api` binary (a genuinely separate deployable — not a `vet-api` re-run); see
+[`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) for the three-role separation design.
 
 ## Build & test
 
@@ -120,10 +124,13 @@ make parity    # the NORMATIVE Poseidon anchor gate (t=2/3/6/7) — blocks downs
 cargo test -p vet-api
 # Central/admin backend:
 cargo test -p admin-api
+# Government credential-authority backend (its own crate):
+cargo test -p government-api
 # Web portals (Vite build):
 pnpm --filter @dogtag/vet-web build
 pnpm --filter @dogtag/groomer-web build
 pnpm --filter @dogtag/admin-web build
+pnpm --filter @dogtag/government-web build
 # Contracts:
 cd contracts && forge test
 ```
@@ -131,7 +138,7 @@ cd contracts && forge test
 **Run a stack (Docker — Mongo internal-only):**
 ```bash
 cp stacks/vet/.env.example stacks/vet/.env   # fill addrs + secrets
-make up-vet        # or up-admin / up-groomer
+make up-vet        # or up-admin / up-groomer / up-government
 ```
 See **[`docs/DEPLOY.md`](docs/DEPLOY.md)** for the full deploy + ceremony runbook.
 

@@ -3578,6 +3578,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "government-api"
+version = "0.0.0"
+dependencies = [
+ "alloy",
+ "async-trait",
+ "axum",
+ "dogtag-standard-rs",
+ "futures",
+ "hex",
+ "http",
+ "http-body-util",
+ "mongodb",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber 0.3.23",
+ "uuid",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
