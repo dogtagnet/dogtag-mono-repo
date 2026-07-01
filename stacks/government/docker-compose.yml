@@ -1,0 +1,91 @@
+# ----------------------------------------------------------------------------------------------
+# DogTag — GOVERNMENT stack (separately deployable). See docs/ROLE_APPS.md.
+#   caddy : TLS reverse-proxy (Let's Encrypt) terminating HTTPS    -> host 80/443
+#   web   : React SPA built by Vite, served by nginx               -> internal only (web:80)
+#   api   : the Rust government-api binary (NET-NEW crate)          -> host 44832 (internal 44832)
+#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY        -> NO host port (never published)
+#
+# Build context is the monorepo ROOT (`..` resolves to dogtag-mono-repo/). Run from this directory:
+#   docker compose up -d   (or `make up-government`).
+#
+# PERSISTENCE: issued credentials + the verification audit log live in MONGO (the `governmentdata`
+# volume). Operators MUST back it up. Unlike groomer, this stack runs its OWN binary (government-api),
+# not vet-api — it is a genuinely separate deployable.
+# ----------------------------------------------------------------------------------------------
+services:
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"             # ACME HTTP-01 challenge + HTTP->HTTPS redirect
+      - "443:443"           # public HTTPS (auto-TLS via Let's Encrypt)
+    volumes:
+      - ../../deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    environment:
+      DOMAIN: ${DOMAIN}
+    depends_on:
+      - web
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../..
+      dockerfile: stacks/government/web/Dockerfile
+    image: dogtag-government-web
+    # No host `ports:` — internal only. Caddy reaches it as `web:80`.
+    expose:
+      - "80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ../..
+      dockerfile: stacks/government/api/Dockerfile
+      args:
+        FEATURES: mongo      # build the MongoStore-capable binary (Dockerfile has ARG FEATURES)
+    image: dogtag-government-api
+    ports:
+      - "44832:44832"       # host 44832 -> government-api :44832
+    env_file: .env
+    environment:
+      # Production knobs (secrets come from .env via ${VAR} interpolation — never hardcoded here).
+      MONGO_URI: "mongodb://mongo:27017/dogtag"
+      MONGO_DB: ${MONGO_DB:-dogtag}
+      CHAIN_ID: ${CHAIN_ID:-135}
+      PORT: "44832"
+    depends_on:
+      mongo:
+        condition: service_healthy   # fail-closed Mongo connect must not crash the API on first boot
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:44832/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    # NO `ports:` mapping — internal to the compose network only (service name `mongo`, default 27017).
+    expose:
+      - "27017"
+    command: ["mongod", "--port", "27017", "--bind_ip_all"]
+    volumes:
+      - governmentdata:/data/db  # PERSISTENT credentials + audit log — BACK THIS UP
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  default:
+    name: dogtag-government
+
+volumes:
+  governmentdata: {}
+  caddy_data: {}
