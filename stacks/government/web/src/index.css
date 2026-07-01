@@ -188,3 +188,37 @@ pre {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* Per-record-type Issue-form field grid. */
+.fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* Wrapped-document display + one-click copy after a successful issue. */
+.wrapped-doc {
+  margin-top: 14px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 14px;
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.wrapped-doc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wrapped-doc-body {
+  max-height: 320px;
+  margin: 0;
+}
+
+.copy-btn {
+  margin-top: 0;
+  padding: 7px 14px;
+  font-size: 13px;
+}
