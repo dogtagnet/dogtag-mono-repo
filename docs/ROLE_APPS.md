@@ -173,5 +173,30 @@ Tracked so the next PRs can close them:
    Government verify currently checks the three authenticity pillars (integrity + on-chain status + issuer identity) as gasless reads. Recording a **consented `VerificationRegistry` presentation** for a government purpose (e.g. `TRAVEL_PRESENTATION` / `AIRLINE_CHECKIN`, owner-signed consent, ZK path) is the natural next increment — the contracts already support it.
 6. **Central discovery.**
    The government stack is not yet registered in the `stacks/admin` business directory; adding it lets the mobile app discover a government authority the same way it discovers vets/groomers.
-7. **A three-role smoke script.**
-   `scripts/e2e-smoke.sh` covers vet/groomer; extending it (or adding `scripts/e2e-government.sh`) to run vet-issue → government-verify end-to-end would lock the showcase into CI.
+7. **A three-role smoke script.** ✅ **DONE** (§8) — `scripts/e2e-roles.sh` drives the cross-role chain; `scripts/demo-up.sh` now boots government as a 4th separate stack; the `government-api` `cross_role` test codifies "vet ISSUES → government VERIFIES" deterministically.
+
+---
+
+## 8. Three-role showcase — how to run it
+
+The three roles boot as **separate running stacks** and one credential flows across them.
+
+### 8.1 Hermetic (zero deps — no node, no gas, no Mongo)
+
+```bash
+scripts/e2e-roles.sh            # boots government-api in GOV_DEMO_MODE and runs ISSUE→VERIFY→audit
+cargo test -p government-api    # incl. cross_role: government VERIFIES a vet-issued VACCINATION credential
+```
+
+`tests/cross_role.rs` is the codified cross-role guarantee: a credential built through the shared SDK exactly as the **vet** stack builds it (record type `VACCINATION`, anchored on the vet clone — MemChain stands in for the shared chain) is verified, unchanged, by the **government** verifier (integrity + on-chain status + issuer identity), and a tampered copy is rejected.
+
+### 8.2 Live cross-stack (the full showcase, over ROAX)
+
+```bash
+scripts/demo-up.sh              # boots admin :39742 · vet :41874 · groomer :43618 · government :44832 (+ portals)
+scripts/e2e-roles.sh --live     # vet ISSUES a VACCINATION → government VERIFIES it (gasless ROAX read)
+                                #                          → government ISSUES a TRAVEL_CLEARANCE
+```
+
+`--live` needs `contracts/.env` (a funded DEPLOYER key) for the vet issue + `cast`/`jq`/`python3`.
+The **groomer** verify (an owner-consent `VerificationRegistry` presentation) is wallet/phone-driven and is exercised by `scripts/e2e-smoke.sh` step 6 (§7.5 tracks folding it into `e2e-roles.sh` once a headless consent signer is wired).

@@ -30,7 +30,7 @@ ADMIN_PK="$DEPLOYER_PRIVATE_KEY"; ADMIN_ADDR="$DEPLOYER_ADDRESS"
 run(){ echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & echo $! >> .demo/pids ); }
 
 echo "Building backend binaries (release for speed)…"
-cargo build -q --release -p admin-api -p vet-api
+cargo build -q --release -p admin-api -p vet-api -p government-api
 # The PROVER SERVICE is the SAME vet-api binary but compiled WITH the `prover` feature (which mounts
 # the `/prove-verification` route + the prover-independent circuit-input assembly). We build it to a
 # SEPARATE target dir so the vet/groomer instances stay on the feature-OFF binary — the groomer
@@ -74,14 +74,26 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   CUSTODY_SEAL_PATH="$ROOT/.demo/prover-custody.json" \
   run prover-api ":41875" "$ROOT/target/prover/release/vet-api"
 
+# GOVERNMENT stack — a SEPARATE deployable (its own government-api binary, own port, own DB), not a
+# vet-api re-run. In the demo it runs against LIVE ROAX for gasless reads (verify), so it can verify a
+# credential the vet stack just issued. On-chain issuance (TRAVEL_CLEARANCE) needs a funded, whitelisted
+# GOV_SIGNER_KEY + a DogTagIssuer clone (TRAVEL_CLEARANCE_ISSUER_ADDR) — an ops step; unset here means
+# /issue builds+persists via dry_run. See docs/ROLE_APPS.md §7.
+ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority" ISSUER_DOMAIN=gov.local \
+  CHAIN_ID=135 PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
+  TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}" GOV_SIGNER_KEY="${GOV_SIGNER_KEY:-}" \
+  run government-api ":44832" "$ROOT/target/release/government-api"
+
 echo "Starting portals (vite dev):"
 run admin-web ":39741" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/admin-web dev
 run vet-web    ":41873" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/vet-web dev
 run groomer-web ":43617" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/groomer-web dev
+run government-web ":44831" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/government-web dev
 
 echo
-echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617"
-echo "Backends:     admin :39742  vet :41874  groomer :43618  prover :41875   (ROAX chainId 135)"
+echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617  government http://localhost:44831"
+echo "Backends:     admin :39742  vet :41874  groomer :43618  government :44832  prover :41875   (ROAX chainId 135)"
+echo "Three-role showcase: scripts/e2e-roles.sh --live   (vet ISSUES -> government VERIFIES -> government ISSUES)"
 echo "Prover svc:   POST :41875/prove-verification  (32-bit-Android fallback; set PROVER_PUBLIC_URL to tunnel it)"
 echo "Next: docs/DEMO.md  (genesis the vet -> demo-bootstrap.sh <signer> -> Issue -> Create QR -> scan on phone)"
 echo "For the PHONE: set its server base to this Mac's LAN IP (not localhost) — see docs/DEMO.md."
