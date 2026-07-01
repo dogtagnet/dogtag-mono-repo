@@ -34,3 +34,4 @@ circuits/log_*.txt
 
 # agent memory symlink (AGENTS.md is the committed standard)
 CLAUDE.md
+.demo-gov/

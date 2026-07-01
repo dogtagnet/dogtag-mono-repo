@@ -99,9 +99,45 @@ pub fn build_gov_vc(cfg: &Config, record_type: &str, fields: &Value, dog_tag_id:
         .map(|n| json!(n))
         .unwrap_or_else(|_| json!(dog_tag_id));
 
-    let vc_type = match record_type {
-        EU_HEALTH_CERT => "PetHealthCertificate",
-        _ => "PetTravelClearance",
+    // Each government credential type carries its OWN field set (a travel clearance and an EU health
+    // certificate attest fundamentally different things). All fields are salted, obfuscatable Merkle
+    // leaves — never on-chain in cleartext. `dogTagId` is the common, mandatory binding to the SBT.
+    let (vc_type, legal_basis, subject) = match record_type {
+        EU_HEALTH_CERT => (
+            "PetHealthCertificate",
+            // EU Reg. 576/2013 Annex IV model animal health certificate.
+            "EU-2013-577-AnnexIV-v1",
+            json!({
+                "dogTagId": dog_tag_id_val,
+                "species": get("species", "Canis lupus familiaris"),
+                "breed": get("breed", "Mixed Breed"),
+                "sex": get("sex", "male"),
+                "microchipNumber": get("microchipNumber", "985141006580319"),
+                "microchipImplantDate": get("microchipImplantDate", "2025-06-01"),
+                "rabiesVaccinationDate": get("rabiesVaccinationDate", "2026-01-11"),
+                "rabiesValidUntil": get("rabiesValidUntil", "2027-01-10"),
+                "clinicalExaminationDate": get("clinicalExaminationDate", "2026-01-20"),
+                "healthAttestation": get("healthAttestation", "fit_to_travel"),
+                "destinationMemberState": get("destinationMemberState", "DE"),
+                "certificateNumber": get("certificateNumber", &format!("EU-HC-{dog_tag_id}")),
+                "officialVeterinarian": get("officialVeterinarian", "Dr. A. Muster"),
+            }),
+        ),
+        _ => (
+            "PetTravelClearance",
+            // EU Reg. 576/2013 non-commercial movement of pet animals.
+            "EU-2013-576-v1",
+            json!({
+                "dogTagId": dog_tag_id_val,
+                "originCountry": get("originCountry", "US"),
+                "destinationCountry": get("destinationCountry", "DE"),
+                "purposeOfMovement": get("purposeOfMovement", "non-commercial"),
+                "clearanceReference": get("clearanceReference", &format!("GOV-TC-{dog_tag_id}")),
+                "validFrom": get("validFrom", "2026-01-01"),
+                "validUntil": get("validUntil", "2026-05-01"),
+                "endorsingAuthority": get("endorsingAuthority", &cfg.issuer_name),
+            }),
+        ),
     };
 
     json!({
@@ -115,19 +151,9 @@ pub fn build_gov_vc(cfg: &Config, record_type: &str, fields: &Value, dog_tag_id:
         "attestationType": "authority_endorsement",
         "signatureTrustTier": "accredited_authority",
         "legalEffect": "evidentiary",
-        "legalBasisVersion": get("legalBasisVersion", "EU-2013-576-v1"),
+        "legalBasisVersion": get("legalBasisVersion", legal_basis),
         "jurisdiction": get("jurisdiction", "EU"),
-        "credentialSubject": {
-            "dogTagId": dog_tag_id_val,
-            // travel/consignment fields (salted, obfuscatable leaves — never on-chain in cleartext).
-            "originCountry": get("originCountry", "US"),
-            "destinationCountry": get("destinationCountry", "DE"),
-            "purposeOfMovement": get("purposeOfMovement", "non-commercial"),
-            "clearanceReference": get("clearanceReference", &format!("GOV-{dog_tag_id}")),
-            "validFrom": get("validFrom", "2026-01-01"),
-            "validUntil": get("validUntil", "2026-05-01"),
-            "endorsingAuthority": get("endorsingAuthority", &cfg.issuer_name),
-        }
+        "credentialSubject": subject,
     })
 }
 
@@ -201,6 +227,29 @@ mod tests {
         assert!(doc.signature.merkle_root.starts_with("0x"));
         assert_eq!(doc.signature.merkle_root.len(), 66);
         assert_eq!(doc.issuer.record_type, TRAVEL_CLEARANCE);
+    }
+
+    #[test]
+    fn each_type_has_its_own_field_set() {
+        let cfg = demo_cfg();
+        let tc = build_gov_vc(&cfg, TRAVEL_CLEARANCE, &json!({}), "7");
+        let eu = build_gov_vc(&cfg, EU_HEALTH_CERT, &json!({}), "7");
+        let tc_sub = tc["credentialSubject"].as_object().unwrap();
+        let eu_sub = eu["credentialSubject"].as_object().unwrap();
+        // travel-clearance-only fields
+        assert!(tc_sub.contains_key("originCountry") && tc_sub.contains_key("purposeOfMovement"));
+        assert!(!eu_sub.contains_key("originCountry"));
+        // EU-health-cert-only fields
+        assert!(eu_sub.contains_key("rabiesVaccinationDate") && eu_sub.contains_key("microchipNumber"));
+        assert!(!tc_sub.contains_key("rabiesVaccinationDate"));
+        // both keep the mandatory SBT binding + distinct VC type + legal basis
+        assert!(tc_sub.contains_key("dogTagId") && eu_sub.contains_key("dogTagId"));
+        assert_eq!(tc["type"][1], "PetTravelClearance");
+        assert_eq!(eu["type"][1], "PetHealthCertificate");
+        assert_ne!(tc["legalBasisVersion"], eu["legalBasisVersion"]);
+        // custom field values flow through
+        let eu2 = build_gov_vc(&cfg, EU_HEALTH_CERT, &json!({"microchipNumber":"111222333444555"}), "7");
+        assert_eq!(eu2["credentialSubject"]["microchipNumber"], "111222333444555");
     }
 
     #[test]
