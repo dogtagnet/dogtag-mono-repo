@@ -487,6 +487,7 @@ async fn prepare(
     let calldata = crate::chain::issue_calldata(&root);
     let record_id = uuid::Uuid::new_v4().to_string();
 
+    let created_at = auth::now();
     let mut record = Record {
         record_id: record_id.clone(),
         record_type: body.record_type.clone(),
@@ -500,6 +501,17 @@ async fn prepare(
         confirmed_tx_hash: None,
         signer_address: None,
         signing_mode: None,
+        block_number: None,
+        explorer_url: None,
+        created_at,
+        updated_at: created_at,
+        label: None,
+        notes: None,
+        revoked_tx_hash: None,
+        revoked_block_number: None,
+        revoke_explorer_url: None,
+        invalidated_at: None,
+        invalidation_reason: None,
     };
     st.store.put_record(record.clone()).await;
 
@@ -665,8 +677,12 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
     r.tx_hash = Some(tx_hash.to_string());
     r.signer_address = Some(signer.clone());
     r.signing_mode = Some(st.store.get_settings().await.signing_mode);
+    // Persist the immutable on-chain proof: block number + a ready-to-click explorer link.
+    r.block_number = view.block_number;
+    r.explorer_url = Some(crate::chain::explorer_tx_url(tx_hash));
+    r.updated_at = auth::now();
     st.store.update_record(r).await;
-    Ok(json!({ "recordId": record_id, "status": "issued" }))
+    Ok(json!({ "recordId": record_id, "status": "issued", "blockNumber": view.block_number }))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -692,9 +708,118 @@ async fn revoke(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<S
         Ok(s) => s,
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("revoke broadcast: {e}")),
     };
+    // Soft-invalidation: NEVER delete. Flip to revoked and record the revoke tx's on-chain proof
+    // (hash + block + explorer link) alongside the ORIGINAL issuance proof, which stays intact. The
+    // record remains listable + verifiable (its on-chain `isValid` now reads false).
+    let revoke_block = st
+        .chain
+        .get_tx_view(&sent.tx_hash, &r.issuer_addr, 1)
+        .await
+        .ok()
+        .and_then(|v| v.block_number);
     r.status = RecordStatus::Revoked;
+    r.revoked_tx_hash = Some(sent.tx_hash.clone());
+    r.revoked_block_number = revoke_block;
+    r.revoke_explorer_url = Some(crate::chain::explorer_tx_url(&sent.tx_hash));
+    r.invalidated_at = Some(auth::now());
+    r.updated_at = auth::now();
     st.store.update_record(r).await;
-    ok(json!({ "recordId": id, "status": "revoked", "txHash": sent.tx_hash }))
+    ok(json!({ "recordId": id, "status": "revoked", "txHash": sent.tx_hash, "blockNumber": revoke_block }))
+}
+
+/// GET /records — list every record this device has issued, most-recent first (operator-gated).
+/// Surfaces the full history INCLUDING revoked/expired records with their on-chain proof + explorer
+/// links, so the operator can trace each credential back to the chain and re-verify it.
+async fn list_records(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let records = st.store.list_records().await;
+    ok(json!({ "records": records }))
+}
+
+#[derive(Deserialize)]
+struct UpdateRecordReq {
+    /// `Some(None)` clears the label, `Some(Some(..))` sets it, `None` leaves it unchanged.
+    #[serde(default)]
+    label: Option<Option<String>>,
+    #[serde(default)]
+    notes: Option<Option<String>>,
+    /// Off-chain status transition — only "expired" is permitted here (a validity lapse that needs no
+    /// chain tx). Use POST /records/:id/revoke for on-chain revocation.
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// PATCH /records/:id — update OFF-CHAIN metadata only (operator-gated). On-chain-derived fields (tx
+/// hash, block number, contract/issuer address, root, the anchored wrapped doc) are IMMUTABLE and are
+/// not accepted here — the typed body only exposes off-chain fields, and any on-chain-derived key in
+/// the raw body is rejected with 400. Editable: `label`, `notes`, and `status` (only → `expired`).
+async fn update_record_meta(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(raw): Json<Value>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    // Reject any attempt to set an on-chain-derived field — immutable chain state cannot be edited.
+    const IMMUTABLE_KEYS: &[&str] = &[
+        "recordId", "record_id", "recordType", "record_type", "dogTagId", "dog_tag_id", "root",
+        "merkleRoot", "wrappedDoc", "wrapped_doc", "issuerAddr", "issuer_addr", "contractAddress",
+        "preparedCalldata", "prepared_calldata", "txHash", "tx_hash", "confirmedTxHash",
+        "confirmed_tx_hash", "blockNumber", "block_number", "explorerUrl", "explorer_url",
+        "signerAddress", "signer_address", "revokedTxHash", "revoked_tx_hash", "revokedBlockNumber",
+        "revoked_block_number", "revokeExplorerUrl", "revoke_explorer_url",
+    ];
+    if let Some(obj) = raw.as_object() {
+        for k in obj.keys() {
+            if IMMUTABLE_KEYS.contains(&k.as_str()) {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("field '{k}' is on-chain-derived and immutable"),
+                );
+            }
+        }
+    }
+    let body: UpdateRecordReq = match serde_json::from_value(raw) {
+        Ok(b) => b,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &format!("bad body: {e}")),
+    };
+
+    let mut r = match st.store.get_record(&id).await {
+        Some(r) => r,
+        None => return err(StatusCode::NOT_FOUND, "record not found"),
+    };
+    if let Some(v) = body.label {
+        r.label = v;
+    }
+    if let Some(v) = body.notes {
+        r.notes = v;
+    }
+    if let Some(s) = body.status.as_deref() {
+        match s {
+            "expired" => {
+                r.status = RecordStatus::Expired;
+                r.invalidated_at = Some(auth::now());
+                if r.invalidation_reason.is_none() {
+                    r.invalidation_reason = body.reason.clone();
+                }
+            }
+            other => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("status can only be set to 'expired' via update (got '{other}')"),
+                )
+            }
+        }
+    }
+    r.updated_at = auth::now();
+    st.store.update_record(r.clone()).await;
+    ok(serde_json::to_value(r).unwrap_or(Value::Null))
 }
 
 async fn share(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
@@ -1919,10 +2044,11 @@ pub fn public_router(state: AppState) -> Router {
         // credentials
         .route("/credentials/prepare", post(prepare))
         .route("/credentials/confirm", post(confirm))
-        // records
+        // records — list (own DB), metadata update (off-chain only), revoke (soft-invalidate), share
+        .route("/records", get(list_records))
         .route("/records/:id/revoke", post(revoke))
         .route("/records/:id/share", post(share))
-        .route("/records/:id", get(get_record))
+        .route("/records/:id", get(get_record).patch(update_record_meta))
         // short one-time share token resolver (unauthenticated; consumed on first read)
         .route("/r/:token", get(get_shared))
         // short one-time EXPORT token resolver (unauthenticated; NON-consuming — consume on submit)

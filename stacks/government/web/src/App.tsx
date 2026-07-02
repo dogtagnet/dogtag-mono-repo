@@ -15,6 +15,14 @@ async function apiPost(path: string, body: unknown) {
   });
   return { status: r.status, json: await r.json() };
 }
+async function apiPatch(path: string, body: unknown) {
+  const r = await fetch(`${API_BASE}${path}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: r.status, json: await r.json() };
+}
 
 interface Health {
   status?: string;
@@ -35,6 +43,9 @@ function Header({ health }: { health: Health | null }) {
         </NavLink>
         <NavLink to="/verify" className={({ isActive }) => (isActive ? "active" : "")}>
           Verify
+        </NavLink>
+        <NavLink to="/records" className={({ isActive }) => (isActive ? "active" : "")}>
+          Records
         </NavLink>
       </nav>
     </header>
@@ -303,6 +314,220 @@ function Frag({ label, v, testid }: { label: string; v: unknown; testid?: string
   );
 }
 
+/** A persisted government credential as returned by GET /v1/records (serde camelCase). */
+interface GovRecord {
+  root: string;
+  recordType: string;
+  dogTagId: string;
+  issuerAddr: string;
+  status: string;
+  txHash?: string | null;
+  blockNumber?: number | null;
+  explorerUrl?: string | null;
+  anchored?: boolean;
+  label?: string | null;
+  notes?: string | null;
+  revokedTxHash?: string | null;
+  revokeExplorerUrl?: string | null;
+  invalidationReason?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+/** The authority's own credential ledger: every issued credential with its immutable on-chain proof
+ *  (tx / block / contract / explorer link), editable off-chain metadata, and soft-invalidation. */
+function RecordsPage() {
+  const [records, setRecords] = useState<GovRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [editRoot, setEditRoot] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      const json = await apiGet("/v1/records");
+      setRecords((json.records as GovRecord[]) ?? []);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  function openEdit(rec: GovRecord) {
+    setEditRoot(rec.root);
+    setEditLabel(rec.label ?? "");
+    setEditNotes(rec.notes ?? "");
+  }
+  async function saveEdit() {
+    if (!editRoot) return;
+    setBusy(editRoot);
+    try {
+      const { status, json } = await apiPatch(`/v1/records/${editRoot}`, {
+        label: editLabel || null,
+        notes: editNotes || null,
+      });
+      if (status !== 200) setError(json.error || `HTTP ${status}`);
+      else {
+        setEditRoot(null);
+        await refresh();
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function revoke(rec: GovRecord) {
+    if (!window.confirm("Revoke on-chain? It stays on record (as revoked) and remains verifiable.")) return;
+    setBusy(rec.root);
+    try {
+      const { status, json } = await apiPost(`/v1/records/${rec.root}/revoke`, {
+        reason: "credential withdrawn",
+      });
+      if (status !== 200) setError(json.error || `HTTP ${status}`);
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+  async function markExpired(rec: GovRecord) {
+    if (!window.confirm("Mark expired? It stays on record and keeps its on-chain proof.")) return;
+    setBusy(rec.root);
+    try {
+      const { status, json } = await apiPatch(`/v1/records/${rec.root}`, {
+        status: "expired",
+        reason: "validity window lapsed",
+      });
+      if (status !== 200) setError(json.error || `HTTP ${status}`);
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Issued credentials</h2>
+      <p className="sub">
+        Every credential this authority issued, from its own database - with the on-chain proof (tx,
+        block, contract) and a block-explorer link to verify it. Revoked/expired credentials stay on
+        record. Only off-chain metadata is editable; on-chain state is immutable.
+      </p>
+      <button data-testid="records-refresh" onClick={() => void refresh()} disabled={loading}>
+        {loading ? "Loading…" : "Refresh"}
+      </button>
+      {error && <p className="pill bad" style={{ marginTop: 14 }}>{error}</p>}
+      {records.length === 0 ? (
+        <p className="muted" style={{ marginTop: 14 }}>
+          {loading ? "Loading…" : "No credentials issued yet."}
+        </p>
+      ) : (
+        <table className="records" style={{ marginTop: 14, width: "100%" }}>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Dog tag</th>
+              <th>Status</th>
+              <th>On-chain proof</th>
+              <th>Label</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((rec) => (
+              <tr key={rec.root} data-testid="record-row" data-status={rec.status}>
+                <td>{rec.recordType}</td>
+                <td className="mono">{rec.dogTagId}</td>
+                <td>
+                  <span className={`pill ${rec.status === "issued" ? "ok" : "bad"}`} data-testid="record-status">
+                    {rec.status}
+                  </span>
+                </td>
+                <td>
+                  {rec.explorerUrl || rec.txHash ? (
+                    <div>
+                      <a
+                        data-testid="explorer-link"
+                        href={rec.explorerUrl || `https://explorer.roax.net/tx/${rec.txHash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mono"
+                      >
+                        {rec.txHash?.slice(0, 12)}…
+                      </a>
+                      <div className="muted" style={{ fontSize: 11 }}>
+                        block {rec.blockNumber ?? "?"} · {rec.issuerAddr.slice(0, 10)}…
+                      </div>
+                      {rec.revokeExplorerUrl && (
+                        <a
+                          data-testid="revoke-explorer-link"
+                          href={rec.revokeExplorerUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mono"
+                          style={{ fontSize: 11 }}
+                        >
+                          revoke tx →
+                        </a>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
+                <td className="muted">{rec.label || "—"}</td>
+                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  <button data-testid="edit-open" onClick={() => openEdit(rec)}>
+                    Edit
+                  </button>{" "}
+                  {rec.status === "issued" && (
+                    <>
+                      <button data-testid="expire" disabled={busy === rec.root} onClick={() => markExpired(rec)}>
+                        Expire
+                      </button>{" "}
+                      <button data-testid="revoke" disabled={busy === rec.root} onClick={() => revoke(rec)}>
+                        Revoke
+                      </button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {editRoot && (
+        <div className="wrapped-doc" style={{ marginTop: 18 }} data-testid="edit-panel">
+          <div className="wrapped-doc-head">
+            <strong>Edit off-chain metadata</strong>
+          </div>
+          <p className="sub" style={{ margin: "6px 0 10px" }}>
+            Only the label and notes are editable. The tx hash, block, contract address and anchored
+            document hash are immutable on-chain state.
+          </p>
+          <label>Label</label>
+          <input data-testid="edit-label" value={editLabel} onChange={(e) => setEditLabel(e.target.value)} />
+          <label>Notes</label>
+          <input data-testid="edit-notes" value={editNotes} onChange={(e) => setEditNotes(e.target.value)} />
+          <div style={{ marginTop: 10 }}>
+            <button data-testid="edit-save" disabled={busy === editRoot} onClick={() => void saveEdit()}>
+              Save
+            </button>{" "}
+            <button onClick={() => setEditRoot(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function App() {
   const [health, setHealth] = useState<Health | null>(null);
   useEffect(() => {
@@ -315,6 +540,7 @@ export function App() {
         <Route path="/" element={<Navigate to="/issue" replace />} />
         <Route path="/issue" element={<IssuePage />} />
         <Route path="/verify" element={<VerifyPage health={health} />} />
+        <Route path="/records" element={<RecordsPage />} />
       </Routes>
       <p className="muted">
         chainId {health?.chainId ?? "?"} · signer {health?.signer ?? "none"} ·{" "}

@@ -19,8 +19,10 @@ import type {
   ProfileIssueStartReq,
   ProfileIssueStartResp,
   ProfileIssueStatusResp,
+  RecordsListResp,
   RevokeResp,
   ShareResp,
+  UpdateRecordReq,
   SigningMode,
   SigningModeResp,
   UnlockReq,
@@ -139,6 +141,11 @@ export function createApiClient(opts: ApiClientOptions) {
     confirm: (body: ConfirmReq) => request<ConfirmResp>("POST", "/credentials/confirm", body),
 
     // ---- records ----
+    /** GET /records — list every record from the backend's OWN DB (operator-gated, most-recent first). */
+    listRecords: () => request<RecordsListResp>("GET", "/records"),
+    /** PATCH /records/:id — update OFF-CHAIN metadata only; the backend rejects on-chain-derived fields. */
+    updateRecord: (id: string, body: UpdateRecordReq) =>
+      request<Record<string, unknown>>("PATCH", `/records/${id}`, body),
     revoke: (id: string) => request<RevokeResp>("POST", `/records/${id}/revoke`),
     share: (id: string) => request<ShareResp>("POST", `/records/${id}/share`),
     /** record-JWT bearer (UNAUTHENTICATED by operator session) */

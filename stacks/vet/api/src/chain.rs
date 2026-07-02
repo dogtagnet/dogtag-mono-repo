@@ -117,6 +117,8 @@ pub struct TxView {
     pub chain_id: Option<u64>,
     pub from: String,
     pub success: bool,
+    /// The block number the tx mined into (the immutable on-chain proof stored against the record).
+    pub block_number: Option<u64>,
     /// RootIssued logs emitted by `issuer_addr` in this tx: (root_hex, by_addr).
     pub root_issued_logs: Vec<(String, String)>,
 }
@@ -278,6 +280,11 @@ pub fn revoke_calldata(root: &str) -> String {
         r: parse_b256(root),
     };
     format!("0x{}", hex::encode(call.abi_encode()))
+}
+/// The block-explorer link for a tx hash, per the ROAX explorer scheme (`/tx/<hash>`). Persisted
+/// against a record so the operator has a ready-to-click on-chain proof link.
+pub fn explorer_tx_url(tx_hash: &str) -> String {
+    format!("https://explorer.roax.net/tx/{tx_hash}")
 }
 /// ABI-encode DogTagSBT.mint(to, dogTagId, root). Mirrors admin's `mint_calldata`.
 pub fn mint_calldata(to: &str, dog_tag_id: &str, root: &str) -> String {
@@ -578,6 +585,8 @@ impl ChainClient for MemChain {
             chain_id: Some(ROAX_CHAIN_ID),
             from: signer,
             success: true,
+            // Emulate a monotonic block height so the persisted on-chain proof carries a block number.
+            block_number: Some(1_000 + g.nonce),
             root_issued_logs: logs,
         };
         g.txs.insert(tx_hash.clone(), view);
@@ -1029,6 +1038,7 @@ impl ChainClient for AlloyChain {
             chain_id: tx.inner.chain_id(),
             from: format!("{:#x}", tx.from),
             success: receipt.status(),
+            block_number: receipt.block_number,
             root_issued_logs: logs,
         })
     }

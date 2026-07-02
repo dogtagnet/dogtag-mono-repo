@@ -12,24 +12,62 @@ use serde::{Deserialize, Serialize};
 
 /// A prepared/issued credential record. `prepared_calldata` pins the exact `issue(bytes32)` calldata
 /// so confirm can bind the broadcast tx to THIS draft (impl §11.6).
+///
+/// The record bundles the credential data with its **immutable on-chain proof** — the anchoring tx
+/// hash, the block it mined into, the DogTagIssuer clone (contract) address, and a ready-to-click
+/// block-explorer link — so the operator can always trace a record back to the chain and re-verify
+/// it. On a metadata update the on-chain-derived fields are never mutated; only `label`/`notes`
+/// (off-chain metadata) and the invalidation status are editable.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub record_id: String,
     pub record_type: String,
     pub dog_tag_id: String,
-    /// The wrapped document (dogtag-standard WrappedDoc), serialized.
+    /// The wrapped document (dogtag-standard WrappedDoc), serialized. Carries the anchored document
+    /// hash — IMMUTABLE.
     pub wrapped_doc: serde_json::Value,
-    /// The single Poseidon root R (`0x..` hex32) == doc.signature.merkleRoot.
+    /// The single Poseidon root R (`0x..` hex32) == doc.signature.merkleRoot. IMMUTABLE.
     pub root: String,
     /// hex calldata for issue(root), pinned at prepare time.
     pub prepared_calldata: String,
-    /// the issuer clone address (documentStore) this record anchors to.
+    /// the issuer clone (contract) address (documentStore) this record anchors to. IMMUTABLE.
     pub issuer_addr: String,
     pub status: RecordStatus,
     pub tx_hash: Option<String>,
     pub confirmed_tx_hash: Option<String>,
     pub signer_address: Option<String>,
     pub signing_mode: Option<String>,
+    /// The block number the anchoring (confirmed) tx mined into. IMMUTABLE once set.
+    #[serde(default)]
+    pub block_number: Option<u64>,
+    /// Ready-to-click block-explorer link for the anchoring tx (`https://explorer.roax.net/tx/<hash>`).
+    #[serde(default)]
+    pub explorer_url: Option<String>,
+    /// Unix seconds the record was first prepared.
+    #[serde(default)]
+    pub created_at: u64,
+    /// Unix seconds the record was last touched (issuance, metadata edit, invalidation).
+    #[serde(default)]
+    pub updated_at: u64,
+    /// Operator-editable off-chain label (never anchored).
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Operator-editable off-chain notes (never anchored).
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Set when revoked on-chain: the revoke tx hash + its block + explorer link. IMMUTABLE once set.
+    #[serde(default)]
+    pub revoked_tx_hash: Option<String>,
+    #[serde(default)]
+    pub revoked_block_number: Option<u64>,
+    #[serde(default)]
+    pub revoke_explorer_url: Option<String>,
+    /// Unix seconds the record was invalidated (revoked or expired), if it has been.
+    #[serde(default)]
+    pub invalidated_at: Option<u64>,
+    /// Optional human reason for the invalidation.
+    #[serde(default)]
+    pub invalidation_reason: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +77,9 @@ pub enum RecordStatus {
     Confirming,
     Issued,
     Revoked,
+    /// Marked expired off-chain (validity window lapsed) — the on-chain anchor is untouched, the
+    /// record stays visible + verifiable. A non-destructive state change, never a row removal.
+    Expired,
 }
 
 /// A verifier session (impl §3.9).
@@ -231,6 +272,9 @@ pub trait Store: Send + Sync {
     async fn put_record(&self, r: Record);
     async fn get_record(&self, id: &str) -> Option<Record>;
     async fn update_record(&self, r: Record);
+    /// List all records, most-recently-created first. Surfaces revoked/expired history too (never
+    /// filtered) so the operator can trace every credential this device ever issued.
+    async fn list_records(&self) -> Vec<Record>;
     /// true if any record currently has status == prepared.
     async fn has_prepared(&self) -> bool;
     /// idempotency lookup: record already confirmed at this txHash.
@@ -375,6 +419,23 @@ impl Store for MemStore {
             .unwrap()
             .records
             .insert(r.record_id.clone(), r);
+    }
+    async fn list_records(&self) -> Vec<Record> {
+        let mut v: Vec<Record> = self
+            .inner
+            .read()
+            .unwrap()
+            .records
+            .values()
+            .cloned()
+            .collect();
+        // Most-recent first; created_at is the primary key, record_id breaks ties deterministically.
+        v.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.record_id.cmp(&a.record_id))
+        });
+        v
     }
     async fn has_prepared(&self) -> bool {
         self.inner

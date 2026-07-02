@@ -63,6 +63,16 @@ impl Store for MongoStore {
     async fn update_record(&self, r: Record) {
         self.put_record(r).await;
     }
+    async fn list_records(&self) -> Vec<Record> {
+        use futures::TryStreamExt;
+        use mongodb::options::FindOptions;
+        // Most-recent first (created_at desc). Records with no created_at (legacy) sort last.
+        let opts = FindOptions::builder().sort(doc! { "created_at": -1 }).build();
+        match self.records().find(doc! {}).with_options(opts).await {
+            Ok(cur) => cur.try_collect().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
     async fn has_prepared(&self) -> bool {
         self.records()
             .find_one(doc! { "status": "prepared" })

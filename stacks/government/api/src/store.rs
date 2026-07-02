@@ -14,28 +14,89 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Lifecycle state of an issued credential. `delete` is NEVER a row removal — an anchored credential
+/// transitions to `Revoked` (on-chain revoke path) or `Expired` (off-chain validity lapse) and stays
+/// in the DB with its on-chain proof intact, still verifiable on the block explorer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CredentialStatus {
+    /// Built + persisted but not yet anchored on-chain (dry-run / no signer).
+    Draft,
+    /// Anchored on-chain and currently valid.
+    Issued,
+    /// Invalidated on-chain via `DogTagIssuer.revoke` — `isValid` is now false, history retained.
+    Revoked,
+    /// Marked expired off-chain (validity window lapsed) — the on-chain anchor is untouched.
+    Expired,
+}
+
 /// An issued government credential (TRAVEL_CLEARANCE / EU_HEALTH_CERT / authority-endorsement).
+///
+/// The record bundles the credential data with its **immutable on-chain proof** — the anchoring tx
+/// hash, the block it mined into, the DogTagIssuer clone (contract) address, and a ready-to-click
+/// block-explorer link — so the authority can always trace a credential back to the chain and
+/// re-verify it. On-chain-derived fields are never mutated by an update; only `label`/`notes`/`status`
+/// (off-chain metadata) are editable.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IssuedCredential {
-    /// The anchored Poseidon root `R` (== signature.merkleRoot) — the primary key.
+    /// The anchored Poseidon root `R` (== signature.merkleRoot) — the primary key. IMMUTABLE.
     pub root: String,
     #[serde(rename = "recordType")]
     pub record_type: String,
     #[serde(rename = "dogTagId")]
     pub dog_tag_id: String,
-    /// The DogTagIssuer clone the root was anchored to.
+    /// The DogTagIssuer clone (contract) address the root was anchored to. IMMUTABLE.
     #[serde(rename = "issuerAddr")]
     pub issuer_addr: String,
     /// The full wrapped credential document (the holder receives a copy; the authority is custodian).
+    /// Carries the anchored credential/document hash, so it is IMMUTABLE.
     #[serde(rename = "wrappedDoc")]
     pub wrapped_doc: Value,
     /// Anchoring tx hash, when the root was issued on-chain (absent when built but not yet anchored).
+    /// IMMUTABLE.
     #[serde(rename = "txHash", skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<String>,
+    /// The block number the anchoring tx mined into. IMMUTABLE.
+    #[serde(rename = "blockNumber", skip_serializing_if = "Option::is_none")]
+    pub block_number: Option<u64>,
+    /// Ready-to-click block-explorer link for the anchoring tx (`https://explorer.roax.net/tx/<hash>`).
+    /// IMMUTABLE.
+    #[serde(rename = "explorerUrl", skip_serializing_if = "Option::is_none")]
+    pub explorer_url: Option<String>,
     #[serde(rename = "anchored")]
     pub anchored: bool,
+    /// Lifecycle state (see `CredentialStatus`). Mutable only through the invalidate / expire paths.
+    #[serde(default = "default_status")]
+    pub status: CredentialStatus,
+    /// Operator-editable off-chain label (e.g. a case reference). Never anchored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Operator-editable off-chain notes. Never anchored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// Set when revoked on-chain: the revoke tx hash. IMMUTABLE once set.
+    #[serde(rename = "revokedTxHash", skip_serializing_if = "Option::is_none")]
+    pub revoked_tx_hash: Option<String>,
+    /// Set when revoked on-chain: the revoke tx block number. IMMUTABLE once set.
+    #[serde(rename = "revokedBlockNumber", skip_serializing_if = "Option::is_none")]
+    pub revoked_block_number: Option<u64>,
+    /// Set when revoked on-chain: the revoke tx explorer link. IMMUTABLE once set.
+    #[serde(rename = "revokeExplorerUrl", skip_serializing_if = "Option::is_none")]
+    pub revoke_explorer_url: Option<String>,
+    /// Unix seconds the credential was invalidated (revoked or expired), if it has been.
+    #[serde(rename = "invalidatedAt", skip_serializing_if = "Option::is_none")]
+    pub invalidated_at: Option<u64>,
+    /// Optional human reason for the invalidation.
+    #[serde(rename = "invalidationReason", skip_serializing_if = "Option::is_none")]
+    pub invalidation_reason: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: u64,
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: u64,
+}
+
+fn default_status() -> CredentialStatus {
+    CredentialStatus::Issued
 }
 
 /// A recorded verification the authority performed against the ROAX contracts.
