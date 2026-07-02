@@ -468,7 +468,9 @@ async fn revoke_record(
     cred.revoked_block_number = sent.block_number;
     cred.revoke_explorer_url = Some(crate::chain::explorer_tx_url(&sent.tx_hash));
     cred.invalidated_at = Some(now());
-    cred.invalidation_reason = reason;
+    if reason.is_some() {
+        cred.invalidation_reason = reason;
+    }
     cred.updated_at = now();
     st.store.put_credential(cred.clone()).await;
 

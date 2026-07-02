@@ -499,10 +499,12 @@ function RecordsPage() {
                       <button data-testid="expire" disabled={busy === rec.root} onClick={() => markExpired(rec)}>
                         Expire
                       </button>{" "}
-                      <button data-testid="revoke" disabled={busy === rec.root} onClick={() => revoke(rec)}>
-                        Revoke
-                      </button>
                     </>
+                  )}
+                  {(rec.status === "issued" || rec.status === "expired") && (
+                    <button data-testid="revoke" disabled={busy === rec.root} onClick={() => revoke(rec)}>
+                      Revoke
+                    </button>
                   )}
                 </td>
               </tr>

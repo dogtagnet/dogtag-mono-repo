@@ -296,4 +296,20 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
     assert!(mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
     let (_s, b) = call(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(b["records"][0]["status"], "expired");
+
+    // expired -> revoked with an empty body keeps the recorded expiry reason.
+    let (s, b) = call_auth(
+        &state,
+        "POST",
+        &format!("/v1/records/{root}/revoke"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "revoke after expire: {b}");
+    assert_eq!(b["status"], "revoked");
+    assert_eq!(
+        b["invalidationReason"], "validUntil lapsed",
+        "revoke without a reason preserves the prior expiry reason"
+    );
+    assert!(!mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
 }

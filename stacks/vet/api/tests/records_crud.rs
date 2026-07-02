@@ -115,6 +115,44 @@ async fn patch_updates_offchain_but_rejects_onchain_fields() {
     // on-chain fields untouched.
     assert_eq!(b["root"], root);
 
+    // an absent key leaves the field unchanged.
+    let (s, b) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&op),
+        Some(serde_json::json!({ "notes": "annual booster" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "patch notes only: {b}");
+    assert_eq!(b["label"], "Rex — booster", "absent label key stays unchanged");
+    assert_eq!(b["notes"], "annual booster");
+
+    // an explicit JSON null clears the field.
+    let (s, b) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&op),
+        Some(serde_json::json!({ "label": null })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "patch label null: {b}");
+    assert!(b["label"].is_null(), "null label clears the stored value: {b}");
+    assert_eq!(b["notes"], "annual booster", "notes untouched by label clear");
+
+    // restore the label for the trailing proof-survival assertion below.
+    let (s, b) = call(
+        &app,
+        "PATCH",
+        &path,
+        Some(&op),
+        Some(serde_json::json!({ "label": "Rex — booster" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "patch label restore: {b}");
+    assert_eq!(b["label"], "Rex — booster");
+
     // every on-chain-derived key is rejected (immutable chain state).
     for (k, v) in [
         ("txHash", serde_json::json!("0xdead")),

@@ -740,11 +740,6 @@ async fn list_records(State(st): State<AppState>, headers: HeaderMap) -> Resp {
 
 #[derive(Deserialize)]
 struct UpdateRecordReq {
-    /// `Some(None)` clears the label, `Some(Some(..))` sets it, `None` leaves it unchanged.
-    #[serde(default)]
-    label: Option<Option<String>>,
-    #[serde(default)]
-    notes: Option<Option<String>>,
     /// Off-chain status transition — only "expired" is permitted here (a validity lapse that needs no
     /// chain tx). Use POST /records/:id/revoke for on-chain revocation.
     #[serde(default)]
@@ -785,6 +780,10 @@ async fn update_record_meta(
             }
         }
     }
+    // label / notes — free-form off-chain metadata (present + null clears, present + string sets,
+    // absent leaves unchanged).
+    let label_update = raw.get("label").map(|v| v.as_str().map(String::from));
+    let notes_update = raw.get("notes").map(|v| v.as_str().map(String::from));
     let body: UpdateRecordReq = match serde_json::from_value(raw) {
         Ok(b) => b,
         Err(e) => return err(StatusCode::BAD_REQUEST, &format!("bad body: {e}")),
@@ -794,10 +793,10 @@ async fn update_record_meta(
         Some(r) => r,
         None => return err(StatusCode::NOT_FOUND, "record not found"),
     };
-    if let Some(v) = body.label {
+    if let Some(v) = label_update {
         r.label = v;
     }
-    if let Some(v) = body.notes {
+    if let Some(v) = notes_update {
         r.notes = v;
     }
     if let Some(s) = body.status.as_deref() {
