@@ -14,7 +14,7 @@
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -59,6 +59,32 @@ fn ok(v: Value) -> Resp {
 fn err(code: StatusCode, msg: &str) -> Resp {
     eprintln!("[err {code}] {msg}");
     (code, Json(json!({ "error": msg })))
+}
+
+/// Gate for the record MUTATION endpoints (PATCH + revoke): require `Authorization: Bearer <token>`
+/// matching the configured `GOV_API_TOKEN`. Unconfigured token fails closed (503). Reads, verify and
+/// issue stay open.
+fn require_api_token(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
+    let expected = match st.cfg.api_token.as_deref() {
+        Some(t) => t,
+        None => {
+            return Err(err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "GOV_API_TOKEN not configured",
+            ))
+        }
+    };
+    let presented = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match presented {
+        Some(t) if t == expected => Ok(()),
+        _ => Err(err(
+            StatusCode::UNAUTHORIZED,
+            "missing or invalid bearer token",
+        )),
+    }
 }
 
 /// Monotonic-ish wall clock (seconds). Government records are audit metadata, not consensus-critical.
@@ -320,9 +346,13 @@ async fn get_record(State(st): State<AppState>, Path(root): Path<String>) -> Res
 /// `expired`, the off-chain validity lapse — use the revoke endpoint for on-chain invalidation).
 async fn update_record(
     State(st): State<AppState>,
+    headers: HeaderMap,
     Path(root): Path<String>,
     Json(body): Json<Value>,
 ) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
     let obj = match body.as_object() {
         Some(o) => o,
         None => return err(StatusCode::BAD_REQUEST, "body must be a JSON object"),
@@ -354,6 +384,12 @@ async fn update_record(
     if let Some(v) = obj.get("status") {
         match v.as_str() {
             Some("expired") => {
+                if cred.status == CredentialStatus::Revoked {
+                    return err(
+                        StatusCode::CONFLICT,
+                        "credential is revoked on-chain; revoked is terminal and cannot be downgraded to expired",
+                    );
+                }
                 cred.status = CredentialStatus::Expired;
                 cred.invalidated_at = Some(now());
                 if cred.invalidation_reason.is_none() {
@@ -388,9 +424,13 @@ struct RevokeBody {
 /// verifiable on the block explorer (its `isValid` now reads false).
 async fn revoke_record(
     State(st): State<AppState>,
+    headers: HeaderMap,
     Path(root): Path<String>,
     body: Option<Json<RevokeBody>>,
 ) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
     let reason = body.and_then(|Json(b)| b.reason);
 
     let mut cred = match st.store.get_credential(&root).await {

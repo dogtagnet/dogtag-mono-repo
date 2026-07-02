@@ -2,15 +2,21 @@ import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 
 const API_BASE = import.meta.env.VITE_GOV_API_BASE || "/api";
+// Bearer token for the record MUTATION endpoints (PATCH + revoke). The fallback matches the
+// backend's demo-mode default so the demo portal works out of the box; set VITE_GOV_API_TOKEN
+// (and GOV_API_TOKEN on the API) for a real deployment.
+const API_TOKEN = import.meta.env.VITE_GOV_API_TOKEN || "dogtag-gov-demo-token";
 
 async function apiGet(path: string) {
   const r = await fetch(`${API_BASE}${path}`);
   return r.json();
 }
-async function apiPost(path: string, body: unknown) {
+async function apiPost(path: string, body: unknown, opts?: { auth?: boolean }) {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (opts?.auth) headers.authorization = `Bearer ${API_TOKEN}`;
   const r = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   return { status: r.status, json: await r.json() };
@@ -18,7 +24,7 @@ async function apiPost(path: string, body: unknown) {
 async function apiPatch(path: string, body: unknown) {
   const r = await fetch(`${API_BASE}${path}`, {
     method: "PATCH",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", authorization: `Bearer ${API_TOKEN}` },
     body: JSON.stringify(body),
   });
   return { status: r.status, json: await r.json() };
@@ -387,9 +393,11 @@ function RecordsPage() {
     if (!window.confirm("Revoke on-chain? It stays on record (as revoked) and remains verifiable.")) return;
     setBusy(rec.root);
     try {
-      const { status, json } = await apiPost(`/v1/records/${rec.root}/revoke`, {
-        reason: "credential withdrawn",
-      });
+      const { status, json } = await apiPost(
+        `/v1/records/${rec.root}/revoke`,
+        { reason: "credential withdrawn" },
+        { auth: true },
+      );
       if (status !== 200) setError(json.error || `HTTP ${status}`);
       await refresh();
     } finally {

@@ -26,6 +26,20 @@ async fn main() {
     // is configured AND GOV_DEMO_MODE is set. Production leaves GOV_DEMO_MODE unset.
     let demo = truthy("GOV_DEMO_MODE") || truthy("VITE_DEMO_MODE") || truthy("DEMO_MODE");
 
+    // Bearer token gating the record MUTATION endpoints (PATCH + revoke). Demo mode falls back to
+    // the well-known demo token; production without GOV_API_TOKEN fails closed on mutations (503).
+    let api_token = match std::env::var("GOV_API_TOKEN") {
+        Ok(t) if !t.trim().is_empty() => Some(t.trim().to_string()),
+        _ if demo => Some("dogtag-gov-demo-token".to_string()),
+        _ => None,
+    };
+    if api_token.is_none() {
+        tracing::warn!(
+            "no GOV_API_TOKEN configured - record mutation endpoints (PATCH /v1/records/:root, \
+             POST /v1/records/:root/revoke) will refuse with 503 until it is set"
+        );
+    }
+
     let cfg = Config {
         deployment_url: env("DEPLOYMENT_URL", &format!("http://localhost:{port}")),
         rpc_url: rpc_url.clone(),
@@ -45,6 +59,7 @@ async fn main() {
         issuer_name: env("ISSUER_NAME", "DogTag Government Authority"),
         issuer_domain: env("ISSUER_DOMAIN", "gov.example"),
         demo,
+        api_token,
     };
 
     // Chain client selection.

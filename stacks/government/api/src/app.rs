@@ -37,6 +37,10 @@ pub struct Config {
     pub issuer_domain: String,
     /// Whether this deployment is in demo mode (MemChain/MemStore, relaxed secrets).
     pub demo: bool,
+    /// Bearer token gating the record MUTATION endpoints (PATCH /v1/records/:root and
+    /// POST /v1/records/:root/revoke). `None` means unconfigured: mutations fail closed (503).
+    /// Reads, verify and issue stay open.
+    pub api_token: Option<String>,
 }
 
 impl Config {
@@ -212,6 +216,7 @@ mod tests {
             issuer_name: "DogTag Government Authority".into(),
             issuer_domain: "gov.example".into(),
             demo: true,
+            api_token: Some("dogtag-gov-demo-token".into()),
         }
     }
 

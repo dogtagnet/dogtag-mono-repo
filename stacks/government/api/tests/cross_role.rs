@@ -63,6 +63,7 @@ fn government_stack(chain: MemChain) -> AppState {
         issuer_name: "Example Competent Authority".into(),
         issuer_domain: "gov.example".into(),
         demo: true,
+        api_token: Some("dogtag-gov-demo-token".into()),
     };
     let store: Arc<dyn Store> = Arc::new(MemStore::new());
     AppState {

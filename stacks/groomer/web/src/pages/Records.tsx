@@ -240,27 +240,27 @@ export function Records() {
                           <QrIcon className="h-4 w-4" /> QR
                         </Button>
                         {rec.status === "issued" && (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              data-testid="expire"
-                              loading={busyId === rec.record_id}
-                              onClick={() => markExpired(rec)}
-                              title="Mark expired (off-chain)"
-                            >
-                              <Clock className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              data-testid="revoke"
-                              loading={busyId === rec.record_id}
-                              onClick={() => revoke(rec)}
-                            >
-                              <Ban className="h-4 w-4" /> Revoke
-                            </Button>
-                          </>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            data-testid="expire"
+                            loading={busyId === rec.record_id}
+                            onClick={() => markExpired(rec)}
+                            title="Mark expired (off-chain)"
+                          >
+                            <Clock className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {(rec.status === "issued" || rec.status === "expired") && (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            data-testid="revoke"
+                            loading={busyId === rec.record_id}
+                            onClick={() => revoke(rec)}
+                          >
+                            <Ban className="h-4 w-4" /> Revoke
+                          </Button>
                         )}
                       </div>
                     </TableCell>

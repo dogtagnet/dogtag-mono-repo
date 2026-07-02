@@ -700,8 +700,8 @@ async fn revoke(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<S
         Some(r) => r,
         None => return err(StatusCode::NOT_FOUND, "record not found"),
     };
-    if r.status != RecordStatus::Issued {
-        return err(StatusCode::CONFLICT, "record not issued");
+    if !matches!(r.status, RecordStatus::Issued | RecordStatus::Expired) {
+        return err(StatusCode::CONFLICT, "record not issued or expired");
     }
     let calldata = crate::chain::revoke_calldata(&r.root);
     let sent = match st.chain.sign_and_send(0, &r.issuer_addr, &calldata).await {
@@ -803,6 +803,12 @@ async fn update_record_meta(
     if let Some(s) = body.status.as_deref() {
         match s {
             "expired" => {
+                if r.status == RecordStatus::Revoked {
+                    return err(
+                        StatusCode::CONFLICT,
+                        "record is revoked on-chain; revoked is terminal and cannot be downgraded to expired",
+                    );
+                }
                 r.status = RecordStatus::Expired;
                 r.invalidated_at = Some(auth::now());
                 if r.invalidation_reason.is_none() {

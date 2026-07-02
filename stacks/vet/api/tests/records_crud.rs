@@ -81,7 +81,10 @@ async fn issue_persists_onchain_proof_and_lists_from_db() {
     // on-chain proof: tx hash + block number + a ready-to-click explorer link.
     let tx = rec["tx_hash"].as_str().expect("tx hash persisted");
     assert!(tx.starts_with("0x"));
-    assert!(rec["block_number"].as_u64().is_some(), "block number persisted");
+    assert!(
+        rec["block_number"].as_u64().is_some(),
+        "block number persisted"
+    );
     assert_eq!(
         rec["explorer_url"].as_str().unwrap(),
         format!("https://explorer.roax.net/tx/{tx}"),
@@ -168,14 +171,21 @@ async fn revoke_is_soft_invalidation_keeping_history_and_proof() {
     assert_eq!(s, StatusCode::OK, "revoke: {b}");
 
     // on-chain: isValid flips to false (invalidated) but the historical anchor is untouched.
-    assert!(!mem.is_valid(ISSUER, &root).await.unwrap(), "revoked on-chain");
+    assert!(
+        !mem.is_valid(ISSUER, &root).await.unwrap(),
+        "revoked on-chain"
+    );
     assert!(!mem.issued_at(ISSUER, &root).await.unwrap().is_zero());
 
     // the record is NOT deleted — it stays listed as `revoked` with BOTH its original issuance proof
     // AND the revoke tx proof, still traceable to the explorer.
     let (_s, b) = call(&app, "GET", "/records", Some(&op), None).await;
     let records = b["records"].as_array().unwrap();
-    assert_eq!(records.len(), 1, "revoked record is retained (never deleted)");
+    assert_eq!(
+        records.len(),
+        1,
+        "revoked record is retained (never deleted)"
+    );
     let rec = &records[0];
     assert_eq!(rec["status"], "revoked");
     let orig_tx = rec["tx_hash"].as_str().unwrap();
@@ -191,7 +201,7 @@ async fn revoke_is_soft_invalidation_keeping_history_and_proof() {
     );
     assert!(rec["invalidated_at"].as_u64().is_some());
 
-    // double-revoke is a conflict (already not `issued`).
+    // double-revoke is a conflict (already revoked).
     let (s, _b) = call(
         &app,
         "POST",
@@ -201,6 +211,76 @@ async fn revoke_is_soft_invalidation_keeping_history_and_proof() {
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT, "already-revoked -> 409");
+
+    // revoked is terminal: expiring a revoked record -> 409, status stays `revoked` (an off-chain
+    // `expired` must never mask the on-chain revocation).
+    let (s, b) = call(
+        &app,
+        "PATCH",
+        &format!("/records/{record_id}"),
+        Some(&op),
+        Some(serde_json::json!({ "status": "expired" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "expire-after-revoke -> 409: {b}");
+    let (_s, b) = call(&app, "GET", "/records", Some(&op), None).await;
+    assert_eq!(
+        b["records"][0]["status"], "revoked",
+        "never downgraded to expired"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_records_can_still_be_revoked_onchain() {
+    let (app, mem, op) = booted().await;
+    let (record_id, root) = issue_one(&app, &op, "11").await;
+
+    let (s, b) = call(
+        &app,
+        "PATCH",
+        &format!("/records/{record_id}"),
+        Some(&op),
+        Some(serde_json::json!({ "status": "expired", "reason": "validUntil lapsed" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "expire: {b}");
+    assert!(
+        mem.is_valid(ISSUER, &root).await.unwrap(),
+        "expiry is off-chain only"
+    );
+
+    // an expired record can still be invalidated on-chain (e.g. compromised-but-expired credential).
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/records/{record_id}/revoke"),
+        Some(&op),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "expired -> revoked: {b}");
+    assert!(
+        !mem.is_valid(ISSUER, &root).await.unwrap(),
+        "isValid flips false"
+    );
+
+    // the row is retained with its ORIGINAL issuance proof plus the NEW revoke-tx proof.
+    let (_s, b) = call(&app, "GET", "/records", Some(&op), None).await;
+    let records = b["records"].as_array().unwrap();
+    assert_eq!(records.len(), 1);
+    let rec = &records[0];
+    assert_eq!(rec["status"], "revoked");
+    let orig_tx = rec["tx_hash"].as_str().unwrap();
+    assert_eq!(
+        rec["explorer_url"].as_str().unwrap(),
+        format!("https://explorer.roax.net/tx/{orig_tx}"),
+        "original issuance proof intact"
+    );
+    let revoke_tx = rec["revoked_tx_hash"].as_str().unwrap();
+    assert_eq!(
+        rec["revoke_explorer_url"].as_str().unwrap(),
+        format!("https://explorer.roax.net/tx/{revoke_tx}")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -220,12 +300,18 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
     assert_eq!(b["status"], "expired");
 
     // expiry is OFF-CHAIN: the anchor is untouched, the record retained + still verifiable on-chain.
-    assert!(mem.is_valid(ISSUER, &root).await.unwrap(), "anchor untouched by expiry");
+    assert!(
+        mem.is_valid(ISSUER, &root).await.unwrap(),
+        "anchor untouched by expiry"
+    );
     let (_s, b) = call(&app, "GET", "/records", Some(&op), None).await;
     let rec = &b["records"][0];
     assert_eq!(rec["status"], "expired");
     assert_eq!(rec["invalidation_reason"], "validUntil lapsed");
-    assert!(rec["tx_hash"].as_str().unwrap().starts_with("0x"), "proof intact");
+    assert!(
+        rec["tx_hash"].as_str().unwrap().starts_with("0x"),
+        "proof intact"
+    );
 
     // arbitrary status transitions are rejected.
     let (s, _b) = call(
@@ -236,5 +322,9 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
         Some(serde_json::json!({ "status": "issued" })),
     )
     .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "only 'expired' is allowed via patch");
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "only 'expired' is allowed via patch"
+    );
 }
