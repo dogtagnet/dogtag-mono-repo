@@ -54,8 +54,8 @@ The vet backend is the legal **record-custodian**: it holds full credential reco
 On-chain we anchor **only** the salted root `R` — all PII stays in the vet's Mongo, erasable per the DPIA.
 
 **API + web surface.**
-`vet-api` (Axum): issue → prepare/confirm, share, third-party verify, export-session (owner→verifier ZK consent), calendar sync, custody genesis/unlock.
-`vet-web` (React+Vite+`@dogtag/ui`): issue wizards (dog-tag + vaccination), records, verify, settings.
+`vet-api` (Axum): issue → prepare/confirm, share, third-party verify, export-session (owner→verifier ZK consent), calendar sync, custody genesis/unlock; records management (`GET /records` operator-gated list, `PATCH /records/:id` off-chain metadata only — on-chain-derived fields rejected, `POST /records/:id/revoke` soft-invalidation) — each record bundles its immutable on-chain proof (tx hash, block number, issuer clone, explorer link).
+`vet-web` (React+Vite+`@dogtag/ui`): issue wizards (dog-tag + vaccination), records (DB-backed list + edit/expire/revoke), verify, settings.
 
 **Deployment.** `stacks/vet/docker-compose.yml`: `caddy` (TLS) + `web` (nginx) + `api` (`vet-api`, `--features mongo`) + `mongo` (internal). Host `41873`/`41874`.
 
@@ -90,7 +90,7 @@ It realizes the architecture's **future-government** notes (§3.6 record-type ta
 **Centralized DB (what it stores off-chain and why).**
 Its own Mongo (`governmentdata`), two collections:
 
-- `credentials` — every issued government credential, keyed by its anchored root `R`: the full wrapped document (salted cleartext leaves the authority is custodian of — origin/destination, clearance reference, endorsing authority, validity window), the target `DogTagIssuer` clone, and the anchoring tx hash.
+- `credentials` — every issued government credential, keyed by its anchored root `R`: the full wrapped document (salted cleartext leaves the authority is custodian of — origin/destination, clearance reference, endorsing authority, validity window), the target `DogTagIssuer` clone, and its **immutable on-chain proof** (anchoring tx hash, block number, ready-to-click explorer link), plus off-chain operator metadata (`label`/`notes`) and a status (`issued`/`revoked`/`expired` — soft-invalidation only, never hard-deleted; a revoke adds a revoke-tx proof alongside the issuance proof).
   On-chain holds only `R`; the operational + PII payload stays here.
 - `verifications` — an audit log of every verification the authority performed (root, issuer, per-pillar fragment states, folded verdict, timestamp) — the evidentiary trail a border/authority check needs.
 
@@ -103,10 +103,14 @@ Its own Mongo (`governmentdata`), two collections:
 | `GET /health` | liveness | status + chainId + demo/live + signer + configured issuer clones |
 | `POST /v1/travel-clearance/issue` | **issuer** | build `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` VC → root `R` → anchor `DogTagIssuer.issue(R)` (unless `dry_run` / no signer) → persist |
 | `POST /v1/verify` | **verifier** | integrity + `isValid` + `isWhitelistedFor` → verdict → persist audit record |
-| `GET /v1/records`, `GET /v1/records/:root` | custodian | list / fetch issued credentials (off-chain DB) |
+| `GET /v1/records`, `GET /v1/records/:root` | custodian | list / fetch issued credentials (off-chain DB, incl. the on-chain proof + explorer links) |
+| `PATCH /v1/records/:root` | custodian | update **off-chain metadata only** (`label`/`notes`, `status` → `expired`); any on-chain-derived field is rejected 400 |
+| `POST /v1/records/:root/revoke` | **issuer** | on-chain `DogTagIssuer.revoke(R)` → soft-invalidate (row + issuance proof kept, revoke-tx proof added) |
 | `GET /v1/verifications` | audit | the verification audit log |
 
-`government-web` (React+Vite) — a deliberately **lean** portal skeleton (no shared `@dogtag/ui`/wallet stack): an **Issue** page (record type + pet + consignment fields → issue + anchor) and a **Verify** page (paste a wrapped doc → per-pillar verdict).
+The two record **mutation** routes are gated by `Authorization: Bearer <GOV_API_TOKEN>` (reads/verify/issue/health stay open): missing or wrong token → 401; in demo mode an unset `GOV_API_TOKEN` defaults to `dogtag-gov-demo-token` (the portal's `VITE_GOV_API_TOKEN` falls back to the same value); in live mode with no token configured, mutations fail closed with 503.
+
+`government-web` (React+Vite) — a deliberately **lean** portal skeleton (no shared `@dogtag/ui`/wallet stack): an **Issue** page (record type + pet + consignment fields → issue + anchor), a **Records** page (DB-backed list with the on-chain proof + explorer links, edit label/notes, mark expired, revoke), and a **Verify** page (paste a wrapped doc → per-pillar verdict).
 Kept intentionally minimal so the net-new stack is a reliable, buildable skeleton this PR can ship; §7 lists the gap to portal parity.
 
 **Deployment.** `stacks/government/docker-compose.yml`: `caddy` + `web` (nginx) + `api` (`government-api`, `--features mongo`) + `mongo` (internal). Host `44831`/`44832`.
