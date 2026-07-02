@@ -372,7 +372,18 @@ async fn update_record(
         None => return err(StatusCode::NOT_FOUND, "no credential for that root"),
     };
 
-    // label / notes — free-form off-chain metadata (null clears).
+    // label / notes — free-form off-chain metadata (null clears; any other non-string JSON type is
+    // rejected rather than silently clearing).
+    for key in ["label", "notes"] {
+        if let Some(v) = obj.get(key) {
+            if !v.is_null() && !v.is_string() {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{key} must be a string or null"),
+                );
+            }
+        }
+    }
     if let Some(v) = obj.get("label") {
         cred.label = v.as_str().map(|s| s.to_string());
     }
@@ -384,10 +395,10 @@ async fn update_record(
     if let Some(v) = obj.get("status") {
         match v.as_str() {
             Some("expired") => {
-                if cred.status == CredentialStatus::Revoked {
+                if cred.status != CredentialStatus::Issued {
                     return err(
                         StatusCode::CONFLICT,
-                        "credential is revoked on-chain; revoked is terminal and cannot be downgraded to expired",
+                        "only issued credentials can be expired",
                     );
                 }
                 cred.status = CredentialStatus::Expired;

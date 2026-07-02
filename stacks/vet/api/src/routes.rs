@@ -781,7 +781,17 @@ async fn update_record_meta(
         }
     }
     // label / notes — free-form off-chain metadata (present + null clears, present + string sets,
-    // absent leaves unchanged).
+    // absent leaves unchanged; any other JSON type is rejected rather than silently clearing).
+    for key in ["label", "notes"] {
+        if let Some(v) = raw.get(key) {
+            if !v.is_null() && !v.is_string() {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{key} must be a string or null"),
+                );
+            }
+        }
+    }
     let label_update = raw.get("label").map(|v| v.as_str().map(String::from));
     let notes_update = raw.get("notes").map(|v| v.as_str().map(String::from));
     let body: UpdateRecordReq = match serde_json::from_value(raw) {
@@ -802,10 +812,10 @@ async fn update_record_meta(
     if let Some(s) = body.status.as_deref() {
         match s {
             "expired" => {
-                if r.status == RecordStatus::Revoked {
+                if r.status != RecordStatus::Issued {
                     return err(
                         StatusCode::CONFLICT,
-                        "record is revoked on-chain; revoked is terminal and cannot be downgraded to expired",
+                        "only issued records can be expired",
                     );
                 }
                 r.status = RecordStatus::Expired;

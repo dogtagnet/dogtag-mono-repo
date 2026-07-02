@@ -165,6 +165,15 @@ async fn patch_updates_offchain_but_rejects_onchain_fields() {
         assert_eq!(s, StatusCode::BAD_REQUEST, "on-chain '{k}' rejected: {b}");
         assert!(b["error"].as_str().unwrap_or("").contains("immutable"));
     }
+
+    // a non-string, non-null label/notes is rejected — it must never silently clear the value.
+    for (k, v) in [("label", json!(123)), ("notes", json!({}))] {
+        let (s, b) = call_auth(&state, "PATCH", &path, json!({ k: v })).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "non-string '{k}' rejected: {b}");
+    }
+    let (_s, b) = call(&state, "GET", &path, Value::Null).await;
+    assert_eq!(b["label"], "case-42", "label survives every rejected edit");
+    assert_eq!(b["notes"], "priority");
 }
 
 #[tokio::test]
@@ -312,4 +321,41 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
         "revoke without a reason preserves the prior expiry reason"
     );
     assert!(!mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
+}
+
+#[tokio::test]
+async fn expire_requires_issued_status() {
+    let (state, _mem) = demo_state();
+
+    // dry_run builds + persists the credential as a never-anchored draft.
+    let (s, b) = call(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({
+            "record_type": TRAVEL_CLEARANCE,
+            "dog_tag_id": "8",
+            "fields": { "destinationCountry": "FR" },
+            "dry_run": true
+        }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "dry-run issue: {b}");
+    assert_eq!(b["anchored"], false);
+    let root = b["root"].as_str().unwrap().to_string();
+
+    // a never-anchored draft cannot be expired — only issued credentials can lapse.
+    let (s, b) = call_auth(
+        &state,
+        "PATCH",
+        &format!("/v1/records/{root}"),
+        json!({ "status": "expired" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "expire on draft -> 409: {b}");
+    let (_s, b) = call(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
+    assert_eq!(
+        b["status"], "draft",
+        "draft status unchanged by the rejected expire"
+    );
 }

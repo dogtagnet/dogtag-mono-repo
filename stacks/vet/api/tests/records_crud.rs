@@ -184,12 +184,29 @@ async fn patch_updates_offchain_but_rejects_onchain_fields() {
         );
     }
 
-    // the on-chain proof survived every rejected edit.
+    // a non-string, non-null label/notes is rejected — it must never silently clear the value.
+    for (k, v) in [
+        ("label", serde_json::json!(123)),
+        ("notes", serde_json::json!({})),
+    ] {
+        let (s, b) = call(
+            &app,
+            "PATCH",
+            &path,
+            Some(&op),
+            Some(serde_json::json!({ k: v })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "non-string '{k}' rejected: {b}");
+    }
+
+    // the on-chain proof AND the off-chain metadata survived every rejected edit.
     let (_s, b) = call(&app, "GET", "/records", Some(&op), None).await;
     let rec = &b["records"][0];
     assert_eq!(rec["root"], root);
     assert!(rec["tx_hash"].as_str().unwrap().starts_with("0x"));
     assert_eq!(rec["label"], "Rex — booster");
+    assert_eq!(rec["notes"], "annual booster");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -364,5 +381,52 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
         s,
         StatusCode::BAD_REQUEST,
         "only 'expired' is allowed via patch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expire_requires_issued_status() {
+    let (app, _mem, op) = booted().await;
+
+    // switch to wallet mode so prepare leaves the record in `prepared` (no auto-confirm).
+    let (s, b) = call(
+        &app,
+        "PUT",
+        "/settings/signing-mode",
+        Some(&op),
+        Some(serde_json::json!({ "mode": "wallet" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "mode switch: {b}");
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/credentials/prepare",
+        Some(&op),
+        Some(serde_json::json!({
+            "recordType": "VACCINATION",
+            "dogTagId": "13",
+            "fields": vaccination_fields()
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "prepare: {b}");
+    let record_id = b["recordId"].as_str().unwrap().to_string();
+
+    // a never-issued (prepared) record cannot be expired — that would let it skip issuance and
+    // reach the revoke path with an unanchored root.
+    let (s, b) = call(
+        &app,
+        "PATCH",
+        &format!("/records/{record_id}"),
+        Some(&op),
+        Some(serde_json::json!({ "status": "expired" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "expire on prepared -> 409: {b}");
+    let (_s, b) = call(&app, "GET", "/records", Some(&op), None).await;
+    assert_eq!(
+        b["records"][0]["status"], "prepared",
+        "status unchanged by the rejected expire"
     );
 }
