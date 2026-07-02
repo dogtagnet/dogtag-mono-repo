@@ -24,6 +24,7 @@ sol! {
     #[sol(rpc)]
     contract IDogTagIssuer {
         event RootIssued(bytes32 indexed root, address indexed by, uint256 ts);
+        event RootRevoked(bytes32 indexed root, address indexed by, uint256 ts);
         function issue(bytes32 r) external;
         function revoke(bytes32 r) external;
         function isValid(bytes32 r) external view returns (bool);
@@ -47,10 +48,14 @@ pub enum ChainError {
     Other(String),
 }
 
-/// Result of a broadcast: the tx hash the caller records against the credential.
+/// Result of a broadcast: the tx hash the caller records against the credential, plus the block it
+/// mined into (the immutable on-chain proof surfaced back to the operator alongside the explorer link).
 #[derive(Clone, Debug)]
 pub struct SentTx {
     pub tx_hash: String,
+    /// The block number the tx mined into (`None` when the receipt did not carry one; MemChain
+    /// emulates a monotonic height).
+    pub block_number: Option<u64>,
 }
 
 /// Abstract chain surface. Addresses/roots are passed as lowercase `0x..` hex strings.
@@ -78,6 +83,10 @@ pub trait ChainClient: Send + Sync {
     /// Sign+broadcast `issue(root)` FROM the government signer to the `issuer_addr` clone. Awaits the
     /// receipt so a subsequent `is_valid` read reflects the anchor. Returns the tx hash.
     async fn issue(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError>;
+    /// Sign+broadcast `revoke(root)` FROM the government signer to the `issuer_addr` clone (the
+    /// on-chain soft-invalidation: the root stays issued-history but `isValid` flips to false). Awaits
+    /// the receipt so a subsequent `is_valid` read reflects the revocation. Returns the tx hash.
+    async fn revoke(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -104,6 +113,18 @@ pub fn issue_calldata(root: &str) -> String {
     use alloy::sol_types::SolCall;
     let call = IDogTagIssuer::issueCall { r: parse_b256(root) };
     format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// `revoke(bytes32)` calldata — the on-chain invalidation path (mirrors the vet stack).
+pub fn revoke_calldata(root: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IDogTagIssuer::revokeCall { r: parse_b256(root) };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// The block-explorer link for a tx hash, per the ROAX explorer scheme (`/tx/<hash>`).
+pub fn explorer_tx_url(tx_hash: &str) -> String {
+    format!("https://explorer.roax.net/tx/{tx_hash}")
 }
 
 // --------------------------------------------------------------------------------------------
@@ -205,6 +226,17 @@ impl ChainClient for AlloyChain {
         Ok(r._0)
     }
     async fn issue(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
+        self.send_call(issuer_addr, &issue_calldata(root)).await
+    }
+    async fn revoke(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
+        self.send_call(issuer_addr, &revoke_calldata(root)).await
+    }
+}
+
+impl AlloyChain {
+    /// Sign+broadcast arbitrary calldata FROM the government signer to `to`, await the receipt, and
+    /// return the tx hash + mined block number. Shared by `issue`/`revoke`.
+    async fn send_call(&self, to: &str, calldata: &str) -> Result<SentTx, ChainError> {
         use alloy::network::{EthereumWallet, TransactionBuilder};
         use alloy::providers::{Provider, ProviderBuilder};
         use alloy::rpc::types::TransactionRequest;
@@ -222,7 +254,7 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
 
         let data = Bytes::from(
-            hex::decode(issue_calldata(root).strip_prefix("0x").unwrap_or_default())
+            hex::decode(calldata.strip_prefix("0x").unwrap_or_default())
                 .map_err(|e| ChainError::Other(format!("bad calldata: {e}")))?,
         );
         // LEGACY pricing on ROAX (mirrors vet-api chain.rs): the node's base fee is ~7 wei but its
@@ -233,7 +265,7 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         let tx = TransactionRequest::default()
-            .with_to(parse_addr(issuer_addr))
+            .with_to(parse_addr(to))
             .with_input(data)
             .with_value(U256::ZERO)
             .with_chain_id(self.chain_id)
@@ -251,7 +283,10 @@ impl ChainClient for AlloyChain {
         if !receipt.status() {
             return Err(ChainError::Other(format!("tx reverted: {tx_hash}")));
         }
-        Ok(SentTx { tx_hash })
+        Ok(SentTx {
+            tx_hash,
+            block_number: receipt.block_number,
+        })
     }
 }
 
@@ -359,7 +394,29 @@ impl ChainClient for MemChain {
         g.issued.insert(key, ts);
         g.nonce += 1;
         let tx_hash = format!("0x{:064x}", g.nonce);
-        Ok(SentTx { tx_hash })
+        // Emulate a monotonic block height so the persisted on-chain proof carries a block number.
+        let block_number = Some(1_000 + g.nonce);
+        Ok(SentTx {
+            tx_hash,
+            block_number,
+        })
+    }
+    async fn revoke(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
+        let mut g = self.inner.lock().unwrap();
+        let key = (issuer_addr.to_lowercase(), root.to_lowercase());
+        if g.issued.get(&key).copied().unwrap_or(0) == 0 {
+            return Err(ChainError::Other("BadRoot: not issued".into()));
+        }
+        g.clock += 12;
+        let ts = g.clock;
+        g.revoked.insert(key, ts);
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        let block_number = Some(1_000 + g.nonce);
+        Ok(SentTx {
+            tx_hash,
+            block_number,
+        })
     }
 }
 
@@ -382,8 +439,34 @@ mod tests {
         assert!(!c.is_valid(issuer, root).await.unwrap());
         let tx = c.issue(issuer, root).await.unwrap();
         assert!(tx.tx_hash.starts_with("0x"));
+        assert!(tx.block_number.is_some(), "issue surfaces a block number");
         assert!(c.is_valid(issuer, root).await.unwrap());
         // double-issue rejected
         assert!(c.issue(issuer, root).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn memchain_revoke_flips_valid_but_keeps_history() {
+        let c = MemChain::new();
+        let issuer = "0x1111111111111111111111111111111111111111";
+        let root = "0x3333333333333333333333333333333333333333333333333333333333333333";
+        // can't revoke an unissued root.
+        assert!(c.revoke(issuer, root).await.is_err());
+        c.issue(issuer, root).await.unwrap();
+        assert!(c.is_valid(issuer, root).await.unwrap());
+        let tx = c.revoke(issuer, root).await.unwrap();
+        assert!(tx.tx_hash.starts_with("0x"));
+        assert!(tx.block_number.is_some());
+        // isValid flips to false, but issuedAt (the historical anchor) stays intact.
+        assert!(!c.is_valid(issuer, root).await.unwrap());
+        assert!(!c.issued_at(issuer, root).await.unwrap().is_zero());
+    }
+
+    #[test]
+    fn explorer_url_uses_roax_scheme() {
+        assert_eq!(
+            explorer_tx_url("0xabc"),
+            "https://explorer.roax.net/tx/0xabc"
+        );
     }
 }

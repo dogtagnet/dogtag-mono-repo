@@ -6,7 +6,7 @@
 
 export type SigningMode = "wallet" | "backend";
 export type VerifyMode = "normal" | "zk";
-export type RecordStatus = "prepared" | "issued" | "revoked";
+export type RecordStatus = "prepared" | "confirming" | "issued" | "revoked" | "expired";
 
 // ---- auth ----
 export interface LoginResp {
@@ -88,9 +88,54 @@ export interface RevokeResp {
   recordId: string;
   status: "revoked";
   txHash: string;
+  blockNumber?: number | null;
 }
 export interface ShareResp {
   qrUrl: string;
+}
+
+/**
+ * A persisted credential record as stored in the backend's OWN database (`GET /records`). Field names
+ * mirror the Rust `store::Record` serde defaults (snake_case). Bundles the credential data with its
+ * IMMUTABLE on-chain proof (tx hash, block number, contract/issuer address, explorer link). The
+ * source of truth for the operator's records surface — NOT a browser cache.
+ */
+export interface DbRecord {
+  record_id: string;
+  record_type: string;
+  dog_tag_id: string;
+  root: string;
+  issuer_addr: string;
+  status: RecordStatus;
+  tx_hash?: string | null;
+  confirmed_tx_hash?: string | null;
+  block_number?: number | null;
+  /** ready-to-click block-explorer link for the anchoring tx. */
+  explorer_url?: string | null;
+  created_at?: number;
+  updated_at?: number;
+  /** off-chain, operator-editable metadata. */
+  label?: string | null;
+  notes?: string | null;
+  /** on-chain revocation proof (set once revoked). */
+  revoked_tx_hash?: string | null;
+  revoked_block_number?: number | null;
+  revoke_explorer_url?: string | null;
+  invalidated_at?: number | null;
+  invalidation_reason?: string | null;
+  signer_address?: string | null;
+  signing_mode?: string | null;
+}
+export interface RecordsListResp {
+  records: DbRecord[];
+}
+/** PATCH /records/:id — OFF-CHAIN metadata only. On-chain-derived fields are rejected by the backend. */
+export interface UpdateRecordReq {
+  label?: string | null;
+  notes?: string | null;
+  /** only "expired" is a permitted off-chain transition (validity lapse, no chain tx). */
+  status?: "expired";
+  reason?: string;
 }
 
 // ---- issuer signers (whitelist matrix) ----

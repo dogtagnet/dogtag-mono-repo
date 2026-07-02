@@ -1104,7 +1104,7 @@ Shared across vet, groomer, and admin portals (lives in `packages/ui`):
 ### 5.1 Vet portal (`stacks/vet/web`, port 41873)
 - **Setup wizard**: genesis (show 24 words → confirm challenge → set passphrase), derive accounts, apply for whitelist (enter USDA#/license#), set DNS-TXT instructions for their domain.
 - **Issue credential**: pick recordType → form (schema-driven, validates §1.6) → "Sign & Issue" (POST `/records`) → show txHash + "Show QR" (`/records/{id}/share`, render QR).
-- **Records list**: status (issued/revoked), re-generate QR anytime, revoke.
+- **Records list**: backed by the backend's own DB (`GET /records`, operator-gated) — status (issued/revoked/expired), the immutable on-chain proof (tx, block, contract) + explorer link, edit off-chain label/notes (`PATCH /records/{id}` — on-chain-derived fields rejected), mark expired, re-generate QR anytime, revoke (soft — row + proof kept).
 - **Import from user**: "Import Profile / Vaccination" → show scan prompt → `/import/pull` (off-chain; **decoupled** from Verify below).
 - **Export (on-chain proof-of-verification)** — CHANGESPEC §5: pick purpose + **Normal/ZK toggle** (ZK = default for sensitive purposes; no data imported) → `POST /verify/session/start` → render the one-time **export QR** (`/x/<token>?a=<relayer>`; owner scans, approves consent in-app) → poll session: the owner's phone generates the Groth16 proof **on-device** and POSTs `{proof, pubSignals, consent, bind}` (auth via the one-time `exportToken`) → the relayer submits on-chain → show **on-chain verification status** (pending → `Verified` txHash + explorer link). ZK shows "private — no credential data on chain."
 - **Calendar + Appointments**: connect Google, calendar grid, approve/decline/reschedule (mirrors reference groomer UI).
@@ -1113,7 +1113,7 @@ Shared across vet, groomer, and admin portals (lives in `packages/ui`):
 - Mirrors the reference dashboard (Dashboard/Calendar/Appointments/Clients/Groomers/Reports/Marketing/Settings).
 - Import pet **profile** + **vaccination status** via QR (`/import/*`), verify on chain+DNS before accepting.
 - **Export (on-chain proof-of-verification)**: same **Export** UI as §5.1 — purpose + **Normal/ZK toggle**, show the export QR, on-chain verification status. A groomer can verify a vet-issued vaccination **without being an issuer** (`VERIFY:` whitelist namespace, distinct from issuer roles). Decoupled from `/import/*`.
-- Same genesis/custody setup (groomers can issue their own records too).
+- Same genesis/custody setup (groomers can issue their own records too) + the same DB-backed **Records list** as §5.1 (list / edit off-chain metadata / expire / revoke).
 
 ### 5.3 Admin portal (`stacks/admin/web`, port 39741)
 - Business registry CRUD + map.

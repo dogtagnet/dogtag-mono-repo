@@ -29,13 +29,11 @@ import { CheckCircle2, Sparkles } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 import { useSendTransaction } from "wagmi";
 import { useApp } from "../app/AppContext";
-import { useRecordsStore } from "../app/recordsStore";
 import { env } from "../lib/env";
 
 export function Issue() {
   const { api, signingMode } = useApp();
   const { toast } = useToast();
-  const { upsert } = useRecordsStore();
   const { sendTransactionAsync } = useSendTransaction();
 
   const [recordType, setRecordType] = useState(RECORD_TYPE_SCHEMAS[0]?.recordType ?? "");
@@ -113,15 +111,6 @@ export function Issue() {
       }
       // backend mode → prepare already broadcast + confirmed; txHash is on the response.
 
-      upsert({
-        recordId: prep.recordId,
-        recordType,
-        dogTagId: dogTagId.trim(),
-        merkleRoot: prep.merkleRoot,
-        txHash,
-        status: "issued",
-        createdAt: Date.now(),
-      });
       setIssued({ resp: prep, txHash, issuerAddr });
       toast({ title: "Credential issued", variant: "success" });
     } catch (err) {

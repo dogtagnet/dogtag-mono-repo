@@ -82,6 +82,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority" ISSUER_DOMAIN=gov.local \
   CHAIN_ID=135 PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
   TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}" GOV_SIGNER_KEY="${GOV_SIGNER_KEY:-}" \
+  GOV_API_TOKEN="${GOV_API_TOKEN:-dogtag-gov-demo-token}" \
   run government-api ":44832" "$ROOT/target/release/government-api"
 
 echo "Starting portals (vite dev):"

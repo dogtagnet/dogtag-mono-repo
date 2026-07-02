@@ -27,6 +27,7 @@ fn demo_state() -> (AppState, MemChain) {
         issuer_name: "DogTag Government Authority".into(),
         issuer_domain: "gov.example".into(),
         demo: true,
+        api_token: Some("dogtag-gov-demo-token".into()),
     };
     let chain = MemChain::new();
     // whitelist the demo signer for TRAVEL_CLEARANCE so the issuer-identity pillar can be exercised.
