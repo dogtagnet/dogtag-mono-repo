@@ -361,8 +361,8 @@ async fn prove_verification_proof_matches_and_optionally_verifies_on_chain() {
     let out = std::process::Command::new("cast")
         .args([
             "call",
-            // The live Groth16Verifier the on-device parity test also targets.
-            "0x138b433071Ad806E841B5AD53623290a9bf21761",
+            // The live Groth16Verifier the on-device parity test also targets (v2, live since 2026-07-02).
+            "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
             "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])(bool)",
             &format!("[{},{}]", a[0], a[1]),
             &format!("[[{},{}],[{},{}]]", b[0][0], b[0][1], b[1][0], b[1][1]),

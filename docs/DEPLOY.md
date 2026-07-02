@@ -24,7 +24,8 @@
 > | **ConsentKeyRegistry** (current; gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 > | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 > | **VerificationRegistry** (current; ZK-wired) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
-> | Groth16Verifier | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
+> | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
+> | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
 > | admin / deployer | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 > | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
 > | demo clone DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |

@@ -260,7 +260,7 @@ node_modules/.bin/snarkjs groth16 verify build/verification_key.json <public.jso
 
 The dev/testnet verifier is currently live. Swapping in the production verifier is behind a **2-day timelock** on `VerificationRegistry`: there is **no** single-call `setZkVerifier` — you `propose`, wait, then `execute`.
 
-> **Where things stand now (M2 scout confirmed):** the live `VerificationRegistry` (`0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1`) already points at the deployed verifier `0x138b433071Ad806E841B5AD53623290a9bf21761`. That verifier is the **testnet self-run** key. This step replaces it with the production-ceremony verifier.
+> **Where things stand now:** the live `VerificationRegistry` (`0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1`) points at the v2 testnet self-run verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` (cut over 2026-07-02 after the 2-day timelock). That verifier is still a **testnet self-run** key. This step replaces it with the production-ceremony verifier.
 
 ### 5.1 Build + deploy the production verifier
 
