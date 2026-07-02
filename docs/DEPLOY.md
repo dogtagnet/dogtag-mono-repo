@@ -119,9 +119,11 @@ forge verify-contract --rpc-url $ROAX_RPC \
    path that is now LIVE. So there are **THREE VR generations** — `0xb4FbbDb5…` (zk0) → `0x19C1B5f8…`
    (preMetaTx) → `0x8bA836eCe9…` (current) — and `0x19C1B5f8…` is NOT the current registry.
 
-   The testnet trusted setup (3 contributions + beacon) is recorded in `docs/CEREMONY_TRANSCRIPT.md`
-   (zkey sha256 `45d0b6fb…`); the on-chain wiring + the prod timelock procedure are in `docs/CEREMONY_RUNBOOK.md`
-   (concise version: `docs/CEREMONY.md`).
+   The testnet trusted setup is recorded in `docs/CEREMONY_TRANSCRIPT.md`. The repo now ships the
+   **v2 self-run** (public Hermez ptau + 3 contributions + drand beacon, zkey sha256 `9e3636b9…`); the
+   **live on-chain** `Groth16Verifier` `0x138b4330…` still corresponds to the prior key (`45d0b6fb…`)
+   until the verifier is redeployed and swapped. The on-chain wiring + the prod timelock procedure are in
+   `docs/CEREMONY_RUNBOOK.md` (concise version: `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.
 
 ## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
 

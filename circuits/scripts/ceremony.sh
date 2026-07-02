@@ -23,7 +23,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
 PTAU_POW=17
 PTAU="$ROOT/ptau/powersOfTau28_hez_final_${PTAU_POW}.ptau"
-PTAU_URL="https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_${PTAU_POW}.ptau"
+# Phase-1 = the public Hermez / Perpetual Powers-of-Tau output (we do NOT generate phase 1 ourselves).
+# The original Hermez S3 bucket (hermez.s3-eu-west-1.amazonaws.com) now returns AccessDenied (403), so we
+# fetch the SAME file from Polygon's official zkEVM mirror. The mirror's URL is NOT a trust anchor: `init`
+# runs `snarkjs powersoftau verify` below, which cryptographically validates the whole Hermez contribution
+# chain + beacon regardless of where the bytes came from. Override with PTAU_URL=… to use another mirror.
+PTAU_URL="${PTAU_URL:-https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_${PTAU_POW}.ptau}"
 R1CS="$BUILD/verification.r1cs"
 SNARKJS="$ROOT/node_modules/.bin/snarkjs"
 [ -x "$SNARKJS" ] || SNARKJS="$ROOT/../node_modules/.bin/snarkjs"
@@ -38,8 +43,19 @@ case "$cmd" in
       echo "Downloading Hermez phase-1 powers-of-tau (2^${PTAU_POW})…"
       curl -L --fail -o "$PTAU" "$PTAU_URL"
     fi
-    # sanity: phase-1 file is internally consistent
-    "$SNARKJS" powersoftau verify "$PTAU"
+    # Sanity: phase-1 file is internally consistent. This `powersoftau verify` cryptographically replays
+    # the entire Hermez contribution chain + beacon and is the trust anchor for a mirrored ptau — but on
+    # a 2^17 file it is single-threaded and SLOW (20-30 min). Set CEREMONY_SKIP_PTAU_VERIFY=1 ONLY if you
+    # have already established the ptau's authenticity out of band (e.g. it is the canonical public Hermez
+    # file and its sha256 matches a trusted published value); skipping is recorded in the transcript and
+    # independent auditors should still run the verify per the reproduce steps. Default: verify runs.
+    if [ "${CEREMONY_SKIP_PTAU_VERIFY:-0}" = 1 ]; then
+      echo "SKIPPING 'powersoftau verify' (CEREMONY_SKIP_PTAU_VERIFY=1). ptau sha256:"
+      shasum -a 256 "$PTAU"
+      echo "  -> authenticity must be established out of band (canonical public Hermez file + sha256)."
+    else
+      "$SNARKJS" powersoftau verify "$PTAU"
+    fi
     echo "Creating contribution #0 (verification_0000.zkey)…"
     "$SNARKJS" groth16 setup "$R1CS" "$PTAU" "$BUILD/ceremony_0000.zkey"
     echo
