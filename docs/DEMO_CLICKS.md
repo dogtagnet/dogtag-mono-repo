@@ -6,7 +6,9 @@ click. (Testnet only.) For the full runbook + phone networking + gotchas see **[
 
 Boot first: `scripts/demo-up.sh` (or with a public tunnel on corporate Wi-Fi:
 `VET_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh` — see DEMO.md §6). This also boots the
-**prover-service** on **:41875** (the 32-bit-Android ZK fallback — see §E).
+**prover-service** on **:41875** (the 32-bit-Android ZK fallback — see §E) and the browser-based
+**pet-owner (holder) wallet** on **:45931** (a phone-free alternative for the receive/hold/present side;
+see [`stacks/owner/web/README.md`](../stacks/owner/web/README.md)).
 Automated equivalent of the whole flow: `scripts/e2e-smoke.sh` (7 steps, all PASS on ROAX).
 
 Portals: **admin** http://localhost:39741 · **vet** http://localhost:41873 · **groomer** http://localhost:43617

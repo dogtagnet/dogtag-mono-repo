@@ -22,6 +22,7 @@ DogTag is a **pet-credentialing ecosystem**. Pet owners hold their pets' identit
 |---|---|---|---|
 | Pet-owner app (Android) | Kotlin + Jetpack Compose | End users | `apps/android` |
 | Pet-owner app (iOS) | Swift + SwiftUI | End users | `apps/ios` |
+| Pet-owner (holder) wallet (web) | React+Vite SPA, **no backend** (holds credentials in localStorage) | End users (browser) | `stacks/owner/web` |
 | Vet portal stack | React+Vite SPA + Rust API + MongoDB | **Each vet, self-hosted** (or we host) | `stacks/vet` |
 | Groomer portal stack | React+Vite SPA + Rust API + MongoDB | **Each groomer, self-hosted** (or we host) | `stacks/groomer` |
 | Admin / central stack | React+Vite SPA + Rust API + MongoDB | **We (protocol)** | `stacks/admin` |
@@ -677,7 +678,7 @@ business: store replica, notify staff
 
 ### 9.2 Business (vet/groomer) DB
 - `keystore_meta` — genesis state, encrypted-seed location, derived accounts (addresses+labels only) — backend signing mode.
-- `records` — issued wrapped documents `{recordId, recordType, dogTagId, wrappedDoc, root, txHash, signingMode, signerAddress, custodian, retention{basis, clock}, status}`. **`custodian` (the practice = legal record owner) is distinct from the pet-`Owner`.**
+- `records` — issued wrapped documents `{recordId, recordType, dogTagId, wrappedDoc, root, txHash, blockNumber, explorerUrl, signingMode, signerAddress, custodian, retention{basis, clock}, status, label, notes, revokedTxHash/revokedBlockNumber/revokeExplorerUrl, invalidatedAt/invalidationReason, createdAt/updatedAt}` — each row bundles the credential with its **immutable on-chain proof** (tx hash, block number, explorer link); `status` ∈ prepared/confirming/issued/revoked/expired with **soft-invalidation only** (revoke keeps the row + issuance proof and adds a revoke-tx proof; `expired` is an off-chain-only transition; no delete endpoint). **`custodian` (the practice = legal record owner) is distinct from the pet-`Owner`.**
 - `issuer_signers` — `{issuerEntityId, address, mode('wallet'|'backend'), recordTypes[], whitelistedTxHash, status}` — one issuer entity, many signing addresses (§4.3).
 - `consents` / `consent_receipts` — per-purpose lawful-basis records (mirror of §9.1 for issuer-side processing); includes off-chain `VerificationConsent` receipts for proof-of-verification (deletable, erasure-scoped — §13.7).
 - `verification_records` — verifier-side mirror of recorded `Verified` events `{dogTagId, relayer, subject, purpose, recordType, path, nullifier, credentialRoot, txHash, ts}`.

@@ -1,0 +1,59 @@
+[package]
+name = "government-api"
+version = "0.0.0"
+edition = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+description = "DogTag government credential authority backend (Axum + Alloy + dogtag-standard-rs) — issues TRAVEL_CLEARANCE / authority-endorsement credentials and records government-grade verifications against the ROAX contracts"
+
+[[bin]]
+name = "government-api"
+path = "src/main.rs"
+
+[lib]
+name = "government_api"
+path = "src/lib.rs"
+
+[dependencies]
+dogtag-standard-rs = { path = "../../../crates/dogtag-standard-rs" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+# web
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+http = "1"
+
+# chain (ROAX). Same alloy surface the vet stack uses.
+alloy = { version = "0.8", features = [
+    "full",
+    "signer-mnemonic",
+    "rpc-types",
+    "json-rpc",
+    "contract",
+] }
+
+# misc
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+mongodb = { version = "3", optional = true }
+futures = "0.3"
+
+[features]
+default = []
+# Persistent MongoStore (mirrors vet-api's `mongo` feature). Without it, the binary uses the
+# in-memory MemStore. The Docker image is built with `--features mongo`.
+mongo = ["dep:mongodb"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+hex = { workspace = true }

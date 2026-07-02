@@ -27,6 +27,10 @@ Nav mirrors the reference groomer dashboard:
   (`POST /import/pull`); the backend third-party-verifies on chain + DNS and the portal renders the
   **three authenticity pillars** verdict (integrity / issuance / identity, plus the contextual
   `ownership` fragment which is `NOT_APPLICABLE` for a third-party importer). Decoupled from Verify.
+- **Records** (`/records`) — lists the backend's OWN records DB (`GET /records`, operator-gated):
+  status badges (issued/revoked/expired), the immutable on-chain proof (tx, block, contract) with a
+  block-explorer link, edit off-chain label/notes (`PATCH /records/:id`), mark expired, revoke
+  (`POST /records/:id/revoke`, soft — the row + proof stay). Same page as the vet portal.
 - **Verify** (`/verify`) — the shared `<VerifyFlow/>` (purpose + Normal/ZK toggle → session QR →
   on-chain status). Emphasizes that a groomer can verify a vet-issued vaccination **without being an
   issuer** (the `VERIFY:<purpose>` whitelist namespace, distinct from issuer roles).
@@ -38,13 +42,13 @@ Nav mirrors the reference groomer dashboard:
 
 ## Wired vs placeholder
 
-- **Wired to backend contracts**: login, genesis/confirm/unlock/accounts, signing-mode get/put,
-  issuer signers, import/pull (with 3-pillar verdict render), verify session start, central
-  issuer-application apply.
+- **Wired to backend contracts**: login, genesis/confirm/unlock/accounts, records
+  list/edit/expire/revoke (`GET /records`, `PATCH /records/:id`, `POST /records/:id/revoke`),
+  signing-mode get/put, issuer signers, import/pull (with 3-pillar verdict render), verify
+  session start, central issuer-application apply.
 - **Placeholder**: Calendar, Appointments, Clients, Groomers, Reports, Marketing.
-- **Note**: like the vet portal, the Verify flow shows the session QR + awaiting-consent state;
-  there is no `GET /verify/session/:id` status endpoint in the backend, so the "pending → Verified"
-  transition only advances when a poller is supplied to `<VerifyFlow/>` (left out by design).
+- **Note**: like the vet portal, the Verify flow shows the session QR + awaiting-consent state and
+  polls `GET /verify/session/:id` for the "pending → Verified" transition.
 
 ## Env
 

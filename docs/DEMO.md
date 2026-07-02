@@ -15,6 +15,12 @@ There is **no central `/v1/register`** and **no admin "Registered devices" / "Mi
 This flow is **verified working end-to-end on a real Android device** and by the automated
 `scripts/e2e-smoke.sh` (see [§7](#7-automated-verification-e2e-smokesh)).
 
+> **No phone? Use the browser holder wallet.** The pet-owner (holder) side of this flow (receive a
+> wrapped credential, hold/display it, and present a ZK proof to a verifier) is also available as a
+> backend-less web app at **http://localhost:45931** (`scripts/demo-up.sh` boots it). Paste an issuer's
+> "Copy wrapped document" output to **Receive**, then paste a verifier's `/x/<token>` link into
+> **Present**. See [`stacks/owner/web/README.md`](../stacks/owner/web/README.md).
+
 > **Start here:** this page is the narrated **LOCAL/demo** walkthrough. The authoritative LOCAL runbook
 > is **[LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md)**; `scripts/demo-up.sh` sets **`VITE_DEMO_MODE=1`**
 > (auto-fill + demo buttons + ephemeral MemStore). For a hardened, persistent, self-hosted, **type-
@@ -26,10 +32,11 @@ VerificationRegistry `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` (ZK-wired).
 
 ## 0. Boot
 ```bash
-scripts/demo-up.sh        # builds + starts admin/vet/groomer backends + the 3 portals (vite dev)
-# portals: admin http://localhost:39741 · vet http://localhost:41873 · groomer http://localhost:43617
-# backends: admin :39742 · vet :41874 · groomer :43618   (ROAX chainId 135)
-# also boots the prover-service :41875 (32-bit-Android ZK fallback — see §5)
+scripts/demo-up.sh        # builds + starts admin/vet/groomer/government backends + the role portals + owner wallet (vite dev)
+# portals: admin http://localhost:39741 · vet http://localhost:41873 · groomer http://localhost:43617 · government http://localhost:44831
+# owner wallet (holder, no backend): http://localhost:45931   (Receive a wrapped doc → Present a ZK proof to a verifier's /x/<token> link)
+# backends: admin :39742 · vet :41874 · groomer :43618 · government :44832   (ROAX chainId 135)
+# also boots the prover-service :41875 (32-bit-Android ZK fallback + the owner wallet's trusted prover; see §5)
 # stop with: scripts/demo-down.sh
 ```
 Backends keep records/sessions in an in-memory store (no Mongo needed) — those are **lost on restart** —

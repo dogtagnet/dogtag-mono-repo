@@ -85,7 +85,10 @@ signers each run, and the phone re-creates its wallet on the next launch.
 scripts/demo-up.sh                   # sets VITE_DEMO_MODE=1; wires the new VR + CKR + CONSENT_KEY_REGISTRY_ADDR
 ```
 Portals: admin `:39741`, vet `:41873`, groomer `:43617`. Backends: admin `:39742`, vet `:41874`,
-groomer `:43618`. For a phone on another network, boot with a tunnel:
+groomer `:43618`. `demo-up.sh` also boots the browser **pet-owner (holder) wallet** on `:45931`: a
+phone-free way to run the owner side of this flow, though it delegates proving to the prover-service
+(the same path as the 32-bit-Android fallback below) rather than proving on-device. For a phone on
+another network, boot with a tunnel:
 `VET_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh` (see `docs/DEMO.md` §6).
 
 ## 3. Issuer + verifier onboarding via apply → approve (admin portal)
