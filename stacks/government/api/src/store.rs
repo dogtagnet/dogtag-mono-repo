@@ -60,7 +60,11 @@ pub struct IssuedCredential {
     pub subject: Value,
     /// Denormalized `validity.validUntil` (ISO-8601 date) for derived-expiry queries + rendering. It
     /// mirrors a leaf committed in R, so it is IMMUTABLE.
-    #[serde(rename = "validUntil", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "validUntil",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub valid_until: Option<String>,
     /// The full wrapped credential document (the holder receives a copy; the authority is custodian).
     /// Carries the anchored credential/document hash, so it is IMMUTABLE.

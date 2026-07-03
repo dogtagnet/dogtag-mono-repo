@@ -229,7 +229,11 @@ fn default_record_type() -> String {
 /// GATED behind the government operator bearer (`GOV_API_TOKEN`) — an authority portal that anyone
 /// could issue from would undermine the receipt's credibility (arch DP-6). Reads/verify/public
 /// status stay open; demo mode keeps the baked demo token so `demo-up` flows still work.
-async fn issue(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<IssueBody>) -> Resp {
+async fn issue(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<IssueBody>,
+) -> Resp {
     if let Err(e) = require_api_token(&st, &headers) {
         return e;
     }
@@ -278,10 +282,7 @@ async fn issue(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<
     );
     // Denormalize the cleartext subject + validUntil for list/detail/status rendering (both mirror
     // content committed in R, hence IMMUTABLE — see IMMUTABLE_KEYS).
-    let subject = vc
-        .get("credentialSubject")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let subject = vc.get("credentialSubject").cloned().unwrap_or(Value::Null);
     let valid_until = subject
         .get("validity")
         .and_then(|v| v.get("validUntil"))
@@ -673,7 +674,12 @@ async fn resolve_receipt_status(st: &AppState, receipt_id: &str) -> Result<Recei
         .chain
         .is_valid(&cred.issuer_addr, &cred.root)
         .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, &format!("on-chain isValid read failed: {e}")))?;
+        .map_err(|e| {
+            err(
+                StatusCode::BAD_GATEWAY,
+                &format!("on-chain isValid read failed: {e}"),
+            )
+        })?;
     let issued_at = st
         .chain
         .issued_at(&cred.issuer_addr, &cred.root)
@@ -684,8 +690,7 @@ async fn resolve_receipt_status(st: &AppState, receipt_id: &str) -> Result<Recei
     // revoked is driven by the LIVE read (an anchored root that no longer isValid was revoked), so a
     // fresh revoke wins over the possibly-stale stored lifecycle field.
     let today = today_iso();
-    let revoked =
-        cred.status == CredentialStatus::Revoked || (cred.anchored && !onchain_valid);
+    let revoked = cred.status == CredentialStatus::Revoked || (cred.anchored && !onchain_valid);
     let effective_status = if !cred.anchored {
         "DRAFT"
     } else if revoked {
@@ -777,19 +782,31 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
         "REVOKED" => ("#dc2626", "REVOKED"),
         other => ("#64748b", other),
     };
-    let issuance = (rs.issued_at != 0)
-        .then(|| iso_date(rs.issued_at))
-        .unwrap_or_else(|| "—".to_string());
+    let issuance = if rs.issued_at != 0 {
+        iso_date(rs.issued_at)
+    } else {
+        "—".to_string()
+    };
     let valid_until = c.valid_until.clone().unwrap_or_else(|| "—".to_string());
     let issue_link = c
         .explorer_url
         .as_deref()
-        .map(|u| format!("<a href=\"{}\" rel=\"noopener noreferrer\">issue tx</a>", esc(u)))
+        .map(|u| {
+            format!(
+                "<a href=\"{}\" rel=\"noopener noreferrer\">issue tx</a>",
+                esc(u)
+            )
+        })
         .unwrap_or_default();
     let revoke_link = c
         .revoke_explorer_url
         .as_deref()
-        .map(|u| format!(" · <a href=\"{}\" rel=\"noopener noreferrer\">revoke tx</a>", esc(u)))
+        .map(|u| {
+            format!(
+                " · <a href=\"{}\" rel=\"noopener noreferrer\">revoke tx</a>",
+                esc(u)
+            )
+        })
         .unwrap_or_default();
 
     let html = format!(
@@ -813,7 +830,7 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
          <dt>Date of issuance</dt><dd>{issuance}</dd>\
          <dt>Valid until</dt><dd>{valid_until}</dd>\
          <dt>Credential root</dt><dd class=\"mono\">{root}</dd>\
-         <dt>Anchored on</dt><dd>ROAX chainId {chain} · {links}</dd>\
+         <dt>Anchored on</dt><dd>ROAX chainId {chain} · {issue_link}{revoke_link}</dd>\
          </dl>\
          <p class=\"foot\">Live on-chain status check · no personal data shown · checked {checked} (UTC epoch s).</p>\
          </div></body></html>",
@@ -821,7 +838,6 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
         rtype = esc(&c.record_type),
         root = esc(&c.root),
         chain = st.cfg.chain_id,
-        links = format!("{issue_link}{revoke_link}"),
         checked = now(),
     );
     Html(html).into_response()

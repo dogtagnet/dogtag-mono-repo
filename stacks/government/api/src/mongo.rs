@@ -26,12 +26,7 @@ impl MongoStore {
         // duplicate id can never be persisted (sparse: legacy rows without a receiptId are exempt).
         let idx = IndexModel::builder()
             .keys(doc! { "receiptId": 1 })
-            .options(
-                IndexOptions::builder()
-                    .unique(true)
-                    .sparse(true)
-                    .build(),
-            )
+            .options(IndexOptions::builder().unique(true).sparse(true).build())
             .build();
         store.credentials().create_index(idx).await?;
         Ok(store)

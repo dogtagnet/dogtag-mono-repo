@@ -120,7 +120,10 @@ pub fn build_gov_vc(
     // Numeric leaf (JSON number → INTEGER tag 3): accept a JSON number or a numeric string.
     let get_num = |k: &str, d: i64| -> Value {
         f.get(k)
-            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok())))
+            .and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+            })
             .map(|n| json!(n))
             .unwrap_or_else(|| json!(d))
     };
@@ -281,7 +284,10 @@ pub fn wrap(issuer_meta: IssuerMeta, vc: &Value) -> Result<WrappedDoc, String> {
 /// The bytes32 issuer/whitelist key for a record type = keccak256(label).
 pub fn record_type_key(record_type: &str) -> String {
     use alloy::primitives::keccak256;
-    format!("0x{}", hex::encode(keccak256(record_type.as_bytes()).as_slice()))
+    format!(
+        "0x{}",
+        hex::encode(keccak256(record_type.as_bytes()).as_slice())
+    )
 }
 
 #[cfg(test)]
@@ -306,8 +312,18 @@ mod tests {
     #[test]
     fn build_and_wrap_produces_a_root() {
         let cfg = demo_cfg();
-        let vc = build_gov_vc(&cfg, TRAVEL_CLEARANCE, &json!({"animalName":"Rex"}), "7", "9RVBXK8AFQ2C");
-        let meta = issuer_meta(&cfg, TRAVEL_CLEARANCE, "0x1111111111111111111111111111111111111111");
+        let vc = build_gov_vc(
+            &cfg,
+            TRAVEL_CLEARANCE,
+            &json!({"animalName":"Rex"}),
+            "7",
+            "9RVBXK8AFQ2C",
+        );
+        let meta = issuer_meta(
+            &cfg,
+            TRAVEL_CLEARANCE,
+            "0x1111111111111111111111111111111111111111",
+        );
         let doc = wrap(meta, &vc).unwrap();
         assert_eq!(doc.signature.merkle_root, doc.signature.target_hash);
         assert!(doc.signature.merkle_root.starts_with("0x"));

@@ -112,9 +112,15 @@ async fn issue_then_verify_end_to_end() {
     assert_eq!(issued["anchored"], true);
     assert!(issued["txHash"].is_string());
     // The receipt handle is minted + surfaced with its public lookup URLs.
-    let receipt_id = issued["receiptId"].as_str().expect("receiptId minted").to_string();
+    let receipt_id = issued["receiptId"]
+        .as_str()
+        .expect("receiptId minted")
+        .to_string();
     assert_eq!(receipt_id.len(), 12, "12-char Crockford receipt id");
-    assert_eq!(issued["statusUrl"], format!("/v1/receipts/{receipt_id}/status"));
+    assert_eq!(
+        issued["statusUrl"],
+        format!("/v1/receipts/{receipt_id}/status")
+    );
     let root = issued["root"].as_str().unwrap().to_string();
     assert!(root.starts_with("0x") && root.len() == 66);
     let wrapped = issued["wrappedDoc"].clone();
@@ -155,13 +161,22 @@ async fn issue_then_verify_end_to_end() {
     assert_eq!(st_json["effectiveStatus"], "VALID");
     assert_eq!(st_json["receiptId"], receipt_id);
     assert_eq!(st_json["root"], root);
-    assert!(st_json["issuanceDate"].is_string(), "issuance date derived from chain");
+    assert!(
+        st_json["issuanceDate"].is_string(),
+        "issuance date derived from chain"
+    );
     assert!(
         st_json.get("importer").is_none() && st_json.get("subject").is_none(),
         "public status is PII-free: {st_json}"
     );
     // unknown receipt id -> 404.
-    let (status, _) = call(&state, "GET", "/v1/receipts/ZZZZZZZZZZZZ/status", Value::Null).await;
+    let (status, _) = call(
+        &state,
+        "GET",
+        "/v1/receipts/ZZZZZZZZZZZZ/status",
+        Value::Null,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -176,7 +191,11 @@ async fn issue_requires_the_operator_bearer() {
         json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7" }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "issue without token: {body}");
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "issue without token: {body}"
+    );
     // Wrong bearer -> 401.
     let (status, _) = call_with_token(
         &state,

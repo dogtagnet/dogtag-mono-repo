@@ -417,7 +417,10 @@ async fn receipt_fields_are_immutable_and_status_page_renders() {
     assert_eq!(s, StatusCode::OK);
     assert!(html.contains("VALID"), "page shows verdict: {html}");
     assert!(html.contains(&receipt_id));
-    assert!(!html.contains("Blaze"), "status page must not leak Section B PII");
+    assert!(
+        !html.contains("Blaze"),
+        "status page must not leak Section B PII"
+    );
 
     // Unknown receipt -> 404 page.
     let (s, _) = call_raw(&state, "GET", "/r/ZZZZZZZZZZZZ").await;
@@ -442,7 +445,10 @@ async fn effective_status_derives_expired_from_a_lapsed_window() {
 
     let (_s, rec) = call_auth(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
     assert_eq!(rec["status"], "issued", "stored lifecycle unchanged");
-    assert_eq!(rec["effectiveStatus"], "EXPIRED", "derived from lapsed validUntil");
+    assert_eq!(
+        rec["effectiveStatus"], "EXPIRED",
+        "derived from lapsed validUntil"
+    );
 
     // The live public status endpoint agrees (anchored + not revoked, but past validUntil).
     let (_s, st) = call(
