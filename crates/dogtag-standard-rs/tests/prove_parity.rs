@@ -320,7 +320,7 @@ fn dump_proof_for_live_verifier() {
     println!("pub = [{}]", p.join(", "));
     // Ready-to-run cast call (current prover_ffi formatting).
     println!(
-        "\nCAST_CMD: cast call 0x138b433071Ad806E841B5AD53623290a9bf21761 \
+        "\nCAST_CMD: cast call 0xEEFCfAF026931b7325472A88fd14Ee780Da13559 \
          'verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])(bool)' \
          '[{},{}]' '[[{},{}],[{},{}]]' '[{},{}]' '[{},{},{},{},{},{},{}]' \
          --rpc-url https://devrpc.roax.net",
@@ -369,7 +369,7 @@ fn on_device_proof_verifies_on_live_chain() {
     let out = std::process::Command::new("cast")
         .args([
             "call",
-            "0x138b433071Ad806E841B5AD53623290a9bf21761",
+            "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
             "verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])(bool)",
             &format!("[{},{}]", a[0], a[1]),
             &format!("[[{},{}],[{},{}]]", b[0][0], b[0][1], b[1][0], b[1][1]),

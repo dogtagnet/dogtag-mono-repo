@@ -102,7 +102,7 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 | **VerificationRegistry** | **`0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1`** | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` = `_preMetaTx_legacy`; `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` = `_zk0_legacy` |
 | **ConsentKeyRegistry** | **`0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671`** | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` = `_preMetaTx_legacy` |
 | DogTagSBT | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` | profile/credential mint target |
-| Groth16Verifier | `0x138b433071Ad806E841B5AD53623290a9bf21761` | wired into current VR |
+| Groth16Verifier | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` | v2 ceremony verifier, wired into current VR since the 2026-07-02 cutover; `0x138b433071Ad806E841B5AD53623290a9bf21761` = `_v1_legacy` |
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` | circomlib-exact |
 | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` | `onlyOwner createIssuer` |
 | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` | clone impl |
@@ -110,7 +110,7 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` | `demo_clones` |
 | demo clone DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` | `demo_clones` |
 | chainId | 135 | ROAX testnet |
-| zkey sha256 (repo) | `9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992` | testnet self-run **v2** (Hermez ptau + drand beacon); see [CEREMONY_TRANSCRIPT.md](./CEREMONY_TRANSCRIPT.md). On-chain verifier still the prior `45d0b6fb…` key until the timelock swap (PRODUCTION_DEPLOYMENT §3.2). |
+| zkey sha256 (repo) | `9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992` | testnet self-run **v2** (Hermez ptau + drand beacon); see [CEREMONY_TRANSCRIPT.md](./CEREMONY_TRANSCRIPT.md). The matching v2 verifier is live on-chain since the 2026-07-02 timelock swap (PRODUCTION_DEPLOYMENT §3.2). |
 
 ### 3.2 Service + Port tables
 
