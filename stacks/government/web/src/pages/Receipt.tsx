@@ -322,7 +322,7 @@ export function Receipt() {
                 </div>
               </div>
               <div style={{ marginTop: "0.5rem" }}>
-                Anchored: ROAX{status ? "" : ""} · block {record.blockNumber ?? "?"} · issuer{" "}
+                Anchored: ROAX · block {record.blockNumber ?? "?"} · issuer{" "}
                 <span className="receipt-mono">{record.issuerAddr.slice(0, 12)}…</span>
               </div>
               {record.explorerUrl && (

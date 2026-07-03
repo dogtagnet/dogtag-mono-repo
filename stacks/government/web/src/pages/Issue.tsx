@@ -161,7 +161,7 @@ export function Issue() {
         { auth: true }, // issue is gated by the operator bearer (arch DP-6)
       );
       if (status !== 200) setError(json.error || `HTTP ${status}`);
-      setResult(json);
+      else setResult(json);
     } catch (e) {
       setError(String(e));
     } finally {

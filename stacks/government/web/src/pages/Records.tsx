@@ -70,6 +70,8 @@ export function Records() {
         setEditRoot(null);
         await refresh();
       }
+    } catch (e) {
+      setError(String(e));
     } finally {
       setBusy(null);
     }
@@ -85,6 +87,8 @@ export function Records() {
       );
       if (status !== 200) setError(json.error || `HTTP ${status}`);
       await refresh();
+    } catch (e) {
+      setError(String(e));
     } finally {
       setBusy(null);
     }
@@ -99,6 +103,8 @@ export function Records() {
       });
       if (status !== 200) setError(json.error || `HTTP ${status}`);
       await refresh();
+    } catch (e) {
+      setError(String(e));
     } finally {
       setBusy(null);
     }
