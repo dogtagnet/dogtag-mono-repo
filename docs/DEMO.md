@@ -27,7 +27,7 @@ This flow is **verified working end-to-end on a real Android device** and by the
 > everything** deployment (flag **unset**), see **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)**.
 
 Pre-created on ROAX for the demo: `DogTagIssuer` clones — VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53`,
-DOG_PROFILE `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25`. ZK verifier is live (`0x138b4330…`),
+DOG_PROFILE `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25`. ZK verifier is live (`0xEEFCfAF0…`, v2),
 VerificationRegistry `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` (ZK-wired).
 
 ## 0. Boot
@@ -158,7 +158,7 @@ the `.local` demo) → review → select the record to present → sign consent 
 `/v1/verify/consent` with the token. The portal **polls `GET /verify/session/:id`** → shows
 **Verified on-chain ✓** with the tx + a `Verified` event.
 - **Normal** path commits `credentialRoot` on-chain (ECDSA consent; instant).
-- **ZK** path (live, Groth16Verifier `0x138b4330…`) keeps `recordType`/`credentialRoot` **off chain** and
+- **ZK** path (live, Groth16Verifier `0xEEFCfAF0…` — v2 since the 2026-07-02 cutover) keeps `recordType`/`credentialRoot` **off chain** and
   the raw record **off the groomer entirely** — the phone proves in **~1–2 s** and sends only the proof.
 
 > **Who generates the proof — 64-bit vs 32-bit.** 64-bit devices (iPhone, modern arm64 Android) prove

@@ -110,7 +110,7 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` | `demo_clones` |
 | demo clone DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` | `demo_clones` |
 | chainId | 135 | ROAX testnet |
-| zkey sha256 (repo) | `9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992` | testnet self-run **v2** (Hermez ptau + drand beacon); see [CEREMONY_TRANSCRIPT.md](./CEREMONY_TRANSCRIPT.md). On-chain verifier still the prior `45d0b6fb…` key until the timelock swap (PRODUCTION_DEPLOYMENT §3.2). |
+| zkey sha256 (repo) | `9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992` | testnet self-run **v2** (Hermez ptau + drand beacon); see [CEREMONY_TRANSCRIPT.md](./CEREMONY_TRANSCRIPT.md). The matching v2 verifier is live on-chain since the 2026-07-02 timelock swap (PRODUCTION_DEPLOYMENT §3.2). |
 
 ### 3.2 Service + Port tables
 

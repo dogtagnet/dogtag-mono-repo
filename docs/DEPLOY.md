@@ -110,7 +110,7 @@ forge verify-contract --rpc-url $ROAX_RPC \
    ```
 
    **(b) Testnet — redeploy (what we did on ROAX).** Rather than wait out the 2-day timelock on testnet,
-   the **VerificationRegistry was REDEPLOYED** with the live `Groth16Verifier` (`0x138b4330…`) wired in
+   the **VerificationRegistry was REDEPLOYED** with the then-live `Groth16Verifier` (`0x138b4330…`, now `_v1_legacy`) wired in
    at construction, so the ZK path is active immediately. That ZK-wired redeploy was `0x19C1B5f8…`; the
    original zk=0 instance is kept as `VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`.
 
@@ -120,10 +120,11 @@ forge verify-contract --rpc-url $ROAX_RPC \
    path that is now LIVE. So there are **THREE VR generations** — `0xb4FbbDb5…` (zk0) → `0x19C1B5f8…`
    (preMetaTx) → `0x8bA836eCe9…` (current) — and `0x19C1B5f8…` is NOT the current registry.
 
-   The testnet trusted setup is recorded in `docs/CEREMONY_TRANSCRIPT.md`. The repo now ships the
-   **v2 self-run** (public Hermez ptau + 3 contributions + drand beacon, zkey sha256 `9e3636b9…`); the
-   **live on-chain** `Groth16Verifier` `0x138b4330…` still corresponds to the prior key (`45d0b6fb…`)
-   until the verifier is redeployed and swapped. The on-chain wiring + the prod timelock procedure are in
+   The testnet trusted setup is recorded in `docs/CEREMONY_TRANSCRIPT.md`. The repo ships the
+   **v2 self-run** (public Hermez ptau + 3 contributions + drand beacon, zkey sha256 `9e3636b9…`), and the
+   matching **v2 `Groth16Verifier`** (`0xEEFCfAF0…`) is the **live on-chain** verifier since the
+   2026-07-02 timelock swap (the prior `0x138b4330…` / `45d0b6fb…` key is retired as `_v1_legacy`).
+   The on-chain wiring + the prod timelock procedure are in
    `docs/CEREMONY_RUNBOOK.md` (concise version: `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.
 
 ## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)

@@ -288,9 +288,10 @@ wait. **STOP if** either call reverts on access control → you are not sending 
 `DEFAULT_ADMIN`. **STOP if** `proposeZkVerifier` is rejected as an unknown function → you are pointed at a
 **legacy** VR address (the wrong generation); use the current `<VR_ADDR>`.
 
-> Note: on **testnet** the ZK verifier was wired by **redeploying** the whole VerificationRegistry with the
-> verifier set at construction (to avoid waiting out the timelock on testnet) — see
-> [DEPLOY.md](./DEPLOY.md) §3.2. **In production use the timelock above**, not a redeploy: the redeploy
+> Note: on **testnet** the ZK verifier was originally wired by **redeploying** the whole VerificationRegistry
+> with the verifier set at construction (to avoid waiting out the timelock on testnet) — see
+> [DEPLOY.md](./DEPLOY.md) §3.2; the later v2 verifier cutover (executed 2026-07-02) did go through the
+> propose → wait → execute timelock above. **In production use the timelock above**, not a redeploy: the redeploy
 > changes the VR address and forces every backend/portal/app to re-point, defeating the point of go-live
 > stability.
 

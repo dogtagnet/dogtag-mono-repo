@@ -57,7 +57,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | demo clone — DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |
 
 > The original VerificationRegistry was deployed with `zkVerifier = 0`; for the testnet the registry was
-> **redeployed** pointing at the live Groth16Verifier (`VerificationRegistry_zk0_legacy`
+> **redeployed** pointing at the then-live v1 Groth16Verifier (`VerificationRegistry_zk0_legacy`
 > `0xb4FbbDb5…` is the retired zk=0 instance), and a later **meta-tx migration** produced the current VR
 > `0x8bA836eCe9…` + CKR `0xA74DDe4a9b…` (retiring the `_preMetaTx_legacy` VR `0x19C1B5f8…` and CKR
 > `0xFD277b9B…`) — three VR generations in all. In production the verifier is wired via the registry's

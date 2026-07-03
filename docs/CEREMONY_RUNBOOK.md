@@ -297,7 +297,7 @@ cast send "$REG" "executeZkVerifier()" \
 ```bash
 # the live registry must now report the NEW production verifier:
 cast call "$REG" "zkVerifier()(address)" --rpc-url "$ROAX_RPC"
-#   expect: $VERIFIER  (NOT the old 0x138b4330… testnet verifier)
+#   expect: $VERIFIER  (NOT the old 0xEEFCfAF0… v2 testnet verifier)
 ```
 
 Then:
