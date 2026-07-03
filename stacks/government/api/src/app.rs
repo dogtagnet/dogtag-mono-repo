@@ -86,19 +86,56 @@ pub fn issuer_meta(cfg: &Config, record_type: &str, issuer_addr: &str) -> Issuer
 }
 
 /// Build a complete, valid government VC (plain JSON) from the operator's applicant fields. Each
-/// record type carries its OWN `credentialSubject` schema — a `TRAVEL_CLEARANCE` describes a
-/// cross-border movement (origin/destination/purpose), while an `EU_HEALTH_CERT` (Annex IV pet
-/// health certificate) describes the animal's clinical/vaccination status (microchip, rabies,
-/// examining vet). Missing optional fields fall back to sensible per-type defaults so the skeleton
-/// is demoable. The mandatory, non-obfuscatable `credentialSubject.dogTagId` binds the credential
-/// to the pet's SBT in every type.
-pub fn build_gov_vc(cfg: &Config, record_type: &str, fields: &Value, dog_tag_id: &str) -> Value {
+/// record type carries its OWN `credentialSubject` schema.
+///
+/// `TRAVEL_CLEARANCE` is the CDC-modeled travel-receipt (research dogtag-govreceipt-r7 §2.1 /
+/// dogtag-govarch-r8 §1): a nested subject grouping **Section A** (person importing the animal —
+/// PII, the obfuscatable/private block), **Section B** (animal), **Section C** (travel), a
+/// **validity** window, and a public `receiptId` leaf. Nesting flattens to leaf key-paths
+/// automatically (`credentialSubject.importer.firstName`, …) via the standard's flattener. B/C,
+/// validity and `receiptId` are the PUBLIC blocks (revealed cleartext leaves at presentation); A is
+/// obfuscated by the holder. `EU_HEALTH_CERT` (Annex IV pet health certificate) describes the
+/// animal's clinical/vaccination status. Missing optional fields fall back to sensible per-type
+/// defaults so the skeleton is demoable. The mandatory, non-obfuscatable `credentialSubject.dogTagId`
+/// binds the credential to the pet's SBT in every type.
+///
+/// `receipt_id` is the CSPRNG Crockford-base32 handle minted at issue time (see `routes::issue`); it
+/// is committed into `R` as a public salted leaf (a forged receipt with a real-looking id fails
+/// integrity) AND stored off-chain as the `/r/:receiptId` lookup handle. The issuance DATE is NOT a
+/// leaf — it is derived from the on-chain `issuedAt[R]` / anchoring block timestamp (arch DP-2).
+pub fn build_gov_vc(
+    cfg: &Config,
+    record_type: &str,
+    fields: &Value,
+    dog_tag_id: &str,
+    receipt_id: &str,
+) -> Value {
     let f = fields.as_object().cloned().unwrap_or_default();
     let get = |k: &str, d: &str| -> String {
         f.get(k)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| d.to_string())
+    };
+    // Numeric leaf (JSON number → INTEGER tag 3): accept a JSON number or a numeric string.
+    let get_num = |k: &str, d: i64| -> Value {
+        f.get(k)
+            .and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+            })
+            .map(|n| json!(n))
+            .unwrap_or_else(|| json!(d))
+    };
+    // Boolean leaf (JSON bool → tag 1): accept a JSON bool or the strings "true"/"false".
+    let get_bool = |k: &str, d: bool| -> Value {
+        f.get(k)
+            .and_then(|v| {
+                v.as_bool()
+                    .or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true")))
+            })
+            .map(|b| json!(b))
+            .unwrap_or_else(|| json!(d))
     };
 
     // dogTagId as a JSON number when numeric so the typed projection tags it INTEGER (tag 3).
@@ -114,6 +151,8 @@ pub fn build_gov_vc(cfg: &Config, record_type: &str, fields: &Value, dog_tag_id:
             "EU-2013-577-Annex-IV-v1",
             json!({
                 "dogTagId": dog_tag_id_val,
+                // Public lookup handle, committed in R (also the /r/:receiptId key).
+                "receiptId": receipt_id,
                 // Annex IV health-certificate leaves (salted, obfuscatable — never on-chain in clear).
                 "species": get("species", "dog"),
                 "microchipNumber": get("microchipNumber", "985112345678903"),
@@ -130,13 +169,60 @@ pub fn build_gov_vc(cfg: &Config, record_type: &str, fields: &Value, dog_tag_id:
             "EU-2013-576-v1",
             json!({
                 "dogTagId": dog_tag_id_val,
-                // Travel/consignment leaves (salted, obfuscatable — never on-chain in cleartext).
-                "originCountry": get("originCountry", "US"),
-                "destinationCountry": get("destinationCountry", "DE"),
-                "purposeOfMovement": get("purposeOfMovement", "non-commercial"),
-                "clearanceReference": get("clearanceReference", &format!("GOV-{dog_tag_id}")),
-                "validFrom": get("validFrom", "2026-01-01"),
-                "validUntil": get("validUntil", "2026-05-01"),
+                // PUBLIC handle committed in R + the off-chain /r/:receiptId lookup key.
+                "receiptId": receipt_id,
+
+                // -- validity (PUBLIC revealed leaves; issuance DATE derived from chain, not a leaf) --
+                "validity": {
+                    "validFrom": get("validFrom", "2026-07-01"),
+                    "validUntil": get("validUntil", "2027-01-01"),
+                    "multipleEntries": get_bool("multipleEntries", true),
+                    // CDC "valid only from the listed country of departure" binding.
+                    "countryOfDepartureBinding": get("countryOfDepartureBinding", "CA"),
+                },
+
+                // -- Section A: person importing the animal (PII — the PRIVATE/obfuscatable block) --
+                "importer": {
+                    "firstName": get("importerFirstName", "Dominic"),
+                    "middleName": get("importerMiddleName", ""),
+                    "lastName": get("importerLastName", "Zagara"),
+                    "role": get("importerRole", "owner"),
+                    "idType": get("importerIdType", "drivers_license"),
+                    "idJurisdiction": get("importerIdJurisdiction", "US-NY"),
+                    "idNumber": get("importerIdNumber", "887524355"),
+                    "dateOfBirth": get("importerDateOfBirth", "1997-02-13"),
+                    "email": get("importerEmail", "dom.zagara@example.com"),
+                    "phone": get("importerPhone", "216-533-5925"),
+                },
+                "consignee": {
+                    "fullName": get("consigneeName", ""),
+                    "email": get("consigneeEmail", ""),
+                    "idType": get("consigneeIdType", ""),
+                },
+
+                // -- Section B: animal information (PUBLIC) --
+                "animal": {
+                    "name": get("animalName", "Blaze"),
+                    "ageYears": get_num("animalAgeYears", 3),
+                    "ageMonths": get_num("animalAgeMonths", 1),
+                    "sex": get("animalSex", "male"),
+                    // CDC's "Male Neutered" split into a typed boolean leaf.
+                    "neutered": get_bool("animalNeutered", true),
+                    "breed": get("animalBreed", "Poodle - Standard"),
+                    "colorMarkings": get("animalColorMarkings", "Grey"),
+                    "microchipNumber": get("microchipNumber", "985112345678903"),
+                    "importationPurpose": get("importationPurpose", "service_animal"),
+                },
+
+                // -- Section C: travel information (PUBLIC) --
+                "travel": {
+                    "travelType": get("travelType", "air"),
+                    "countryOfDeparture": get("countryOfDeparture", "CA"),
+                    "dateOfArrival": get("dateOfArrival", "2026-07-08"),
+                    "portOfEntry": get("portOfEntry", "JFK"),
+                    "carrierOrFlight": get("carrierOrFlight", "AC 8552"),
+                },
+
                 "endorsingAuthority": get("endorsingAuthority", &cfg.issuer_name),
             }),
         ),
@@ -198,7 +284,10 @@ pub fn wrap(issuer_meta: IssuerMeta, vc: &Value) -> Result<WrappedDoc, String> {
 /// The bytes32 issuer/whitelist key for a record type = keccak256(label).
 pub fn record_type_key(record_type: &str) -> String {
     use alloy::primitives::keccak256;
-    format!("0x{}", hex::encode(keccak256(record_type.as_bytes()).as_slice()))
+    format!(
+        "0x{}",
+        hex::encode(keccak256(record_type.as_bytes()).as_slice())
+    )
 }
 
 #[cfg(test)]
@@ -223,8 +312,18 @@ mod tests {
     #[test]
     fn build_and_wrap_produces_a_root() {
         let cfg = demo_cfg();
-        let vc = build_gov_vc(&cfg, TRAVEL_CLEARANCE, &json!({"destinationCountry":"FR"}), "7");
-        let meta = issuer_meta(&cfg, TRAVEL_CLEARANCE, "0x1111111111111111111111111111111111111111");
+        let vc = build_gov_vc(
+            &cfg,
+            TRAVEL_CLEARANCE,
+            &json!({"animalName":"Rex"}),
+            "7",
+            "9RVBXK8AFQ2C",
+        );
+        let meta = issuer_meta(
+            &cfg,
+            TRAVEL_CLEARANCE,
+            "0x1111111111111111111111111111111111111111",
+        );
         let doc = wrap(meta, &vc).unwrap();
         assert_eq!(doc.signature.merkle_root, doc.signature.target_hash);
         assert!(doc.signature.merkle_root.starts_with("0x"));
@@ -233,26 +332,59 @@ mod tests {
     }
 
     #[test]
+    fn travel_clearance_has_cdc_sectioned_subject() {
+        let cfg = demo_cfg();
+        let tc = build_gov_vc(
+            &cfg,
+            TRAVEL_CLEARANCE,
+            &json!({"importerFirstName": "Ada", "animalAgeYears": 5, "animalNeutered": false}),
+            "7",
+            "RECEIPT012345",
+        );
+        let sub = &tc["credentialSubject"];
+
+        // dogTagId stays mandatory + numeric (INTEGER-tagged); receiptId is a public leaf.
+        assert_eq!(sub["dogTagId"], json!(7u64));
+        assert_eq!(sub["receiptId"], json!("RECEIPT012345"));
+
+        // Section A (person PII) — the private/obfuscatable block, supplied field honored.
+        assert_eq!(sub["importer"]["firstName"], json!("Ada"));
+        assert!(sub["importer"]["idNumber"].is_string());
+        // Section B (animal) — typed numeric + boolean leaves, supplied values honored.
+        assert_eq!(sub["animal"]["ageYears"], json!(5));
+        assert_eq!(sub["animal"]["neutered"], json!(false));
+        assert!(sub["animal"]["name"].is_string());
+        // Section C (travel) + validity window are present.
+        assert!(sub["travel"]["countryOfDeparture"].is_string());
+        assert!(sub["validity"]["validUntil"].is_string());
+        assert_eq!(sub["validity"]["multipleEntries"], json!(true));
+
+        // The CDC receipt is NOT the old flat movement shape.
+        assert!(sub.get("destinationCountry").is_none());
+        assert!(sub.get("purposeOfMovement").is_none());
+    }
+
+    #[test]
     fn record_types_have_distinct_subject_fields() {
         let cfg = demo_cfg();
-        let tc = build_gov_vc(&cfg, TRAVEL_CLEARANCE, &json!({}), "7");
-        let eu = build_gov_vc(&cfg, EU_HEALTH_CERT, &json!({}), "7");
+        let tc = build_gov_vc(&cfg, TRAVEL_CLEARANCE, &json!({}), "7", "RID0TRAVEL012");
+        let eu = build_gov_vc(&cfg, EU_HEALTH_CERT, &json!({}), "7", "RID0HEALTH012");
 
         let tc_sub = &tc["credentialSubject"];
         let eu_sub = &eu["credentialSubject"];
 
-        // TRAVEL_CLEARANCE carries movement fields, NOT health-cert fields.
-        assert!(tc_sub.get("destinationCountry").is_some());
-        assert!(tc_sub.get("purposeOfMovement").is_some());
-        assert!(tc_sub.get("microchipNumber").is_none());
+        // TRAVEL_CLEARANCE carries the CDC animal/travel sections, NOT flat health-cert fields.
+        assert!(tc_sub["animal"]["name"].is_string());
+        assert!(tc_sub["travel"]["travelType"].is_string());
         assert!(tc_sub.get("rabiesVaccinationDate").is_none());
 
-        // EU_HEALTH_CERT carries Annex-IV health fields, NOT travel fields.
+        // EU_HEALTH_CERT carries Annex-IV health fields (+ a receiptId handle), NOT travel sections.
         assert!(eu_sub.get("microchipNumber").is_some());
         assert!(eu_sub.get("rabiesVaccinationDate").is_some());
         assert!(eu_sub.get("examiningVeterinarian").is_some());
-        assert!(eu_sub.get("destinationCountry").is_none());
-        assert!(eu_sub.get("purposeOfMovement").is_none());
+        assert_eq!(eu_sub["receiptId"], json!("RID0HEALTH012"));
+        assert!(eu_sub.get("travel").is_none());
+        assert!(eu_sub.get("importer").is_none());
 
         // Distinct VC subtype + legal basis per record type.
         assert_eq!(tc["type"][1], json!("PetTravelClearance"));
@@ -269,6 +401,7 @@ mod tests {
             EU_HEALTH_CERT,
             &json!({"microchipNumber": "111", "clinicalHealthStatus": "under_observation"}),
             "9",
+            "RID0HEALTH012",
         );
         assert_eq!(eu["credentialSubject"]["microchipNumber"], json!("111"));
         assert_eq!(

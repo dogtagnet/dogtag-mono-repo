@@ -8,7 +8,9 @@ const API_BASE = import.meta.env.VITE_GOV_API_BASE || "/api";
 const API_TOKEN = import.meta.env.VITE_GOV_API_TOKEN || "dogtag-gov-demo-token";
 
 async function apiGet(path: string) {
-  const r = await fetch(`${API_BASE}${path}`);
+  const r = await fetch(`${API_BASE}${path}`, {
+    headers: { authorization: `Bearer ${API_TOKEN}` },
+  });
   return r.json();
 }
 async function apiPost(path: string, body: unknown, opts?: { auth?: boolean }) {
@@ -69,13 +71,20 @@ interface FieldSpec {
 }
 
 const RECORD_TYPE_FIELDS: Record<string, FieldSpec[]> = {
+  // CDC-modeled travel receipt (Section A person / B animal / C travel + validity). A flat subset of
+  // the most-used leaves; the full sectioned A/B/C form + receipt view land in PR-2. Keys map 1:1 to
+  // the nested credentialSubject leaves the backend builds (e.g. `importer.lastName`), and the
+  // receiptId + issuance date are minted/derived server-side (not entered here).
   TRAVEL_CLEARANCE: [
-    { key: "originCountry", label: "Origin country", placeholder: "US" },
-    { key: "destinationCountry", label: "Destination country", placeholder: "DE" },
-    { key: "purposeOfMovement", label: "Purpose of movement", placeholder: "non-commercial" },
-    { key: "clearanceReference", label: "Clearance reference", placeholder: "GOV-7" },
-    { key: "validFrom", label: "Valid from", placeholder: "2026-01-01" },
-    { key: "validUntil", label: "Valid until", placeholder: "2026-05-01" },
+    { key: "importerLastName", label: "Importer last name (Section A)", placeholder: "Zagara" },
+    { key: "importerIdNumber", label: "Importer ID number (Section A)", placeholder: "887524355" },
+    { key: "animalName", label: "Animal name (Section B)", placeholder: "Blaze" },
+    { key: "animalBreed", label: "Breed (Section B)", placeholder: "Poodle - Standard" },
+    { key: "importationPurpose", label: "Importation purpose (Section B)", placeholder: "service_animal" },
+    { key: "travelType", label: "Travel type (Section C)", placeholder: "air" },
+    { key: "countryOfDeparture", label: "Country of departure (Section C)", placeholder: "CA" },
+    { key: "dateOfArrival", label: "Date of arrival (Section C)", placeholder: "2026-07-08" },
+    { key: "validUntil", label: "Valid until", placeholder: "2027-01-01" },
   ],
   EU_HEALTH_CERT: [
     { key: "species", label: "Species", placeholder: "dog" },
@@ -151,11 +160,15 @@ function IssuePage() {
         const v = values[s.key];
         if (v != null && v.trim() !== "") fields[s.key] = v.trim();
       }
-      const { status, json } = await apiPost("/v1/travel-clearance/issue", {
-        record_type: recordType,
-        dog_tag_id: dogTagId,
-        fields,
-      });
+      const { status, json } = await apiPost(
+        "/v1/travel-clearance/issue",
+        {
+          record_type: recordType,
+          dog_tag_id: dogTagId,
+          fields,
+        },
+        { auth: true }, // issue is now gated by the operator bearer (arch DP-6)
+      );
       if (status !== 200) setError(json.error || `HTTP ${status}`);
       setResult(json);
     } catch (e) {

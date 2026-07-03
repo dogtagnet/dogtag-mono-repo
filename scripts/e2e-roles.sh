@@ -20,6 +20,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GOV="${GOV_BASE:-http://localhost:44832}"
 VET="${VET_BASE:-http://localhost:41874}"
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
+# Government operator bearer gating the issue endpoint (demo-mode default matches the API's baked token).
+GTOK="${GOV_API_TOKEN:-dogtag-gov-demo-token}"
 IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c          # IssuerRegistry
 VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53   # VACCINATION issuer clone (live ROAX)
 
@@ -60,8 +62,8 @@ if [ "$MODE" = demo ]; then
   green "government-api up on :$PORT (demo=$(echo "$H" | jqr .demo), canSign=$(echo "$H" | jqr .canSign))"
 
   step "1. GOVERNMENT ISSUES a TRAVEL_CLEARANCE (build root R + anchor on the emulated chain)"
-  ISS=$(curl -fsS -X POST "$GOV/v1/travel-clearance/issue" -H 'content-type: application/json' \
-    -d '{"record_type":"TRAVEL_CLEARANCE","dog_tag_id":"7","fields":{"originCountry":"US","destinationCountry":"FR"}}')
+  ISS=$(curl -fsS -X POST "$GOV/v1/travel-clearance/issue" -H 'content-type: application/json' -H "authorization: Bearer $GTOK" \
+    -d '{"record_type":"TRAVEL_CLEARANCE","dog_tag_id":"7","fields":{"animalName":"Blaze","countryOfDeparture":"CA"}}')
   [ "$(echo "$ISS" | jqr .anchored)" = true ] || fail "issue not anchored: $ISS"
   ROOT_HEX=$(echo "$ISS" | jqr .root)
   info "root = $ROOT_HEX  tx = $(echo "$ISS" | jqr .txHash)"
@@ -80,12 +82,12 @@ if [ "$MODE" = demo ]; then
   green "VERIFIED: verdict=true (integrity + onchain + issuer identity all pass)"
 
   step "3. Off-chain DB surfaces (records custody + verification audit log)"
-  [ "$(curl -fsS "$GOV/v1/records" | jq '.records | length')" -ge 1 ]         || fail "records empty"
+  [ "$(curl -fsS "$GOV/v1/records" -H "authorization: Bearer $GTOK" | jq '.records | length')" -ge 1 ]         || fail "records empty"
   [ "$(curl -fsS "$GOV/v1/verifications" | jq '.verifications | length')" -ge 1 ] || fail "audit empty"
   green "1 issued credential persisted + 1 verification audit record persisted"
 
   step "4. Negative: an UNANCHORED root must fail the on-chain pillar"
-  ISS2=$(curl -fsS -X POST "$GOV/v1/travel-clearance/issue" -H 'content-type: application/json' \
+  ISS2=$(curl -fsS -X POST "$GOV/v1/travel-clearance/issue" -H 'content-type: application/json' -H "authorization: Bearer $GTOK" \
     -d '{"dog_tag_id":"9","dry_run":true}')
   WD2=$(echo "$ISS2" | jq -c '.wrappedDoc')
   VER2=$(curl -fsS -X POST "$GOV/v1/verify" -H 'content-type: application/json' -d "{\"wrapped_doc\":$WD2}")
@@ -150,8 +152,8 @@ VER=$(curl -fsS -X POST "$GOV/v1/verify" -H 'content-type: application/json' \
 green "GOVERNMENT verified the VET credential ON-CHAIN: verdict=true"
 
 step "4. GOVERNMENT stack ISSUES its own TRAVEL_CLEARANCE (build root R; dry_run unless a gov clone+signer is wired)"
-GI=$(curl -fsS -X POST "$GOV/v1/travel-clearance/issue" -H 'content-type: application/json' \
-  -d "{\"dog_tag_id\":\"$DOG_TAG_ID\",\"dry_run\":true,\"fields\":{\"originCountry\":\"US\",\"destinationCountry\":\"DE\"}}")
+GI=$(curl -fsS -X POST "$GOV/v1/travel-clearance/issue" -H 'content-type: application/json' -H "authorization: Bearer $GTOK" \
+  -d "{\"dog_tag_id\":\"$DOG_TAG_ID\",\"dry_run\":true,\"fields\":{\"animalName\":\"Blaze\",\"countryOfDeparture\":\"CA\"}}")
 GROOT=$(echo "$GI" | jqr .root)
 [ -n "$GROOT" ] && [ "$GROOT" != null ] || fail "government issue failed: $GI"
 green "GOVERNMENT built a TRAVEL_CLEARANCE credential (root $GROOT); anchor by wiring TRAVEL_CLEARANCE_ISSUER_ADDR + GOV_SIGNER_KEY (see docs/ROLE_APPS.md §7)"

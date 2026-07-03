@@ -33,5 +33,10 @@
   "demo_clones": {
     "DOG_PROFILE": "0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25",
     "VACCINATION": "0x5c703910111f942EE0f47E02214291b5274cDb53"
+  },
+  "government_clones": {
+    "_note": "Per-record-type DogTagIssuer clones for the government credential authority, deployed via DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business) with business == the protocol admin 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 (single-authority topology, arch DP-3). The government signer (the same admin address on testnet) is whitelisted on IssuerRegistry for keccak256(recordType); DogTagIssuer.issue is onlyWhitelisted. Consumed by stacks/government via TRAVEL_CLEARANCE_ISSUER_ADDR / EU_HEALTH_CERT_ISSUER_ADDR.",
+    "TRAVEL_CLEARANCE": "0x8e276BD4c57740766A7e173D05F4f02013681c6a",
+    "EU_HEALTH_CERT": "0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2"
   }
 }

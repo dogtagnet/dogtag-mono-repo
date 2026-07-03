@@ -81,7 +81,9 @@ It realizes the architecture's **future-government** notes (§3.6 record-type ta
 
 **On-chain responsibilities.**
 
-- **Issue** — build an authority-endorsed credential (`TRAVEL_CLEARANCE` for cross-border pet travel clearance, `EU_HEALTH_CERT` for an Annex-IV-style health certificate), compute its salted Poseidon root `R` via the shared SDK, and anchor it with `DogTagIssuer.issue(R)` on the record-type's clone.
+- **Issue** — build an authority-endorsed credential (`TRAVEL_CLEARANCE` is a **CDC-modeled travel receipt** — a nested `credentialSubject` grouping **Section A** importer/consignee person PII (the obfuscatable/private block), **Section B** animal, **Section C** travel, a `validity` window, and a public `receiptId` leaf; `EU_HEALTH_CERT` is an Annex-IV-style health certificate), compute its salted Poseidon root `R` via the shared SDK, and anchor it with `DogTagIssuer.issue(R)` on the record-type's clone.
+  A 12-char Crockford-base32 `receiptId` (CSPRNG, ~60 bits) is minted per issue, committed into `R` as a public salted leaf, and kept as the off-chain `/r/:receiptId` lookup handle; the issuance **date** is derived from the on-chain `issuedAt[R]` timestamp, never a leaf.
+  The issue endpoint is **gated by the operator bearer** (`GOV_API_TOKEN`) — an authority portal anyone could issue from would undermine the receipt's credibility.
   The government signer must hold that record type's issuance whitelist (`IssuerRegistry.whitelistFor`, granted by the protocol admin) and be funded with PLASMA — exactly the vet issuer model, one trust tier up.
 - **Verify** — perform government-grade verification of any DogTag credential: recompute **integrity** offline (salted-leaf root), read **on-chain status** (`DogTagIssuer.isValid(R)`), and read **issuer identity** (`IssuerRegistry.isWhitelistedFor(keccak(recordType), signer)`).
   All three are the authenticity pillars of architecture §5; all chain reads are **gasless**.
@@ -90,7 +92,8 @@ It realizes the architecture's **future-government** notes (§3.6 record-type ta
 **Centralized DB (what it stores off-chain and why).**
 Its own Mongo (`governmentdata`), two collections:
 
-- `credentials` — every issued government credential, keyed by its anchored root `R`: the full wrapped document (salted cleartext leaves the authority is custodian of — origin/destination, clearance reference, endorsing authority, validity window), the target `DogTagIssuer` clone, and its **immutable on-chain proof** (anchoring tx hash, block number, ready-to-click explorer link), plus off-chain operator metadata (`label`/`notes`) and a status (`issued`/`revoked`/`expired` — soft-invalidation only, never hard-deleted; a revoke adds a revoke-tx proof alongside the issuance proof).
+- `credentials` — every issued government credential, keyed by its anchored root `R`: the full wrapped document (salted cleartext leaves the authority is custodian of — for `TRAVEL_CLEARANCE` the CDC-sectioned subject A/B/C + validity window; for `EU_HEALTH_CERT` the Annex-IV health leaves), the target `DogTagIssuer` clone, and its **immutable on-chain proof** (anchoring tx hash, block number, ready-to-click explorer link), plus off-chain operator metadata (`label`/`notes`) and a status (`issued`/`revoked`/`expired` — soft-invalidation only, never hard-deleted; a revoke adds a revoke-tx proof alongside the issuance proof).
+  It also denormalizes the public `receiptId` (with a **unique+sparse** Mongo index backing the `/r/:receiptId` lookup), a cleartext `subject` projection, and `validUntil` — all three mirror content committed in `R`, so they are immutable (in `IMMUTABLE_KEYS`, rejected by PATCH). A read-time `effectiveStatus` (`VALID`/`EXPIRED`/`REVOKED`/`DRAFT`) is derived from the stored lifecycle + `validUntil` on every record surface.
   On-chain holds only `R`; the operational + PII payload stays here.
 - `verifications` — an audit log of every verification the authority performed (root, issuer, per-pillar fragment states, folded verdict, timestamp) — the evidentiary trail a border/authority check needs.
 
@@ -101,16 +104,18 @@ Its own Mongo (`governmentdata`), two collections:
 | Route | Role | What |
 |---|---|---|
 | `GET /health` | liveness | status + chainId + demo/live + signer + configured issuer clones |
-| `POST /v1/travel-clearance/issue` | **issuer** | build `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` VC → root `R` → anchor `DogTagIssuer.issue(R)` (unless `dry_run` / no signer) → persist |
+| `POST /v1/travel-clearance/issue` | **issuer** 🔒 | build `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` VC (+ mint public `receiptId`) → root `R` → anchor `DogTagIssuer.issue(R)` (unless `dry_run` / no signer) → persist |
 | `POST /v1/verify` | **verifier** | integrity + `isValid` + `isWhitelistedFor` → verdict → persist audit record |
-| `GET /v1/records`, `GET /v1/records/:root` | custodian | list / fetch issued credentials (off-chain DB, incl. the on-chain proof + explorer links) |
-| `PATCH /v1/records/:root` | custodian | update **off-chain metadata only** (`label`/`notes`, `status` → `expired`); any on-chain-derived field is rejected 400 |
-| `POST /v1/records/:root/revoke` | **issuer** | on-chain `DogTagIssuer.revoke(R)` → soft-invalidate (row + issuance proof kept, revoke-tx proof added) |
+| `GET /v1/records`, `GET /v1/records/:root` | custodian 🔒 | list / fetch issued credentials (off-chain DB, incl. the on-chain proof + explorer links + derived `effectiveStatus`) |
+| `PATCH /v1/records/:root` | custodian 🔒 | update **off-chain metadata only** (`label`/`notes`, `status` → `expired`); any on-chain-derived field is rejected 400 |
+| `POST /v1/records/:root/revoke` | **issuer** 🔒 | on-chain `DogTagIssuer.revoke(R)` → soft-invalidate (row + issuance proof kept, revoke-tx proof added) |
 | `GET /v1/verifications` | audit | the verification audit log |
+| `GET /v1/receipts/:receiptId/status` | **public** | PII-free JSON status via a LIVE `isValid(R)` read (verdict + validity window + provenance links + `checkedAt`) |
+| `GET /r/:receiptId` | **public** | server-rendered, PII-free HTML status page (status-only — no Section A/B/C content) |
 
-The two record **mutation** routes are gated by `Authorization: Bearer <GOV_API_TOKEN>` (reads/verify/issue/health stay open): missing or wrong token → 401; in demo mode an unset `GOV_API_TOKEN` defaults to `dogtag-gov-demo-token` (the portal's `VITE_GOV_API_TOKEN` falls back to the same value); in live mode with no token configured, mutations fail closed with 503.
+🔒 = gated by `Authorization: Bearer <GOV_API_TOKEN>`. This covers issue, both record **reads** (`GET /v1/records`, `GET /v1/records/:root` — the CDC subject denormalizes Section A person PII, so an unauthenticated read would leak it) and both record **mutations** (PATCH, revoke). Health, verify, the verifications audit log, and the two **public receipt** endpoints (`GET /v1/receipts/:receiptId/status`, `GET /r/:receiptId`) stay open. Missing or wrong token → 401; in demo mode an unset `GOV_API_TOKEN` defaults to `dogtag-gov-demo-token` (the portal's `VITE_GOV_API_TOKEN` falls back to the same value); in live mode with no token configured, the gated routes fail closed with 503.
 
-`government-web` (React+Vite) — a deliberately **lean** portal skeleton (no shared `@dogtag/ui`/wallet stack): an **Issue** page (record type + pet + consignment fields → issue + anchor), a **Records** page (DB-backed list with the on-chain proof + explorer links, edit label/notes, mark expired, revoke), and a **Verify** page (paste a wrapped doc → per-pillar verdict).
+`government-web` (React+Vite) — a deliberately **lean** portal skeleton (no shared `@dogtag/ui`/wallet stack): an **Issue** page (record type + pet + a flat subset of the per-type subject leaves — for `TRAVEL_CLEARANCE` the CDC A/B/C fields, whose keys map 1:1 onto the nested subject the backend builds; the sectioned form + receipt view are PR-2 → issue + anchor), a **Records** page (DB-backed list with the on-chain proof + explorer links, edit label/notes, mark expired, revoke), and a **Verify** page (paste a wrapped doc → per-pillar verdict). All operator calls now carry the `VITE_GOV_API_TOKEN` bearer.
 Kept intentionally minimal so the net-new stack is a reliable, buildable skeleton this PR can ship; §7 lists the gap to portal parity.
 
 **Deployment.** `stacks/government/docker-compose.yml`: `caddy` + `web` (nginx) + `api` (`government-api`, `--features mongo`) + `mongo` (internal). Host `44831`/`44832`.
@@ -165,12 +170,11 @@ When a real competent authority onboards, the protocol admin whitelists its sign
 
 Tracked so the next PRs can close them:
 
-1. **`DogTagIssuer` clones for the government record types.**
-   `roax.json` currently has demo clones only for `VACCINATION` + `DOG_PROFILE`.
-   Anchoring `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` on-chain needs clones created via the existing `DogTagIssuerFactory.createIssuer(name, recordType, salt)` — an **ops step, not a contract change** — then their addresses wired into `TRAVEL_CLEARANCE_ISSUER_ADDR` / `EU_HEALTH_CERT_ISSUER_ADDR`.
-   Until then, government issuance runs `dry_run` (build + persist, no anchor); verify against **existing** vet-issued roots already works live.
-2. **Government signer onboarding.**
-   The government signer needs `whitelistFor(TRAVEL_CLEARANCE, signer)` (via the admin portal) + PLASMA gas before `POST /issue` can anchor live. Demo mode side-steps this via `MemChain`.
+1. **`DogTagIssuer` clones for the government record types.** ✅ **DONE (testnet, OPS-0).**
+   The per-record-type clones are deployed on ROAX (chainId 135) via `DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business)` with `business == the protocol admin` (single-authority topology), and their addresses are wired into `contracts/deployments/roax.json → government_clones` and `TRAVEL_CLEARANCE_ISSUER_ADDR` / `EU_HEALTH_CERT_ISSUER_ADDR` (`TRAVEL_CLEARANCE 0x8e276BD4c57740766A7e173D05F4f02013681c6a`, `EU_HEALTH_CERT 0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2`).
+   Set `GOV_SIGNER_KEY` to anchor live; unset (or a zero clone address) still runs `dry_run` (build + persist, no anchor).
+2. **Government signer onboarding.** ✅ **DONE (testnet, OPS-0).**
+   The government signer (the protocol admin address on testnet) is whitelisted on `IssuerRegistry.whitelistFor(keccak256(recordType), signer)`, so `DogTagIssuer.issue` (`onlyWhitelisted`) accepts it. It still needs PLASMA gas to anchor live; demo mode side-steps this via `MemChain`.
 3. **Custody parity.**
    The government stack loads its signer from `GOV_SIGNER_KEY` (env). The vet/groomer age-encrypted custody genesis/unlock flow is richer; a future PR can port it to `government-api` for prod-grade key handling.
 4. **Web parity.**

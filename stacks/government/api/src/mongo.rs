@@ -6,7 +6,8 @@
 
 use async_trait::async_trait;
 use mongodb::bson::doc;
-use mongodb::{Client, Collection, Database};
+use mongodb::options::IndexOptions;
+use mongodb::{Client, Collection, Database, IndexModel};
 
 use crate::store::{IssuedCredential, Store, VerificationRecord};
 
@@ -20,7 +21,15 @@ impl MongoStore {
         let db = client.database(db_name);
         // Ping fail-closed so a misconfigured URI refuses to boot rather than silently degrading.
         db.run_command(doc! { "ping": 1 }).await?;
-        Ok(MongoStore { db })
+        let store = MongoStore { db };
+        // Unique index on the public receipt handle so the `/r/:receiptId` lookup is O(1) and a
+        // duplicate id can never be persisted (sparse: legacy rows without a receiptId are exempt).
+        let idx = IndexModel::builder()
+            .keys(doc! { "receiptId": 1 })
+            .options(IndexOptions::builder().unique(true).sparse(true).build())
+            .build();
+        store.credentials().create_index(idx).await?;
+        Ok(store)
     }
 
     fn credentials(&self) -> Collection<IssuedCredential> {
@@ -43,6 +52,13 @@ impl Store for MongoStore {
     async fn get_credential(&self, root: &str) -> Option<IssuedCredential> {
         self.credentials()
             .find_one(doc! { "root": root })
+            .await
+            .ok()
+            .flatten()
+    }
+    async fn get_credential_by_receipt_id(&self, receipt_id: &str) -> Option<IssuedCredential> {
+        self.credentials()
+            .find_one(doc! { "receiptId": receipt_id })
             .await
             .ok()
             .flatten()

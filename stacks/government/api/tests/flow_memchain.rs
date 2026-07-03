@@ -15,6 +15,7 @@ use tower::ServiceExt;
 
 const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
 const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
+const API_TOKEN: &str = "dogtag-gov-demo-token";
 
 fn demo_state() -> (AppState, MemChain) {
     let cfg = Config {
@@ -48,12 +49,29 @@ fn demo_state() -> (AppState, MemChain) {
 }
 
 async fn call(state: &AppState, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
-    let req = Request::builder()
+    call_with_token(state, method, uri, body, None).await
+}
+
+/// Same as `call` but presents the government operator bearer (the issue/mutation gate).
+async fn call_auth(state: &AppState, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+    call_with_token(state, method, uri, body, Some(API_TOKEN)).await
+}
+
+async fn call_with_token(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Value,
+    token: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("authorization", format!("Bearer {t}"));
+    }
+    let req = builder.body(Body::from(body.to_string())).unwrap();
     let resp = government_api::router(state.clone())
         .oneshot(req)
         .await
@@ -79,20 +97,30 @@ async fn issue_then_verify_end_to_end() {
     let (state, _) = demo_state();
 
     // ISSUE — build + anchor the TRAVEL_CLEARANCE credential on the emulated chain.
-    let (status, issued) = call(
+    let (status, issued) = call_auth(
         &state,
         "POST",
         "/v1/travel-clearance/issue",
         json!({
             "record_type": TRAVEL_CLEARANCE,
             "dog_tag_id": "7",
-            "fields": { "destinationCountry": "FR", "originCountry": "US" }
+            "fields": { "animalName": "Rex", "countryOfDeparture": "CA" }
         }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "issue: {issued}");
     assert_eq!(issued["anchored"], true);
     assert!(issued["txHash"].is_string());
+    // The receipt handle is minted + surfaced with its public lookup URLs.
+    let receipt_id = issued["receiptId"]
+        .as_str()
+        .expect("receiptId minted")
+        .to_string();
+    assert_eq!(receipt_id.len(), 12, "12-char Crockford receipt id");
+    assert_eq!(
+        issued["statusUrl"],
+        format!("/v1/receipts/{receipt_id}/status")
+    );
     let root = issued["root"].as_str().unwrap().to_string();
     assert!(root.starts_with("0x") && root.len() == 66);
     let wrapped = issued["wrappedDoc"].clone();
@@ -113,18 +141,81 @@ async fn issue_then_verify_end_to_end() {
     assert_eq!(verdict["fragments"]["issuerWhitelisted"], true);
     assert_eq!(verdict["recomputedRoot"], root);
 
-    // audit + records surfaces reflect the flow.
-    let (_, records) = call(&state, "GET", "/v1/records", Value::Null).await;
+    // audit + records surfaces reflect the flow (records carry the read-time effectiveStatus).
+    let (_, records) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(records["records"].as_array().unwrap().len(), 1);
+    assert_eq!(records["records"][0]["effectiveStatus"], "VALID");
+    assert_eq!(records["records"][0]["receiptId"], receipt_id);
     let (_, audit) = call(&state, "GET", "/v1/verifications", Value::Null).await;
     assert_eq!(audit["verifications"].as_array().unwrap().len(), 1);
+
+    // PUBLIC receipt status (no auth): live on-chain read → VALID, PII-free (no importer section).
+    let (status, st_json) = call(
+        &state,
+        "GET",
+        &format!("/v1/receipts/{receipt_id}/status"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "public status: {st_json}");
+    assert_eq!(st_json["effectiveStatus"], "VALID");
+    assert_eq!(st_json["receiptId"], receipt_id);
+    assert_eq!(st_json["root"], root);
+    assert!(
+        st_json["issuanceDate"].is_string(),
+        "issuance date derived from chain"
+    );
+    assert!(
+        st_json.get("importer").is_none() && st_json.get("subject").is_none(),
+        "public status is PII-free: {st_json}"
+    );
+    // unknown receipt id -> 404.
+    let (status, _) = call(
+        &state,
+        "GET",
+        "/v1/receipts/ZZZZZZZZZZZZ/status",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn issue_requires_the_operator_bearer() {
+    let (state, _) = demo_state();
+    // No bearer -> 401; the credential is NOT built/persisted.
+    let (status, body) = call(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "issue without token: {body}"
+    );
+    // Wrong bearer -> 401.
+    let (status, _) = call_with_token(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7" }),
+        Some("wrong"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // Nothing was persisted by the rejected issues.
+    let (_, records) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
+    assert_eq!(records["records"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
 async fn verify_unanchored_root_is_invalid() {
     let (state, _) = demo_state();
     // Build (dry_run) but DON'T anchor — on-chain isValid must be false → verdict false.
-    let (status, issued) = call(
+    let (status, issued) = call_auth(
         &state,
         "POST",
         "/v1/travel-clearance/issue",

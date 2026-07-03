@@ -4,7 +4,7 @@ import { test, expect, type Page } from "@playwright/test";
  * End-to-end re-test of the two captain-reported government-portal fixes, against a LIVE portal:
  *
  *   1. each credential type renders its OWN Issue-form fields
- *      (EU_HEALTH_CERT: microchip/rabies/vet;  TRAVEL_CLEARANCE: origin/destination/purpose)
+ *      (EU_HEALTH_CERT: microchip/rabies/vet;  TRAVEL_CLEARANCE: animal/travel/importer)
  *   2. after a successful issue the wrapped document is displayed with a one-click COPY button
  *
  * The flow: open the portal → issue the credential (its own fields) → COPY the wrapped doc →
@@ -22,11 +22,11 @@ const CASES: TypeCase[] = [
   {
     recordType: "EU_HEALTH_CERT",
     ownField: "field-microchipNumber",
-    foreignField: "field-destinationCountry",
+    foreignField: "field-animalName",
   },
   {
     recordType: "TRAVEL_CLEARANCE",
-    ownField: "field-destinationCountry",
+    ownField: "field-animalName",
     foreignField: "field-microchipNumber",
   },
 ];
