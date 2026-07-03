@@ -88,15 +88,31 @@ async fn call_with_token(
     (status, v)
 }
 
+/// Raw (non-JSON) request — for the `/r/:receiptId` HTML status page.
+async fn call_raw(state: &AppState, method: &str, uri: &str) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    let resp = government_api::router(state.clone())
+        .oneshot(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
 async fn issue_one(state: &AppState) -> String {
-    let (s, b) = call(
+    let (s, b) = call_auth(
         state,
         "POST",
         "/v1/travel-clearance/issue",
         json!({
             "record_type": TRAVEL_CLEARANCE,
             "dog_tag_id": "7",
-            "fields": { "destinationCountry": "FR" }
+            "fields": { "animalName": "Rex" }
         }),
     )
     .await;
@@ -324,18 +340,91 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
 }
 
 #[tokio::test]
+async fn receipt_fields_are_immutable_and_status_page_renders() {
+    let (state, _mem) = demo_state();
+    let (s, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7",
+                "fields": { "validUntil": "2999-01-01", "animalName": "Blaze" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "issue: {issued}");
+    let root = issued["root"].as_str().unwrap().to_string();
+    let receipt_id = issued["receiptId"].as_str().unwrap().to_string();
+    let path = format!("/v1/records/{root}");
+
+    // receiptId / subject / validUntil mirror content committed in R → PATCH must reject them.
+    for k in ["receiptId", "subject", "validUntil"] {
+        let (s, b) = call_auth(&state, "PATCH", &path, json!({ k: json!("x") })).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "immutable '{k}': {b}");
+        assert!(b["error"].as_str().unwrap_or("").contains("immutable"));
+    }
+
+    // The record carries the denormalized receipt fields + a derived VALID effectiveStatus.
+    let (_s, rec) = call(&state, "GET", &path, Value::Null).await;
+    assert_eq!(rec["receiptId"], receipt_id);
+    assert_eq!(rec["validUntil"], "2999-01-01");
+    assert_eq!(rec["effectiveStatus"], "VALID");
+    assert!(rec["subject"]["animal"]["name"].is_string());
+
+    // Public status page (no auth): 200 HTML with the live VALID verdict, and PII-free.
+    let (s, html) = call_raw(&state, "GET", &format!("/r/{receipt_id}")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(html.contains("VALID"), "page shows verdict: {html}");
+    assert!(html.contains(&receipt_id));
+    assert!(!html.contains("Blaze"), "status page must not leak Section B PII");
+
+    // Unknown receipt -> 404 page.
+    let (s, _) = call_raw(&state, "GET", "/r/ZZZZZZZZZZZZ").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn effective_status_derives_expired_from_a_lapsed_window() {
+    let (state, _mem) = demo_state();
+    // validUntil already in the past → derived EXPIRED even though the stored lifecycle is `issued`.
+    let (s, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7",
+                "fields": { "validUntil": "2000-01-01" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "issue: {issued}");
+    let root = issued["root"].as_str().unwrap();
+    let receipt_id = issued["receiptId"].as_str().unwrap();
+
+    let (_s, rec) = call(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
+    assert_eq!(rec["status"], "issued", "stored lifecycle unchanged");
+    assert_eq!(rec["effectiveStatus"], "EXPIRED", "derived from lapsed validUntil");
+
+    // The live public status endpoint agrees (anchored + not revoked, but past validUntil).
+    let (_s, st) = call(
+        &state,
+        "GET",
+        &format!("/v1/receipts/{receipt_id}/status"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(st["effectiveStatus"], "EXPIRED");
+}
+
+#[tokio::test]
 async fn expire_requires_issued_status() {
     let (state, _mem) = demo_state();
 
     // dry_run builds + persists the credential as a never-anchored draft.
-    let (s, b) = call(
+    let (s, b) = call_auth(
         &state,
         "POST",
         "/v1/travel-clearance/issue",
         json!({
             "record_type": TRAVEL_CLEARANCE,
             "dog_tag_id": "8",
-            "fields": { "destinationCountry": "FR" },
+            "fields": { "animalName": "Rex" },
             "dry_run": true
         }),
     )

@@ -48,6 +48,16 @@ Each role platform persists the records it issues into its OWN store (separate M
 - **Web**: the vet + groomer portals share `stacks/{vet,groomer}/web/src/pages/Records.tsx` (identical) which now reads `api.listRecords()` from the backend DB (NOT the old localStorage `recordsStore`) and offers edit/expire/revoke via the shared `@dogtag/ui` client (`listRecords`/`updateRecord` in `packages/ui/src/api/client.ts`). The government portal has a `RecordsPage` in `App.tsx`.
 - **Tests**: hermetic Rust integration tests (`stacks/{vet,government}/api/tests/records_crud.rs`, MemChain+MemStore) prove issue→persist-proof→list→patch(reject on-chain)→revoke(soft)→expire. Playwright: `government/web/e2e/records-crud.spec.ts` runs full-stack against a demo `GOV_DEMO_MODE` backend (real store + mem chain); `stacks/{vet,groomer}/web/e2e/records.spec.ts` drive the shared Records UI against a **mocked** backend (route regex `^https?://[^/]+/api/` — a `**/api/**` glob wrongly swallows `@dogtag/ui`'s `src/api/*.ts` module scripts and breaks the mount). None are in CI (need a served portal + browsers).
 
+### Government travel receipt (CDC-modeled TRAVEL_CLEARANCE)
+The government `TRAVEL_CLEARANCE` credential is a CDC-modeled travel receipt (research `dogtag-govreceipt-r7` §2.1 + arch `dogtag-govarch-r8`). Grounding rules that are easy to get wrong:
+- **Nested CDC subject.** `build_gov_vc` (`stacks/government/api/src/app.rs`) builds a nested `credentialSubject`: `importer`/`consignee` (**Section A** — person PII, the private/obfuscatable block), `animal` (**Section B**), `travel` (**Section C**), a `validity` block, plus top-level `receiptId`. Nesting flattens to leaf key-paths automatically (`credentialSubject.importer.firstName`, …). B/C + validity + receiptId are PUBLIC (revealed leaves); A is obfuscated by the holder. `dogTagId` stays mandatory + non-obfuscatable. The envelope (attestationType/trustTier/legalEffect/legalBasisVersion/jurisdiction) is UNCHANGED. The web Issue form (`stacks/government/web/src/App.tsx` `RECORD_TYPE_FIELDS`) sends a flat subset whose keys map 1:1 onto these leaves (`importerLastName`, `animalName`, `travelType`, …) — the sectioned A/B/C form + receipt view are PR-2, not built yet.
+- **Receipt ID = public salted leaf + off-chain lookup handle — NOT the nullifier.** 12-char Crockford-base32 from a CSPRNG (~60 bits), minted in `routes::issue` (`gen_receipt_id`, uniqueness-retried), committed into `R` as a leaf AND stored on `IssuedCredential.receipt_id` (Mongo unique+sparse index on `receiptId`; `Store::get_credential_by_receipt_id`). Equating it to the ZK nullifier was ruled unsound (nullifier is per-verification, consumed once, unlinkable). `IssuedCredential` also denormalizes a cleartext `subject` projection + `valid_until`; all three (`receiptId`/`subject`/`validUntil`) are in `IMMUTABLE_KEYS` (mirror content committed in R).
+- **Issuance date is DERIVED from the chain, never a leaf** (arch DP-2): read `DogTagIssuer.issuedAt[R]` (the anchoring block timestamp). `validUntil` DOES stay a public salted leaf (policy-variable window).
+- **Derived `effectiveStatus`** computed at read time everywhere a record renders: `revoked ? REVOKED : (status==expired || today > validUntil) ? EXPIRED : VALID` (a never-anchored draft → `DRAFT`). `routes.rs` has `derive_effective_status` (pure, for list/detail) and folds it against a LIVE `isValid(R)` read in `resolve_receipt_status` (public endpoints). Date math uses a self-contained civil-from-days helper (no chrono/time dep); ISO dates compare as strings.
+- **Public, PII-free endpoints (no auth):** `GET /v1/receipts/:receiptId/status` (JSON: effectiveStatus, recordType, receiptId, validUntil, issuanceDate, root, issuerAddr, explorer links, checkedAt — via a LIVE `isValid(R)` read, not a DB echo) and `GET /r/:receiptId` (server-rendered HTML status page, status-only by default per arch DP-5 — NO Section A/B/C content).
+- **Issue is now GATED** behind the `require_api_token` bearer (arch DP-6; was open). Reads/verify/public-status stay open; demo keeps the baked `dogtag-gov-demo-token`. Callers of `/v1/travel-clearance/issue` must send the bearer — the web app (`apiPost(..., {auth:true})`), `scripts/e2e-roles.sh` (`$GTOK`), and the Rust integration tests were updated accordingly.
+- **OPS-0 (on-chain prereq, already live on ROAX chainId 135).** The per-record-type `DogTagIssuer` clones are deployed via `DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business)` with `business == the protocol admin 0x119F8c7F…` (single-authority topology, arch DP-3), and the government signer (that same admin address on testnet) is whitelisted on `IssuerRegistry.whitelistFor(keccak256(recordType), signer)` — `DogTagIssuer.issue` is `onlyWhitelisted`. Addresses (in `contracts/deployments/roax.json` → `government_clones` and `stacks/government/.env.example`): **TRAVEL_CLEARANCE `0x8e276BD4c57740766A7e173D05F4f02013681c6a`**, **EU_HEALTH_CERT `0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2`**. The deployer EOA (`roax.json:admin`) IS the factory owner AND holds `WHITELIST_ADMIN` — so this OPS step needs no multisig for testnet.
+
 ### Governance / admin (audit H-3)
 - Governed contracts split admin two ways: `IssuerRegistry` (3-day), `VerificationRegistry` (2-day), and `DogTagSBT` (3-day) use OZ `AccessControlDefaultAdminRules` (two-step `begin`/`acceptDefaultAdminTransfer` + timelock); `DogTagIssuerFactory` uses `Ownable2Step`. `DogTagIssuer` clones have no own admin — they read `IssuerRegistry.hasRole(0x00)`. `ConsentKeyRegistry`/`Groth16Verifier`/`Poseidon6` have no admin.
 - `DogTagSBT` inherits BOTH `AccessControlEnumerable` and `AccessControlDefaultAdminRules`, so it must explicitly override `grantRole`/`revokeRole`/`renounceRole`/`_setRoleAdmin` (`override(AccessControl, IAccessControl, AccessControlDefaultAdminRules)`) plus `_grantRole`/`_revokeRole`/`supportsInterface` — `super` resolves to the ACDAR rules first, then chains the enumerable bookkeeping. Do NOT `_grantRole(DEFAULT_ADMIN_ROLE,...)` in the constructor; the `AccessControlDefaultAdminRules(delay, admin)` base already does, and a second grant reverts (`AccessControlEnforcedDefaultAdminRules`).
@@ -261,14 +271,22 @@ is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `Z
 
 (Folded in from the firstmate-private canonical record so any agent in this repo shares the captain's conventions and vocabulary.)
 
-### Working environment
+### Working environment (WezTerm tab + tmux flow)
 
-- Each project is developed in a **dedicated WezTerm terminal tab**, supervised via **tmux**.
-- A crewmate working on a repo runs in its own tmux window and **may spawn as many additional tmux
-  windows as it needs** - builds, tests, logs, watchers, REPLs - so the work stays observable to the
-  captain.
+- **One project, one tab.** Each project is developed in its **own dedicated WezTerm terminal tab**,
+  backed by its **own dedicated tmux session** named for the project. A project's tab shows only that
+  project's work - never another project's. Do **not** hardcode a tab number; the captain's tab ordering
+  is environment-specific and may change - describe the convention, not "tab N".
+- **Crewmates live inside their project's tab.** Every agent working on a repo runs as a tmux
+  window/pane **within that project's session/tab**, alongside its sibling crewmates for the same
+  project, so all of one project's parallel work is visible together in one tab.
+- **Never share/group tmux sessions across projects.** Session grouping mirrors the same window list
+  across tabs and scatters every project's work into every tab; keep each project's session independent
+  (ungrouped) so tabs stay clean and project-scoped.
+- A crewmate **may spawn as many additional tmux windows/panes as it needs** - builds, tests, logs,
+  watchers, REPLs - within its project's session, so the work stays observable to the captain.
 - Prefer giving long-running or noisy processes (servers, watchers, test loops, dev builds) **their own
-  tmux window** rather than blocking the main one. Keep the work visible.
+  tmux window/pane** rather than blocking the main one. Keep the work visible.
 
 ### Common vocabulary the captain uses
 

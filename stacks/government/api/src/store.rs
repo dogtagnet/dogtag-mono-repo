@@ -48,6 +48,20 @@ pub struct IssuedCredential {
     /// The DogTagIssuer clone (contract) address the root was anchored to. IMMUTABLE.
     #[serde(rename = "issuerAddr")]
     pub issuer_addr: String,
+    /// The public Crockford-base32 receipt handle (also a salted leaf committed in R, so it is
+    /// IMMUTABLE). This is the `/r/:receiptId` lookup key — unique across the authority's records.
+    /// `Option` for backward-compat with rows written before receipts existed.
+    #[serde(rename = "receiptId", default, skip_serializing_if = "Option::is_none")]
+    pub receipt_id: Option<String>,
+    /// Cleartext projection of the credential's `credentialSubject` (the same content committed in R,
+    /// so it is IMMUTABLE). Denormalized for list/search/detail rendering without re-parsing the
+    /// wrapped doc. Never a new PII surface beyond what the authority already custodies in `wrappedDoc`.
+    #[serde(rename = "subject", default, skip_serializing_if = "Value::is_null")]
+    pub subject: Value,
+    /// Denormalized `validity.validUntil` (ISO-8601 date) for derived-expiry queries + rendering. It
+    /// mirrors a leaf committed in R, so it is IMMUTABLE.
+    #[serde(rename = "validUntil", default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<String>,
     /// The full wrapped credential document (the holder receives a copy; the authority is custodian).
     /// Carries the anchored credential/document hash, so it is IMMUTABLE.
     #[serde(rename = "wrappedDoc")]
@@ -124,6 +138,9 @@ pub struct VerificationRecord {
 pub trait Store: Send + Sync {
     async fn put_credential(&self, cred: IssuedCredential);
     async fn get_credential(&self, root: &str) -> Option<IssuedCredential>;
+    /// Resolve a credential by its public `receiptId` handle (the `/r/:receiptId` lookup). `None`
+    /// when no credential carries that receipt id.
+    async fn get_credential_by_receipt_id(&self, receipt_id: &str) -> Option<IssuedCredential>;
     async fn list_credentials(&self) -> Vec<IssuedCredential>;
     async fn put_verification(&self, rec: VerificationRecord);
     async fn list_verifications(&self) -> Vec<VerificationRecord>;
@@ -138,6 +155,8 @@ struct MemInner {
     credentials: HashMap<String, IssuedCredential>,
     /// insertion order for stable listing.
     cred_order: Vec<String>,
+    /// receiptId -> root, for the `/r/:receiptId` lookup (mirrors the Mongo unique index).
+    receipt_index: HashMap<String, String>,
     verifications: Vec<VerificationRecord>,
 }
 
@@ -159,10 +178,18 @@ impl Store for MemStore {
         if !g.credentials.contains_key(&cred.root) {
             g.cred_order.push(cred.root.clone());
         }
+        if let Some(rid) = &cred.receipt_id {
+            g.receipt_index.insert(rid.clone(), cred.root.clone());
+        }
         g.credentials.insert(cred.root.clone(), cred);
     }
     async fn get_credential(&self, root: &str) -> Option<IssuedCredential> {
         self.inner.lock().unwrap().credentials.get(root).cloned()
+    }
+    async fn get_credential_by_receipt_id(&self, receipt_id: &str) -> Option<IssuedCredential> {
+        let g = self.inner.lock().unwrap();
+        let root = g.receipt_index.get(receipt_id)?;
+        g.credentials.get(root).cloned()
     }
     async fn list_credentials(&self) -> Vec<IssuedCredential> {
         let g = self.inner.lock().unwrap();
