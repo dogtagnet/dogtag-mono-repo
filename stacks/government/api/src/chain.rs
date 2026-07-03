@@ -294,7 +294,12 @@ impl AlloyChain {
 // MemChain — in-memory emulation for demo/local + tests (no live node).
 // --------------------------------------------------------------------------------------------
 
-#[derive(Default)]
+/// Fixed base for the MemChain emulated block clock (2026-07-01T00:00:00Z). The demo has no real
+/// node, so `issue()` derives its `issuedAt` timestamp from this monotonic clock; seeding it to a
+/// realistic recent instant (rather than 0 = 1970) makes the derived "Date of issuance" on the
+/// receipt + public status page read as a plausible present-day date in demo mode.
+const MEMCHAIN_CLOCK_BASE: u64 = 1_782_864_000;
+
 struct MemChainInner {
     /// (issuer_addr, root) -> issuedAt timestamp (0 == not issued).
     issued: HashMap<(String, String), u64>,
@@ -303,6 +308,18 @@ struct MemChainInner {
     whitelist: HashMap<(String, String, String), bool>,
     nonce: u64,
     clock: u64,
+}
+
+impl Default for MemChainInner {
+    fn default() -> Self {
+        MemChainInner {
+            issued: HashMap::new(),
+            revoked: HashMap::new(),
+            whitelist: HashMap::new(),
+            nonce: 0,
+            clock: MEMCHAIN_CLOCK_BASE,
+        }
+    }
 }
 
 #[derive(Clone)]
