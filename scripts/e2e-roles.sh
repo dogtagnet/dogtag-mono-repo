@@ -82,7 +82,7 @@ if [ "$MODE" = demo ]; then
   green "VERIFIED: verdict=true (integrity + onchain + issuer identity all pass)"
 
   step "3. Off-chain DB surfaces (records custody + verification audit log)"
-  [ "$(curl -fsS "$GOV/v1/records" | jq '.records | length')" -ge 1 ]         || fail "records empty"
+  [ "$(curl -fsS "$GOV/v1/records" -H "authorization: Bearer $GTOK" | jq '.records | length')" -ge 1 ]         || fail "records empty"
   [ "$(curl -fsS "$GOV/v1/verifications" | jq '.verifications | length')" -ge 1 ] || fail "audit empty"
   green "1 issued credential persisted + 1 verification audit record persisted"
 

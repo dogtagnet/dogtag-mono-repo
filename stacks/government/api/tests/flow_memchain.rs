@@ -136,7 +136,7 @@ async fn issue_then_verify_end_to_end() {
     assert_eq!(verdict["recomputedRoot"], root);
 
     // audit + records surfaces reflect the flow (records carry the read-time effectiveStatus).
-    let (_, records) = call(&state, "GET", "/v1/records", Value::Null).await;
+    let (_, records) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(records["records"].as_array().unwrap().len(), 1);
     assert_eq!(records["records"][0]["effectiveStatus"], "VALID");
     assert_eq!(records["records"][0]["receiptId"], receipt_id);
@@ -188,7 +188,7 @@ async fn issue_requires_the_operator_bearer() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     // Nothing was persisted by the rejected issues.
-    let (_, records) = call(&state, "GET", "/v1/records", Value::Null).await;
+    let (_, records) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(records["records"].as_array().unwrap().len(), 0);
 }
 

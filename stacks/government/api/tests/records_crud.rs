@@ -126,7 +126,7 @@ async fn issue_persists_onchain_proof_and_lists() {
     let (state, mem) = demo_state();
     let root = issue_one(&state).await;
 
-    let (s, b) = call(&state, "GET", "/v1/records", Value::Null).await;
+    let (s, b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(s, StatusCode::OK);
     let records = b["records"].as_array().unwrap();
     assert_eq!(records.len(), 1);
@@ -187,7 +187,7 @@ async fn patch_updates_offchain_but_rejects_onchain_fields() {
         let (s, b) = call_auth(&state, "PATCH", &path, json!({ k: v })).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "non-string '{k}' rejected: {b}");
     }
-    let (_s, b) = call(&state, "GET", &path, Value::Null).await;
+    let (_s, b) = call_auth(&state, "GET", &path, Value::Null).await;
     assert_eq!(b["label"], "case-42", "label survives every rejected edit");
     assert_eq!(b["notes"], "priority");
 }
@@ -223,7 +223,7 @@ async fn mutations_require_the_bearer_token() {
     assert_eq!(s, StatusCode::UNAUTHORIZED, "revoke with wrong token: {b}");
 
     // the stored record is unchanged: still issued, no label, anchor still valid on-chain.
-    let (_s, b) = call(&state, "GET", &path, Value::Null).await;
+    let (_s, b) = call_auth(&state, "GET", &path, Value::Null).await;
     assert_eq!(b["status"], "issued");
     assert!(b["label"].is_null(), "rejected patch must not write: {b}");
     assert!(
@@ -232,9 +232,52 @@ async fn mutations_require_the_bearer_token() {
     );
     assert!(mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
 
-    // reads stay open (no token needed).
-    let (s, _b) = call(&state, "GET", "/v1/records", Value::Null).await;
+    // operator reads require the bearer.
+    let (s, _b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn record_reads_require_the_bearer_token_but_public_status_stays_open() {
+    let (state, _mem) = demo_state();
+    let (s, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7",
+                "fields": { "validUntil": "2999-01-01", "animalName": "Rex" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "issue: {issued}");
+    let root = issued["root"].as_str().unwrap().to_string();
+    let receipt_id = issued["receiptId"].as_str().unwrap().to_string();
+    let detail = format!("/v1/records/{root}");
+
+    // operator record reads leak Section A/B PII -> gated behind the bearer.
+    let (s, b) = call(&state, "GET", "/v1/records", Value::Null).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "list without token: {b}");
+    let (s, b) = call_with_token(&state, "GET", "/v1/records", Value::Null, Some("wrong")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "list with wrong token: {b}");
+    let (s, b) = call(&state, "GET", &detail, Value::Null).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "detail without token: {b}");
+    let (s, b) = call_with_token(&state, "GET", &detail, Value::Null, Some("wrong")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "detail with wrong token: {b}");
+
+    // the bearer unlocks them.
+    let (s, _b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "list with token");
+    let (s, _b) = call_auth(&state, "GET", &detail, Value::Null).await;
+    assert_eq!(s, StatusCode::OK, "detail with token");
+
+    // the public PII-free receipt status endpoint stays open (no token needed).
+    let (s, _b) = call(
+        &state,
+        "GET",
+        &format!("/v1/receipts/{receipt_id}/status"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "public status stays open");
 }
 
 #[tokio::test]
@@ -258,7 +301,7 @@ async fn revoke_is_soft_invalidation_keeping_history_and_proof() {
     assert!(!mem.issued_at(ISSUER_ADDR, &root).await.unwrap().is_zero());
 
     // record retained + still shows the issuance AND revoke proofs.
-    let (_s, b) = call(&state, "GET", "/v1/records", Value::Null).await;
+    let (_s, b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     let records = b["records"].as_array().unwrap();
     assert_eq!(records.len(), 1, "revoked record retained (never deleted)");
     let rec = &records[0];
@@ -295,7 +338,7 @@ async fn revoke_is_soft_invalidation_keeping_history_and_proof() {
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT, "expire-after-revoke: {b}");
-    let (_s, b) = call(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
+    let (_s, b) = call_auth(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
     assert_eq!(
         b["status"], "revoked",
         "revoked never downgraded to expired"
@@ -319,7 +362,7 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
 
     // off-chain expiry doesn't touch the anchor; record retained + verifiable.
     assert!(mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
-    let (_s, b) = call(&state, "GET", "/v1/records", Value::Null).await;
+    let (_s, b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(b["records"][0]["status"], "expired");
 
     // expired -> revoked with an empty body keeps the recorded expiry reason.
@@ -363,7 +406,7 @@ async fn receipt_fields_are_immutable_and_status_page_renders() {
     }
 
     // The record carries the denormalized receipt fields + a derived VALID effectiveStatus.
-    let (_s, rec) = call(&state, "GET", &path, Value::Null).await;
+    let (_s, rec) = call_auth(&state, "GET", &path, Value::Null).await;
     assert_eq!(rec["receiptId"], receipt_id);
     assert_eq!(rec["validUntil"], "2999-01-01");
     assert_eq!(rec["effectiveStatus"], "VALID");
@@ -397,7 +440,7 @@ async fn effective_status_derives_expired_from_a_lapsed_window() {
     let root = issued["root"].as_str().unwrap();
     let receipt_id = issued["receiptId"].as_str().unwrap();
 
-    let (_s, rec) = call(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
+    let (_s, rec) = call_auth(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
     assert_eq!(rec["status"], "issued", "stored lifecycle unchanged");
     assert_eq!(rec["effectiveStatus"], "EXPIRED", "derived from lapsed validUntil");
 
@@ -442,7 +485,7 @@ async fn expire_requires_issued_status() {
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT, "expire on draft -> 409: {b}");
-    let (_s, b) = call(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
+    let (_s, b) = call_auth(&state, "GET", &format!("/v1/records/{root}"), Value::Null).await;
     assert_eq!(
         b["status"], "draft",
         "draft status unchanged by the rejected expire"

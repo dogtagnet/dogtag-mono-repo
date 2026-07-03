@@ -69,9 +69,11 @@ fn err(code: StatusCode, msg: &str) -> Resp {
     (code, Json(json!({ "error": msg })))
 }
 
-/// Gate for the record MUTATION endpoints (PATCH + revoke): require `Authorization: Bearer <token>`
-/// matching the configured `GOV_API_TOKEN`. Unconfigured token fails closed (503). Reads, verify and
-/// issue stay open.
+/// Gate for the operator endpoints: issue, PATCH /v1/records/:root, POST /v1/records/:root/revoke,
+/// and the operator record reads (GET /v1/records, GET /v1/records/:root) all require
+/// `Authorization: Bearer <token>` matching the configured `GOV_API_TOKEN`. Unconfigured token fails
+/// closed (503). Health, verify, the verifications audit log, and the public receipt status
+/// endpoints (GET /v1/receipts/:id/status and GET /r/:id) stay open.
 fn require_api_token(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
     let expected = match st.cfg.api_token.as_deref() {
         Some(t) => t,
@@ -452,7 +454,10 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
 // records / audit-log reads
 // --------------------------------------------------------------------------------------------
 
-async fn list_records(State(st): State<AppState>) -> Resp {
+async fn list_records(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
     let records: Vec<Value> = st
         .store
         .list_credentials()
@@ -463,7 +468,14 @@ async fn list_records(State(st): State<AppState>) -> Resp {
     ok(json!({ "records": records }))
 }
 
-async fn get_record(State(st): State<AppState>, Path(root): Path<String>) -> Resp {
+async fn get_record(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(root): Path<String>,
+) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
     match st.store.get_credential(&root).await {
         Some(c) => ok(credential_json(&c)),
         None => err(StatusCode::NOT_FOUND, "no credential for that root"),

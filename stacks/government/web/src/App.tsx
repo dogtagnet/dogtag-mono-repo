@@ -8,7 +8,9 @@ const API_BASE = import.meta.env.VITE_GOV_API_BASE || "/api";
 const API_TOKEN = import.meta.env.VITE_GOV_API_TOKEN || "dogtag-gov-demo-token";
 
 async function apiGet(path: string) {
-  const r = await fetch(`${API_BASE}${path}`);
+  const r = await fetch(`${API_BASE}${path}`, {
+    headers: { authorization: `Bearer ${API_TOKEN}` },
+  });
   return r.json();
 }
 async function apiPost(path: string, body: unknown, opts?: { auth?: boolean }) {
