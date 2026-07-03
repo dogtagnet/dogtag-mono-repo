@@ -1,7 +1,8 @@
 # @dogtag/ui
 
 Shared portal UI library for the DogTag ecosystem — the reference implementation of all
-shared portal patterns (vet, groomer, admin reuse this). React 18 + TypeScript + Tailwind +
+shared portal patterns (vet, groomer, admin, and government reuse this — government uses the
+AppShell/tokens/toasts without `WalletProvider`, authenticating with a bearer token). React 18 + TypeScript + Tailwind +
 shadcn-style primitives, with wallet-connect and the on-chain verify flow.
 
 Consumed **as workspace source** (no prebuild step): apps import from `@dogtag/ui` and Vite
