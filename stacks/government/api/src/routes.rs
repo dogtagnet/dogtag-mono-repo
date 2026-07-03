@@ -155,11 +155,22 @@ fn derive_effective_status(
     match status {
         CredentialStatus::Revoked => "REVOKED",
         CredentialStatus::Draft => "DRAFT",
-        CredentialStatus::Expired => "EXPIRED",
-        CredentialStatus::Issued => match valid_until {
-            Some(vu) if today > vu => "EXPIRED",
-            _ => "VALID",
-        },
+        _ => expired_or_valid(status, valid_until, today),
+    }
+}
+
+/// The shared EXPIRED-vs-VALID tail: a record is `EXPIRED` when its stored lifecycle already says so
+/// or its validity window has passed (`today > validUntil`), else `VALID`. Callers apply their own
+/// REVOKED/DRAFT precedence first, then delegate the final decision here so policy lives in one place.
+fn expired_or_valid(
+    status: CredentialStatus,
+    valid_until: Option<&str>,
+    today: &str,
+) -> &'static str {
+    if status == CredentialStatus::Expired || valid_until.map(|vu| today > vu).unwrap_or(false) {
+        "EXPIRED"
+    } else {
+        "VALID"
     }
 }
 
@@ -679,12 +690,8 @@ async fn resolve_receipt_status(st: &AppState, receipt_id: &str) -> Result<Recei
         "DRAFT"
     } else if revoked {
         "REVOKED"
-    } else if cred.status == CredentialStatus::Expired
-        || cred.valid_until.as_deref().map(|vu| today.as_str() > vu).unwrap_or(false)
-    {
-        "EXPIRED"
     } else {
-        "VALID"
+        expired_or_valid(cred.status, cred.valid_until.as_deref(), &today)
     };
 
     Ok(ReceiptStatus {
@@ -725,6 +732,21 @@ fn esc(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Render a minimal, PII-free error page for the public `/r/:receiptId` surface, preserving the
+/// upstream StatusCode so a chain-read failure (5xx) is never conflated with a missing receipt (404).
+fn receipt_error_page(code: StatusCode, title: &str, message: &str) -> Response {
+    let html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>{t}</title></head>\
+         <body style=\"font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem\">\
+         <h1>{t}</h1><p>{m}</p></body></html>",
+        t = esc(title),
+        m = esc(message),
+    );
+    (code, Html(html)).into_response()
+}
+
 /// GET /r/:receiptId — PUBLIC status page (status-only by default, arch DP-5). Renders the live
 /// verdict + validity window + on-chain provenance links. NO Section A/B/C content — the official
 /// reads the details off the paper/phone in front of them and this page confirms the receipt is
@@ -737,15 +759,15 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
                 .get("error")
                 .and_then(|v| v.as_str())
                 .unwrap_or("not found");
-            let html = format!(
-                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-                 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-                 <title>Receipt not found</title></head>\
-                 <body style=\"font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem\">\
-                 <h1>Receipt not found</h1><p>{}</p></body></html>",
-                esc(msg)
+            if code == StatusCode::NOT_FOUND {
+                return receipt_error_page(code, "Receipt not found", msg);
+            }
+            return receipt_error_page(
+                code,
+                "Status temporarily unavailable",
+                "We could not reach the chain to confirm this receipt right now. \
+                 This does NOT mean the receipt is invalid - please try again in a moment.",
             );
-            return (code, Html(html)).into_response();
         }
     };
     let c = &rs.cred;
