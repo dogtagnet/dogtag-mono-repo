@@ -86,7 +86,7 @@ export function Records() {
         { auth: true },
       );
       if (status !== 200) setError(json.error || `HTTP ${status}`);
-      await refresh();
+      else await refresh();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -102,7 +102,7 @@ export function Records() {
         reason: "validity window lapsed",
       });
       if (status !== 200) setError(json.error || `HTTP ${status}`);
-      await refresh();
+      else await refresh();
     } catch (e) {
       setError(String(e));
     } finally {

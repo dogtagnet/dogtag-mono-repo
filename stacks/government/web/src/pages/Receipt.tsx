@@ -88,9 +88,16 @@ export function Receipt() {
         }
         setRecord(rec as GovRecord);
         // The LIVE on-chain status + authoritative issuance date (public, PII-free surface).
+        // Best-effort so a status hiccup never blanks the whole receipt.
         if (rec.receiptId) {
-          const st = await fetch(`${API_BASE}/v1/receipts/${rec.receiptId}/status`).then((r) => r.json());
-          if (!cancelled && !st?.error) setStatus(st as ReceiptStatus);
+          try {
+            const st = await fetch(`${API_BASE}/v1/receipts/${rec.receiptId}/status`).then((r) =>
+              r.json(),
+            );
+            if (!cancelled && !st?.error) setStatus(st as ReceiptStatus);
+          } catch {
+            /* live status is supplementary */
+          }
         }
       } catch (e) {
         if (!cancelled) setError(String(e));
