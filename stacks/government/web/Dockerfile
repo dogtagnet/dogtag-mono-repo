@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # ----------------------------------------------------------------------------------------------
-# government-web — pnpm build -> nginx static. The government portal is a deliberately lean SPA
-# skeleton (no shared @dogtag/ui / wallet stack), but it still builds through the pnpm workspace.
-# Build context MUST be the monorepo root:
+# government-web — pnpm build -> nginx static. The government portal builds through the pnpm
+# workspace and consumes the shared @dogtag/ui (AppShell + tokens) as workspace source (hence the
+# `COPY packages` below). Build context MUST be the monorepo root:
 #   docker build -f stacks/government/web/Dockerfile -t dogtag-government-web .
 # ----------------------------------------------------------------------------------------------
 

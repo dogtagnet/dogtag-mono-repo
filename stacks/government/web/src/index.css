@@ -1,224 +1,136 @@
-:root {
-  --bg: #0f172a;
-  --panel: #1e293b;
-  --panel-2: #273449;
-  --border: #334155;
-  --text: #e2e8f0;
-  --muted: #94a3b8;
-  --accent: #38bdf8;
-  --ok: #34d399;
-  --bad: #f87171;
-  color-scheme: dark;
+@import "@dogtag/ui/tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------------------------------------
+ * The official travel-clearance RECEIPT sheet.
+ *
+ * Modeled 1:1 on the CDC "Dog Import Form Receipt" (references2/government_receipt.pdf): white paper,
+ * dark-slate section-header bars with white text, thin-bordered alternating label/value rows. The
+ * sheet renders with a FIXED light palette (not the theme tokens) so it always looks like the formal
+ * paper document — on screen in dark theme, and identically when printed. Print rules below strip the
+ * portal chrome so browser "Print → Save as PDF" yields the clean official document.
+ * ---------------------------------------------------------------------------------------------- */
+.receipt-sheet {
+  --r-ink: #0f172a;
+  --r-muted: #475569;
+  --r-line: #e2e8f0;
+  --r-bar: #334155;
+  --r-zebra: #f8fafc;
+  background: #ffffff;
+  color: var(--r-ink);
+  border: 1px solid var(--r-line);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
 }
 
-* {
-  box-sizing: border-box;
+.receipt-sheet .r-body {
+  padding: 2rem 2.25rem 2.5rem;
 }
 
-body {
-  margin: 0;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-}
-
-.wrap {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 24px 20px 64px;
-}
-
-header.top {
+.receipt-letterhead {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 14px;
-  margin-bottom: 22px;
+  align-items: center;
+  gap: 0.85rem;
+  border-bottom: 3px solid var(--r-bar);
+  padding: 1.4rem 2.25rem 1.1rem;
 }
 
-header.top h1 {
-  font-size: 20px;
-  margin: 0;
-}
-
-header.top .badge {
-  font-size: 12px;
-  color: var(--bg);
-  background: var(--accent);
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-weight: 600;
-}
-
-nav {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-}
-
-nav a {
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 14px;
-  padding: 6px 10px;
-  border-radius: 8px;
-}
-
-nav a.active,
-nav a:hover {
-  color: var(--text);
-  background: var(--panel-2);
-}
-
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 20px;
-  margin-bottom: 18px;
-}
-
-.card h2 {
-  margin: 0 0 4px;
-  font-size: 16px;
-}
-
-.card p.sub {
-  margin: 0 0 16px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-label {
-  display: block;
-  font-size: 12px;
-  color: var(--muted);
-  margin: 12px 0 4px;
-}
-
-input,
-textarea,
-select {
-  width: 100%;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  padding: 9px 11px;
-  font-size: 14px;
-  font-family: inherit;
-}
-
-textarea {
-  min-height: 120px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-}
-
-.row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-button {
-  margin-top: 16px;
-  background: var(--accent);
-  color: #04212e;
-  border: none;
-  border-radius: 9px;
-  padding: 10px 18px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-pre {
-  background: #0b1120;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px;
-  overflow: auto;
-  font-size: 12px;
-  color: #cbd5e1;
-}
-
-.verdict {
+.receipt-seal {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 700;
-  font-size: 15px;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 0.6rem;
+  background: var(--r-bar);
+  color: #fff;
+  font-size: 1.5rem;
 }
 
-.verdict.ok {
-  color: var(--ok);
+.receipt-section-bar {
+  background: var(--r-bar);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
+  padding: 0.6rem 0.9rem;
+  margin: 1.6rem 0 0;
+  border-radius: 4px 4px 0 0;
 }
 
-.verdict.bad {
-  color: var(--bad);
+.receipt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
 }
 
-.pill {
-  display: inline-block;
-  font-size: 12px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  margin-right: 6px;
+.receipt-table tr {
+  border: 1px solid var(--r-line);
 }
 
-.pill.ok {
-  color: var(--ok);
-  border-color: var(--ok);
+.receipt-table tr:nth-child(even) {
+  background: var(--r-zebra);
 }
 
-.pill.bad {
-  color: var(--bad);
-  border-color: var(--bad);
+.receipt-table td {
+  padding: 0.55rem 0.9rem;
+  vertical-align: top;
 }
 
-.muted {
-  color: var(--muted);
-  font-size: 12px;
+.receipt-table td.r-label {
+  width: 42%;
+  color: var(--r-ink);
+  border-right: 1px solid var(--r-line);
 }
 
-/* Per-record-type Issue-form field grid. */
-.fields {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+.receipt-table td.r-value {
+  color: var(--r-muted);
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
 }
 
-/* Wrapped-document display + one-click copy after a successful issue. */
-.wrapped-doc {
-  margin-top: 14px;
-  border: 1px solid var(--accent);
-  border-radius: 12px;
-  padding: 14px;
-  background: rgba(56, 189, 248, 0.06);
-}
-
-.wrapped-doc-head {
-  display: flex;
+.receipt-status-chip {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 0.4rem;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+  color: #fff;
+  padding: 0.3rem 0.85rem;
+  border-radius: 999px;
 }
 
-.wrapped-doc-body {
-  max-height: 320px;
-  margin: 0;
+.receipt-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
 }
 
-.copy-btn {
-  margin-top: 0;
-  padding: 7px 14px;
-  font-size: 13px;
+/* ------------------------------------------------------------------------------------------------
+ * Print: strip the portal shell (sidebar + topbar + any .no-print control) so only the official
+ * receipt sheet prints, edge to edge, on white paper.
+ * ---------------------------------------------------------------------------------------------- */
+@media print {
+  aside,
+  header,
+  .no-print {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+  }
+  body {
+    background: #ffffff !important;
+  }
+  .receipt-sheet {
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    max-width: none !important;
+  }
 }
