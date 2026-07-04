@@ -18,7 +18,7 @@ use crate::leaf::hash_leaf;
 use crate::merkle::build_merkle;
 use crate::types::{TypeTag, TypedScalar};
 use crate::verify::{check_integrity, FragmentState};
-use crate::wrap::{from_hex32, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc};
+use crate::wrap::{from_hex32, obfuscate, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc};
 
 /// A single error type crossing the FFI boundary (UniFFI maps this to a thrown exception).
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -135,6 +135,27 @@ pub fn verify_integrity(wrapped_doc_json: String) -> Result<String, FfiError> {
         FragmentState::Valid => "VALID".to_string(),
         _ => "INVALID".to_string(),
     })
+}
+
+/// obfuscate — the merkle selective-disclosure primitive (mirror `wrap::obfuscate`). Moves each
+/// named field's leaf hash into `privacy.obfuscated[]` and drops its cleartext, leaving the Merkle
+/// root (== the on-chain root R) UNCHANGED. This is what lets the phone produce a PII-free
+/// presentation copy LOCALLY: the holder hides Section-A person-PII leaves while the tree still
+/// rebuilds to R, so every disclosed (Section B/C/validity/receiptId) leaf stays verifiable on-chain.
+///
+/// `key_paths` are dotted leaf key-paths as they appear in `data` (e.g.
+/// `credentialSubject.importer.idNumber`). `credentialSubject.dogTagId` is the one leaf that must
+/// never be obfuscated (`verify.rs` rejects it as the non-obfuscatable SBT binding); obfuscating a
+/// missing key errors. Returns the redacted WrappedDoc JSON, which `verify_integrity` still passes.
+#[uniffi::export]
+pub fn obfuscate_document_json(
+    wrapped_doc_json: String,
+    key_paths: Vec<String>,
+) -> Result<String, FfiError> {
+    let doc: WrappedDoc =
+        serde_json::from_str(&wrapped_doc_json).map_err(|e| err(format!("bad wrapped doc json: {e}")))?;
+    let out = obfuscate(&doc, &key_paths)?;
+    serde_json::to_string(&out).map_err(|e| err(format!("serialize: {e}")))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -492,6 +513,64 @@ pub fn verify_whitelist_key_hex(purpose_label: String) -> String {
     h.update(&buf);
     let key: [u8; 32] = h.finalize().into();
     format!("0x{}", hex::encode(key))
+}
+
+#[cfg(test)]
+mod obfuscate_ffi_tests {
+    use super::*;
+
+    /// The mobile holder flow: wrap a credential, obfuscate a Section-A PII leaf LOCALLY, and assert
+    /// (a) integrity still verifies (the tree rebuilds to the same root R), (b) the cleartext is gone,
+    /// and (c) it lands in `privacy.obfuscated[]`. This is the PII-free presentation copy the phone
+    /// produces without any server round-trip.
+    #[test]
+    fn obfuscate_hides_leaf_but_keeps_integrity() {
+        let credential = r#"{
+            "credentialSubject": {
+                "dogTagId": {"tag": 3, "value": "7"},
+                "receiptId": {"tag": 2, "value": "9RVBXK8AFQ2C"},
+                "importer": {
+                    "firstName": {"tag": 2, "value": "Dominic"},
+                    "idNumber": {"tag": 2, "value": "887524355"}
+                },
+                "animal": {"name": {"tag": 2, "value": "Blaze"}}
+            }
+        }"#;
+        let issuer = r#"{
+            "name": "Example Competent Authority",
+            "domain": "gov.example",
+            "documentStore": "0x0000000000000000000000000000000000000001",
+            "recordType": "TRAVEL_CLEARANCE"
+        }"#;
+
+        let wrapped = wrap_document_json(credential.to_string(), issuer.to_string()).unwrap();
+        assert_eq!(verify_integrity(wrapped.clone()).unwrap(), "VALID");
+
+        let redacted = obfuscate_document_json(
+            wrapped,
+            vec!["credentialSubject.importer.idNumber".to_string()],
+        )
+        .unwrap();
+
+        // Integrity survives obfuscation — the on-chain root R is unchanged.
+        assert_eq!(verify_integrity(redacted.clone()).unwrap(), "VALID");
+        // The PII cleartext is dropped and a hash moved to privacy.obfuscated[].
+        assert!(!redacted.contains("887524355"), "idNumber cleartext must be gone");
+        let v: Value = serde_json::from_str(&redacted).unwrap();
+        assert_eq!(v["privacy"]["obfuscated"].as_array().unwrap().len(), 1);
+        // A public/disclosed leaf is untouched.
+        assert!(redacted.contains("Blaze"), "disclosed animal leaf stays visible");
+    }
+
+    /// Obfuscating an absent key path is an error surfaced across the FFI (not a silent no-op).
+    #[test]
+    fn obfuscate_missing_field_errors() {
+        let credential = r#"{"credentialSubject": {"dogTagId": {"tag": 3, "value": "7"}}}"#;
+        let issuer = r#"{"name":"A","domain":"a.example","documentStore":"0x0000000000000000000000000000000000000001","recordType":"TRAVEL_CLEARANCE"}"#;
+        let wrapped = wrap_document_json(credential.to_string(), issuer.to_string()).unwrap();
+        let res = obfuscate_document_json(wrapped, vec!["credentialSubject.nope".to_string()]);
+        assert!(res.is_err());
+    }
 }
 
 #[cfg(test)]

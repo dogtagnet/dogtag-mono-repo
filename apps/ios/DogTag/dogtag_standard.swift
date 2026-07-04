@@ -1117,6 +1117,26 @@ public func nfcNormalize(input: String) -> String {
 })
 }
 /**
+ * obfuscate — the merkle selective-disclosure primitive (mirror `wrap::obfuscate`). Moves each
+ * named field's leaf hash into `privacy.obfuscated[]` and drops its cleartext, leaving the Merkle
+ * root (== the on-chain root R) UNCHANGED. This is what lets the phone produce a PII-free
+ * presentation copy LOCALLY: the holder hides Section-A person-PII leaves while the tree still
+ * rebuilds to R, so every disclosed (Section B/C/validity/receiptId) leaf stays verifiable on-chain.
+ *
+ * `key_paths` are dotted leaf key-paths as they appear in `data` (e.g.
+ * `credentialSubject.importer.idNumber`). `credentialSubject.dogTagId` is the one leaf that must
+ * never be obfuscated (`verify.rs` rejects it as the non-obfuscatable SBT binding); obfuscating a
+ * missing key errors. Returns the redacted WrappedDoc JSON, which `verify_integrity` still passes.
+ */
+public func obfuscateDocumentJson(wrappedDocJson: String, keyPaths: [String])throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_obfuscate_document_json(
+        FfiConverterString.lower(wrappedDocJson),
+        FfiConverterSequenceString.lower(keyPaths),$0
+    )
+})
+}
+/**
  * Generate a Groth16 proof for the DogTag verification circuit ON DEVICE.
  *
  * - `wrapped_doc_json` — the stored WrappedDoc (raw salted leaves; the witness source).
@@ -1279,6 +1299,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_nfc_normalize() != 7804) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_obfuscate_document_json() != 27517) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_prove_verification() != 3014) {

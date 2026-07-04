@@ -34,6 +34,7 @@
 		D5B0677DB22C2B06A76051B5 /* ProfileScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */; };
 		D9732C3C315A3C5DE6D4A3BE /* QrPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 685707046DC0696308DB5C8D /* QrPayload.swift */; };
 		E8D82ED92A758B3C7A009A2B /* Net.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409155A71A31BD791C0561AD /* Net.swift */; };
+		E9C15C0493BE17D1889DAF14 /* TravelReceiptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEFF4BE5934863572EB85AB5 /* TravelReceiptView.swift */; };
 		EF0AD58CCCEF572174247AFF /* ZkSelfTestScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50C45D5C665E86BCBC686B3 /* ZkSelfTestScreen.swift */; };
 		F71346870BDDB878D094DEFE /* BigUInt.swift in Sources */ = {isa = PBXBuildFile; fileRef = D015751D851C794DC4128BC7 /* BigUInt.swift */; };
 		F99C7D3CA52E6CCBE02EB6A5 /* Wallet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35FCC686C0AAD6B317376C7 /* Wallet.swift */; };
@@ -65,6 +66,7 @@
 		C48A2C71E910181EB8484314 /* QR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QR.swift; sourceTree = "<group>"; };
 		C50C45D5C665E86BCBC686B3 /* ZkSelfTestScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkSelfTestScreen.swift; sourceTree = "<group>"; };
 		C8AB4F26FEB853C4B49F7988 /* Consent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Consent.swift; sourceTree = "<group>"; };
+		CEFF4BE5934863572EB85AB5 /* TravelReceiptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TravelReceiptView.swift; sourceTree = "<group>"; };
 		D015751D851C794DC4128BC7 /* BigUInt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BigUInt.swift; sourceTree = "<group>"; };
 		D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerifyScreen.swift; sourceTree = "<group>"; };
 		E0236E3495680C88FA6DA3FD /* RecordImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordImporter.swift; sourceTree = "<group>"; };
@@ -116,6 +118,7 @@
 				8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */,
 				BBCC68456C4002493E9519A5 /* testvectors.json */,
 				A7926F506647E68F6A59FDAF /* Theme.swift */,
+				CEFF4BE5934863572EB85AB5 /* TravelReceiptView.swift */,
 				6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */,
 				41B690C8C0288E6D92C49B1A /* verification_final.zkey */,
 				9DE95B9868DF2B01687427E7 /* verification.graph */,
@@ -239,6 +242,7 @@
 				D23B623773E4F1738D03833B /* ScanScreen.swift in Sources */,
 				95966E12D4F0950D42E83A0A /* Secp256k1.swift in Sources */,
 				82DFB6F5477D97DDCA88CF69 /* Theme.swift in Sources */,
+				E9C15C0493BE17D1889DAF14 /* TravelReceiptView.swift in Sources */,
 				20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */,
 				D0F8DCB58714F356E47D7CBE /* VerifyScreen.swift in Sources */,
 				F99C7D3CA52E6CCBE02EB6A5 /* Wallet.swift in Sources */,

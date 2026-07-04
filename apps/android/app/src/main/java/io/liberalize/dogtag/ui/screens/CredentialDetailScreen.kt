@@ -22,10 +22,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.liberalize.dogtag.data.Credential
+import io.liberalize.dogtag.data.CredentialGroup
 import io.liberalize.dogtag.data.WrappedDoc
 import io.liberalize.dogtag.ui.DogTagTheme
 
@@ -44,6 +50,12 @@ import io.liberalize.dogtag.ui.DogTagTheme
  */
 @Composable
 fun CredentialDetailScreen(cred: Credential, onBack: () -> Unit) {
+    var showReceipt by remember { mutableStateOf(false) }
+    if (showReceipt) {
+        TravelReceiptScreen(cred, onBack = { showReceipt = false })
+        return
+    }
+
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val scroll = rememberScrollState()
@@ -83,6 +95,21 @@ fun CredentialDetailScreen(cred: Credential, onBack: () -> Unit) {
             if (rt.isNotBlank()) Text(rt, fontSize = 13.sp, color = c.muted)
             val tag = cred.dogTagId.ifBlank { doc?.dogTagId ?: "" }
             if (tag.isNotBlank()) Text("DogTag #$tag", fontSize = 13.sp, color = c.muted)
+        }
+
+        // Travel credentials get the CDC-modeled receipt as their "present to an official" surface
+        // (holder-controlled selective disclosure + PII-free public-status QR).
+        if (cred.group == CredentialGroup.Travel) {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.accent)
+                    .clickable { showReceipt = true }.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Description, null, tint = c.onAccent)
+                Spacer(Modifier.size(10.dp))
+                Text("Show travel receipt", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onAccent, modifier = Modifier.weight(1f))
+                Icon(Icons.Filled.KeyboardArrowRight, null, tint = c.onAccent)
+            }
         }
 
         // On-chain card.

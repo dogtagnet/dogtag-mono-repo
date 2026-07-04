@@ -747,6 +747,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -783,6 +785,8 @@ internal interface UniffiLib : Library {
     fun uniffi_dogtag_standard_fn_func_key_hash_hex(`axHex`: RustBuffer.ByValue,`ayHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_nfc_normalize(`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_obfuscate_document_json(`wrappedDocJson`: RustBuffer.ByValue,`keyPaths`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_prove_verification(`wrappedDocJson`: RustBuffer.ByValue,`consentJson`: RustBuffer.ByValue,`eddsaSig`: RustBuffer.ByValue,`zkeyPath`: RustBuffer.ByValue,`graphPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -932,6 +936,8 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_dogtag_standard_checksum_func_nfc_normalize(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_obfuscate_document_json(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_prove_verification(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_sign_consent_eddsa(
@@ -994,6 +1000,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_nfc_normalize() != 7804.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_dogtag_standard_checksum_func_obfuscate_document_json() != 27517.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_prove_verification() != 3014.toShort()) {
@@ -1650,6 +1659,28 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_nfc_normalize(
         FfiConverterString.lower(`input`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * obfuscate — the merkle selective-disclosure primitive (mirror `wrap::obfuscate`). Moves each
+         * named field's leaf hash into `privacy.obfuscated[]` and drops its cleartext, leaving the Merkle
+         * root (== the on-chain root R) UNCHANGED. This is what lets the phone produce a PII-free
+         * presentation copy LOCALLY: the holder hides Section-A person-PII leaves while the tree still
+         * rebuilds to R, so every disclosed (Section B/C/validity/receiptId) leaf stays verifiable on-chain.
+         *
+         * `key_paths` are dotted leaf key-paths as they appear in `data` (e.g.
+         * `credentialSubject.importer.idNumber`). `credentialSubject.dogTagId` is the one leaf that must
+         * never be obfuscated (`verify.rs` rejects it as the non-obfuscatable SBT binding); obfuscating a
+         * missing key errors. Returns the redacted WrappedDoc JSON, which `verify_integrity` still passes.
+         */
+    @Throws(FfiException::class) fun `obfuscateDocumentJson`(`wrappedDocJson`: kotlin.String, `keyPaths`: List<kotlin.String>): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_obfuscate_document_json(
+        FfiConverterString.lower(`wrappedDocJson`),FfiConverterSequenceString.lower(`keyPaths`),_status)
 }
     )
     }
