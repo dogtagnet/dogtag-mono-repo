@@ -39,6 +39,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -258,12 +261,20 @@ fun TravelReceiptScreen(cred: Credential, onBack: () -> Unit) {
                 // Legal preamble.
                 val binding = pick("validity.countryOfDepartureBinding")
                 Text(
-                    buildString {
-                        append("This receipt is valid for the animal listed for the validity window shown above")
-                        if (binding.isNotBlank()) append(", for entry from the listed country of departure ($binding)")
-                        append(". If the animal travels via a different or high-risk country, a new clearance may be required. You must show this receipt (printed or on your phone) to airline staff and port-of-entry officials. The authority reserves the right to request additional supporting documentation on arrival.")
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(color = c.muted)) {
+                            append("This receipt is valid for the animal listed for the validity window shown above")
+                            if (binding.isNotBlank()) append(", for entry from the listed country of departure ($binding)")
+                            append(". If the animal travels via a different or high-risk country, a new clearance may be required. ")
+                        }
+                        withStyle(SpanStyle(color = c.onBackground, fontWeight = FontWeight.Bold)) {
+                            append("You must show this receipt (printed or on your phone) to airline staff and port-of-entry officials.")
+                        }
+                        withStyle(SpanStyle(color = c.muted)) {
+                            append(" The authority reserves the right to request additional supporting documentation on arrival.")
+                        }
                     },
-                    fontSize = 12.sp, color = c.muted,
+                    fontSize = 12.sp,
                 )
 
                 (doc?.obfuscatedCount ?: 0).let { n ->

@@ -29,6 +29,9 @@ struct TravelReceiptView: View {
     @State private var withheld: Set<String>
     @State private var shareItem: SharePayload? = nil
     @State private var shareError: String? = nil
+    /// QR image cached across recompositions and generated off the main thread (mirrors Android's
+    /// `remember(publicUrl)` + `Dispatchers.Default`), so reveal-toggles never regenerate it inline.
+    @State private var qr: UIImage? = nil
 
     // Amber warning accent (no semantic token for "expired/withheld"; matches the web #b45309).
     private let amber = Color(hex: 0xB45309)
@@ -61,6 +64,7 @@ struct TravelReceiptView: View {
         }
         .background(c.background.ignoresSafeArea())
         .task { await refreshStatus() }
+        .task(id: publicStatusUrl) { await generateQR() }
         .sheet(item: $shareItem) { ShareSheet(items: [$0.text]) }
     }
 
@@ -393,7 +397,7 @@ struct TravelReceiptView: View {
                 .background(Color(hex: 0x334155))
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top, spacing: 14) {
-                    if let img = qrImage(publicStatusUrl), !publicStatusUrl.isEmpty {
+                    if let img = qr, !publicStatusUrl.isEmpty {
                         Image(uiImage: img).interpolation(.none).resizable()
                             .frame(width: 116, height: 116)
                             .background(Color.white).cornerRadius(6)
@@ -459,8 +463,16 @@ struct TravelReceiptView: View {
         return v.split(separator: "_").map { $0.isEmpty ? "" : $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
     }
 
+    /// Build the QR off the main thread once per `publicStatusUrl`, then publish it on the main actor.
+    private func generateQR() async {
+        let url = publicStatusUrl
+        guard !url.isEmpty else { qr = nil; return }
+        let img = await Task.detached(priority: .userInitiated) { Self.qrImage(url) }.value
+        qr = img
+    }
+
     /// Generate a QR code image for `value` (PII-free public status URL). CoreImage, offline.
-    private func qrImage(_ value: String) -> UIImage? {
+    private static func qrImage(_ value: String) -> UIImage? {
         guard !value.isEmpty else { return nil }
         let ctx = CIContext()
         let filter = CIFilter.qrCodeGenerator()
