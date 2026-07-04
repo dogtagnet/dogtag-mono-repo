@@ -111,14 +111,18 @@ fn parse_addr(h: &str) -> Address {
 /// `issue(bytes32)` calldata (selector 0f75e81f) — pinned by the parity test.
 pub fn issue_calldata(root: &str) -> String {
     use alloy::sol_types::SolCall;
-    let call = IDogTagIssuer::issueCall { r: parse_b256(root) };
+    let call = IDogTagIssuer::issueCall {
+        r: parse_b256(root),
+    };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
 /// `revoke(bytes32)` calldata — the on-chain invalidation path (mirrors the vet stack).
 pub fn revoke_calldata(root: &str) -> String {
     use alloy::sol_types::SolCall;
-    let call = IDogTagIssuer::revokeCall { r: parse_b256(root) };
+    let call = IDogTagIssuer::revokeCall {
+        r: parse_b256(root),
+    };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
@@ -153,7 +157,8 @@ impl AlloyChain {
     /// key is a hard config error (the whole point of this signer is to anchor real txs).
     pub fn with_signer_hex(mut self, key_hex: &str) -> Result<Self, ChainError> {
         let s = key_hex.strip_prefix("0x").unwrap_or(key_hex);
-        let bytes = hex::decode(s).map_err(|e| ChainError::Other(format!("bad signer key hex: {e}")))?;
+        let bytes =
+            hex::decode(s).map_err(|e| ChainError::Other(format!("bad signer key hex: {e}")))?;
         if bytes.len() != 32 {
             return Err(ChainError::Other(format!(
                 "signer key must be 32 bytes (got {})",
@@ -241,10 +246,9 @@ impl AlloyChain {
         use alloy::providers::{Provider, ProviderBuilder};
         use alloy::rpc::types::TransactionRequest;
 
-        let signer = self
-            .signer
-            .clone()
-            .ok_or_else(|| ChainError::Other("no government signer configured (set GOV_SIGNER_KEY)".into()))?;
+        let signer = self.signer.clone().ok_or_else(|| {
+            ChainError::Other("no government signer configured (set GOV_SIGNER_KEY)".into())
+        })?;
         let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()
             .with_recommended_fillers()
