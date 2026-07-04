@@ -1,0 +1,55 @@
+[package]
+name = "indexer-api"
+version = "0.0.0"
+edition = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+description = "DogTag oversight indexer (Axum + Alloy) — scans the ROAX factory/registry/DogTagIssuer-clone/VerificationRegistry event logs (IssuerCreated, Whitelisted/Delisted, RootIssued/RootRevoked, Verified) into a queryable, non-PII index. Serves the UNSCOPED government oversight feed and per-signer/clone SCOPED views for vet/groomer, with server-side scope enforcement."
+
+[[bin]]
+name = "indexer-api"
+path = "src/main.rs"
+
+[lib]
+name = "indexer_api"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+
+# web
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+http = "1"
+
+# chain (ROAX). Same alloy surface the government / vet stacks use.
+alloy = { version = "0.8", features = [
+    "full",
+    "rpc-types",
+    "json-rpc",
+    "contract",
+    "sol-types",
+] }
+
+# misc
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+mongodb = { version = "3", optional = true }
+futures = "0.3"
+
+[features]
+default = []
+# Persistent MongoStore (mirrors the government / vet `mongo` feature). Without it the binary keeps
+# the index in memory (demo/local + tests). The Docker image is built with `--features mongo`.
+mongo = ["dep:mongodb"]
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

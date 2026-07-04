@@ -1,0 +1,68 @@
+# ----------------------------------------------------------------------------------------------
+# DogTag — OVERSIGHT INDEXER stack (separately deployable). See docs/ROLE_APPS.md + AGENTS.md.
+#   api   : the Rust indexer-api binary (NET-NEW crate) — scans ROAX event logs + serves the
+#           scope-enforced query API                                       -> host 46001 (internal 46001)
+#   mongo : MongoDB 7, INTERNAL TO THE COMPOSE NETWORK ONLY                 -> NO host port (never published)
+#
+# Backend-only service: there is no web UI here (the admin/government/vet portals are the query
+# consumers — a later task). Build context is the monorepo ROOT (`..` resolves to dogtag-mono-repo/).
+# Run from this directory:
+#   docker compose up -d
+#
+# PERSISTENCE: the event index + resume cursor live in MONGO (the `indexerdata` volume). The index
+# is fully rebuildable from the chain, so a lost volume is recoverable (re-scans from START_BLOCK) —
+# but keeping it avoids a full re-scan on restart.
+#
+# DOCTRINE: this service reads the CHAIN (eth_getLogs) + the admin business directory (to name
+# signers) ONLY. It never reads any role's PII Mongo, and the index itself holds NO PII.
+# ----------------------------------------------------------------------------------------------
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: stacks/indexer/api/Dockerfile
+      args:
+        FEATURES: mongo      # build the MongoStore-capable binary (Dockerfile has ARG FEATURES)
+    image: dogtag-indexer-api
+    ports:
+      - "46001:46001"       # host 46001 -> indexer-api :46001
+    env_file: .env
+    environment:
+      # Production knobs (secrets come from .env via ${VAR} interpolation — never hardcoded here).
+      MONGO_URI: "mongodb://mongo:27017/dogtag"
+      MONGO_DB: ${MONGO_DB:-dogtag}
+      CHAIN_ID: ${CHAIN_ID:-135}
+      PORT: "46001"
+    depends_on:
+      mongo:
+        condition: service_healthy   # fail-closed Mongo connect must not crash the API on first boot
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:46001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    # NO `ports:` mapping — internal to the compose network only (service name `mongo`, default 27017).
+    expose:
+      - "27017"
+    command: ["mongod", "--port", "27017", "--bind_ip_all"]
+    volumes:
+      - indexerdata:/data/db  # PERSISTENT event index + cursor (rebuildable from chain)
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+networks:
+  default:
+    name: dogtag-indexer
+
+volumes:
+  indexerdata: {}

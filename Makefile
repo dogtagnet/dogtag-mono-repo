@@ -1,6 +1,6 @@
 # DogTag monorepo — root task runner (just is unavailable; GNU Make 3.81)
 .DEFAULT_GOAL := help
-.PHONY: help dev build test parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government
+.PHONY: help dev build test parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer
 
 help: ## list targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -43,6 +43,8 @@ up-groomer: ## docker compose up the groomer stack (43617/43618)
 	cd stacks/groomer && docker compose up -d
 up-government: ## docker compose up the government stack (44831/44832)
 	cd stacks/government && docker compose up -d
+up-indexer: ## docker compose up the oversight indexer stack (46001, backend-only)
+	cd stacks/indexer && docker compose up -d
 
 clean: ## remove build artifacts
 	rm -rf node_modules packages/*/dist packages/*/node_modules target contracts/out contracts/cache
