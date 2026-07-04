@@ -6,6 +6,7 @@ members = [
     "stacks/vet/api",
     "stacks/admin/api",
     "stacks/government/api",
+    "stacks/indexer/api",
 ]
 
 [workspace.package]
