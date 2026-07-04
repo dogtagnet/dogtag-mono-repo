@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::AppState;
 use crate::chain::ChainError;
-use crate::events::{EventType, Finality};
+use crate::events::{EventType, Finality, IndexedEvent};
 use crate::scope::Scope;
 use crate::store::{Cursor, EventQuery};
 
@@ -118,25 +118,22 @@ impl Indexer {
             }
         }
 
-        // --- pending-range reconciliation -------------------------------------------------------
-        // Drop ALL pending (non-finalized) rows and re-derive them below from the canonical chain, so
-        // any pending event orphaned by a reorg simply disappears. Finalized rows are never touched.
-        let dropped = store.delete_pending().await;
-        if dropped > 0 {
-            tracing::debug!("dropped {dropped} pending events for re-derivation");
-        }
-
-        // --- forward scan [last_finalized+1 .. head] in chunks ----------------------------------
+        // --- forward scan [last_finalized+1 .. head] into a buffer FIRST ------------------------
+        // Derive the full new finalized+pending set BEFORE touching the store, so a transient RPC
+        // error on any chunk bails with the store untouched (the prior pending rows survive). The
+        // pending range is only swapped after the whole fallible scan succeeds (atomic swap).
         let mut scan_from = cursor.last_finalized.map(|b| b + 1).unwrap_or(cfg.start_block);
         if scan_from > head {
-            return Ok(()); // nothing new
+            return Ok(()); // nothing new (everything is already finalized ≤ watermark)
         }
         let chunk = cfg.chunk_size.max(1);
+        let mut scanned: Vec<IndexedEvent> = Vec::new();
         let mut finalized_count = 0u64;
         let mut pending_count = 0u64;
         while scan_from <= head {
             let scan_to = (scan_from + chunk - 1).min(head);
             let ctx = cfg.watch_context(&self.discovered_snapshot());
+            // A fetch error here returns before any delete/upsert — the store keeps its prior state.
             let mut events = source.fetch_events(scan_from, scan_to, &ctx).await?;
 
             // Stamp each event's finality from the watermark, and fold newly-discovered clones so
@@ -158,11 +155,21 @@ impl Indexer {
                     }
                 }
             }
-
-            if !events.is_empty() {
-                store.upsert_events(&events).await;
-            }
+            scanned.append(&mut events);
             scan_from = scan_to + 1;
+        }
+
+        // --- atomic swap of the pending range ---------------------------------------------------
+        // The fallible scan fully succeeded, so now (and only now) replace the pending range: drop all
+        // prior pending rows and upsert the freshly-derived set. Any pending event orphaned by a reorg
+        // is gone (absent from `scanned`); finalized rows re-derived from the canonical chain upsert
+        // idempotently by id. Nothing here is fallible on the network, so there is no lossy window.
+        let dropped = store.delete_pending().await;
+        if dropped > 0 {
+            tracing::debug!("dropped {dropped} prior pending events, swapping in re-derived set");
+        }
+        if !scanned.is_empty() {
+            store.upsert_events(&scanned).await;
         }
 
         // --- advance + persist the finalized watermark ------------------------------------------
