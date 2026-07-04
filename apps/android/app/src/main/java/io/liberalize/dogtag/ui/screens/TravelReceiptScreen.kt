@@ -261,7 +261,7 @@ fun TravelReceiptScreen(cred: Credential, onBack: () -> Unit) {
                     buildString {
                         append("This receipt is valid for the animal listed for the validity window shown above")
                         if (binding.isNotBlank()) append(", for entry from the listed country of departure ($binding)")
-                        append(". You must show this receipt (printed or on your phone) to airline staff and port-of-entry officials. The authority reserves the right to request additional supporting documentation on arrival.")
+                        append(". If the animal travels via a different or high-risk country, a new clearance may be required. You must show this receipt (printed or on your phone) to airline staff and port-of-entry officials. The authority reserves the right to request additional supporting documentation on arrival.")
                     },
                     fontSize = 12.sp, color = c.muted,
                 )

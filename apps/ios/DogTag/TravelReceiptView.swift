@@ -19,16 +19,35 @@ struct TravelReceiptView: View {
     @Environment(\.dismiss) var dismiss
     let cred: Credential
 
+    /// Parsed once at init (mirrors Android's `remember(doc)`) so recomposition never re-parses.
+    private let doc: WrappedDoc?
+    /// `credentialSubject` leaves flattened to dotted paths WITHOUT the `credentialSubject.` prefix
+    /// (e.g. `importer.firstName`, `animal.name`), decoded once from the packed `salt:tag:value` leaves.
+    private let subject: [String: String]
+
     @State private var live: RoaxRpc.Result = .unknown("checking…")
-    @State private var withheld: Set<String> = []
-    @State private var didSeedWithheld = false
+    @State private var withheld: Set<String>
     @State private var shareItem: SharePayload? = nil
     @State private var shareError: String? = nil
 
-    private var doc: WrappedDoc? { WrappedDoc(json: cred.wrappedDocJson) }
-
     // Amber warning accent (no semantic token for "expired/withheld"; matches the web #b45309).
     private let amber = Color(hex: 0xB45309)
+
+    init(cred: Credential) {
+        self.cred = cred
+        let parsed = WrappedDoc(json: cred.wrappedDocJson)
+        self.doc = parsed
+        var subj: [String: String] = [:]
+        for f in parsed?.decodedFields() ?? [] {
+            guard f.keyPath.hasPrefix("credentialSubject.") else { continue }
+            subj[String(f.keyPath.dropFirst("credentialSubject.".count))] = f.value
+        }
+        self.subject = subj
+        // Seed WITHHELD eagerly to every present Section-A leaf so the first render never shows
+        // person PII in cleartext (privacy-by-default; mirrors Android's eager `remember` init).
+        let present = Self.sectionAPaths.filter { !(subj[$0.path] ?? "").isEmpty }
+        _withheld = State(initialValue: Set(present.map { $0.path }))
+    }
 
     var body: some View {
         ScrollView {
@@ -46,17 +65,6 @@ struct TravelReceiptView: View {
     }
 
     // MARK: - decoded subject
-
-    /// `credentialSubject` leaves flattened to dotted paths WITHOUT the `credentialSubject.` prefix
-    /// (e.g. `importer.firstName`, `animal.name`). Decoded from the packed `salt:tag:value` leaves.
-    private var subject: [String: String] {
-        var out: [String: String] = [:]
-        for f in doc?.decodedFields() ?? [] {
-            guard f.keyPath.hasPrefix("credentialSubject.") else { continue }
-            out[String(f.keyPath.dropFirst("credentialSubject.".count))] = f.value
-        }
-        return out
-    }
 
     private func pick(_ path: String) -> String { subject[path] ?? "" }
     private func isTrue(_ path: String) -> Bool {
@@ -141,7 +149,7 @@ struct TravelReceiptView: View {
     // MARK: - selective disclosure
 
     /// Section-A person/importer leaves — the PII block that defaults to WITHHELD when presenting.
-    private var sectionAPaths: [(label: String, path: String)] {
+    private static let sectionAPaths: [(label: String, path: String)] = {
         [
             ("First Name", "importer.firstName"),
             ("Middle Name/Initial", "importer.middleName"),
@@ -157,10 +165,10 @@ struct TravelReceiptView: View {
             ("Consignee Email", "consignee.email"),
             ("Consignee ID Type", "consignee.idType"),
         ]
-    }
+    }()
     /// Present Section-A paths (a value exists in the credential).
     private var presentSectionA: [(label: String, path: String)] {
-        sectionAPaths.filter { !pick($0.path).isEmpty }
+        Self.sectionAPaths.filter { !pick($0.path).isEmpty }
     }
 
     private var disclosureControls: some View {
@@ -192,12 +200,6 @@ struct TravelReceiptView: View {
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
-        .onAppear {
-            // Seed: withhold every present Section-A leaf (PII-protected by default).
-            guard !didSeedWithheld else { return }
-            withheld = Set(presentSectionA.map { $0.path })
-            didSeedWithheld = true
-        }
     }
 
     /// Run the merkle `obfuscate()` LOCALLY over the withheld leaves and hand the redacted WrappedDoc
@@ -284,7 +286,7 @@ struct TravelReceiptView: View {
 
     private var legalPreamble: some View {
         let binding = pick("validity.countryOfDepartureBinding")
-        return Text("This receipt is valid for the animal listed for the validity window shown above\(binding.isEmpty ? "" : ", for entry from the listed country of departure (\(binding))"). ")
+        return Text("This receipt is valid for the animal listed for the validity window shown above\(binding.isEmpty ? "" : ", for entry from the listed country of departure (\(binding))"). If the animal travels via a different or high-risk country, a new clearance may be required. ")
             .font(.system(size: 12)).foregroundColor(c.muted)
         + Text("You must show this receipt (printed or on your phone) to airline staff and port-of-entry officials.")
             .font(.system(size: 12, weight: .bold)).foregroundColor(c.onBackground)
