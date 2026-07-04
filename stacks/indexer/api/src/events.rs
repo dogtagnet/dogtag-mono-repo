@@ -32,6 +32,36 @@ pub enum EventType {
     Verified,
 }
 
+/// The finality lifecycle of an indexed event (captain-directed finality-aware model). ROAX is an
+/// EVM/PoS chain with a finality gadget, so a **finalized** block can never reorg — its events are
+/// immutable and never rewound. A **pending** block (height > the finalized watermark) is still
+/// reorg-able and is the ONLY range the reorg logic ever touches. A government oversight feed must
+/// distinguish the two so it never treats a pre-finality, reorg-able issuance as authoritative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Finality {
+    /// block height > finalized watermark — reorg-able, in-flight.
+    Pending,
+    /// block height <= finalized watermark — immutable, settled.
+    Finalized,
+}
+
+impl Finality {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Finality::Pending => "pending",
+            Finality::Finalized => "finalized",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Finality> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "pending" => Some(Finality::Pending),
+            "finalized" => Some(Finality::Finalized),
+            _ => None,
+        }
+    }
+}
+
 impl EventType {
     /// The stable wire token used in JSON + the `?type=` query filter.
     pub fn as_str(&self) -> &'static str {
@@ -86,6 +116,10 @@ pub struct IndexedEvent {
     /// time-filterable/sortable regardless of whether the event carries its own `ts`.
     #[serde(rename = "blockTimestamp")]
     pub block_timestamp: u64,
+    /// Finality lifecycle state — `finalized` (immutable, settled) vs `pending` (still reorg-able).
+    /// The scanner assigns this from the finalized watermark; the reorg logic only touches `pending`.
+    #[serde(rename = "finality")]
+    pub finality: Finality,
 
     // ---- scoping keys (server-side enforcement) -----------------------------------------------
     /// The signer that performed the action — `by` (RootIssued/Revoked), `signer`

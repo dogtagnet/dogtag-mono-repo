@@ -160,6 +160,7 @@ mod tests {
             tx_hash: "0xtx".into(),
             log_index: 0,
             block_timestamp: 100,
+            finality: crate::events::Finality::Finalized,
             actor: actor.map(|s| s.to_string()),
             clone: clone.map(|s| s.to_string()),
             record_type: None,

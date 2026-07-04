@@ -20,7 +20,7 @@ use alloy::sol;
 use alloy::sol_types::SolEvent;
 use async_trait::async_trait;
 
-use crate::events::{EventType, IndexedEvent};
+use crate::events::{EventType, Finality, IndexedEvent};
 
 pub const ROAX_CHAIN_ID: u64 = 135;
 
@@ -95,6 +95,10 @@ pub trait LogSource: Send + Sync {
     }
     /// The current chain head (`eth_blockNumber`).
     async fn head_block(&self) -> Result<u64, ChainError>;
+    /// The current **finalized** block height via the `finalized` block tag (ROAX/PoS finality).
+    /// `Ok(Some(n))` when the node exposes the tag; `Ok(None)` when it does not (or has no finalized
+    /// block yet), in which case the ingest loop falls back to a confirmations-depth watermark.
+    async fn finalized_block(&self) -> Result<Option<u64>, ChainError>;
     /// Fetch + decode + timestamp every watched event in `[from, to]`, gated by `ctx`. Returns them
     /// sorted `(block, logIndex)` ascending so the caller can fold `IssuerCreated` discoveries in order.
     async fn fetch_events(
@@ -146,6 +150,8 @@ pub fn decode_log(log: &RawLog, ctx: &WatchContext, known: &mut HashSet<String>)
         tx_hash: log.tx_hash.to_ascii_lowercase(),
         log_index: log.log_index,
         block_timestamp: log.block_timestamp,
+        // Default pending; the ingest loop stamps the true finality from the finalized watermark.
+        finality: Finality::Pending,
         actor: None,
         clone: None,
         record_type: None,
@@ -307,6 +313,26 @@ impl LogSource for AlloyLogSource {
             .map_err(|e| ChainError::Rpc(e.to_string()))
     }
 
+    async fn finalized_block(&self) -> Result<Option<u64>, ChainError> {
+        use alloy::eips::BlockNumberOrTag;
+        use alloy::network::primitives::BlockTransactionsKind;
+        use alloy::providers::Provider;
+        let provider = self.provider().await?;
+        // A node without the finality gadget returns null (or errors) for the `finalized` tag; treat
+        // either as "no finality tag" so the ingest loop falls back to a confirmations-depth watermark.
+        match provider
+            .get_block_by_number(BlockNumberOrTag::Finalized, BlockTransactionsKind::Hashes)
+            .await
+        {
+            Ok(Some(block)) => Ok(Some(block.header.number)),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                tracing::debug!("finalized block tag unavailable ({e}); using confirmations fallback");
+                Ok(None)
+            }
+        }
+    }
+
     async fn fetch_events(
         &self,
         from: u64,
@@ -394,11 +420,20 @@ struct MemRawLog {
 #[derive(Clone, Default)]
 pub struct MemLogSource {
     inner: Arc<Mutex<Vec<MemBlock>>>, // index == block number
+    /// Optional finalized-height override. `None` ⇒ the source reports no finality tag (the ingest
+    /// loop falls back to a confirmations-depth watermark), exactly like a node without the gadget.
+    finalized: Arc<Mutex<Option<u64>>>,
 }
 
 impl MemLogSource {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Set the finalized-block height the source reports (simulates the `finalized` tag). Blocks at or
+    /// below this height are treated as immutable by the ingest loop.
+    pub fn set_finalized(&self, height: u64) {
+        *self.finalized.lock().unwrap() = Some(height);
     }
 
     /// Append a block carrying pre-encoded raw logs. Returns the assigned block number.
@@ -463,6 +498,10 @@ impl LogSource for MemLogSource {
             return Ok(0);
         }
         Ok((g.len() - 1) as u64)
+    }
+
+    async fn finalized_block(&self) -> Result<Option<u64>, ChainError> {
+        Ok(*self.finalized.lock().unwrap())
     }
 
     async fn fetch_events(

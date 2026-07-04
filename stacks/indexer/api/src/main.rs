@@ -321,6 +321,9 @@ fn demo_seed(mem: &MemLogSource, cfg: &Config) {
             base_ts + 96,
         )],
     );
+    // Finalize through block 6 (the government flow): blocks 7-8 (the demo-groomer DOG_PROFILE
+    // issuance) stay PENDING, so the demo shows the finalized/pending lifecycle in the feed.
+    mem.set_finalized(6);
 }
 
 /// CORS: explicit allowlist from `CORS_ALLOW_ORIGINS` (comma-separated) when set, else permissive.

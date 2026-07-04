@@ -3,8 +3,10 @@
 //! One feed, two doctrines, enforced **server-side** by the caller's bearer token:
 //!   - the **unscoped** government/oversight token sees every event across all issuers;
 //!   - a **scoped** vet/groomer token sees only events for its own signer(s)/clone(s).
-//! Client filters (`type`, `signer`, `issuer`, `recordType`, `root`, `dogTagId`, `since`, `until`)
-//! only ever narrow *within* the token's ceiling — never widen it (see `crate::scope`).
+//!
+//! Client filters (`type`, `signer`, `issuer`, `recordType`, `root`, `dogTagId`, `finality`,
+//! `since`, `until`) only ever narrow *within* the token's ceiling — never widen it (see
+//! `crate::scope`).
 //!
 //! Every event is joined to the admin business directory to NAME its signer/clone where possible, and
 //! carries a ready-to-click `txUrl`. Nothing personal is served — the index holds only non-PII chain
@@ -19,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::{keccak_key, AppState};
-use crate::events::{EventType, IndexedEvent};
+use crate::events::{EventType, Finality, IndexedEvent};
 use crate::scope::Principal;
 use crate::store::EventQuery;
 
@@ -59,6 +61,8 @@ pub struct FeedParams {
     pub root: Option<String>,
     #[serde(rename = "dogTagId")]
     pub dog_tag_id: Option<String>,
+    /// `finalized` | `pending` — restrict the feed to a finality state.
+    pub finality: Option<String>,
     pub since: Option<u64>,
     pub until: Option<u64>,
     pub limit: Option<usize>,
@@ -81,6 +85,13 @@ fn build_query(st: &AppState, p: &FeedParams) -> Result<EventQuery, ApiError> {
     let event_type = match &p.event_type {
         Some(s) if !s.trim().is_empty() => Some(
             EventType::parse(s).ok_or_else(|| err(StatusCode::BAD_REQUEST, "unknown event type"))?,
+        ),
+        _ => None,
+    };
+    let finality = match &p.finality {
+        Some(s) if !s.trim().is_empty() => Some(
+            Finality::parse(s)
+                .ok_or_else(|| err(StatusCode::BAD_REQUEST, "finality must be finalized|pending"))?,
         ),
         _ => None,
     };
@@ -115,6 +126,7 @@ fn build_query(st: &AppState, p: &FeedParams) -> Result<EventQuery, ApiError> {
             .as_ref()
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.trim().to_string()),
+        finality,
         since: p.since,
         until: p.until,
         limit,
@@ -146,19 +158,31 @@ async fn health(State(st): State<AppState>) -> impl IntoResponse {
     Json(json!({ "ok": true, "chainId": st.cfg.chain_id }))
 }
 
-/// `GET /v1/status` — indexer progress + this principal's scope. Any authenticated principal.
+/// `GET /v1/status` — indexer progress + finality watermark + this principal's scope.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
     let cursor = st.store.get_cursor().await;
     let head = st.source.head_block().await.ok();
-    let lag = match (head, cursor.last_block) {
+    // Report the live finalized watermark + whether it comes from the chain's finality tag or the
+    // confirmations-depth fallback, so an oversight consumer knows how strong "finalized" is here.
+    let (finalized_block, finality_source) = match st.source.finalized_block().await {
+        Ok(Some(n)) => (head.map(|h| n.min(h)).or(Some(n)), "finalized-tag"),
+        Ok(None) => (
+            head.map(|h| h.saturating_sub(st.cfg.confirmations)),
+            "confirmations-fallback",
+        ),
+        Err(_) => (None, "unknown"),
+    };
+    let lag = match (head, cursor.last_finalized) {
         (Some(h), Some(lb)) => Some(h.saturating_sub(lb)),
         _ => None,
     };
     Ok(Json(json!({
         "chainId": st.cfg.chain_id,
         "headBlock": head,
-        "lastIndexedBlock": cursor.last_block,
+        "finalizedBlock": finalized_block,
+        "finalitySource": finality_source,
+        "lastFinalizedIndexed": cursor.last_finalized,
         "lag": lag,
         "confirmations": st.cfg.confirmations,
         "scope": {
@@ -198,9 +222,15 @@ async fn stats(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Va
     let mut verifications = 0u64;
     let mut whitelisted = 0u64;
     let mut delisted = 0u64;
+    let mut finalized = 0u64;
+    let mut pending = 0u64;
     let mut clones = std::collections::BTreeSet::new();
     let mut signers = std::collections::BTreeSet::new();
     for e in &all {
+        match e.finality {
+            Finality::Finalized => finalized += 1,
+            Finality::Pending => pending += 1,
+        }
         match e.event_type {
             EventType::RootIssued => issued += 1,
             EventType::RootRevoked => revoked += 1,
@@ -223,6 +253,8 @@ async fn stats(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Va
     }
     Ok(Json(json!({
         "totalEvents": total,
+        "finalized": finalized,
+        "pending": pending,
         "rootIssued": issued,
         "rootRevoked": revoked,
         "activeCredentials": issued.saturating_sub(revoked),

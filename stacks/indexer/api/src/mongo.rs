@@ -72,6 +72,11 @@ fn to_filter_doc(q: &EventQuery) -> Document {
     if let Some(dt) = &q.dog_tag_id {
         d.insert("dogTagId", dt);
     }
+    if let Some(f) = q.finality {
+        if let Ok(mongodb::bson::Bson::String(s)) = mongodb::bson::to_bson(&f) {
+            d.insert("finality", s);
+        }
+    }
     let mut ts = Document::new();
     if let Some(s) = q.since {
         ts.insert("$gte", s as i64);
@@ -135,11 +140,22 @@ impl Store for MongoStore {
         }
     }
 
+    async fn delete_pending(&self) -> usize {
+        match self
+            .events()
+            .delete_many(doc! { "finality": "pending" })
+            .await
+        {
+            Ok(r) => r.deleted_count as usize,
+            Err(_) => 0,
+        }
+    }
+
     async fn get_cursor(&self) -> Cursor {
         match self.cursor_col().find_one(doc! { "_id": "cursor" }).await {
             Ok(Some(d)) => Cursor {
-                last_block: d.get_i64("lastBlock").ok().map(|v| v as u64),
-                last_block_hash: d.get_str("lastBlockHash").ok().map(|s| s.to_string()),
+                last_finalized: d.get_i64("lastFinalized").ok().map(|v| v as u64),
+                last_finalized_hash: d.get_str("lastFinalizedHash").ok().map(|s| s.to_string()),
             },
             _ => Cursor::default(),
         }
@@ -147,11 +163,11 @@ impl Store for MongoStore {
 
     async fn set_cursor(&self, cursor: Cursor) {
         let mut d = doc! { "_id": "cursor" };
-        if let Some(b) = cursor.last_block {
-            d.insert("lastBlock", b as i64);
+        if let Some(b) = cursor.last_finalized {
+            d.insert("lastFinalized", b as i64);
         }
-        if let Some(h) = cursor.last_block_hash {
-            d.insert("lastBlockHash", h);
+        if let Some(h) = cursor.last_finalized_hash {
+            d.insert("lastFinalizedHash", h);
         }
         let _ = self
             .cursor_col()

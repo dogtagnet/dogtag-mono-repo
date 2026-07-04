@@ -11,20 +11,23 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::events::{EventType, IndexedEvent};
+use crate::events::{EventType, Finality, IndexedEvent};
 use crate::scope::Scope;
 
-/// The resume cursor: the highest fully-indexed block + its hash (for reorg detection). Persisted so
-/// a restart resumes from where it left off instead of re-scanning genesis.
+/// The resume cursor: the highest **finalized** (immutable) block + its hash. Blocks at or below it
+/// are settled and never re-scanned; the ingest loop always re-derives the pending range above it
+/// from the canonical chain. Persisted so a restart resumes from the finalized watermark instead of
+/// re-scanning genesis.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Cursor {
-    /// The highest block number whose logs are fully indexed. A fresh index reports `None`.
-    #[serde(rename = "lastBlock", skip_serializing_if = "Option::is_none")]
-    pub last_block: Option<u64>,
-    /// The block hash of `last_block` at index time — compared against the live hash on the next tick
-    /// to detect a reorg that rewrote history under us.
-    #[serde(rename = "lastBlockHash", skip_serializing_if = "Option::is_none")]
-    pub last_block_hash: Option<String>,
+    /// The highest finalized block number whose logs are fully indexed. A fresh index reports `None`.
+    #[serde(rename = "lastFinalized", skip_serializing_if = "Option::is_none")]
+    pub last_finalized: Option<u64>,
+    /// The block hash of `last_finalized` at index time — a defensive guard: if a supposedly-final
+    /// block's hash ever changes (only possible under the confirmations-depth fallback, never under
+    /// true finality) the loop rewinds the watermark.
+    #[serde(rename = "lastFinalizedHash", skip_serializing_if = "Option::is_none")]
+    pub last_finalized_hash: Option<String>,
 }
 
 /// Server-side query filters. Every field is an AND-narrowing predicate applied *after* the caller's
@@ -40,6 +43,8 @@ pub struct EventQuery {
     pub record_type: Option<String>,
     pub root: Option<String>,
     pub dog_tag_id: Option<String>,
+    /// Finality lifecycle filter (`finalized` vs `pending`).
+    pub finality: Option<Finality>,
     /// Inclusive lower bound on `block_timestamp` (Unix seconds).
     pub since: Option<u64>,
     /// Inclusive upper bound on `block_timestamp` (Unix seconds).
@@ -84,6 +89,11 @@ impl EventQuery {
                 return false;
             }
         }
+        if let Some(f) = self.finality {
+            if ev.finality != f {
+                return false;
+            }
+        }
         if let Some(s) = self.since {
             if ev.block_timestamp < s {
                 return false;
@@ -111,9 +121,15 @@ pub trait Store: Send + Sync {
     /// no store consumer can accidentally bypass it.
     async fn query_events(&self, q: &EventQuery, scope: &Scope) -> (Vec<IndexedEvent>, usize);
 
-    /// Delete every event at or above `from_block` — the reorg rollback primitive. Returns the count
-    /// removed (for logging).
+    /// Delete every event at or above `from_block` — the finalized-watermark rewind primitive (only
+    /// exercised by the confirmations-depth fallback's defensive guard). Returns the count removed.
     async fn delete_from_block(&self, from_block: u64) -> usize;
+
+    /// Delete every `pending` (non-finalized) event — the pending-range reconciliation primitive. The
+    /// ingest loop drops all pending rows each tick and re-derives them from the canonical chain, so
+    /// an orphaned pending event from a reorg simply disappears. Finalized rows are never touched.
+    /// Returns the count removed.
+    async fn delete_pending(&self) -> usize;
 
     /// Read the resume cursor.
     async fn get_cursor(&self) -> Cursor;
@@ -186,6 +202,13 @@ impl Store for MemStore {
         before - g.events.len()
     }
 
+    async fn delete_pending(&self) -> usize {
+        let mut g = self.inner.lock().unwrap();
+        let before = g.events.len();
+        g.events.retain(|_, e| e.finality != Finality::Pending);
+        before - g.events.len()
+    }
+
     async fn get_cursor(&self) -> Cursor {
         self.inner.lock().unwrap().cursor.clone()
     }
@@ -201,6 +224,16 @@ mod tests {
     use crate::events::EventType;
 
     fn ev(id: &str, block: u64, log_index: u64, ty: EventType) -> IndexedEvent {
+        ev_fin(id, block, log_index, ty, Finality::Finalized)
+    }
+
+    fn ev_fin(
+        id: &str,
+        block: u64,
+        log_index: u64,
+        ty: EventType,
+        finality: Finality,
+    ) -> IndexedEvent {
         IndexedEvent {
             id: id.into(),
             event_type: ty,
@@ -210,6 +243,7 @@ mod tests {
             tx_hash: id.split(':').next().unwrap().into(),
             log_index,
             block_timestamp: 1000 + block,
+            finality,
             actor: Some("0xaa".into()),
             clone: Some("0xcc".into()),
             record_type: None,
@@ -240,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_from_block_rolls_back_reorg() {
+    async fn delete_from_block_rewinds_watermark() {
         let s = MemStore::new();
         s.upsert_events(&[
             ev("0x1:0", 10, 0, EventType::RootIssued),
@@ -253,5 +287,39 @@ mod tests {
             .query_events(&EventQuery { limit: 10, ..Default::default() }, &Scope::Unscoped)
             .await;
         assert_eq!(total, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_pending_keeps_finalized() {
+        let s = MemStore::new();
+        s.upsert_events(&[
+            ev_fin("0x1:0", 10, 0, EventType::RootIssued, Finality::Finalized),
+            ev_fin("0x2:0", 20, 0, EventType::RootIssued, Finality::Pending),
+        ])
+        .await;
+        let removed = s.delete_pending().await;
+        assert_eq!(removed, 1, "only the pending event is dropped");
+        let (page, total) = s
+            .query_events(&EventQuery { limit: 10, ..Default::default() }, &Scope::Unscoped)
+            .await;
+        assert_eq!(total, 1);
+        assert_eq!(page[0].finality, Finality::Finalized);
+    }
+
+    #[tokio::test]
+    async fn finality_filter_narrows() {
+        let s = MemStore::new();
+        s.upsert_events(&[
+            ev_fin("0x1:0", 10, 0, EventType::RootIssued, Finality::Finalized),
+            ev_fin("0x2:0", 20, 0, EventType::RootIssued, Finality::Pending),
+        ])
+        .await;
+        let (_, fin) = s
+            .query_events(
+                &EventQuery { finality: Some(Finality::Finalized), limit: 10, ..Default::default() },
+                &Scope::Unscoped,
+            )
+            .await;
+        assert_eq!(fin, 1);
     }
 }

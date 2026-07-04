@@ -84,7 +84,10 @@ fn scopes() -> ScopeRegistry {
     ])
 }
 
-async fn build() -> (AppState, Arc<Indexer>) {
+/// Build the app + indexer. Returns the `MemLogSource` handle too (it is Arc-backed + Clone, so the
+/// returned handle shares state with the one inside `AppState` — tests use it to set the finalized
+/// watermark and script reorgs that the running indexer observes).
+async fn build() -> (AppState, Arc<Indexer>, MemLogSource) {
     let c = cfg();
     let mem = MemLogSource::new();
     seed(&mem, &c);
@@ -96,14 +99,14 @@ async fn build() -> (AppState, Arc<Indexer>) {
     ));
     let state = AppState {
         store,
-        source: Arc::new(mem),
+        source: Arc::new(mem.clone()),
         scopes: Arc::new(scopes()),
         directory,
         cfg: Arc::new(c),
     };
     let indexer = Arc::new(Indexer::new(state.clone()));
     indexer.rebuild_known_clones().await;
-    (state, indexer)
+    (state, indexer, mem)
 }
 
 async fn get(state: &AppState, path: &str, token: Option<&str>) -> (StatusCode, Value) {
@@ -123,7 +126,7 @@ async fn get(state: &AppState, path: &str, token: Option<&str>) -> (StatusCode, 
 
 #[tokio::test]
 async fn ingest_then_unscoped_and_scoped_feeds() {
-    let (state, indexer) = build().await;
+    let (state, indexer, _mem) = build().await;
 
     indexer.tick().await.expect("tick");
 
@@ -132,6 +135,10 @@ async fn ingest_then_unscoped_and_scoped_feeds() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["total"], 7, "unscoped sees all 7 events");
     assert_eq!(body["scope"]["unscoped"], true);
+    // every event carries a finality annotation (all finalized here — no watermark set, confirmations=0)
+    for e in body["events"].as_array().unwrap() {
+        assert_eq!(e["finality"], "finalized");
+    }
     // newest-first ordering
     let first = &body["events"][0];
     assert_eq!(first["type"], "rootIssued"); // block 7 is the other issuer's RootIssued
@@ -160,7 +167,7 @@ async fn ingest_then_unscoped_and_scoped_feeds() {
 
 #[tokio::test]
 async fn scope_cannot_be_widened_by_client_filter() {
-    let (state, indexer) = build().await;
+    let (state, indexer, _mem) = build().await;
     indexer.tick().await.unwrap();
     // A scoped token asks to see the OTHER signer — server-side scope still excludes it.
     let (st, body) = get(&state, &format!("/v1/events?signer={OTHER_SIGNER}"), Some("vet")).await;
@@ -170,7 +177,7 @@ async fn scope_cannot_be_widened_by_client_filter() {
 
 #[tokio::test]
 async fn filters_and_stats_and_auth() {
-    let (state, indexer) = build().await;
+    let (state, indexer, _mem) = build().await;
     indexer.tick().await.unwrap();
 
     // type filter
@@ -188,6 +195,8 @@ async fn filters_and_stats_and_auth() {
     assert_eq!(body["activeCredentials"], 1);
     assert_eq!(body["verifications"], 1);
     assert_eq!(body["clones"], 2);
+    assert_eq!(body["finalized"], 7, "all finalized (no watermark set, confirmations=0)");
+    assert_eq!(body["pending"], 0);
 
     // stats (scoped) — only the gov issuer
     let (_, body) = get(&state, "/v1/stats", Some("vet")).await;
@@ -212,7 +221,7 @@ async fn filters_and_stats_and_auth() {
 
 #[tokio::test]
 async fn rescan_is_idempotent() {
-    let (state, indexer) = build().await;
+    let (state, indexer, _mem) = build().await;
     indexer.tick().await.unwrap();
     let (_, a) = get(&state, "/v1/events", Some("gov")).await;
     // Re-run the loop: same range, same ids -> no duplicates.
@@ -222,46 +231,69 @@ async fn rescan_is_idempotent() {
     assert_eq!(b["total"], 7);
 }
 
+/// The captain-directed finality model: finalize the gov flow (blocks 1..5), leave the other issuer
+/// (blocks 6..7) PENDING, then reorg the pending tail. Finalized events survive untouched; the
+/// orphaned pending events are dropped and re-derived from the canonical chain.
 #[tokio::test]
-async fn reorg_rolls_back_orphaned_events() {
-    let (state, indexer) = build().await;
-    indexer.tick().await.unwrap();
+async fn finalized_survive_reorg_pending_reconciled() {
+    let (state, indexer, mem) = build().await;
+    // Finalize through block 5 (the government issue/verify/revoke flow); the other issuer's deploy +
+    // issuance at blocks 6-7 stay pending.
+    mem.set_finalized(5);
+    indexer.tick().await.expect("tick");
+
+    let (_, body) = get(&state, "/v1/stats", Some("gov")).await;
+    assert_eq!(body["finalized"], 5, "gov flow (blocks 1-5) finalized");
+    assert_eq!(body["pending"], 2, "other-issuer deploy + issuance (blocks 6-7) pending");
+
+    // Capture a finalized gov event id so we can prove it is untouched by the reorg.
+    let (_, feed) = get(&state, "/v1/events?type=rootIssued&finality=finalized", Some("gov")).await;
+    assert_eq!(feed["total"], 1, "the gov RootIssued is finalized");
+    let gov_issue_id = feed["events"][0]["id"].as_str().unwrap().to_string();
+
+    // Reorg the PENDING tail: rewrite from block 6 with empty blocks (the other issuer disappears).
+    // Blocks 0..5 (finalized) are retained; the finalized watermark hash at block 5 is unchanged.
+    mem.reorg_from(
+        6,
+        vec![
+            ("0xREORG6".into(), 1072, vec![]),
+            ("0xREORG7".into(), 1084, vec![]),
+        ],
+    );
+    indexer.tick().await.expect("reorg tick");
+
+    // Orphaned pending other-issuer events are gone; the finalized gov history is intact.
     let (_, body) = get(&state, "/v1/events", Some("gov")).await;
-    assert_eq!(body["total"], 7);
-
-    // Reorg: rewrite from block 6 onward with empty blocks — the "other issuer" history disappears.
-    // (downcast the trait object back to MemLogSource via a fresh handle is not exposed, so rebuild
-    // the source through the state is not possible; instead we assert via a second source below.)
-    // Simulate by constructing a new state whose source has the reorged chain and the SAME store.
-    let c = cfg();
-    let mem2 = MemLogSource::new();
-    // canonical prefix (blocks 0..=5) identical, then a divergent tail with different hashes.
-    let rt = keccak_key("TRAVEL_CLEARANCE");
-    let purpose = keccak_key("boarding_intake");
-    let subject = "0x00000000000000000000000000000000deadbeef";
-    mem2.push_empty_block("0x00", 1000);
-    mem2.push_events("0x01", 1012, vec![emit::issuer_created(&c.factory_addr, GOV_CLONE, &rt, "Gov Travel")]);
-    mem2.push_events("0x02", 1024, vec![emit::whitelisted(&c.registry_addr, &rt, GOV_SIGNER)]);
-    mem2.push_events("0x03", 1036, vec![emit::root_issued(GOV_CLONE, &b32(0x11), GOV_SIGNER, 1036)]);
-    mem2.push_events("0x04", 1048, vec![emit::verified(&c.verification_registry_addr, 42, GOV_SIGNER, subject, &purpose, &b32(0x33), 1048)]);
-    mem2.push_events("0x05", 1060, vec![emit::root_revoked(GOV_CLONE, &b32(0x11), GOV_SIGNER, 1060)]);
-    // divergent tail: different hash at block 6, no "other issuer".
-    mem2.push_empty_block("0xREORG6", 1072);
-    mem2.push_empty_block("0xREORG7", 1084);
-
-    let reorged = AppState {
-        store: state.store.clone(), // SAME store (carries the pre-reorg cursor + events)
-        source: Arc::new(mem2),
-        scopes: state.scopes.clone(),
-        directory: state.directory.clone(),
-        cfg: state.cfg.clone(),
-    };
-    let reindexer = Arc::new(Indexer::new(reorged.clone()));
-    reindexer.tick().await.expect("reorg tick");
-
-    let (_, body) = get(&reorged, "/v1/events", Some("gov")).await;
-    assert_eq!(body["total"], 5, "orphaned other-issuer events rolled back; canonical gov history kept");
+    assert_eq!(body["total"], 5, "only the 5 finalized gov events remain");
     for e in body["events"].as_array().unwrap() {
         assert_ne!(e["clone"].as_str(), Some(OTHER_CLONE));
+        assert_eq!(e["finality"], "finalized");
     }
+    // the specific finalized event survived with the same id (never rewound/re-inserted)
+    let (_, again) = get(&state, "/v1/events?type=rootIssued", Some("gov")).await;
+    assert_eq!(again["total"], 1);
+    assert_eq!(again["events"][0]["id"].as_str(), Some(gov_issue_id.as_str()));
+}
+
+/// Pending events are promoted to finalized once the watermark advances past their block.
+#[tokio::test]
+async fn promotion_at_watermark() {
+    let (state, indexer, mem) = build().await;
+    // Finalize only through block 3 (deploy + whitelist + first issue); blocks 4-7 pending.
+    mem.set_finalized(3);
+    indexer.tick().await.expect("tick");
+    let (_, body) = get(&state, "/v1/stats", Some("gov")).await;
+    assert_eq!(body["finalized"], 3);
+    assert_eq!(body["pending"], 4);
+    // status surfaces the finalized watermark + that it came from the (simulated) finality tag
+    let (_, st) = get(&state, "/v1/status", Some("gov")).await;
+    assert_eq!(st["finalitySource"], "finalized-tag");
+    assert_eq!(st["finalizedBlock"], 3);
+
+    // Advance finality to the head; every pending event promotes.
+    mem.set_finalized(7);
+    indexer.tick().await.expect("tick");
+    let (_, body) = get(&state, "/v1/stats", Some("gov")).await;
+    assert_eq!(body["finalized"], 7, "all promoted to finalized");
+    assert_eq!(body["pending"], 0);
 }

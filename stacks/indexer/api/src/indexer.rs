@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app::AppState;
 use crate::chain::ChainError;
-use crate::events::EventType;
+use crate::events::{EventType, Finality};
 use crate::scope::Scope;
 use crate::store::{Cursor, EventQuery};
 
@@ -78,55 +78,79 @@ impl Indexer {
         let store = &self.state.store;
 
         let head = source.head_block().await?;
-        let safe_head = head.saturating_sub(cfg.confirmations);
+
+        // --- resolve the finalized watermark ----------------------------------------------------
+        // Prefer the chain's `finalized` tag (true PoS finality — those blocks can never reorg). If
+        // the node does not expose it, fall back to a confirmations-depth watermark (weaker: those
+        // blocks are only "N-deep", not provably final) and say so.
+        let (finalized, finality_source) = match source.finalized_block().await? {
+            Some(n) => (n.min(head), FinalitySource::Tag),
+            None => (head.saturating_sub(cfg.confirmations), FinalitySource::Confirmations),
+        };
         let mut cursor = store.get_cursor().await;
 
-        // --- reorg detection on the last-indexed block ------------------------------------------
-        if let (Some(lb), Some(stored_hash)) = (cursor.last_block, cursor.last_block_hash.clone()) {
-            let live = source.block_hash(lb).await?;
+        // --- defensive watermark guard ----------------------------------------------------------
+        // Under true finality the finalized block's hash can never change, so this never fires. Under
+        // the confirmations fallback a deeper-than-N reorg could rewrite a block we already promoted;
+        // detect it by hash and rewind the watermark + delete the affected (finalized) rows.
+        if let (Some(lf), Some(stored_hash)) =
+            (cursor.last_finalized, cursor.last_finalized_hash.clone())
+        {
+            let live = source.block_hash(lf).await?;
             let diverged = match &live {
                 Some(h) => !h.eq_ignore_ascii_case(&stored_hash),
-                None => true, // the block we thought was final is gone
+                None => true,
             };
             if diverged {
-                let rewind_to = cfg
-                    .start_block
-                    .max(lb.saturating_sub(cfg.confirmations.max(1)));
+                let rewind_to = cfg.start_block.max(lf.saturating_sub(cfg.confirmations.max(1)));
                 let removed = store.delete_from_block(rewind_to).await;
                 tracing::warn!(
-                    "reorg detected at block {lb} (stored {stored_hash}, live {live:?}); \
-                     rolled back {removed} events from block {rewind_to}"
+                    "finalized-watermark divergence at block {lf} ({finality_source:?} mode; stored \
+                     {stored_hash}, live {live:?}); rewound {removed} events from block {rewind_to}"
                 );
                 cursor = Cursor {
-                    last_block: if rewind_to > cfg.start_block {
-                        Some(rewind_to - 1)
-                    } else {
-                        None
-                    },
-                    last_block_hash: None,
+                    last_finalized: (rewind_to > cfg.start_block).then_some(rewind_to - 1),
+                    last_finalized_hash: None,
                 };
                 store.set_cursor(cursor.clone()).await;
-                // Rebuild the known-clone set from what survived the rollback.
                 self.discovered.lock().unwrap().clear();
                 self.rebuild_known_clones().await;
             }
         }
 
-        // --- forward scan in chunks -------------------------------------------------------------
-        let mut scan_from = cursor.last_block.map(|b| b + 1).unwrap_or(cfg.start_block);
-        if scan_from > safe_head {
-            return Ok(()); // nothing new below the finality buffer
+        // --- pending-range reconciliation -------------------------------------------------------
+        // Drop ALL pending (non-finalized) rows and re-derive them below from the canonical chain, so
+        // any pending event orphaned by a reorg simply disappears. Finalized rows are never touched.
+        let dropped = store.delete_pending().await;
+        if dropped > 0 {
+            tracing::debug!("dropped {dropped} pending events for re-derivation");
+        }
+
+        // --- forward scan [last_finalized+1 .. head] in chunks ----------------------------------
+        let mut scan_from = cursor.last_finalized.map(|b| b + 1).unwrap_or(cfg.start_block);
+        if scan_from > head {
+            return Ok(()); // nothing new
         }
         let chunk = cfg.chunk_size.max(1);
-        while scan_from <= safe_head {
-            let scan_to = (scan_from + chunk - 1).min(safe_head);
+        let mut finalized_count = 0u64;
+        let mut pending_count = 0u64;
+        while scan_from <= head {
+            let scan_to = (scan_from + chunk - 1).min(head);
             let ctx = cfg.watch_context(&self.discovered_snapshot());
-            let events = source.fetch_events(scan_from, scan_to, &ctx).await?;
+            let mut events = source.fetch_events(scan_from, scan_to, &ctx).await?;
 
-            // Fold newly-discovered clones so subsequent chunks gate correctly.
+            // Stamp each event's finality from the watermark, and fold newly-discovered clones so
+            // subsequent chunks gate `RootIssued`/`RootRevoked` correctly.
             {
                 let mut g = self.discovered.lock().unwrap();
-                for e in &events {
+                for e in &mut events {
+                    e.finality = if e.block_number <= finalized {
+                        finalized_count += 1;
+                        Finality::Finalized
+                    } else {
+                        pending_count += 1;
+                        Finality::Pending
+                    };
                     if e.event_type == EventType::IssuerCreated {
                         if let Some(c) = &e.clone {
                             g.insert(c.to_ascii_lowercase());
@@ -138,23 +162,45 @@ impl Indexer {
             if !events.is_empty() {
                 store.upsert_events(&events).await;
             }
-
-            // Advance + persist the cursor for this chunk (chunk-granular resume).
-            let hash = source.block_hash(scan_to).await?;
-            cursor = Cursor {
-                last_block: Some(scan_to),
-                last_block_hash: hash,
-            };
-            store.set_cursor(cursor.clone()).await;
-
-            if !events.is_empty() {
-                tracing::info!(
-                    "indexed {} events in blocks {scan_from}..={scan_to} (head {head})",
-                    events.len()
-                );
-            }
             scan_from = scan_to + 1;
         }
+
+        // --- advance + persist the finalized watermark ------------------------------------------
+        // Everything up to `finalized` is now indexed + immutable; the pending range above it will be
+        // re-derived next tick. Only record a watermark once it is within our scanned range.
+        if finalized >= cfg.start_block {
+            let hash = source.block_hash(finalized).await?;
+            cursor = Cursor {
+                last_finalized: Some(finalized),
+                last_finalized_hash: hash,
+            };
+            store.set_cursor(cursor).await;
+        }
+
+        if finalized_count + pending_count > 0 {
+            tracing::info!(
+                "indexed {finalized_count} finalized + {pending_count} pending events \
+                 (head {head}, finalized {finalized}, {finality_source:?})"
+            );
+        }
         Ok(())
+    }
+}
+
+/// Where the finalized watermark came from, for logging + the `/v1/status` surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalitySource {
+    /// The chain's `finalized` block tag (true PoS finality).
+    Tag,
+    /// A confirmations-depth watermark (`head - CONFIRMATIONS`) because the node exposes no tag.
+    Confirmations,
+}
+
+impl FinalitySource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FinalitySource::Tag => "finalized-tag",
+            FinalitySource::Confirmations => "confirmations-fallback",
+        }
     }
 }
