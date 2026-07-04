@@ -18,7 +18,9 @@ use crate::leaf::hash_leaf;
 use crate::merkle::build_merkle;
 use crate::types::{TypeTag, TypedScalar};
 use crate::verify::{check_integrity, FragmentState};
-use crate::wrap::{from_hex32, obfuscate, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc};
+use crate::wrap::{
+    from_hex32, obfuscate, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc,
+};
 
 /// A single error type crossing the FFI boundary (UniFFI maps this to a thrown exception).
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -61,8 +63,8 @@ pub fn hash_leaf_hex(
     value: String,
 ) -> Result<String, FfiError> {
     let salt = decode_salt(&salt_hex)?;
-    let type_tag = TypeTag::from_u8(tag)
-        .ok_or_else(|| FfiError::Invalid(format!("unknown tag {tag}")))?;
+    let type_tag =
+        TypeTag::from_u8(tag).ok_or_else(|| FfiError::Invalid(format!("unknown tag {tag}")))?;
     let scalar: TypedScalar = scalar_from_packed(type_tag, &value)?;
     let f = hash_leaf(&key_path, &salt, &scalar)?;
     Ok(to_hex32(&f))
@@ -110,8 +112,8 @@ pub fn wrap_document_json(
     typed_credential_json: String,
     issuer_json: String,
 ) -> Result<String, FfiError> {
-    let typed: Value =
-        serde_json::from_str(&typed_credential_json).map_err(|e| err(format!("bad credential json: {e}")))?;
+    let typed: Value = serde_json::from_str(&typed_credential_json)
+        .map_err(|e| err(format!("bad credential json: {e}")))?;
     let issuer: IssuerMeta =
         serde_json::from_str(&issuer_json).map_err(|e| err(format!("bad issuer json: {e}")))?;
 
@@ -128,8 +130,8 @@ pub fn wrap_document_json(
 /// targetHash/merkleRoot. This is what mobile runs OFFLINE. Returns "VALID" / "INVALID".
 #[uniffi::export]
 pub fn verify_integrity(wrapped_doc_json: String) -> Result<String, FfiError> {
-    let doc: WrappedDoc =
-        serde_json::from_str(&wrapped_doc_json).map_err(|e| err(format!("bad wrapped doc json: {e}")))?;
+    let doc: WrappedDoc = serde_json::from_str(&wrapped_doc_json)
+        .map_err(|e| err(format!("bad wrapped doc json: {e}")))?;
     let (state, _root) = check_integrity(&doc);
     Ok(match state {
         FragmentState::Valid => "VALID".to_string(),
@@ -152,8 +154,8 @@ pub fn obfuscate_document_json(
     wrapped_doc_json: String,
     key_paths: Vec<String>,
 ) -> Result<String, FfiError> {
-    let doc: WrappedDoc =
-        serde_json::from_str(&wrapped_doc_json).map_err(|e| err(format!("bad wrapped doc json: {e}")))?;
+    let doc: WrappedDoc = serde_json::from_str(&wrapped_doc_json)
+        .map_err(|e| err(format!("bad wrapped doc json: {e}")))?;
     let out = obfuscate(&doc, &key_paths)?;
     serde_json::to_string(&out).map_err(|e| err(format!("serialize: {e}")))
 }
@@ -165,7 +167,10 @@ pub fn obfuscate_document_json(
 /// keccak256 of the EIP-712 VerificationConsent type string (0x.. 32-byte hex).
 #[uniffi::export]
 pub fn verification_consent_typehash_hex() -> String {
-    format!("0x{}", hex::encode(crate::consent::verification_consent_typehash()))
+    format!(
+        "0x{}",
+        hex::encode(crate::consent::verification_consent_typehash())
+    )
 }
 
 /// Decode a 0x.. hex string into exactly N bytes (big-endian word / address).
@@ -236,7 +241,10 @@ pub fn consent_nullifier_hex(
         &nonce_hex,
         &deadline_hex,
     )?;
-    Ok(format!("0x{}", hex::encode(crate::consent::consent_nullifier(&c))))
+    Ok(format!(
+        "0x{}",
+        hex::encode(crate::consent::consent_nullifier(&c))
+    ))
 }
 
 /// The EdDSA-BabyJubjub consent message M (impl §11.9(d)): Poseidon(dogTagId, purpose, relayer,
@@ -273,7 +281,10 @@ pub fn eddsa_consent_message_hex(
 pub fn key_hash_hex(ax_hex: String, ay_hex: String) -> Result<String, FfiError> {
     let ax = field_from_hex(&ax_hex)?;
     let ay = field_from_hex(&ay_hex)?;
-    Ok(format!("0x{}", hex::encode(crate::consent::key_hash(ax, ay))))
+    Ok(format!(
+        "0x{}",
+        hex::encode(crate::consent::key_hash(ax, ay))
+    ))
 }
 
 /// The EIP-712 digest the owner's secp256k1 wallet signs to authorize a relayer-sponsored
@@ -295,8 +306,13 @@ pub fn bind_consent_key_digest_hex(
     let wallet = decode_word::<20>("walletAddr", &wallet_addr)?;
     let mut nonce_word = [0u8; 32];
     nonce_word[24..].copy_from_slice(&nonce.to_be_bytes());
-    let digest =
-        crate::consent::bind_consent_key_digest(registry, &key_hash, &wallet, &nonce_word, chain_id);
+    let digest = crate::consent::bind_consent_key_digest(
+        registry,
+        &key_hash,
+        &wallet,
+        &nonce_word,
+        chain_id,
+    );
     Ok(format!("0x{}", hex::encode(digest)))
 }
 
@@ -368,7 +384,10 @@ fn consent_key_to_ffi(key: &crate::eddsa::BabyjubConsentKey) -> BabyjubConsentKe
         prv_hex: format!("0x{}", hex::encode(key.prv)),
         ax_hex: to_hex32(&key.ax),
         ay_hex: to_hex32(&key.ay),
-        key_hash_hex: format!("0x{}", hex::encode(crate::consent::key_hash(key.ax, key.ay))),
+        key_hash_hex: format!(
+            "0x{}",
+            hex::encode(crate::consent::key_hash(key.ax, key.ay))
+        ),
     }
 }
 
@@ -555,11 +574,17 @@ mod obfuscate_ffi_tests {
         // Integrity survives obfuscation — the on-chain root R is unchanged.
         assert_eq!(verify_integrity(redacted.clone()).unwrap(), "VALID");
         // The PII cleartext is dropped and a hash moved to privacy.obfuscated[].
-        assert!(!redacted.contains("887524355"), "idNumber cleartext must be gone");
+        assert!(
+            !redacted.contains("887524355"),
+            "idNumber cleartext must be gone"
+        );
         let v: Value = serde_json::from_str(&redacted).unwrap();
         assert_eq!(v["privacy"]["obfuscated"].as_array().unwrap().len(), 1);
         // A public/disclosed leaf is untouched.
-        assert!(redacted.contains("Blaze"), "disclosed animal leaf stays visible");
+        assert!(
+            redacted.contains("Blaze"),
+            "disclosed animal leaf stays visible"
+        );
     }
 
     /// Obfuscating an absent key path is an error surfaced across the FFI (not a silent no-op).
