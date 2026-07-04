@@ -334,7 +334,9 @@ async fn sign_and_send(signer, rpc, to, calldata) -> TxHash:
 ```
 
 ### 1.9 UniFFI export
-The crate exposes `wrap_document`, `verify`, `build_merkle`, `hash_leaf`, the `consent` module (§1.10:
+The crate exposes `wrap_document`, `verify`, `build_merkle`, `hash_leaf`, `obfuscate` (§1.5 selective
+disclosure — surfaced as `obfuscateDocumentJson`, so the holder can redact leaves locally and produce
+a PII-free presentation copy whose root still equals the on-chain `R`), the `consent` module (§1.10:
 `verification_consent_typehash`, `hash_typed_consent`, `sign_consent_ecdsa`, `sign_consent_eddsa`,
 `derive_babyjub_consent_key`) (and value encoders) over **UniFFI** so Android (Kotlin) and iOS (Swift)
 call the *same* verification + consent-signing code. `custody`/RPC stay server-side only.
@@ -1125,8 +1127,9 @@ Shared across vet, groomer, and admin portals (lives in `packages/ui`):
 ## 6. Mobile apps (Android + iOS)
 
 ### 6.1 Shared
-- **Verification** via `dogtag-standard-rs` UniFFI bindings (`verify`, `wrapDocument`) — identical to server.
+- **Verification** via `dogtag-standard-rs` UniFFI bindings (`verify`, `wrapDocument`, `obfuscate`) — identical to server.
 - **API base**: central API (`https://api.dogtag.io`) for accounts/discovery/booking; per-business URLs come from discovery responses & QR origins.
+- **Travel receipt (holder-presented)** — a held `TRAVEL_CLEARANCE` credential renders as the same CDC-modeled receipt the government web portal shows (ROLE_APPS §3.3), built LOCALLY from the stored wrapped doc: `TravelReceiptView.swift` / `TravelReceiptScreen.kt`, reached from the credential detail screen when `group == travel`. Section A/B/C + validity + the public `receiptId` + a derived `effectiveStatus` banner (live `isValid` → REVOKED, lapsed `validUntil` → EXPIRED, else VALID). Selective disclosure is **holder-controlled**: Section-A person PII defaults to withheld, per-field reveal toggles flip it, `dogTagId` stays locked visible, and **Share redacted** runs the `obfuscate` binding (§1.5) over the withheld leaves so the shared copy hides them while still rebuilding to the on-chain root `R`. The receipt shows a **PII-free QR** to the public `https://<issuer.domain>/r/<receiptId>` status page — the only QR encode retained on-device (a status-page URL leaks nothing).
 
 ### 6.2 Screens (from references)
 - Onboarding ("Welcome to Dog Tags") → tabs **Verify · Travel · Home · Documents · Profile**.

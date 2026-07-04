@@ -88,4 +88,8 @@ dependencies {
 
     // UniFFI Kotlin bindings require JNA (the @aar variant ships the native JNI libs for Android).
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+
+    // QR GENERATION (pure-Java) for the travel-receipt public-status QR. ML Kit above only SCANS;
+    // the holder receipt must DRAW a PII-free /r/:receiptId QR, so we encode with zxing-core.
+    implementation("com.google.zxing:core:3.5.3")
 }

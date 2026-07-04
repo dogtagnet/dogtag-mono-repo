@@ -7,6 +7,8 @@ struct CredentialDetailScreen: View {
     @Environment(\.dismiss) var dismiss
     let cred: Credential
 
+    @State private var showReceipt = false
+
     private var doc: WrappedDoc? { WrappedDoc(json: cred.wrappedDocJson) }
     private var fields: [WrappedDoc.DecodedField] { doc?.decodedFields() ?? [] }
 
@@ -14,6 +16,22 @@ struct CredentialDetailScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+
+                // Travel credentials get the CDC-modeled receipt as their "present to an official"
+                // surface (holder-controlled selective disclosure + PII-free public-status QR).
+                if cred.group == .travel {
+                    Button { showReceipt = true } label: {
+                        HStack {
+                            Image(systemName: "doc.richtext")
+                            Text("Show travel receipt").font(.system(size: 14, weight: .semibold))
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.system(size: 12))
+                        }
+                        .foregroundColor(c.onAccent)
+                        .padding(14)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(c.accent))
+                    }.buttonStyle(.plain)
+                }
 
                 // On-chain card.
                 VStack(alignment: .leading, spacing: 10) {
@@ -54,6 +72,9 @@ struct CredentialDetailScreen: View {
             .padding(20)
         }
         .background(c.background.ignoresSafeArea())
+        .sheet(isPresented: $showReceipt) {
+            TravelReceiptView(cred: cred).environment(\.dogTagColors, c)
+        }
     }
 
     private var header: some View {
