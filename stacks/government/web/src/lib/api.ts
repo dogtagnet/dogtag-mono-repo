@@ -15,6 +15,10 @@ export async function apiGet(path: string) {
   const r = await fetch(`${API_BASE}${path}`, {
     headers: { authorization: `Bearer ${API_TOKEN}` },
   });
+  if (!r.ok) {
+    const body = await r.json().catch(() => null);
+    throw new Error(body?.error || `HTTP ${r.status}`);
+  }
   return r.json();
 }
 
