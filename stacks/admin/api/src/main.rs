@@ -8,6 +8,7 @@ use admin_api::business::ReqwestBusinessClient;
 use admin_api::chain::{AlloyChain, ChainClient};
 use admin_api::crypto::MemVault;
 use admin_api::dns::{DnsChecker, DohDnsChecker, MockDnsChecker};
+use admin_api::indexer::{DisabledFeed, HttpOversightFeed, OversightFeed};
 use admin_api::store::{MemStore, Store};
 use tower_http::cors::CorsLayer;
 
@@ -135,12 +136,19 @@ async fn main() {
     // MemStore (demo/local — unchanged). Demo behavior is preserved when MONGO_URI is unset/empty.
     let store: Arc<dyn Store> = build_store().await;
 
+    // Oversight-indexer consumer (PR-B): the UNSCOPED cross-issuer feed. Wired when INDEXER_API_BASE is
+    // set (with INDEXER_OVERSIGHT_TOKEN — the indexer's `unscoped:true` bearer); otherwise a
+    // DisabledFeed makes the activity/directory-count surfaces fail closed with 503 while the rest of
+    // the admin backend runs unchanged. The signer→business directory is store-derived and always live.
+    let feed: Arc<dyn OversightFeed> = build_feed();
+
     let state = AppState {
         store,
         chain: Arc::new(chain),
         dns,
         business: Arc::new(ReqwestBusinessClient::new()),
         vault: Arc::new(MemVault::new()),
+        feed,
         // Shared JWT signing key from SHARE_JWT_SIGNING_KEY (audit L4) so share tokens survive restart
         // and work across instances; fail closed when missing in production (same DEMO_MODE signal as
         // the H2 secret guard above).
@@ -235,6 +243,38 @@ fn load_jwt_keys(prod: bool) -> JwtKeys {
                  will NOT survive restart or work across horizontally-scaled instances)"
             );
             JwtKeys::generate()
+        }
+    }
+}
+
+/// Build the oversight-indexer consumer (PR-B). With `INDEXER_API_BASE` set: a real
+/// `HttpOversightFeed` presenting the UNSCOPED bearer token from `INDEXER_OVERSIGHT_TOKEN` (an
+/// `INDEXER_SCOPES` entry with `unscoped:true`). Otherwise a `DisabledFeed` — the activity/count
+/// surfaces fail closed with 503 and the rest of the admin backend runs unchanged. `ADMIN_INDEXER_BASE`
+/// / `ADMIN_INDEXER_TOKEN` are accepted as aliases so the var names read clearly from the admin side.
+fn build_feed() -> Arc<dyn OversightFeed> {
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+    let base = env("INDEXER_API_BASE").or_else(|| env("ADMIN_INDEXER_BASE"));
+    match base {
+        Some(base) => {
+            let token = env("INDEXER_OVERSIGHT_TOKEN")
+                .or_else(|| env("ADMIN_INDEXER_TOKEN"))
+                .unwrap_or_default();
+            if token.is_empty() {
+                tracing::warn!(
+                    "INDEXER_API_BASE set but no INDEXER_OVERSIGHT_TOKEN; the indexer will 401 unless \
+                     it is running in demo mode (fail-closed scope registry)"
+                );
+            }
+            tracing::info!("oversight indexer consumer wired to {base} (unscoped)");
+            Arc::new(HttpOversightFeed::new(base, token))
+        }
+        None => {
+            tracing::warn!(
+                "INDEXER_API_BASE unset; the on-chain activity + cross-issuer count surfaces \
+                 (/v1/admin/activity*) return 503 until an indexer is configured"
+            );
+            Arc::new(DisabledFeed)
         }
     }
 }

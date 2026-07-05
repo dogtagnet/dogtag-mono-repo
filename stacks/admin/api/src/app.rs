@@ -11,6 +11,7 @@ use crate::business::BusinessClient;
 use crate::chain::ChainClient;
 use crate::crypto::KeyVault;
 use crate::dns::DnsChecker;
+use crate::indexer::OversightFeed;
 use crate::store::Store;
 
 /// The DOG_PROFILE record type the central stack mints SBT profiles under.
@@ -47,6 +48,9 @@ pub struct AppState {
     pub dns: Arc<dyn DnsChecker>,
     pub business: Arc<dyn BusinessClient>,
     pub vault: Arc<dyn KeyVault>,
+    /// UNSCOPED consumer of the PR-4 oversight indexer (the "see on-chain activity" data layer, PR-B).
+    /// `DisabledFeed` when `INDEXER_API_BASE` is unset; the real `HttpOversightFeed` otherwise.
+    pub feed: Arc<dyn OversightFeed>,
     pub jwt: JwtKeys,
     pub cfg: Arc<Config>,
     /// in-memory login rate limiter (lenient; demo-safe).

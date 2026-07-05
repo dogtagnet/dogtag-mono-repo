@@ -1474,6 +1474,180 @@ async fn governance_authority(State(st): State<AppState>, headers: HeaderMap) ->
     }))
 }
 
+// ============================================================================================
+// PR-B — oversight-indexer consumption + signer→business directory (the "see on-chain activity"
+// data layer). All reads are UNSCOPED (cross-issuer) and non-PII: the admin/government sees every
+// issuer's events, named via the admin business directory, never any role's PII Mongo.
+// ============================================================================================
+
+/// Query params for `GET /v1/admin/activity` — pass-through narrowing filters over the unscoped feed.
+#[derive(Debug, Deserialize, Default)]
+struct ActivityParams {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    signer: Option<String>,
+    issuer: Option<String>,
+    #[serde(rename = "recordType")]
+    record_type: Option<String>,
+    root: Option<String>,
+    #[serde(rename = "dogTagId")]
+    dog_tag_id: Option<String>,
+    finality: Option<String>,
+    since: Option<u64>,
+    until: Option<u64>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+impl From<ActivityParams> for crate::indexer::FeedQuery {
+    fn from(p: ActivityParams) -> Self {
+        crate::indexer::FeedQuery {
+            event_type: p.event_type,
+            signer: p.signer,
+            issuer: p.issuer,
+            record_type: p.record_type,
+            root: p.root,
+            dog_tag_id: p.dog_tag_id,
+            finality: p.finality,
+            since: p.since,
+            until: p.until,
+            limit: p.limit,
+            offset: p.offset,
+        }
+    }
+}
+
+/// Map an oversight-feed error to an HTTP response: an unconfigured indexer is a 503 (the surface is
+/// simply unavailable), any transport/upstream error is a 502.
+fn feed_err(e: crate::indexer::FeedError) -> Resp {
+    use crate::indexer::FeedError;
+    match e {
+        FeedError::NotConfigured => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": e.to_string(), "indexer": "not-configured" })),
+        ),
+        FeedError::Transport(_) | FeedError::Status(_, _) => {
+            err(StatusCode::BAD_GATEWAY, &e.to_string())
+        }
+    }
+}
+
+/// Re-enrich an indexer `events` array with the admin's AUTHORITATIVE signer→business names: for each
+/// event, resolve `actor`→`actorName` and `clone`→`cloneName` from the admin directory, overriding the
+/// indexer's own best-effort copy. Leaves the indexer's value in place when the admin can't resolve it.
+fn enrich_events(dir: &crate::directory::SignerDirectory, body: &mut Value) {
+    let Some(events) = body.get_mut("events").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for ev in events.iter_mut() {
+        let Some(obj) = ev.as_object_mut() else { continue };
+        if let Some(actor) = obj.get("actor").and_then(|v| v.as_str()).map(str::to_string) {
+            if let Some(name) = dir.name(&actor) {
+                obj.insert("actorName".into(), json!(name));
+            }
+        }
+        if let Some(clone) = obj.get("clone").and_then(|v| v.as_str()).map(str::to_string) {
+            if let Some(name) = dir.name(&clone) {
+                obj.insert("cloneName".into(), json!(name));
+            }
+        }
+    }
+}
+
+/// `GET /v1/admin/activity` — the UNSCOPED cross-issuer oversight feed (plan §3.2). Proxies the PR-4
+/// indexer's `/v1/events` with the admin's unscoped token, then re-enriches every event with the
+/// admin's authoritative signer→business directory so signers read as business names. Filters
+/// (`type`, `signer`, `issuer`, `recordType`, `root`, `dogTagId`, `finality`, `since`, `until`,
+/// `limit`, `offset`) only ever narrow within the unscoped ceiling.
+async fn admin_activity(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(p): Query<ActivityParams>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let q: crate::indexer::FeedQuery = p.into();
+    match st.feed.events(&q).await {
+        Ok(mut body) => {
+            let dir = crate::directory::SignerDirectory::from_store(st.store.as_ref()).await;
+            enrich_events(&dir, &mut body);
+            ok(body)
+        }
+        Err(e) => feed_err(e),
+    }
+}
+
+/// `GET /v1/admin/activity/stats` — cross-issuer aggregate counters (active vs revoked credentials,
+/// verifications, whitelisted/delisted signers, distinct clones/signers, finalized/pending). The
+/// aggregates PR-D's dashboard renders (plan §3.1). Proxies the indexer's `/v1/stats` unscoped.
+async fn admin_activity_stats(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    match st.feed.stats().await {
+        Ok(body) => ok(body),
+        Err(e) => feed_err(e),
+    }
+}
+
+/// `GET /v1/admin/activity/issuers` — per-clone issued/revoked/active counts across all issuers (plan
+/// §3.3 list). Proxies the indexer's `/v1/issuers` unscoped and re-enriches each clone with the
+/// admin's authoritative directory name.
+async fn admin_activity_issuers(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    match st.feed.issuers().await {
+        Ok(mut body) => {
+            let dir = crate::directory::SignerDirectory::from_store(st.store.as_ref()).await;
+            if let Some(list) = body.get_mut("issuers").and_then(|v| v.as_array_mut()) {
+                for it in list.iter_mut() {
+                    let Some(obj) = it.as_object_mut() else { continue };
+                    if let Some(clone) =
+                        obj.get("clone").and_then(|v| v.as_str()).map(str::to_string)
+                    {
+                        if let Some(name) = dir.name(&clone) {
+                            obj.insert("cloneName".into(), json!(name));
+                        }
+                    }
+                }
+            }
+            ok(body)
+        }
+        Err(e) => feed_err(e),
+    }
+}
+
+/// `GET /v1/admin/directory` — the full signer→business directory (plan §3.5): every indexed signer
+/// address joined to its business identity (name, entity, recordTypes). Non-PII; the naming source the
+/// activity feed + PR-D dashboard consume. Built live from the admin business registry + applications.
+async fn admin_directory(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let dir = crate::directory::SignerDirectory::from_store(st.store.as_ref()).await;
+    let entries = dir.entries();
+    ok(json!({ "signers": entries, "total": entries.len() }))
+}
+
+/// `GET /v1/admin/directory/signer/:addr` — resolve one on-chain signer/clone address to its business
+/// identity (`{business, entity, recordTypes, …}`). 404 when the address maps to no known issuer.
+async fn admin_directory_signer(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(addr): Path<String>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let dir = crate::directory::SignerDirectory::from_store(st.store.as_ref()).await;
+    match dir.resolve(&addr) {
+        Some(entry) => ok(json!(entry)),
+        None => err(StatusCode::NOT_FOUND, "signer not found in directory"),
+    }
+}
+
 pub fn admin_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/admin/login", post(admin_login))
@@ -1481,6 +1655,15 @@ pub fn admin_router(state: AppState) -> Router {
         .route("/v1/admin/factory/predict", post(factory_predict))
         .route("/v1/admin/factory/issuers", post(factory_create_issuer))
         .route("/v1/admin/governance/authority", get(governance_authority))
+        // PR-B: unscoped oversight-indexer consumption + signer→business directory
+        .route("/v1/admin/activity", get(admin_activity))
+        .route("/v1/admin/activity/stats", get(admin_activity_stats))
+        .route("/v1/admin/activity/issuers", get(admin_activity_issuers))
+        .route("/v1/admin/directory", get(admin_directory))
+        .route(
+            "/v1/admin/directory/signer/:addr",
+            get(admin_directory_signer),
+        )
         // issuer whitelisting (admin-session writes)
         .route(
             "/v1/issuer-applications/:id/approve",

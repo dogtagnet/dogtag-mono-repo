@@ -165,6 +165,7 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         dns: Arc::new(MockDnsChecker::ok()) as Arc<dyn DnsChecker>,
         business: Arc::new(ReqwestBusinessClient::new()) as Arc<dyn BusinessClient>,
         vault: Arc::new(MemVault::new()) as Arc<dyn KeyVault>,
+        feed: Arc::new(admin_api::indexer::DisabledFeed) as Arc<dyn admin_api::indexer::OversightFeed>,
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(admin_api::auth::RateLimiter::new()),
