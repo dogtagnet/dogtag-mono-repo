@@ -12,6 +12,9 @@
 //!   verify.rs       — credential-import structural verification (SDK canonicalization)
 //!   verify_relay.rs — proof-of-verification consent relay
 //!   erasure.rs      — `erase` + `fulfill_due_deletions` (crypto-shred)
+//!   governance.rs   — `GovernanceAction` (sign-if-held / propose-if-not) authority abstraction (PR-A)
+//!   indexer.rs      — `OversightFeed` client: the UNSCOPED consumer of the PR-4 oversight indexer (PR-B)
+//!   directory.rs    — signer→business directory: names on-chain signers from the business registry (PR-B)
 //!   routes.rs       — Axum router + all handlers (§4.1–§4.5)
 
 pub mod app;
@@ -19,9 +22,11 @@ pub mod auth;
 pub mod business;
 pub mod chain;
 pub mod crypto;
+pub mod directory;
 pub mod dns;
 pub mod erasure;
 pub mod governance;
+pub mod indexer;
 pub mod routes;
 pub mod startup;
 pub mod store;

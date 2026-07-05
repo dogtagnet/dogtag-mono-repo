@@ -16,6 +16,7 @@ use admin_api::business::{BusinessClient, MockBusinessClient};
 use admin_api::chain::{ChainClient, MemChain};
 use admin_api::crypto::{KeyVault, MemVault};
 use admin_api::dns::{DnsChecker, MockDnsChecker};
+use admin_api::indexer::{MemFeed, OversightFeed};
 use admin_api::store::MemStore;
 
 pub const ADMIN_PW: &str = "admin-pw";
@@ -49,11 +50,24 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         dns: Arc::new(MockDnsChecker::ok()) as Arc<dyn DnsChecker>,
         business: Arc::new(business.clone()) as Arc<dyn BusinessClient>,
         vault: Arc::new(vault.clone()) as Arc<dyn KeyVault>,
+        // Default hermetic feed: empty MemFeed. Tests that exercise the activity/count surfaces build
+        // their own state via `hermetic_state_with_feed` with a seeded MemFeed.
+        feed: Arc::new(MemFeed::new()) as Arc<dyn OversightFeed>,
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(admin_api::auth::RateLimiter::new()),
     };
     (state, chain, vault, business)
+}
+
+/// Like `hermetic_state`, but with a caller-supplied oversight feed (PR-B). Used by the
+/// indexer-consumption tests to inject a `MemFeed` seeded with canned `/v1/events` / `/v1/stats` /
+/// `/v1/issuers` payloads, so the activity + directory-enrichment routes run end-to-end with no live
+/// indexer. Returns just the state (the chain/vault/business mocks are rarely needed there).
+pub fn hermetic_state_with_feed(feed: Arc<dyn OversightFeed>) -> AppState {
+    let (mut state, _chain, _vault, _business) = hermetic_state();
+    state.feed = feed;
+    state
 }
 
 /// Issue a request and return (status, json body).
