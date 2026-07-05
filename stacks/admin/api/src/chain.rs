@@ -1097,7 +1097,10 @@ mod tests {
         use alloy::primitives::keccak256;
         assert_eq!(
             whitelist_admin_role(),
-            format!("0x{}", hex::encode(keccak256(b"WHITELIST_ADMIN").as_slice()))
+            format!(
+                "0x{}",
+                hex::encode(keccak256(b"WHITELIST_ADMIN").as_slice())
+            )
         );
         assert_eq!(default_admin_role(), format!("0x{}", "0".repeat(64)));
     }

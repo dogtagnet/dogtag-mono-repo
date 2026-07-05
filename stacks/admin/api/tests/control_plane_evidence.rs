@@ -41,26 +41,72 @@ async fn control_plane_api_transcript() {
     w!("### SCENARIO 1 — Phase-1 today: single deployer EOA {HOSTED} holds all three authorities\n");
 
     w!("GET /v1/admin/governance/authority");
-    let (s, b) = common::call(&app, "GET", "/v1/admin/governance/authority", Some(&tok), None).await;
-    w!("HTTP {}\n{}\n", s.as_u16(), serde_json::to_string_pretty(&b).unwrap());
+    let (s, b) = common::call(
+        &app,
+        "GET",
+        "/v1/admin/governance/authority",
+        Some(&tok),
+        None,
+    )
+    .await;
+    w!(
+        "HTTP {}\n{}\n",
+        s.as_u16(),
+        serde_json::to_string_pretty(&b).unwrap()
+    );
 
     let predict_body = serde_json::json!({ "recordType": "VACCINATION", "business": HOSTED });
     w!("POST /v1/admin/factory/predict  {}", predict_body);
-    let (s, b) = common::call(&app, "POST", "/v1/admin/factory/predict", Some(&tok), Some(predict_body.clone())).await;
-    w!("HTTP {}\n{}\n", s.as_u16(), serde_json::to_string_pretty(&b).unwrap());
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/factory/predict",
+        Some(&tok),
+        Some(predict_body.clone()),
+    )
+    .await;
+    w!(
+        "HTTP {}\n{}\n",
+        s.as_u16(),
+        serde_json::to_string_pretty(&b).unwrap()
+    );
     let predicted_1 = b["predicted"].as_str().unwrap().to_string();
 
     w!("POST /v1/admin/factory/predict  (same inputs again — must be identical/deterministic)");
-    let (_s, b2) = common::call(&app, "POST", "/v1/admin/factory/predict", Some(&tok), Some(predict_body)).await;
-    w!("predicted (call 2) = {}   deterministic == {}\n", b2["predicted"], b2["predicted"] == predicted_1);
+    let (_s, b2) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/factory/predict",
+        Some(&tok),
+        Some(predict_body),
+    )
+    .await;
+    w!(
+        "predicted (call 2) = {}   deterministic == {}\n",
+        b2["predicted"],
+        b2["predicted"] == predicted_1
+    );
 
     let deploy_body = serde_json::json!({ "name": "Vax Authority", "recordType": "VACCINATION", "business": HOSTED });
     w!("POST /v1/admin/factory/issuers  {}", deploy_body);
-    let (s, b) = common::call(&app, "POST", "/v1/admin/factory/issuers", Some(&tok), Some(deploy_body)).await;
-    w!("HTTP {}\n{}", s.as_u16(), serde_json::to_string_pretty(&b).unwrap());
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/factory/issuers",
+        Some(&tok),
+        Some(deploy_body),
+    )
+    .await;
+    w!(
+        "HTTP {}\n{}",
+        s.as_u16(),
+        serde_json::to_string_pretty(&b).unwrap()
+    );
     w!(">> hosted key IS the factory owner → disposition = EXECUTED, signed + broadcast, txHash returned.");
-    w!(">> deployed clone == the up-front predicted address: {}\n",
-        b["predicted"].as_str() == Some(predicted_1.as_str()));
+    w!(
+        ">> deployed clone == the up-front predicted address: {}\n",
+        b["predicted"].as_str() == Some(predicted_1.as_str())
+    );
 
     // ---- Scenario 2: Phase-2 handover — DEFAULT_ADMIN moved to governance 0x8E27, factory NOT owned.
     let (state2, chain2, _v, _b) = hermetic_state();
@@ -79,27 +125,66 @@ async fn control_plane_api_transcript() {
     w!("###             (hosted key still holds WHITELIST_ADMIN). Same code path, no redeploy.\n");
 
     w!("GET /v1/admin/governance/authority");
-    let (s, b) = common::call(&app2, "GET", "/v1/admin/governance/authority", Some(&tok2), None).await;
-    w!("HTTP {}\n{}\n", s.as_u16(), serde_json::to_string_pretty(&b).unwrap());
+    let (s, b) = common::call(
+        &app2,
+        "GET",
+        "/v1/admin/governance/authority",
+        Some(&tok2),
+        None,
+    )
+    .await;
+    w!(
+        "HTTP {}\n{}\n",
+        s.as_u16(),
+        serde_json::to_string_pretty(&b).unwrap()
+    );
 
     let deploy_body2 = serde_json::json!({ "name": "Vax Authority", "recordType": "VACCINATION", "business": HOSTED });
     w!("POST /v1/admin/factory/issuers  {}", deploy_body2);
-    let (s, b) = common::call(&app2, "POST", "/v1/admin/factory/issuers", Some(&tok2), Some(deploy_body2)).await;
-    w!("HTTP {}\n{}", s.as_u16(), serde_json::to_string_pretty(&b).unwrap());
+    let (s, b) = common::call(
+        &app2,
+        "POST",
+        "/v1/admin/factory/issuers",
+        Some(&tok2),
+        Some(deploy_body2),
+    )
+    .await;
+    w!(
+        "HTTP {}\n{}",
+        s.as_u16(),
+        serde_json::to_string_pretty(&b).unwrap()
+    );
     w!(">> hosted key is NOT the factory owner → disposition = PROPOSED. Nothing broadcast; the");
     w!(">> {{target, calldata}} payload is handed to governance {GOV} to execute out-of-band.\n");
 
     // ---- Scenario 3: input hardening — malformed business rejected, auth required. ---------------
     w!("--------------------------------------------------------------------------------");
     w!("### SCENARIO 3 — input hardening\n");
-    let bad = serde_json::json!({ "name": "X", "recordType": "VACCINATION", "business": "0xnothex" });
-    w!("POST /v1/admin/factory/issuers  {}   (malformed business)", bad);
-    let (s, b) = common::call(&app, "POST", "/v1/admin/factory/issuers", Some(&tok), Some(bad)).await;
+    let bad =
+        serde_json::json!({ "name": "X", "recordType": "VACCINATION", "business": "0xnothex" });
+    w!(
+        "POST /v1/admin/factory/issuers  {}   (malformed business)",
+        bad
+    );
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/factory/issuers",
+        Some(&tok),
+        Some(bad),
+    )
+    .await;
     w!("HTTP {} → {}\n", s.as_u16(), b);
 
     w!("POST /v1/admin/factory/issuers  (no admin session)");
-    let (s, _b) = common::call(&app, "POST", "/v1/admin/factory/issuers", None,
-        Some(serde_json::json!({ "name": "X", "recordType": "VACCINATION" }))).await;
+    let (s, _b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/factory/issuers",
+        None,
+        Some(serde_json::json!({ "name": "X", "recordType": "VACCINATION" })),
+    )
+    .await;
     w!("HTTP {} (rejected — admin session required)\n", s.as_u16());
 
     w!("================================================================================");

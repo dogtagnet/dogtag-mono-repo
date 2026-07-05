@@ -20,15 +20,33 @@ async fn factory_predict_is_deterministic() {
     let tok = admin_token(&app).await;
 
     let body = serde_json::json!({ "recordType": RT, "business": HOSTED });
-    let (s1, b1) = common::call(&app, "POST", "/v1/admin/factory/predict", Some(&tok), Some(body.clone())).await;
+    let (s1, b1) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/factory/predict",
+        Some(&tok),
+        Some(body.clone()),
+    )
+    .await;
     assert_eq!(s1, StatusCode::OK, "{b1}");
     let addr1 = b1["predicted"].as_str().unwrap().to_string();
     assert!(addr1.starts_with("0x") && addr1.len() == 42);
     // recordType label is hashed to its bytes32 key.
     assert_eq!(b1["recordTypeKey"], admin_api::chain::record_type_key(RT));
 
-    let (_s2, b2) = common::call(&app, "POST", "/v1/admin/factory/predict", Some(&tok), Some(body)).await;
-    assert_eq!(b2["predicted"].as_str().unwrap(), addr1, "predict must be deterministic");
+    let (_s2, b2) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/factory/predict",
+        Some(&tok),
+        Some(body),
+    )
+    .await;
+    assert_eq!(
+        b2["predicted"].as_str().unwrap(),
+        addr1,
+        "predict must be deterministic"
+    );
 }
 
 /// A malformed caller-provided `business` is rejected with 400 rather than silently coerced to the
@@ -121,13 +139,28 @@ async fn governance_authority_map_reflects_holders_and_pending_transfer() {
 
     let app = admin_api::router(state);
     let tok = admin_token(&app).await;
-    let (s, b) = common::call(&app, "GET", "/v1/admin/governance/authority", Some(&tok), None).await;
+    let (s, b) = common::call(
+        &app,
+        "GET",
+        "/v1/admin/governance/authority",
+        Some(&tok),
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{b}");
 
     assert_eq!(b["factoryOwner"]["heldByHosted"], true);
     assert_eq!(b["whitelistAdmin"]["heldByHosted"], true);
     // hosted still holds DEFAULT_ADMIN today, but the pending transfer to governance is surfaced.
     assert_eq!(b["defaultAdmin"]["heldByHosted"], true);
-    assert_eq!(b["defaultAdmin"]["pendingTransfer"]["newAdmin"].as_str().unwrap(), gov);
-    assert_eq!(b["defaultAdmin"]["pendingTransfer"]["acceptSchedule"], 1_782_988_652u64);
+    assert_eq!(
+        b["defaultAdmin"]["pendingTransfer"]["newAdmin"]
+            .as_str()
+            .unwrap(),
+        gov
+    );
+    assert_eq!(
+        b["defaultAdmin"]["pendingTransfer"]["acceptSchedule"],
+        1_782_988_652u64
+    );
 }

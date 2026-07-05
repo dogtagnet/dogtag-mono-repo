@@ -41,10 +41,7 @@ async fn main() {
             "0x0000000000000000000000000000000000000000",
         ),
         sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
-        factory_addr: env(
-            "FACTORY_ADDR",
-            "0x0000000000000000000000000000000000000000",
-        ),
+        factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         issuer_name: env("ISSUER_NAME", "DogTag Central"),
         issuer_domain: env("ISSUER_DOMAIN", "dogtag.example"),
         profile_document_store: env(
@@ -209,14 +206,19 @@ async fn main() {
 /// restart- and instance-stable key. Malformed -> fail closed. Missing in a persistent deployment
 /// (`prod`, i.e. DEMO_MODE/VITE_DEMO_MODE unset) -> fail closed. Demo/local -> ephemeral key + warning.
 fn load_jwt_keys(prod: bool) -> JwtKeys {
-    match std::env::var("SHARE_JWT_SIGNING_KEY").ok().filter(|s| !s.trim().is_empty()) {
+    match std::env::var("SHARE_JWT_SIGNING_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
         Some(seed) => match JwtKeys::from_seed_hex(&seed) {
             Ok(k) => {
                 tracing::info!("loaded shared JWT signing key from SHARE_JWT_SIGNING_KEY");
                 k
             }
             Err(e) => {
-                tracing::error!("SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start");
+                tracing::error!(
+                    "SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start"
+                );
                 std::process::exit(1);
             }
         },

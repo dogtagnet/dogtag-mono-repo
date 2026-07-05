@@ -203,8 +203,13 @@ mod tests {
             summary: "createIssuer".into(),
         };
         match dispatch(&c, 0, &action).await.unwrap() {
-            Disposition::Proposed { holder, calldata, .. } => {
-                assert_eq!(holder.as_deref().map(str::to_lowercase), Some(GOV.to_lowercase()));
+            Disposition::Proposed {
+                holder, calldata, ..
+            } => {
+                assert_eq!(
+                    holder.as_deref().map(str::to_lowercase),
+                    Some(GOV.to_lowercase())
+                );
                 assert_eq!(calldata, "0xabcdef");
             }
             other => panic!("want Proposed, got {other:?}"),
@@ -250,8 +255,13 @@ mod tests {
             summary: "adminRevoke".into(),
         };
         match dispatch(&c, 0, &action).await.unwrap() {
-            Disposition::Proposed { holder, authority, .. } => {
-                assert_eq!(holder.as_deref().map(str::to_lowercase), Some(GOV.to_lowercase()));
+            Disposition::Proposed {
+                holder, authority, ..
+            } => {
+                assert_eq!(
+                    holder.as_deref().map(str::to_lowercase),
+                    Some(GOV.to_lowercase())
+                );
                 assert!(authority.contains("DEFAULT_ADMIN"));
             }
             other => panic!("want Proposed, got {other:?}"),
