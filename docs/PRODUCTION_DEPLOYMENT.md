@@ -97,6 +97,7 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 # stack owns which key). Take every value from contracts/deployments/<chain>.json (§2.2):
 #   ISSUER_REGISTRY_ADDR=...            # all stacks
 #   SBT_ADDR=...                        # admin (+ vet via demo wiring); PROFILE_DOCUMENT_STORE usually = SBT_ADDR
+#   FACTORY_ADDR=...                    # admin  (DogTagIssuerFactory — createIssuer/predictIssuer + Ownable owner)
 #   VERIFICATION_REGISTRY_ADDR=...      # vet, groomer  (CURRENT VR, not a legacy generation)
 #   CONSENT_KEY_REGISTRY_ADDR=...       # vet, groomer  (CURRENT CKR — meta-tx bindConsentKeyFor is the live path)
 #   VACCINATION_ISSUER_ADDR=...         # vet, groomer  (per-recordType clone; 0x0…0 for pure verifiers)

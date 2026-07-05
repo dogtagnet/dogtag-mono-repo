@@ -170,6 +170,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `CONSENT_KEY_REGISTRY_ADDR` | vet, groomer | gasless `bindConsentKeyFor` (`0xA74DDe4a9b…`) | (roax.json, pre-filled) | current, **not** legacy |
 | `SBT_ADDR` | admin | DogTagSBT | (roax.json, pre-filled) | per chain |
 | `PROFILE_DOCUMENT_STORE` | admin | SBT mint target | `=SBT_ADDR` | usually `=SBT_ADDR` |
+| `FACTORY_ADDR` | admin | DogTagIssuerFactory — `createIssuer`/`predictIssuer` target + the Ownable owner whose key gates deploys | (roax.json, pre-filled) | per chain |
 | `VACCINATION_ISSUER_ADDR` | vet, groomer | per-recordType clone | `0x0…0` (set to the real clone for an issuer) | `0x0…0` for pure verifiers |
 | `ADMIN_SIGNER_INDEX` | admin | HD signer index | `0` | `0` |
 | `DNS_CHECK` | all | issuer DNS legitimacy | `skip` (local) | **`doh`** (enforced by `remote-up.sh`) |
@@ -179,7 +180,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `OPERATOR_PASSWORD` | vet, groomer | operator login (`POST /login`) | `operator` | **secret** → `openssl rand -hex 32` |
 | `ADMIN_PASSWORD` | all | admin-session login (custody/console) | `admin` | **secret** → `openssl rand -hex 32` |
 | `CENTRAL_HMAC_SECRET` | all | central↔business HMAC; **identical across all stacks** | `dev-central-hmac-secret` | **secret** → `openssl rand -hex 32` (same value everywhere) |
-| `ADMIN_PRIVATE_KEY` | admin | on-chain signer (`whitelistFor` / SBT `mint`) | from `contracts/.env` | **secret** — dedicated **funded** EOA key |
+| `ADMIN_PRIVATE_KEY` | admin | on-chain signer (`whitelistFor` / SBT `mint` / factory `createIssuer`); its holdership of each authority is what the `GovernanceAction` dispatcher checks | from `contracts/.env` | **secret** — dedicated **funded** EOA key |
 | `ADMIN_ADDRESS` | admin | address of `ADMIN_PRIVATE_KEY` | from `contracts/.env` | derive from the key |
 | `BUSINESS_ID` | vet, groomer | central registry id | `biz-vet-local` / `biz-groomer-local` | real id |
 | `BUSINESS_TYPE` | groomer | run `vet-api` as groomer | `groomer` | `groomer` |
