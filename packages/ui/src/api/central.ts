@@ -1,4 +1,8 @@
 import type {
+  ActivityIssuersResp,
+  ActivityQuery,
+  ActivityResp,
+  ActivityStats,
   AdminActivityIssuersResp,
   AdminLoginResp,
   ApiError,
@@ -8,7 +12,11 @@ import type {
   CreateIssuerReq,
   CreateIssuerResp,
   DelistApplicationResp,
+  DirectoryResp,
+  DirectorySigner,
+  GovernanceAuthority,
   GovernanceAuthorityResp,
+  IndexerStatus,
   IssuerApplicationReq,
   IssuerApplicationResp,
   IssuerApplicationsResp,
@@ -94,6 +102,25 @@ export function createCentralClient(opts: CentralClientOptions) {
     return s ? `?${s}` : "";
   }
 
+  /** Build the `/v1/admin/activity` query string - only set, non-empty filters are emitted. */
+  function activityQs(q?: ActivityQuery): string {
+    if (!q) return "";
+    const p = new URLSearchParams();
+    if (q.type) p.set("type", q.type);
+    if (q.signer?.trim()) p.set("signer", q.signer.trim());
+    if (q.issuer?.trim()) p.set("issuer", q.issuer.trim());
+    if (q.recordType?.trim()) p.set("recordType", q.recordType.trim());
+    if (q.root?.trim()) p.set("root", q.root.trim());
+    if (q.dogTagId?.trim()) p.set("dogTagId", q.dogTagId.trim());
+    if (q.finality) p.set("finality", q.finality);
+    if (q.since !== undefined) p.set("since", String(q.since));
+    if (q.until !== undefined) p.set("until", String(q.until));
+    if (q.limit !== undefined) p.set("limit", String(q.limit));
+    if (q.offset !== undefined) p.set("offset", String(q.offset));
+    const s = p.toString();
+    return s ? `?${s}` : "";
+  }
+
   return {
     base,
 
@@ -139,6 +166,28 @@ export function createCentralClient(opts: CentralClientOptions) {
     /** GET /v1/admin/activity/issuers — per-clone issued/revoked/active counts (needs the oversight indexer). */
     listIssuers: () =>
       request<AdminActivityIssuersResp>("GET", "/v1/admin/activity/issuers"),
+
+    // ---- oversight indexer (PR-B data layer; the "see on-chain activity" surface) ----
+    /** GET /v1/admin/activity - the UNSCOPED cross-issuer event feed, named by the admin directory. */
+    getActivity: (q?: ActivityQuery) =>
+      request<ActivityResp>("GET", `/v1/admin/activity${activityQs(q)}`),
+    /** GET /v1/admin/activity/stats - cross-issuer aggregate counters (dashboard). */
+    getActivityStats: () =>
+      request<ActivityStats>("GET", "/v1/admin/activity/stats"),
+    /** GET /v1/admin/activity/status - indexer progress + finality watermark (chain-health card). */
+    getActivityStatus: () =>
+      request<IndexerStatus>("GET", "/v1/admin/activity/status"),
+    /** GET /v1/admin/activity/issuers - per-clone issued/revoked/active counts. */
+    getActivityIssuers: () =>
+      request<ActivityIssuersResp>("GET", "/v1/admin/activity/issuers"),
+    /** GET /v1/admin/directory - the full signer→business directory (naming source). */
+    getDirectory: () => request<DirectoryResp>("GET", "/v1/admin/directory"),
+    /** GET /v1/admin/directory/signer/:addr - resolve one signer/clone address to its business. */
+    getDirectorySigner: (addr: string) =>
+      request<DirectorySigner>("GET", `/v1/admin/directory/signer/${addr}`),
+    /** GET /v1/admin/governance/authority - the live on-chain authority map (chain-health card). */
+    getGovernanceAuthority: () =>
+      request<GovernanceAuthority>("GET", "/v1/admin/governance/authority"),
   };
 }
 

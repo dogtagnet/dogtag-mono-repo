@@ -1,5 +1,6 @@
 import { AppShell, ThemeToggle, type NavItem } from "@dogtag/ui";
 import {
+  Activity,
   LayoutDashboard,
   ListChecks,
   LogOut,
@@ -14,6 +15,7 @@ import { useApp } from "./AppContext";
 
 const NAV: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { key: "activity", href: "/activity", label: "Activity", icon: Activity },
   { key: "issuers", href: "/issuers", label: "Issuers / Factory", icon: Factory },
   { key: "onboard", href: "/onboard", label: "Onboard issuer", icon: Rocket },
   { key: "businesses", href: "/businesses", label: "Business registry", icon: Building2 },

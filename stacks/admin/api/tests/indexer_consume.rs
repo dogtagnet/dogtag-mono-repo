@@ -78,11 +78,18 @@ fn seeded_feed() -> Arc<dyn OversightFeed> {
         ],
         "scope": { "label": "government-oversight" }
     });
+    // `/v1/status`: the chain-health watermark PR-D's dashboard renders (head vs last-indexed, finality).
+    let status = json!({
+        "chainId": 135, "headBlock": 100, "finalizedBlock": 95, "finalitySource": "finalized-tag",
+        "lastFinalizedIndexed": 95, "lag": 5, "confirmations": 12,
+        "scope": { "label": "government-oversight", "unscoped": true }
+    });
     Arc::new(
         MemFeed::new()
             .with_events(events)
             .with_stats(stats)
-            .with_issuers(issuers),
+            .with_issuers(issuers)
+            .with_status(status),
     ) as Arc<dyn OversightFeed>
 }
 
@@ -166,6 +173,23 @@ async fn issuers_list_is_named() {
     assert_eq!(b["issuers"][0]["clone"].as_str(), Some(CLONE));
     assert_eq!(b["issuers"][0]["active"], 1);
     assert_eq!(b["issuers"][0]["cloneName"], "DogTag Government Authority");
+}
+
+/// The chain-health status watermark is served unscoped (head vs last-indexed, finality source) - the
+/// fuel for PR-D's chain-health card.
+#[tokio::test]
+async fn chain_health_status_is_served() {
+    let state = hermetic_state_with_feed(seeded_feed());
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+
+    let (s, b) = call(&app, "GET", "/v1/admin/activity/status", Some(&tok), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["headBlock"], 100);
+    assert_eq!(b["finalizedBlock"], 95);
+    assert_eq!(b["lastFinalizedIndexed"], 95);
+    assert_eq!(b["lag"], 5);
+    assert_eq!(b["finalitySource"], "finalized-tag");
 }
 
 /// The signer→business directory resolves an on-chain signer to its business identity, and 404s on an

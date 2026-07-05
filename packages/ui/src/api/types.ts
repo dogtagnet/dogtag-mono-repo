@@ -484,6 +484,160 @@ export interface AdminActivityIssuersResp {
   issuers: IssuerCloneStat[];
 }
 
+// ============================================================================================
+// central admin API - oversight-indexer consumption (PR-B data layer, rendered by PR-D).
+// The UNSCOPED, non-PII cross-issuer activity surface: `/v1/admin/activity[/stats|/status|/issuers]`
+// and `/v1/admin/directory`. Field names mirror the indexer's serde renames, re-enriched by the admin
+// backend with its authoritative signer→business names (`actorName`/`cloneName`).
+// ============================================================================================
+
+/** The seven on-chain event kinds the oversight indexer surfaces (stable `?type=` wire tokens). */
+export type ActivityEventType =
+  | "issuerCreated"
+  | "rootRegistered"
+  | "whitelisted"
+  | "delisted"
+  | "rootIssued"
+  | "rootRevoked"
+  | "verified";
+/** Finality lifecycle: `finalized` (settled/immutable) vs `pending` (still reorg-able). */
+export type ActivityFinality = "finalized" | "pending";
+
+/**
+ * One flattened non-PII on-chain event (`GET /v1/admin/activity`). Hex fields are lowercase `0x…`.
+ * `actorName`/`cloneName` are the admin backend's authoritative business names for `actor`/`clone`
+ * (present only when the signer/clone resolves in the signer→business directory). `txUrl` is the
+ * indexer-provided explorer link.
+ */
+export interface ActivityEvent {
+  id: string;
+  type: ActivityEventType;
+  contract: string;
+  blockNumber: number;
+  blockHash?: string;
+  txHash: string;
+  logIndex?: number;
+  blockTimestamp: number;
+  finality: ActivityFinality;
+  /** the acting signer (`by`/`signer`/`relayer`); absent for factory events. */
+  actor?: string;
+  /** the `DogTagIssuer` clone the event pertains to; absent for registry-level events. */
+  clone?: string;
+  recordType?: string | null;
+  root?: string | null;
+  dogTagId?: string | null;
+  /** issuer display name carried on `IssuerCreated`. */
+  name?: string | null;
+  /** admin-directory business name for `actor`, when resolvable. */
+  actorName?: string | null;
+  /** admin-directory business name for `clone`, when resolvable. */
+  cloneName?: string | null;
+  /** ready-to-click explorer link for the anchoring tx (from the indexer). */
+  txUrl?: string | null;
+}
+/** GET /v1/admin/activity - newest-first, paginated, unscoped feed. */
+export interface ActivityResp {
+  events: ActivityEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+  scope?: { label: string; unscoped: boolean };
+}
+/** GET /v1/admin/activity query filters - every field only NARROWS the unscoped feed. */
+export interface ActivityQuery {
+  type?: ActivityEventType;
+  signer?: string;
+  issuer?: string;
+  recordType?: string;
+  root?: string;
+  dogTagId?: string;
+  finality?: ActivityFinality;
+  /** inclusive lower/upper `blockTimestamp` bounds (unix seconds). */
+  since?: number;
+  until?: number;
+  limit?: number;
+  offset?: number;
+}
+/** GET /v1/admin/activity/stats - cross-issuer aggregate counters (dashboard fuel). */
+export interface ActivityStats {
+  totalEvents: number;
+  finalized: number;
+  pending: number;
+  rootIssued: number;
+  rootRevoked: number;
+  activeCredentials: number;
+  verifications: number;
+  whitelisted: number;
+  delisted: number;
+  clones: number;
+  signers: number;
+  scope?: { label: string; unscoped: boolean };
+}
+/** GET /v1/admin/activity/status - indexer progress + finality watermark (chain-health card). */
+export interface IndexerStatus {
+  chainId: number;
+  /** current chain head block (null when the RPC is unreachable). */
+  headBlock: number | null;
+  /** latest block the indexer treats as finalized. */
+  finalizedBlock: number | null;
+  /** how the finalized watermark was derived. */
+  finalitySource: "finalized-tag" | "confirmations-fallback" | "unknown";
+  /** the furthest block the scanner has settled into the index. */
+  lastFinalizedIndexed: number | null;
+  /** head − lastFinalizedIndexed (indexing lag in blocks; null when unknown). */
+  lag: number | null;
+  confirmations: number;
+  scope?: { label: string; unscoped: boolean };
+}
+/** GET /v1/admin/activity/issuers - per-clone issued/revoked/active counts. */
+export interface ActivityIssuer {
+  clone: string;
+  name?: string | null;
+  cloneName?: string | null;
+  recordType?: string | null;
+  issued: number;
+  revoked: number;
+  active: number;
+}
+export interface ActivityIssuersResp {
+  issuers: ActivityIssuer[];
+  scope?: { label: string };
+}
+/** One signer→business directory entry (`GET /v1/admin/directory`). Non-PII: business identity only. */
+export interface DirectorySigner {
+  signer: string;
+  business?: string;
+  businessId?: string;
+  entity: string;
+  recordTypes: string[];
+  verifyPurposes: string[];
+  domain: string;
+  applicationId: string;
+  status: IssuerApplicationStatus;
+}
+export interface DirectoryResp {
+  signers: DirectorySigner[];
+  total: number;
+}
+/** GET /v1/admin/governance/authority - the live on-chain authority map (PR-A; chain-health card). */
+export interface AuthorityRole {
+  target?: string;
+  role?: string;
+  owner?: string | null;
+  holder?: string | null;
+  pendingOwner?: string | null;
+  pendingTransfer?: { newAdmin: string; acceptSchedule: number } | null;
+  heldByHosted?: boolean | null;
+  capability?: string;
+}
+export interface GovernanceAuthority {
+  hostedSigner: string | null;
+  chainId: number;
+  factoryOwner: AuthorityRole;
+  whitelistAdmin: AuthorityRole;
+  defaultAdmin: AuthorityRole;
+}
+
 // ---- import verdict (3 authenticity pillars + contextual ownership) ----
 export type FragmentState = "VALID" | "INVALID" | "ERROR" | "NOT_APPLICABLE";
 /** Shape of ImportPullResp.verdict from the vet/groomer backend `verify::verdict_json`. */
