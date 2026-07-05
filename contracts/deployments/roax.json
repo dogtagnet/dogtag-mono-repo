@@ -29,6 +29,18 @@
     "executed_utc": "2026-07-02T10:47:08Z"
   },
   "admin": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
+  "_governance": {
+    "status": "HANDOVER EXECUTED (Phase-2). Governance authority moved off the original deployer EOA to the governance signer 'signer-1' 0x8E27E117... which now holds the IssuerRegistry DEFAULT_ADMIN_ROLE + WHITELIST_ADMIN AND is the DogTagIssuerFactory Ownable2Step owner. The 'admin' field above (0x119F8c7F...) is the HISTORICAL deployer EOA kept as the deploy record; it was stripped of all roles in Phase-2. Migration shipped as reviewable code and merged to mainline (PR #8): contracts/script/GovernanceMigration.sol + MigrateGovernance.s.sol (two-phase Begin/Accept) + test/GovernanceMigration.t.sol; runbook docs/GOVERNANCE_MIGRATION.md.",
+    "authority": "0x8E27E117...",
+    "authority_label": "signer-1 (governance signer)",
+    "former_deployer_eoa": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
+    "tooling_note": "The demo/relayer/admin ADMIN_PRIVATE_KEY (the control-plane GovernanceAction signer) MUST now be signer-1 0x8E27E117... - with the stripped deployer EOA any privileged write (createIssuer / whitelistFor / adminRevoke) correctly downgrades to a Disposition::Proposed payload instead of broadcasting. The private key value is captain-managed env, NEVER committed; only the address is recorded here (truncated, per convention).",
+    "authorities": {
+      "factory_owner": "DogTagIssuerFactory (Ownable2Step) -> 0x8E27E117... (createIssuer)",
+      "whitelist_admin": "IssuerRegistry WHITELIST_ADMIN -> 0x8E27E117... (whitelistFor / delistFor)",
+      "default_admin": "IssuerRegistry + VerificationRegistry + DogTagSBT DEFAULT_ADMIN -> 0x8E27E117... (adminRevoke / role-admin / verifier+consent-key swaps, behind the 2-3 day ACDAR timelock)"
+    }
+  },
   "chainId": 135,
   "demo_clones": {
     "DOG_PROFILE": "0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25",

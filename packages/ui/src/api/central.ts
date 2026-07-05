@@ -1,13 +1,19 @@
 import type {
+  AdminActivityIssuersResp,
   AdminLoginResp,
   ApiError,
   ApproveApplicationResp,
   BusinessesQuery,
   BusinessesResp,
+  CreateIssuerReq,
+  CreateIssuerResp,
   DelistApplicationResp,
+  GovernanceAuthorityResp,
   IssuerApplicationReq,
   IssuerApplicationResp,
   IssuerApplicationsResp,
+  PredictIssuerReq,
+  PredictIssuerResp,
   RegisterBusinessReq,
   RegisterBusinessResp,
   RejectApplicationResp,
@@ -115,6 +121,24 @@ export function createCentralClient(opts: CentralClientOptions) {
       request<RejectApplicationResp>("POST", `/v1/issuer-applications/${id}/reject`),
     delistApplication: (id: string) =>
       request<DelistApplicationResp>("POST", `/v1/issuer-applications/${id}/delist`),
+
+    // ---- control plane: factory deploys + governance authority (PR-A / PR-C) ----
+    /** POST /v1/admin/factory/predict — deterministic clone-address preview (read-only, no tx). */
+    predictIssuer: (body: PredictIssuerReq) =>
+      request<PredictIssuerResp>("POST", "/v1/admin/factory/predict", body),
+    /**
+     * POST /v1/admin/factory/issuers — deploy an issuer clone through the GovernanceAction layer.
+     * Returns `result.disposition === "executed"` (hosted key IS the factory owner → tx broadcast) or
+     * `"proposed"` (ownership moved to governance → calldata payload for out-of-band execution).
+     */
+    createIssuer: (body: CreateIssuerReq) =>
+      request<CreateIssuerResp>("POST", "/v1/admin/factory/issuers", body),
+    /** GET /v1/admin/governance/authority — live authority map (factory owner / WHITELIST_ADMIN / DEFAULT_ADMIN). */
+    governanceAuthority: () =>
+      request<GovernanceAuthorityResp>("GET", "/v1/admin/governance/authority"),
+    /** GET /v1/admin/activity/issuers — per-clone issued/revoked/active counts (needs the oversight indexer). */
+    listIssuers: () =>
+      request<AdminActivityIssuersResp>("GET", "/v1/admin/activity/issuers"),
   };
 }
 

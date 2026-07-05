@@ -401,6 +401,89 @@ export interface ConsentsResp {
   consents: CentralConsent[];
 }
 
+// ---- control plane: factory deploys + governance authority (PR-A backend / PR-C UI) ----
+/** POST /v1/admin/factory/predict — deterministic clone-address preview (no tx). */
+export interface PredictIssuerReq {
+  /** human label (`VACCINATION`) hashed server-side, or an already-hashed `0x`+64-hex key. */
+  recordType: string;
+  /** the `business` salt component; defaults server-side to the hosted signer (single-authority topology). */
+  business?: string;
+}
+export interface PredictIssuerResp {
+  /** the deterministic CREATE2 clone address for (recordType, business). */
+  predicted: string;
+  /** the keccak256(recordType) salt key actually used. */
+  recordTypeKey: string;
+  /** the resolved `business` salt component (echoed so the caller sees the default). */
+  business: string;
+  /** the factory the clone deploys from. */
+  factory: string;
+}
+/** POST /v1/admin/factory/issuers — deploy a clone (routed through the GovernanceAction layer). */
+export interface CreateIssuerReq {
+  name: string;
+  recordType: string;
+  business?: string;
+}
+/**
+ * The outcome of dispatching the deploy through the key-holder-agnostic `GovernanceAction` layer.
+ * `executed` — the hosted signer IS the factory owner, so `createIssuer` was signed and broadcast.
+ * `proposed` — factory ownership sits with the governance signer (post Phase-2), so nothing was
+ * broadcast; the `{target, calldata}` payload is handed to that holder to execute out-of-band.
+ */
+export type GovernanceDisposition =
+  | { disposition: "executed"; txHash: string; holder: string; summary: string }
+  | {
+      disposition: "proposed";
+      holder: string | null;
+      target: string;
+      calldata: string;
+      authority: string;
+      summary: string;
+    };
+export interface CreateIssuerResp {
+  predicted: string;
+  recordTypeKey: string;
+  business: string;
+  result: GovernanceDisposition;
+}
+/** One authority slot in the live on-chain authority map (GET /v1/admin/governance/authority). */
+export interface AuthoritySlot {
+  target: string;
+  /** the current holder if resolvable (Owner + DEFAULT_ADMIN), else null (ordinary roles). */
+  owner?: string | null;
+  holder?: string | null;
+  pendingOwner?: string | null;
+  pendingTransfer?: { newAdmin: string; acceptSchedule: number } | null;
+  /** whether the hosted operator key holds this authority (null when unknown/unreachable). */
+  heldByHosted: boolean | null;
+  role?: string;
+  capability: string;
+}
+export interface GovernanceAuthorityResp {
+  /** the hosted operator signer address (the key the control plane signs with). */
+  hostedSigner: string | null;
+  chainId: number;
+  factoryOwner: AuthoritySlot;
+  whitelistAdmin: AuthoritySlot;
+  defaultAdmin: AuthoritySlot;
+}
+/** One deployed `DogTagIssuer` clone with cross-issuer issuance counters (GET /v1/admin/activity/issuers). */
+export interface IssuerCloneStat {
+  clone: string;
+  /** name from the IssuerCreated event (may be null). */
+  name?: string | null;
+  /** authoritative business name from the admin signer→business directory (may be null). */
+  cloneName?: string | null;
+  recordType?: string | null;
+  issued: number;
+  revoked: number;
+  active: number;
+}
+export interface AdminActivityIssuersResp {
+  issuers: IssuerCloneStat[];
+}
+
 // ---- import verdict (3 authenticity pillars + contextual ownership) ----
 export type FragmentState = "VALID" | "INVALID" | "ERROR" | "NOT_APPLICABLE";
 /** Shape of ImportPullResp.verdict from the vet/groomer backend `verify::verdict_json`. */
