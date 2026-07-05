@@ -41,6 +41,7 @@ async fn main() {
             "0x0000000000000000000000000000000000000000",
         ),
         sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
+        factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         issuer_name: env("ISSUER_NAME", "DogTag Central"),
         issuer_domain: env("ISSUER_DOMAIN", "dogtag.example"),
         profile_document_store: env(
@@ -56,7 +57,12 @@ async fn main() {
             .filter(|h| !h.trim().is_empty())
             .map(|h| h.trim().to_string())
             .unwrap_or_else(|| admin_api::auth::hash_password(&admin_password)),
-        admin_signer_index: 0,
+        // Honor ADMIN_SIGNER_INDEX (was hardcoded 0). The signer at this index is unlocked below from
+        // ADMIN_PRIVATE_KEY and is the key the GovernanceAction dispatcher checks role-holdership for.
+        admin_signer_index: std::env::var("ADMIN_SIGNER_INDEX")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0),
     };
 
     // Fail-closed (audit H2): refuse to boot in production with an unset/dev-default ADMIN_PASSWORD or
@@ -200,14 +206,19 @@ async fn main() {
 /// restart- and instance-stable key. Malformed -> fail closed. Missing in a persistent deployment
 /// (`prod`, i.e. DEMO_MODE/VITE_DEMO_MODE unset) -> fail closed. Demo/local -> ephemeral key + warning.
 fn load_jwt_keys(prod: bool) -> JwtKeys {
-    match std::env::var("SHARE_JWT_SIGNING_KEY").ok().filter(|s| !s.trim().is_empty()) {
+    match std::env::var("SHARE_JWT_SIGNING_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
         Some(seed) => match JwtKeys::from_seed_hex(&seed) {
             Ok(k) => {
                 tracing::info!("loaded shared JWT signing key from SHARE_JWT_SIGNING_KEY");
                 k
             }
             Err(e) => {
-                tracing::error!("SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start");
+                tracing::error!(
+                    "SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start"
+                );
                 std::process::exit(1);
             }
         },

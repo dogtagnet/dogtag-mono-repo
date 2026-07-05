@@ -15,9 +15,43 @@ use serde_json::{json, Value};
 
 use crate::app::{self, AppState, DOG_PROFILE};
 use crate::auth::{self, keccak256_hex, ShareClaims};
-use crate::chain::{record_type_key, verify_key};
+use crate::chain::{
+    create_issuer_calldata, default_admin_role, record_type_key, verify_key, whitelist_admin_role,
+};
 use crate::crypto;
+use crate::governance::{self, Authority, GovernanceAction};
 use crate::store::*;
+
+/// The all-zero address as lowercase `0x..` — an unset/absent contract-address sentinel.
+const ZERO_ADDR: &str = "0x0000000000000000000000000000000000000000";
+
+/// Is `addr` the zero/unset address (config not wired)?
+fn is_zero_addr(addr: &str) -> bool {
+    addr.trim_start_matches("0x")
+        .chars()
+        .all(|c| c == '0' || c == 'x')
+}
+
+/// Is `s` a well-formed 20-byte `0x`-prefixed hex address? Guards against silent `parse_addr`
+/// coercion of a malformed value to the zero address.
+fn is_valid_addr(s: &str) -> bool {
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()),
+        None => false,
+    }
+}
+
+/// Coerce a recordType input into its bytes32 key: pass through an explicit `0x`+64-hex value, else
+/// `keccak256(label)` (the factory salt / whitelist key convention, matching the government clones).
+fn to_record_type_key(s: &str) -> String {
+    let t = s.trim();
+    if let Some(h) = t.strip_prefix("0x") {
+        if h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()) {
+            return format!("0x{}", h.to_lowercase());
+        }
+    }
+    record_type_key(t)
+}
 
 type Resp = (StatusCode, Json<Value>);
 
@@ -1237,9 +1271,216 @@ async fn fulfill_deletions(State(st): State<AppState>, headers: HeaderMap) -> Re
 /// Admin-console routes (admin-session gated). Mounted on the public listener by default; when
 /// `ADMIN_LOOPBACK_ONLY` is set, served on a separate 127.0.0.1 listener instead. These are the
 /// central operator's privileged actions (admin login + issuer whitelisting + erasure trigger).
+// ============================================================================================
+// Control plane — factory deploys + governance authority (plan PR-A)
+// ============================================================================================
+
+#[derive(Deserialize)]
+struct PredictIssuerReq {
+    #[serde(rename = "recordType")]
+    record_type: String,
+    /// The `business` salt component. Optional: defaults to the hosted signer address (single-authority
+    /// topology, matching the deployed government clones).
+    #[serde(default)]
+    business: Option<String>,
+}
+
+/// Resolve the `business` salt component: an explicit non-empty value (rejected if malformed), else
+/// the hosted signer address. A caller-provided value must parse as a 20-byte `0x` address so a typo
+/// is not silently coerced to the zero address by `parse_addr`.
+async fn resolve_business(st: &AppState, business: &Option<String>) -> Result<String, Resp> {
+    match business {
+        Some(b) if !b.trim().is_empty() => {
+            let t = b.trim();
+            if !is_valid_addr(t) {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "business must be a valid 0x-prefixed 20-byte address",
+                ));
+            }
+            Ok(t.to_lowercase())
+        }
+        _ => Ok(st
+            .chain
+            .signer_address(st.cfg.admin_signer_index)
+            .await
+            .unwrap_or_else(|| ZERO_ADDR.to_string())),
+    }
+}
+
+/// `POST /v1/admin/factory/predict` — the deterministic clone address for a (recordType, business)
+/// BEFORE any deploy (`salt = keccak256(recordType, business)`). Read-only; no tx.
+async fn factory_predict(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PredictIssuerReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    if is_zero_addr(&st.cfg.factory_addr) {
+        return err(StatusCode::BAD_REQUEST, "FACTORY_ADDR not configured");
+    }
+    let rt = to_record_type_key(&body.record_type);
+    let business = match resolve_business(&st, &body.business).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    match st
+        .chain
+        .predict_issuer(&st.cfg.factory_addr, &rt, &business)
+        .await
+    {
+        Ok(addr) => ok(json!({
+            "predicted": addr,
+            "recordTypeKey": rt,
+            "business": business,
+            "factory": st.cfg.factory_addr,
+        })),
+        Err(e) => err(StatusCode::BAD_GATEWAY, &format!("predictIssuer: {e}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateIssuerReq {
+    name: String,
+    #[serde(rename = "recordType")]
+    record_type: String,
+    #[serde(default)]
+    business: Option<String>,
+}
+
+/// `POST /v1/admin/factory/issuers` — deploy a new issuer clone from the factory. Routed through the
+/// `GovernanceAction` abstraction (Authority = the factory `Ownable` owner): if the hosted key IS the
+/// owner it broadcasts `createIssuer`; if ownership has moved to governance it returns the calldata
+/// proposal instead. Either way the deterministic clone address is returned up-front.
+async fn factory_create_issuer(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateIssuerReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    if is_zero_addr(&st.cfg.factory_addr) {
+        return err(StatusCode::BAD_REQUEST, "FACTORY_ADDR not configured");
+    }
+    if body.name.trim().is_empty() || body.record_type.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "name and recordType are required");
+    }
+    let rt = to_record_type_key(&body.record_type);
+    let business = match resolve_business(&st, &body.business).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    let predicted = match st
+        .chain
+        .predict_issuer(&st.cfg.factory_addr, &rt, &business)
+        .await
+    {
+        Ok(addr) => addr,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("predictIssuer: {e}")),
+    };
+    let action = GovernanceAction {
+        target: st.cfg.factory_addr.clone(),
+        calldata: create_issuer_calldata(&body.name, &rt, &business),
+        authority: Authority::Owner {
+            owner_target: st.cfg.factory_addr.clone(),
+        },
+        summary: format!(
+            "createIssuer(name={}, recordType={}, business={})",
+            body.name, body.record_type, business
+        ),
+    };
+    match governance::dispatch(st.chain.as_ref(), st.cfg.admin_signer_index, &action).await {
+        Ok(disp) => ok(json!({
+            "predicted": predicted,
+            "recordTypeKey": rt,
+            "business": business,
+            "result": disp,
+        })),
+        Err(e) => err(StatusCode::BAD_GATEWAY, &format!("createIssuer: {e}")),
+    }
+}
+
+/// `GET /v1/admin/governance/authority` — the live on-chain authority map (plan Part 2 + OPS-0): who
+/// holds the factory `Ownable` owner, the registry `WHITELIST_ADMIN`, and the registry
+/// `DEFAULT_ADMIN_ROLE`, whether the hosted operator key holds each, and any pending (timelocked)
+/// transfers. The Phase-2 DEFAULT_ADMIN → governance handover surfaces as `pendingDefaultAdmin`. All
+/// reads are best-effort: an unreachable/unconfigured target yields `null` rather than failing the map.
+async fn governance_authority(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let hosted = st.chain.signer_address(st.cfg.admin_signer_index).await;
+    let factory = &st.cfg.factory_addr;
+    let registry = &st.cfg.issuer_registry_addr;
+    let wl_role = whitelist_admin_role();
+    let da_role = default_admin_role();
+
+    // Factory Ownable owner + pending owner + does the hosted key own it.
+    let factory_owner = st.chain.ownable_owner(factory).await.ok();
+    let factory_pending_owner = st.chain.ownable_pending_owner(factory).await.ok();
+    let hosted_is_factory_owner = match (&hosted, &factory_owner) {
+        (Some(h), Some(o)) => Some(h.eq_ignore_ascii_case(o)),
+        _ => None,
+    };
+
+    // Registry DEFAULT_ADMIN holder + pending transfer (Phase-2) + hosted holdership.
+    let default_admin = st.chain.default_admin(registry).await.ok();
+    let (pending_admin, pending_eta) = st
+        .chain
+        .pending_default_admin(registry)
+        .await
+        .unwrap_or_else(|_| (ZERO_ADDR.to_string(), 0));
+    let pending_default_admin = if is_zero_addr(&pending_admin) {
+        None
+    } else {
+        Some(json!({ "newAdmin": pending_admin, "acceptSchedule": pending_eta }))
+    };
+    let hosted_has_default_admin = match &hosted {
+        Some(h) => st.chain.has_role(registry, &da_role, h).await.ok(),
+        None => None,
+    };
+    let hosted_has_whitelist_admin = match &hosted {
+        Some(h) => st.chain.has_role(registry, &wl_role, h).await.ok(),
+        None => None,
+    };
+
+    ok(json!({
+        "hostedSigner": hosted,
+        "chainId": crate::chain::ROAX_CHAIN_ID,
+        "factoryOwner": {
+            "target": factory,
+            "owner": factory_owner,
+            "pendingOwner": factory_pending_owner.filter(|a| !is_zero_addr(a)),
+            "heldByHosted": hosted_is_factory_owner,
+            "capability": "createIssuer",
+        },
+        "whitelistAdmin": {
+            "target": registry,
+            "role": wl_role,
+            "heldByHosted": hosted_has_whitelist_admin,
+            "capability": "whitelistFor / delistFor",
+        },
+        "defaultAdmin": {
+            "target": registry,
+            "role": da_role,
+            "holder": default_admin,
+            "pendingTransfer": pending_default_admin,
+            "heldByHosted": hosted_has_default_admin,
+            "capability": "adminRevoke / role-admin / verifier+consent-key swaps",
+        },
+    }))
+}
+
 pub fn admin_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/admin/login", post(admin_login))
+        // control plane: factory deploys + governance authority map (PR-A)
+        .route("/v1/admin/factory/predict", post(factory_predict))
+        .route("/v1/admin/factory/issuers", post(factory_create_issuer))
+        .route("/v1/admin/governance/authority", get(governance_authority))
         // issuer whitelisting (admin-session writes)
         .route(
             "/v1/issuer-applications/:id/approve",
