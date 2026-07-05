@@ -16,7 +16,8 @@ use serde_json::{json, Value};
 use crate::app::{self, AppState, DOG_PROFILE};
 use crate::auth::{self, keccak256_hex, ShareClaims};
 use crate::chain::{
-    create_issuer_calldata, default_admin_role, record_type_key, verify_key, whitelist_admin_role,
+    create_issuer_calldata, default_admin_role, delist_for_calldata, grant_issuer_role_calldata,
+    record_type_key, verify_key, whitelist_admin_role, whitelist_for_calldata,
 };
 use crate::crypto;
 use crate::governance::{self, Authority, GovernanceAction};
@@ -1475,6 +1476,221 @@ async fn governance_authority(State(st): State<AppState>, headers: HeaderMap) ->
 }
 
 // ============================================================================================
+// PR-E — direct whitelist management (grant / revoke) as a standalone control-plane action.
+// Promotes the read-only whitelist viewer to a management console: an operator whitelists or delists
+// an arbitrary (signer, capability) pair on demand — decoupled from the issuer-application lifecycle
+// (key rotation, ad-hoc grants, incident response). Every write routes through the `GovernanceAction`
+// abstraction (Authority = the registry WHITELIST_ADMIN role, and the SBT DEFAULT_ADMIN for the
+// DOG_PROFILE ISSUER grant), so each action executes directly while the hosted key holds the
+// authority and flips to a proposal the moment that role moves to the governance signer (Phase-2) —
+// never assuming the old EOA holds it.
+// ============================================================================================
+
+#[derive(Deserialize)]
+struct WhitelistActionReq {
+    /// The signer address the capability is granted to / revoked from.
+    signer: String,
+    /// The issuance record type (a label like "VACCINATION" or an explicit `0x`+64-hex key). Optional:
+    /// a grant/revoke may target only verify purposes.
+    #[serde(rename = "recordType", default)]
+    record_type: Option<String>,
+    /// Optional VERIFY:<purpose> capabilities (each keyed via `verify_key`), mirroring approval.
+    #[serde(rename = "verifyPurposes", default)]
+    verify_purposes: Vec<String>,
+}
+
+/// Build the WHITELIST_ADMIN `GovernanceAction`s for a grant/revoke over `(record_type?, verify_purposes)`.
+/// `grant=true` encodes `whitelistFor`, else `delistFor`. Returns an empty vec when no capability is
+/// named (the caller rejects that as a 400). `signer` is assumed already validated + lowercased.
+fn whitelist_actions(
+    registry: &str,
+    signer: &str,
+    record_type: &Option<String>,
+    verify_purposes: &[String],
+    grant: bool,
+) -> Vec<GovernanceAction> {
+    let verb = if grant { "whitelistFor" } else { "delistFor" };
+    let calldata = |key: &str| -> String {
+        if grant {
+            whitelist_for_calldata(key, signer)
+        } else {
+            delist_for_calldata(key, signer)
+        }
+    };
+    let role_authority = || Authority::Role {
+        role_target: registry.to_string(),
+        role: whitelist_admin_role(),
+        default_admin: false,
+    };
+    let mut actions = Vec::new();
+    if let Some(rt) = record_type {
+        let rt = rt.trim();
+        if !rt.is_empty() {
+            actions.push(GovernanceAction {
+                target: registry.to_string(),
+                calldata: calldata(&to_record_type_key(rt)),
+                authority: role_authority(),
+                summary: format!("{verb}(recordType={rt}, signer={signer})"),
+            });
+        }
+    }
+    for purpose in verify_purposes {
+        let p = purpose.trim();
+        if p.is_empty() {
+            continue;
+        }
+        actions.push(GovernanceAction {
+            target: registry.to_string(),
+            calldata: calldata(&verify_key(p)),
+            authority: role_authority(),
+            summary: format!("{verb}(VERIFY:{p}, signer={signer})"),
+        });
+    }
+    actions
+}
+
+/// Dispatch each action in order, short-circuiting to a 502 on the first chain error. A dispatched
+/// action yields a `Disposition` (executed with a tx hash, or proposed with the calldata payload).
+async fn dispatch_all(
+    st: &AppState,
+    actions: &[GovernanceAction],
+) -> Result<Vec<governance::Disposition>, Resp> {
+    let mut out = Vec::with_capacity(actions.len());
+    for a in actions {
+        match governance::dispatch(st.chain.as_ref(), st.cfg.admin_signer_index, a).await {
+            Ok(d) => out.push(d),
+            Err(e) => return Err(err(StatusCode::BAD_GATEWAY, &format!("{}: {e}", a.summary))),
+        }
+    }
+    Ok(out)
+}
+
+/// `POST /v1/admin/whitelist/grant` — grant an issuer/verifier capability directly. Whitelists the
+/// signer for the record type + each verify purpose, and (for DOG_PROFILE) grants DogTagSBT
+/// ISSUER_ROLE so it can mint — the same machinery `approve_application` runs, but for one signer and
+/// decoupled from the application queue. Each write is a `GovernanceAction` (executed if the hosted
+/// key holds the authority, else proposed).
+async fn whitelist_grant(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<WhitelistActionReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    if !is_valid_addr(body.signer.trim()) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "signer must be a valid 0x-prefixed 20-byte address",
+        );
+    }
+    let signer = body.signer.trim().to_lowercase();
+    let actions = whitelist_actions(
+        &st.cfg.issuer_registry_addr,
+        &signer,
+        &body.record_type,
+        &body.verify_purposes,
+        true,
+    );
+    if actions.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "at least one of recordType or verifyPurposes is required",
+        );
+    }
+    let results = match dispatch_all(&st, &actions).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    // DOG_PROFILE onboarding: also grant DogTagSBT.ISSUER_ROLE (mint rights). Gated by the SBT's
+    // DEFAULT_ADMIN authority (a distinct key post-Phase-2), so it too routes through GovernanceAction.
+    // Idempotent: skipped when the signer already holds the role.
+    let is_dog_tag_issuer = body
+        .record_type
+        .as_deref()
+        .map(|rt| rt.trim().eq_ignore_ascii_case(DOG_PROFILE))
+        .unwrap_or(false);
+    let issuer_role = if is_dog_tag_issuer {
+        match st.chain.has_issuer_role(&st.cfg.sbt_addr, &signer).await {
+            Ok(true) => json!({ "status": "alreadyHeld" }),
+            Ok(false) => {
+                let action = GovernanceAction {
+                    target: st.cfg.sbt_addr.clone(),
+                    calldata: grant_issuer_role_calldata(&signer),
+                    authority: Authority::Role {
+                        role_target: st.cfg.sbt_addr.clone(),
+                        role: default_admin_role(),
+                        default_admin: true,
+                    },
+                    summary: format!("grantRole(ISSUER, signer={signer})"),
+                };
+                match governance::dispatch(st.chain.as_ref(), st.cfg.admin_signer_index, &action)
+                    .await
+                {
+                    Ok(d) => json!(d),
+                    Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}")),
+                }
+            }
+            Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("hasRole(ISSUER): {e}")),
+        }
+    } else {
+        Value::Null
+    };
+
+    ok(json!({
+        "signer": signer,
+        "recordType": body.record_type,
+        "actions": results,
+        "issuerRole": issuer_role,
+    }))
+}
+
+/// `POST /v1/admin/whitelist/revoke` — delist an issuer/verifier capability directly (the inverse of
+/// grant): delists the record type + each verify purpose via `GovernanceAction` (WHITELIST_ADMIN).
+/// Does NOT revoke DogTagSBT.ISSUER_ROLE or on-chain roots — those are DEFAULT_ADMIN governance
+/// actions (`adminRevoke`) surfaced on the Governance page (plan PR-F), not here. Mirrors the existing
+/// `delist_application` semantics (delistFor only).
+async fn whitelist_revoke(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<WhitelistActionReq>,
+) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    if !is_valid_addr(body.signer.trim()) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "signer must be a valid 0x-prefixed 20-byte address",
+        );
+    }
+    let signer = body.signer.trim().to_lowercase();
+    let actions = whitelist_actions(
+        &st.cfg.issuer_registry_addr,
+        &signer,
+        &body.record_type,
+        &body.verify_purposes,
+        false,
+    );
+    if actions.is_empty() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "at least one of recordType or verifyPurposes is required",
+        );
+    }
+    let results = match dispatch_all(&st, &actions).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    ok(json!({
+        "signer": signer,
+        "recordType": body.record_type,
+        "actions": results,
+    }))
+}
+
+// ============================================================================================
 // PR-B — oversight-indexer consumption + signer→business directory (the "see on-chain activity"
 // data layer). All reads are UNSCOPED (cross-issuer) and non-PII: the admin/government sees every
 // issuer's events, named via the admin business directory, never any role's PII Mongo.
@@ -1670,6 +1886,9 @@ pub fn admin_router(state: AppState) -> Router {
         .route("/v1/admin/factory/predict", post(factory_predict))
         .route("/v1/admin/factory/issuers", post(factory_create_issuer))
         .route("/v1/admin/governance/authority", get(governance_authority))
+        // PR-E: direct whitelist management (grant / revoke) via GovernanceAction
+        .route("/v1/admin/whitelist/grant", post(whitelist_grant))
+        .route("/v1/admin/whitelist/revoke", post(whitelist_revoke))
         // PR-B: unscoped oversight-indexer consumption + signer→business directory
         .route("/v1/admin/activity", get(admin_activity))
         .route("/v1/admin/activity/stats", get(admin_activity_stats))

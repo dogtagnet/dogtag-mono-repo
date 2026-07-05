@@ -20,7 +20,7 @@ const NAV: NavItem[] = [
   { key: "onboard", href: "/onboard", label: "Onboard issuer", icon: Rocket },
   { key: "businesses", href: "/businesses", label: "Business registry", icon: Building2 },
   { key: "applications", href: "/applications", label: "Issuer applications", icon: ListChecks },
-  { key: "whitelist", href: "/whitelist", label: "Whitelist viewer", icon: ShieldCheck },
+  { key: "whitelist", href: "/whitelist", label: "Whitelist", icon: ShieldCheck },
 ];
 
 function Brand() {
