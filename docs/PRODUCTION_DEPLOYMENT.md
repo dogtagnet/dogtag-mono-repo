@@ -350,7 +350,10 @@ cast wallet address --private-key <ADMIN_PRIVATE_KEY>   # confirm the address ma
 issuers / mint).
 
 **STOP if** `ADMIN_ADDRESS` is the demo deployer (`0x119F8c7F…`) or has zero balance → onboarding will
-either reuse the demo key in production or fail with out-of-gas. Use a dedicated funded EOA.
+either reuse the demo key in production or fail with out-of-gas. Use a dedicated funded EOA that holds
+the on-chain admin roles. (On the **live ROAX testnet** that authority is governance signer-1
+`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` - Governance Phase-2 (2026-07-05, block 123835) stripped the
+`0x119F…` deployer EOA of all roles, so it can no longer whitelist or mint.)
 
 ### 4.3 Edge-lock the admin surface (Caddy)
 

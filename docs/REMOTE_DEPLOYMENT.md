@@ -180,8 +180,8 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `OPERATOR_PASSWORD` | vet, groomer | operator login (`POST /login`) | `operator` | **secret** → `openssl rand -hex 32` |
 | `ADMIN_PASSWORD` | all | admin-session login (custody/console) | `admin` | **secret** → `openssl rand -hex 32` |
 | `CENTRAL_HMAC_SECRET` | all | central↔business HMAC; **identical across all stacks** | `dev-central-hmac-secret` | **secret** → `openssl rand -hex 32` (same value everywhere) |
-| `ADMIN_PRIVATE_KEY` | admin | on-chain signer (`whitelistFor` / SBT `mint` / factory `createIssuer`); its holdership of each authority is what the `GovernanceAction` dispatcher checks | from `contracts/.env` | **secret** — dedicated **funded** EOA key |
-| `ADMIN_ADDRESS` | admin | address of `ADMIN_PRIVATE_KEY` | from `contracts/.env` | derive from the key |
+| `ADMIN_PRIVATE_KEY` | admin | on-chain signer (`whitelistFor` / SBT `mint` / factory `createIssuer`); its holdership of each authority is what the `GovernanceAction` dispatcher checks. Since Governance Phase-2 (2026-07-05, block 123835) this MUST be **governance signer-1** - the old deployer EOA `0x119F…` was stripped of all roles | from `contracts/.env` (`GOVERNANCE_PRIVATE_KEY`) | **secret** - dedicated **funded** signer-1 key |
+| `ADMIN_ADDRESS` | admin | address of `ADMIN_PRIVATE_KEY` - expected governance signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | from `contracts/.env` | derive from the key |
 | `BUSINESS_ID` | vet, groomer | central registry id | `biz-vet-local` / `biz-groomer-local` | real id |
 | `BUSINESS_TYPE` | groomer | run `vet-api` as groomer | `groomer` | `groomer` |
 | `CENTRAL_BASE_URL` | vet, groomer | central api base for HMAC events | `http://localhost:39742` | `https://api.<DOMAIN>` (your admin stack) |

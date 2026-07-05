@@ -17,12 +17,15 @@
 #
 #   VERIFY_PURPOSES="grooming_intake" OWNER_WALLET=0x<ownerWallet> scripts/demo-bootstrap.sh 0x<signer>
 #
-# Uses the deployer key in contracts/.env (registry WHITELIST_ADMIN + PLASMA source + factory owner).
+# Uses governance signer-1's key in contracts/.env (registry WHITELIST_ADMIN + factory owner + PLASMA
+# source). Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved admin authority off the
+# old deployer EOA 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 (now zero roles) onto governance signer-1
+# 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2; set GOVERNANCE_PRIVATE_KEY (signer-1) in contracts/.env.
 set -euo pipefail
 SIGNER="${1:?usage: demo-bootstrap.sh <signerAddress>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 set -a; source "$ROOT/contracts/.env"; set +a
-RPC="$ROAX_RPC"; PK="$DEPLOYER_PRIVATE_KEY"
+RPC="$ROAX_RPC"; PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - the old deployer EOA 0x119F… holds zero roles post-Phase-2 and its whitelistFor/grantRole txs would revert}"
 IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c   # IssuerRegistry (deployments/roax.json)
 SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233  # DogTagSBT (the vet mints DOG_PROFILE here)
 

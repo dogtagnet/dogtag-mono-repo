@@ -94,56 +94,68 @@ never committed** — generate them with `openssl rand -hex 32` (REMOTE/PROD).
 
 ### 2.1 `contracts/.env` — funded deployer (LOCAL only)
 
-LOCAL sources `contracts/.env` and wires its key as the central stack's on-chain admin signer
-(it is also read by `demo-bootstrap.sh` and `demo-prepare-phone.sh`). **`contracts/.env` is
-LOCAL-only** — REMOTE/PROD use `stacks/admin/.env`'s `ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS` instead.
+LOCAL sources `contracts/.env` and wires its **governance signer-1** key as the central stack's on-chain
+admin signer (it is also read by `demo-bootstrap.sh`, `demo-prepare-phone.sh`, and the `e2e-*.sh`
+harnesses). Since Governance Phase-2 (executed on-chain 2026-07-05, block 123835) the demo tooling's admin
+authority is **governance signer-1** (`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`) - Phase-2 stripped the
+old deployer EOA `0x119F8c7F…` of ALL roles, so it can no longer whitelist / mint / own the factory. The
+`DEPLOYER_*` key is retained only for `forge` contract deploys and the ceremony verifier-swap scripts.
+**`contracts/.env` is LOCAL-only** - REMOTE/PROD use `stacks/admin/.env`'s `ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS`
+(also governance signer-1) instead.
 
 | Key | Purpose | How to get it | Secret? |
 |---|---|---|---|
-| `DEPLOYER_PRIVATE_KEY` | central stack's on-chain signer (whitelistFor / mint) + PLASMA source for bootstrap | a ROAX EOA private key (`0x…`, 64 hex) — must be **FUNDED with PLASMA** | **YES — never commit** |
+| `GOVERNANCE_PRIVATE_KEY` | the demo tooling's on-chain admin signer - **governance signer-1** (whitelistFor / SBT mint / factory createIssuer) + PLASMA gas source | signer-1's private key (`0x…`, 64 hex) - must be **FUNDED with PLASMA**; its address must be `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | **YES - never commit** |
+| `GOVERNANCE_ADDRESS` | the address of `GOVERNANCE_PRIVATE_KEY` (governance signer-1) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` (derive: `cast wallet address --private-key <GOVERNANCE_PRIVATE_KEY>`) | no |
+| `DEPLOYER_PRIVATE_KEY` | deploying EOA for `forge` contract deploys / the ceremony verifier-swap scripts only - **NOT** admin ops (Phase-2 stripped it of all roles) | a funded ROAX EOA private key (`0x…`, 64 hex) | **YES - never commit** |
 | `DEPLOYER_ADDRESS` | the address of `DEPLOYER_PRIVATE_KEY` | derive: `cast wallet address --private-key <DEPLOYER_PRIVATE_KEY>` | no |
 | `ROAX_RPC` | chain RPC | `https://devrpc.roax.net` | no |
 
 `contracts/.env` is **gitignored** (`.gitignore:24`) and there is **no `contracts/.env.example`** —
-so a fresh clone will NOT have it and must create it with exactly these three keys. **But first check
+so a fresh clone will NOT have it and must create it with these keys. **But first check
 whether it already exists** (e.g. the shared demo setup on this machine):
 
 > **If `contracts/.env` already exists, do NOT overwrite it.** A pre-existing file may hold a
-> **throwaway TESTNET deployer key** from the shared demo setup. Instead of recreating it, ensure its
-> three keys point at **YOUR funded EOA** (edit `DEPLOYER_PRIVATE_KEY` / `DEPLOYER_ADDRESS` in place,
-> keep `ROAX_RPC`). Any key that ships with such a setup is a **throwaway testnet key** — never fund it
-> with anything you care about, and never reuse it in production.
+> **throwaway TESTNET key** from the shared demo setup, and may predate Phase-2 (only `DEPLOYER_*`). Add
+> `GOVERNANCE_PRIVATE_KEY` / `GOVERNANCE_ADDRESS` (governance signer-1) if missing, and ensure the keys
+> point at **YOUR funded EOAs** (edit in place, keep `ROAX_RPC`). Any key that ships with such a setup is
+> a **throwaway testnet key** - never fund it with anything you care about, and never reuse it in production.
 
-Only if the file is **absent**, create it (run from the repo root; fill in a FUNDED ROAX EOA private key):
+Only if the file is **absent**, create it (run from the repo root; fill in the FUNDED ROAX EOA private keys):
 
 ```bash
 # Run from the repo root. ONLY if contracts/.env does not already exist.
 cat > contracts/.env <<'EOF'
+# Governance signer-1 - the demo tooling's admin authority since Phase-2 (2026-07-05, block 123835).
+GOVERNANCE_PRIVATE_KEY=0x<GOVERNANCE_SIGNER1_PRIVATE_KEY>
+GOVERNANCE_ADDRESS=0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2
+# Deploying EOA - only for `forge` deploys / ceremony scripts (no admin roles after Phase-2).
 DEPLOYER_PRIVATE_KEY=0x<YOUR_FUNDED_ROAX_EOA_PRIVATE_KEY>
 DEPLOYER_ADDRESS=0x<ITS_ADDRESS>
 ROAX_RPC=https://devrpc.roax.net
 EOF
-chmod 600 contracts/.env   # contains a private key
+chmod 600 contracts/.env   # contains private keys
 ```
 
-**Verify the deployer is funded** (gas token is PLASMA; ROAX uses legacy gas):
+**Verify the governance signer is funded** (it is the key the demo tooling whitelists / mints with; gas
+token is PLASMA; ROAX uses legacy gas):
 
 ```bash
 # Load the address from contracts/.env, then read its on-chain balance.
 set -a; source contracts/.env; set +a
-cast balance "$DEPLOYER_ADDRESS" --rpc-url https://devrpc.roax.net
+cast balance "$GOVERNANCE_ADDRESS" --rpc-url https://devrpc.roax.net
 ```
 
 **Verify.** Output is a balance in wei **greater than 0**, e.g. `500000000000000000`. Convert to a
-human number with `cast balance "$DEPLOYER_ADDRESS" --rpc-url https://devrpc.roax.net --ether`.
+human number with `cast balance "$GOVERNANCE_ADDRESS" --rpc-url https://devrpc.roax.net --ether`.
 
 **STOP if** the balance is `0` (or the command errors):
 - **Symptom:** `cast balance` prints `0`, or `error sending request` / a connection error.
-- **Likely cause:** the EOA has no PLASMA, or `DEPLOYER_ADDRESS` is wrong, or the RPC is unreachable.
-- **Fix:** fund the EOA with PLASMA on ROAX testnet (faucet / transfer) before continuing — a
-  zero-balance deployer cannot whitelist, mint, or run `demo-bootstrap.sh`. Re-check the address with
-  `cast wallet address --private-key "$DEPLOYER_PRIVATE_KEY"`. Confirm the RPC with
-  `cast chain-id --rpc-url https://devrpc.roax.net` → must print `135`.
+- **Likely cause:** the signer has no PLASMA, or `GOVERNANCE_ADDRESS` is wrong, or the RPC is unreachable.
+- **Fix:** fund governance signer-1 with PLASMA on ROAX testnet (faucet / transfer) before continuing - a
+  zero-balance admin signer cannot whitelist, mint, or run `demo-bootstrap.sh`. Re-check the address with
+  `cast wallet address --private-key "$GOVERNANCE_PRIVATE_KEY"` → must be `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`.
+  Confirm the RPC with `cast chain-id --rpc-url https://devrpc.roax.net` → must print `135`.
 
 ### 2.2 `circuits/build/` — the proving artifacts
 
