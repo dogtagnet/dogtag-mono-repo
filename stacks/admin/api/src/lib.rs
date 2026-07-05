@@ -21,6 +21,7 @@ pub mod chain;
 pub mod crypto;
 pub mod dns;
 pub mod erasure;
+pub mod governance;
 pub mod routes;
 pub mod startup;
 pub mod store;

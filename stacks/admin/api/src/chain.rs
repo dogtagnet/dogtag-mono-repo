@@ -31,6 +31,39 @@ sol! {
         function grantRole(bytes32 role, address account) external;
         function hasRole(bytes32 role, address account) external view returns (bool);
     }
+
+    #[sol(rpc)]
+    contract IDogTagIssuerFactory {
+        // Ownable2Step onlyOwner: deploy a deterministic EIP-1167 issuer clone. salt = keccak256(recordType, business).
+        function createIssuer(string name, bytes32 recordType, address business) external returns (address clone);
+        function predictIssuer(bytes32 recordType, address business) external view returns (address);
+        function isClone(address) external view returns (bool);
+        function rootIssuer(bytes32 root) external view returns (address);
+        // Ownable2Step surface — the factory owner is the createIssuer authority (distinct from the registry admin).
+        function owner() external view returns (address);
+        function pendingOwner() external view returns (address);
+    }
+
+    // AccessControlDefaultAdminRules surface on the IssuerRegistry / VerificationRegistry: read the live
+    // DEFAULT_ADMIN holder + any pending (timelocked) transfer, and probe arbitrary role membership.
+    #[sol(rpc)]
+    contract IAccessControlAdmin {
+        function hasRole(bytes32 role, address account) external view returns (bool);
+        function defaultAdmin() external view returns (address);
+        function pendingDefaultAdmin() external view returns (address newAdmin, uint48 acceptSchedule);
+    }
+}
+
+/// `IssuerRegistry.WHITELIST_ADMIN = keccak256("WHITELIST_ADMIN")` — the role gating whitelistFor/delistFor.
+pub fn whitelist_admin_role() -> String {
+    use alloy::primitives::keccak256;
+    let h: FixedBytes<32> = keccak256(b"WHITELIST_ADMIN");
+    format!("0x{}", hex::encode(h.as_slice()))
+}
+
+/// `DEFAULT_ADMIN_ROLE = 0x00…00` — the OpenZeppelin AccessControl default admin role (bytes32 zero).
+pub fn default_admin_role() -> String {
+    format!("0x{}", hex::encode([0u8; 32]))
 }
 
 /// `DogTagSBT.ISSUER_ROLE = keccak256("ISSUER")` — the role that gates `mint`.
@@ -138,6 +171,54 @@ pub trait ChainClient: Send + Sync {
 
     /// DogTagSBT.hasRole(ISSUER_ROLE, account) — read so approve can skip an already-granted role.
     async fn has_issuer_role(&self, sbt_addr: &str, account: &str) -> Result<bool, ChainError>;
+
+    // ---- factory / governance surface (PR-A) --------------------------------------------------
+
+    /// The lowercase `0x..` address of the signer registered at `index`, if any. The `GovernanceAction`
+    /// dispatcher uses this to decide whether the hosted key HOLDS the required authority (sign-and-send)
+    /// or whether it belongs to a governance signer (propose). Alloy derives it from the private key.
+    async fn signer_address(&self, index: u32) -> Option<String>;
+
+    /// Broadcast an arbitrary `{target, calldata}` from the signer at `account_index`. The generic
+    /// escape hatch the `GovernanceAction` dispatcher and `createIssuer` share (mirrors sign_and_send).
+    async fn send_action(
+        &self,
+        account_index: u32,
+        target: &str,
+        calldata: &str,
+    ) -> Result<SentTx, ChainError>;
+
+    /// DogTagIssuerFactory.predictIssuer(recordType, business) — the deterministic clone address
+    /// (`salt = keccak256(recordType, business)`), exact and computable BEFORE any deploy.
+    async fn predict_issuer(
+        &self,
+        factory_addr: &str,
+        record_type: &str,
+        business: &str,
+    ) -> Result<String, ChainError>;
+
+    /// DogTagIssuerFactory.isClone(addr) — was `addr` deployed by this factory.
+    async fn is_clone(&self, factory_addr: &str, addr: &str) -> Result<bool, ChainError>;
+
+    /// DogTagIssuerFactory.rootIssuer(root) — the write-once root→clone binding (zero addr if unset).
+    async fn root_issuer(&self, factory_addr: &str, root: &str) -> Result<String, ChainError>;
+
+    /// Ownable/Ownable2Step `owner()` on `addr` (e.g. the factory's createIssuer authority).
+    async fn ownable_owner(&self, addr: &str) -> Result<String, ChainError>;
+
+    /// Ownable2Step `pendingOwner()` — the queued (un-accepted) owner of a two-step transfer.
+    async fn ownable_pending_owner(&self, addr: &str) -> Result<String, ChainError>;
+
+    /// AccessControl `hasRole(role, account)` on `addr` (registry WHITELIST_ADMIN / DEFAULT_ADMIN probe).
+    async fn has_role(&self, addr: &str, role: &str, account: &str) -> Result<bool, ChainError>;
+
+    /// AccessControlDefaultAdminRules `defaultAdmin()` — the current DEFAULT_ADMIN holder.
+    async fn default_admin(&self, addr: &str) -> Result<String, ChainError>;
+
+    /// AccessControlDefaultAdminRules `pendingDefaultAdmin()` — `(newAdmin, acceptSchedule)`. The
+    /// Phase-2 DEFAULT_ADMIN → governance handover surfaces here (newAdmin = governance signer, schedule
+    /// = unix ETA). `(zero addr, 0)` when no transfer is pending.
+    async fn pending_default_admin(&self, addr: &str) -> Result<(String, u64), ChainError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -154,6 +235,20 @@ struct MemChainInner {
     issuer_roles: std::collections::HashSet<(String, String)>,
     /// admin signer addresses by account index.
     signers: HashMap<u32, String>,
+    /// factory_addr -> Ownable owner.
+    factory_owner: HashMap<String, String>,
+    /// factory_addr -> Ownable2Step pending owner.
+    factory_pending_owner: HashMap<String, String>,
+    /// (target_addr, role, account) holding an AccessControl role.
+    roles: std::collections::HashSet<(String, String, String)>,
+    /// target_addr -> AccessControlDefaultAdminRules current DEFAULT_ADMIN.
+    default_admin: HashMap<String, String>,
+    /// target_addr -> (pending new DEFAULT_ADMIN, unix acceptSchedule).
+    pending_default_admin: HashMap<String, (String, u64)>,
+    /// (factory_addr, clone_addr) deployed by the factory.
+    clones: std::collections::HashSet<(String, String)>,
+    /// (factory_addr, root) -> issuing clone (write-once).
+    root_issuer: HashMap<(String, String), String>,
     nonce: u64,
 }
 
@@ -178,6 +273,60 @@ impl MemChain {
         g.nonce += 1;
         format!("0x{:064x}", g.nonce)
     }
+
+    /// Seed the Ownable owner of a factory (test harness).
+    pub fn set_factory_owner(&self, factory_addr: &str, owner: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .factory_owner
+            .insert(factory_addr.to_lowercase(), owner.to_lowercase());
+    }
+    /// Seed a pending Ownable2Step owner transfer (test harness).
+    pub fn set_factory_pending_owner(&self, factory_addr: &str, pending: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .factory_pending_owner
+            .insert(factory_addr.to_lowercase(), pending.to_lowercase());
+    }
+    /// Grant an AccessControl role to `account` on `target` (test harness).
+    pub fn set_role(&self, target: &str, role: &str, account: &str) {
+        self.inner.lock().unwrap().roles.insert((
+            target.to_lowercase(),
+            role.to_lowercase(),
+            account.to_lowercase(),
+        ));
+    }
+    /// Seed the current DEFAULT_ADMIN of a registry (test harness).
+    pub fn set_default_admin(&self, target: &str, admin: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .default_admin
+            .insert(target.to_lowercase(), admin.to_lowercase());
+    }
+    /// Seed a pending DEFAULT_ADMIN transfer (the Phase-2 handover shape) (test harness).
+    pub fn set_pending_default_admin(&self, target: &str, new_admin: &str, schedule: u64) {
+        self.inner
+            .lock()
+            .unwrap()
+            .pending_default_admin
+            .insert(target.to_lowercase(), (new_admin.to_lowercase(), schedule));
+    }
+}
+
+/// Deterministic clone-address preview for MemChain: last 20 bytes of `keccak256(recordType ++
+/// business ++ factory)`. NOT the real CREATE2 address (AlloyChain reads the exact on-chain
+/// `predictIssuer`), but stable across predict/create so the in-memory flow is coherent and testable.
+fn mem_predict_clone(factory_addr: &str, record_type: &str, business: &str) -> String {
+    use alloy::primitives::keccak256;
+    let mut buf = Vec::new();
+    buf.extend_from_slice(parse_b256(record_type).as_slice());
+    buf.extend_from_slice(parse_addr(business).as_slice());
+    buf.extend_from_slice(parse_addr(factory_addr).as_slice());
+    let h = keccak256(&buf);
+    format!("0x{}", hex::encode(&h.as_slice()[12..32]))
 }
 
 #[async_trait]
@@ -309,6 +458,94 @@ impl ChainClient for MemChain {
         Ok(g.issuer_roles
             .contains(&(sbt_addr.to_lowercase(), account.to_lowercase())))
     }
+
+    async fn signer_address(&self, index: u32) -> Option<String> {
+        self.inner.lock().unwrap().signers.get(&index).cloned()
+    }
+
+    async fn send_action(
+        &self,
+        account_index: u32,
+        _target: &str,
+        _calldata: &str,
+    ) -> Result<SentTx, ChainError> {
+        let mut g = self.inner.lock().unwrap();
+        g.signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
+        let tx_hash = Self::next_tx(&mut g);
+        Ok(SentTx { tx_hash })
+    }
+
+    async fn predict_issuer(
+        &self,
+        factory_addr: &str,
+        record_type: &str,
+        business: &str,
+    ) -> Result<String, ChainError> {
+        Ok(mem_predict_clone(factory_addr, record_type, business))
+    }
+
+    async fn is_clone(&self, factory_addr: &str, addr: &str) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.clones
+            .contains(&(factory_addr.to_lowercase(), addr.to_lowercase())))
+    }
+
+    async fn root_issuer(&self, factory_addr: &str, root: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.root_issuer
+            .get(&(factory_addr.to_lowercase(), root.to_lowercase()))
+            .cloned()
+            .unwrap_or_else(zero_addr))
+    }
+
+    async fn ownable_owner(&self, addr: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.factory_owner
+            .get(&addr.to_lowercase())
+            .cloned()
+            .unwrap_or_else(zero_addr))
+    }
+
+    async fn ownable_pending_owner(&self, addr: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.factory_pending_owner
+            .get(&addr.to_lowercase())
+            .cloned()
+            .unwrap_or_else(zero_addr))
+    }
+
+    async fn has_role(&self, addr: &str, role: &str, account: &str) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.roles.contains(&(
+            addr.to_lowercase(),
+            role.to_lowercase(),
+            account.to_lowercase(),
+        )))
+    }
+
+    async fn default_admin(&self, addr: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.default_admin
+            .get(&addr.to_lowercase())
+            .cloned()
+            .unwrap_or_else(zero_addr))
+    }
+
+    async fn pending_default_admin(&self, addr: &str) -> Result<(String, u64), ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.pending_default_admin
+            .get(&addr.to_lowercase())
+            .cloned()
+            .unwrap_or_else(|| (zero_addr(), 0)))
+    }
+}
+
+/// The canonical all-zero address as lowercase `0x..` (unset owner / admin / root sentinel).
+fn zero_addr() -> String {
+    format!("0x{}", hex::encode([0u8; 20]))
 }
 
 /// Normalize a dogTagId (decimal or hex) into a canonical decimal string so MemChain keys collide
@@ -344,6 +581,18 @@ pub fn grant_issuer_role_calldata(grantee: &str) -> String {
     let call = IDogTagSBT::grantRoleCall {
         role: parse_b256(&issuer_role_key()),
         account: parse_addr(grantee),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
+/// ABI-encoded `DogTagIssuerFactory.createIssuer(name, recordType, business)` calldata. The bytes32
+/// `record_type` is the salt key (canonically `keccak256(recordType label)` — see `record_type_key`).
+pub fn create_issuer_calldata(name: &str, record_type: &str, business: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IDogTagIssuerFactory::createIssuerCall {
+        name: name.to_string(),
+        recordType: parse_b256(record_type),
+        business: parse_addr(business),
     };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
@@ -556,6 +805,144 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
+
+    async fn signer_address(&self, index: u32) -> Option<String> {
+        self.signer(index).map(|s| format!("{:#x}", s.address()))
+    }
+
+    async fn send_action(
+        &self,
+        account_index: u32,
+        target: &str,
+        calldata: &str,
+    ) -> Result<SentTx, ChainError> {
+        self.sign_and_send(account_index, target, calldata).await
+    }
+
+    async fn predict_issuer(
+        &self,
+        factory_addr: &str,
+        record_type: &str,
+        business: &str,
+    ) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
+        let r = c
+            .predictIssuer(parse_b256(record_type), parse_addr(business))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(format!("{:#x}", r._0))
+    }
+
+    async fn is_clone(&self, factory_addr: &str, addr: &str) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
+        let r = c
+            .isClone(parse_addr(addr))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
+
+    async fn root_issuer(&self, factory_addr: &str, root: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
+        let r = c
+            .rootIssuer(parse_b256(root))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(format!("{:#x}", r._0))
+    }
+
+    async fn ownable_owner(&self, addr: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(addr), provider);
+        let r = c
+            .owner()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(format!("{:#x}", r._0))
+    }
+
+    async fn ownable_pending_owner(&self, addr: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(addr), provider);
+        let r = c
+            .pendingOwner()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(format!("{:#x}", r._0))
+    }
+
+    async fn has_role(&self, addr: &str, role: &str, account: &str) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IAccessControlAdmin::new(parse_addr(addr), provider);
+        let r = c
+            .hasRole(parse_b256(role), parse_addr(account))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
+
+    async fn default_admin(&self, addr: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IAccessControlAdmin::new(parse_addr(addr), provider);
+        let r = c
+            .defaultAdmin()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(format!("{:#x}", r._0))
+    }
+
+    async fn pending_default_admin(&self, addr: &str) -> Result<(String, u64), ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IAccessControlAdmin::new(parse_addr(addr), provider);
+        let r = c
+            .pendingDefaultAdmin()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok((format!("{:#x}", r.newAdmin), r.acceptSchedule.to::<u64>()))
+    }
 }
 
 /// Helper: normalize a record-type string into its keccak256 bytes32 (the whitelist / issuer key).
@@ -688,6 +1075,51 @@ mod tests {
         assert_eq!(parse_u256_dec_or_hex(""), U256::ZERO);
         assert_eq!(parse_u256_dec_or_hex("not-a-number"), U256::ZERO);
         assert_eq!(parse_u256_dec_or_hex("0xzz"), U256::ZERO);
+    }
+
+    /// `create_issuer_calldata` selects the correct 4-byte selector and is deterministic for fixed args.
+    #[test]
+    fn create_issuer_calldata_selector_and_determinism() {
+        let rt = record_type_key("VACCINATION");
+        let biz = "0x00000000000000000000000000000000000000ad";
+        let a = create_issuer_calldata("Vax Authority", &rt, biz);
+        let b = create_issuer_calldata("Vax Authority", &rt, biz);
+        assert_eq!(a, b, "calldata must be deterministic");
+        // selector = keccak256("createIssuer(string,bytes32,address)")[..4].
+        use alloy::primitives::keccak256;
+        let sel = keccak256(b"createIssuer(string,bytes32,address)");
+        assert_eq!(&a[2..10], &hex::encode(&sel.as_slice()[..4]));
+    }
+
+    /// The role-key helpers anchor to their canonical values.
+    #[test]
+    fn role_key_anchors() {
+        use alloy::primitives::keccak256;
+        assert_eq!(
+            whitelist_admin_role(),
+            format!("0x{}", hex::encode(keccak256(b"WHITELIST_ADMIN").as_slice()))
+        );
+        assert_eq!(default_admin_role(), format!("0x{}", "0".repeat(64)));
+    }
+
+    /// MemChain's clone preview is deterministic per (factory, recordType, business) and diverges when
+    /// any component changes — the property the deploy preview relies on.
+    #[tokio::test]
+    async fn mem_predict_issuer_is_deterministic_and_input_sensitive() {
+        let c = MemChain::new();
+        let factory = "0x00000000000000000000000000000000000000fa";
+        let rt = record_type_key("VACCINATION");
+        let biz = "0x00000000000000000000000000000000000000ad";
+        let p1 = c.predict_issuer(factory, &rt, biz).await.unwrap();
+        let p2 = c.predict_issuer(factory, &rt, biz).await.unwrap();
+        assert_eq!(p1, p2);
+        assert!(p1.starts_with("0x") && p1.len() == 42);
+        // different recordType -> different address.
+        let p3 = c
+            .predict_issuer(factory, &record_type_key("DOG_PROFILE"), biz)
+            .await
+            .unwrap();
+        assert_ne!(p1, p3);
     }
 
     /// `normalize_id` canonicalizes any radix into the decimal string so MemChain keys collide regardless

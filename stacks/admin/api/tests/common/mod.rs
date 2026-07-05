@@ -21,6 +21,7 @@ use admin_api::store::MemStore;
 pub const ADMIN_PW: &str = "admin-pw";
 pub const REGISTRY: &str = "0x00000000000000000000000000000000000000a1";
 pub const SBT: &str = "0x00000000000000000000000000000000000000b2";
+pub const FACTORY: &str = "0x00000000000000000000000000000000000000fa";
 
 /// Build a fully hermetic AppState (MemChain/MemStore/MemVault + mock DNS/business). Returns the state
 /// plus typed handles to the chain/business/dns mocks for assertions.
@@ -35,6 +36,7 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         rpc_url: "http://localhost:0".to_string(),
         issuer_registry_addr: REGISTRY.to_string(),
         sbt_addr: SBT.to_string(),
+        factory_addr: FACTORY.to_string(),
         issuer_name: "DogTag Central".to_string(),
         issuer_domain: "dogtag.example".to_string(),
         profile_document_store: SBT.to_string(),

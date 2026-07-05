@@ -152,6 +152,7 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         rpc_url: rpc.to_string(),
         issuer_registry_addr: registry.to_lowercase(),
         sbt_addr: sbt.to_lowercase(),
+        factory_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_name: "DogTag Central".to_string(),
         issuer_domain: "dogtag.example".to_string(),
         profile_document_store: sbt.to_lowercase(),

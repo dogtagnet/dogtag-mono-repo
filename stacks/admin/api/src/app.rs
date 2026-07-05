@@ -23,6 +23,9 @@ pub struct Config {
     pub rpc_url: String,
     pub issuer_registry_addr: String,
     pub sbt_addr: String,
+    /// DogTagIssuerFactory address — the `createIssuer`/`predictIssuer` target + the Ownable owner whose
+    /// key gates deploys (plan PR-A). Empty (zero) until `FACTORY_ADDR` is configured.
+    pub factory_addr: String,
     /// the central protocol issuer identity (for IssuerMeta on the profile VC).
     pub issuer_name: String,
     pub issuer_domain: String,
@@ -230,6 +233,7 @@ mod tests {
             rpc_url: "http://localhost:8545".to_string(),
             issuer_registry_addr: "0x1111".to_string(),
             sbt_addr: "0x2222".to_string(),
+            factory_addr: "0x4444".to_string(),
             issuer_name: "DogTag Central".to_string(),
             issuer_domain: "central.dogtag.test".to_string(),
             profile_document_store: "0x3333".to_string(),
