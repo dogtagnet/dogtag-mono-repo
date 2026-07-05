@@ -32,6 +32,15 @@ fn is_zero_addr(addr: &str) -> bool {
         .all(|c| c == '0' || c == 'x')
 }
 
+/// Is `s` a well-formed 20-byte `0x`-prefixed hex address? Guards against silent `parse_addr`
+/// coercion of a malformed value to the zero address.
+fn is_valid_addr(s: &str) -> bool {
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()),
+        None => false,
+    }
+}
+
 /// Coerce a recordType input into its bytes32 key: pass through an explicit `0x`+64-hex value, else
 /// `keccak256(label)` (the factory salt / whitelist key convention, matching the government clones).
 fn to_record_type_key(s: &str) -> String {
@@ -1276,15 +1285,26 @@ struct PredictIssuerReq {
     business: Option<String>,
 }
 
-/// Resolve the `business` salt component: an explicit non-empty value, else the hosted signer address.
-async fn resolve_business(st: &AppState, business: &Option<String>) -> String {
+/// Resolve the `business` salt component: an explicit non-empty value (rejected if malformed), else
+/// the hosted signer address. A caller-provided value must parse as a 20-byte `0x` address so a typo
+/// is not silently coerced to the zero address by `parse_addr`.
+async fn resolve_business(st: &AppState, business: &Option<String>) -> Result<String, Resp> {
     match business {
-        Some(b) if !b.trim().is_empty() => b.trim().to_lowercase(),
-        _ => st
+        Some(b) if !b.trim().is_empty() => {
+            let t = b.trim();
+            if !is_valid_addr(t) {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "business must be a valid 0x-prefixed 20-byte address",
+                ));
+            }
+            Ok(t.to_lowercase())
+        }
+        _ => Ok(st
             .chain
             .signer_address(st.cfg.admin_signer_index)
             .await
-            .unwrap_or_else(|| ZERO_ADDR.to_string()),
+            .unwrap_or_else(|| ZERO_ADDR.to_string())),
     }
 }
 
@@ -1302,7 +1322,10 @@ async fn factory_predict(
         return err(StatusCode::BAD_REQUEST, "FACTORY_ADDR not configured");
     }
     let rt = to_record_type_key(&body.record_type);
-    let business = resolve_business(&st, &body.business).await;
+    let business = match resolve_business(&st, &body.business).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
     match st
         .chain
         .predict_issuer(&st.cfg.factory_addr, &rt, &business)
@@ -1346,7 +1369,10 @@ async fn factory_create_issuer(
         return err(StatusCode::BAD_REQUEST, "name and recordType are required");
     }
     let rt = to_record_type_key(&body.record_type);
-    let business = resolve_business(&st, &body.business).await;
+    let business = match resolve_business(&st, &body.business).await {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
     let predicted = match st
         .chain
         .predict_issuer(&st.cfg.factory_addr, &rt, &business)

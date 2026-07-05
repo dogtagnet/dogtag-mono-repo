@@ -31,6 +31,21 @@ async fn factory_predict_is_deterministic() {
     assert_eq!(b2["predicted"].as_str().unwrap(), addr1, "predict must be deterministic");
 }
 
+/// A malformed caller-provided `business` is rejected with 400 rather than silently coerced to the
+/// zero address (which would yield a wrong deterministic clone / deploy salt).
+#[tokio::test]
+async fn factory_malformed_business_is_rejected() {
+    let (state, _chain, _v, _b) = hermetic_state();
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+
+    for path in ["/v1/admin/factory/predict", "/v1/admin/factory/issuers"] {
+        let body = serde_json::json!({ "name": "Vax Authority", "recordType": RT, "business": "0xnothex" });
+        let (s, b) = common::call(&app, "POST", path, Some(&tok), Some(body)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{path}: {b}");
+    }
+}
+
 /// The deploy requires an admin session.
 #[tokio::test]
 async fn factory_deploy_requires_admin() {
