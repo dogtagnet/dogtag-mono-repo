@@ -22,6 +22,7 @@ sol! {
         function issue(bytes32 r) external;
         function revoke(bytes32 r) external;
         function isValid(bytes32 r) external view returns (bool);
+        function isRevoked(bytes32 r) external view returns (bool);
         function issuedAt(bytes32 r) external view returns (uint256);
     }
 
@@ -138,6 +139,8 @@ pub trait ChainClient: Send + Sync {
     async fn register_signer(&self, index: u32, private_key: [u8; 32], address: String);
     /// DogTagIssuer.isValid(root).
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError>;
+    /// DogTagIssuer.isRevoked(root).
+    async fn is_revoked(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError>;
     /// DogTagIssuer.issuedAt(root) (0 == not issued).
     async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError>;
     /// IssuerRegistry.isWhitelistedFor(recordType, signer).
@@ -518,6 +521,11 @@ impl ChainClient for MemChain {
         let revoked = g.revoked.get(&key).copied().unwrap_or(0) != 0;
         Ok(issued && !revoked)
     }
+    async fn is_revoked(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let key = (issuer_addr.to_lowercase(), root.to_lowercase());
+        Ok(g.revoked.get(&key).copied().unwrap_or(0) != 0)
+    }
     async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError> {
         let g = self.inner.lock().unwrap();
         let v = g
@@ -879,6 +887,20 @@ impl ChainClient for AlloyChain {
         let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
         let r = c
             .isValid(parse_b256(root))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
+    async fn is_revoked(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
+        let r = c
+            .isRevoked(parse_b256(root))
             .call()
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;

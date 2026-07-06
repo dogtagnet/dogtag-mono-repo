@@ -98,12 +98,32 @@ async fn full_issuance_share_revoke_flow() {
     assert_eq!(s, StatusCode::OK, "get shared: {doc}");
     assert_eq!(doc["version"], "dogtag/1.0");
     let merkle_root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
+    let shared_doc = doc.clone();
 
     // third-party verify of the returned doc: issuance pillar TRUE (root is issued on chain).
     assert!(
         mem.is_valid(ISSUER, &merkle_root).await.unwrap(),
         "issuance pillar: root must be valid on-chain after issue"
     );
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/credential",
+        Some(&op),
+        Some(serde_json::json!({
+            "wrappedDoc": shared_doc.clone(),
+            "signerAddr": backend_addr.clone(),
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "direct verify valid: {b}");
+    assert_eq!(b["verdict"], true);
+    assert_eq!(b["status"], "valid");
+    assert_eq!(b["fragments"]["integrity"], true);
+    assert_eq!(b["fragments"]["onchain"], true);
+    assert_eq!(b["fragments"]["issued"], true);
+    assert_eq!(b["fragments"]["revoked"], false);
+    assert_eq!(b["fragments"]["issuerWhitelisted"], true);
 
     // --- reused short token => 404 (one-time, deleted after first use) ---
     let (s, _b) = call(&app, "GET", &format!("/r/{token}"), None, None).await;
@@ -127,6 +147,23 @@ async fn full_issuance_share_revoke_flow() {
         !mem.is_valid(ISSUER, &merkle_root).await.unwrap(),
         "after revoke, issuance pillar must be INVALID"
     );
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/credential",
+        Some(&op),
+        Some(serde_json::json!({
+            "wrappedDoc": shared_doc,
+            "signerAddr": backend_addr.clone(),
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "direct verify revoked: {b}");
+    assert_eq!(b["verdict"], false);
+    assert_eq!(b["status"], "revoked");
+    assert_eq!(b["fragments"]["issued"], true);
+    assert_eq!(b["fragments"]["revoked"], true);
+    assert_eq!(b["fragments"]["onchain"], false);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

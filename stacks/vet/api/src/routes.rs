@@ -14,6 +14,7 @@
 //!     GET  /x/{token}                                 (short one-time EXPORT token — UNAUTHENTICATED)
 //!     GET  /issuer/signers
 //!     POST /import/pull
+//!     POST /verify/credential                         -> direct credential validity/revocation check
 //!     POST /verify/session/start | /verify/consent/submit   (EXPORT flow; route PATHS kept stable)
 //!     GET  /verify/history                            (operator-gated verifier audit log)
 //!   admin router (custody — mounted SEPARATELY; /admin/* requires the admin session):
@@ -28,6 +29,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use dogtag_standard::verify::{check_integrity, FragmentState};
+use dogtag_standard::wrap::WrappedDoc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -988,6 +991,126 @@ async fn import_pull(
 // --------------------------------------------------------------------------------------------
 // verify (impl §3.9)
 // --------------------------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct VerifyCredentialReq {
+    /// The wrapped credential document to verify (as produced by any DogTag issuer).
+    #[serde(rename = "wrappedDoc", alias = "wrapped_doc")]
+    wrapped_doc: WrappedDoc,
+    /// Override the DogTagIssuer clone to check `isValid`/`isRevoked` against. Defaults to the doc's
+    /// `issuer.documentStore`.
+    #[serde(rename = "issuerAddr", alias = "issuer_addr", default)]
+    issuer_addr: Option<String>,
+    /// Optional signer address to check issuer identity (`isWhitelistedFor(recordType, signer)`).
+    #[serde(rename = "signerAddr", alias = "signer_addr", default)]
+    signer_addr: Option<String>,
+}
+
+/// POST /verify/credential — operator-gated direct credential check. This is the verifier-facing
+/// "paste a credential and learn whether it is currently valid or revoked" path: no tx, no storage, just
+/// integrity recompute + gasless on-chain reads.
+async fn verify_credential(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VerifyCredentialReq>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+
+    let doc = body.wrapped_doc;
+    let record_type = doc.issuer.record_type.clone();
+    let issuer_addr = body
+        .issuer_addr
+        .clone()
+        .unwrap_or_else(|| doc.issuer.document_store.clone());
+    let claimed_root = doc.signature.merkle_root.clone();
+
+    let (integrity_state, recomputed) = check_integrity(&doc);
+    let integrity_valid = integrity_state == FragmentState::Valid;
+    let recomputed_hex = dogtag_standard::to_hex32(&recomputed);
+
+    let issued_at = match st.chain.issued_at(&issuer_addr, &claimed_root).await {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::BAD_GATEWAY,
+                &format!("on-chain issuedAt read failed: {e}"),
+            )
+        }
+    };
+    let issued = !issued_at.is_zero();
+    let onchain_valid = match st.chain.is_valid(&issuer_addr, &claimed_root).await {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::BAD_GATEWAY,
+                &format!("on-chain isValid read failed: {e}"),
+            )
+        }
+    };
+    let revoked = match st.chain.is_revoked(&issuer_addr, &claimed_root).await {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::BAD_GATEWAY,
+                &format!("on-chain isRevoked read failed: {e}"),
+            )
+        }
+    };
+
+    let issuer_whitelisted = match &body.signer_addr {
+        Some(signer) if !signer.trim().is_empty() => {
+            let rt_key = app::rt_key(&record_type);
+            match st
+                .chain
+                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, signer.trim())
+                .await
+            {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    return err(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("on-chain whitelist read failed: {e}"),
+                    )
+                }
+            }
+        }
+        _ => None,
+    };
+
+    let status = if !integrity_valid {
+        "integrity_failed"
+    } else if !issued {
+        "not_issued"
+    } else if revoked {
+        "revoked"
+    } else if onchain_valid {
+        "valid"
+    } else {
+        "invalid"
+    };
+    let verdict = integrity_valid && onchain_valid && issuer_whitelisted.unwrap_or(true);
+
+    ok(json!({
+        "verdict": verdict,
+        "status": status,
+        "recordType": record_type,
+        "root": claimed_root,
+        "recomputedRoot": recomputed_hex,
+        "issuerAddr": issuer_addr,
+        "signerAddr": body.signer_addr,
+        "issuedAt": issued_at.to_string(),
+        "checkedAt": auth::now(),
+        "fragments": {
+            "integrity": integrity_valid,
+            "onchain": onchain_valid,
+            "issued": issued,
+            "revoked": revoked,
+            "issuerWhitelisted": issuer_whitelisted,
+        },
+    }))
+}
 
 #[derive(Deserialize)]
 struct SessionStartReq {
@@ -2121,9 +2244,11 @@ pub fn public_router(state: AppState) -> Router {
         .route("/import/pull", post(import_pull))
         // verify
         .route("/verify/session/start", post(export_session_start))
+        .route("/verify/credential", post(verify_credential))
         .route("/verify/session/:id", get(verify_session_status))
         .route("/verify/history", get(verify_history))
         .route("/verify/consent/submit", post(verify_consent_submit))
+        .route("/v1/verify/credential", post(verify_credential))
         // alias so the owner's phone can POST consent+proof directly to the groomer host.
         .route("/v1/verify/consent", post(verify_consent_submit))
         // calendar sync (Phase 7, §3.6)
