@@ -50,6 +50,8 @@ services:
     env_file: .env
     environment:
       # Production knobs (secrets — incl. ADMIN_PRIVATE_KEY/ADMIN_ADDRESS — come from .env).
+      # ADMIN_PRIVATE_KEY must be governance signer-1 (0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) since
+      # Phase-2 (2026-07-05, block 123835) stripped the old deployer EOA 0x119F… of all roles - see .env.example.
       MONGO_URI: "mongodb://mongo:27017/dogtag"
       MONGO_DB: ${MONGO_DB:-dogtag}
       CHAIN_ID: ${CHAIN_ID:-135}

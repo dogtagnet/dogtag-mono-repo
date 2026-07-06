@@ -120,8 +120,10 @@ registry on 2026-06-30 (starting the 2-day timelock), and the final `executeZkVe
   `scripts/e2e-zk.sh` and the live-chain parity tests target the v2 verifier; local validation uses the
   Rust prover self-verify oracle (`cargo test -p dogtag-prover-rs`), `snarkjs groth16 verify`, and the
   on-chain `forge test` (`ZkIntegration.t.sol`) against the v2 verifier source + regenerated fixture.
-- **Governance stays the single deployer EOA** (`0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`) for
-  testnet — the multisig migration was deferred by the captain.
+- **Governance was the single deployer EOA** (`0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`) for testnet
+  at the time of this ZK ceremony - the multisig migration was deferred by the captain. **Update:**
+  Governance Phase-2 has since executed on-chain (2026-07-05, block 123835), stripping that EOA of ALL
+  roles and moving admin authority to governance signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`.
 
 All three steps above are done — the swap is complete. For reference (e.g. a future production-ceremony
 swap), the exact commands (single deployer EOA, ROAX `--legacy`):

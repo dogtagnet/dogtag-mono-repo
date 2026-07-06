@@ -106,7 +106,8 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` | circomlib-exact |
 | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` | `onlyOwner createIssuer` |
 | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` | clone impl |
-| admin / deployer | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` | WHITELIST_ADMIN + SBT ISSUER + PLASMA source |
+| deployer EOA (genesis) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` | **stripped of all roles in Governance Phase-2 (2026-07-05, block 123835)** - now zero authority; historical deployer only |
+| **governance authority / admin** | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | signer-1 - WHITELIST_ADMIN + DEFAULT_ADMIN + factory owner + SBT ISSUER + PLASMA source (live since Phase-2) |
 | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` | `demo_clones` |
 | demo clone DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` | `demo_clones` |
 | chainId | 135 | ROAX testnet |
@@ -154,7 +155,7 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 
 | Term | Meaning |
 |---|---|
-| **signer** | The EOA whose key the backend holds in custody; signs on-chain txs (`whitelistFor`, mint, gasless relays). LOCAL wires the deployer key; REMOTE/PROD use a dedicated `ADMIN_PRIVATE_KEY`. |
+| **signer** | The EOA whose key the backend holds in custody; signs on-chain txs (`whitelistFor`, mint, gasless relays). Since Governance Phase-2 (2026-07-05, block 123835) this MUST be governance signer-1 (`0x8E27…F4A2`) - the old deployer EOA `0x119F…` was stripped of all roles. LOCAL wires signer-1 from `contracts/.env` (`GOVERNANCE_PRIVATE_KEY`); REMOTE/PROD use the dedicated `ADMIN_PRIVATE_KEY` (also signer-1). |
 | **custody** | The sealed keystore holding the signer's key. LOCAL: `.demo/*-custody.json` (`CUSTODY_SEAL_PATH`). REMOTE/PROD: a `CustodyBlob` in Mongo. Lost passphrase = unrecoverable. |
 | **genesis** | First-time creation of a stack's custody/signer. Done once. LOCAL re-genesis happens **only** after `rm -rf .demo`. |
 | **unlock** | Decrypting custody with the passphrase so the backend can sign. Required after **every** restart (`POST /admin/unlock`). A LOCAL restart = re-unlock with the same passphrase, **not** re-genesis. |

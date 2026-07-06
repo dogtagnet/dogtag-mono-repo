@@ -44,8 +44,10 @@ but **custody is sealed to `.demo/{vet,groomer,prover}-custody.json`**, so a **r
 same passphrase (same signer), NOT re-genesis** (records/sessions are simply re-created, and the signer is
 still funded + whitelisted on-chain, so no re-bootstrap is needed). A full re-genesis is required only after
 `rm -rf .demo`. `demo-up.sh` wires the
-deployer/admin key (`contracts/.env` → `ADMIN_PRIVATE_KEY`) into the central stack so it can broadcast
-`whitelistFor` (the dog-tag `mint` is broadcast by the **vet** signer, not central), sets
+governance signer-1 admin key (`contracts/.env` → `GOVERNANCE_PRIVATE_KEY`, passed to the central stack as
+`ADMIN_PRIVATE_KEY`) so it can broadcast `whitelistFor` - since Governance Phase-2 (2026-07-05, block
+123835) this admin authority is signer-1 `0x8E27…F4A2`, NOT the old deployer EOA `0x119F…` (now zero
+roles). (The dog-tag `mint` is broadcast by the **vet** signer, not central.) It also sets
 `DNS_CHECK=skip` (bypasses DNS-TXT for the `.local` demo domains), and sets the QR host to the Mac LAN
 IP (see [§6 phone networking](#6-phone-networking-real-gotchas)).
 
@@ -212,7 +214,9 @@ Five backend issues fixed while bringing the system up live on ROAX — worth kn
 - **ROAX needs legacy gas.** EIP-1559 txs are accepted but never mined; all broadcasts use `--legacy`
   (the backend chain client falls back to `gas_price`).
 - **The central stack needs its admin signer wired** (`ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS` — set by
-  `demo-up.sh` from `contracts/.env`) to broadcast `whitelistFor`. Without it, Approve no-ops. (The
+  `demo-up.sh` from `contracts/.env`'s `GOVERNANCE_PRIVATE_KEY`/`GOVERNANCE_ADDRESS`, i.e. governance
+  signer-1 `0x8E27…F4A2` since Phase-2; the old deployer EOA `0x119F…` holds zero roles) to broadcast
+  `whitelistFor`. Without it, Approve no-ops. (The
   dog-tag `mint` is broadcast by the **vet** signer, which must hold `DogTagSBT.ISSUER_ROLE`.)
 - **`sign_and_send` waits for the receipt** before reporting success (so issue/verify reflect the real
   on-chain state, not just a submitted tx hash).

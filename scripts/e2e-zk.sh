@@ -39,6 +39,14 @@ VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53   # VACCINATION issuer clo
 ZKV=0xEEFCfAF026931b7325472A88fd14Ee780Da13559          # Groth16Verifier (v2, live since 2026-07-02 cutover)
 
 set -a; source "$ROOT/contracts/.env"; set +a   # DEPLOYER_PRIVATE_KEY / DEPLOYER_ADDRESS
+# Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved admin authority (WHITELIST_ADMIN
+# / DEFAULT_ADMIN / SBT ISSUER / factory owner) off the old deployer EOA 0x119F… (now zero roles) onto
+# governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2. This harness establishes every on-chain
+# precondition (whitelistFor / grantRole / issue / mint) as ONE key, so point the deployer vars it uses at
+# the captain-managed signer-1 key (GOVERNANCE_PRIVATE_KEY / GOVERNANCE_ADDRESS in contracts/.env); the
+# old EOA's admin txs would revert.
+DEPLOYER_PRIVATE_KEY="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - the old deployer EOA 0x119F… was stripped of all roles in Phase-2}"
+DEPLOYER_ADDRESS="${GOVERNANCE_ADDRESS:?set GOVERNANCE_ADDRESS (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env}"
 PK="$DEPLOYER_PRIVATE_KEY"
 
 R=21888242871839275222246405745257275088548364400416034343698204186575808495617  # BN254 r

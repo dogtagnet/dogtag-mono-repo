@@ -51,9 +51,12 @@ It all runs against the **live ROAX testnet** (chainId **135**, gas token **PLAS
 > - **`jq`** and **`python3`** — used by the bootstrap + smoke scripts.
 > - **`cloudflared`** — only if a **real phone on corporate/cellular/guest Wi-Fi** is involved (§4.2).
 > - **git + `cmake` + a C toolchain** — needed to build the prover-service (`--features prover`).
-> - **a funded `contracts/.env`** — `DEPLOYER_PRIVATE_KEY` + `DEPLOYER_ADDRESS` for a **funded ROAX EOA**
->   (and `ROAX_RPC`). `demo-up.sh` wires this as the central stack's signer; `demo-bootstrap.sh` and
->   `demo-prepare-phone.sh` also use it to pay gas. **`contracts/.env` is LOCAL-only.**
+> - **a funded `contracts/.env`** - `GOVERNANCE_PRIVATE_KEY` + `GOVERNANCE_ADDRESS` for the **funded
+>   governance signer-1 EOA** (`0x8E27…F4A2`), plus `ROAX_RPC`. Since Governance Phase-2 (2026-07-05, block
+>   123835) this signer-1 is the admin authority (the old deployer EOA `0x119F…` was stripped of all roles).
+>   `demo-up.sh` wires it as the central stack's signer; `demo-bootstrap.sh` and `demo-prepare-phone.sh`
+>   also use it to whitelist/mint and pay gas. (`DEPLOYER_*` stays only for `forge` deploys.)
+>   **`contracts/.env` is LOCAL-only.**
 > - **a populated `circuits/build/`** — must contain `verification_final.zkey` **and** `verification.graph`
 >   so the prover-service loads the real **ArkProver**. `demo-up.sh` sets `CIRCUITS_BUILD_DIR=circuits/build`
 >   on the prover, so if those files are missing the prover-service is **fail-closed** and **exits on boot**
@@ -65,9 +68,9 @@ Run this single block to confirm the toolchain and inputs are present.
 set -e
 command -v cargo cast jq python3 node pnpm >/dev/null && echo "tools: ok"   # cloudflared only if §4.2
 cast chain-id --rpc-url https://devrpc.roax.net                              # expect: 135
-test -f contracts/.env && grep -q DEPLOYER_PRIVATE_KEY contracts/.env && echo "contracts/.env: ok"
-# the deployer EOA must be funded with PLASMA (it pays for bootstrap + central whitelists):
-cast balance "$(grep -E '^DEPLOYER_ADDRESS=' contracts/.env | cut -d= -f2)" --rpc-url https://devrpc.roax.net
+test -f contracts/.env && grep -q GOVERNANCE_PRIVATE_KEY contracts/.env && echo "contracts/.env: ok"
+# governance signer-1 must be funded with PLASMA (it pays for bootstrap + central whitelists/mints):
+cast balance "$(grep -E '^GOVERNANCE_ADDRESS=' contracts/.env | cut -d= -f2)" --rpc-url https://devrpc.roax.net
 test -f circuits/build/verification_final.zkey && test -f circuits/build/verification.graph && echo "circuits/build: ok"
 ```
 

@@ -320,6 +320,24 @@ is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `Z
   range-checked `< 2^160` so `uint160(..)` truncation can't alias a victim address (audit L1). The Rust
   relay ABI (`stacks/vet/api/src/chain.rs`) must stay in sync with this signature.
 
+## Governance authority (Phase-2 executed) - tooling signer
+
+- **Governance authority is signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`; the tooling ADMIN key
+  is signer-1.** Governance Phase-2 executed on-chain 2026-07-05 (block 123835), stripping the old deployer
+  EOA `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` of ALL roles (registry `DEFAULT_ADMIN_ROLE` +
+  `WHITELIST_ADMIN`, the `DogTagIssuerFactory` `Ownable2Step` ownership, and `DogTagSBT` `ISSUER_ROLE`) and
+  moving them to governance signer-1. Any tooling that signs a privileged write (`whitelistFor` / SBT
+  `mint` / factory `createIssuer` / `adminRevoke`) as the old EOA now reverts (or, in the admin control
+  plane, downgrades to a `Disposition::Proposed`), so **wire the admin authority to signer-1, never `0x119F…`.**
+- **Demo / relayer / demo-script tooling reads signer-1 from a captain-managed env var - the private-key
+  VALUE is never committed.** The `scripts/*.sh` demo + e2e harnesses (`demo-up.sh`, `demo-bootstrap.sh`,
+  `demo-prepare-phone.sh`, `e2e-smoke.sh`, `e2e-zk.sh`) source **`GOVERNANCE_PRIVATE_KEY` /
+  `GOVERNANCE_ADDRESS`** (signer-1) from `contracts/.env` and fail closed if unset; `DEPLOYER_*` is kept
+  only for `forge` contract deploys / ceremony scripts (it holds no roles post-Phase-2). The admin stack
+  reads the same authority as `ADMIN_PRIVATE_KEY` / `ADMIN_ADDRESS` (`stacks/admin/.env`). See
+  `docs/PREREQUISITES.md` §2.1. (The on-chain / backend-signer record lives in the "Governance / admin"
+  section above and in `contracts/deployments/roax.json`.)
+
 ## Captain's conventions & vocabulary
 
 (Folded in from the firstmate-private canonical record so any agent in this repo shares the captain's conventions and vocabulary.)

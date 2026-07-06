@@ -52,7 +52,8 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | **VerificationRegistry** (ZK-wired) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
 | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
-| admin / deployer | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
+| deployer EOA (genesis; **stripped of all roles** in Governance Phase-2, 2026-07-05 block 123835) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
+| **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
 | demo clone — VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
 | demo clone — DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |
 
