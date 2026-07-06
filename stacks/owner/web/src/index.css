@@ -591,6 +591,93 @@ textarea {
   word-break: break-all;
 }
 
+/* ---- Share (selective disclosure) -------------------------------------- */
+.share-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel);
+  padding: 11px 14px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.share-row:hover {
+  background: var(--panel-2);
+}
+
+.share-row.off {
+  background: color-mix(in srgb, var(--bad) 7%, var(--panel));
+}
+
+.share-field {
+  min-width: 0;
+  flex: 1;
+}
+
+.share-field .k {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.share-field .v {
+  font-size: 14px;
+  margin-top: 3px;
+  word-break: break-word;
+}
+
+.share-field .v.withheld,
+.field-cell .v.withheld {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.lock-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  text-transform: none;
+}
+
+.share-toggle {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  accent-color: var(--owner);
+  cursor: pointer;
+}
+
+.share-toggle:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.share-output {
+  margin-top: 8px;
+  min-height: 160px;
+  color: #cbd5e1;
+}
+
 /* ---- Empty state -------------------------------------------------------- */
 .empty {
   text-align: center;
