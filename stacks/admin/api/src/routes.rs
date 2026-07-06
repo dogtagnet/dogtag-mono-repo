@@ -1591,6 +1591,21 @@ async fn admin_activity_stats(State(st): State<AppState>, headers: HeaderMap) ->
     }
 }
 
+/// `GET /v1/admin/activity/status` — the oversight indexer's progress + finality watermark (plan §3.1
+/// chain-health card): `headBlock` (chain head), `finalizedBlock`/`finalitySource`,
+/// `lastFinalizedIndexed` (how far the scanner has settled), `lag` (head − last-indexed), and
+/// `confirmations`. Proxies the indexer's `/v1/status` unscoped; PR-B wired the `status()` feed method
+/// specifically to fuel this card. No directory enrichment (no addresses in the payload).
+async fn admin_activity_status(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    match st.feed.status().await {
+        Ok(body) => ok(body),
+        Err(e) => feed_err(e),
+    }
+}
+
 /// `GET /v1/admin/activity/issuers` — per-clone issued/revoked/active counts across all issuers (plan
 /// §3.3 list). Proxies the indexer's `/v1/issuers` unscoped and re-enriches each clone with the
 /// admin's authoritative directory name.
@@ -1658,6 +1673,7 @@ pub fn admin_router(state: AppState) -> Router {
         // PR-B: unscoped oversight-indexer consumption + signer→business directory
         .route("/v1/admin/activity", get(admin_activity))
         .route("/v1/admin/activity/stats", get(admin_activity_stats))
+        .route("/v1/admin/activity/status", get(admin_activity_status))
         .route("/v1/admin/activity/issuers", get(admin_activity_issuers))
         .route("/v1/admin/directory", get(admin_directory))
         .route(
