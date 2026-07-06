@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { summarize } from "../lib/credential";
 import { integrityOf, redact, shareableFields } from "../lib/redact";
@@ -30,7 +30,16 @@ export function Share() {
   const redactedJson = useMemo(() => (redacted ? JSON.stringify(redacted, null, 2) : ""), [redacted]);
   const previewIntegrity = useMemo(() => (redacted ? integrityOf(redacted) : "INVALID"), [redacted]);
 
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [showJson, setShowJson] = useState(false);
+
+  // Navigating between credentials keeps this component mounted (only the :id param changes), so reset
+  // the holder's choices when the credential changes - otherwise A's withheld paths leak into B.
+  useEffect(() => {
+    setWithheld(new Set());
+    setCopyState("idle");
+    setShowJson(false);
+  }, [decodedId]);
 
   if (!credential || !doc) {
     return (
@@ -49,7 +58,7 @@ export function Share() {
   const revealableCount = fields.filter((f) => !f.locked).length;
 
   function toggle(keyPath: string) {
-    setCopied(false);
+    setCopyState("idle");
     setWithheld((prev) => {
       const next = new Set(prev);
       if (next.has(keyPath)) next.delete(keyPath);
@@ -59,22 +68,25 @@ export function Share() {
   }
 
   function revealAll() {
-    setCopied(false);
+    setCopyState("idle");
     setWithheld(new Set());
   }
 
   function withholdAll() {
-    setCopied(false);
+    setCopyState("idle");
     setWithheld(new Set(fields.filter((f) => !f.locked).map((f) => f.keyPath)));
   }
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(redactedJson);
+      setCopyState("copied");
     } catch {
-      /* clipboard may be blocked; the JSON is visible in the field below to copy manually. */
+      // Clipboard blocked (insecure context / no permission) - do not claim success. Reveal the JSON
+      // fallback so the holder can select and copy it manually.
+      setCopyState("failed");
+      setShowJson(true);
     }
-    setCopied(true);
   }
 
   function download() {
@@ -144,7 +156,7 @@ export function Share() {
                     {f.label}
                     {f.locked && (
                       <span className="lock-tag" data-testid="share-locked">
-                        🔒 required
+                        {f.lockReason === "public" ? "🌐 public" : "🔒 required"}
                       </span>
                     )}
                   </div>
@@ -199,20 +211,26 @@ export function Share() {
 
         <div className="btn-row">
           <button className="btn" data-testid="share-copy" onClick={() => void copy()}>
-            {copied ? "✓ Copied" : "Copy redacted credential"}
+            {copyState === "copied" ? "✓ Copied" : "Copy redacted credential"}
           </button>
           <button type="button" className="btn secondary" data-testid="share-download" onClick={download}>
             Download .json
           </button>
         </div>
-        {copied && (
+        {copyState === "copied" && (
           <p className="ok-box" data-testid="share-copied">
             Redacted credential copied. Paste it wherever the recipient receives credentials — they will
             verify its authenticity offline and on-chain, seeing only the fields you revealed.
           </p>
         )}
+        {copyState === "failed" && (
+          <p className="error-box" data-testid="share-copy-failed">
+            Couldn't reach the clipboard (it may be blocked in this browser). The redacted document is
+            shown below - select it and copy manually, or use Download .json.
+          </p>
+        )}
 
-        <details>
+        <details open={showJson} onToggle={(e) => setShowJson(e.currentTarget.open)}>
           <summary>Show the redacted document (JSON)</summary>
           <textarea
             readOnly

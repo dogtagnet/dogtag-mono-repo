@@ -25,6 +25,10 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     trace: "retain-on-failure",
+    // Grant clipboard write so the "Copy redacted credential" path resolves deterministically - the app
+    // now only reports success when the write actually resolves, so the copy assertion must not depend
+    // on ambient headless clipboard-permission behaviour.
+    permissions: ["clipboard-write"],
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   ...(useOwnServer
