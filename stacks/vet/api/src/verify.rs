@@ -750,6 +750,7 @@ pub async fn consent_submit(
             recording.status = "recording".to_string();
             recording.tx_hash = None;
             recording.nullifier = None;
+            recording.updated_at = crate::auth::now();
             st.store.update_session(recording).await;
 
             tokio::spawn(async move {
@@ -768,6 +769,7 @@ pub async fn consent_submit(
                     {
                         bg_session.status = "error".to_string();
                         bg_session.tx_hash = Some(format!("bindConsentKeyFor: {e}"));
+                        bg_session.updated_at = crate::auth::now();
                         store.update_session(bg_session).await;
                         // DO NOT consume the export token -> the owner can retry the same QR.
                         return;
@@ -792,6 +794,7 @@ pub async fn consent_submit(
                         bg_session.tx_hash = Some(sent.tx_hash);
                         // The nullifier consumed on-chain is pub[4].
                         bg_session.nullifier = Some(bg_nullifier);
+                        bg_session.updated_at = crate::auth::now();
                         store.update_session(bg_session).await;
                         // Consume the one-time export token ONLY on a fully successful record.
                         if let Some(t) = bg_export_token.as_deref() {
@@ -801,6 +804,7 @@ pub async fn consent_submit(
                     Err(e) => {
                         bg_session.status = "error".to_string();
                         bg_session.tx_hash = Some(format!("recordVerificationZK: {e}"));
+                        bg_session.updated_at = crate::auth::now();
                         store.update_session(bg_session).await;
                         // DO NOT consume the export token -> retryable QR.
                     }
@@ -890,6 +894,7 @@ pub async fn consent_submit(
     updated.status = "recorded".to_string();
     updated.tx_hash = Some(tx_hash.clone());
     updated.nullifier = nullifier;
+    updated.updated_at = crate::auth::now();
     st.store.update_session(updated).await;
     ok(json!({ "recorded": true, "txHash": tx_hash, "mode": mode }))
 }

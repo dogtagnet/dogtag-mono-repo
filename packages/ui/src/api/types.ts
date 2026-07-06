@@ -189,6 +189,22 @@ export interface VerifySessionStatusResp {
   txHash?: string | null;
   nullifier?: string | null;
 }
+export interface VerificationHistoryItem {
+  sessionId: string;
+  relayer: string;
+  purpose: string;
+  recordType: string;
+  mode: VerifyMode | string;
+  status: "pending" | "recording" | "recorded" | "error" | string;
+  txHash?: string | null;
+  explorerUrl?: string | null;
+  nullifier?: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface VerificationHistoryResp {
+  verifications: VerificationHistoryItem[];
+}
 
 // ---- profile / dog-tag issuance (operator session) ----
 /** Microchip standard accepted by the backend. */

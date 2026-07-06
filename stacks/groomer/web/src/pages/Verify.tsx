@@ -4,6 +4,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  VerificationHistoryPanel,
   VerifyFlow,
   type VerifyPurpose,
 } from "@dogtag/ui";
@@ -61,6 +62,10 @@ export function Verify() {
           const s = await api.verifySessionStatus(id);
           return { status: s.status, txHash: s.txHash ?? undefined };
         }}
+      />
+      <VerificationHistoryPanel
+        client={api}
+        description="Recent owner-consent verification sessions recorded by this groomer portal."
       />
     </div>
   );

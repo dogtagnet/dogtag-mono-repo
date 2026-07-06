@@ -29,6 +29,7 @@ import type {
   UnlockResp,
   VerifyConsentSubmitReq,
   VerifyConsentSubmitResp,
+  VerificationHistoryResp,
   VerifySessionStartReq,
   VerifySessionStartResp,
   VerifySessionStatusResp,
@@ -171,6 +172,8 @@ export function createApiClient(opts: ApiClientOptions) {
     /** GET /verify/session/{id} — operator-gated status poll (pending → recorded). */
     verifySessionStatus: (id: string) =>
       request<VerifySessionStatusResp>("GET", `/verify/session/${id}`),
+    /** GET /verify/history — operator-gated verification audit trail, most recent first. */
+    verificationHistory: () => request<VerificationHistoryResp>("GET", "/verify/history"),
     verifyConsentSubmit: (body: VerifyConsentSubmitReq) =>
       request<VerifyConsentSubmitResp>("POST", "/verify/consent/submit", body),
 

@@ -413,6 +413,25 @@ async fn verify_session_status_polls_pending_to_recorded() {
     assert_eq!(b["mode"], "zk");
     assert!(b["txHash"].is_null(), "no txHash while pending");
 
+    // history is operator-gated and includes the pending verifier session.
+    let (s, _b) = call(&app, "GET", "/verify/history", None, None).await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "history must be operator-gated"
+    );
+    let (s, b) = call(&app, "GET", "/verify/history", Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "history pending: {b}");
+    let rows = b["verifications"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["sessionId"].as_str().unwrap(), session_id);
+    assert_eq!(rows[0]["purpose"].as_str().unwrap(), purpose);
+    assert_eq!(rows[0]["recordType"].as_str().unwrap(), "VACCINATION");
+    assert_eq!(rows[0]["mode"].as_str().unwrap(), "zk");
+    assert_eq!(rows[0]["status"].as_str().unwrap(), "pending");
+    assert!(rows[0]["createdAt"].as_u64().unwrap() > 0);
+    assert!(rows[0]["updatedAt"].as_u64().unwrap() > 0);
+
     // submit the ZK consent (MemChain) -> records the attestation.
     let rt = record_type_key("VACCINATION");
     let consent = serde_json::json!({
@@ -457,6 +476,29 @@ async fn verify_session_status_polls_pending_to_recorded() {
     assert_eq!(
         b["nullifier"], "0x2222222222222222222222222222222222222222222222222222222222222222",
         "nullifier surfaced",
+    );
+
+    // history now carries the durable verifier-side proof metadata.
+    let (s, b) = call(&app, "GET", "/verify/history", Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "history recorded: {b}");
+    let rows = b["verifications"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row["sessionId"].as_str().unwrap(), session_id);
+    assert_eq!(row["status"].as_str().unwrap(), "recorded");
+    assert_eq!(row["txHash"].as_str().unwrap(), submit_tx);
+    assert!(
+        row["explorerUrl"].as_str().unwrap().contains(&submit_tx),
+        "history includes ready explorer link"
+    );
+    assert_eq!(
+        row["nullifier"].as_str().unwrap(),
+        "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "history carries consumed nullifier",
+    );
+    assert!(
+        row["updatedAt"].as_u64().unwrap() >= row["createdAt"].as_u64().unwrap(),
+        "history timestamps are monotonic"
     );
 }
 

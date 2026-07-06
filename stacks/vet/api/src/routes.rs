@@ -15,6 +15,7 @@
 //!     GET  /issuer/signers
 //!     POST /import/pull
 //!     POST /verify/session/start | /verify/consent/submit   (EXPORT flow; route PATHS kept stable)
+//!     GET  /verify/history                            (operator-gated verifier audit log)
 //!   admin router (custody — mounted SEPARATELY; /admin/* requires the admin session):
 //!     POST /admin/genesis/start | /admin/genesis/confirm | /admin/unlock | /admin/accounts
 
@@ -1033,6 +1034,7 @@ async fn export_session_start(
     let mut challenge = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge);
     let challenge_hex = format!("0x{}", hex::encode(challenge));
+    let now = auth::now();
     st.store
         .put_session(VerifySession {
             session_id: session_id.clone(),
@@ -1044,6 +1046,8 @@ async fn export_session_start(
             status: "pending".to_string(),
             tx_hash: None,
             nullifier: None,
+            created_at: now,
+            updated_at: now,
         })
         .await;
     // Mint a SHORT one-time EXPORT token (32 hex chars == 16 random bytes) so the QR is low-density
@@ -1198,6 +1202,37 @@ async fn verify_session_status(
         "txHash": s.tx_hash,
         "nullifier": s.nullifier,
     }))
+}
+
+/// GET /verify/history — operator-gated verifier audit log. This intentionally stores verifier-side
+/// operational proof metadata (purpose, mode, relayer, tx/nullifier), not credential PII.
+async fn verify_history(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let verifications: Vec<Value> = st
+        .store
+        .list_sessions()
+        .await
+        .into_iter()
+        .map(|s| {
+            let explorer_url = s.tx_hash.as_deref().map(crate::chain::explorer_tx_url);
+            json!({
+                "sessionId": s.session_id,
+                "relayer": s.relayer,
+                "purpose": s.purpose,
+                "recordType": s.record_type,
+                "mode": s.mode,
+                "status": s.status,
+                "txHash": s.tx_hash,
+                "explorerUrl": explorer_url,
+                "nullifier": s.nullifier,
+                "createdAt": s.created_at,
+                "updatedAt": s.updated_at,
+            })
+        })
+        .collect();
+    ok(json!({ "verifications": verifications }))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -2087,6 +2122,7 @@ pub fn public_router(state: AppState) -> Router {
         // verify
         .route("/verify/session/start", post(export_session_start))
         .route("/verify/session/:id", get(verify_session_status))
+        .route("/verify/history", get(verify_history))
         .route("/verify/consent/submit", post(verify_consent_submit))
         // alias so the owner's phone can POST consent+proof directly to the groomer host.
         .route("/v1/verify/consent", post(verify_consent_submit))
