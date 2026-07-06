@@ -375,6 +375,38 @@ export interface DelistApplicationResp {
   delistTxs: string[];
 }
 
+// ---- direct whitelist management (PR-E) ----
+// `GovernanceDisposition` (the shared GovernanceAction outcome type) is defined once in the
+// control-plane block below; the whitelist responses reuse it.
+/**
+ * POST /v1/admin/whitelist/{grant,revoke} body — whitelist/delist a (signer, capability) pair
+ * directly, decoupled from the issuer-application queue. At least one of `recordType` /
+ * `verifyPurposes` must be present. `recordType` is a label ("VACCINATION") or an explicit
+ * `0x`+64-hex key; `verifyPurposes` are VERIFY:<purpose> capabilities.
+ */
+export interface WhitelistActionReq {
+  signer: string;
+  recordType?: string;
+  verifyPurposes?: string[];
+}
+/** POST /v1/admin/whitelist/grant response: one disposition per whitelisted capability. */
+export interface WhitelistGrantResp {
+  signer: string;
+  recordType?: string | null;
+  actions: GovernanceDisposition[];
+  /**
+   * DOG_PROFILE grants ALSO grant DogTagSBT.ISSUER_ROLE (mint rights): the disposition of that grant,
+   * `{ status: "alreadyHeld" }` when the signer already had it, or null for non-DOG_PROFILE grants.
+   */
+  issuerRole?: GovernanceDisposition | { status: "alreadyHeld" } | null;
+}
+/** POST /v1/admin/whitelist/revoke response: one disposition per delisted capability. */
+export interface WhitelistRevokeResp {
+  signer: string;
+  recordType?: string | null;
+  actions: GovernanceDisposition[];
+}
+
 // ---- appointments (§4.4) ----
 export interface CentralAppointment {
   id: string;

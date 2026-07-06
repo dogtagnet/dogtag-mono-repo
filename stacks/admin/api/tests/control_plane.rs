@@ -164,3 +164,162 @@ async fn governance_authority_map_reflects_holders_and_pending_transfer() {
         1_782_988_652u64
     );
 }
+
+// ============================================================================================
+// PR-E — direct whitelist grant / revoke (management console), routed through GovernanceAction.
+// ============================================================================================
+
+use common::{REGISTRY, SBT};
+
+/// A distinct, well-formed signer address to grant/revoke against (not the hosted key).
+const SIGNER: &str = "0x00000000000000000000000000000000000000c3";
+
+/// Grant requires an admin session.
+#[tokio::test]
+async fn whitelist_grant_requires_admin() {
+    let (state, _c, _v, _b) = hermetic_state();
+    let app = admin_api::router(state);
+    let (s, _b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        None,
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": RT })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// A grant with neither recordType nor verifyPurposes is a 400 (nothing to whitelist).
+#[tokio::test]
+async fn whitelist_grant_rejects_missing_capability() {
+    let (state, _c, _v, _b) = hermetic_state();
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+}
+
+/// A malformed signer address is rejected rather than silently coerced to the zero address.
+#[tokio::test]
+async fn whitelist_grant_rejects_bad_signer() {
+    let (state, _c, _v, _b) = hermetic_state();
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": "0xnothex", "recordType": RT })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+}
+
+/// When the hosted key does NOT hold WHITELIST_ADMIN (default hermetic state), the grant is PROPOSED:
+/// nothing is broadcast; the calldata payload is returned for the role holder to execute.
+#[tokio::test]
+async fn whitelist_grant_proposes_when_hosted_lacks_role() {
+    let (state, _chain, _v, _b) = hermetic_state();
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": RT })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["actions"].as_array().unwrap().len(), 1);
+    assert_eq!(b["actions"][0]["disposition"], "proposed");
+    assert!(b["actions"][0]["calldata"].as_str().unwrap().starts_with("0x"));
+    // not a DOG_PROFILE grant -> no ISSUER role step.
+    assert!(b["issuerRole"].is_null());
+    assert_eq!(b["signer"].as_str().unwrap(), SIGNER);
+}
+
+/// When the hosted key holds WHITELIST_ADMIN, the grant (recordType + each verify purpose) is EXECUTED:
+/// one broadcast tx per capability.
+#[tokio::test]
+async fn whitelist_grant_executes_all_capabilities_when_holds_role() {
+    let (state, chain, _v, _b) = hermetic_state();
+    chain.set_role(REGISTRY, &whitelist_admin_role(), HOSTED);
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({
+            "signer": SIGNER,
+            "recordType": RT,
+            "verifyPurposes": ["grooming_intake", "boarding_intake"],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let actions = b["actions"].as_array().unwrap();
+    assert_eq!(actions.len(), 3, "recordType + 2 verify purposes");
+    for a in actions {
+        assert_eq!(a["disposition"], "executed");
+        assert!(a["txHash"].as_str().unwrap().starts_with("0x"));
+    }
+}
+
+/// A DOG_PROFILE grant also grants DogTagSBT.ISSUER_ROLE (mint rights) when the hosted key holds the
+/// SBT DEFAULT_ADMIN authority — the same onboarding step approve runs, as a standalone action.
+#[tokio::test]
+async fn whitelist_grant_dog_profile_grants_issuer_role() {
+    let (state, chain, _v, _b) = hermetic_state();
+    chain.set_role(REGISTRY, &whitelist_admin_role(), HOSTED);
+    chain.set_role(SBT, &default_admin_role(), HOSTED);
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": "DOG_PROFILE" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["actions"][0]["disposition"], "executed");
+    // the ISSUER-role grant is a governance action too (executed here, holder holds SBT DEFAULT_ADMIN).
+    assert_eq!(b["issuerRole"]["disposition"], "executed");
+    assert!(b["issuerRole"]["txHash"].as_str().unwrap().starts_with("0x"));
+}
+
+/// Revoke delists the record type (delistFor) and is EXECUTED when the hosted key holds WHITELIST_ADMIN.
+#[tokio::test]
+async fn whitelist_revoke_executes_when_holds_role() {
+    let (state, chain, _v, _b) = hermetic_state();
+    chain.set_role(REGISTRY, &whitelist_admin_role(), HOSTED);
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/revoke",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": RT })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["actions"].as_array().unwrap().len(), 1);
+    assert_eq!(b["actions"][0]["disposition"], "executed");
+    assert!(b["actions"][0]["txHash"].as_str().unwrap().starts_with("0x"));
+    // revoke never carries an issuerRole field.
+    assert!(b.get("issuerRole").is_none());
+}

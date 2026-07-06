@@ -25,6 +25,9 @@ import type {
   RegisterBusinessReq,
   RegisterBusinessResp,
   RejectApplicationResp,
+  WhitelistActionReq,
+  WhitelistGrantResp,
+  WhitelistRevokeResp,
 } from "./types";
 
 export interface CentralClientOptions {
@@ -188,6 +191,14 @@ export function createCentralClient(opts: CentralClientOptions) {
     /** GET /v1/admin/governance/authority - the live on-chain authority map (chain-health card). */
     getGovernanceAuthority: () =>
       request<GovernanceAuthority>("GET", "/v1/admin/governance/authority"),
+
+    // ---- direct whitelist management (PR-E) ----
+    /** POST /v1/admin/whitelist/grant — whitelist a (signer, capability) pair via GovernanceAction. */
+    whitelistGrant: (body: WhitelistActionReq) =>
+      request<WhitelistGrantResp>("POST", "/v1/admin/whitelist/grant", body),
+    /** POST /v1/admin/whitelist/revoke — delist a (signer, capability) pair via GovernanceAction. */
+    whitelistRevoke: (body: WhitelistActionReq) =>
+      request<WhitelistRevokeResp>("POST", "/v1/admin/whitelist/revoke", body),
   };
 }
 
