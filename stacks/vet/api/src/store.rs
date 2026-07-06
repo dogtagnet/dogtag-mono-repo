@@ -91,11 +91,17 @@ pub struct VerifySession {
     pub record_type: String,
     pub mode: String, // "normal" | "zk"
     pub challenge: String,
-    pub status: String, // "pending" | "recorded"
+    pub status: String, // "pending" | "recording" | "recorded" | "error"
     pub tx_hash: Option<String>,
     /// the consumed verification nullifier (set on `recorded`, primarily the ZK path).
     #[serde(default)]
     pub nullifier: Option<String>,
+    /// Unix seconds the verification session/audit row was created.
+    #[serde(default)]
+    pub created_at: u64,
+    /// Unix seconds the verification session/audit row last changed state.
+    #[serde(default)]
+    pub updated_at: u64,
 }
 
 // --------------------------------------------------------------------------------------------
@@ -284,6 +290,8 @@ pub trait Store: Send + Sync {
     async fn put_session(&self, s: VerifySession);
     async fn get_session(&self, id: &str) -> Option<VerifySession>;
     async fn update_session(&self, s: VerifySession);
+    /// List verifier sessions as a durable audit trail, most-recently-created first.
+    async fn list_sessions(&self) -> Vec<VerifySession>;
 
     // ---- jwt jti (one-time) ----
     /// Atomic consume: returns true if the jti was unused (now consumed), false if already used.
@@ -471,6 +479,23 @@ impl Store for MemStore {
             .unwrap()
             .sessions
             .insert(s.session_id.clone(), s);
+    }
+    async fn list_sessions(&self) -> Vec<VerifySession> {
+        let mut v: Vec<VerifySession> = self
+            .inner
+            .read()
+            .unwrap()
+            .sessions
+            .values()
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| b.session_id.cmp(&a.session_id))
+        });
+        v
     }
 
     async fn consume_jti(&self, jti: &str) -> bool {

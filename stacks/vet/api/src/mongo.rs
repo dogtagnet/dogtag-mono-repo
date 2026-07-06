@@ -106,6 +106,18 @@ impl Store for MongoStore {
     async fn update_session(&self, s: VerifySession) {
         self.put_session(s).await;
     }
+    async fn list_sessions(&self) -> Vec<VerifySession> {
+        use futures::TryStreamExt;
+        use mongodb::options::FindOptions;
+        // Most-recent first; legacy rows without created_at sort last.
+        let opts = FindOptions::builder()
+            .sort(doc! { "created_at": -1, "updated_at": -1, "session_id": -1 })
+            .build();
+        match self.sessions().find(doc! {}).with_options(opts).await {
+            Ok(cur) => cur.try_collect().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
 
     async fn consume_jti(&self, jti: &str) -> bool {
         // insert-or-fail against the unique index == atomic one-time consume.

@@ -1,4 +1,4 @@
-import { VerifyFlow, type VerifyPurpose } from "@dogtag/ui";
+import { VerificationHistoryPanel, VerifyFlow, type VerifyPurpose } from "@dogtag/ui";
 import { useApp } from "../app/AppContext";
 
 const PURPOSES: VerifyPurpose[] = [
@@ -19,6 +19,10 @@ export function Verify() {
           const s = await api.verifySessionStatus(id);
           return { status: s.status, txHash: s.txHash ?? undefined };
         }}
+      />
+      <VerificationHistoryPanel
+        client={api}
+        description="Recent owner-consent verification sessions recorded by this vet portal."
       />
     </div>
   );

@@ -78,6 +78,10 @@ export { SigningModeToggle, type SigningModeToggleProps } from "./domain/Signing
 export { StatusPanel, formatPlasma, type StatusPanelProps } from "./domain/StatusPanel";
 export { VerifyFlow, type VerifyFlowProps, type VerifyPurpose } from "./domain/VerifyFlow";
 export {
+  VerificationHistoryPanel,
+  type VerificationHistoryPanelProps,
+} from "./domain/VerificationHistoryPanel";
+export {
   IssuanceStatusPanel,
   type IssuanceStatusPanelProps,
 } from "./domain/IssuanceStatusPanel";
