@@ -6,6 +6,7 @@ import {
   Rocket,
   ShieldCheck,
   Building2,
+  Factory,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -13,6 +14,7 @@ import { useApp } from "./AppContext";
 
 const NAV: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { key: "issuers", href: "/issuers", label: "Issuers / Factory", icon: Factory },
   { key: "onboard", href: "/onboard", label: "Onboard issuer", icon: Rocket },
   { key: "businesses", href: "/businesses", label: "Business registry", icon: Building2 },
   { key: "applications", href: "/applications", label: "Issuer applications", icon: ListChecks },

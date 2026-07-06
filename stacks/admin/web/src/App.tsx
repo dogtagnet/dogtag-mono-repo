@@ -3,6 +3,7 @@ import { useApp } from "./app/AppContext";
 import { Layout } from "./app/Layout";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
+import { Issuers } from "./pages/Issuers";
 import { Businesses } from "./pages/Businesses";
 import { IssuerApplications } from "./pages/IssuerApplications";
 import { Whitelist } from "./pages/Whitelist";
@@ -16,6 +17,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/dashboard" element={<Layout title="Dashboard"><Dashboard /></Layout>} />
+      <Route path="/issuers" element={<Layout title="Issuers / Factory"><Issuers /></Layout>} />
       <Route path="/onboard" element={<Layout title="Onboard issuer"><Wizard /></Layout>} />
       <Route path="/businesses" element={<Layout title="Business registry"><Businesses /></Layout>} />
       <Route
