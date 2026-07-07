@@ -27,6 +27,12 @@ pnpm --filter @dogtag/vet-web dev
   status badges (issued/revoked/expired), the immutable on-chain proof (tx, block, contract) with a
   block-explorer link, edit off-chain label/notes (`PATCH /records/:id`), mark expired (off-chain
   status transition), re-generate QR, revoke (`POST /records/:id/revoke`, soft — the row + proof stay).
+- **Traceability** (`/traceability`) — this business's on-chain credential activity (`GET /trace/activity`
+  + `GET /trace/stats`, operator-gated), scoped server-side to its own signer(s)/clone(s) and joined to
+  its own records: an "In scope" / "Matched to a record" summary strip, per-event type + finality badges,
+  the matched local record highlighted, and block-explorer links — so an operator never sees another
+  operator's activity. Reads the standalone oversight indexer (`INDEXER_API_BASE` + a scoped bearer); when
+  the indexer is unset the page shows a first-class "Oversight indexer not connected" state.
 - **Import from user** (`/import`) — scan prompt → `POST /import/pull` (off-chain, decoupled
   from Verify).
 - **Verify** (`/verify`) — the shared `<VerifyFlow/>` (purpose + Normal/ZK → session QR → status).
@@ -43,7 +49,8 @@ real one. The central API base is where the whitelist application is posted.
 - **Wired to backend contracts**: login, genesis/confirm/unlock/accounts, prepare/confirm
   (both modes), records list/edit/expire (`GET /records`, `PATCH /records/:id`), revoke,
   share QR, signing-mode get/put, issuer signers, import/pull, verify session start, central
-  issuer-application apply.
+  issuer-application apply, traceability feed (`GET /trace/activity`, `GET /trace/stats`; 503 →
+  "indexer not connected" empty state).
 - **Visual / partially wired**: the Verify flow renders the session QR and the
   awaiting-consent state and polls `GET /verify/session/:id` for the "pending → Verified"
   transition.

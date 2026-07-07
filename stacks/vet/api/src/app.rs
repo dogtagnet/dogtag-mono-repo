@@ -10,6 +10,7 @@ use crate::auth::JwtKeys;
 use crate::calendar::{CalendarProvider, CentralClient};
 use crate::chain::{record_type_key, ChainClient};
 use crate::custody::Custody;
+use crate::oversight::OversightFeed;
 use crate::prover::ProverClient;
 use crate::store::Store;
 
@@ -74,6 +75,10 @@ pub struct AppState {
     pub cfg: Arc<Config>,
     /// in-memory login/unlock rate limiter (lenient; demo-safe).
     pub ratelimit: Arc<crate::auth::RateLimiter>,
+    /// SCOPED consumer of the PR-4 oversight indexer — the data layer behind the traceability portal
+    /// (govarch PR-5). `DisabledFeed` when `INDEXER_API_BASE` is unset; the real `HttpOversightFeed`
+    /// (presenting this business's scoped bearer) otherwise. See `crate::oversight` / `crate::trace`.
+    pub feed: Arc<dyn OversightFeed>,
 }
 
 /// Build the issuer metadata for a record type (documentStore = the issuer clone address).

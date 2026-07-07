@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./app/Layout";
 import { apiGet, type Health } from "./lib/api";
 import { Issue } from "./pages/Issue";
+import { Oversight } from "./pages/Oversight";
 import { Receipt } from "./pages/Receipt";
 import { Records } from "./pages/Records";
 import { Verify } from "./pages/Verify";
@@ -39,6 +40,14 @@ export function App() {
         element={
           <Layout title="Records" health={health}>
             <Records />
+          </Layout>
+        }
+      />
+      <Route
+        path="/oversight"
+        element={
+          <Layout title="Oversight" health={health}>
+            <Oversight />
           </Layout>
         }
       />

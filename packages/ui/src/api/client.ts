@@ -22,6 +22,9 @@ import type {
   RecordsListResp,
   RevokeResp,
   ShareResp,
+  TraceActivityResp,
+  TraceQuery,
+  TraceStatsResp,
   UpdateRecordReq,
   SigningMode,
   SigningModeResp,
@@ -118,6 +121,17 @@ export function createApiClient(opts: ApiClientOptions) {
     }
   }
 
+  /** Build a `?a=b&…` query string from a TraceQuery, skipping unset/blank fields. */
+  function traceQs(q?: TraceQuery): string {
+    if (!q) return "";
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) {
+      if (v !== undefined && v !== null && `${v}` !== "") p.set(k, `${v}`);
+    }
+    const s = p.toString();
+    return s ? `?${s}` : "";
+  }
+
   return {
     base,
     central,
@@ -142,6 +156,14 @@ export function createApiClient(opts: ApiClientOptions) {
     // ---- credentials ----
     prepare: (body: PrepareReq) => request<PrepareResp>("POST", "/credentials/prepare", body),
     confirm: (body: ConfirmReq) => request<ConfirmResp>("POST", "/credentials/confirm", body),
+
+    // ---- traceability portal (govarch PR-5): this operator's on-chain activity joined to its DB ----
+    /** GET /trace/activity — this operator's own on-chain credential activity (scoped server-side by
+     *  the indexer + a local scope gate), joined to its own DB records. Operator-gated. */
+    traceActivity: (q?: TraceQuery) =>
+      request<TraceActivityResp>("GET", `/trace/activity${traceQs(q)}`),
+    /** GET /trace/stats — this operator's in-scope on-chain counters + own record counts. */
+    traceStats: () => request<TraceStatsResp>("GET", "/trace/stats"),
 
     // ---- records ----
     /** GET /records — list every record from the backend's OWN DB (operator-gated, most-recent first). */

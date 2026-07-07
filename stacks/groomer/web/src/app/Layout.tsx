@@ -14,6 +14,7 @@ import {
   BarChart3,
   Users,
   Wand2,
+  Waypoints,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -35,6 +36,7 @@ const NAV: NavItem[] = [
   { key: "import", href: "/import", label: "Import from user", icon: Download },
   { key: "issue", href: "/issue", label: "Issue credential", icon: FileSignature },
   { key: "records", href: "/records", label: "Records", icon: FileStack },
+  { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
   { key: "verify", href: "/verify", label: "Export", icon: ShieldCheck },
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },

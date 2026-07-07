@@ -33,6 +33,16 @@ export async function apiPost(path: string, body: unknown, opts?: { auth?: boole
   return { status: r.status, json: await r.json() };
 }
 
+/** A GET that surfaces the HTTP status so the caller can render a first-class 503 "oversight indexer
+ *  not connected" state (rather than a generic thrown error). */
+export async function apiGetResult(path: string): Promise<{ status: number; json: unknown }> {
+  const r = await fetch(`${API_BASE}${path}`, {
+    headers: { authorization: `Bearer ${API_TOKEN}` },
+  });
+  const json = await r.json().catch(() => null);
+  return { status: r.status, json };
+}
+
 export async function apiPatch(path: string, body: unknown) {
   const r = await fetch(`${API_BASE}${path}`, {
     method: "PATCH",
@@ -75,6 +85,86 @@ export interface GovRecord {
   invalidationReason?: string | null;
   createdAt?: number;
   updatedAt?: number;
+}
+
+// ---- oversight console (govarch PR-5): UNSCOPED cross-issuer activity joined to own credentials ----
+
+/** The government's own credential/verification joined to an on-chain event (non-PII summary). */
+export interface OversightLocalJoin {
+  kind: "issuance" | "verification";
+  root?: string;
+  recordType?: string;
+  dogTagId?: string;
+  receiptId?: string | null;
+  status?: string;
+  label?: string | null;
+  id?: string;
+  verdict?: boolean;
+}
+
+/** One non-PII on-chain oversight event (from the indexer), joined to the government's own records. */
+export interface OversightEvent {
+  id: string;
+  type: string;
+  contract?: string;
+  actor?: string;
+  clone?: string;
+  recordType?: string;
+  root?: string;
+  dogTagId?: string;
+  txHash?: string;
+  blockNumber?: number;
+  blockTimestamp?: number;
+  finality?: string;
+  actorName?: string;
+  cloneName?: string;
+  txUrl?: string;
+  /** The government's own record joined to this event, or null when it belongs to another issuer. */
+  local?: OversightLocalJoin | null;
+}
+
+export interface OversightActivityResp {
+  events: OversightEvent[];
+  total?: number;
+  /** how many cross-issuer events are the government's OWN credentials. */
+  matched?: number;
+  scope?: { label?: string; unscoped?: boolean };
+}
+
+export interface OversightStatsResp {
+  rootIssued?: number;
+  rootRevoked?: number;
+  activeCredentials?: number;
+  verifications?: number;
+  clones?: number;
+  signers?: number;
+  local?: { credentials: number; verifications: number };
+  [k: string]: unknown;
+}
+
+/** Map an on-chain event kind to a display label + Badge variant. */
+export function eventMeta(t: string): {
+  label: string;
+  variant: "success" | "warning" | "danger" | "neutral" | "default";
+} {
+  switch (t) {
+    case "rootIssued":
+      return { label: "Root issued", variant: "success" };
+    case "rootRevoked":
+      return { label: "Root revoked", variant: "danger" };
+    case "verified":
+      return { label: "Verified", variant: "default" };
+    case "whitelisted":
+      return { label: "Whitelisted", variant: "success" };
+    case "delisted":
+      return { label: "Delisted", variant: "warning" };
+    case "issuerCreated":
+      return { label: "Issuer created", variant: "default" };
+    case "rootRegistered":
+      return { label: "Root registered", variant: "neutral" };
+    default:
+      return { label: t, variant: "neutral" };
+  }
 }
 
 /** PII-free public receipt status (GET /v1/receipts/:receiptId/status) — a LIVE on-chain read. */

@@ -647,6 +647,129 @@ async fn list_verifications(State(st): State<AppState>) -> Resp {
 }
 
 // --------------------------------------------------------------------------------------------
+// Government oversight console (govarch PR-5) — the UNSCOPED cross-issuer activity feed from the
+// oversight indexer, joined to the government's OWN issued credentials. See `crate::oversight` +
+// `crate::trace`. API-token-gated (the authority's own console).
+// --------------------------------------------------------------------------------------------
+
+/// Map an oversight-feed error to an HTTP response: an unconfigured indexer is a 503 (the oversight
+/// surface is simply unavailable — the rest of the backend runs), any transport/upstream error is 502.
+fn feed_err(e: crate::oversight::FeedError) -> Resp {
+    use crate::oversight::FeedError;
+    match e {
+        FeedError::NotConfigured => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": e.to_string(), "indexer": "not-configured" })),
+        ),
+        FeedError::Transport(_) | FeedError::Status(_, _) => {
+            err(StatusCode::BAD_GATEWAY, &e.to_string())
+        }
+    }
+}
+
+/// Query params for `GET /v1/oversight/activity` — pass-through narrowing filters over the UNSCOPED
+/// feed. Each only ever shrinks the (already cross-issuer) result set.
+#[derive(Debug, Deserialize, Default)]
+struct OversightParams {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    signer: Option<String>,
+    issuer: Option<String>,
+    #[serde(rename = "recordType")]
+    record_type: Option<String>,
+    root: Option<String>,
+    #[serde(rename = "dogTagId")]
+    dog_tag_id: Option<String>,
+    finality: Option<String>,
+    since: Option<u64>,
+    until: Option<u64>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+impl From<OversightParams> for crate::oversight::FeedQuery {
+    fn from(p: OversightParams) -> Self {
+        crate::oversight::FeedQuery {
+            event_type: p.event_type,
+            signer: p.signer,
+            issuer: p.issuer,
+            record_type: p.record_type,
+            root: p.root,
+            dog_tag_id: p.dog_tag_id,
+            finality: p.finality,
+            since: p.since,
+            until: p.until,
+            limit: p.limit,
+            offset: p.offset,
+        }
+    }
+}
+
+/// `GET /v1/oversight/activity` — the UNSCOPED cross-issuer on-chain activity feed, joined to the
+/// government's own issued credentials (its own activity is highlighted; every other issuer's is shown
+/// too). API-token-gated.
+async fn oversight_activity(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(p): axum::extract::Query<OversightParams>,
+) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
+    let q: crate::oversight::FeedQuery = p.into();
+    let mut body = match st.feed.events(&q).await {
+        Ok(b) => b,
+        Err(e) => return feed_err(e),
+    };
+    let idx = crate::trace::build_index(st.store.as_ref()).await;
+    let events = body
+        .get("events")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let joined = crate::trace::join_events(events, &idx);
+    if let Value::Object(map) = &mut body {
+        map.insert("events".into(), json!(joined.events));
+        // `matched` = how many cross-issuer events are the government's OWN credentials.
+        map.insert("matched".into(), json!(joined.matched));
+    }
+    ok(body)
+}
+
+/// `GET /v1/oversight/stats` — cross-issuer aggregate counters from the indexer, plus the government's
+/// own record counts. API-token-gated.
+async fn oversight_stats(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
+    let mut body = match st.feed.stats().await {
+        Ok(b) => b,
+        Err(e) => return feed_err(e),
+    };
+    let creds = st.store.list_credentials().await;
+    let verifs = st.store.list_verifications().await;
+    if let Value::Object(map) = &mut body {
+        map.insert(
+            "local".into(),
+            json!({ "credentials": creds.len(), "verifications": verifs.len() }),
+        );
+    }
+    ok(body)
+}
+
+/// `GET /v1/oversight/issuers` — the deployed `DogTagIssuer` clones across ALL issuers with per-clone
+/// issued/revoked/active counts. API-token-gated.
+async fn oversight_issuers(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
+    match st.feed.issuers().await {
+        Ok(body) => ok(body),
+        Err(e) => feed_err(e),
+    }
+}
+
+// --------------------------------------------------------------------------------------------
 // public receipt status (PII-free) — resolves receiptId -> R, LIVE on-chain read
 // --------------------------------------------------------------------------------------------
 
@@ -852,6 +975,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/records/:root", get(get_record).patch(update_record))
         .route("/v1/records/:root/revoke", post(revoke_record))
         .route("/v1/verifications", get(list_verifications))
+        // oversight console (govarch PR-5): unscoped cross-issuer activity joined to own credentials
+        .route("/v1/oversight/activity", get(oversight_activity))
+        .route("/v1/oversight/stats", get(oversight_stats))
+        .route("/v1/oversight/issuers", get(oversight_issuers))
         // PUBLIC (no auth): PII-free receipt status JSON + human status page (live on-chain read).
         .route("/v1/receipts/:receipt_id/status", get(receipt_status))
         .route("/r/:receipt_id", get(receipt_page))

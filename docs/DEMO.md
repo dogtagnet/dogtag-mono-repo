@@ -37,6 +37,7 @@ scripts/demo-up.sh        # builds + starts admin/vet/groomer/government backend
 # owner wallet (holder, no backend): http://localhost:45931   (Receive a wrapped doc → Present a ZK proof to a verifier's /x/<token> link)
 # backends: admin :39742 · vet :41874 · groomer :43618 · government :44832   (ROAX chainId 135)
 # also boots the prover-service :41875 (32-bit-Android ZK fallback + the owner wallet's trusted prover; see §5)
+# also boots the oversight indexer :46001 (demo mode) — the data layer for the vet/groomer Traceability + government Oversight pages
 # stop with: scripts/demo-down.sh
 ```
 Backends keep records/sessions in an in-memory store (no Mongo needed) — those are **lost on restart** —
