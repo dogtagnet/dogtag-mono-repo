@@ -1,4 +1,4 @@
-import { VerificationHistoryPanel, VerifyFlow, type VerifyPurpose } from "@dogtag/ui";
+import { CredentialVerifyPanel, VerificationHistoryPanel, VerifyFlow, type VerifyPurpose } from "@dogtag/ui";
 import { useApp } from "../app/AppContext";
 
 const PURPOSES: VerifyPurpose[] = [
@@ -12,6 +12,7 @@ export function Verify() {
   // Poll GET /verify/session/{id}; status flips pending → recorded once the owner consent is on chain.
   return (
     <div className="space-y-4">
+      <CredentialVerifyPanel client={api} />
       <VerifyFlow
         client={api}
         purposes={PURPOSES}

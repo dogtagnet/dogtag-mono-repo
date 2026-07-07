@@ -82,6 +82,10 @@ export {
   type VerificationHistoryPanelProps,
 } from "./domain/VerificationHistoryPanel";
 export {
+  CredentialVerifyPanel,
+  type CredentialVerifyPanelProps,
+} from "./domain/CredentialVerifyPanel";
+export {
   IssuanceStatusPanel,
   type IssuanceStatusPanelProps,
 } from "./domain/IssuanceStatusPanel";

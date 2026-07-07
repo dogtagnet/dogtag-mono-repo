@@ -161,6 +161,34 @@ export interface ImportPullResp {
 }
 
 // ---- verify ----
+export interface VerifyCredentialReq {
+  /** WrappedDoc JSON as produced by a DogTag issuer. */
+  wrappedDoc: Record<string, unknown>;
+  /** Optional DogTagIssuer clone override; defaults to wrappedDoc.issuer.documentStore. */
+  issuerAddr?: string;
+  /** Optional issuer signer address for the IssuerRegistry whitelist pillar. */
+  signerAddr?: string;
+}
+export interface VerifyCredentialResp {
+  verdict: boolean;
+  /** Current direct-check status from integrity + chain reads. */
+  status: "valid" | "revoked" | "not_issued" | "integrity_failed" | "invalid";
+  recordType: string;
+  root: string;
+  recomputedRoot: string;
+  issuerAddr: string;
+  signerAddr?: string | null;
+  /** Unix seconds as a decimal string from DogTagIssuer.issuedAt(root). */
+  issuedAt: string;
+  checkedAt: number;
+  fragments: {
+    integrity: boolean;
+    onchain: boolean;
+    issued: boolean;
+    revoked: boolean;
+    issuerWhitelisted?: boolean | null;
+  };
+}
 export interface VerifySessionStartReq {
   purpose: string;
   recordType: string;

@@ -4,6 +4,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  CredentialVerifyPanel,
   VerificationHistoryPanel,
   VerifyFlow,
   type VerifyPurpose,
@@ -55,6 +56,7 @@ export function Verify() {
           proof. ZK is the default for sensitive purposes — no credential data is written on chain.
         </CardContent>
       </Card>
+      <CredentialVerifyPanel client={api} />
       <VerifyFlow
         client={api}
         purposes={PURPOSES}

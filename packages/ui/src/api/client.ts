@@ -30,6 +30,8 @@ import type {
   VerifyConsentSubmitReq,
   VerifyConsentSubmitResp,
   VerificationHistoryResp,
+  VerifyCredentialReq,
+  VerifyCredentialResp,
   VerifySessionStartReq,
   VerifySessionStartResp,
   VerifySessionStatusResp,
@@ -167,6 +169,8 @@ export function createApiClient(opts: ApiClientOptions) {
     importPull: (body: ImportPullReq) => request<ImportPullResp>("POST", "/import/pull", body),
 
     // ---- verify ----
+    verifyCredential: (body: VerifyCredentialReq) =>
+      request<VerifyCredentialResp>("POST", "/verify/credential", body),
     verifySessionStart: (body: VerifySessionStartReq) =>
       request<VerifySessionStartResp>("POST", "/verify/session/start", body),
     /** GET /verify/session/{id} — operator-gated status poll (pending → recorded). */
