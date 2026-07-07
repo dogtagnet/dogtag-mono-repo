@@ -728,7 +728,9 @@ async fn revoke(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<S
     r.invalidated_at = Some(auth::now());
     r.updated_at = auth::now();
     st.store.update_record(r).await;
-    ok(json!({ "recordId": id, "status": "revoked", "txHash": sent.tx_hash, "blockNumber": revoke_block }))
+    ok(
+        json!({ "recordId": id, "status": "revoked", "txHash": sent.tx_hash, "blockNumber": revoke_block }),
+    )
 }
 
 /// GET /records — list every record this device has issued, most-recent first (operator-gated).
@@ -767,12 +769,37 @@ async fn update_record_meta(
     }
     // Reject any attempt to set an on-chain-derived field — immutable chain state cannot be edited.
     const IMMUTABLE_KEYS: &[&str] = &[
-        "recordId", "record_id", "recordType", "record_type", "dogTagId", "dog_tag_id", "root",
-        "merkleRoot", "wrappedDoc", "wrapped_doc", "issuerAddr", "issuer_addr", "contractAddress",
-        "preparedCalldata", "prepared_calldata", "txHash", "tx_hash", "confirmedTxHash",
-        "confirmed_tx_hash", "blockNumber", "block_number", "explorerUrl", "explorer_url",
-        "signerAddress", "signer_address", "revokedTxHash", "revoked_tx_hash", "revokedBlockNumber",
-        "revoked_block_number", "revokeExplorerUrl", "revoke_explorer_url",
+        "recordId",
+        "record_id",
+        "recordType",
+        "record_type",
+        "dogTagId",
+        "dog_tag_id",
+        "root",
+        "merkleRoot",
+        "wrappedDoc",
+        "wrapped_doc",
+        "issuerAddr",
+        "issuer_addr",
+        "contractAddress",
+        "preparedCalldata",
+        "prepared_calldata",
+        "txHash",
+        "tx_hash",
+        "confirmedTxHash",
+        "confirmed_tx_hash",
+        "blockNumber",
+        "block_number",
+        "explorerUrl",
+        "explorer_url",
+        "signerAddress",
+        "signer_address",
+        "revokedTxHash",
+        "revoked_tx_hash",
+        "revokedBlockNumber",
+        "revoked_block_number",
+        "revokeExplorerUrl",
+        "revoke_explorer_url",
     ];
     if let Some(obj) = raw.as_object() {
         for k in obj.keys() {
@@ -817,10 +844,7 @@ async fn update_record_meta(
         match s {
             "expired" => {
                 if r.status != RecordStatus::Issued {
-                    return err(
-                        StatusCode::CONFLICT,
-                        "only issued records can be expired",
-                    );
+                    return err(StatusCode::CONFLICT, "only issued records can be expired");
                 }
                 r.status = RecordStatus::Expired;
                 r.invalidated_at = Some(auth::now());
@@ -2179,6 +2203,130 @@ async fn staff_action(
 // router assembly
 // --------------------------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------------------------
+// Traceability portal (govarch PR-5) — this operator's own on-chain credential activity, scoped
+// server-side by the oversight indexer to this business's signer/clone, re-gated by a LOCAL scope
+// check, and joined to this operator's own DB records. See `crate::oversight` + `crate::trace`.
+// --------------------------------------------------------------------------------------------
+
+/// Map an oversight-feed error to an HTTP response: an unconfigured indexer is a 503 (the traceability
+/// surface is simply unavailable — the rest of the backend runs), any transport/upstream error is 502.
+fn feed_err(e: crate::oversight::FeedError) -> Resp {
+    use crate::oversight::FeedError;
+    match e {
+        FeedError::NotConfigured => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": e.to_string(), "indexer": "not-configured" })),
+        ),
+        FeedError::Transport(_) | FeedError::Status(_, _) => {
+            err(StatusCode::BAD_GATEWAY, &e.to_string())
+        }
+    }
+}
+
+/// Query params for `GET /trace/activity` — narrowing filters over the SCOPED oversight feed. Each
+/// only ever shrinks the result set; the indexer's server-side scope ceiling (this business's
+/// signer/clone) can never be widened by a client filter, and the local gate drops anything foreign.
+#[derive(Debug, Deserialize, Default)]
+struct TraceParams {
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+    signer: Option<String>,
+    issuer: Option<String>,
+    #[serde(rename = "recordType")]
+    record_type: Option<String>,
+    root: Option<String>,
+    #[serde(rename = "dogTagId")]
+    dog_tag_id: Option<String>,
+    finality: Option<String>,
+    since: Option<u64>,
+    until: Option<u64>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+impl From<TraceParams> for crate::oversight::FeedQuery {
+    fn from(p: TraceParams) -> Self {
+        crate::oversight::FeedQuery {
+            event_type: p.event_type,
+            signer: p.signer,
+            issuer: p.issuer,
+            record_type: p.record_type,
+            root: p.root,
+            dog_tag_id: p.dog_tag_id,
+            finality: p.finality,
+            since: p.since,
+            until: p.until,
+            limit: p.limit,
+            offset: p.offset,
+        }
+    }
+}
+
+/// `GET /trace/activity` — this operator's own on-chain credential activity, joined to its own DB
+/// records. The indexer scopes the feed to this business's signer/clone by its bearer; the local scope
+/// gate re-checks every event server-side (defense-in-depth); the join attaches each event's matching
+/// local record. Operator-gated. A vet can never fetch another vet's activity through this route.
+async fn trace_activity(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(p): Query<TraceParams>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let q: crate::oversight::FeedQuery = p.into();
+    let mut body = match st.feed.events(&q).await {
+        Ok(b) => b,
+        Err(e) => return feed_err(e),
+    };
+    let scope = crate::trace::build_scope(st.store.as_ref(), &st.cfg).await;
+    let idx = crate::trace::build_index(st.store.as_ref()).await;
+    let events = body
+        .get("events")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let joined = crate::trace::join_events(events, Some(&scope), &idx);
+    if let Value::Object(map) = &mut body {
+        map.insert("events".into(), json!(joined.events));
+        // `total` (from the indexer) is the scoped total; report the local page stats alongside so the
+        // portal can show "N in scope, M joined to a local record".
+        map.insert("inScope".into(), json!(joined.in_scope));
+        map.insert("matched".into(), json!(joined.matched));
+        map.insert(
+            "droppedOutOfScope".into(),
+            json!(joined.dropped_out_of_scope),
+        );
+        map.insert(
+            "localScope".into(),
+            json!({ "signers": scope.signers.len(), "clones": scope.clones.len() }),
+        );
+    }
+    ok(body)
+}
+
+/// `GET /trace/stats` — this operator's in-scope on-chain counters (proxied from the indexer's scoped
+/// `/v1/stats`) plus its own off-chain record/verification counts. Operator-gated.
+async fn trace_stats(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    let mut body = match st.feed.stats().await {
+        Ok(b) => b,
+        Err(e) => return feed_err(e),
+    };
+    let records = st.store.list_records().await;
+    let sessions = st.store.list_sessions().await;
+    if let Value::Object(map) = &mut body {
+        map.insert(
+            "local".into(),
+            json!({ "records": records.len(), "verifications": sessions.len() }),
+        );
+    }
+    ok(body)
+}
+
 /// The `/admin/*` custody routes (admin-session/loopback isolated). Mounted on the public listener
 /// by default; when `ADMIN_LOOPBACK_ONLY` is set, served on a separate 127.0.0.1 listener instead.
 pub fn admin_router(state: AppState) -> Router {
@@ -2242,6 +2390,9 @@ pub fn public_router(state: AppState) -> Router {
         .route("/issuer/signers", get(issuer_signers))
         // import
         .route("/import/pull", post(import_pull))
+        // traceability portal (govarch PR-5): this operator's own on-chain activity joined to its DB
+        .route("/trace/activity", get(trace_activity))
+        .route("/trace/stats", get(trace_stats))
         // verify
         .route("/verify/session/start", post(export_session_start))
         .route("/verify/credential", post(verify_credential))

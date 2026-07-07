@@ -70,6 +70,7 @@ fn government_stack(chain: MemChain) -> AppState {
         store,
         chain: Arc::new(chain),
         cfg: Arc::new(cfg),
+        feed: Arc::new(government_api::oversight::DisabledFeed),
     }
 }
 
@@ -80,10 +81,16 @@ async fn post(state: &AppState, uri: &str, body: Value) -> (StatusCode, Value) {
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap();
-    let resp = government_api::router(state.clone()).oneshot(req).await.unwrap();
+    let resp = government_api::router(state.clone())
+        .oneshot(req)
+        .await
+        .unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test]
@@ -92,7 +99,10 @@ async fn government_verifies_a_vet_issued_credential() {
     //    whitelist the vet signer for VACCINATION (what the admin approve flow does on-chain).
     let (root, wrapped) = vet_issue_vaccination("7");
     let chain = MemChain::new();
-    chain.issue(VACC_CLONE, &root).await.expect("vet anchors root");
+    chain
+        .issue(VACC_CLONE, &root)
+        .await
+        .expect("vet anchors root");
     chain.whitelist(
         REGISTRY,
         &government_api::app::record_type_key("VACCINATION"),
@@ -112,7 +122,10 @@ async fn government_verifies_a_vet_issued_credential() {
     assert_eq!(v["recordType"], "VACCINATION");
     assert_eq!(v["fragments"]["integrity"], true, "integrity: {v}");
     assert_eq!(v["fragments"]["onchain"], true, "on-chain isValid: {v}");
-    assert_eq!(v["fragments"]["issuerWhitelisted"], true, "issuer identity: {v}");
+    assert_eq!(
+        v["fragments"]["issuerWhitelisted"], true,
+        "issuer identity: {v}"
+    );
     assert_eq!(v["verdict"], true);
     assert_eq!(v["recomputedRoot"], root);
 }
@@ -130,6 +143,9 @@ async fn government_rejects_a_tampered_vet_credential() {
     let gov = government_stack(chain);
     let (status, v) = post(&gov, "/v1/verify", json!({ "wrapped_doc": wrapped })).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(v["fragments"]["integrity"], false, "tamper must fail integrity: {v}");
+    assert_eq!(
+        v["fragments"]["integrity"], false,
+        "tamper must fail integrity: {v}"
+    );
     assert_eq!(v["verdict"], false);
 }

@@ -11,6 +11,7 @@ use dogtag_standard::wrap::{wrap_document, IssuerMeta, WrappedDoc};
 use serde_json::{json, Value};
 
 use crate::chain::ChainClient;
+use crate::oversight::OversightFeed;
 use crate::store::Store;
 
 /// The government authority's record types (keccak256(label) is the on-chain issuer/whitelist key).
@@ -63,6 +64,11 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub chain: Arc<dyn ChainClient>,
     pub cfg: Arc<Config>,
+    /// UNSCOPED consumer of the PR-4 oversight indexer — the data layer behind the government
+    /// oversight console (govarch PR-5). `DisabledFeed` when `INDEXER_API_BASE` is unset; the real
+    /// `HttpOversightFeed` (presenting the unscoped bearer) otherwise. See `crate::oversight` /
+    /// `crate::trace`.
+    pub feed: Arc<dyn OversightFeed>,
 }
 
 impl Clone for AppState {
@@ -71,6 +77,7 @@ impl Clone for AppState {
             store: self.store.clone(),
             chain: self.chain.clone(),
             cfg: self.cfg.clone(),
+            feed: self.feed.clone(),
         }
     }
 }

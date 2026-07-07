@@ -5,14 +5,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tower_http::cors::CorsLayer;
 use vet_api::app::{AppState, Config};
 use vet_api::auth::JwtKeys;
 use vet_api::calendar::{CalendarProvider, CentralClient, GoogleCalendar, ReqwestCentralClient};
 use vet_api::chain::AlloyChain;
 use vet_api::custody::Custody;
+use vet_api::oversight::{DisabledFeed, HttpOversightFeed, OversightFeed};
 use vet_api::prover::{ArkProver, ProverClient, StubProver};
 use vet_api::store::{MemStore, Store};
-use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() {
@@ -68,7 +69,9 @@ async fn main() {
         central_hmac_secret: env("CENTRAL_HMAC_SECRET", "dev-central-hmac-secret"),
         // OPTIONAL disk seal: when set, the sealed custody (ciphertext + meta) is persisted on
         // genesis and re-loaded on startup so the signer survives a restart. Unset -> in-memory only.
-        custody_seal_path: std::env::var("CUSTODY_SEAL_PATH").ok().filter(|s| !s.trim().is_empty()),
+        custody_seal_path: std::env::var("CUSTODY_SEAL_PATH")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
     };
 
     // Fail-closed (audit H2): refuse to boot in production with unset/dev-default secrets. The
@@ -104,7 +107,10 @@ async fn main() {
     let calendar: Arc<dyn CalendarProvider> = Arc::new(GoogleCalendar::new(
         env("GOOGLE_CLIENT_ID", ""),
         env("GOOGLE_CLIENT_SECRET", ""),
-        env("GOOGLE_REDIRECT_URI", &format!("http://localhost:{port}/calendar/google/callback")),
+        env(
+            "GOOGLE_REDIRECT_URI",
+            &format!("http://localhost:{port}/calendar/google/callback"),
+        ),
         env("GOOGLE_CALENDAR_ID", "primary"),
     ));
     // central appointment-events callback (HMAC-signed).
@@ -128,7 +134,10 @@ async fn main() {
             .unwrap_or_else(|| ArkProver::load(&dir))
         {
             Ok(p) => {
-                tracing::info!("loaded real Groth16 prover from {dir} (zkey {})", p.zkey_hash_hex());
+                tracing::info!(
+                    "loaded real Groth16 prover from {dir} (zkey {})",
+                    p.zkey_hash_hex()
+                );
                 Arc::new(p)
             }
             Err(e) => {
@@ -148,6 +157,11 @@ async fn main() {
     // (demo/local — unchanged). Demo behavior is byte-for-byte preserved when MONGO_URI is unset/empty.
     let store: Arc<dyn Store> = build_store().await;
 
+    // Oversight-indexer consumer (govarch PR-5, the traceability portal's data layer): the SCOPED
+    // cross-of-my-own feed. Wired when INDEXER_API_BASE is set (with INDEXER_SCOPED_TOKEN — this
+    // business's scoped bearer); otherwise DisabledFeed → the /trace/* surfaces return 503.
+    let feed: Arc<dyn OversightFeed> = build_feed();
+
     // Hydrate the sealed custody from disk (if CUSTODY_SEAL_PATH is set and the file exists) so the
     // store starts "initialized but locked" after a restart. We do NOT auto-unlock — there is no
     // passphrase on disk; the operator still unlocks (the passphrase decrypts the disk-loaded blob ->
@@ -157,13 +171,18 @@ async fn main() {
             match vet_api::custody::read_seal_file(path) {
                 Ok(Some((encrypted_seed, meta))) => {
                     store
-                        .put_custody(vet_api::store::CustodyBlob { encrypted_seed, meta })
+                        .put_custody(vet_api::store::CustodyBlob {
+                            encrypted_seed,
+                            meta,
+                        })
                         .await;
                     tracing::info!("hydrated sealed custody from {path} (initialized but locked)");
                 }
                 Ok(None) => tracing::info!("no custody seal at {path}; starting uninitialized"),
                 Err(e) => {
-                    tracing::error!("CUSTODY_SEAL_PATH set but seal load failed: {e}; refusing to start");
+                    tracing::error!(
+                        "CUSTODY_SEAL_PATH set but seal load failed: {e}; refusing to start"
+                    );
                     std::process::exit(1);
                 }
             }
@@ -183,6 +202,7 @@ async fn main() {
         jwt: load_jwt_keys(!demo),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
+        feed,
     };
 
     // CORS: explicit allowlist when CORS_ALLOW_ORIGINS is set (prod), else permissive (demo).
@@ -204,10 +224,16 @@ async fn main() {
 
         let public_addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
         let admin_addr = std::net::SocketAddr::from(([127, 0, 0, 1], admin_port));
-        tracing::info!("vet-api public listening on {public_addr}; /admin/* loopback-only on {admin_addr}");
+        tracing::info!(
+            "vet-api public listening on {public_addr}; /admin/* loopback-only on {admin_addr}"
+        );
 
-        let public_listener = tokio::net::TcpListener::bind(public_addr).await.expect("bind public");
-        let admin_listener = tokio::net::TcpListener::bind(admin_addr).await.expect("bind admin");
+        let public_listener = tokio::net::TcpListener::bind(public_addr)
+            .await
+            .expect("bind public");
+        let admin_listener = tokio::net::TcpListener::bind(admin_addr)
+            .await
+            .expect("bind admin");
 
         let public_srv = axum::serve(
             public_listener,
@@ -239,14 +265,19 @@ async fn main() {
 /// (`prod`, i.e. DEMO_MODE/VITE_DEMO_MODE unset) -> fail closed, because per-process ephemeral keys
 /// break tokens across restarts/instances. Demo/local -> ephemeral key + a loud warning.
 fn load_jwt_keys(prod: bool) -> JwtKeys {
-    match std::env::var("SHARE_JWT_SIGNING_KEY").ok().filter(|s| !s.trim().is_empty()) {
+    match std::env::var("SHARE_JWT_SIGNING_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
         Some(seed) => match JwtKeys::from_seed_hex(&seed) {
             Ok(k) => {
                 tracing::info!("loaded shared JWT signing key from SHARE_JWT_SIGNING_KEY");
                 k
             }
             Err(e) => {
-                tracing::error!("SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start");
+                tracing::error!(
+                    "SHARE_JWT_SIGNING_KEY is set but invalid ({e}); refusing to start"
+                );
                 std::process::exit(1);
             }
         },
@@ -263,6 +294,37 @@ fn load_jwt_keys(prod: bool) -> JwtKeys {
                  will NOT survive restart or work across horizontally-scaled instances)"
             );
             JwtKeys::generate()
+        }
+    }
+}
+
+/// Build the SCOPED oversight-indexer consumer (govarch PR-5). With `INDEXER_API_BASE` set: a real
+/// `HttpOversightFeed` presenting this business's SCOPED bearer from `INDEXER_SCOPED_TOKEN` (an
+/// `INDEXER_SCOPES` entry bound to this signer/clone; `INDEXER_TOKEN` is accepted as an alias).
+/// Unset base → a `DisabledFeed` so the `/trace/*` surfaces return 503 while the rest of the backend
+/// runs. An empty token still builds an `HttpOversightFeed` (the indexer will 401 unless in demo mode).
+fn build_feed() -> Arc<dyn OversightFeed> {
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+    match env("INDEXER_API_BASE") {
+        Some(base) => {
+            let token = env("INDEXER_SCOPED_TOKEN")
+                .or_else(|| env("INDEXER_TOKEN"))
+                .unwrap_or_default();
+            if token.is_empty() {
+                tracing::warn!(
+                    "INDEXER_API_BASE set but no INDEXER_SCOPED_TOKEN; the indexer will 401 unless it \
+                     is running in demo mode (fail-closed scope registry)"
+                );
+            }
+            tracing::info!("oversight indexer consumer wired to {base} (scoped)");
+            Arc::new(HttpOversightFeed::new(base, token))
+        }
+        None => {
+            tracing::warn!(
+                "INDEXER_API_BASE unset; the traceability surfaces (/trace/*) return 503 until an \
+                 indexer is configured"
+            );
+            Arc::new(DisabledFeed)
         }
     }
 }
@@ -284,7 +346,9 @@ async fn build_store() -> Arc<dyn Store> {
                 Arc::new(s)
             }
             Err(e) => {
-                tracing::error!("MONGO_URI set but MongoStore::connect failed: {e}; refusing to start");
+                tracing::error!(
+                    "MONGO_URI set but MongoStore::connect failed: {e}; refusing to start"
+                );
                 std::process::exit(1);
             }
         }

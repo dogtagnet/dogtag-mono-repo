@@ -16,6 +16,7 @@ use vet_api::auth::JwtKeys;
 use vet_api::calendar::{CalendarProvider, CentralClient, MockCalendar, MockCentralClient};
 use vet_api::chain::ChainClient;
 use vet_api::custody::Custody;
+use vet_api::oversight::DisabledFeed;
 use vet_api::prover::{ProverClient, StubProver};
 use vet_api::store::MemStore;
 
@@ -66,6 +67,9 @@ pub fn state_with(
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
+        // Traceability feed default: disabled (fail-closed 503). Trace tests override `state.feed`
+        // with a `MemFeed` seeded to mirror the indexer's scoped `/v1/events` response.
+        feed: Arc::new(DisabledFeed),
     }
 }
 
@@ -139,6 +143,9 @@ pub fn state_with_verify_keys(
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
+        // Traceability feed default: disabled (fail-closed 503). Trace tests override `state.feed`
+        // with a `MemFeed` seeded to mirror the indexer's scoped `/v1/events` response.
+        feed: Arc::new(DisabledFeed),
     }
 }
 
@@ -182,6 +189,9 @@ pub fn state_for_calendar(
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
+        // Traceability feed default: disabled (fail-closed 503). Trace tests override `state.feed`
+        // with a `MemFeed` seeded to mirror the indexer's scoped `/v1/events` response.
+        feed: Arc::new(DisabledFeed),
     }
 }
 
@@ -220,6 +230,9 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
+        // Traceability feed default: disabled (fail-closed 503). Trace tests override `state.feed`
+        // with a `MemFeed` seeded to mirror the indexer's scoped `/v1/events` response.
+        feed: Arc::new(DisabledFeed),
     }
 }
 

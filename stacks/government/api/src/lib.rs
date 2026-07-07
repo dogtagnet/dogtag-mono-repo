@@ -14,8 +14,10 @@
 
 pub mod app;
 pub mod chain;
+pub mod oversight;
 pub mod routes;
 pub mod store;
+pub mod trace;
 
 #[cfg(feature = "mongo")]
 pub mod mongo;

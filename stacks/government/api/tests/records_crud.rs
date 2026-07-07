@@ -50,6 +50,7 @@ fn demo_state() -> (AppState, MemChain) {
         store,
         chain: Arc::new(chain.clone()),
         cfg: Arc::new(cfg),
+        feed: Arc::new(government_api::oversight::DisabledFeed),
     };
     (state, chain)
 }

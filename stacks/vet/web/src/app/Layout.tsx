@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   Download,
   Wand2,
+  Waypoints,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -18,6 +19,7 @@ const NAV: NavItem[] = [
   { key: "issue", href: "/issue", label: "Issue credential", icon: FilePlus2 },
   { key: "issue-dog-tag", href: "/issue-dog-tag", label: "Issue dog tag", icon: Dog },
   { key: "records", href: "/records", label: "Records", icon: ListChecks },
+  { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
   { key: "verify", href: "/verify", label: "Export", icon: ShieldCheck },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },

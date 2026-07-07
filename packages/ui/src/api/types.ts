@@ -129,6 +129,95 @@ export interface DbRecord {
 export interface RecordsListResp {
   records: DbRecord[];
 }
+
+// ---- traceability portal (govarch PR-5): scoped on-chain activity joined to own DB records --------
+
+export type TraceEventType =
+  | "issuerCreated"
+  | "rootRegistered"
+  | "whitelisted"
+  | "delisted"
+  | "rootIssued"
+  | "rootRevoked"
+  | "verified";
+
+/** The local DB record/verification joined to an on-chain event (this operator's own). */
+export interface TraceLocalJoin {
+  kind: "issuance" | "verification";
+  recordId?: string;
+  recordType?: string;
+  dogTagId?: string;
+  status?: string;
+  label?: string | null;
+  notes?: string | null;
+  /** verification joins carry these instead. */
+  sessionId?: string;
+  purpose?: string;
+  mode?: string;
+}
+
+/** One non-PII on-chain oversight event, as re-served (and joined) by the `/trace` feed. */
+export interface TraceEvent {
+  id: string;
+  type: TraceEventType;
+  contract?: string;
+  blockNumber?: number;
+  txHash?: string;
+  blockTimestamp?: number;
+  finality?: "finalized" | "pending";
+  actor?: string;
+  clone?: string;
+  recordType?: string;
+  root?: string;
+  dogTagId?: string;
+  name?: string;
+  actorName?: string;
+  cloneName?: string;
+  txUrl?: string;
+  /** The joined local record/verification, or null when there is no matching local record. */
+  local?: TraceLocalJoin | null;
+}
+
+/** Narrowing filters for the scoped `/trace/activity` feed (can only shrink, never widen, scope). */
+export interface TraceQuery {
+  type?: TraceEventType;
+  signer?: string;
+  issuer?: string;
+  recordType?: string;
+  root?: string;
+  dogTagId?: string;
+  finality?: "finalized" | "pending";
+  since?: number;
+  until?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface TraceActivityResp {
+  events: TraceEvent[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+  /** events admitted by the local scope gate (== events.length). */
+  inScope?: number;
+  /** events joined to one of this operator's own local records. */
+  matched?: number;
+  /** events the indexer returned that the local scope gate rejected (0 when scoped correctly). */
+  droppedOutOfScope?: number;
+  scope?: { label?: string; unscoped?: boolean };
+  localScope?: { signers: number; clones: number };
+}
+
+export interface TraceStatsResp {
+  rootIssued?: number;
+  rootRevoked?: number;
+  activeCredentials?: number;
+  verifications?: number;
+  scope?: { label?: string; unscoped?: boolean };
+  /** this operator's own off-chain record/verification counts. */
+  local?: { records: number; verifications: number };
+  [k: string]: unknown;
+}
 /** PATCH /records/:id — OFF-CHAIN metadata only. On-chain-derived fields are rejected by the backend. */
 export interface UpdateRecordReq {
   label?: string | null;

@@ -6,6 +6,7 @@ import { Setup } from "./pages/Setup";
 import { Issue } from "./pages/Issue";
 import { IssueDogTag } from "./pages/IssueDogTag";
 import { Records } from "./pages/Records";
+import { Traceability } from "./pages/Traceability";
 import { ImportFromUser } from "./pages/ImportFromUser";
 import { Verify } from "./pages/Verify";
 import { Settings } from "./pages/Settings";
@@ -21,6 +22,7 @@ export function App() {
       <Route path="/issue" element={<Layout title="Issue credential"><Issue /></Layout>} />
       <Route path="/issue-dog-tag" element={<Layout title="Issue dog tag"><IssueDogTag /></Layout>} />
       <Route path="/records" element={<Layout title="Records"><Records /></Layout>} />
+      <Route path="/traceability" element={<Layout title="Traceability"><Traceability /></Layout>} />
       <Route path="/import" element={<Layout title="Import from user"><ImportFromUser /></Layout>} />
       <Route path="/verify" element={<Layout title="Export"><Verify /></Layout>} />
       <Route path="/settings" element={<Layout title="Settings"><Settings /></Layout>} />

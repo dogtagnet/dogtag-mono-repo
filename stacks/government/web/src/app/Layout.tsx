@@ -1,5 +1,5 @@
 import { AppShell, Badge, ThemeToggle, type NavItem } from "@dogtag/ui";
-import { FilePlus2, Landmark, ListChecks, ShieldCheck } from "lucide-react";
+import { FilePlus2, Landmark, ListChecks, ShieldCheck, Waypoints } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { Health } from "../lib/api";
@@ -8,6 +8,7 @@ const NAV: NavItem[] = [
   { key: "issue", href: "/issue", label: "Issue", icon: FilePlus2 },
   { key: "verify", href: "/verify", label: "Verify", icon: ShieldCheck },
   { key: "records", href: "/records", label: "Records", icon: ListChecks },
+  { key: "oversight", href: "/oversight", label: "Oversight", icon: Waypoints },
 ];
 
 function Brand() {

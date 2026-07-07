@@ -35,7 +35,7 @@ ADMIN_ADDR="${GOVERNANCE_ADDRESS:?set GOVERNANCE_ADDRESS (governance signer-1 0x
 run(){ echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & echo $! >> .demo/pids ); }
 
 echo "Building backend binaries (release for speed)…"
-cargo build -q --release -p admin-api -p vet-api -p government-api
+cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api
 # The PROVER SERVICE is the SAME vet-api binary but compiled WITH the `prover` feature (which mounts
 # the `/prove-verification` route + the prover-independent circuit-input assembly). We build it to a
 # SEPARATE target dir so the vet/groomer instances stay on the feature-OFF binary — the groomer
@@ -45,6 +45,14 @@ echo "Building prover-service binary (vet-api --features prover)…"
 cargo build -q --release -p vet-api --features prover --target-dir "$ROOT/target/prover"
 
 echo "Starting backends:"
+# OVERSIGHT INDEXER (govarch PR-4) — scans ROAX events into a scope-enforced, non-PII index. In the
+# demo it runs INDEXER_DEMO_MODE: scripted in-memory events + two well-known tokens (an UNSCOPED
+# oversight token for government, a SCOPED token for vet/groomer). The role portals' Traceability /
+# Oversight pages (govarch PR-5) consume it. NOTE: the scoped demo token is bound to a FIXED stand-in
+# signer/clone, so a freshly-genesis'd vet/groomer sees "0 in scope" until its own signer is added to
+# INDEXER_SCOPES; the government (unscoped) view always shows the full scripted cross-issuer feed.
+INDEXER_DEMO_MODE=1 PORT=46001 \
+  run indexer-api ":46001" "$ROOT/target/release/indexer-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
@@ -54,6 +62,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Seaport Vet" ISSUER_DOMAIN=vet.local \
   BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 DEPLOYMENT_URL="${VET_PUBLIC_URL:-http://$LAN_IP:41874}" \
+  INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
   CUSTODY_SEAL_PATH="$ROOT/.demo/vet-custody.json" \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
@@ -61,6 +70,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Pampered Paws" ISSUER_DOMAIN=groomer.local \
   BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="${GROOMER_PUBLIC_URL:-http://$LAN_IP:43618}" \
+  INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
   CUSTODY_SEAL_PATH="$ROOT/.demo/groomer-custody.json" \
   run groomer-api ":43618" "$ROOT/target/release/vet-api"
 # PROVER SERVICE — the trusted 64-bit prover a 32-bit-only Android phone queries for its Groth16 proof
@@ -88,6 +98,7 @@ ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority"
   CHAIN_ID=135 PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
   TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}" GOV_SIGNER_KEY="${GOV_SIGNER_KEY:-}" \
   GOV_API_TOKEN="${GOV_API_TOKEN:-dogtag-gov-demo-token}" \
+  INDEXER_API_BASE=http://localhost:46001 INDEXER_OVERSIGHT_TOKEN=dogtag-indexer-oversight-demo-token \
   run government-api ":44832" "$ROOT/target/release/government-api"
 
 echo "Starting portals (vite dev):"
@@ -101,7 +112,7 @@ run owner-web ":45931" env VITE_OWNER_PROVER_URL="${PROVER_PUBLIC_URL:-http://lo
 
 echo
 echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617  government http://localhost:44831  owner-wallet http://localhost:45931"
-echo "Backends:     admin :39742  vet :41874  groomer :43618  government :44832  prover :41875   (ROAX chainId 135)"
+echo "Backends:     admin :39742  vet :41874  groomer :43618  government :44832  prover :41875  indexer :46001   (ROAX chainId 135)"
 echo "Three-role showcase: scripts/e2e-roles.sh --live   (vet ISSUES -> government VERIFIES -> government ISSUES)"
 echo "Prover svc:   POST :41875/prove-verification  (32-bit-Android fallback; set PROVER_PUBLIC_URL to tunnel it)"
 echo "Owner wallet: http://localhost:45931  (Receive an issued wrapped doc -> Present a ZK proof to a verifier's /x/<token> link)"

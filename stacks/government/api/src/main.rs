@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use government_api::app::{AppState, Config};
 use government_api::chain::{AlloyChain, ChainClient, MemChain};
+use government_api::oversight::{DisabledFeed, HttpOversightFeed, OversightFeed};
 use government_api::store::{MemStore, Store};
 
 #[tokio::main]
@@ -113,10 +114,16 @@ async fn main() {
 
     let store: Arc<dyn Store> = build_store(demo).await;
 
+    // Oversight-indexer consumer (govarch PR-5, the oversight console's data layer): the UNSCOPED
+    // cross-issuer feed. Wired when INDEXER_API_BASE is set (with INDEXER_OVERSIGHT_TOKEN — the
+    // indexer's `unscoped:true` bearer); otherwise DisabledFeed → the /v1/oversight/* surfaces 503.
+    let feed: Arc<dyn OversightFeed> = build_feed();
+
     let state = AppState {
         store,
         chain,
         cfg: Arc::new(cfg),
+        feed,
     };
 
     let cors = build_cors();
@@ -127,6 +134,37 @@ async fn main() {
     axum::serve(listener, app.into_make_service())
         .await
         .expect("serve");
+}
+
+/// Build the UNSCOPED oversight-indexer consumer (govarch PR-5). With `INDEXER_API_BASE` set: a real
+/// `HttpOversightFeed` presenting the UNSCOPED bearer from `INDEXER_OVERSIGHT_TOKEN` (an
+/// `INDEXER_SCOPES` entry with `unscoped:true`; `GOV_INDEXER_TOKEN` is accepted as an alias). Unset
+/// base → a `DisabledFeed` so the `/v1/oversight/*` surfaces return 503 while the rest of the backend
+/// runs. Demo wiring (base + token) is supplied by `scripts/demo-up.sh`, matching the admin stack.
+fn build_feed() -> Arc<dyn OversightFeed> {
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.trim().is_empty());
+    match env("INDEXER_API_BASE") {
+        Some(base) => {
+            let token = env("INDEXER_OVERSIGHT_TOKEN")
+                .or_else(|| env("GOV_INDEXER_TOKEN"))
+                .unwrap_or_default();
+            if token.is_empty() {
+                tracing::warn!(
+                    "INDEXER_API_BASE set but no INDEXER_OVERSIGHT_TOKEN; the indexer will 401 unless \
+                     it is running in demo mode (fail-closed scope registry)"
+                );
+            }
+            tracing::info!("oversight indexer consumer wired to {base} (unscoped)");
+            Arc::new(HttpOversightFeed::new(base, token))
+        }
+        None => {
+            tracing::warn!(
+                "INDEXER_API_BASE unset; the oversight surfaces (/v1/oversight/*) return 503 until an \
+                 indexer is configured"
+            );
+            Arc::new(DisabledFeed)
+        }
+    }
 }
 
 /// Build the backing store. With `MONGO_URI` set & non-empty (and NOT demo): persistent MongoStore
@@ -146,7 +184,9 @@ async fn build_store(demo: bool) -> Arc<dyn Store> {
                 Arc::new(s)
             }
             Err(e) => {
-                tracing::error!("MONGO_URI set but MongoStore::connect failed: {e}; refusing to start");
+                tracing::error!(
+                    "MONGO_URI set but MongoStore::connect failed: {e}; refusing to start"
+                );
                 std::process::exit(1);
             }
         }
