@@ -181,7 +181,12 @@ pub fn join_events(events: Vec<Value>, scope: Option<&LocalScope>, idx: &LocalIn
 /// Build this operator's local scope from everything that authoritatively identifies it on-chain:
 /// its configured issuer-clone addresses, its custody signer accounts, and the signer/clone addresses
 /// stamped onto its own records + verification sessions. All non-zero, lowercased.
-pub async fn build_scope(store: &dyn Store, cfg: &Config) -> LocalScope {
+pub async fn build_scope(
+    store: &dyn Store,
+    cfg: &Config,
+    records: &[crate::store::Record],
+    sessions: &[crate::store::VerifySession],
+) -> LocalScope {
     let mut scope = LocalScope::default();
 
     // Configured DogTagIssuer clones (recordType -> clone address).
@@ -197,7 +202,7 @@ pub async fn build_scope(store: &dyn Store, cfg: &Config) -> LocalScope {
     }
 
     // Signer/clone addresses observed on this operator's own issued records.
-    for r in store.list_records().await {
+    for r in records {
         if let Some(s) = &r.signer_address {
             scope.add_signer(s);
         }
@@ -205,7 +210,7 @@ pub async fn build_scope(store: &dyn Store, cfg: &Config) -> LocalScope {
     }
 
     // Relayer addresses on this operator's own verification sessions (the verifier == this signer).
-    for s in store.list_sessions().await {
+    for s in sessions {
         scope.add_signer(&s.relayer);
     }
 
@@ -214,11 +219,14 @@ pub async fn build_scope(store: &dyn Store, cfg: &Config) -> LocalScope {
 
 /// Build the DB-record join index from this operator's own store: every issued `Record` keyed by its
 /// anchored root + issuance/revocation tx, and every `VerifySession` keyed by its nullifier + tx.
-pub async fn build_index(store: &dyn Store) -> LocalIndex {
+pub fn build_index(
+    records: &[crate::store::Record],
+    sessions: &[crate::store::VerifySession],
+) -> LocalIndex {
     let mut idx = LocalIndex::default();
 
-    for r in store.list_records().await {
-        let summary = record_summary(&r);
+    for r in records {
+        let summary = record_summary(r);
         idx.insert_by_root(&r.root, summary.clone());
         if let Some(tx) = &r.confirmed_tx_hash {
             idx.insert_by_tx(tx, summary.clone());
@@ -231,8 +239,8 @@ pub async fn build_index(store: &dyn Store) -> LocalIndex {
         }
     }
 
-    for s in store.list_sessions().await {
-        let summary = session_summary(&s);
+    for s in sessions {
+        let summary = session_summary(s);
         if let Some(n) = &s.nullifier {
             idx.insert_by_nullifier(n, summary.clone());
         }

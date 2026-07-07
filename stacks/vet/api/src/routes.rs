@@ -2280,8 +2280,10 @@ async fn trace_activity(
         Ok(b) => b,
         Err(e) => return feed_err(e),
     };
-    let scope = crate::trace::build_scope(st.store.as_ref(), &st.cfg).await;
-    let idx = crate::trace::build_index(st.store.as_ref()).await;
+    let records = st.store.list_records().await;
+    let sessions = st.store.list_sessions().await;
+    let scope = crate::trace::build_scope(st.store.as_ref(), &st.cfg, &records, &sessions).await;
+    let idx = crate::trace::build_index(&records, &sessions);
     let events = body
         .get("events")
         .and_then(|v| v.as_array())

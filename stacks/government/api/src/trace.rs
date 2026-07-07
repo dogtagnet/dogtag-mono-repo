@@ -32,6 +32,11 @@ impl LocalIndex {
             self.by_root.insert(norm(root), summary);
         }
     }
+    fn insert_by_root_if_absent(&mut self, root: &str, summary: Value) {
+        if !root.trim().is_empty() {
+            self.by_root.entry(norm(root)).or_insert(summary);
+        }
+    }
     fn insert_by_tx(&mut self, tx: &str, summary: Value) {
         if !tx.trim().is_empty() {
             self.by_tx.entry(norm(tx)).or_insert(summary);
@@ -108,7 +113,7 @@ pub async fn build_index(store: &dyn Store) -> LocalIndex {
     // Verification audit rows join a `verified` event's root (the government verified this credential).
     // Credentials win on a root collision (issuance is the more informative join); `or_insert` keeps it.
     for v in store.list_verifications().await {
-        idx.insert_by_root(&v.root, verification_summary(&v));
+        idx.insert_by_root_if_absent(&v.root, verification_summary(&v));
     }
 
     idx
@@ -180,5 +185,19 @@ mod tests {
         );
         assert_eq!(out.events[0]["local"]["kind"], "issuance");
         assert_eq!(out.events[1]["local"], Value::Null);
+    }
+
+    #[test]
+    fn credential_wins_root_collision_over_verification() {
+        let mut idx = LocalIndex::default();
+        // Mirror build_index's order: the issued credential is inserted first...
+        idx.insert_by_root("0xROOT", json!({ "kind": "issuance", "root": "0xroot" }));
+        // ...then a verification audit row for the SAME root must NOT overwrite it.
+        idx.insert_by_root_if_absent("0xROOT", json!({ "kind": "verification" }));
+        assert_eq!(
+            idx.by_root.get("0xroot").unwrap()["kind"],
+            "issuance",
+            "credentials win on a root collision"
+        );
     }
 }
