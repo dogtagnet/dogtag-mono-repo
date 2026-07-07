@@ -124,6 +124,13 @@ export function CredentialDetail({ wallet }: { wallet: OwnerWallet | null }) {
           >
             Present a proof →
           </Link>
+          <Link
+            to={`/share/${encodeURIComponent(credential.id)}`}
+            className="btn secondary"
+            data-testid="detail-share"
+          >
+            Share a redacted copy →
+          </Link>
           <button type="button" className="btn secondary" data-testid="detail-remove" onClick={remove}>
             Remove
           </button>

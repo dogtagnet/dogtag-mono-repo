@@ -121,6 +121,51 @@ test("holder loop: receive → hold → generate ZK proof → present → verifi
   await expect(page.getByTestId("present-nullifier")).toContainText(NULLIFIER);
 });
 
+test("holder selective disclosure: withhold a field → redacted copy still verifies", async ({ page }) => {
+  await page.goto("/wallet");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+
+  // Receive the sample credential (lands on its detail view).
+  await page.goto("/receive");
+  await page.getByTestId("receive-sample").click();
+  await page.getByTestId("receive-add").click();
+  await expect(page.getByTestId("detail-name")).toHaveText("Rex");
+
+  // Open the Share (redacted copy) flow from the detail view.
+  await page.getByTestId("detail-share").click();
+  await expect(page.getByTestId("share-fields")).toBeVisible();
+  // dogTagId is locked-on (required, non-obfuscatable) and its toggle is disabled.
+  await expect(page.getByTestId("share-locked").first()).toBeVisible();
+  await expect(page.getByTestId("share-toggle-credentialSubject.dogTagId")).toBeDisabled();
+
+  // Everything revealed by default → the copy is the full, authentic credential.
+  await expect(page.getByTestId("share-withheld-count")).toContainText("Every field is revealed");
+  await expect(page.getByTestId("share-preview-integrity")).toContainText("authentic");
+  await expect(page.getByTestId("share-preview")).toContainText("Dr. A. Meyer");
+
+  // Withhold the veterinarian field.
+  await page.getByTestId("share-toggle-credentialSubject.veterinarian").click();
+  await expect(page.getByTestId("share-withheld-count")).toContainText("1 field withheld");
+  // The redacted copy STILL verifies authentic (the Merkle root is unchanged)…
+  await expect(page.getByTestId("share-preview-integrity")).toContainText("authentic");
+  // …but the recipient no longer sees the withheld value.
+  await expect(page.getByTestId("share-preview")).toContainText("withheld by holder");
+  await expect(page.getByTestId("share-preview")).not.toContainText("Dr. A. Meyer");
+
+  // Copy the redacted credential; the output JSON drops the cleartext but keeps dogTagId + the root.
+  await page.getByTestId("share-copy").click();
+  await expect(page.getByTestId("share-copied")).toBeVisible();
+  const out = await page.getByTestId("share-output").inputValue();
+  expect(out).not.toContain("Dr. A. Meyer");
+  expect(out).toContain("424242"); // dogTagId cleartext stays
+  const redacted = JSON.parse(out) as { privacy: { obfuscated: string[] }; signature: { merkleRoot: string } };
+  expect(redacted.privacy.obfuscated.length).toBe(1); // the withheld leaf's hash is retained
+  expect(redacted.signature.merkleRoot).toBe(
+    "0x11bd3f84654df12518d490f7e109127b277673641016239863973844ce82dd67",
+  ); // unchanged — it is the same on-chain credential
+});
+
 test("receive rejects a tampered credential", async ({ page }) => {
   await page.goto("/receive");
   await page.getByTestId("receive-sample").click();

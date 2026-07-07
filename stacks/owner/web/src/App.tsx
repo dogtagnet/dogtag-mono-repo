@@ -5,6 +5,7 @@ import { Wallet } from "./pages/Wallet";
 import { Receive } from "./pages/Receive";
 import { CredentialDetail } from "./pages/CredentialDetail";
 import { Present } from "./pages/Present";
+import { Share } from "./pages/Share";
 
 function TopBar({ wallet }: { wallet: OwnerWallet | null }) {
   return (
@@ -48,6 +49,7 @@ export function App() {
         <Route path="/wallet" element={<Wallet />} />
         <Route path="/receive" element={<Receive />} />
         <Route path="/credential/:id" element={<CredentialDetail wallet={wallet} />} />
+        <Route path="/share/:id" element={<Share />} />
         <Route path="/present" element={<Present wallet={wallet} />} />
         <Route path="*" element={<Navigate to="/wallet" replace />} />
       </Routes>
