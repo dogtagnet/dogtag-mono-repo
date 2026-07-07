@@ -31,6 +31,13 @@ Nav mirrors the reference groomer dashboard:
   status badges (issued/revoked/expired), the immutable on-chain proof (tx, block, contract) with a
   block-explorer link, edit off-chain label/notes (`PATCH /records/:id`), mark expired, revoke
   (`POST /records/:id/revoke`, soft — the row + proof stay). Same page as the vet portal.
+- **Traceability** (`/traceability`) — this business's on-chain credential/verification activity
+  (`GET /trace/activity` + `GET /trace/stats`, operator-gated), scoped server-side to its own
+  signer(s)/clone(s) and joined to its own records: an "In scope" / "Matched to a record" summary strip,
+  per-event type + finality badges, the matched local record highlighted, and block-explorer links — so
+  an operator never sees another operator's activity. Reads the standalone oversight indexer
+  (`INDEXER_API_BASE` + a scoped bearer); when unset the page shows a first-class "Oversight indexer not
+  connected" state. Same page as the vet portal.
 - **Verify** (`/verify`) — the shared `<VerifyFlow/>` (purpose + Normal/ZK toggle → session QR →
   on-chain status). Emphasizes that a groomer can verify a vet-issued vaccination **without being an
   issuer** (the `VERIFY:<purpose>` whitelist namespace, distinct from issuer roles).
@@ -45,7 +52,8 @@ Nav mirrors the reference groomer dashboard:
 - **Wired to backend contracts**: login, genesis/confirm/unlock/accounts, records
   list/edit/expire/revoke (`GET /records`, `PATCH /records/:id`, `POST /records/:id/revoke`),
   signing-mode get/put, issuer signers, import/pull (with 3-pillar verdict render), verify
-  session start, central issuer-application apply.
+  session start, central issuer-application apply, traceability feed (`GET /trace/activity`,
+  `GET /trace/stats`; 503 → "indexer not connected" empty state).
 - **Placeholder**: Calendar, Appointments, Clients, Groomers, Reports, Marketing.
 - **Note**: like the vet portal, the Verify flow shows the session QR + awaiting-consent state and
   polls `GET /verify/session/:id` for the "pending → Verified" transition.
