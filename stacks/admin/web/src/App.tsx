@@ -9,6 +9,7 @@ import { Businesses } from "./pages/Businesses";
 import { IssuerApplications } from "./pages/IssuerApplications";
 import { Whitelist } from "./pages/Whitelist";
 import { Wizard } from "./pages/Wizard";
+import { Governance } from "./pages/Governance";
 
 export function App() {
   const { adminToken } = useApp();
@@ -28,6 +29,7 @@ export function App() {
         element={<Layout title="Issuer applications"><IssuerApplications /></Layout>}
       />
       <Route path="/whitelist" element={<Layout title="Whitelist viewer"><Whitelist /></Layout>} />
+      <Route path="/governance" element={<Layout title="Governance"><Governance /></Layout>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

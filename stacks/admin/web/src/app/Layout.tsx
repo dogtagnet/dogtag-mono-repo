@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   Building2,
   Factory,
+  Landmark,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -21,6 +22,7 @@ const NAV: NavItem[] = [
   { key: "businesses", href: "/businesses", label: "Business registry", icon: Building2 },
   { key: "applications", href: "/applications", label: "Issuer applications", icon: ListChecks },
   { key: "whitelist", href: "/whitelist", label: "Whitelist", icon: ShieldCheck },
+  { key: "governance", href: "/governance", label: "Governance", icon: Landmark },
 ];
 
 function Brand() {
