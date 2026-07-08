@@ -18,6 +18,7 @@ function ReceiptRow({ credential }: { credential: StoredCredential }) {
   const summary = summarize(credential.wrappedDoc);
   const receipt = useMemo(() => buildReceipt(credential.wrappedDoc), [credential.wrappedDoc]);
   const [onchain, setOnchain] = useState<OnChain>("checking");
+  const validUntil = receipt?.validUntil ?? "";
 
   useEffect(() => {
     let live = true;
@@ -30,7 +31,9 @@ function ReceiptRow({ credential }: { credential: StoredCredential }) {
     };
   }, [summary.documentStore, summary.credentialRoot]);
 
-  const status = deriveStatus(onchain, receipt.validUntil);
+  const status = deriveStatus(onchain, validUntil);
+
+  if (!receipt) return null;
 
   return (
     <Link

@@ -151,8 +151,10 @@ export function publicStatusUrl(doc: WrappedDoc, receiptId: string): string {
   return `${base}/r/${receiptId}`;
 }
 
-/** Assemble the full receipt model from a held credential (all values already decoded/humanized). */
-export function buildReceipt(doc: WrappedDoc): ReceiptModel {
+/** Assemble the full receipt model from a held credential (all values already decoded/humanized).
+ * Returns null for unsupported record types so callers cannot accidentally render a generic credential
+ * as an official receipt. */
+export function buildReceipt(doc: WrappedDoc): ReceiptModel | null {
   const all = decodeAll(doc);
   // Subject leaves are addressed WITHOUT the `credentialSubject.` prefix (mirrors the native app).
   const pick = (path: string): string => all[`credentialSubject.${path}`] ?? "";
@@ -163,7 +165,9 @@ export function buildReceipt(doc: WrappedDoc): ReceiptModel {
   };
 
   const recordType = (doc.issuer.recordType || "").toUpperCase();
-  const isTravel = recordType !== "EU_HEALTH_CERT";
+  const isTravel = recordType === "TRAVEL_CLEARANCE";
+  const isHealth = recordType === "EU_HEALTH_CERT";
+  if (!isTravel && !isHealth) return null;
 
   // Section A — person importing the animal (PII; a redacted copy drops these, leaving blanks).
   const sectionA: Row[] = [

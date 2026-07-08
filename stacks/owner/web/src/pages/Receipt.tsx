@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import { isRootAnchored } from "../lib/chain";
+import { summarize } from "../lib/credential";
 import { useCredentials } from "../lib/hooks";
 import {
   buildReceipt,
@@ -67,7 +68,7 @@ export function Receipt() {
 
   const receipt = useMemo(() => (doc ? buildReceipt(doc) : null), [doc]);
 
-  if (!credential || !doc || !receipt) {
+  if (!credential || !doc) {
     return (
       <div className="card">
         <h2>Credential not found</h2>
@@ -75,6 +76,27 @@ export function Receipt() {
         <Link to="/wallet" className="btn">
           Back to wallet
         </Link>
+      </div>
+    );
+  }
+
+  if (!receipt) {
+    const summary = summarize(doc);
+    return (
+      <div className="card" data-testid="receipt-unavailable">
+        <h2>Receipt unavailable</h2>
+        <p className="sub">
+          {summary.recordType} credentials do not have an official holder receipt view. Open the
+          credential detail to inspect its decoded Merkle leaves or share a redacted copy.
+        </p>
+        <div className="btn-row">
+          <Link to={`/credential/${encodeURIComponent(credential.id)}`} className="btn">
+            Back to credential
+          </Link>
+          <Link to={`/share/${encodeURIComponent(credential.id)}`} className="btn secondary">
+            Share a redacted copy →
+          </Link>
+        </div>
       </div>
     );
   }
@@ -130,7 +152,9 @@ export function Receipt() {
               {receipt.authorityName}
             </div>
             <div className="receipt-subtitle">
-              Pet Travel Clearance · authority-endorsed credential
+              {receipt.isTravel
+                ? "Pet Travel Clearance · authority-endorsed credential"
+                : "Pet Health Certificate · authority-endorsed credential"}
             </div>
           </div>
         </div>
@@ -168,16 +192,25 @@ export function Receipt() {
           </table>
 
           {/* legal preamble */}
-          <p className="receipt-preamble">
-            This receipt is valid for the animal listed for the validity window shown above
-            {receipt.departureBinding
-              ? `, for entry from the listed country of departure (${receipt.departureBinding})`
-              : ""}
-            . If the animal travels via a different or high-risk country, a new clearance may be
-            required. <strong>You must show this receipt (printed or on your phone) to airline staff
-            and port-of-entry officials.</strong> The authority reserves the right to request
-            additional supporting documentation on arrival.
-          </p>
+          {receipt.isTravel ? (
+            <p className="receipt-preamble">
+              This receipt is valid for the animal listed for the validity window shown above
+              {receipt.departureBinding
+                ? `, for entry from the listed country of departure (${receipt.departureBinding})`
+                : ""}
+              . If the animal travels via a different or high-risk country, a new clearance may be
+              required. <strong>You must show this receipt (printed or on your phone) to airline
+              staff and port-of-entry officials.</strong> The authority reserves the right to request
+              additional supporting documentation on arrival.
+            </p>
+          ) : (
+            <p className="receipt-preamble">
+              This certificate is valid for the animal listed for the validity window shown above.
+              <strong> You must show this certificate when a verifier or competent authority requests
+              the animal's health credential.</strong> The authority reserves the right to request
+              additional supporting documentation.
+            </p>
+          )}
 
           {receipt.obfuscatedCount > 0 && (
             <p className="receipt-withheld-note" data-testid="receipt-withheld-note">

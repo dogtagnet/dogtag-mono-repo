@@ -101,6 +101,11 @@ test("holder loop: receive → hold → generate ZK proof → present → verifi
   await expect(page.getByTestId("detail-integrity")).toContainText("intact");
   await expect(page.getByTestId("detail-fields")).toContainText("Rabies");
   await expect(page.getByTestId("detail-fields")).toContainText("424242");
+  await expect(page.getByTestId("detail-receipt")).toHaveCount(0);
+
+  // Unsupported record types fail closed if someone manually opens the receipt route.
+  await page.goto("/receipt/0x11bd3f84654df12518d490f7e109127b277673641016239863973844ce82dd67");
+  await expect(page.getByTestId("receipt-unavailable")).toContainText("VACCINATION");
 
   // The wallet now holds exactly one credential.
   await page.goto("/wallet");
