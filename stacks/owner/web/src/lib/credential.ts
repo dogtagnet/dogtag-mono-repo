@@ -104,7 +104,13 @@ function computeSummary(doc: WrappedDoc): CredentialSummary {
   const recordType = doc.issuer.recordType || fieldValue(doc, "recordType") || "CREDENTIAL";
   return {
     dogTagId: fieldValue(doc, "credentialSubject.dogTagId", "dogTagId"),
-    petName: fieldValue(doc, "credentialSubject.name", "credentialSubject.petName", "pet.name"),
+    petName: fieldValue(
+      doc,
+      "credentialSubject.name",
+      "credentialSubject.petName",
+      "credentialSubject.animal.name",
+      "pet.name",
+    ),
     recordType,
     issuerName: doc.issuer.name || "Unknown issuer",
     issuerDomain: doc.issuer.domain || "",
@@ -112,6 +118,7 @@ function computeSummary(doc: WrappedDoc): CredentialSummary {
     category: categoryOf(recordType),
     validUntil: fieldValue(
       doc,
+      "credentialSubject.validity.validUntil",
       "credentialSubject.validUntil",
       "credentialSubject.rabiesValidUntil",
       "credentialSubject.expiresOn",
@@ -119,6 +126,7 @@ function computeSummary(doc: WrappedDoc): CredentialSummary {
     ),
     validFrom: fieldValue(
       doc,
+      "credentialSubject.validity.validFrom",
       "credentialSubject.validFrom",
       "credentialSubject.administeredOn",
       "credentialSubject.examinationDate",

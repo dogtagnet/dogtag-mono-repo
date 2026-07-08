@@ -6,6 +6,8 @@ import { Receive } from "./pages/Receive";
 import { CredentialDetail } from "./pages/CredentialDetail";
 import { Present } from "./pages/Present";
 import { Share } from "./pages/Share";
+import { Receipt } from "./pages/Receipt";
+import { Receipts } from "./pages/Receipts";
 
 function TopBar({ wallet }: { wallet: OwnerWallet | null }) {
   return (
@@ -40,6 +42,9 @@ export function App() {
         <NavLink to="/receive" className={({ isActive }) => (isActive ? "active" : "")}>
           Receive
         </NavLink>
+        <NavLink to="/receipts" className={({ isActive }) => (isActive ? "active" : "")}>
+          Receipts
+        </NavLink>
         <NavLink to="/present" className={({ isActive }) => (isActive ? "active" : "")}>
           Present
         </NavLink>
@@ -48,7 +53,9 @@ export function App() {
         <Route path="/" element={<Navigate to="/wallet" replace />} />
         <Route path="/wallet" element={<Wallet />} />
         <Route path="/receive" element={<Receive />} />
+        <Route path="/receipts" element={<Receipts />} />
         <Route path="/credential/:id" element={<CredentialDetail wallet={wallet} />} />
+        <Route path="/receipt/:id" element={<Receipt />} />
         <Route path="/share/:id" element={<Share />} />
         <Route path="/present" element={<Present wallet={wallet} />} />
         <Route path="*" element={<Navigate to="/wallet" replace />} />

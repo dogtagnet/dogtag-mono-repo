@@ -166,6 +166,71 @@ test("holder selective disclosure: withhold a field → redacted copy still veri
   ); // unchanged — it is the same on-chain credential
 });
 
+test("holder receipt: travel clearance renders and respects redacted re-imports", async ({ page }) => {
+  await page.goto("/wallet");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+
+  // Receive the CDC-modeled government travel-clearance sample.
+  await page.goto("/receive");
+  await page.getByTestId("receive-sample-travel").click();
+  await expect(page.getByTestId("receive-input")).toHaveValue(/TRAVEL_CLEARANCE/);
+  await page.getByTestId("receive-add").click();
+
+  // Detail now recognizes the nested animal name + exposes the receipt action and derived status.
+  await expect(page.getByTestId("detail-name")).toHaveText("Blaze");
+  await expect(page.getByTestId("detail-receipt")).toBeVisible();
+  await expect(page.getByTestId("detail-onchain")).toContainText("Receipt: Valid");
+
+  // The top-level Receipts nav lists holder-renderable receipt credentials.
+  await page.goto("/receipts");
+  await expect(page.getByTestId("receipt-count")).toContainText("1 available");
+  await expect(page.getByTestId("receipt-row")).toContainText("Blaze");
+  await expect(page.getByTestId("receipt-row")).toContainText("9RVBXK8AFQ2C");
+  await expect(page.getByTestId("receipt-row-status")).toContainText("Valid");
+
+  await page.getByTestId("receipt-row").click();
+  const sheet = page.getByTestId("receipt-sheet");
+  await expect(sheet).toBeVisible();
+  await expect(page.getByTestId("receipt-status")).toContainText("VALID");
+  await expect(page.getByTestId("receipt-id")).toContainText("9RVBXK8AFQ2C");
+  await expect(sheet).toContainText("Section A - Person Importing the Animal");
+  await expect(sheet).toContainText("Dominic");
+  await expect(sheet).toContainText("887524355");
+  await expect(sheet).toContainText("Section B - Animal Information");
+  await expect(sheet).toContainText("Blaze");
+  await expect(sheet).toContainText("Section C - Travel Information");
+  await expect(sheet).toContainText("AC 8552");
+  await expect(page.getByTestId("receipt-public-url")).toContainText("https://gov.example/r/9RVBXK8AFQ2C");
+  await expect(page.getByTestId("receipt-qr").locator("svg")).toBeVisible();
+  await expect(page.getByTestId("receipt-live")).toContainText("anchored");
+  await expect(page.getByTestId("receipt-root")).toContainText(
+    "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+  );
+
+  // Produce a redacted copy that withholds a Section-A identifier, then re-import it. The same root is
+  // replaced in localStorage, and the receipt renders only the disclosed leaves.
+  await page.getByTestId("receipt-share").click();
+  await page.getByTestId("share-toggle-credentialSubject.importer.idNumber").click();
+  await expect(page.getByTestId("share-preview-integrity")).toContainText("authentic");
+  await page.getByTestId("share-copy").click();
+  const redactedJson = await page.getByTestId("share-output").inputValue();
+  expect(redactedJson).not.toContain("887524355");
+  const redacted = JSON.parse(redactedJson) as { privacy: { obfuscated: string[] }; signature: { merkleRoot: string } };
+  expect(redacted.privacy.obfuscated.length).toBe(1);
+  expect(redacted.signature.merkleRoot).toBe(
+    "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+  );
+
+  await page.goto("/receive");
+  await page.getByTestId("receive-input").fill(redactedJson);
+  await page.getByTestId("receive-add").click();
+  await page.getByTestId("detail-receipt").click();
+  await expect(page.getByTestId("receipt-withheld-note")).toContainText("1 field");
+  await expect(page.getByTestId("receipt-sheet")).toContainText("Dominic");
+  await expect(page.getByTestId("receipt-sheet")).not.toContainText("887524355");
+});
+
 test("receive rejects a tampered credential", async ({ page }) => {
   await page.goto("/receive");
   await page.getByTestId("receive-sample").click();
