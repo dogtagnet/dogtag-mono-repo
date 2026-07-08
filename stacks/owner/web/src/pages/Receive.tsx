@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { checkIntegrity } from "@dogtag/standard";
 import { parseWrappedDoc, summarize } from "../lib/credential";
 import { credentialStore } from "../lib/store";
-import { SAMPLE_WRAPPED_DOC_JSON } from "../lib/sampleDoc";
+import { SAMPLE_TRAVEL_CLEARANCE_DOC_JSON, SAMPLE_WRAPPED_DOC_JSON } from "../lib/sampleDoc";
 
 /**
  * Receive a credential an issuer gave you. Every issuer portal (vet / groomer / government) shows a
@@ -68,6 +68,17 @@ export function Receive() {
           }}
         >
           Fill sample
+        </button>
+        <button
+          type="button"
+          className="btn secondary"
+          data-testid="receive-sample-travel"
+          onClick={() => {
+            setError(null);
+            setText(SAMPLE_TRAVEL_CLEARANCE_DOC_JSON);
+          }}
+        >
+          Fill travel-clearance sample
         </button>
       </div>
       <div className="notice">

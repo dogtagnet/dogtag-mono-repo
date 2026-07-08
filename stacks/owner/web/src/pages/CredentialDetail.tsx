@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { decodeFields, summarize } from "../lib/credential";
+import { deriveStatus, isReceiptType, statusBadgeClass, statusLabel } from "../lib/receipt";
 import { isRootAnchored } from "../lib/chain";
 import { credentialStore } from "../lib/store";
 import { useCredentials } from "../lib/hooks";
@@ -45,6 +46,8 @@ export function CredentialDetail({ wallet }: { wallet: OwnerWallet | null }) {
 
   const s = summarize(doc);
   const fields = decodeFields(doc);
+  const receiptCapable = isReceiptType(s.recordType);
+  const receiptStatus = receiptCapable ? deriveStatus(onchain, s.validUntil || "") : null;
 
   function remove() {
     credentialStore.remove(decodedId);
@@ -75,16 +78,26 @@ export function CredentialDetail({ wallet }: { wallet: OwnerWallet | null }) {
             {s.integrity === "VALID" ? "✓ Integrity intact" : "✗ Integrity failed"}
           </span>
           <span
-            className={`badge ${onchain === "valid" ? "ok" : onchain === "invalid" ? "bad" : "warn"}`}
+            className={`badge ${
+              receiptStatus
+                ? statusBadgeClass(receiptStatus)
+                : onchain === "valid"
+                  ? "ok"
+                  : onchain === "invalid"
+                    ? "bad"
+                    : "warn"
+            }`}
             data-testid="detail-onchain"
           >
-            {onchain === "checking"
-              ? "⏳ Checking on-chain…"
-              : onchain === "valid"
-                ? "✓ Anchored on-chain"
-                : onchain === "invalid"
-                  ? "✗ Not anchored"
-                  : "· On-chain status unavailable"}
+            {receiptStatus
+              ? `Receipt: ${statusLabel(receiptStatus)}`
+              : onchain === "checking"
+                ? "⏳ Checking on-chain…"
+                : onchain === "valid"
+                  ? "✓ Anchored on-chain"
+                  : onchain === "invalid"
+                    ? "✗ Not anchored"
+                    : "· On-chain status unavailable"}
           </span>
         </div>
 
@@ -116,9 +129,18 @@ export function CredentialDetail({ wallet }: { wallet: OwnerWallet | null }) {
         </div>
 
         <div className="btn-row">
+          {receiptCapable && (
+            <Link
+              to={`/receipt/${encodeURIComponent(credential.id)}`}
+              className="btn"
+              data-testid="detail-receipt"
+            >
+              View receipt →
+            </Link>
+          )}
           <Link
             to={`/present?id=${encodeURIComponent(credential.id)}`}
-            className="btn"
+            className={`btn ${receiptCapable ? "secondary" : ""}`}
             data-testid="detail-present"
             aria-disabled={!wallet}
           >

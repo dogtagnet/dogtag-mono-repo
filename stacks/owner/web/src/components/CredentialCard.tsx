@@ -1,5 +1,14 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { isRootAnchored } from "../lib/chain";
 import { summarize } from "../lib/credential";
+import {
+  deriveStatus,
+  isReceiptType,
+  statusBadgeClass,
+  statusLabel,
+  type OnChain,
+} from "../lib/receipt";
 import { categoryIcon, categoryVar } from "../lib/ui";
 import type { StoredCredential } from "../lib/store";
 
@@ -7,6 +16,23 @@ import type { StoredCredential } from "../lib/store";
 export function CredentialCard({ credential }: { credential: StoredCredential }) {
   const s = summarize(credential.wrappedDoc);
   const held = s.integrity === "VALID";
+  const receiptCapable = isReceiptType(s.recordType);
+  const [onchain, setOnchain] = useState<OnChain>("checking");
+
+  useEffect(() => {
+    if (!receiptCapable) return;
+    let live = true;
+    setOnchain("checking");
+    isRootAnchored(s.documentStore, s.credentialRoot)
+      .then((ok) => live && setOnchain(ok ? "valid" : "invalid"))
+      .catch(() => live && setOnchain("unknown"));
+    return () => {
+      live = false;
+    };
+  }, [receiptCapable, s.documentStore, s.credentialRoot]);
+
+  const receiptStatus = receiptCapable ? deriveStatus(onchain, s.validUntil || "") : null;
+
   return (
     <Link
       to={`/credential/${encodeURIComponent(credential.id)}`}
@@ -43,6 +69,11 @@ export function CredentialCard({ credential }: { credential: StoredCredential })
         <span className={`badge ${held ? "ok" : "bad"}`} data-testid="cred-integrity">
           {held ? "✓ Intact" : "✗ Tampered"}
         </span>
+        {receiptStatus && (
+          <span className={`badge ${statusBadgeClass(receiptStatus)}`} data-testid="cred-receipt-status">
+            Receipt: {statusLabel(receiptStatus)}
+          </span>
+        )}
       </div>
     </Link>
   );
