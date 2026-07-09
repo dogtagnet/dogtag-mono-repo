@@ -12,7 +12,7 @@ export function Verify() {
   // Poll GET /verify/session/{id}; status flips pending → recorded once the owner consent is on chain.
   return (
     <div className="space-y-4">
-      <CredentialVerifyPanel client={api} />
+      <CredentialVerifyPanel />
       <VerifyFlow
         client={api}
         purposes={PURPOSES}

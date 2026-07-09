@@ -51,6 +51,21 @@ const DOGTAG_ISSUER_ABI = [
     inputs: [{ name: "r", type: "bytes32" }],
     outputs: [{ name: "", type: "bool" }],
   },
+  {
+    type: "function",
+    name: "isRevoked",
+    stateMutability: "view",
+    inputs: [{ name: "r", type: "bytes32" }],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    // public `mapping(bytes32 => uint256) issuedAt` getter - 0 = not issued (DogTagIssuer.sol).
+    type: "function",
+    name: "issuedAt",
+    stateMutability: "view",
+    inputs: [{ name: "r", type: "bytes32" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 ] as const satisfies Abi;
 
 const clientCache = new Map<string, PublicClient>();
@@ -98,4 +113,39 @@ export async function isRootValid(args: {
     functionName: "isValid",
     args: [args.root as `0x${string}`],
   }) as Promise<boolean>;
+}
+
+/**
+ * Reads DogTagIssuer.isRevoked(merkleRoot) - true once the root's revokedAt != 0. Distinguishes an
+ * explicitly revoked credential from one that was simply never anchored (see {@link issuedAtOf}).
+ */
+export async function isRootRevoked(args: {
+  issuerAddr: string;
+  root: string;
+  rpcUrl?: string;
+}): Promise<boolean> {
+  return roaxPublicClient(args.rpcUrl).readContract({
+    address: args.issuerAddr as Address,
+    abi: DOGTAG_ISSUER_ABI,
+    functionName: "isRevoked",
+    args: [args.root as `0x${string}`],
+  }) as Promise<boolean>;
+}
+
+/**
+ * Reads DogTagIssuer.issuedAt(merkleRoot) - the anchoring unix timestamp, or 0n if never issued.
+ * `isValid == issuedAt != 0 && !isRevoked`; this getter is what lets the panel report `not_issued`
+ * distinctly from `revoked`.
+ */
+export async function issuedAtOf(args: {
+  issuerAddr: string;
+  root: string;
+  rpcUrl?: string;
+}): Promise<bigint> {
+  return roaxPublicClient(args.rpcUrl).readContract({
+    address: args.issuerAddr as Address,
+    abi: DOGTAG_ISSUER_ABI,
+    functionName: "issuedAt",
+    args: [args.root as `0x${string}`],
+  }) as Promise<bigint>;
 }

@@ -68,7 +68,15 @@ export {
   roaxPublicClient,
   isWhitelistedFor,
   isRootValid,
+  isRootRevoked,
+  issuedAtOf,
 } from "./wallet/contracts";
+export {
+  verifyCredentialOnchain,
+  roaxIssuerChainReader,
+  type IssuerChainReader,
+  type VerifyCredentialOnchainArgs,
+} from "./wallet/verifyCredential";
 export { WalletProvider } from "./wallet/WalletProvider";
 export { WalletButton, shortAddress } from "./wallet/WalletButton";
 export { useRoaxChain, type UseRoaxChainResult } from "./wallet/useRoaxChain";
