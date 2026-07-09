@@ -120,6 +120,9 @@ importers:
       typescript:
         specifier: 5.6.3
         version: 5.6.3
+      vitest:
+        specifier: 2.1.8
+        version: 2.1.8(@types/node@22.10.5)
 
   stacks/admin/web:
     dependencies:

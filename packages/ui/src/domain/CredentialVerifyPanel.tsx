@@ -1,6 +1,5 @@
 import { CircleAlert, ClipboardCheck, RotateCcw, ShieldCheck } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import type { ApiClient } from "../api/client";
 import type { VerifyCredentialResp } from "../api/types";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
@@ -9,10 +8,16 @@ import { Input } from "../components/Input";
 import { Label } from "../components/Label";
 import { useToast } from "../components/Toast";
 import { explorerAddressUrl } from "../wallet/chain";
+import { verifyCredentialOnchain, type IssuerChainReader } from "../wallet/verifyCredential";
 
 export interface CredentialVerifyPanelProps {
-  client: ApiClient;
   defaultSigner?: string;
+  /** IssuerRegistry address for the whitelist pillar; defaults to the deployed ROAX registry. */
+  registryAddr?: string;
+  /** Public RPC URL override; defaults to the ROAX devrpc from the chain definition. */
+  rpcUrl?: string;
+  /** Injected chain reader (tests/storybook); defaults to a viem reader over the public ROAX RPC. */
+  reader?: IssuerChainReader;
 }
 
 const STATUS_LABEL: Record<VerifyCredentialResp["status"], string> = {
@@ -23,7 +28,12 @@ const STATUS_LABEL: Record<VerifyCredentialResp["status"], string> = {
   invalid: "Invalid",
 };
 
-export function CredentialVerifyPanel({ client, defaultSigner = "" }: CredentialVerifyPanelProps) {
+export function CredentialVerifyPanel({
+  defaultSigner = "",
+  registryAddr,
+  rpcUrl,
+  reader,
+}: CredentialVerifyPanelProps = {}) {
   const { toast } = useToast();
   const [doc, setDoc] = useState("");
   const [signer, setSigner] = useState(defaultSigner);
@@ -39,9 +49,14 @@ export function CredentialVerifyPanel({ client, defaultSigner = "" }: Credential
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("Wrapped document must be a JSON object.");
       }
-      const resp = await client.verifyCredential({
+      // Permissionless direct-to-RPC verification (same on-chain reads the mobile apps do); no
+      // operator-gated endpoint required.
+      const resp = await verifyCredentialOnchain({
         wrappedDoc: parsed as Record<string, unknown>,
         signerAddr: signer.trim() || undefined,
+        registryAddr,
+        rpcUrl,
+        reader,
       });
       setResult(resp);
     } catch (err) {
@@ -64,7 +79,9 @@ export function CredentialVerifyPanel({ client, defaultSigner = "" }: Credential
           <ShieldCheck className="h-5 w-5 text-primary" /> Check credential status
         </CardTitle>
         <CardDescription>
-          Recompute integrity and read the DogTag issuer clone for current validity and revocation.
+          Recompute integrity and read the DogTag issuer clone directly on ROAX for current validity
+          and revocation. Permissionless - verified in-browser over the public RPC, no operator
+          session required.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
