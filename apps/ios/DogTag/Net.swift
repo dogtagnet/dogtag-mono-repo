@@ -52,7 +52,19 @@ enum Http {
 enum RoaxRpc {
     enum Result { case valid, invalid, unknown(String) }
 
-    private static let isValidSelector = "0x6d04f0bc"   // keccak256("isValid(bytes32)")[:4]
+    /// `DogTagIssuer.isValid(bytes32)` selector, DERIVED from the canonical signature rather than
+    /// hard-coded: keccak256("isValid(bytes32)")[:4] = 0x6a938567 - the exact selector viem, the
+    /// Rust/alloy ABI, the vet-api `verify_credential` handler and the web direct-RPC path all bind.
+    /// It was previously a stale constant `0x6d04f0bc` whose comment *claimed* to be this hash but
+    /// wasn't; that selector REVERTS on the deployed ROAX clone, so every check fell through to
+    /// `.unknown` (accept-with-caveat) and a revoked credential never showed as revoked. Deriving it
+    /// from the signature makes it impossible to drift again.
+    private static let isValidSelector = functionSelector("isValid(bytes32)")
+
+    /// 4-byte function selector = first 4 bytes of keccak256(canonical signature), `0x`-prefixed hex.
+    private static func functionSelector(_ signature: String) -> String {
+        "0x" + Keccak256.digest(Data(signature.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()
+    }
 
     static func isValid(rpcUrl: String, documentStore: String, root: String) async -> Result {
         guard !documentStore.isEmpty, !root.isEmpty else { return .unknown("missing addr/root") }

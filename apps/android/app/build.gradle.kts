@@ -92,4 +92,8 @@ dependencies {
     // QR GENERATION (pure-Java) for the travel-receipt public-status QR. ML Kit above only SCANS;
     // the holder receipt must DRAW a PII-free /r/:receiptId QR, so we encode with zxing-core.
     implementation("com.google.zxing:core:3.5.3")
+
+    // JVM unit tests (pure-JVM, no Android runtime): pins the on-chain `isValid` selector derivation
+    // (RoaxRpcSelectorTest) so it can never drift back to a reverting value. Run: `./gradlew test`.
+    testImplementation("junit:junit:4.13.2")
 }

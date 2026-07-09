@@ -1,5 +1,6 @@
 package io.liberalize.dogtag.net
 
+import io.liberalize.dogtag.wallet.Keccak256
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -13,8 +14,21 @@ import org.json.JSONObject
 object RoaxRpc {
     const val DEFAULT_RPC = "https://devrpc.roax.net"
 
-    // keccak256("isValid(bytes32)")[:4] = 0x6d04f0 bc ... -> 0x6d04f0bc
-    private const val IS_VALID_SELECTOR = "0x6d04f0bc"
+    /** 4-byte function selector = first 4 bytes of keccak256(canonical signature), `0x`-prefixed hex. */
+    internal fun functionSelector(signature: String): String =
+        "0x" + Keccak256.digest(signature.toByteArray(Charsets.US_ASCII)).take(4)
+            .joinToString("") { "%02x".format(it) }
+
+    /**
+     * `DogTagIssuer.isValid(bytes32)` selector, DERIVED from the canonical signature rather than
+     * hard-coded: keccak256("isValid(bytes32)")[:4] = 0x6a938567 - the exact selector viem, the
+     * Rust/alloy ABI, the vet-api `verify_credential` handler and the web direct-RPC path all bind.
+     * It was previously a stale constant `0x6d04f0bc` whose comment *claimed* to be this hash but
+     * wasn't; that selector REVERTS on the deployed ROAX clone, so every read fell through to Unknown
+     * (accept-with-caveat) and a revoked credential never surfaced as revoked. Deriving it from the
+     * signature makes it impossible to drift again.
+     */
+    private val IS_VALID_SELECTOR = functionSelector("isValid(bytes32)")
 
     sealed class Result {
         object Valid : Result()
