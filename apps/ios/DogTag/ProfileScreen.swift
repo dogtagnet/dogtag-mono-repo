@@ -114,6 +114,7 @@ struct ProfileScreen: View {
                             Text("Write these down and store them offline. Anyone with them controls your wallet.")
                                 .font(.system(size: 11)).foregroundColor(c.muted)
                             Text(m).font(.system(size: 12, design: .monospaced)).foregroundColor(c.onBackground)
+                                .hideWhenInactive()
                             HStack(spacing: 10) {
                                 CopyButton(title: "Copy phrase", value: m, secret: true)
                                 Button {
@@ -173,7 +174,10 @@ struct ProfileScreen: View {
             }
             .padding(20)
         }
-        .sheet(isPresented: $showExport) {
+        .sheet(isPresented: $showExport, onDismiss: {
+            exportMnemonic = nil
+            exportPrivKey = nil
+        }) {
             ExportAccountSheet(mnemonic: exportMnemonic, privateKeyHex: exportPrivKey)
                 .environment(\.dogTagColors, c)
         }
@@ -307,7 +311,7 @@ private struct ExportAccountSheet: View {
 
                 if let m = mnemonic, !m.isEmpty {
                     Text("Recovery phrase (24 words)").font(.system(size: 13, weight: .semibold)).foregroundColor(c.muted)
-                    mnemonicGrid(m)
+                    mnemonicGrid(m).hideWhenInactive()
                     CopyButton(title: "Copy recovery phrase", value: m, secret: true)
                     Text("Restores your account in DogTag (or a wallet using the same derivation). The copy clears from the clipboard automatically.")
                         .font(.system(size: 11)).foregroundColor(c.muted)
@@ -324,6 +328,7 @@ private struct ExportAccountSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                         .background(RoundedRectangle(cornerRadius: 10).fill(c.surface))
+                        .hideWhenInactive()
                     CopyButton(title: "Copy private key", value: pk, secret: true)
                     Text("Full control of your on-chain wallet. Import it into a compatible EVM wallet to restore this exact address (the recovery phrase alone would derive a different one).")
                         .font(.system(size: 11)).foregroundColor(c.muted)
@@ -353,6 +358,36 @@ private struct ExportAccountSheet: View {
             }
         }
     }
+}
+
+/// Covers secret content with an opaque, un-animated overlay whenever the scene leaves `.active`, so
+/// the plaintext never lands in the app-switcher snapshot iOS writes to disk on backgrounding. The
+/// cover must appear instantly (no fade) or the snapshot could catch a mid-transition frame.
+private struct HideWhenInactive: ViewModifier {
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dogTagColors) private var c
+
+    func body(content: Content) -> some View {
+        let hidden = scenePhase != .active
+        return content
+            .blur(radius: hidden ? 18 : 0)
+            .overlay {
+                if hidden {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(c.surfaceVariant)
+                        .overlay(
+                            Label("Hidden", systemImage: "eye.slash.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(c.muted)
+                        )
+                }
+            }
+            .animation(nil, value: scenePhase)
+    }
+}
+
+private extension View {
+    func hideWhenInactive() -> some View { modifier(HideWhenInactive()) }
 }
 
 /// Clipboard helper for sensitive values: copies with a short expiry so the secret does not linger
