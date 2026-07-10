@@ -39,9 +39,13 @@ struct CredentialDetailScreen: View {
                     item: DocumentExport.single(cred),
                     preview: SharePreview(cred.title.isEmpty ? (doc?.displayTitle() ?? "Credential") : cred.title)
                 ) {
-                    HStack {
+                    HStack(spacing: 12) {
                         Image(systemName: "square.and.arrow.up")
-                        Text("Export credential").font(.system(size: 14, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Export full record").font(.system(size: 14, weight: .semibold))
+                            Text("Full record, all fields - for your backup")
+                                .font(.system(size: 11)).foregroundColor(c.muted)
+                        }
                         Spacer()
                     }
                     .foregroundColor(c.accent)
