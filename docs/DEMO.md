@@ -140,7 +140,7 @@ issued. Then **Create QR** → renders the QR.
 > (prod/remote) DNS-verifies the groomer, proves **on-device**, and POSTs the proof — see §5.
 
 ## 4. Owner app scans → imports → polls on-chain → taps to view decoded fields
-On the phone (DogTag app), open **Scan** (Home `+` or the Export tab) and scan the vet's QR:
+On the phone (DogTag app), open **Scan** (the Home header **Scan** button or the Export tab) and scan the vet's QR:
 - It `GET`s the wrapped doc (resolving `/r/<token>` server-side), recomputes the Merkle root via the
   Rust SDK, and reads `DogTagIssuer.isValid(root)` on ROAX — showing **Anchoring… → Verified on-chain ✓**.
 - The record lands under the pet, grouped by type; filter by dog on the Travel/Documents tabs.

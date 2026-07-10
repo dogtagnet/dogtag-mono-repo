@@ -126,7 +126,7 @@ Setup is a linear wizard; each step auto-advances on success.
 > Prereq: the device has a **wallet** (§A0) and the dog-tag was **issued to it by the vet** (§A1) —
 > import-as-mine checks `ownerOf(dogTagId) == walletAddress`.
 
-1. Open **Scan** (Home `+` or Export tab) → scan the vet's QR.
+1. Open **Scan** (the Home header **Scan** button or Export tab) → scan the vet's QR.
 2. Watch **Anchoring… → Verified on-chain ✓**. The record lands under the pet.
 3. **Tap the imported credential** → the detail view decodes **every Merkle leaf** and shows the field
    values + the on-chain root/issuer/verdict (Android + iOS).
