@@ -88,7 +88,10 @@ final class PetPhotoStore: ObservableObject {
     @Published private(set) var version = 0
 
     private let dir: URL
-    private var cache: [String: UIImage] = [:]
+    /// Keyed by the sanitized identifier (see `cacheKey(for:)`) so the memory key and on-disk file name
+    /// can never diverge. A present entry with a `nil` value is a cached miss: a dog-tag known to have no
+    /// photo, so subsequent lookups skip the disk instead of re-reading an absent file every re-render.
+    private var cache: [String: UIImage?] = [:]
 
     private init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -96,18 +99,24 @@ final class PetPhotoStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
-    /// dogTagIds are decimal token ids, but sanitize defensively so any id is a safe file name.
-    private func fileURL(for dogTagId: String) -> URL {
+    /// dogTagIds are decimal token ids, but sanitize defensively so any id is a safe file name. This is
+    /// also the in-memory cache key, keeping the memory key and on-disk file name in lockstep.
+    private func cacheKey(for dogTagId: String) -> String {
         let safe = String(dogTagId.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
-        return dir.appendingPathComponent("\(safe.isEmpty ? "unknown" : safe).jpg")
+        return safe.isEmpty ? "unknown" : safe
     }
 
-    /// The stored photo for a dog tag, or `nil`. Reads from disk once, then serves from the cache.
+    private func fileURL(for dogTagId: String) -> URL {
+        dir.appendingPathComponent("\(cacheKey(for: dogTagId)).jpg")
+    }
+
+    /// The stored photo for a dog tag, or `nil`. Reads from disk once — both hits and misses are cached,
+    /// so a photoless dog-tag never re-reads the disk on subsequent calls.
     func image(for dogTagId: String) -> UIImage? {
-        if let img = cache[dogTagId] { return img }
-        guard let data = try? Data(contentsOf: fileURL(for: dogTagId)),
-              let img = UIImage(data: data) else { return nil }
-        cache[dogTagId] = img
+        let key = cacheKey(for: dogTagId)
+        if let cached = cache[key] { return cached }
+        let img = (try? Data(contentsOf: fileURL(for: dogTagId))).flatMap { UIImage(data: $0) }
+        cache.updateValue(img, forKey: key)
         return img
     }
 
@@ -117,7 +126,7 @@ final class PetPhotoStore: ObservableObject {
     /// camera shot doesn't sit in Documents at several megabytes.
     func setImage(_ image: UIImage, for dogTagId: String) {
         let resized = image.downscaled(maxDimension: 1024)
-        cache[dogTagId] = resized
+        cache.updateValue(resized, forKey: cacheKey(for: dogTagId))
         if let data = resized.jpegData(compressionQuality: 0.85) {
             try? data.write(to: fileURL(for: dogTagId), options: .atomic)
         }
@@ -125,8 +134,8 @@ final class PetPhotoStore: ObservableObject {
     }
 
     func removeImage(for dogTagId: String) {
-        cache[dogTagId] = nil
         try? FileManager.default.removeItem(at: fileURL(for: dogTagId))
+        cache.updateValue(nil, forKey: cacheKey(for: dogTagId))
         version &+= 1
     }
 }
