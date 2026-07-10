@@ -119,7 +119,7 @@ struct ProfileScreen: View {
                                 CopyButton(title: "Copy phrase", value: m, secret: true)
                                 Button {
                                     mnemonic = nil
-                                    walletMsg = "Recovery phrase hidden. Export it again anytime from “Export recovery phrase”."
+                                    walletMsg = "Recovery phrase hidden. Export it again anytime from “Export account keys”."
                                 } label: {
                                     Text("I've saved it")
                                         .font(.system(size: 12, weight: .semibold)).foregroundColor(c.onAccent)
@@ -363,6 +363,9 @@ private struct ExportAccountSheet: View {
 enum SecureClipboard {
     static func copySecret(_ value: String, ttl: TimeInterval = 90) {
         let item: [String: Any] = [UTType.utf8PlainText.identifier: value]
-        UIPasteboard.general.setItems([item], options: [.expirationDate: Date().addingTimeInterval(ttl)])
+        UIPasteboard.general.setItems([item], options: [
+            .expirationDate: Date().addingTimeInterval(ttl),
+            .localOnly: true,
+        ])
     }
 }

@@ -154,7 +154,7 @@ enum DocumentExport {
         } else {
             json = "[]"
         }
-        return ExportedDocument(filename: "dogtag-documents-\(creds.count).json", json: json)
+        return ExportedDocument(filename: "dogtag-documents-\(objects.count).json", json: json)
     }
 
     private static func filename(for cred: Credential) -> String {

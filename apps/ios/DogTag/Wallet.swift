@@ -58,13 +58,16 @@ enum Wallet {
     /// secp256k1 address + BabyJubjub consent key.
     static func create() throws -> WalletIdentity {
         var entropy = Data(count: 32) // 256-bit → 24 words
-        _ = entropy.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        let rc = entropy.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        guard rc == errSecSuccess else { throw WalletError.randomGenerationFailed }
         let mnemonic = Bip39.entropyToMnemonic(entropy)
         let seed = Bip39.mnemonicToSeed(mnemonic: mnemonic, passphrase: "")
-        try storeBlob(seed, account: seedAccount)
-        // Persist the entropy too: it re-derives the exact recovery phrase for self-custody export
-        // (seed→mnemonic is one-way). Same protection class as the seed; both stay on this device.
+        // Persist the entropy first, then the seed: it re-derives the exact recovery phrase for
+        // self-custody export (seed→mnemonic is one-way). Same protection class as the seed; both
+        // stay on this device. exists() keys off the seed, so if the seed write fails genesis stays
+        // clean-retriable (no live-but-unexportable wallet) and the orphan entropy is overwritten.
         try storeBlob(entropy, account: entropyAccount)
+        try storeBlob(seed, account: seedAccount)
         return try identity(from: seed, mnemonic: mnemonic)
     }
 
@@ -142,7 +145,7 @@ enum Wallet {
     }
 }
 
-enum WalletError: Error { case keychain(OSStatus) }
+enum WalletError: Error { case keychain(OSStatus); case randomGenerationFailed }
 
 /// AndroidX BiometricPrompt analogue: LAContext-gated authentication.
 enum Biometric {
