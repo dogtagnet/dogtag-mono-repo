@@ -114,7 +114,6 @@ struct ProfileScreen: View {
                             Text("Write these down and store them offline. Anyone with them controls your wallet.")
                                 .font(.system(size: 11)).foregroundColor(c.muted)
                             Text(m).font(.system(size: 12, design: .monospaced)).foregroundColor(c.onBackground)
-                                .textSelection(.enabled)
                             HStack(spacing: 10) {
                                 CopyButton(title: "Copy phrase", value: m, secret: true)
                                 Button {
@@ -322,7 +321,6 @@ private struct ExportAccountSheet: View {
                     Text("Private key (secp256k1)").font(.system(size: 13, weight: .semibold)).foregroundColor(c.muted)
                     Text(pk)
                         .font(.system(size: 12, design: .monospaced)).foregroundColor(c.onBackground)
-                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                         .background(RoundedRectangle(cornerRadius: 10).fill(c.surface))
@@ -354,7 +352,6 @@ private struct ExportAccountSheet: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(c.surface))
             }
         }
-        .textSelection(.enabled)
     }
 }
 
