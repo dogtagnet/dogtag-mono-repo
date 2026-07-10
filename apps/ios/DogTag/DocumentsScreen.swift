@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct DocumentsScreen: View {
     @Environment(\.dogTagColors) var c
@@ -26,6 +27,18 @@ struct DocumentsScreen: View {
                     SectionTitle(text: "Records", trailing: "\(shown.count)")
                     if shown.isEmpty {
                         Text("No records for this dog yet.").font(.system(size: 13)).foregroundColor(c.muted)
+                    } else {
+                        // Export the held credentials the user is currently viewing (respects the pet
+                        // filter) as the app's own WrappedDoc JSON, via the OS share sheet.
+                        ShareLink(
+                            item: DocumentExport.bundle(shown),
+                            preview: SharePreview("DogTag documents (\(shown.count))")
+                        ) {
+                            Label("Export \(shown.count == 1 ? "document" : "documents")",
+                                  systemImage: "square.and.arrow.up")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(c.accent)
+                        }
                     }
                     ForEach(shown) { cred in
                         Button { detailCred = cred } label: {
@@ -97,5 +110,61 @@ struct VerdictBadge: View {
         return Text(verdict).font(.system(size: 10, weight: .bold)).foregroundColor(fg)
             .padding(.horizontal, 10).padding(.vertical, 4)
             .background(Capsule().fill(bg))
+    }
+}
+
+// MARK: - Document export
+
+/// A portable export of the holder's own credential(s) as the app's existing WrappedDoc JSON - the
+/// exact format the app imports and verifies. Shared as a `.json` file through the OS share sheet
+/// (Save to Files / AirDrop / Mail …). A single credential exports its `wrappedDocJson` verbatim; a
+/// bundle exports a JSON array of those same docs (no envelope, no invented fields).
+struct ExportedDocument: Transferable {
+    let filename: String
+    let json: String
+
+    // FileRepresentation (iOS 16+) carries the filename via the written file URL - unlike
+    // `.suggestedFileName`, which is iOS 17+ (deployment target here is 16.0).
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(exportedContentType: .json) { doc in
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(doc.filename)
+            try Data(doc.json.utf8).write(to: url, options: .atomic)
+            return SentTransferredFile(url)
+        }
+    }
+}
+
+enum DocumentExport {
+    /// One credential → its WrappedDoc JSON verbatim (byte-for-byte what was imported/verified).
+    static func single(_ cred: Credential) -> ExportedDocument {
+        ExportedDocument(filename: filename(for: cred), json: cred.wrappedDocJson)
+    }
+
+    /// Many credentials → a JSON array of their WrappedDoc objects (re-parsed + re-serialized so the
+    /// array is always well-formed even if a stored doc had stray whitespace).
+    static func bundle(_ creds: [Credential]) -> ExportedDocument {
+        let objects: [Any] = creds.compactMap { cred in
+            guard let d = cred.wrappedDocJson.data(using: .utf8) else { return nil }
+            return try? JSONSerialization.jsonObject(with: d)
+        }
+        let json: String
+        if let data = try? JSONSerialization.data(withJSONObject: objects, options: [.prettyPrinted]),
+           let s = String(data: data, encoding: .utf8) {
+            json = s
+        } else {
+            json = "[]"
+        }
+        return ExportedDocument(filename: "dogtag-documents-\(creds.count).json", json: json)
+    }
+
+    private static func filename(for cred: Credential) -> String {
+        let rt = cred.recordType.isEmpty ? "record" : cred.recordType.lowercased()
+        let tag = cred.dogTagId.isEmpty ? "" : "-\(cred.dogTagId)"
+        return "dogtag-\(sanitize(rt))\(sanitize(tag)).json"
+    }
+
+    private static func sanitize(_ s: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789-_")
+        return String(s.lowercased().map { allowed.contains($0) ? $0 : "-" })
     }
 }
