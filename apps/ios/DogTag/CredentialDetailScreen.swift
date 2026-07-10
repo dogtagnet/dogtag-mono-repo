@@ -37,7 +37,10 @@ struct CredentialDetailScreen: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("ON-CHAIN").font(.system(size: 11, weight: .bold)).foregroundColor(c.muted)
                     let root = (doc?.merkleRoot).flatMap { $0.isEmpty ? nil : $0 } ?? cred.credentialRoot
-                    MonoCopyRow(label: "Merkle root", value: root)
+                    CopyableMonoRow(label: "Merkle root", value: root)
+                    if let store = doc?.documentStore, !store.isEmpty {
+                        CopyableMonoRow(label: "Issuer address", value: store)
+                    }
                     if let domain = doc?.issuerDomain, !domain.isEmpty {
                         KeyValueRow(label: "Issuer domain", value: domain)
                     }
@@ -96,7 +99,9 @@ struct CredentialDetailScreen: View {
             let rt = cred.recordType.isEmpty ? (doc?.recordType ?? "") : cred.recordType
             if !rt.isEmpty { Text(rt).font(.system(size: 13)).foregroundColor(c.muted) }
             let tag = cred.dogTagId.isEmpty ? (doc?.dogTagId ?? "") : cred.dogTagId
-            if !tag.isEmpty { Text("DogTag #\(tag)").font(.system(size: 13)).foregroundColor(c.muted) }
+            if !tag.isEmpty {
+                InlineCopyText(text: "DogTag #\(tag)", copyValue: tag, font: .system(size: 13))
+            }
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
@@ -116,28 +121,3 @@ private struct KeyValueRow: View {
     }
 }
 
-private struct MonoCopyRow: View {
-    @Environment(\.dogTagColors) var c
-    let label: String
-    let value: String
-    private var shown: String {
-        value.count > 18 ? "\(value.prefix(10))…\(value.suffix(6))" : value
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.system(size: 12, weight: .semibold)).foregroundColor(c.muted)
-            Button {
-                UIPasteboard.general.string = value
-            } label: {
-                HStack {
-                    Text(shown.isEmpty ? "—" : shown)
-                        .font(.system(size: 13, design: .monospaced)).foregroundColor(c.onBackground)
-                    Spacer()
-                    if !value.isEmpty {
-                        Image(systemName: "doc.on.doc").font(.system(size: 12)).foregroundColor(c.muted)
-                    }
-                }
-            }.buttonStyle(.plain)
-        }
-    }
-}

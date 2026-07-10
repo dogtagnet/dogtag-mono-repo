@@ -337,7 +337,15 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
   e2e runs on the Simulator, which needs no Apple team.
 - **Generated `DogTag.xcodeproj` is committed** — it is produced by `xcodegen` from
   `apps/ios/project.yml`; re-run `xcodegen` (don't hand-edit the project) after adding/removing source
-  files, and commit the regenerated `project.pbxproj`.
+  files, and commit the regenerated `project.pbxproj`. **Trap:** `xcodegen` enumerates the `DogTag/`
+  folder, so regenerating in a checkout that has NOT vendored `verification_final.zkey` +
+  `verification.graph` (both gitignored) silently DROPS those two Copy-Bundle-Resources entries from the
+  committed `pbxproj` — vendor them first (step 1) or the prover bundle breaks. A pure-UI change that
+  adds no source file needs no regen at all: fold new views/types into an existing `.swift` and the
+  `pbxproj` stays untouched.
+- **Local pet photos are UI-only** — `PetPhotoStore` (LocalStore.swift) keeps per-`dogTagId` avatars as
+  JPEGs under `Documents/pet-photos/`; deliberately separate from `Pet` (which `mergeCentralPets`
+  overwrites) so a photo survives central sync. Never uploaded, never on-chain, never in a credential.
 - **zkey + graph are gitignored** (`apps/.gitignore`) — a fresh checkout has neither; vendor them from
   `circuits/build/` (step 1) or the e2e fails to prove. Validate the graph/zkey pair on the host with
   `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.

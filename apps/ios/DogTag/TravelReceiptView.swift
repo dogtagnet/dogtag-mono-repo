@@ -414,10 +414,7 @@ struct TravelReceiptView: View {
                 Divider().overlay(c.outline)
                 liveStatusRow
                 let root = (doc?.merkleRoot).flatMap { $0.isEmpty ? nil : $0 } ?? cred.credentialRoot
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Credential root").font(.system(size: 11, weight: .semibold)).foregroundColor(c.muted)
-                    Text(root).font(.system(size: 11, design: .monospaced)).foregroundColor(c.onSurface).lineLimit(1).truncationMode(.middle)
-                }
+                CopyableMonoRow(label: "Credential root", value: root)
                 if let store = doc?.documentStore, !store.isEmpty {
                     Text("Anchored: ROAX chainId 135 · issuer \(store.prefix(12))…")
                         .font(.system(size: 11)).foregroundColor(c.muted)

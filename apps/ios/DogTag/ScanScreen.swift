@@ -196,10 +196,10 @@ struct ScanScreen: View {
             if let res = issued {
                 card {
                     Text("Dog tag issued").font(.system(size: 16, weight: .bold)).foregroundColor(c.success)
-                    field("dogTagId", res.dogTagId.isEmpty ? "—" : res.dogTagId)
+                    CopyableMonoRow(label: "dogTagId", value: res.dogTagId, truncate: false)
                     field("Verdict", issueVerdict.isEmpty ? "—" : issueVerdict)
-                    field("Root", (res.root.isEmpty ? "—" : String(res.root.prefix(18))) + "…")
-                    field("Tx", (res.txHash.isEmpty ? "—" : String(res.txHash.prefix(18))) + "…")
+                    CopyableMonoRow(label: "Merkle root", value: res.root)
+                    CopyableMonoRow(label: "Transaction", value: res.txHash)
                     Text("Stored under your dog tags.").font(.system(size: 12)).foregroundColor(c.muted)
                 }
             }
