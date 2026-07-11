@@ -13,9 +13,7 @@ struct ProfileScreen: View {
     @State private var consentKeyHash: String? = nil
     @State private var mnemonic: String? = nil
     @State private var walletMsg = ""
-    @State private var showExport = false
-    @State private var exportMnemonic: String? = nil
-    @State private var exportPrivKey: String? = nil
+    @State private var exportPayload: ExportPayload? = nil
 
     var body: some View {
         ScrollView {
@@ -93,9 +91,9 @@ struct ProfileScreen: View {
                         walletButtonSecondary("Export account keys") {
                             Biometric.authenticate(reason: "Authenticate to export your account keys") { ok, e in
                                 guard ok else { walletMsg = e ?? "auth failed"; return }
-                                exportMnemonic = Wallet.revealMnemonic()
-                                exportPrivKey = Wallet.revealPrivateKeyHex()
-                                showExport = true
+                                exportPayload = ExportPayload(
+                                    mnemonic: Wallet.revealMnemonic(),
+                                    privateKeyHex: Wallet.revealPrivateKeyHex())
                             }
                         }
                     }
@@ -174,11 +172,11 @@ struct ProfileScreen: View {
             }
             .padding(20)
         }
-        .sheet(isPresented: $showExport, onDismiss: {
-            exportMnemonic = nil
-            exportPrivKey = nil
-        }) {
-            ExportAccountSheet(mnemonic: exportMnemonic, privateKeyHex: exportPrivKey)
+        // Deliver the revealed secrets through the sheet's item payload. A prior `.sheet(isPresented:)`
+        // read sibling @State that was still nil when SwiftUI first evaluated the sheet body, so the
+        // phrase/key never displayed. Dismiss nils the binding, releasing the secrets from memory.
+        .sheet(item: $exportPayload) { payload in
+            ExportAccountSheet(mnemonic: payload.mnemonic, privateKeyHex: payload.privateKeyHex)
                 .environment(\.dogTagColors, c)
         }
     }
@@ -275,6 +273,15 @@ private struct CopyButton: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+/// Carries the revealed secrets into `ExportAccountSheet` via `.sheet(item:)`, so they are delivered
+/// by the payload rather than read from sibling `@State` (which SwiftUI evaluates stale on the first
+/// presentation). A fresh `id` per reveal re-presents the sheet each time Export is tapped.
+private struct ExportPayload: Identifiable {
+    let id = UUID()
+    let mnemonic: String?
+    let privateKeyHex: String?
 }
 
 /// The biometric-gated account-export sheet. Shows a hard security warning, the 24-word recovery
