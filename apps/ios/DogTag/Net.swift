@@ -283,6 +283,14 @@ enum CentralApi {
         let recordType: String
         let challenge: String
         let mode: String
+
+        /// Whether this session presents via the zero-knowledge path. The ECDSA (EIP-712) modes
+        /// ("normal"/"ecdsa") have no leaf-count limit; anything else is the ZK circuit path, which
+        /// can only prove records within the circuit's leaf budget. Single source for that decision.
+        var isZk: Bool {
+            let m = mode.lowercased()
+            return m != "normal" && m != "ecdsa"
+        }
     }
 
     /// GET <host>/x/<token> → export-session metadata (non-consuming). Nil on failure.

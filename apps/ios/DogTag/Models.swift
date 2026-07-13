@@ -204,6 +204,89 @@ struct WrappedDoc {
     }
 }
 
+// --------------------------------------------------------------------------------------------
+// Record-display helpers (impl §6 UX). Every credential list/detail must state WHAT a record is and
+// WHICH pet it belongs to — never a bare "Dog Profile". These derive that from data the app already
+// holds (the WrappedDoc leaves + the local Pet / DOG_PROFILE name), shared by Home, Documents, Travel,
+// the credential detail and the export picker so the presentation stays consistent.
+// --------------------------------------------------------------------------------------------
+
+/// Constraints of the on-device zero-knowledge verification circuit
+/// (`circuits/verification.circom` — `DogTagVerification(24, 5)`; mirrored by
+/// `crates/dogtag-prover-rs` `pub const N: usize = 24`). A record with more Merkle leaves than this
+/// cannot be proven privately (the prover aborts with `too many leaves: <n> > N=24`).
+/// NOTE: this is the single display-layer source of truth for the limit — if the sibling ZK work
+/// (dogtag-zkverify-z2) changes the circuit width, update this constant to match.
+enum ZkCircuit {
+    static let maxLeaves = 24
+}
+
+/// Formats the "which pet" line shared across every record display.
+enum PetLabel {
+    /// "<name> · DogTag #<id>", or just "DogTag #<id>", or "" when neither is known.
+    static func line(name: String?, dogTagId: String) -> String {
+        let tag = dogTagId.isEmpty ? "" : "DogTag #\(dogTagId)"
+        if let n = name, !n.isEmpty { return tag.isEmpty ? n : "\(n) · \(tag)" }
+        return tag
+    }
+}
+
+extension WrappedDoc {
+    /// The parsed (unsalted) value of the leaf whose keyPath exactly equals `keyPath`, or nil if absent.
+    func leafValue(keyPath: String) -> String? {
+        decodedFields().first { $0.keyPath == keyPath }?.value
+    }
+
+    /// The parsed value of the first leaf whose keyPath equals `suffix` or ends with ".<suffix>".
+    /// Robust to whether a field sits at the `data` top level (vaccination fields) or nested under
+    /// `credentialSubject` (profile fields).
+    func leafValue(endingWith suffix: String) -> String? {
+        decodedFields().first { $0.keyPath == suffix || $0.keyPath.hasSuffix("." + suffix) }?.value
+    }
+
+    /// The pet's name baked into a DOG_PROFILE credential (`credentialSubject.name`), or nil. Matched
+    /// exactly so it is not confused with `ownerIdentity.name`.
+    var petName: String? {
+        guard let v = leafValue(keyPath: "credentialSubject.name"), !v.isEmpty else { return nil }
+        return v
+    }
+}
+
+extension Credential {
+    /// The wrapped-doc view over this credential's stored JSON (nil if unparseable).
+    var wrapped: WrappedDoc? { WrappedDoc(json: wrappedDocJson) }
+
+    var isVaccination: Bool { recordType.uppercased().contains("VACCINATION") }
+
+    /// A clear record-identity headline. Vaccinations read as "Rabies Vaccination" — this system issues
+    /// only USDA-coded rabies certs (packages/ui `RABIES_VACCINATION`); the specific product + date come
+    /// from `vaccinationDetail`. Every other type humanizes the recordType (DOG_PROFILE -> "Dog Profile").
+    var displayTypeLabel: String {
+        if isVaccination { return "Rabies Vaccination" }
+        if !title.isEmpty && title != "Record" { return title }
+        if let t = wrapped?.displayTitle(), !t.isEmpty { return t }
+        return recordType.isEmpty ? "Record" : recordType
+    }
+
+    /// For a vaccination: "<product> · <date>" (either part may be missing). nil for other record types,
+    /// so callers can conditionally show a vaccine detail line.
+    var vaccinationDetail: String? {
+        guard isVaccination, let d = wrapped else { return nil }
+        let product = d.leafValue(endingWith: "vaccineProductName") ?? ""
+        let date = d.leafValue(endingWith: "vaccinationDate") ?? ""
+        let parts = [product, date].filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Number of Merkle leaves in this record — the same count the ZK prover computes as `numLeaves`
+    /// (`decodedFields()` flattens `data` identically to the prover's `flatten_data`).
+    var leafCount: Int { wrapped?.decodedFields().count ?? 0 }
+
+    /// True when this record has more leaves than the ZK verification circuit supports, so it cannot be
+    /// privately (zero-knowledge) verified. See `ZkCircuit.maxLeaves`.
+    var exceedsZkLeafLimit: Bool { leafCount > ZkCircuit.maxLeaves }
+}
+
 /// The live ROAX (chainId 135) deployment addresses, loaded from the bundled `roax.json`.
 struct RoaxConfig {
     let chainId: Int

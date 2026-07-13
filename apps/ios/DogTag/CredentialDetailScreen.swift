@@ -5,6 +5,7 @@ import SwiftUI
 struct CredentialDetailScreen: View {
     @Environment(\.dogTagColors) var c
     @Environment(\.dismiss) var dismiss
+    @ObservedObject private var store = LocalStore.shared
     let cred: Credential
 
     @State private var showReceipt = false
@@ -112,17 +113,28 @@ struct CredentialDetailScreen: View {
                 Spacer()
             }
             HStack(alignment: .top) {
-                Text(cred.title.isEmpty ? (doc?.displayTitle() ?? "Record") : cred.title)
+                Text(cred.displayTypeLabel)
                     .font(.system(size: 20, weight: .bold)).foregroundColor(c.onBackground)
                 Spacer()
                 VerdictBadge(verdict: cred.verdict)
             }
-            let rt = cred.recordType.isEmpty ? (doc?.recordType ?? "") : cred.recordType
-            if !rt.isEmpty { Text(rt).font(.system(size: 13)).foregroundColor(c.muted) }
+            // Which pet: name (synced Pet or the DOG_PROFILE credential) + dogTagId — never a bare type.
+            // The dogTagId stays tap-to-copy (InlineCopyText), as the operator relies on copying it.
             let tag = cred.dogTagId.isEmpty ? (doc?.dogTagId ?? "") : cred.dogTagId
-            if !tag.isEmpty {
-                InlineCopyText(text: "DogTag #\(tag)", copyValue: tag, font: .system(size: 13))
+            let petName = store.petDisplayName(forDogTagId: tag)
+            if tag.isEmpty {
+                if let n = petName, !n.isEmpty { Text(n).font(.system(size: 13)).foregroundColor(c.muted) }
+            } else {
+                HStack(spacing: 6) {
+                    if let n = petName, !n.isEmpty {
+                        Text("\(n) ·").font(.system(size: 13)).foregroundColor(c.muted)
+                    }
+                    InlineCopyText(text: "DogTag #\(tag)", copyValue: tag, font: .system(size: 13))
+                }
             }
+            if let detail = cred.vaccinationDetail { Text(detail).font(.system(size: 12)).foregroundColor(c.muted) }
+            let rt = cred.recordType.isEmpty ? (doc?.recordType ?? "") : cred.recordType
+            if !rt.isEmpty { Text(rt).font(.system(size: 12)).foregroundColor(c.muted) }
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))

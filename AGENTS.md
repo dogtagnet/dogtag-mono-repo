@@ -427,3 +427,41 @@ is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `Z
   clones and staged as PRs for review. (Functional description - confirm exact definition with the
   captain if precision is needed.)
 - **tmux** - terminal multiplexer used to run and observe agent work across windows and panes.
+
+## iOS holder app (apps/ios)
+
+### Record display (Home / Documents / Travel / detail / export picker)
+- Every credential row must state WHAT the record is and WHICH pet it belongs to. Use the shared
+  `CredentialLabel` view (DocumentsScreen.swift) + the `Credential` display helpers in Models.swift
+  (`displayTypeLabel`, `vaccinationDetail`, `leafCount`, `exceedsZkLeafLimit`). Never render a bare
+  `cred.title` / `recordType`.
+- Pet name is NOT in `PetPhotoStore` (that stores photos only, keyed by dogTagId). Resolve it via
+  `LocalStore.petDisplayName(forDogTagId:)`: synced `Pet.name` → the DOG_PROFILE credential's
+  `credentialSubject.name` leaf → fall back to `DogTag #<id>` (never "Unnamed"/"Dog Profile").
+- Vaccinations are the USDA rabies schema (`packages/ui` `RABIES_VACCINATION`, recordType
+  `VACCINATION`). The specific vaccine + date are the `vaccineProductName` + `vaccinationDate` leaves,
+  which sit at the `data` TOP LEVEL (the vet's `build_vc` wraps operator fields directly), not under
+  `credentialSubject`. Extract by keyPath suffix.
+
+### ZK export leaf limit
+- The on-device ZK circuit (`circuits/verification.circom` `DogTagVerification(24, 5)`,
+  `crates/dogtag-prover-rs` `pub const N = 24`) proves at most 24 Merkle leaves; more aborts with
+  `too many leaves: <n> > N=24`. `ZkCircuit.maxLeaves` (Models.swift) is the display-layer mirror —
+  keep it in sync if the circuit width changes.
+- A record's leaf count == `WrappedDoc.decodedFields().count`, which flattens `data` identically to the
+  prover's `flatten_data` (both skip empty collections and count only string leaves), so the app's count
+  always matches the prover's on the same doc. DOG_PROFILE credentials are ~34 leaves (they wrap the full
+  VC envelope) → they EXCEED the limit and map to the `.health` group, so they appear as candidates for a
+  VACCINATION export request; the export picker disables them in ZK mode with a "too many fields" note.
+  VACCINATION records are ~14 leaves and prove fine.
+
+### Building / verifying UI changes
+- Build: `xcodebuild build -project apps/ios/DogTag.xcodeproj -scheme DogTag -sdk iphonesimulator
+  -destination 'id=<sim-udid>' CODE_SIGNING_ALLOWED=NO`. SourceKit single-file diagnostics report
+  cross-file symbols (Credential, LocalStore, …) as "not found" — those are false positives; only the
+  full `xcodebuild` result is authoritative.
+- Do NOT re-run xcodegen (`project.yml`) casually: it silently drops the vendored prover resources
+  (verification_final.zkey / verification.graph) from the pbxproj. Prefer editing existing `.swift`
+  files over adding new ones so the pbxproj (which lists sources individually) needs no regen.
+- To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
+  `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.

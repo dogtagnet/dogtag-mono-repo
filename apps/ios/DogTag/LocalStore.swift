@@ -60,6 +60,30 @@ final class LocalStore: ObservableObject {
         return credentials.filter { $0.dogTagId == id }
     }
 
+    // ---- pet display name ----------------------------------------------------------------------
+
+    /// The best display name for the pet owning `dogTagId`:
+    ///   1. the synced `Pet` name (skipping placeholder fallbacks),
+    ///   2. else the name baked into the pet's DOG_PROFILE credential (`credentialSubject.name`),
+    ///   3. else nil — callers then show the dogTagId alone (never a bare "Dog Profile").
+    func petDisplayName(forDogTagId id: String) -> String? {
+        if let n = pet(for: id)?.name, Self.isRealName(n) { return n }
+        for c in credentials where c.dogTagId == id && c.recordType.uppercased().contains("DOG_PROFILE") {
+            if let name = WrappedDoc(json: c.wrappedDocJson)?.petName, Self.isRealName(name) { return name }
+        }
+        return nil
+    }
+
+    /// Convenience: the display name for the pet owning `cred`.
+    func petDisplayName(for cred: Credential) -> String? { petDisplayName(forDogTagId: cred.dogTagId) }
+
+    /// A pet name is "real" only if it isn't empty or one of the auto placeholders ("Unnamed" from a
+    /// central sync, "DogTag #…" from the on-import fallback).
+    private static func isRealName(_ n: String) -> Bool {
+        let t = n.trimmingCharacters(in: .whitespaces)
+        return !t.isEmpty && t != "Unnamed" && !t.hasPrefix("DogTag #") && !t.hasPrefix("DogTag#")
+    }
+
     // ---- IO ------------------------------------------------------------------------------------
 
     private func load<T: Decodable>(_ type: T.Type, from url: URL) -> T? {

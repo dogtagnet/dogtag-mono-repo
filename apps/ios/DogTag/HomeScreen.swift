@@ -194,12 +194,9 @@ struct HomeScreen: View {
                 ForEach(items) { cred in
                     Button { detailCred = cred } label: {
                         HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                                Text("\(cred.recordType) · \(cred.verdict)").font(.system(size: 12)).foregroundColor(c.muted)
-                                if !cred.issuer.isEmpty { Text(cred.issuer).font(.system(size: 11)).foregroundColor(c.muted) }
-                            }
+                            CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
                             Spacer()
+                            VerdictBadge(verdict: cred.verdict)
                             Image(systemName: "chevron.right").foregroundColor(c.muted).font(.system(size: 12))
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
