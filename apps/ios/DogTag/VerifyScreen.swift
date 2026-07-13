@@ -59,6 +59,7 @@ struct VerifyScreen: View {
     @Environment(\.dogTagColors) var c
     let onScan: () -> Void
     private let parity = runParity()
+    private let inclusion = runInclusionConformance()
 
     var body: some View {
         ScrollView {
@@ -83,6 +84,21 @@ struct VerifyScreen: View {
                     Text("leaves: \(parity.leafChecks)   merkle trees: \(parity.merkleChecks)")
                         .font(.system(size: 12)).foregroundColor(c.muted)
                     Text(parity.detail).font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
+
+                // Inclusion-proof (DSDP §2.3) conformance panel — Swift verifier == Rust == vectors.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Selective-disclosure inclusion proofs").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
+                    Text("Sibling|Promote verify (recompute leaf + fold; arity/domain split)").font(.system(size: 12)).foregroundColor(c.muted)
+                    Text("Swift == Rust == vectors: \(inclusion.pass ? "PASS" : "FAIL")")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(inclusion.pass ? c.success : c.danger)
+                    Text("accepted: \(inclusion.accepted)   rejected: \(inclusion.rejected)")
+                        .font(.system(size: 12)).foregroundColor(c.muted)
+                    Text(inclusion.detail).font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)

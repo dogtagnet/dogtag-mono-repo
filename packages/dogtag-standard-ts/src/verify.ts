@@ -2,7 +2,6 @@
 // Validity = integrity AND issuance AND identity (the 3 authenticity pillars). `ownership` is a
 // CONTEXTUAL 4th fragment: gates only the owner's self-import; NOT_APPLICABLE for third parties.
 import {buildMerkle} from "./merkle.js";
-import {processProof} from "./merkle.js";
 import {flattenData, leafFromPacked} from "./wrap.js";
 import {fromHex32, toHex32, type Field} from "./field.js";
 import type {FragmentState, Verdict, WrappedDoc} from "./types.js";
@@ -61,10 +60,11 @@ export function checkIntegrity(doc: WrappedDoc): {state: FragmentState; root: Fi
   const targetHash = fromHex32(doc.signature.targetHash);
   if (root !== targetHash) return {state: "INVALID", root};
   const merkleRoot = fromHex32(doc.signature.merkleRoot);
-  const ok =
-    doc.signature.proof.length === 0
-      ? merkleRoot === targetHash
-      : processProof(doc.signature.proof.map(fromHex32), targetHash) === merkleRoot;
+  // Single-document credentials only: `signature.proof` MUST be empty, so `targetHash` IS the
+  // anchored root `R`. Doc→batch-root inclusion (a non-empty `proof`) never shipped, and the C1
+  // invariant forbids trusting a permissive commutative fold in the trust path — so a non-empty
+  // proof is rejected outright rather than folded (see merkle.processProof, DSDP plan §2.3).
+  const ok = doc.signature.proof.length === 0 && merkleRoot === targetHash;
   return {state: ok ? "VALID" : "INVALID", root};
 }
 

@@ -1096,6 +1096,19 @@ public func hashLeafHex(keyPath: String, saltHex: String, tag: UInt8, value: Str
 })
 }
 /**
+ * hashNode: the commutative internal-node hash `Poseidon3(DS_NODE, min(a,b), max(a,b))` over two
+ * 0x.. 32-byte field hexes -> the 0x.. 32-byte node hex. The primitive a foreign `Sibling | Promote`
+ * inclusion verifier folds with (Swift/Kotlin) so the Poseidon parameter set stays pinned in Rust.
+ */
+public func hashNodeHex(aHex: String, bHex: String)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_hash_node_hex(
+        FfiConverterString.lower(aHex),
+        FfiConverterString.lower(bHex),$0
+    )
+})
+}
+/**
  * keyHash = Poseidon(Ax, Ay) -> 0x.. 32-byte hex. Ax/Ay are 0x.. 32-byte BE field hex.
  */
 public func keyHashHex(axHex: String, ayHex: String)throws  -> String {
@@ -1216,6 +1229,28 @@ public func verifyConsentEddsa(axHex: String, ayHex: String, r8xHex: String, r8y
 })
 }
 /**
+ * verifyInclusionProof: the NORMATIVE DSDP §2.3 disclosed-leaf check over the FFI boundary.
+ *
+ * RECOMPUTES the leaf hash from `(key_path, salt, tag, value)` under `DS_LEAF` (Poseidon5) — never
+ * trusting a supplied leaf hash — then folds the root-ward `Sibling | Promote` proof and returns
+ * whether it equals `root_hex`. `proof_steps` encodes each step as either the literal `"promote"`
+ * (a lone-odd-node pass-through) or a 0x.. 32-byte sibling hex. This is the canonical reference the
+ * foreign verifiers cross-check against (their own fold via [`hash_leaf_hex`] + [`hash_node_hex`]
+ * must agree with this).
+ */
+public func verifyInclusionProofHex(keyPath: String, saltHex: String, tag: UInt8, value: String, proofSteps: [String], rootHex: String)throws  -> Bool {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_verify_inclusion_proof_hex(
+        FfiConverterString.lower(keyPath),
+        FfiConverterString.lower(saltHex),
+        FfiConverterUInt8.lower(tag),
+        FfiConverterString.lower(value),
+        FfiConverterSequenceString.lower(proofSteps),
+        FfiConverterString.lower(rootHex),$0
+    )
+})
+}
+/**
  * The pure §11.3 integrity pillar over a WrappedDoc JSON: rebuild the whole tree and compare to
  * targetHash/merkleRoot. This is what mobile runs OFFLINE. Returns "VALID" / "INVALID".
  */
@@ -1295,6 +1330,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_hash_leaf_hex() != 23706) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dogtag_standard_checksum_func_hash_node_hex() != 61695) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dogtag_standard_checksum_func_key_hash_hex() != 11418) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1314,6 +1352,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_verify_consent_eddsa() != 58972) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_verify_inclusion_proof_hex() != 37971) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_verify_integrity() != 1032) {

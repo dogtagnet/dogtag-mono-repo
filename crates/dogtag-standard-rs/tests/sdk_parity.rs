@@ -6,7 +6,7 @@ use ark_bn254::Fr;
 use ark_ff::PrimeField;
 use dogtag_standard::field::{bytes_to_field, field_modulus_dec, to_hex32};
 use dogtag_standard::leaf::hash_leaf;
-use dogtag_standard::merkle::build_merkle;
+use dogtag_standard::merkle::{build_merkle, verify_inclusion, ProofStep};
 use dogtag_standard::types::{TypeTag, TypedScalar};
 use serde_json::Value;
 
@@ -118,4 +118,46 @@ fn merkle_vectors_parity() {
             );
         }
     }
+}
+
+/// DSDP §2.3 `Sibling | Promote` inclusion-proof conformance — the Rust verifier RECOMPUTES each
+/// disclosed leaf from its fields and folds the shared TS-generated proof; the accept/reject verdict
+/// MUST match `valid`. Guarantees the Rust/TS(/Swift) legs agree bit-for-bit, including on the
+/// negative (tampered / corrupted-sibling / wrong-root) and multi-level-promotion cases.
+#[test]
+fn inclusion_vectors_parity() {
+    let v = load();
+    let arr = v["inclusion"].as_array().expect("testvectors.json missing `inclusion` — run gen-vectors");
+    let mut checked = 0usize;
+    let mut negatives = 0usize;
+    let mut max_promotes = 0u64;
+    for m in arr {
+        let name = m["name"].as_str().unwrap();
+        let key_path = m["keyPath"].as_str().unwrap();
+        let salt = hex::decode(m["saltHex"].as_str().unwrap()).unwrap();
+        let tag = m["tag"].as_u64().unwrap() as u8;
+        let scalar = scalar_of(tag, &m["value"]);
+        let root = fr_from_hex32(m["root"].as_str().unwrap());
+        let want = m["valid"].as_bool().unwrap();
+
+        let mut steps: Vec<ProofStep> = Vec::new();
+        for st in m["steps"].as_array().unwrap() {
+            if st.get("promote").and_then(|x| x.as_bool()) == Some(true) {
+                steps.push(ProofStep::Promote);
+            } else {
+                steps.push(ProofStep::Sibling(fr_from_hex32(st["sibling"].as_str().unwrap())));
+            }
+        }
+
+        let got = verify_inclusion(key_path, &salt, &scalar, &steps, root).unwrap();
+        assert_eq!(got, want, "inclusion {name}: verify()={got} want={want}");
+        checked += 1;
+        if !want {
+            negatives += 1;
+        }
+        max_promotes = max_promotes.max(m["promotes"].as_u64().unwrap_or(0));
+    }
+    assert!(checked >= 100, "expected the full shared inclusion vector set (got {checked})");
+    assert!(negatives >= 3, "expected negative (reject) vectors (got {negatives})");
+    assert!(max_promotes >= 2, "shared vectors must exercise multi-level promotion");
 }

@@ -6,9 +6,19 @@
 //! call through the generated bindings). The JVM-level repeat lives in apps/android.
 
 use dogtag_standard::ffi::{
-    build_merkle_root_hex, bytes_to_field_hex, hash_leaf_hex, verify_integrity, wrap_document_json,
+    build_merkle_root_hex, bytes_to_field_hex, hash_leaf_hex, hash_node_hex, verify_inclusion_proof_hex,
+    verify_integrity, wrap_document_json,
 };
 use serde_json::Value;
+
+/// Canonical string form of a vector's `value` field (null -> "" as the FFI/Swift runner packs it).
+fn value_str(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
 
 fn vectors() -> Value {
     let path = concat!(
@@ -92,6 +102,68 @@ fn ffi_wrap_then_verify_integrity_valid() {
     let wrapped = wrap_document_json(credential.to_string(), issuer.to_string()).expect("wrap");
     let verdict = verify_integrity(wrapped).expect("verify");
     assert_eq!(verdict, "VALID");
+}
+
+/// The `Sibling | Promote` inclusion FFI (`verify_inclusion_proof_hex`) is exactly what the Swift /
+/// Kotlin verifiers call. Drive it over every shared inclusion vector — including the `"promote"`
+/// step-string encoding and the negative (reject) cases — and assert the verdict matches `valid`.
+/// This is the CI-runnable proxy for the mobile inclusion-proof path (iOS CI is dispatch-only).
+#[test]
+fn ffi_inclusion_vectors_parity() {
+    let v = vectors();
+    let arr = v["inclusion"].as_array().expect("testvectors.json missing `inclusion`");
+    let mut checked = 0usize;
+    let mut negatives = 0usize;
+    for m in arr {
+        let key_path = m["keyPath"].as_str().unwrap().to_string();
+        let salt_hex = m["saltHex"].as_str().unwrap().to_string();
+        let tag = m["tag"].as_u64().unwrap() as u8;
+        let value = value_str(&m["value"]);
+        let root_hex = m["root"].as_str().unwrap().to_string();
+        let want = m["valid"].as_bool().unwrap();
+        // encode steps for the FFI: "promote" | 0x.. sibling hex (the wire form Swift builds).
+        let proof_steps: Vec<String> = m["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|st| {
+                if st.get("promote").and_then(|x| x.as_bool()) == Some(true) {
+                    "promote".to_string()
+                } else {
+                    st["sibling"].as_str().unwrap().to_string()
+                }
+            })
+            .collect();
+        let got = verify_inclusion_proof_hex(key_path, salt_hex, tag, value, proof_steps, root_hex)
+            .expect("verify_inclusion_proof_hex");
+        assert_eq!(got, want, "FFI inclusion {}: got={got} want={want}", m["name"]);
+        checked += 1;
+        if !want {
+            negatives += 1;
+        }
+    }
+    assert!(checked >= 100, "expected the full shared inclusion vector set (got {checked})");
+    assert!(negatives >= 3, "expected negative (reject) vectors (got {negatives})");
+}
+
+/// `hash_node_hex` is the Poseidon3 node primitive the foreign verifiers fold with. For a 2-leaf
+/// tree the root IS `hashNode(a, b)`, so the shared `size_2` vector pins it; also assert commutativity.
+#[test]
+fn ffi_hash_node_hex_matches_vectors() {
+    let v = vectors();
+    let m = v["merkle"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "size_2")
+        .expect("size_2 merkle vector");
+    let leaves: Vec<String> =
+        m["leaf_hexes"].as_array().unwrap().iter().map(|h| h.as_str().unwrap().to_string()).collect();
+    let (a, b) = (leaves[0].clone(), leaves[1].clone());
+    let root = m["root_hex"].as_str().unwrap();
+    let got = hash_node_hex(a.clone(), b.clone()).expect("hash_node_hex");
+    assert_eq!(got, root, "hash_node_hex(a,b) must equal the 2-leaf root");
+    assert_eq!(got, hash_node_hex(b, a).expect("hash_node_hex"), "hash_node must be commutative");
 }
 
 #[test]
