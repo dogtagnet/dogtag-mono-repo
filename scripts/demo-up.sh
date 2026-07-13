@@ -57,10 +57,10 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
-# REQUIRE_MINTED_DOG_TAG=false: the demo/e2e-smoke flow mints the DogTagSBT with the credential's own
-# root AFTER prepare (scripts/e2e-smoke.sh step 6), so the §7B-2 "tag must already be minted" pre-flight
-# (default-on in prod) is disabled here. In production a pet is registered (Register pet) before any
-# record is issued against its dog tag.
+# REQUIRE_MINTED_DOG_TAG=false (set on BOTH the vet + groomer instances below): the demo/e2e-smoke flow
+# mints the DogTagSBT with the credential's own root AFTER prepare (scripts/e2e-smoke.sh step 6), so the
+# §7B-2 "tag must already be minted" pre-flight (default-on in prod) is disabled here. In production a pet
+# is registered (Register pet) before any record is issued against its dog tag.
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR CONSENT_KEY_REGISTRY_ADDR=$CKR \
   SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
@@ -77,6 +77,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="${GROOMER_PUBLIC_URL:-http://$LAN_IP:43618}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
   CUSTODY_SEAL_PATH="$ROOT/.demo/groomer-custody.json" \
+  REQUIRE_MINTED_DOG_TAG=false \
   run groomer-api ":43618" "$ROOT/target/release/vet-api"
 # PROVER SERVICE — the trusted 64-bit prover a 32-bit-only Android phone queries for its Groth16 proof
 # (the phone then submits that proof to the GROOMER itself, so the groomer never sees the witness).
