@@ -279,14 +279,14 @@ struct ScanScreen: View {
             let candidates = matching.isEmpty ? store.credentials : matching
             // Zero-knowledge export can only prove records within the circuit's leaf budget; the ECDSA
             // (EIP-712) path has no such limit. Gate the "too many fields" state on the ZK mode only.
-            let isZk = !(sess.mode.lowercased() == "normal" || sess.mode.lowercased() == "ecdsa")
+            let isZk = sess.isZk
             VStack(alignment: .leading, spacing: 14) {
                 card {
                     Text("Export request").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
                     field("Groomer", sess.relayer.isEmpty ? "Unknown" : sess.relayer)
                     field("Purpose", sess.purpose.isEmpty ? "—" : sess.purpose)
                     field("Record type", sess.recordType.isEmpty ? "any" : sess.recordType)
-                    field("Mode", (sess.mode.lowercased() == "normal" || sess.mode.lowercased() == "ecdsa") ? "ECDSA (EIP-712)" : "Zero-knowledge")
+                    field("Mode", sess.isZk ? "Zero-knowledge" : "ECDSA (EIP-712)")
                 }
                 card {
                     Text("Select the record to export").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
@@ -349,8 +349,8 @@ struct ScanScreen: View {
 
     private func presentExport(host: String, token: String, groomerAddr: String, sess: CentralApi.ExportSession) {
         guard let sel = selected else { status = "Select a record first."; return }
-        let relayer = sess.relayer, purpose = sess.purpose, mode = sess.mode, sessionId = sess.sessionId
-        let isZk = !(mode.lowercased() == "normal" || mode.lowercased() == "ecdsa")
+        let relayer = sess.relayer, purpose = sess.purpose, sessionId = sess.sessionId
+        let isZk = sess.isZk
         // Belt-and-suspenders behind the disabled picker row: never hand a record that exceeds the ZK
         // circuit's leaf budget to the prover — it would abort with `too many leaves`. Fail clearly first.
         if isZk && sel.exceedsZkLeafLimit {

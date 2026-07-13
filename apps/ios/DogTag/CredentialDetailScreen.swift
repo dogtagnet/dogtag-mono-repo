@@ -119,9 +119,19 @@ struct CredentialDetailScreen: View {
                 VerdictBadge(verdict: cred.verdict)
             }
             // Which pet: name (synced Pet or the DOG_PROFILE credential) + dogTagId — never a bare type.
+            // The dogTagId stays tap-to-copy (InlineCopyText), as the operator relies on copying it.
             let tag = cred.dogTagId.isEmpty ? (doc?.dogTagId ?? "") : cred.dogTagId
-            let petLine = PetLabel.line(name: store.petDisplayName(forDogTagId: tag), dogTagId: tag)
-            if !petLine.isEmpty { Text(petLine).font(.system(size: 13)).foregroundColor(c.muted) }
+            let petName = store.petDisplayName(forDogTagId: tag)
+            if tag.isEmpty {
+                if let n = petName, !n.isEmpty { Text(n).font(.system(size: 13)).foregroundColor(c.muted) }
+            } else {
+                HStack(spacing: 6) {
+                    if let n = petName, !n.isEmpty {
+                        Text("\(n) ·").font(.system(size: 13)).foregroundColor(c.muted)
+                    }
+                    InlineCopyText(text: "DogTag #\(tag)", copyValue: tag, font: .system(size: 13))
+                }
+            }
             if let detail = cred.vaccinationDetail { Text(detail).font(.system(size: 12)).foregroundColor(c.muted) }
             let rt = cred.recordType.isEmpty ? (doc?.recordType ?? "") : cred.recordType
             if !rt.isEmpty { Text(rt).font(.system(size: 12)).foregroundColor(c.muted) }
