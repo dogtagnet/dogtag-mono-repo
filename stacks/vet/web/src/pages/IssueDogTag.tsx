@@ -305,10 +305,14 @@ export function IssueDogTag() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>Issue a dog tag</CardTitle>
+          <CardTitle>Register pet (issue dog tag)</CardTitle>
           <CardDescription>
-            Signing mode: <Badge variant="neutral">{signingMode}</Badge> — capture the owner identity +
-            pet profile, then the owner's device binds the dog tag on-chain.
+            Do this <strong>once per pet</strong>: it creates the pet's soulbound on-chain identity (the
+            dog tag) that records later attach to. Capture the owner identity + pet profile, then the
+            owner's device scans the QR and <strong>binds</strong> the dog tag on-chain — the mint happens
+            on that bind (watch for status <em>bound</em> + a txHash), not on this click.
+            <br />
+            Signing mode: <Badge variant="neutral">{signingMode}</Badge>
           </CardDescription>
         </div>
         {env.demoMode && (

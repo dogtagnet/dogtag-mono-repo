@@ -120,6 +120,12 @@ export const RABIES_VACCINATION: RecordTypeSchema = {
   ],
 };
 
+// NOTE: DOG_PROFILE is intentionally NOT included in `RECORD_TYPE_SCHEMAS` (the "Issue a record"
+// dropdown). The vet-api registers only the VACCINATION issuer (main.rs / demo-up.sh set only
+// VACCINATION_ISSUER_ADDR), so POST /credentials/prepare with recordType "DOG_PROFILE" resolves no
+// issuer address and always 400s ("unknown recordType"). Dog profiles are minted by the separate
+// "Register pet (issue dog tag)" flow (POST /profiles/issue/*), NOT this credential form. The schema
+// descriptor is kept here (re-exported) for reuse by that flow / future wiring — see audit report §7B-1.
 export const DOG_PROFILE: RecordTypeSchema = {
   recordType: "DOG_PROFILE",
   label: "Dog Profile",
@@ -167,7 +173,9 @@ export const DOG_PROFILE: RecordTypeSchema = {
   ],
 };
 
-export const RECORD_TYPE_SCHEMAS: RecordTypeSchema[] = [RABIES_VACCINATION, DOG_PROFILE];
+// Only record types with a registered vet-api issuer belong here (this array drives the
+// "Issue a record" dropdown). DOG_PROFILE is deliberately excluded — see the note on `DOG_PROFILE`.
+export const RECORD_TYPE_SCHEMAS: RecordTypeSchema[] = [RABIES_VACCINATION];
 
 export function schemaFor(recordType: string): RecordTypeSchema | undefined {
   return RECORD_TYPE_SCHEMAS.find((s) => s.recordType === recordType);

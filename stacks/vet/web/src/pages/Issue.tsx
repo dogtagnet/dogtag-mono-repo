@@ -189,10 +189,14 @@ export function Issue() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>Issue a credential</CardTitle>
+          <CardTitle>Issue a record (e.g. vaccination)</CardTitle>
           <CardDescription>
-            Signing mode: <Badge variant="neutral">{signingMode}</Badge> — the document + merkle root
-            are built server-side; this form supplies the credential fields (§1.6).
+            Attaches a signed record to an <strong>already-registered</strong> pet — it does not create a
+            dog tag. The pet must be registered first (Register pet), so its dog tag id already exists on
+            chain; otherwise the record can never be exported.
+            <br />
+            Signing mode: <Badge variant="neutral">{signingMode}</Badge> — the document + merkle root are
+            built server-side; this form supplies the record fields (§1.6).
           </CardDescription>
         </div>
         {env.demoMode && (
@@ -225,9 +229,16 @@ export function Issue() {
                 value={dogTagId}
                 onChange={(e) => setDogTagId(e.target.value)}
                 invalid={Boolean(errors["__dogTagId"])}
-                placeholder="dtag:…"
+                placeholder="e.g. 42"
               />
-              {errors["__dogTagId"] && <p className="text-xs text-danger">{errors["__dogTagId"]}</p>}
+              {errors["__dogTagId"] ? (
+                <p className="text-xs text-danger">{errors["__dogTagId"]}</p>
+              ) : (
+                <p className="text-xs text-muted">
+                  The existing dog tag's id, from Register pet. Issuing against a tag that isn't
+                  registered fails — the record would never be exportable.
+                </p>
+              )}
             </div>
           </div>
 

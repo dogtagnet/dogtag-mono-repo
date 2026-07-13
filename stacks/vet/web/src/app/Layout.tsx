@@ -16,8 +16,9 @@ import { useApp } from "./AppContext";
 
 const NAV: NavItem[] = [
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
-  { key: "issue", href: "/issue", label: "Issue credential", icon: FilePlus2 },
-  { key: "issue-dog-tag", href: "/issue-dog-tag", label: "Issue dog tag", icon: Dog },
+  // Register-first: a pet must have a dog tag (soulbound identity) before any record can attach to it.
+  { key: "issue-dog-tag", href: "/issue-dog-tag", label: "Register pet", icon: Dog },
+  { key: "issue", href: "/issue", label: "Issue a record", icon: FilePlus2 },
   { key: "records", href: "/records", label: "Records", icon: ListChecks },
   { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
@@ -27,7 +28,7 @@ const NAV: NavItem[] = [
 
 function Brand() {
   return (
-    <Link to="/issue" className="flex items-center gap-2">
+    <Link to="/issue-dog-tag" className="flex items-center gap-2">
       <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-onPrimary font-bold">
         DT
       </span>
