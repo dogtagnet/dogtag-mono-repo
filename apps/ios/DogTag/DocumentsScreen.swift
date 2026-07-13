@@ -47,12 +47,7 @@ struct DocumentsScreen: View {
                                     Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
                                     Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
                                 }
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                                    Text("\(cred.group.title) · \(cred.recordType)").font(.system(size: 12)).foregroundColor(c.muted)
-                                    let petName = store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
-                                    Text(petName).font(.system(size: 11)).foregroundColor(c.muted)
-                                }
+                                CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
                                 Spacer()
                                 VerdictBadge(verdict: cred.verdict)
                             }
@@ -93,6 +88,33 @@ struct PetFilterRow: View {
                 .padding(.horizontal, 14).padding(.vertical, 8)
                 .background(Capsule().fill(selected ? c.accent : c.surfaceVariant))
         }.buttonStyle(.plain)
+    }
+}
+
+/// A consistent record label shared by the Home, Documents, Travel and export-picker lists. Always
+/// states WHAT the record is (record type, and for a vaccination the product + date) and WHICH pet it
+/// belongs to (name + dogTagId), so a record is never presented as a bare "Dog Profile".
+struct CredentialLabel: View {
+    @Environment(\.dogTagColors) var c
+    let cred: Credential
+    /// Resolved by the caller via `LocalStore.petDisplayName(for:)`; nil => show the dogTagId alone.
+    let petName: String?
+
+    /// "<name> · DogTag #<id>", or just "DogTag #<id>" when no real name is known.
+    private var petLine: String {
+        let line = PetLabel.line(name: petName, dogTagId: cred.dogTagId)
+        return line.isEmpty ? "Unknown dog" : line
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(cred.displayTypeLabel)
+                .font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
+            Text(petLine).font(.system(size: 12)).foregroundColor(c.muted)
+            if let detail = cred.vaccinationDetail {
+                Text(detail).font(.system(size: 11)).foregroundColor(c.muted)
+            }
+        }
     }
 }
 

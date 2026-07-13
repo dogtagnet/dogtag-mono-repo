@@ -45,11 +45,7 @@ struct TravelScreen: View {
                                     Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
                                     Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
                                 }
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                                    let petName = store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
-                                    Text("\(petName) · \(cred.recordType)").font(.system(size: 12)).foregroundColor(c.muted)
-                                }
+                                CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
                                 Spacer()
                                 VerdictBadge(verdict: cred.verdict)
                             }

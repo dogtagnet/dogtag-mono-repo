@@ -277,6 +277,9 @@ struct ScanScreen: View {
             let wantGroup = CredentialGroup.from(recordType: sess.recordType)
             let matching = store.credentials.filter { $0.group == wantGroup }
             let candidates = matching.isEmpty ? store.credentials : matching
+            // Zero-knowledge export can only prove records within the circuit's leaf budget; the ECDSA
+            // (EIP-712) path has no such limit. Gate the "too many fields" state on the ZK mode only.
+            let isZk = !(sess.mode.lowercased() == "normal" || sess.mode.lowercased() == "ecdsa")
             VStack(alignment: .leading, spacing: 14) {
                 card {
                     Text("Export request").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
@@ -291,19 +294,32 @@ struct ScanScreen: View {
                         Text("No matching records yet — scan a vet's QR to import one first.").font(.system(size: 12)).foregroundColor(c.muted)
                     }
                     ForEach(candidates) { cred in
+                        let tooManyFields = isZk && cred.exceedsZkLeafLimit
                         let isSel = selected?.id == cred.id
                         Button { selected = cred } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(cred.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.onBackground)
-                                    Text("\(cred.group.title) · \(cred.verdict)").font(.system(size: 11)).foregroundColor(c.muted)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(alignment: .top) {
+                                    CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
+                                    Spacer()
+                                    VerdictBadge(verdict: cred.verdict)
                                 }
-                                Spacer()
+                                if tooManyFields {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
+                                        Text("Can't be privately verified — too many fields (\(cred.leafCount) of max \(ZkCircuit.maxLeaves)).")
+                                            .font(.system(size: 11))
+                                    }
+                                    .foregroundColor(c.danger)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .opacity(tooManyFields ? 0.6 : 1)
                             .padding(12)
                             .background(RoundedRectangle(cornerRadius: 12).fill(isSel ? c.accent.opacity(0.14) : c.surfaceVariant))
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSel ? c.accent : .clear, lineWidth: 1.5))
-                        }.buttonStyle(.plain)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(tooManyFields)
                     }
                 }
                 if working {
@@ -335,7 +351,13 @@ struct ScanScreen: View {
         guard let sel = selected else { status = "Select a record first."; return }
         let relayer = sess.relayer, purpose = sess.purpose, mode = sess.mode, sessionId = sess.sessionId
         let isZk = !(mode.lowercased() == "normal" || mode.lowercased() == "ecdsa")
-        Biometric.authenticate(reason: "Present '\(sel.title)' to \(relayer.isEmpty ? "the groomer" : relayer)") { ok, e in
+        // Belt-and-suspenders behind the disabled picker row: never hand a record that exceeds the ZK
+        // circuit's leaf budget to the prover — it would abort with `too many leaves`. Fail clearly first.
+        if isZk && sel.exceedsZkLeafLimit {
+            status = "This record can't be privately verified — too many fields (\(sel.leafCount) of max \(ZkCircuit.maxLeaves)). Pick a record with fewer fields."
+            return
+        }
+        Biometric.authenticate(reason: "Present '\(sel.displayTypeLabel)' to \(relayer.isEmpty ? "the groomer" : relayer)") { ok, e in
             guard ok else { status = e ?? "auth failed"; return }
             let wallet: WalletIdentity? = (try? Wallet.load()) ?? nil
             let subject = wallet?.ethAddress
