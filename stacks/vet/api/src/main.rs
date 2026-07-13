@@ -76,6 +76,9 @@ async fn main() {
         // The demo (scripts/demo-up.sh) sets REQUIRE_MINTED_DOG_TAG=false because it mints the SBT with
         // the credential's own root AFTER prepare.
         require_minted_dog_tag: env("REQUIRE_MINTED_DOG_TAG", "true") != "false",
+        // Default OFF: ships dormant. Requires a fresh DogTagSBT deploy with `mintNext` AND the paired
+        // non-folding export circuit before it can be enabled (audit §7A) — see Config::sbt_auto_id.
+        sbt_auto_id: env("SBT_AUTO_ID", "false") == "true",
     };
 
     // Fail-closed (audit H2): refuse to boot in production with unset/dev-default secrets. The

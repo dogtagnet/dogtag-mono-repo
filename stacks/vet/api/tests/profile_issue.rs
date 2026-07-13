@@ -196,3 +196,61 @@ async fn profile_issue_bind_rejects_bad_signature() {
     .await;
     assert_eq!(s, StatusCode::OK, "valid bind after a rejected one must succeed: {b}");
 }
+
+/// SBT_AUTO_ID (audit §7A): the "Register pet" bind uses the CONTRACT-assigned dogTagId (`mintNext`),
+/// reading it from the `Issued` event, instead of the off-chain counter + skip-loop. The SBT is minted
+/// under the RAW assigned id (not the field-hashed one), and the session adopts that id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn profile_issue_auto_id_uses_contract_assigned_id() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let state = with_sbt_auto_id(state_with(
+        chain.clone(),
+        "memchain".to_string(),
+        REGISTRY.to_string(),
+        ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+    ));
+    let app = vet_api::router(state);
+    let (_admin, op, _backend_addr) = boot_custody(&app).await;
+
+    let (s, b) = call(&app, "POST", "/profiles/issue/session/start", Some(&op), Some(start_body())).await;
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
+    let token = b["token"].as_str().unwrap().to_string();
+    let session_id = b["sessionId"].as_str().unwrap().to_string();
+
+    let (wallet, sig) = sign_registration();
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/bind",
+        None,
+        Some(serde_json::json!({ "token": token, "walletAddress": wallet, "signature": sig })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "bind: {b}");
+    let root = b["root"].as_str().unwrap().to_string();
+
+    // poll until the async mintNext lands.
+    let mut bound = serde_json::Value::Null;
+    for _ in 0..100 {
+        let (s, b) = call(&app, "GET", &format!("/profiles/issue/session/{session_id}"), Some(&op), None).await;
+        assert_eq!(s, StatusCode::OK);
+        if b["status"] == "bound" {
+            bound = b;
+            break;
+        }
+        assert_ne!(b["status"], "error", "mintNext must not error: {b}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(bound["status"], "bound", "async mintNext must complete -> bound");
+    // the authoritative id is the CONTRACT-assigned "1" (mintNext's first id), adopted from the event.
+    assert_eq!(bound["dogTagId"].as_str().unwrap(), "1", "auto-id adopts the contract-assigned id");
+
+    // the SBT is minted under the RAW assigned id (not the field-hashed one the legacy path uses).
+    let owner = chain.owner_of(SBT_ADDR, "1").await.unwrap();
+    assert_eq!(owner.to_lowercase(), wallet.to_lowercase(), "ownerOf(rawId) == device wallet");
+    let sbt_root = chain.profile_root_of(SBT_ADDR, "1").await.unwrap();
+    assert_eq!(sbt_root.to_lowercase(), root.to_lowercase(), "profileRoot(rawId) == issued root");
+}

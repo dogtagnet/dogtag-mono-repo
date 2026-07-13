@@ -465,3 +465,18 @@ is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `Z
   files over adding new ones so the pbxproj (which lists sources individually) needs no regen.
 - To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
   `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.
+
+## Issuance: two distinct on-chain flows (do not conflate)
+
+- **"Register pet (issue dog tag)"** — `stacks/vet/web/src/pages/IssueDogTag.tsx` → `POST /profiles/issue/session/start` then device `POST /profiles/issue/bind` → `DogTagSBT.mint(to, id, root)` in a background task (mint fires when the **owner's device** scans the QR and binds, not on the operator's click). Creates the pet's soulbound identity. Do this once per pet.
+- **"Issue a record (e.g. vaccination)"** — `stacks/vet/web/src/pages/Issue.tsx` → `POST /credentials/prepare`/`confirm` → `DogTagIssuer.issue(bytes32 root)`. Anchors a record root against an **already-registered** dog tag; never mints an SBT.
+- The vet-api registers **only** the `VACCINATION` issuer (`main.rs` / `demo-up.sh`). `DOG_PROFILE` has no issuer, so it is deliberately excluded from `RECORD_TYPE_SCHEMAS` (`packages/ui/src/schema/recordTypes.ts`) — a `DOG_PROFILE` credential would 400 (`unknown recordType`).
+
+## On-chain dogTagId is FIELD-HASHED
+
+The DogTagSBT is keyed by `field_of_value(handle)` (== the export circuit's `pub[0]`), **not** the raw handle — see `routes::onchain_dog_tag_id`. Anything reading `ownerOf`/`profileRoot` back for a DOG_PROFILE mint (tests included) must use the field-hashed id, not the raw handle. This is the convention the §7B-2 pre-flight and the legacy mint path both follow.
+
+## Two dormant/config-gated issuance hardening flags (audit `data/dogtag-zkverify-z2/report.md`)
+
+- **`REQUIRE_MINTED_DOG_TAG`** (default **ON** in prod): `POST /credentials/prepare` refuses a `dogTagId` whose SBT is not minted (`ownerOf(field_of_value(id))` must resolve), else the record anchors but is un-exportable (§7B-2). Gated OFF in `scripts/demo-up.sh` and the hermetic test helpers because the demo/e2e-smoke mints the SBT with the credential's own root **after** prepare (a demo shortcut with a circular data dependency on `ROOT_HEX`).
+- **`SBT_AUTO_ID`** (default **OFF**, ships **dormant**): moves dogTagId allocation on-chain via `DogTagSBT.mintNext(to, root)` (contract assigns a monotonic id; vet-api reads it from the `Issued` event and drops the racy off-chain counter + TOCTOU skip-loop — audit §7A). **Two hard dependencies before it can be enabled:** (1) the live `DogTagSBT` (`0x1FB8…`) has no `mintNext` — needs a **fresh contracts deploy** (state-orphaning; do not redeploy the live SBT ad hoc). (2) `mintNext` assigns a **raw** sequential id, but the export circuit + the §7B-2 pre-flight key the SBT by the **field-hashed** id — so enabling it only makes sense paired with the **non-folding export circuit (v2.x)** + a matching pre-flight. Until then the DOG_PROFILE credential's `dogTagId` leaf (which does not feed the export circuit) may differ from the tokenId. See `Config::sbt_auto_id` + `routes::profile_issue_bind`.

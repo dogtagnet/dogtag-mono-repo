@@ -52,6 +52,11 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, AccessControlDefaultAdmin
     mapping(uint256 => Status) public status;
     mapping(uint256 => uint256) public recoverNonce;
 
+    /// Monotonic auto-increment for contract-assigned dogTagIds (see `mintNext`). Starts at 0; the
+    /// first `mintNext` id is 1. Non-personal + guaranteed-unique — the issuer never supplies/collides
+    /// an id (audit report §7A). Read via `nextId()` (the id `mintNext` would assign next).
+    uint256 private _nextId;
+
     bool private _inRecovery;
 
     event Issued(uint256 indexed dogTagId, address indexed issuer);
@@ -83,6 +88,25 @@ contract DogTagSBT is ERC721, AccessControlEnumerable, AccessControlDefaultAdmin
         profileRoot[id] = root;
         emit Locked(id);
         emit Issued(id, msg.sender);
+    }
+
+    /// @notice Contract-assigned mint: the issuer never supplies the id (audit report §7A). Allocates a
+    /// monotonic `id = ++_nextId`, mints under it, and returns the assigned id (also emitted as
+    /// `Issued.dogTagId` / `Locked.tokenId`). Removes the off-chain-counter restart-collision + id-squat
+    /// class. Preferred over `mint(to,id,root)` (caller-supplied id, kept for legacy/manual issuance).
+    function mintNext(address to, bytes32 root) external onlyRole(ISSUER_ROLE) returns (uint256 id) {
+        id = ++_nextId;
+        _safeMint(to, id);
+        issuerOf[id] = msg.sender;
+        status[id] = Status.Active;
+        profileRoot[id] = root;
+        emit Locked(id);
+        emit Issued(id, msg.sender);
+    }
+
+    /// @notice The id the next `mintNext` call will assign (current `_nextId + 1`). View-only.
+    function nextId() external view returns (uint256) {
+        return _nextId + 1;
     }
 
     function setProfileRoot(uint256 id, bytes32 r) external issuerOrAuthority(id) {

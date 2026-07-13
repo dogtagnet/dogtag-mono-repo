@@ -1610,22 +1610,28 @@ async fn profile_issue_session_start(
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
     }
-    // Allocate a dogTagId that is NOT already minted on the (shared) DogTagSBT. The local counter
-    // resets on restart and the SBT is shared across issuers, so a fresh counter can collide with an
-    // already-minted id — `DogTagSBT.mint` reverts on a duplicate token. Skip taken ids: owner_of
-    // returns Err(NotFound) for an unminted id (free) and Ok(_) for a minted one (taken).
+    // Allocate the operator-facing dogTagId. Two paths (audit §7A):
+    //  - SBT_AUTO_ID: the CONTRACT assigns the authoritative id at mint time (`mintNext`), so we only
+    //    need a provisional value here for the QR/portal/VC — the real id is read from the `Issued`
+    //    event at bind and overwrites this. No off-chain collision loop is needed (the contract's
+    //    monotonic `_nextId` cannot collide), so the racy TOCTOU skip-loop is skipped.
+    //  - legacy: the off-chain counter supplies a caller-fed id. The counter resets on restart and the
+    //    SBT is shared across issuers, so a fresh counter can collide with an already-minted id
+    //    (`DogTagSBT.mint` reverts on a duplicate). Skip taken ids: owner_of returns Err(NotFound) for
+    //    an unminted id (free) and Ok(_) for a minted one (taken). The SBT is keyed by the field-hashed
+    //    id, so the collision-check queries ownerOf(field_of_value(handle)), not the raw handle.
     let mut dog_tag_id = st.store.next_dog_tag_id().await.to_string();
-    for _ in 0..256 {
-        // The SBT is minted under the field-hashed id, so the collision-check must query
-        // ownerOf(field_of_value(handle)), not the raw handle.
-        let onchain = match onchain_dog_tag_id(&dog_tag_id) {
-            Ok(v) => v,
-            Err(_) => break, // non-numeric handle can't collide via this path; proceed
-        };
-        match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
-            Err(crate::chain::ChainError::NotFound) => break, // unminted -> free
-            Ok(_) => dog_tag_id = st.store.next_dog_tag_id().await.to_string(), // taken -> next
-            Err(_) => break, // transient RPC error: proceed (a real dup would revert at mint)
+    if !st.cfg.sbt_auto_id {
+        for _ in 0..256 {
+            let onchain = match onchain_dog_tag_id(&dog_tag_id) {
+                Ok(v) => v,
+                Err(_) => break, // non-numeric handle can't collide via this path; proceed
+            };
+            match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
+                Err(crate::chain::ChainError::NotFound) => break, // unminted -> free
+                Ok(_) => dog_tag_id = st.store.next_dog_tag_id().await.to_string(), // taken -> next
+                Err(_) => break, // transient RPC error: proceed (a real dup would revert at mint)
+            }
         }
     }
 
@@ -1809,42 +1815,57 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
     let store = st.store.clone();
     let sbt_addr = st.cfg.sbt_addr.clone();
     let signer_index = st.cfg.vet_signer_index;
-    // Mint + read-back under the field-hashed on-chain id (== the export's pub[0]); the raw handle stays
-    // the credential's dogTagId. Computed here so a bad handle fails synchronously, before the spawn.
-    let onchain_id = match onchain_dog_tag_id(&session.dog_tag_id) {
-        Ok(v) => v,
-        Err(e) => {
-            return err(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("dogTagId field-hash: {e}"),
-            )
+    let sbt_auto_id = st.cfg.sbt_auto_id;
+    // LEGACY path mints + reads back under the FIELD-HASHED on-chain id (== the export's pub[0]); the raw
+    // handle stays the credential's dogTagId. Computed here so a bad handle fails synchronously, before
+    // the spawn. AUTO-ID lets the CONTRACT assign the id (mintNext), so no field-hash is needed.
+    let legacy_onchain_id = if sbt_auto_id {
+        String::new()
+    } else {
+        match onchain_dog_tag_id(&session.dog_tag_id) {
+            Ok(v) => v,
+            Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &format!("dogTagId field-hash: {e}")),
         }
     };
     let mint_wallet = wallet.clone();
     let mint_root = root.clone();
     let mut bg_session = session.clone();
     tokio::spawn(async move {
-        match chain
-            .mint(
-                signer_index,
-                &sbt_addr,
-                &mint_wallet,
-                &onchain_id,
-                &mint_root,
-            )
-            .await
-        {
-            Ok(sent) => {
+        // Mint, then resolve the on-chain KEY we read ownerOf/profileRoot back under.
+        //  - AUTO-ID (audit §7A): mintNext assigns a monotonic id on-chain; read it from the `Issued`
+        //    event and adopt it as the authoritative dogTagId (overwriting the provisional value — the
+        //    portal/phone pick it up on the status poll). DORMANT (SBT_AUTO_ID defaults off): the raw
+        //    assigned id is the SBT key, so this pairs with the NON-FOLDING export circuit (v2.x) + a
+        //    matching pre-flight. Until that ships the credential's `dogTagId` leaf (the provisional
+        //    value, which does not feed the export circuit) may differ from the tokenId. See
+        //    Config::sbt_auto_id.
+        //  - LEGACY: caller-fed, field-hashed id via `mint`.
+        let minted = if sbt_auto_id {
+            chain
+                .mint_next(signer_index, &sbt_addr, &mint_wallet, &mint_root)
+                .await
+                .map(|(sent, assigned_id)| {
+                    bg_session.dog_tag_id = assigned_id.clone();
+                    (sent, assigned_id)
+                })
+        } else {
+            chain
+                .mint(signer_index, &sbt_addr, &mint_wallet, &legacy_onchain_id, &mint_root)
+                .await
+                .map(|sent| (sent, legacy_onchain_id.clone()))
+        };
+        match minted {
+            Ok((sent, onchain_key)) => {
                 // VERIFY ON-CHAIN before marking the issuance correct: the mint receipt is not enough —
                 // read back ownerOf(dogTagId)==device wallet AND profileRoot(dogTagId)==the issued root.
                 // Only a chain-confirmed match flips to "bound"; anything else is "error" (so the device
                 // never accepts an unverified issuance).
                 let owner_ok = matches!(
-                    chain.owner_of(&sbt_addr, &onchain_id).await,
+                    chain.owner_of(&sbt_addr, &onchain_key).await,
                     Ok(o) if o.eq_ignore_ascii_case(&mint_wallet)
                 );
                 let root_ok = matches!(
-                    chain.profile_root_of(&sbt_addr, &onchain_id).await,
+                    chain.profile_root_of(&sbt_addr, &onchain_key).await,
                     Ok(r) if r.eq_ignore_ascii_case(&mint_root)
                 );
                 if owner_ok && root_ok {

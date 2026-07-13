@@ -33,7 +33,9 @@ sol! {
 
     #[sol(rpc)]
     contract IDogTagSBT {
+        event Issued(uint256 indexed dogTagId, address indexed issuer);
         function mint(address to, uint256 id, bytes32 root) external;
+        function mintNext(address to, bytes32 root) external returns (uint256 id);
         function ownerOf(uint256 id) external view returns (address);
         function profileRoot(uint256 id) external view returns (bytes32);
     }
@@ -232,6 +234,21 @@ pub trait ChainClient: Send + Sync {
         let calldata = mint_calldata(to, dog_tag_id, root);
         self.sign_and_send(account_index, sbt_addr, &calldata).await
     }
+    /// DogTagSBT.mintNext(to, root) FROM the signer at `account_index` (holds ISSUER_ROLE): the CONTRACT
+    /// assigns a monotonic dogTagId (audit §7A) — the caller never supplies/collides an id. Returns
+    /// `(SentTx, assigned_id_decimal)` where `assigned_id` is read from the `Issued(dogTagId, issuer)`
+    /// event in the mint receipt (the on-chain source of truth), NOT an off-chain counter. Default =
+    /// unsupported: only the Alloy + MemChain impls provide it, and the live SBT must be REDEPLOYED with
+    /// `mintNext` before the `SBT_AUTO_ID` path can use it (see routes::profile_issue_bind).
+    async fn mint_next(
+        &self,
+        _account_index: u32,
+        _sbt_addr: &str,
+        _to: &str,
+        _root: &str,
+    ) -> Result<(SentTx, String), ChainError> {
+        Err(ChainError::Other("mint_next not supported by this chain client".into()))
+    }
     /// DogTagSBT.ownerOf(dogTagId) (lowercase 0x.. address; Err(NotFound) if unminted).
     async fn owner_of(&self, _sbt_addr: &str, _dog_tag_id: &str) -> Result<String, ChainError> {
         Err(ChainError::NotFound)
@@ -297,6 +314,13 @@ pub fn mint_calldata(to: &str, dog_tag_id: &str, root: &str) -> String {
         id: parse_u256_dec_or_hex(dog_tag_id),
         root: parse_b256(root),
     };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+/// ABI-encode DogTagSBT.mintNext(to, root) — the contract assigns the dogTagId (audit §7A). The assigned
+/// id is read back from the `Issued(dogTagId, issuer)` event in the receipt (see `mint_next`).
+pub fn mint_next_calldata(to: &str, root: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IDogTagSBT::mintNextCall { to: parse_addr(to), root: parse_b256(root) };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 /// Normalize a dogTagId (decimal or hex) into a canonical decimal string so MemChain keys collide
@@ -445,6 +469,8 @@ struct MemChainInner {
     sbt_owners: HashMap<(String, String), String>,
     /// (sbt_addr, dog_tag_id) -> profileRoot (DogTagSBT.profileRoot).
     sbt_roots: HashMap<(String, String), String>,
+    /// monotonic counter emulating the contract's `_nextId` (mintNext); first assigned id is 1.
+    sbt_next_id: u64,
     nonce: u64,
     clock: u64,
 }
@@ -782,6 +808,33 @@ impl ChainClient for MemChain {
         let tx_hash = format!("0x{:064x}", g.nonce);
         Ok(SentTx { tx_hash })
     }
+    async fn mint_next(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        to: &str,
+        root: &str,
+    ) -> Result<(SentTx, String), ChainError> {
+        // Emulate DogTagSBT.mintNext(to,root): assign id = ++_nextId, set ownerOf[id]=to AND
+        // profileRoot[id]=root, return the assigned id (as the contract's `Issued.dogTagId`). Requires a
+        // registered signer (the vet ISSUER signer) at this index.
+        let mut g = self.inner.lock().unwrap();
+        g.signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no issuer signer for index".into()))?;
+        g.sbt_next_id += 1;
+        let id = g.sbt_next_id.to_string();
+        let key = (sbt_addr.to_lowercase(), normalize_id(&id));
+        if g.sbt_owners.contains_key(&key) {
+            return Err(ChainError::Other("ERC721: token already minted".into()));
+        }
+        g.sbt_owners.insert(key.clone(), to.to_lowercase());
+        g.sbt_roots.insert(key, root.to_lowercase());
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        Ok((SentTx { tx_hash }, id))
+    }
     async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
         let g = self.inner.lock().unwrap();
         g.sbt_owners
@@ -865,6 +918,64 @@ impl AlloyChain {
     fn signer(&self, index: u32) -> Option<alloy::signers::local::PrivateKeySigner> {
         self.signers.lock().unwrap().get(&index).cloned()
     }
+
+    /// Sign + broadcast `calldata` FROM the signer at `account_index` to `to`, wait for the tx to be
+    /// MINED, and return the full receipt (so callers can decode emitted logs). Legacy-priced (see the
+    /// note below). Errors if the tx reverts. `sign_and_send` and `mint_next` share this.
+    async fn broadcast_calldata(
+        &self,
+        account_index: u32,
+        to: &str,
+        calldata: &str,
+    ) -> Result<alloy::rpc::types::TransactionReceipt, ChainError> {
+        use alloy::network::EthereumWallet;
+        use alloy::network::TransactionBuilder;
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::rpc::types::TransactionRequest;
+
+        let signer = self
+            .signer(account_index)
+            .ok_or_else(|| ChainError::Other("no signer for index (unlocked?)".into()))?;
+        let wallet = EthereumWallet::from(signer);
+        let provider = ProviderBuilder::new()
+            .with_recommended_fillers()
+            .wallet(wallet)
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+        let data = Bytes::from(
+            hex::decode(calldata.strip_prefix("0x").unwrap_or(calldata))
+                .map_err(|e| ChainError::Other(format!("bad calldata: {e}")))?,
+        );
+        // LEGACY pricing on ROAX: the node's base fee is ~7 wei but its mempool only mines txs at the
+        // ~1 gwei eth_gasPrice. Alloy's EIP-1559 filler derives maxFeePerGas from the (tiny) base fee,
+        // producing an underpriced tx that the node ACCEPTS but never mines (stuck forever). Read
+        // eth_gasPrice and send a legacy tx (mirrors the working `cast send --legacy`).
+        let gp = provider.get_gas_price().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let tx = TransactionRequest::default()
+            .with_to(parse_addr(to))
+            .with_input(data)
+            .with_value(U256::ZERO)
+            .with_chain_id(self.chain_id)
+            .with_gas_price(gp);
+
+        let pending = provider
+            .send_transaction(tx)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        // Wait for the tx to be MINED before returning, so the immediate confirm step's get_tx_view /
+        // issuedAt reads (and any cast isValid read) reflect the on-chain effect. Returning at broadcast
+        // time made confirm race the mempool and fail with tx NotFound.
+        let receipt = pending
+            .get_receipt()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        if !receipt.status() {
+            return Err(ChainError::Other(format!("tx reverted: {:#x}", receipt.transaction_hash)));
+        }
+        Ok(receipt)
+    }
 }
 
 #[async_trait]
@@ -945,57 +1056,32 @@ impl ChainClient for AlloyChain {
         to: &str,
         calldata: &str,
     ) -> Result<SentTx, ChainError> {
-        use alloy::network::EthereumWallet;
-        use alloy::network::TransactionBuilder;
-        use alloy::providers::{Provider, ProviderBuilder};
-        use alloy::rpc::types::TransactionRequest;
-
-        let signer = self
-            .signer(account_index)
-            .ok_or_else(|| ChainError::Other("no signer for index (unlocked?)".into()))?;
-        let wallet = EthereumWallet::from(signer);
-        let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
-            .wallet(wallet)
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-
-        let data = Bytes::from(
-            hex::decode(calldata.strip_prefix("0x").unwrap_or(calldata))
-                .map_err(|e| ChainError::Other(format!("bad calldata: {e}")))?,
-        );
-        // LEGACY pricing on ROAX: the node's base fee is ~7 wei but its mempool only mines txs at the
-        // ~1 gwei eth_gasPrice. Alloy's EIP-1559 filler derives maxFeePerGas from the (tiny) base fee,
-        // producing an underpriced tx that the node ACCEPTS but never mines (stuck forever). Read
-        // eth_gasPrice and send a legacy tx (mirrors the working `cast send --legacy`).
-        let gp = provider
-            .get_gas_price()
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let tx = TransactionRequest::default()
-            .with_to(parse_addr(to))
-            .with_input(data)
-            .with_value(U256::ZERO)
-            .with_chain_id(self.chain_id)
-            .with_gas_price(gp);
-
-        let pending = provider
-            .send_transaction(tx)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        // Wait for the tx to be MINED before returning, so the immediate confirm step's
-        // get_tx_view / issuedAt reads (and any cast isValid read) reflect the on-chain effect.
-        // Returning at broadcast time made confirm race the mempool and fail with tx NotFound.
-        let receipt = pending
-            .get_receipt()
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let receipt = self.broadcast_calldata(account_index, to, calldata).await?;
+        Ok(SentTx { tx_hash: format!("{:#x}", receipt.transaction_hash) })
+    }
+    async fn mint_next(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        to: &str,
+        root: &str,
+    ) -> Result<(SentTx, String), ChainError> {
+        // Broadcast mintNext(to, root), then read the CONTRACT-ASSIGNED id off the `Issued(dogTagId,
+        // issuer)` event in the receipt (the on-chain source of truth). Mirrors the log-decode in
+        // `get_tx_view`/`get_verified_event`.
+        let calldata = mint_next_calldata(to, root);
+        let receipt = self.broadcast_calldata(account_index, sbt_addr, &calldata).await?;
         let tx_hash = format!("{:#x}", receipt.transaction_hash);
-        if !receipt.status() {
-            return Err(ChainError::Other(format!("tx reverted: {tx_hash}")));
+        let sbt = parse_addr(sbt_addr);
+        for log in receipt.inner.logs() {
+            if log.address() != sbt {
+                continue;
+            }
+            if let Ok(ev) = IDogTagSBT::Issued::decode_log(log.as_ref(), true) {
+                return Ok((SentTx { tx_hash }, ev.dogTagId.to_string()));
+            }
         }
-        Ok(SentTx { tx_hash })
+        Err(ChainError::Other("mintNext receipt missing Issued(dogTagId) event".into()))
     }
     async fn get_tx_view(
         &self,

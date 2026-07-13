@@ -6,6 +6,7 @@ import {IssuerRegistry} from "../src/IssuerRegistry.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
 import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
 import {DogTagSBT} from "../src/DogTagSBT.sol";
+import {IERC5192} from "../src/IERC5192.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 contract DogTagContractsTest is Test {
@@ -189,6 +190,39 @@ contract DogTagContractsTest is Test {
         sbt.setStatus(3, DogTagSBT.Status.Deceased, "rip");
         vm.expectRevert(DogTagSBT.Terminal.selector);
         sbt.setStatus(3, DogTagSBT.Status.Active, "undo");
+    }
+
+    // ---- contract-assigned dogTagId (mintNext, audit §7A) ----
+    function test_sbt_mintNext_assigns_monotonic_ids() public {
+        bytes32 issuerRole = sbt.ISSUER_ROLE();
+        vm.prank(admin);
+        sbt.grantRole(issuerRole, address(this));
+
+        assertEq(sbt.nextId(), 1, "first assigned id is 1");
+        bytes32 root1 = keccak256("p1");
+        vm.expectEmit(true, false, false, false, address(sbt));
+        emit IERC5192.Locked(1);
+        vm.expectEmit(true, true, false, false, address(sbt));
+        emit DogTagSBT.Issued(1, address(this));
+        uint256 id1 = sbt.mintNext(address(0xD06), root1);
+        assertEq(id1, 1, "returns the assigned id");
+        assertEq(sbt.ownerOf(1), address(0xD06));
+        assertEq(sbt.profileRoot(1), root1);
+        assertEq(sbt.issuerOf(1), address(this));
+        assertEq(uint8(sbt.status(1)), uint8(DogTagSBT.Status.Active));
+
+        // monotonic: the next call assigns 2, never reusing/colliding an id.
+        assertEq(sbt.nextId(), 2);
+        uint256 id2 = sbt.mintNext(address(0xBEEF), keccak256("p2"));
+        assertEq(id2, 2);
+        assertEq(sbt.ownerOf(2), address(0xBEEF));
+        assertEq(sbt.nextId(), 3);
+    }
+
+    function test_sbt_mintNext_requires_issuer_role() public {
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        sbt.mintNext(address(0xD06), keccak256("p"));
     }
 
     function test_sbt_recover_preserves_tokenId_and_issuer() public {

@@ -59,6 +59,7 @@ pub fn state_with(
         // Hermetic prepare/confirm tests issue against a placeholder dogTagId with no SBT deployed —
         // the §7B-2 existence pre-flight is exercised by its own dedicated test instead.
         require_minted_dog_tag: false,
+        sbt_auto_id: false,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -81,6 +82,15 @@ pub fn state_with(
 pub fn with_require_minted_dog_tag(mut state: AppState) -> AppState {
     let mut cfg = (*state.cfg).clone();
     cfg.require_minted_dog_tag = true;
+    state.cfg = Arc::new(cfg);
+    state
+}
+
+/// Flip `sbt_auto_id` ON (contract-assigned dogTagId via `mintNext`, audit §7A). Used by the auto-id
+/// "Register pet" bind test; defaults OFF everywhere else.
+pub fn with_sbt_auto_id(mut state: AppState) -> AppState {
+    let mut cfg = (*state.cfg).clone();
+    cfg.sbt_auto_id = true;
     state.cfg = Arc::new(cfg);
     state
 }
@@ -147,6 +157,7 @@ pub fn state_with_verify_keys(
         // Hermetic prepare/confirm tests issue against a placeholder dogTagId with no SBT deployed —
         // the §7B-2 existence pre-flight is exercised by its own dedicated test instead.
         require_minted_dog_tag: false,
+        sbt_auto_id: false,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -196,6 +207,7 @@ pub fn state_for_calendar(
         // Hermetic prepare/confirm tests issue against a placeholder dogTagId with no SBT deployed —
         // the §7B-2 existence pre-flight is exercised by its own dedicated test instead.
         require_minted_dog_tag: false,
+        sbt_auto_id: false,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -238,6 +250,7 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: Some(seal_path),
         require_minted_dog_tag: false,
+        sbt_auto_id: false,
     };
     AppState {
         store: store as Arc<dyn vet_api::store::Store>,

@@ -59,6 +59,17 @@ pub struct Config {
     /// (`scripts/demo-up.sh`), which mints the SBT with the credential's own root AFTER prepare, and for
     /// hermetic tests that exercise prepare/confirm in isolation without an SBT deployment.
     pub require_minted_dog_tag: bool,
+    /// When `true` (env `SBT_AUTO_ID`), the "Register pet" mint uses the contract-assigned dogTagId:
+    /// `DogTagSBT.mintNext(to, root)` allocates a monotonic id and the vet-api reads it from the `Issued`
+    /// event, instead of the racy off-chain `next_dog_tag_id()` counter + TOCTOU skip-loop (audit §7A).
+    ///
+    /// DEPLOY + CIRCUIT DEPENDENCY — default OFF, ships DORMANT: (1) the live DogTagSBT (`0x1FB8…`) has NO
+    /// `mintNext`; enabling this requires a FRESH DogTagSBT deploy carrying it. (2) `mintNext` assigns a
+    /// RAW sequential id, whereas the current export circuit + the §7B-2 pre-flight key the SBT by the
+    /// FIELD-HASHED id (`field_of_value(handle)`). So flipping this ON only makes end-to-end sense paired
+    /// with the non-folding export circuit (the v2.x circuit revision) + a matching pre-flight. Do NOT
+    /// enable before that pairing ships. See routes::profile_issue_bind / AGENTS.md.
+    pub sbt_auto_id: bool,
 }
 
 impl Config {
@@ -520,6 +531,8 @@ mod tests {
             business_id: String::new(),
             central_hmac_secret: String::new(),
             custody_seal_path: None,
+            require_minted_dog_tag: false,
+            sbt_auto_id: false,
         }
     }
 }
