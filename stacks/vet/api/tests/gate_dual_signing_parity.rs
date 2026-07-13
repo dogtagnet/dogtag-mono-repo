@@ -173,5 +173,6 @@ fn cfg_for_build() -> vet_api::app::Config {
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: None,
+        require_minted_dog_tag: false,
     }
 }

@@ -72,6 +72,10 @@ async fn main() {
         custody_seal_path: std::env::var("CUSTODY_SEAL_PATH")
             .ok()
             .filter(|s| !s.trim().is_empty()),
+        // Robust production default: block issuing a record against an unminted dogTagId (audit §7B-2).
+        // The demo (scripts/demo-up.sh) sets REQUIRE_MINTED_DOG_TAG=false because it mints the SBT with
+        // the credential's own root AFTER prepare.
+        require_minted_dog_tag: env("REQUIRE_MINTED_DOG_TAG", "true") != "false",
     };
 
     // Fail-closed (audit H2): refuse to boot in production with unset/dev-default secrets. The

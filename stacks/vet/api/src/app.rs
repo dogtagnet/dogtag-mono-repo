@@ -52,6 +52,13 @@ pub struct Config {
     /// survives a backend restart. `None` -> in-memory only (no file; demo/tests unchanged). Env
     /// `CUSTODY_SEAL_PATH`.
     pub custody_seal_path: Option<String>,
+    /// When `true` (env `REQUIRE_MINTED_DOG_TAG`, prod default), `POST /credentials/prepare` refuses to
+    /// anchor a record against a `dogTagId` whose DogTagSBT is not yet minted — `ownerOf(field_of_value(
+    /// dogTagId))` must resolve first (audit report §7B-2). This fails fast with a clear error instead of
+    /// silently producing a credential the owner's ZK export can never verify. Gated OFF for the demo
+    /// (`scripts/demo-up.sh`), which mints the SBT with the credential's own root AFTER prepare, and for
+    /// hermetic tests that exercise prepare/confirm in isolation without an SBT deployment.
+    pub require_minted_dog_tag: bool,
 }
 
 impl Config {

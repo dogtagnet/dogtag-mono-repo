@@ -57,6 +57,10 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
+# REQUIRE_MINTED_DOG_TAG=false: the demo/e2e-smoke flow mints the DogTagSBT with the credential's own
+# root AFTER prepare (scripts/e2e-smoke.sh step 6), so the §7B-2 "tag must already be minted" pre-flight
+# (default-on in prod) is disabled here. In production a pet is registered (Register pet) before any
+# record is issued against its dog tag.
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR CONSENT_KEY_REGISTRY_ADDR=$CKR \
   SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
@@ -64,6 +68,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 DEPLOYMENT_URL="${VET_PUBLIC_URL:-http://$LAN_IP:41874}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
   CUSTODY_SEAL_PATH="$ROOT/.demo/vet-custody.json" \
+  REQUIRE_MINTED_DOG_TAG=false \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR CONSENT_KEY_REGISTRY_ADDR=$CKR \

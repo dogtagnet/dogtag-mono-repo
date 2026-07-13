@@ -56,6 +56,9 @@ pub fn state_with(
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: None,
+        // Hermetic prepare/confirm tests issue against a placeholder dogTagId with no SBT deployed —
+        // the §7B-2 existence pre-flight is exercised by its own dedicated test instead.
+        require_minted_dog_tag: false,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -71,6 +74,15 @@ pub fn state_with(
         // with a `MemFeed` seeded to mirror the indexer's scoped `/v1/events` response.
         feed: Arc::new(DisabledFeed),
     }
+}
+
+/// Flip `require_minted_dog_tag` ON for a state built by the helpers here (they default it OFF so the
+/// hermetic prepare/confirm tests are unaffected). Used by the §7B-2 existence pre-flight test.
+pub fn with_require_minted_dog_tag(mut state: AppState) -> AppState {
+    let mut cfg = (*state.cfg).clone();
+    cfg.require_minted_dog_tag = true;
+    state.cfg = Arc::new(cfg);
+    state
 }
 
 /// Like [`state_with`] but also sets the VerificationRegistry address and the prover (real or stub).
@@ -132,6 +144,9 @@ pub fn state_with_verify_keys(
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: None,
+        // Hermetic prepare/confirm tests issue against a placeholder dogTagId with no SBT deployed —
+        // the §7B-2 existence pre-flight is exercised by its own dedicated test instead.
+        require_minted_dog_tag: false,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -178,6 +193,9 @@ pub fn state_for_calendar(
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: None,
+        // Hermetic prepare/confirm tests issue against a placeholder dogTagId with no SBT deployed —
+        // the §7B-2 existence pre-flight is exercised by its own dedicated test instead.
+        require_minted_dog_tag: false,
     };
     AppState {
         store: Arc::new(MemStore::new()),
@@ -219,6 +237,7 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         business_id: BUSINESS_ID.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: Some(seal_path),
+        require_minted_dog_tag: false,
     };
     AppState {
         store: store as Arc<dyn vet_api::store::Store>,

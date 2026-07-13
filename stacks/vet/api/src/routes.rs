@@ -50,6 +50,12 @@ fn err(code: StatusCode, msg: &str) -> Resp {
     (code, Json(json!({ "error": msg })))
 }
 
+/// True when `addr` is the 20-byte zero address (any casing / with-or-without `0x`). Used to skip
+/// SBT-dependent checks when no DogTagSBT is configured (`SBT_ADDR` unset -> the zero-address default).
+fn is_zero_addr(addr: &str) -> bool {
+    addr.trim_start_matches("0x").trim_start_matches('0').is_empty()
+}
+
 // --------------------------------------------------------------------------------------------
 // auth helpers
 // --------------------------------------------------------------------------------------------
@@ -479,6 +485,30 @@ async fn prepare(
             )
         }
     };
+    // Existence pre-flight (audit §7B-2): refuse to anchor a record against a dogTagId whose DogTagSBT is
+    // not minted yet. The SBT is keyed by the field-hashed id (== the export circuit's pub[0]), so we
+    // check ownerOf(field_of_value(dogTagId)). A definitive "unminted" fails fast with a clear message —
+    // otherwise the credential anchors but the owner's later ZK export reverts because ownerOf(pub[0])
+    // doesn't resolve (the un-exportable-credential footgun). A transient RPC error does NOT block (a real
+    // dup/missing tag still surfaces downstream). Runs before build so it covers BOTH signing modes; gated
+    // by `require_minted_dog_tag` + a non-zero sbt_addr so SBT-less/demo/test configs are unaffected.
+    if st.cfg.require_minted_dog_tag && !is_zero_addr(&st.cfg.sbt_addr) {
+        if let Ok(onchain) = onchain_dog_tag_id(&body.dog_tag_id) {
+            match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
+                Ok(_) => {} // minted -> the tag exists; proceed.
+                Err(crate::chain::ChainError::NotFound) => {
+                    return err(
+                        StatusCode::BAD_REQUEST,
+                        &format!(
+                            "dog tag {} is not registered on-chain — register the pet first (Register pet), then issue records against it",
+                            body.dog_tag_id
+                        ),
+                    );
+                }
+                Err(e) => eprintln!("[warn] dogTagId existence pre-flight skipped (transient): {e}"),
+            }
+        }
+    }
     // build (ALWAYS server-side, identical both modes).
     let meta = app::issuer_meta(&st.cfg, &body.record_type, &issuer_addr);
     let vc = app::build_vc(&body.record_type, &body.fields, &body.dog_tag_id);
