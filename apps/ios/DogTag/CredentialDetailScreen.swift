@@ -33,6 +33,27 @@ struct CredentialDetailScreen: View {
                     }.buttonStyle(.plain)
                 }
 
+                // Export this credential as the app's WrappedDoc JSON (holder's own data), via the
+                // OS share sheet - Save to Files, AirDrop, Mail, etc.
+                ShareLink(
+                    item: DocumentExport.single(cred),
+                    preview: SharePreview(cred.title.isEmpty ? (doc?.displayTitle() ?? "Credential") : cred.title)
+                ) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.and.arrow.up")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Export full record").font(.system(size: 14, weight: .semibold))
+                            Text("Full record, all fields - for your backup")
+                                .font(.system(size: 11)).foregroundColor(c.muted)
+                        }
+                        Spacer()
+                    }
+                    .foregroundColor(c.accent)
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 14).stroke(c.accent, lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
+
                 // On-chain card.
                 VStack(alignment: .leading, spacing: 10) {
                     Text("ON-CHAIN").font(.system(size: 11, weight: .bold)).foregroundColor(c.muted)

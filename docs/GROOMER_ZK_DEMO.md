@@ -146,8 +146,8 @@ The dog-tag is no longer minted by an admin "Registered devices" page — the **
 session + QR, mirroring import/export. The device just needs a self-custodial wallet first.
 
 1. **Create the wallet** — phone **Profile → "Create embedded wallet"** → the app generates a
-   **24-word seed** and derives the **secp256k1** EVM **walletAddress** (`m/44'/60'/0'/0/0`; stored
-   encrypted, §6.4). The phone has **no** "Central API URL" setting — every host it talks to comes from
+   **24-word seed** and derives the **secp256k1** EVM **walletAddress** (the raw BIP-32 master key,
+   **not** `m/44'/60'/0'/0/0`; stored encrypted, §6.4). The phone has **no** "Central API URL" setting — every host it talks to comes from
    a scanned QR.
 2. **Vet "Issue dog tag"** — vet portal → **Issue dog tag** → "Fill demo data". The operator enters the
    **`ownerIdentity`** that goes on the `DOG_PROFILE` credential (demo-prefilled) + the pet fields:
