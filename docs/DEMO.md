@@ -28,7 +28,7 @@ This flow is **verified working end-to-end on a real Android device** and by the
 
 Pre-created on ROAX for the demo: `DogTagIssuer` clones — VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53`,
 DOG_PROFILE `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25`. ZK verifier is live (`0xEEFCfAF0…`, v2),
-VerificationRegistry `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` (ZK-wired).
+VerificationRegistry `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` (ZK-wired).
 
 ## 0. Boot
 ```bash

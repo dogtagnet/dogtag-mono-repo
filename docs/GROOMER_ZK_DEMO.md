@@ -9,7 +9,7 @@ groomer (relayer) submits every transaction — Tornado-style.
 - **Gasless owner**: the owner only signs off-chain (EdDSA consent, the proof, an EIP-712 bind sig).
   The groomer relayer broadcasts the one-time consent-key bind **and** the verification record.
 - **Same ROAX testnet** (chainId 135). Live (new) contracts: VerificationRegistry
-  `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1`, ConsentKeyRegistry
+  `0x4E2f0996e1CB4E24F1053346f3da2186906835E8`, ConsentKeyRegistry
   `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` (gasless `bindConsentKeyFor`). Full set in
   `contracts/deployments/roax.json`.
 
@@ -222,7 +222,7 @@ session + QR, mirroring import/export. The device just needs a self-custodial wa
 
 - Portal shows **Verified** + a txHash → open it on `https://explorer.roax.net`; you'll see the
   `Verified(dogTagId, relayer, subject, purpose, nullifier, ts)` event and `msg.sender == relayer`.
-- `cast call 0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1 'consumed(bytes32)(bool)' <nullifier>` → `true`.
+- `cast call 0x4E2f0996e1CB4E24F1053346f3da2186906835E8 'consumed(bytes32)(bool)' <nullifier>` → `true`.
 - `cast balance <ownerPhoneWallet>` → unchanged (the owner never paid gas, never sent a tx).
 
 ## Automated proof (no phone needed)

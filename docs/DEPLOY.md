@@ -23,20 +23,22 @@
 > | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
 > | **ConsentKeyRegistry** (current; gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 > | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-> | **VerificationRegistry** (current; ZK-wired) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
+> | **VerificationRegistry** (current; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
 > | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 > | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
 > | deployer EOA (genesis; **stripped of all roles** in Governance Phase-2, 2026-07-05 block 123835) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 > | **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
 > | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
 > | demo clone DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |
+> | ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
 > | ~~VerificationRegistry~~ `_preMetaTx_legacy` (RETIRED) | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` |
 > | ~~VerificationRegistry~~ `_zk0_legacy` (RETIRED) | `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` |
 > | ~~ConsentKeyRegistry~~ `_preMetaTx_legacy` (RETIRED) | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
 >
-> There are **THREE VerificationRegistry generations**. Current VR = `0x8bA836eCe9…` and current CKR =
+> There are **FOUR VerificationRegistry generations**. Current VR = `0x4E2f0996…` (6-arg
+> `recordVerificationZK`) and current CKR =
 > `0xA74DDe4a9b…` (the meta-tx migration is LIVE — gasless `bindConsentKeyFor`). RETIRED:
-> `0x19C1B5f8…` (`_preMetaTx_legacy` VR), `0xb4FbbDb5…` (`_zk0_legacy` VR, deployed with `zkVerifier = 0`),
+> `0x8bA836eCe9…` (`_4arg_legacy` VR), `0x19C1B5f8…` (`_preMetaTx_legacy` VR), `0xb4FbbDb5…` (`_zk0_legacy` VR, deployed with `zkVerifier = 0`),
 > and `0xFD277b9B…` (`_preMetaTx_legacy` CKR). See §3.2 for how the ZK verifier was wired (testnet redeploy)
 > and the meta-tx migration vs the production timelock path.
 
@@ -115,11 +117,18 @@ forge verify-contract --rpc-url $ROAX_RPC \
    at construction, so the ZK path is active immediately. That ZK-wired redeploy was `0x19C1B5f8…`; the
    original zk=0 instance is kept as `VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`.
 
-   **(c) Meta-tx migration (the CURRENT generation).** `0x19C1B5f8…` is itself now legacy
-   (`VerificationRegistry_preMetaTx_legacy`). A later **meta-tx migration** produced the **current VR
-   `0x8bA836eCe9…`** plus the **current CKR `0xA74DDe4a9b…`**, enabling the gasless `bindConsentKeyFor`
-   path that is now LIVE. So there are **THREE VR generations** — `0xb4FbbDb5…` (zk0) → `0x19C1B5f8…`
-   (preMetaTx) → `0x8bA836eCe9…` (current) — and `0x19C1B5f8…` is NOT the current registry.
+   **(c) Meta-tx migration.** `0x19C1B5f8…` is itself now legacy
+   (`VerificationRegistry_preMetaTx_legacy`). A later **meta-tx migration** produced VR
+   `0x8bA836eCe9…` plus the **current CKR `0xA74DDe4a9b…`**, enabling the gasless `bindConsentKeyFor`
+   path that is now LIVE.
+
+   **(d) 6-arg registry-only redeploy (the CURRENT generation).** `0x8bA836eCe9…` was deployed before the
+   `recordType`/`deadline` args were added to `recordVerificationZK`, so its bytecode only dispatches the
+   old 4-arg selector `0xdd080593` and bare-reverts the v2 6-arg call `0x423a45b6`. A **registry-only
+   redeploy** (reusing all six live component contracts) produced the **current VR `0x4E2f0996…`**;
+   `0x8bA836eCe9…` is kept as `VerificationRegistry_4arg_legacy`. So there are **FOUR VR generations** —
+   `0xb4FbbDb5…` (zk0) → `0x19C1B5f8…` (preMetaTx) → `0x8bA836eCe9…` (4arg) → `0x4E2f0996…` (current) —
+   and only `0x4E2f0996…` is the current registry.
 
    The testnet trusted setup is recorded in `docs/CEREMONY_TRANSCRIPT.md`. The repo ships the
    **v2 self-run** (public Hermez ptau + 3 contributions + drand beacon, zkey sha256 `9e3636b9…`), and the

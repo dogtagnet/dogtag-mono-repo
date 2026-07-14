@@ -92,14 +92,14 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 `docs/DEMO.md`) may cite specific demo-clone / verifier addresses. **All of these must mirror
 `roax.json`**; don't introduce addresses anywhere else — link here instead.
 
-**Three VerificationRegistry generations exist. Never call `0x19C1B5f8…` "current."** Current VR =
-`0x8bA836eCe9…`, current CKR = `0xA74DDe4a9b…` (the meta-tx migration is **LIVE** — gasless
+**Four VerificationRegistry generations exist. Never call `0x19C1B5f8…` or `0x8bA836eCe9…` "current."** Current VR =
+`0x4E2f0996…` (6-arg `recordVerificationZK`; `0x8bA836eCe9…` is `_4arg_legacy`), current CKR = `0xA74DDe4a9b…` (the meta-tx migration is **LIVE** — gasless
 `bindConsentKeyFor` is the current path).
 
 | Contract | CURRENT address | Legacy / notes |
 |---|---|---|
 | IssuerRegistry | `0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c` | — |
-| **VerificationRegistry** | **`0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1`** | `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` = `_preMetaTx_legacy`; `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` = `_zk0_legacy` |
+| **VerificationRegistry** | **`0x4E2f0996e1CB4E24F1053346f3da2186906835E8`** | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` = `_4arg_legacy`; `0x19C1B5f80c41EE864149500bdF998Dd18aec2a43` = `_preMetaTx_legacy`; `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` = `_zk0_legacy` |
 | **ConsentKeyRegistry** | **`0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671`** | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` = `_preMetaTx_legacy` |
 | DogTagSBT | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` | profile/credential mint target |
 | Groth16Verifier | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` | v2 ceremony verifier, wired into current VR since the 2026-07-02 cutover; `0x138b433071Ad806E841B5AD53623290a9bf21761` = `_v1_legacy` |

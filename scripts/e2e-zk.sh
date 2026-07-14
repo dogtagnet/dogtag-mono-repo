@@ -32,7 +32,7 @@ export CIRCUITS_BUILD_DIR="$ROOT/circuits/build"
 
 # LIVE ROAX addresses (contracts/deployments/roax.json).
 IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c          # IssuerRegistry
-VR=0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1          # VerificationRegistry (ZK-wired)
+VR=0x4E2f0996e1CB4E24F1053346f3da2186906835E8          # VerificationRegistry (ZK-wired)
 SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233          # DogTagSBT
 CKR=0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671          # ConsentKeyRegistry (gasless bindConsentKeyFor)
 VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53   # VACCINATION issuer clone

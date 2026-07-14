@@ -18,7 +18,7 @@ use indexer_api::store::{MemStore, Store};
 // ROAX deployment (contracts/deployments/roax.json), lowercased. Overridable via env.
 const DEFAULT_FACTORY: &str = "0xd3179abbfb0274d0a5f7017d76015a93c159511d";
 const DEFAULT_REGISTRY: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
-const DEFAULT_VREG: &str = "0x8ba836ece9a27c43049accc26eb5a1579c1fcfa1";
+const DEFAULT_VREG: &str = "0x4e2f0996e1cb4e24f1053346f3da2186906835e8";
 const GOV_TRAVEL_CLONE: &str = "0x8e276bd4c57740766a7e173d05f4f02013681c6a";
 const GOV_EUHEALTH_CLONE: &str = "0xe30a17396c0fb75d3e8bfc862a49677b3dd568e2";
 const DEMO_DOGPROFILE_CLONE: &str = "0xdb8d39eb83ddfaaa7481c4af4e47d0044116db25";

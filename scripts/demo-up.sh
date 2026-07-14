@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"; mkdir -p .demo; : > .demo/pids
 RPC=https://devrpc.roax.net
 IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c
-VR=0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1      # ZK-wired VerificationRegistry (meta-tx CKR)
+VR=0x4E2f0996e1CB4E24F1053346f3da2186906835E8      # ZK-wired VerificationRegistry (meta-tx CKR)
 CKR=0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671     # ConsentKeyRegistry (gasless bindConsentKeyFor)
 SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233      # DogTagSBT (central mints profiles)
 VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53

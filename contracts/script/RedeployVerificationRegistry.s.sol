@@ -62,7 +62,14 @@ contract RedeployVerificationRegistry is Script {
         console2.log("RootIndex (Factory) ", rootIndex);
         console2.log("Poseidon6           ", poseidon6);
         console2.log("Admin (governance)  ", admin);
-        console2.log("--- NEW VerificationRegistry (update deployments/roax.json + apps/ios/DogTag/roax.json) ---");
+        console2.log("--- NEW VerificationRegistry: repoint EVERY committed consumer (grep the old addr) ---");
+        console2.log("  canonical: contracts/deployments/roax.json (keep old as VerificationRegistry_4arg_legacy)");
+        console2.log("  mobile bundles (compile-time; rebuild+reinstall): apps/ios/DogTag/roax.json, apps/android/app/src/main/assets/roax.json");
+        console2.log("  web/shared config: packages/ui/src/wallet/contracts.ts, stacks/owner/web/src/lib/config.ts");
+        console2.log("  indexer default (anti-spoof gate): stacks/indexer/api/src/main.rs DEFAULT_VREG + stacks/indexer/.env.example");
+        console2.log("  demo/e2e scripts: scripts/e2e-zk.sh, scripts/demo-up.sh, scripts/e2e-smoke.sh");
+        console2.log("  env examples: stacks/{vet,groomer,admin}/{,web/}.env.example");
+        console2.log("  docs: README.md + AGENTS.md + docs/{DEPLOY,DEPLOYMENT,DEMO,GROOMER_ZK_DEMO,REMOTE_DEPLOYMENT,CEREMONY_RUNBOOK}.md");
         console2.log("VerificationRegistry", verification);
     }
 }
