@@ -85,7 +85,7 @@ fn hashLeaf(keyPath: string, salt: bytes16, typeTag: u8, value) -> field:
     // arity-5 (circomlib t=6). Serialized as bytes32 big-endian (always < p < 2^254). (§11.2)
 ```
 
-### 1.3 Merkle tree — Poseidon  (architecture §3.4; CHANGESPEC-v4 §1)
+### 1.3 Merkle tree + inclusion proofs — Poseidon  (architecture §3.4; CHANGESPEC-v4 §1; DSDP plan §2.3)
 
 ```
 fn cmpField(a, b) -> bool: a <= b                          // integer compare in [0, p) (canonical)
@@ -106,16 +106,25 @@ fn buildMerkle(leafHashes: field[]) -> { root, layers }:
         level = next; layers.push(level)
     return { root: level[0], layers }                       // single leaf -> root == that leaf
 
-fn merkleProof(layers, leafHash) -> field[]:               // sibling set (unordered ok: commutative)
+// Inclusion proof = an ORDERED, root-ward list of Sibling(field) | Promote steps (one per level).
+// Promotion is EXPLICIT (a Promote step), not represented by omission, so the proof depth == the
+// tree depth and the shape is reconstructable from the proof alone (DSDP plan §2.3).
+fn merkleProof(layers, leafHash) -> step[]:                // step = Sibling(field) | Promote
     idx = indexOf(layers[0], leafHash); proof = []
     for L in 0 .. len(layers)-2:
         sib = (idx ^ 1)
-        if sib < len(layers[L]): proof.push(layers[L][sib])  // skip when promoted (no sibling)
+        proof.push(sib < len(layers[L]) ? Sibling(layers[L][sib]) : Promote)  // lone odd node -> explicit Promote
         idx = idx >> 1
     return proof
 
-fn processProof(proof, leaf) -> field:                     // recompute root from leaf + siblings
-    h = leaf; for s in proof: h = hashNode(h, s); return h
+fn processProof(steps, leafHash) -> field:                 // FOLD PRIMITIVE — NOT a membership check (C1/E2)
+    h = leafHash                                           // trusts leafHash: an internal node folds to R just as happily
+    for s in steps: if s is Sibling(x): h = hashNode(h, x)  // Promote: pass-through, no hashing
+    return h
+
+fn verifyInclusion(keyPath, salt, tag, value, steps, R) -> bool:   // NORMATIVE disclosed-leaf check (DSDP §2.3)
+    leaf = hashLeaf(keyPath, salt, tag, value)             // RECOMPUTE under DS_LEAF — never trust a caller-supplied hash
+    return processProof(steps, leaf) == R                  // sound via leaf=Poseidon5 vs node=Poseidon3 arity/domain split
 ```
 > The in-circuit ordered tree applies the **same** `sortPair`+`DS_NODE` (via comparator+mux over the
 > SDK's sorted leaf order) so the proven root == the SDK's `R` bit-for-bit (§11.8(d)). One tree
@@ -1190,9 +1199,9 @@ A record imports as **"yours"** only when the on-chain SBT owner is the address 
 
 ```
 fn importRecord(doc, myWalletAddress, {rpc, dnsResolver}):
-    # (1) offline integrity: recompute targetHash + merkle membership (no network trust)
+    # (1) offline integrity: recompute targetHash (single-doc: proof MUST be empty, so it IS R) — no network trust
     require recompute(doc) == doc.signature.targetHash
-    require processProof(doc.signature.proof, doc.signature.targetHash) == doc.signature.merkleRoot
+    require doc.signature.proof.empty && doc.signature.merkleRoot == doc.signature.targetHash  # non-empty proof REJECTED (C1)
     # (2) on-chain anchoring (RPC eth_call)
     require rpc.call(doc.issuer.documentStore, "isValid(bytes32)", doc.signature.merkleRoot)
     # (3) identity: DNS-TXT + central registry cross-check
@@ -1303,6 +1312,7 @@ forge verify-contract --rpc-url https://devrpc.roax.net \
   - **anchor**: `poseidon([1,2]) = 0x115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a` in all four languages.
   - **leaf**: `hashLeaf` per typeTag (null/bool/string-NFC/integer/decimal `22.7`,`0.5`/bytes) + `bytesToField` edges (empty, 1 byte, exactly 31, exactly 32 → 2 limbs, multi-hundred-byte string, NFC-combining = its NFC image); assert `tag 2 "5" != tag 3 5`.
   - **Merkle**: single-leaf (root == leaf), two leaves (commutativity: swap → same `R`), three leaves (odd promotion), selective-disclosure (drop cleartext, keep Field in `obfuscated[]` → same `R`); circom in-circuit recomputed root == SDK `R`.
+  - **inclusion** (DSDP §2.3): `merkleProof`/`verifyInclusion` `Sibling | Promote` conformance — every leaf of trees of leaf counts `{1,2,3,5,6,7,13,24,34}` (so multi-level promotion is exercised), a mixed-leaf-type tree, and negatives (tampered value, corrupted sibling, wrong root) that MUST reject; asserted Rust↔TS↔Swift (`sdk_parity`/`ffi_parity`, `sdk.test`, the iOS Verify-tab panel).
   - **nullifier**: a fixed `(dogTagId,purpose,relayer,subject,nonce)` with `purpose`'s keccak label > p (forces the mod-p reduction), asserted identical in **circom output signal == Solidity `PoseidonT7` == Rust** — the parity gate protecting the shared `consumed` set.
 - **Contracts**: Foundry tests — soulbound revert on transfer, whitelist gating (only whitelisted can issue/revoke), issue/revoke/isValid lifecycle, clone init, factory determinism.
 - **Circuit** (`circuits/`): witness/proof round-trip; the four statements (leaves→ single Poseidon root `R` via the ordered in-circuit tree matching the SDK's sorted commutative tree; `dogTagId`-leaf equality; EdDSA-BabyJubjub consent over `Poseidon(dogTagId,purpose,relayer,subject,R,nonce)`; `nullifier == Poseidon(DS_NULLIFIER,dogTagId,purpose,relayer,subject,nonce)`); `keyHash = Poseidon(Ax,Ay)` output; negative tests (wrong leaf, bad sig, tampered nullifier); pin the `.zkey` hash; `snarkjs zkey verify` against the reused `.ptau`.
@@ -1476,9 +1486,8 @@ async fn verify(doc,{rpc,dns,userWalletAddress?,mode}) -> Verdict:   // mode: "s
    require no overlap(leaves, doc.privacy.obfuscated)               // D1
    {root} = buildMerkle(leaves ++ doc.privacy.obfuscated)
    integrity = root==doc.signature.targetHash
-            && (doc.signature.proof.empty
-                 ? doc.signature.merkleRoot==doc.signature.targetHash
-                 : processProof(doc.signature.proof, doc.signature.targetHash)==doc.signature.merkleRoot)
+            && doc.signature.proof.empty                    // single-doc: proof MUST be empty, so targetHash IS R
+            && doc.signature.merkleRoot==doc.signature.targetHash   // a non-empty proof is REJECTED, never folded (C1)
    issuance = try rpc.isValid(doc.issuer.documentStore, doc.signature.merkleRoot, confirmations=5) else ERROR
    identity = dns.txtMatches(doc.issuer.domain, doc.issuer.documentStore, chainId=135)
            && registry.knows(doc.issuer.domain, doc.issuer.documentStore)
