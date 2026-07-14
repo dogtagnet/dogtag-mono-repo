@@ -3,6 +3,11 @@
 Groth16 circuit proving a **consent-bound credential verification** (impl §11.8(d), §11.9(d),
 §11.10). Built with circom 2.1.9 + snarkjs 0.7.6 + circomlib 2.0.5.
 
+> This is the **Level-A** circuit (exposes `subject` + `keyHash` as public signals). It is
+> **frozen** (pinned dev zkey, its own test) and superseded by the owner-unlinkable **Level-B**
+> [`consent.circom`](README.consent.md) (redesign milestone M2) — which is DEV-only and does **not**
+> replace this circuit yet. Do not edit `verification.circom`.
+
 ## What it proves
 
 `DogTagVerification(N, depth)` (instantiated `main = DogTagVerification(24, 5)` — PRODUCTION:

@@ -9,7 +9,9 @@
     "gen-vectors": "node scripts/gen-vectors.mjs",
     "compile-circuit": "circom verification.circom --r1cs --wasm --sym -l node_modules/circomlib/circuits -o build",
     "build-circuit": "bash scripts/setup.sh",
-    "test-circuit": "node scripts/test-circuit.mjs"
+    "test-circuit": "node scripts/test-circuit.mjs",
+    "build-consent": "bash scripts/setup-consent.sh",
+    "test-consent": "node scripts/test-consent.mjs"
   },
   "dependencies": {
     "circomlib": "2.0.5",

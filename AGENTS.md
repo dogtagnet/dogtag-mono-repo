@@ -653,3 +653,127 @@ The `Sibling | Promote` inclusion-proof engine lives in `merkle.{rs,ts}` and the
   inclusion never shipped and C1 forbids trusting the permissive fold in the trust path).
 - The dogTagId canonical-keyPath binding (F1, plan §2.4) is NOT here — it lands in the reference
   verifier milestone (M3), not the inclusion-proof engine (M1).
+
+---
+
+## Level-B `DogTagConsent` circuit (M2) — owner-unlinkable consent
+
+Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spec.md`.
+Circuit: `circuits/consent.circom` (template `DogTagConsent`, instantiated at `depth=6`).
+Shared fold lib: `circuits/lib/merkle_inclusion.circom`.
+Tests: `circuits/scripts/test-consent.mjs`. Dev setup: `circuits/scripts/setup-consent.sh`.
+
+`DogTagConsent` proves in zero-knowledge that a **hidden** pet owner consented to a **disclosed**
+relayer for a **disclosed** purpose, revealing nothing about the owner. It supersedes the Level-A
+`verification.circom` (which exposed `subject` + `keyHash`). **`verification.circom` is frozen — do
+not edit it** (it has a pinned dev zkey and its own test); the shared `NodeHash`/`LessThanField`
+templates were *copied* into `lib/merkle_inclusion.circom`, not refactored out of it.
+
+### Public-signal vector (ORDER IS LOAD-BEARING for M4 calldata)
+
+snarkjs emits public signals as the circuit's **output** signals in declaration order (all seven
+public signals are declared as outputs to fix the order; verified via `build/consent.sym`):
+
+| idx | signal       | meaning                                         | solidity type    |
+|-----|--------------|-------------------------------------------------|------------------|
+| 0   | `dogTagId`   | the tag being verified                          | uint256          |
+| 1   | `purpose`    | purpose label, reduced mod field                | bytes32 / field  |
+| 2   | `relayer`    | relayer address (range-checked `< 2^160`)       | address / uint160|
+| 3   | `nullifier`  | `Poseidon6(DS_NULLIFIER, ownerSecret, dogTagId, purpose, relayer, consentNonce)` | uint256 |
+| 4   | `R`          | per-tag Merkle root the 3 owner leaves fold to  | uint256 / field  |
+| 5   | `recordType` | record-type label (**prover-asserted**, see below) | bytes32 / field |
+| 6   | `deadline`   | consent expiry (signed inside `M`)              | uint256          |
+
+**No `subject`, no `keyHash`.** The owner never appears in the public signals.
+
+### Intended on-chain calldata shape (M4 `recordVerificationZK`)
+
+The snarkjs Solidity verifier exposes:
+
+```solidity
+function verifyProof(
+    uint[2]    _pA,
+    uint[2][2] _pB,
+    uint[2]    _pC,
+    uint[7]    _pubSignals   // == [dogTagId, purpose, relayer, nullifier, R, recordType, deadline]
+) external view returns (bool);
+```
+
+`recordVerificationZK` should therefore take `(a, b, c, pubSignals[7])` (or the same fields unpacked)
+and, per spec §"On-chain `recordVerificationZK`":
+1. `require(verifyProof(a,b,c,pubSignals))` against the **new VK** (from the M3 ceremony).
+2. `require(pubSignals[4] /*R*/ == profileRoot(pubSignals[0] /*dogTagId*/))` — binds the proof to the
+   real tag. **This is the only place `dogTagId ↔ R` is checked; the circuit does NOT bind it.**
+3. `require(deadline >= block.timestamp)` (pubSignals[6]).
+4. `require(!nullifierConsumed[pubSignals[3]])` then consume it.
+5. `emit Verified(dogTagId, relayer, purpose, nullifier, deadline, block.timestamp)` — **owner-blind**.
+6. **Delete** the old `ownerOf` / `keyOf` checks and the `subject`/`keyHash` handling.
+
+### Reserved owner-leaf schema (M5 issuance MUST match this exactly)
+
+The per-tag tree has three **private** owner-control leaves plus disclosable attribute leaves. Each
+leaf = `Poseidon5(DS_LEAF=1, fieldOf(keyPath), fieldFromScalarBytes(salt16), typeTag, value)`, leaf
+hashes sorted before folding (the M1 engine). The circuit **pins keyPath + typeTag** of the three
+reserved leaves to these constants:
+
+| leaf          | keyPath string      | `fieldOf(keyPath)` constant (pinned in circuit)                                   | typeTag     | value slot                    |
+|---------------|---------------------|-----------------------------------------------------------------------------------|-------------|-------------------------------|
+| owner-address | `owner.address`     | `20593649144631820416234157596070441856608371338897391424937040814759273231214`  | 5 (Bytes)   | app-supplied owner addr field |
+| consent-key   | `owner.consentKey`  | `7822071287675030884271946396254564996644565056920260282559292033992393086992`   | 5 (Bytes)   | `Poseidon2(Ax, Ay)` (keyHash) |
+| owner-secret  | `owner.secret`      | `11172449362271989869407103131203633198993612309996015027844083581837121079156`  | 5 (Bytes)   | random secret field (= nullifier secret) |
+
+`test-consent.mjs` re-derives these constants via the SDK `fieldOfKeyPath()` and asserts they match
+the circuit literals — a drift guard. `consentNonce` and the 16-byte salts stay private and
+per-leaf-random.
+
+**Reserved-leaf value encoding (the sharpest M5 handoff edge):** unlike disclosable attribute leaves
+(whose value slot is `fieldOfValue(typedScalar)` — the length-prefixed byte-fold), the three reserved
+leaves write a **raw field directly** into the value slot: owner-address = the owner address as a
+field, consent-key = `Poseidon2(Ax,Ay)`, owner-secret = the raw secret field (which is *also* the
+nullifier's `ownerSecret`). M5 must build the committed leaf and the circuit input from that same raw
+field, NOT run these three through `fieldOfValue`.
+
+**Why pinning keyPath is load-bearing (soundness, not cosmetic):** if `keyPath` were a free prover
+input, a prover could point the owner-secret inclusion proof at *any other in-tree leaf* (e.g. a
+disclosable attribute), set `ownerSecret` to that leaf's value, and mint a **second valid nullifier
+for one signed consent** — breaking D5 replay protection. Pinning forces the unique real leaf.
+`test-consent.mjs` test (e) exercises exactly this substitution and asserts it fails.
+
+### Consent message & nullifier (the exact preimages)
+
+- EdDSA message: `M = Poseidon5(dogTagId, purpose, relayer, deadline, consentNonce)` — **no DS tag**,
+  no `R`, no `subject`. Signed by the BabyJubJub consent key `(Ax, Ay)` whose `Poseidon2(Ax,Ay)` is
+  the pinned consent-key leaf value. The signature is bound to the tag via `dogTagId ∈ M` + `consent-key ∈ R`.
+- nullifier: `Poseidon6(DS_NULLIFIER=4, ownerSecret, dogTagId, purpose, relayer, consentNonce)`.
+  Scope = per `(dogTagId, purpose, relayer)` + nonce (D5): same signed consent → same nullifier
+  (rejected on replay); fresh nonce → new nullifier (a genuine repeat visit is allowed).
+
+### `recordType` is prover-asserted, NOT consent-signed
+
+`recordType` (pubSignals[5]) is **not** in `M` and **not** in the nullifier, so the owner's EdDSA
+consent does not attest it. It is safe because only the owner's app can generate this proof (it
+needs the private leaves + salts, not merely the signature), so the app — not the relayer — chooses
+`recordType`. Groth16 still binds it to the specific proof (it cannot be swapped post-proof). **M4
+must treat `recordType` as a prover-supplied label, not as an owner-attested field.**
+
+### ⚠ Open item for the M3 VK-freeze checkpoint
+
+`M` is `Poseidon5` and shares arity + first slot with the leaf hash `Poseidon5(DS_LEAF=1, …)` when
+`dogTagId == 1`. No exploit is known (EdDSA needs the private key; leaves are never signed), so M2
+implements `M` exactly as the captain-approved spec states (no DS tag). **M3 is the last point to
+reconsider `M`'s preimage structure before the VK is locked** — if a domain tag is added, the spec,
+this circuit, and M7's app proof-gen must change together, and the ceremony re-run.
+
+### Build / test / reproduce
+
+```bash
+# one-time (~11 min): DEV/THROWAWAY trusted setup -> build/consent_final.zkey (+ dev .sol, NON-PRODUCTION)
+pnpm --filter @dogtag/circuits run build-consent
+# fast: witness/proof round-trip + R-parity + negatives + keyPath-substitution + D5 nullifier
+pnpm --filter @dogtag/circuits run test-consent
+```
+
+The consent build artifacts (`build/consent_*`, `Groth16Verifier.consent.dev.sol`) are **gitignored**
+— they come from a **throwaway single-contributor key** and must never be deployed. The real VK is
+the M3 ceremony's. This circuit test is a standalone heavy gate (like `test-circuit`), intentionally
+**not** wired into `make test`.
