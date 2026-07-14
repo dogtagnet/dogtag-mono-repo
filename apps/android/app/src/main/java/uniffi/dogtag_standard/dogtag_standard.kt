@@ -749,6 +749,10 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -782,6 +786,8 @@ internal interface UniffiLib : Library {
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_hash_leaf_hex(`keyPath`: RustBuffer.ByValue,`saltHex`: RustBuffer.ByValue,`tag`: Byte,`value`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_hash_node_hex(`aHex`: RustBuffer.ByValue,`bHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_key_hash_hex(`axHex`: RustBuffer.ByValue,`ayHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_nfc_normalize(`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -795,6 +801,8 @@ internal interface UniffiLib : Library {
     fun uniffi_dogtag_standard_fn_func_verification_consent_typehash_hex(uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_verify_consent_eddsa(`axHex`: RustBuffer.ByValue,`ayHex`: RustBuffer.ByValue,`r8xHex`: RustBuffer.ByValue,`r8yHex`: RustBuffer.ByValue,`sDec`: RustBuffer.ByValue,`dogTagIdHex`: RustBuffer.ByValue,`recordTypeHex`: RustBuffer.ByValue,`purposeHex`: RustBuffer.ByValue,`credentialRootHex`: RustBuffer.ByValue,`challengeHex`: RustBuffer.ByValue,`relayerHex`: RustBuffer.ByValue,`subjectHex`: RustBuffer.ByValue,`nonceHex`: RustBuffer.ByValue,`deadlineHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
+    fun uniffi_dogtag_standard_fn_func_verify_inclusion_proof_hex(`keyPath`: RustBuffer.ByValue,`saltHex`: RustBuffer.ByValue,`tag`: Byte,`value`: RustBuffer.ByValue,`proofSteps`: RustBuffer.ByValue,`rootHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Byte
     fun uniffi_dogtag_standard_fn_func_verify_integrity(`wrappedDocJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -932,6 +940,8 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_dogtag_standard_checksum_func_hash_leaf_hex(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_hash_node_hex(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_key_hash_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_nfc_normalize(
@@ -945,6 +955,8 @@ internal interface UniffiLib : Library {
     fun uniffi_dogtag_standard_checksum_func_verification_consent_typehash_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_verify_consent_eddsa(
+    ): Short
+    fun uniffi_dogtag_standard_checksum_func_verify_inclusion_proof_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_verify_integrity(
     ): Short
@@ -996,6 +1008,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_dogtag_standard_checksum_func_hash_leaf_hex() != 23706.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_dogtag_standard_checksum_func_hash_node_hex() != 61695.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_dogtag_standard_checksum_func_key_hash_hex() != 11418.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1015,6 +1030,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_verify_consent_eddsa() != 58972.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_dogtag_standard_checksum_func_verify_inclusion_proof_hex() != 37971.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_verify_integrity() != 1032.toShort()) {
@@ -1640,6 +1658,21 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     
 
         /**
+         * hashNode: the commutative internal-node hash `Poseidon3(DS_NODE, min(a,b), max(a,b))` over two
+         * 0x.. 32-byte field hexes -> the 0x.. 32-byte node hex. The primitive a foreign `Sibling | Promote`
+         * inclusion verifier folds with (Swift/Kotlin) so the Poseidon parameter set stays pinned in Rust.
+         */
+    @Throws(FfiException::class) fun `hashNodeHex`(`aHex`: kotlin.String, `bHex`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_hash_node_hex(
+        FfiConverterString.lower(`aHex`),FfiConverterString.lower(`bHex`),_status)
+}
+    )
+    }
+    
+
+        /**
          * keyHash = Poseidon(Ax, Ay) -> 0x.. 32-byte hex. Ax/Ay are 0x.. 32-byte BE field hex.
          */
     @Throws(FfiException::class) fun `keyHashHex`(`axHex`: kotlin.String, `ayHex`: kotlin.String): kotlin.String {
@@ -1746,6 +1779,26 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_verify_consent_eddsa(
         FfiConverterString.lower(`axHex`),FfiConverterString.lower(`ayHex`),FfiConverterString.lower(`r8xHex`),FfiConverterString.lower(`r8yHex`),FfiConverterString.lower(`sDec`),FfiConverterString.lower(`dogTagIdHex`),FfiConverterString.lower(`recordTypeHex`),FfiConverterString.lower(`purposeHex`),FfiConverterString.lower(`credentialRootHex`),FfiConverterString.lower(`challengeHex`),FfiConverterString.lower(`relayerHex`),FfiConverterString.lower(`subjectHex`),FfiConverterString.lower(`nonceHex`),FfiConverterString.lower(`deadlineHex`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * verifyInclusionProof: the NORMATIVE DSDP §2.3 disclosed-leaf check over the FFI boundary.
+         *
+         * RECOMPUTES the leaf hash from `(key_path, salt, tag, value)` under `DS_LEAF` (Poseidon5) — never
+         * trusting a supplied leaf hash — then folds the root-ward `Sibling | Promote` proof and returns
+         * whether it equals `root_hex`. `proof_steps` encodes each step as either the literal `"promote"`
+         * (a lone-odd-node pass-through) or a 0x.. 32-byte sibling hex. This is the canonical reference the
+         * foreign verifiers cross-check against (their own fold via [`hash_leaf_hex`] + [`hash_node_hex`]
+         * must agree with this).
+         */
+    @Throws(FfiException::class) fun `verifyInclusionProofHex`(`keyPath`: kotlin.String, `saltHex`: kotlin.String, `tag`: kotlin.UByte, `value`: kotlin.String, `proofSteps`: List<kotlin.String>, `rootHex`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_verify_inclusion_proof_hex(
+        FfiConverterString.lower(`keyPath`),FfiConverterString.lower(`saltHex`),FfiConverterUByte.lower(`tag`),FfiConverterString.lower(`value`),FfiConverterSequenceString.lower(`proofSteps`),FfiConverterString.lower(`rootHex`),_status)
 }
     )
     }
