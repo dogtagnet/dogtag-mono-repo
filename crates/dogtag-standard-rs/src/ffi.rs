@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::encode::nfc;
 use crate::field::{bytes_to_field, to_hex32};
 use crate::leaf::hash_leaf;
-use crate::merkle::build_merkle;
+use crate::merkle::{build_merkle, hash_node, verify_inclusion, ProofStep};
 use crate::types::{TypeTag, TypedScalar};
 use crate::verify::{check_integrity, FragmentState};
 use crate::wrap::{
@@ -82,6 +82,49 @@ pub fn build_merkle_root_hex(leaf_hexes: Vec<String>) -> Result<String, FfiError
         leaves.push(from_hex32(h)?);
     }
     Ok(to_hex32(&build_merkle(&leaves).root))
+}
+
+/// hashNode: the commutative internal-node hash `Poseidon3(DS_NODE, min(a,b), max(a,b))` over two
+/// 0x.. 32-byte field hexes -> the 0x.. 32-byte node hex. The primitive a foreign `Sibling | Promote`
+/// inclusion verifier folds with (Swift/Kotlin) so the Poseidon parameter set stays pinned in Rust.
+#[uniffi::export]
+pub fn hash_node_hex(a_hex: String, b_hex: String) -> Result<String, FfiError> {
+    let a = from_hex32(&a_hex)?;
+    let b = from_hex32(&b_hex)?;
+    Ok(to_hex32(&hash_node(a, b)))
+}
+
+/// verifyInclusionProof: the NORMATIVE DSDP §2.3 disclosed-leaf check over the FFI boundary.
+///
+/// RECOMPUTES the leaf hash from `(key_path, salt, tag, value)` under `DS_LEAF` (Poseidon5) — never
+/// trusting a supplied leaf hash — then folds the root-ward `Sibling | Promote` proof and returns
+/// whether it equals `root_hex`. `proof_steps` encodes each step as either the literal `"promote"`
+/// (a lone-odd-node pass-through) or a 0x.. 32-byte sibling hex. This is the canonical reference the
+/// foreign verifiers cross-check against (their own fold via [`hash_leaf_hex`] + [`hash_node_hex`]
+/// must agree with this).
+#[uniffi::export]
+pub fn verify_inclusion_proof_hex(
+    key_path: String,
+    salt_hex: String,
+    tag: u8,
+    value: String,
+    proof_steps: Vec<String>,
+    root_hex: String,
+) -> Result<bool, FfiError> {
+    let salt = decode_salt(&salt_hex)?;
+    let type_tag = TypeTag::from_u8(tag)
+        .ok_or_else(|| FfiError::Invalid(format!("unknown tag {tag}")))?;
+    let scalar: TypedScalar = scalar_from_packed(type_tag, &value)?;
+    let mut steps: Vec<ProofStep> = Vec::with_capacity(proof_steps.len());
+    for s in &proof_steps {
+        if s.eq_ignore_ascii_case("promote") {
+            steps.push(ProofStep::Promote);
+        } else {
+            steps.push(ProofStep::Sibling(from_hex32(s)?));
+        }
+    }
+    let root = from_hex32(&root_hex)?;
+    Ok(verify_inclusion(&key_path, &salt, &scalar, &steps, root)?)
 }
 
 /// bytesToField: the length-prefixed, 31-byte-chunked, domain-separated Poseidon fold of raw

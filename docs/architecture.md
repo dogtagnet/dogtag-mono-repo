@@ -550,7 +550,7 @@ function recordVerificationZK(uint[2] a, uint[2][2] b, uint[2] c, uint[7] pub) e
 
 A credential's **authenticity** rests on **three pillars** — it is VALID only if all three return VALID and none returns INVALID (OA-style fragment model; each fragment is tri-state `VALID | INVALID | ERROR` — a network/RPC error ≠ forged ≠ valid):
 
-1. **Integrity** — recompute every leaf hash from `data` with the **pinned Poseidon** scheme (§3.3), union with `privacy.obfuscated`, rebuild the **Poseidon** Merkle tree (§3.4) → must equal `signature.targetHash`. Then `processProof(proof, targetHash)` → must equal `signature.merkleRoot` (the credential root `R`). (Pure, offline, in the SDK.)
+1. **Integrity** — recompute every leaf hash from `data` with the **pinned Poseidon** scheme (§3.3), union with `privacy.obfuscated`, rebuild the **Poseidon** Merkle tree (§3.4) → must equal `signature.targetHash`. Single-document credentials only: `signature.proof` MUST be empty, so `targetHash` **is** the credential root `R` (`signature.merkleRoot`); a non-empty `proof` is **rejected**, never folded (C1). (Pure, offline, in the SDK.)
 2. **Issuance status** — read `DogTagIssuer(issuer.documentStore).isValid(merkleRoot)` over ROAX RPC. Must be `true` (issued, not revoked).
 3. **Identity (DNS)** — resolve `issuer.domain` TXT records over DNS-over-HTTPS; one must read `dogtag net=ethereum chainId=135 addr=<documentStore>` (case-insensitive addr, matching chainId). Binds the human-trusted domain to the contract.
 

@@ -10,7 +10,7 @@
 //! the contextual `verify` orchestration shape are implemented here.
 use ark_bn254::Fr;
 
-use crate::merkle::{build_merkle, process_proof};
+use crate::merkle::build_merkle;
 use crate::wrap::{flatten_data, from_hex32, leaf_from_packed, WrappedDoc};
 
 /// 4-state fragment result (impl §11.3).
@@ -143,15 +143,11 @@ pub fn check_integrity(doc: &WrappedDoc) -> (FragmentState, Fr) {
         Ok(m) => m,
         Err(_) => return (FragmentState::Invalid, root),
     };
-    let ok = if doc.signature.proof.is_empty() {
-        merkle_root == target_hash
-    } else {
-        let proof: Result<Vec<Fr>, _> = doc.signature.proof.iter().map(|h| from_hex32(h)).collect();
-        match proof {
-            Ok(p) => process_proof(&p, target_hash) == merkle_root,
-            Err(_) => false,
-        }
-    };
+    // Single-document credentials only: `signature.proof` MUST be empty, so `targetHash` IS the
+    // anchored root `R`. Doc→batch-root inclusion (a non-empty `proof`) never shipped, and the C1
+    // invariant forbids trusting a permissive commutative fold in the trust path — so a non-empty
+    // proof is rejected outright rather than folded (see merkle::process_proof, DSDP plan §2.3).
+    let ok = doc.signature.proof.is_empty() && merkle_root == target_hash;
     (if ok { FragmentState::Valid } else { FragmentState::Invalid }, root)
 }
 
@@ -560,5 +556,16 @@ mod tests {
         let v = verify(&doc, &opts);
         assert_eq!(v.integrity, FragmentState::Invalid);
         assert!(!v.valid);
+    }
+
+    #[test]
+    fn nonempty_signature_proof_is_invalid() {
+        // Batching (doc→batch-root inclusion via `signature.proof`) never shipped, and C1 forbids
+        // trusting the permissive commutative fold; a non-empty proof is now rejected outright even
+        // when it names the (single-doc) root itself. Documents the intentional tightening.
+        let mut sp = fixed_salts();
+        let mut doc = wrap_document(&sample_credential(), issuer(), &mut sp).unwrap();
+        doc.signature.proof.push(doc.signature.target_hash.clone());
+        assert_eq!(check_integrity(&doc).0, FragmentState::Invalid);
     }
 }
