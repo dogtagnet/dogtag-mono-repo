@@ -48,7 +48,7 @@
   (1) the file is the **canonical public Hermez/Perpetual-PoT output** fetched from Polygon's official mirror;
   (2) its **sha256 matches the repo's already-trusted pinned value** above (`ceremony-consent.sh` fails closed on any mismatch), so no new trust in a download URL is required;
   (3) the finalize step ran `snarkjs zkey verify consent.r1cs <ptau> consent_final.zkey` and printed **`ZKey Ok!`**, which reads this exact ptau and cryptographically validates the whole phase-2 contribution chain against it — a malformed/truncated ptau would fail there.
-  The canonical full check, `snarkjs powersoftau verify` (it replays the entire Hermez contribution chain + beacon and prints `Powers of Tau Ok!`), is single-threaded and slow (~20–30 min on a `2^17` file); it was **also launched on this run** and is the recommended **independent audit** in the reproduce section — an auditor on an idle machine should run it and confirm `Powers of Tau Ok!`. Phase-1 trust here does **not** depend on it: anchors (1)–(3) above already pin the exact bytes to the repo's already-trusted ptau and validate them through `zkey verify`.
+  The canonical full check, `snarkjs powersoftau verify` (it replays the entire Hermez contribution chain + beacon and prints `Powers of Tau Ok!`), is single-threaded and slow (~20–30 min on a `2^17` file). It was **launched on this run but did not complete inline** — it saturated this shared host (as it did on the v2 run, `docs/CEREMONY_TRANSCRIPT.md`), so it was stopped. Phase-1 trust here therefore rests on anchors (1)–(3) above (canonical file + sha256 byte-match to the repo's already-trusted ptau + `ZKey Ok!`), exactly as the v2 ceremony did. The full `powersoftau verify` remains the recommended **independent audit** (reproduce section) — an auditor on an idle machine should run it and confirm `Powers of Tau Ok!`.
 
 ## Phase-2 contributions (in order — single contributor on our infra, NOT independent)
 
@@ -118,18 +118,20 @@ node scripts/test-consent.mjs                     # ALL GREEN (33/33)
 
 M3 deploys the verifier; **wiring it into `VerificationRegistry` is M4** (not done here — see the M4 note below).
 
-- **`Groth16VerifierConsent` deployed at:** _PENDING_ — awaiting the ROAX deployer credentials
-  (`contracts/.env` with `ROAX_RPC` + `DEPLOYER_PRIVATE_KEY`, the `0x119F8c…` deployer EOA), which are
-  captain-managed and were not present in this task worktree.
-  Deploy command (reusing the v2 deploy path, ROAX `--legacy`), filled in on execution:
+- **`Groth16VerifierConsent` DEPLOYED at `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a`** on ROAX (chainId 135),
+  ROAX `--legacy`, deployer `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`.
+  - deploy tx: `0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af` (block **190760**, status success).
+  - on-chain `cast code` == the compiled `Groth16VerifierConsent` runtime bytecode (1933 bytes) — byte-identical, so the deployed contract is exactly this VK's verifier.
+  - **on-chain functional check:** a real consent proof (built via `test-consent.mjs`'s honest witness) → `verifyProof(a,b,c,pub[7])` returns **`true`**; the same proof with a tampered `pub[4] /*R*/` returns **`false`**. Public signals decoded on-chain match `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`.
+  - This is a **separate** verifier for the Level-B consent circuit; it does **not** replace the live Level-A `Groth16Verifier` `0xEEFCf…` (that registry swap is M4).
+
+Deploy command used (reusing the v2 deploy path; forge 1.5.1 needs `--broadcast`):
 
 ```bash
-cp circuits/Groth16Verifier.consent.sol contracts/src/Groth16VerifierConsent.sol   # already staged in this PR
+cp circuits/Groth16Verifier.consent.sol contracts/src/Groth16VerifierConsent.sol   # staged in this PR
 cd contracts && forge build
-VERIFIER=$(forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent \
-  --rpc-url "$ROAX_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --legacy --json | jq -r .deployedTo)
-echo "consent verifier: $VERIFIER"
-# then record $VERIFIER in contracts/deployments/roax.json (Groth16VerifierConsent) + this transcript.
+forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent \
+  --rpc-url "$ROAX_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --legacy --broadcast --json
 ```
 
 - **M4 (out of scope here):** `VerificationRegistry` must be redeployed to `require(verifyProof(a,b,c,pub[7]))`

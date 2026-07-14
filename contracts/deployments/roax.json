@@ -6,14 +6,19 @@
   "DogTagSBT": "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
   "Groth16Verifier": "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
   "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
+  "Groth16VerifierConsent": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
   "_m3_consent_verifier": {
-    "status": "CEREMONY DONE; DEPLOY PENDING. The Level-B DogTagConsent (M3) verifier is built + validated but NOT yet deployed on ROAX - needs contracts/.env with ROAX_RPC + DEPLOYER_PRIVATE_KEY (the 0x119F8c deployer EOA), which are captain-managed and were absent from the task worktree. On deploy, add a 'Groth16VerifierConsent' address key here and set status EXECUTED with the deploy tx/block. This is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf... (that swap is M4). M3 does NOT wire this into VerificationRegistry.",
+    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX. It is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf... (that registry swap is M4). M3 does NOT wire this into VerificationRegistry - M4 redeploys the registry to verify against this VK with the owner-blind Verified event + R==profileRoot check.",
+    "address": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
+    "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
+    "deploy_tx": "0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af",
+    "deploy_block": 190760,
+    "onchain_verify": "cast code == compiled Groth16VerifierConsent runtime (1933 bytes); verifyProof(valid consent proof)=true, verifyProof(tampered R)=false",
     "circuit": "circuits/consent.circom -> DogTagConsent(6), 38501 constraints, 7 public outputs [dogTagId,purpose,relayer,nullifier,R,recordType,deadline]",
     "contract": "Groth16VerifierConsent (contracts/src/Groth16VerifierConsent.sol, renamed to avoid colliding with the live Groth16Verifier)",
     "ceremony": "TESTNET-GRADE single-contributor phase-2 (public Hermez powersOfTau28_hez_final_17.ptau sha256 6b662a32...; one contribution + drand beacon chain 8990e7a9... round 6286835); see docs/CEREMONY_TRANSCRIPT.consent.md",
     "vk_sha256": "27879dd7c4eabb6acea4d1be1249ba3c4212f95a27237e7e1e1220557b4e2d7f",
-    "zkey_sha256": "f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868",
-    "deploy_cmd": "forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent --rpc-url $ROAX_RPC --private-key $DEPLOYER_PRIVATE_KEY --legacy"
+    "zkey_sha256": "f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868"
   },
   "IssuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
   "Poseidon6": "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
