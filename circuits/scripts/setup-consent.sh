@@ -7,10 +7,12 @@
 # The resulting build/consent_final.zkey and Groth16Verifier.consent.sol are ONLY for exercising
 # witness/proof round-trips in scripts/test-consent.mjs. They MUST NOT be deployed.
 #
-# The REAL VK is produced by the M3 trusted-setup ceremony (out of scope for M2), which requires:
-#   - the public Hermez/Perpetual powers-of-tau (NOT a locally generated one);
-#   - a phase-2 ceremony with >= 3 independent contributors on isolated hardware, ending in a
-#     PUBLIC verifiable randomness beacon, so no single party knows tau.
+# The REAL VK is produced by the M3 trusted-setup ceremony (DONE - scripts/ceremony-consent.sh,
+# transcript docs/CEREMONY_TRANSCRIPT.consent.md), which:
+#   - reuses the public Hermez/Perpetual powers-of-tau (NOT a locally generated one);
+#   - ran a phase-2 ceremony ending in a PUBLIC verifiable randomness beacon.
+# The committed M3 key is TESTNET-GRADE (single contributor, captain-approved for ROAX). The mainnet
+# re-run must use >= 3 independent contributors on isolated hardware so no single party knows tau.
 #
 # DogTagConsent (depth=6) has ~38.5k non-linear constraints -> needs 2^16 = 65536 powers (power 16).
 set -euo pipefail
