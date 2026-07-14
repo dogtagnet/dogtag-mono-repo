@@ -6,6 +6,15 @@
   "DogTagSBT": "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
   "Groth16Verifier": "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
   "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
+  "_m3_consent_verifier": {
+    "status": "CEREMONY DONE; DEPLOY PENDING. The Level-B DogTagConsent (M3) verifier is built + validated but NOT yet deployed on ROAX - needs contracts/.env with ROAX_RPC + DEPLOYER_PRIVATE_KEY (the 0x119F8c deployer EOA), which are captain-managed and were absent from the task worktree. On deploy, add a 'Groth16VerifierConsent' address key here and set status EXECUTED with the deploy tx/block. This is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf... (that swap is M4). M3 does NOT wire this into VerificationRegistry.",
+    "circuit": "circuits/consent.circom -> DogTagConsent(6), 38501 constraints, 7 public outputs [dogTagId,purpose,relayer,nullifier,R,recordType,deadline]",
+    "contract": "Groth16VerifierConsent (contracts/src/Groth16VerifierConsent.sol, renamed to avoid colliding with the live Groth16Verifier)",
+    "ceremony": "TESTNET-GRADE single-contributor phase-2 (public Hermez powersOfTau28_hez_final_17.ptau sha256 6b662a32...; one contribution + drand beacon chain 8990e7a9... round 6286835); see docs/CEREMONY_TRANSCRIPT.consent.md",
+    "vk_sha256": "27879dd7c4eabb6acea4d1be1249ba3c4212f95a27237e7e1e1220557b4e2d7f",
+    "zkey_sha256": "f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868",
+    "deploy_cmd": "forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent --rpc-url $ROAX_RPC --private-key $DEPLOYER_PRIVATE_KEY --legacy"
+  },
   "IssuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
   "Poseidon6": "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
   "VerificationRegistry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",

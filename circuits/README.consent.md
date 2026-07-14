@@ -12,9 +12,12 @@ shared `NodeHash`/`LessThanField`/`LessEqThanField` templates were **copied verb
 [`lib/merkle_inclusion.circom`](lib/merkle_inclusion.circom) (kept bit-identical so both circuits
 agree on the integer sort inside `hashNode`), NOT refactored out of the frozen circuit.
 
-> **DEV / NON-PRODUCTION.** Only the throwaway dev trusted setup exists (`scripts/setup-consent.sh`).
-> The real phase-2 ceremony + VK freeze is **M3** (out of scope for M2), and the on-chain verifier +
-> `recordVerificationZK` wiring is **M4**. See the "Build + test" and "M4 binding" notes below.
+> **DEV setup vs the real ceremony.** `scripts/setup-consent.sh` is the throwaway DEV trusted setup
+> (self-generated ptau, forgeable) used only by the circuit test below. The **real testnet-grade phase-2
+> ceremony + VK freeze (M3) is DONE**: `scripts/ceremony-consent.sh` (public Hermez pow-17 ptau + a single
+> testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
+> — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md). The on-chain
+> `recordVerificationZK` wiring (registry redeploy) remains **M4**. See the "Build + test" and "M4 binding" notes below.
 
 ## What it proves
 
@@ -88,18 +91,24 @@ ptau is **power 16** (`2^16 = 65536 ≥ 38501`).
 ## Build + test
 
 ```
-npm run build-consent   # compile + DEV/throwaway trusted setup (~11 min) -> build/consent_final.zkey
-npm run test-consent    # witness/proof round-trip + R-parity + negatives + keyPath-substitution + D5
+bash scripts/ceremony-consent.sh   # M3: real testnet ceremony -> committed VK/zkey + Groth16VerifierConsent.sol
+npm run test-consent               # witness/proof round-trip + R-parity + negatives + keyPath-substitution + D5
+npm run build-consent              # ⚠ DEV/throwaway setup — OVERWRITES the committed M3 zkey/VK with a forgeable key; avoid
 ```
 
-`test-consent` **SKIPs cleanly (exit 0)** when the gitignored dev zkey/wasm are absent, so it never
-reds an unbuilt run — it is a **standalone heavy manual gate** (like `test-circuit`), intentionally
-**not** wired into `make test`. Build the dev artifacts first to run it.
+Since M3, `build/consent.r1cs`, `build/consent_final.zkey`, `build/consent_verification_key.json` and
+`build/consent_js/consent.wasm` are **committed**, so `npm run test-consent` runs the full suite against
+the **real production key** (33/33 green: round-trip verify + R-parity + negatives + D5). It still
+**SKIPs cleanly (exit 0)** if those artifacts are absent, so it never reds an unbuilt checkout — it is a
+**standalone heavy manual gate** (like `test-circuit`), intentionally **not** wired into `make test`.
 
-> **The dev build artifacts are gitignored and MUST NOT be deployed.** `build/consent_*` and
-> `Groth16Verifier.consent.dev.sol` come from a locally-generated power-of-tau with a single
+> **`build-consent`/`setup-consent.sh` produce a DEV key that MUST NOT be deployed.** Its
+> `Groth16Verifier.consent.dev.sol` comes from a locally-generated power-of-tau with a single
 > contributor and a throwaway beacon (the operator knows the toxic waste, so the key is forgeable).
-> The real VK is the **M3** ceremony's; the on-chain verifier + registry swap is **M4**.
+> The **real (M3) VK** is the committed `build/consent_verification_key.json` (sha256 `27879dd7…`) paired
+> with `build/consent_final.zkey` (sha256 `f83a111f…`) and `Groth16VerifierConsent.sol`, produced by
+> `scripts/ceremony-consent.sh` — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md).
+> Running `build-consent` again would OVERWRITE those committed files with a forgeable dev key — don't. The on-chain verifier + registry swap is **M4**.
 
 ## M4 binding (out of scope for M2)
 
@@ -110,10 +119,13 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 `Verified` event (no `subject`/`keyHash`). Full details: AGENTS.md "Level-B `DogTagConsent` circuit
 (M2)".
 
-## Open item for the M3 VK-freeze checkpoint
+## M3 VK-freeze checkpoint — REVIEWED, VK FROZEN
 
 `M` is `Poseidon5` and shares arity + first slot with the leaf hash `Poseidon5([DS_LEAF=1, …])` when
-`dogTagId == 1`. No exploit is known (EdDSA needs the private key; leaves are never signed), so M2
-implements `M` exactly as the captain-approved spec states (no DS tag). **M3 is the last point to
-reconsider `M`'s preimage structure before the VK is locked** — a domain tag would require changing
-the spec, this circuit, and M7's app proof-gen together, and re-running the ceremony.
+`dogTagId == 1`. This was the last point to reconsider `M`'s preimage structure before locking the VK.
+**Conclusion: no exploit exists** (EdDSA needs the private key; leaves are never signed), the
+public-signal order/count was re-verified from the freshly compiled circuit (7 outputs, 0 public inputs,
+`nPublic == 7`), and the captain-approved spec fixes `M` in this exact form (no DS tag) — a domain tag
+would require changing the spec, this circuit, and M7's app proof-gen together, and re-running the
+ceremony. The VK is therefore **frozen** against `consent.circom` as merged in #42. See
+[`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md) "M3 VK-freeze checkpoint".
