@@ -260,7 +260,7 @@ node_modules/.bin/snarkjs groth16 verify build/verification_key.json <public.jso
 
 The dev/testnet verifier is currently live. Swapping in the production verifier is behind a **2-day timelock** on `VerificationRegistry`: there is **no** single-call `setZkVerifier` — you `propose`, wait, then `execute`.
 
-> **Where things stand now:** the live `VerificationRegistry` (`0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1`) points at the v2 testnet self-run verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` (cut over 2026-07-02 after the 2-day timelock). That verifier is still a **testnet self-run** key. This step replaces it with the production-ceremony verifier.
+> **Where things stand now:** the live `VerificationRegistry` (`0x4E2f0996e1CB4E24F1053346f3da2186906835E8`; the prior `0x8bA836eCe9…` is now `VerificationRegistry_4arg_legacy`) points at the v2 testnet self-run verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` (cut over 2026-07-02 after the 2-day timelock). That verifier is still a **testnet self-run** key. This step replaces it with the production-ceremony verifier.
 
 ### 5.1 Build + deploy the production verifier
 
@@ -277,7 +277,7 @@ echo "new verifier: $VERIFIER"
 ### 5.2 Propose → timelock → execute
 
 ```bash
-REG=0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1   # VerificationRegistry (contracts/deployments/roax.json)
+REG=0x4E2f0996e1CB4E24F1053346f3da2186906835E8   # VerificationRegistry (contracts/deployments/roax.json)
 
 # 1. propose (starts the 2-day ZK_TIMELOCK; emits ZkVerifierProposed(v, eta))
 cast send "$REG" "proposeZkVerifier(address)" "$VERIFIER" \

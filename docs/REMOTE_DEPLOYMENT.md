@@ -166,7 +166,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `ISSUER_NAME` | all | display name | "Example Veterinary Clinic" / "Example Grooming Salon" / "DogTag Central" | real name |
 | `ISSUER_DOMAIN` | all | **the real DNS-TXT issuer-domain binding** | `*.local` | your real domain |
 | `ISSUER_REGISTRY_ADDR` | all | IssuerRegistry | (roax.json, pre-filled) | per chain |
-| `VERIFICATION_REGISTRY_ADDR` | vet, groomer | **current** VR (`0x8bA836eCe9…`) | (roax.json, pre-filled) | current, **not** legacy |
+| `VERIFICATION_REGISTRY_ADDR` | vet, groomer | **current** VR (`0x4E2f0996…`; `0x8bA836eCe9…` is `_4arg_legacy`) | (roax.json, pre-filled) | current, **not** legacy |
 | `CONSENT_KEY_REGISTRY_ADDR` | vet, groomer | gasless `bindConsentKeyFor` (`0xA74DDe4a9b…`) | (roax.json, pre-filled) | current, **not** legacy |
 | `SBT_ADDR` | admin | DogTagSBT | (roax.json, pre-filled) | per chain |
 | `PROFILE_DOCUMENT_STORE` | admin | SBT mint target | `=SBT_ADDR` | usually `=SBT_ADDR` |

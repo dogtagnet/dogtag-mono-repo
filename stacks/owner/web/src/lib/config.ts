@@ -9,7 +9,7 @@ export const ROAX_EXPLORER = "https://explorer.roax.net";
 export const CONTRACTS = {
   ConsentKeyRegistry: "0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671",
   Groth16Verifier: "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
-  VerificationRegistry: "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
+  VerificationRegistry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
   IssuerRegistry: "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
   DogTagSBT: "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
 } as const;

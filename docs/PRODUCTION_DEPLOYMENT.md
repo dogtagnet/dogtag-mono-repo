@@ -104,7 +104,7 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 # Leave VITE_DEMO_MODE UNSET (remote-up.sh rejects it).
 ```
 
-**Critical:** there are **three VerificationRegistry generations** and two ConsentKeyRegistry generations
+**Critical:** there are **four VerificationRegistry generations** and two ConsentKeyRegistry generations
 in the testnet Address Book. Use the **current** VR/CKR (the meta-tx ones), never a `_legacy` address. The
 Address Book in [DEPLOYMENT.md](./DEPLOYMENT.md) marks which is current.
 

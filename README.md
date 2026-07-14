@@ -49,7 +49,8 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | DogTagIssuerImpl (clone impl) | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
 | ConsentKeyRegistry (gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-| **VerificationRegistry** (ZK-wired) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
+| **VerificationRegistry** (ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
+| ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
 | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
 | deployer EOA (genesis; **stripped of all roles** in Governance Phase-2, 2026-07-05 block 123835) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
@@ -59,9 +60,10 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 
 > The original VerificationRegistry was deployed with `zkVerifier = 0`; for the testnet the registry was
 > **redeployed** pointing at the then-live v1 Groth16Verifier (`VerificationRegistry_zk0_legacy`
-> `0xb4FbbDb5…` is the retired zk=0 instance), and a later **meta-tx migration** produced the current VR
+> `0xb4FbbDb5…` is the retired zk=0 instance), a later **meta-tx migration** produced VR
 > `0x8bA836eCe9…` + CKR `0xA74DDe4a9b…` (retiring the `_preMetaTx_legacy` VR `0x19C1B5f8…` and CKR
-> `0xFD277b9B…`) — three VR generations in all. In production the verifier is wired via the registry's
+> `0xFD277b9B…`), and a final **registry-only redeploy** produced the current VR `0x4E2f0996…` (carrying
+> the 6-arg `recordVerificationZK`; `0x8bA836eCe9…` becomes `_4arg_legacy`) — four VR generations in all. In production the verifier is wired via the registry's
 > 2-day timelock (`proposeZkVerifier(addr)` → wait ≥ 2 days → `executeZkVerifier()`) instead — see
 > [`docs/DEPLOY.md`](docs/DEPLOY.md). The testnet ZK trusted setup (3 contributions + beacon) is recorded
 > in [`docs/CEREMONY_TRANSCRIPT.md`](docs/CEREMONY_TRANSCRIPT.md).
