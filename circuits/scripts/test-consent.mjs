@@ -65,12 +65,17 @@ function saltField(seed) {
   return fieldFromScalarBytes(b);
 }
 
-// Pad a front-packed sibling array to DEPTH with 0s; returns {siblings, pathLen}.
+// Adapt the SDK's explicit `Sibling | Promote` inclusion proof (DSDP §2.3) to the circuit's
+// FRONT-PACKED sibling array + length. merkleProof returns [{sibling},…,{promote:true},…]; the
+// circuit (MerkleInclusion) folds only the real siblings (a {promote} level is a pass-through, no
+// hashing — exactly what processProof does), so keep only {sibling} steps, set pathLen to that
+// count, and pad the unused tail with 0s.
 function padPath(proof) {
-  if (proof.length > DEPTH) throw new Error(`path too deep (${proof.length} > ${DEPTH})`);
-  const siblings = proof.map((x) => x.toString());
+  const siblings = proof.filter((s) => "sibling" in s).map((s) => s.sibling.toString());
+  if (siblings.length > DEPTH) throw new Error(`path too deep (${siblings.length} > ${DEPTH})`);
+  const pathLen = siblings.length;
   while (siblings.length < DEPTH) siblings.push("0");
-  return {siblings, pathLen: String(proof.length)};
+  return {siblings, pathLen: String(pathLen)};
 }
 
 let passed = 0;
