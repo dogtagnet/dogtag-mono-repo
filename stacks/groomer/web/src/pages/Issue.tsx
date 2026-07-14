@@ -181,10 +181,14 @@ export function Issue() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>Issue a credential</CardTitle>
+          <CardTitle>Issue a record (e.g. vaccination)</CardTitle>
           <CardDescription>
+            Attaches a signed record to a pet that a vet has <strong>already registered</strong> —
+            groomers don't register pets; the dog tag id must already exist on chain (registered by a
+            vet), otherwise the record can never be exported.
+            <br />
             Signing mode: <Badge variant="neutral">{signingMode}</Badge> — the document + merkle root
-            are built server-side; this form supplies the credential fields (§1.6).
+            are built server-side; this form supplies the record fields (§1.6).
           </CardDescription>
         </div>
         {env.demoMode && (

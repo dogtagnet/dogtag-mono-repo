@@ -500,7 +500,7 @@ async fn prepare(
                     return err(
                         StatusCode::BAD_REQUEST,
                         &format!(
-                            "dog tag {} is not registered on-chain — register the pet first (Register pet), then issue records against it",
+                            "dog tag {} is not confirmed on-chain yet — if you just registered this pet, wait ~15s for the mint to confirm and retry; otherwise register the pet first (Register pet), then issue records against it",
                             body.dog_tag_id
                         ),
                     );

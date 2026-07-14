@@ -32,7 +32,7 @@ export function App() {
       <Route path="/reports" element={<Layout title="Reports"><Reports /></Layout>} />
       <Route path="/marketing" element={<Layout title="Marketing"><Marketing /></Layout>} />
       <Route path="/import" element={<Layout title="Import from user"><ImportFromUser /></Layout>} />
-      <Route path="/issue" element={<Layout title="Issue credential"><Issue /></Layout>} />
+      <Route path="/issue" element={<Layout title="Issue a record (e.g. vaccination)"><Issue /></Layout>} />
       <Route path="/records" element={<Layout title="Records"><Records /></Layout>} />
       <Route path="/traceability" element={<Layout title="Traceability"><Traceability /></Layout>} />
       <Route path="/verify" element={<Layout title="Export"><Verify /></Layout>} />

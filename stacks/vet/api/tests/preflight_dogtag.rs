@@ -46,12 +46,12 @@ async fn prepare_requires_minted_dog_tag() {
         "fields": vaccination_fields(),
     });
 
-    // (1) unminted dogTagId -> 400 with a clear, register-first message.
+    // (1) unminted dogTagId -> 400 with a clear message that accounts for the async mint window.
     let (s, b) = call(&app, "POST", "/credentials/prepare", Some(&op), Some(body.clone())).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "unminted dogTagId must be rejected: {b}");
     assert!(
-        b["error"].as_str().unwrap_or_default().contains("not registered"),
-        "error must explain the tag is not registered: {b}"
+        b["error"].as_str().unwrap_or_default().contains("not confirmed on-chain"),
+        "error must explain the tag is not confirmed on-chain yet: {b}"
     );
 
     // (2) mint the SBT under the FIELD-HASHED on-chain id (== the export circuit's pub[0]) — the same key
