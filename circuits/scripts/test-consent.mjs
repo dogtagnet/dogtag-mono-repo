@@ -250,11 +250,13 @@ async function expectWitnessFailure(eddsa, opts, tag) {
 }
 
 async function main() {
-  // Heavy manual gate: the DEV zkey/wasm are gitignored (throwaway key). If they are not built,
-  // SKIP cleanly (exit 0) rather than red an unbuilt CI run — reproduce with `npm run build-consent`.
+  // Heavy manual gate: the consent zkey/wasm/VK are the committed M3 production ceremony output. If
+  // they are somehow absent, SKIP cleanly (exit 0) rather than red an unbuilt CI run - regenerate with
+  // scripts/ceremony-consent.sh (NOT `npm run build-consent`, the DEV/throwaway setup that would
+  // clobber the committed production key).
   for (const f of [WASM, ZKEY, VKEY]) {
     if (!existsSync(f)) {
-      console.log(`SKIP test-consent: missing build artifact ${f}\n  Build it first: npm run build-consent (scripts/setup-consent.sh, ~11 min, DEV/throwaway key).`);
+      console.log(`SKIP test-consent: missing committed artifact ${f}\n  It is the committed M3 production ceremony output; regenerate with scripts/ceremony-consent.sh (NOT build-consent, the DEV/throwaway setup that would clobber the committed production key).`);
       process.exit(0);
     }
   }
