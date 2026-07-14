@@ -417,7 +417,7 @@ cp circuits/build/verification.graph      apps/ios/DogTag/verification.graph
 ```
 
 **The `verification.graph` is not produced by a plain checkout.**
-`circuits/build/verification.graph` is itself gitignored and is built from `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); if it is missing, build it before this copy - the 26-byte `stub-graph-for-build-only` placeholder that ships in the tree will NOT prove.
+`circuits/build/verification.graph` is itself gitignored and is built from `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); if it is missing, build it before this copy - a 26-byte `stub-graph-for-build-only` placeholder will NOT prove.
 Validate the vendored pair on the host: `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
 
 ### 3. Regenerate the Xcode project + set the signing team
