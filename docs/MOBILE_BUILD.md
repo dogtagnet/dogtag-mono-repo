@@ -237,8 +237,11 @@ generated `DogTag.xcodeproj`. Source-of-truth facts from `project.yml`:
   a plain build here)
 
 > **Build the `DogTagFFI.xcframework` first.** It is gitignored and a plain `xcodebuild` will fail to
-> link without it. Build the Rust prover static lib for the iOS Simulator (`--features prover`),
-> regenerate the Swift bindings, and assemble the framework. The full copy-pasteable sequence (and the
+> link without it. Build the Rust prover static lib (`--features prover`), regenerate the Swift bindings,
+> and assemble the framework; for a **device** install you need **both** the `aarch64-apple-ios` device
+> and `aarch64-apple-ios-sim` simulator slices (a Simulator-only xcframework fails to link on a device).
+> The full copy-pasteable device sequence is in
+> [`AGENTS.md` → Building the mobile (iOS) holder app](../AGENTS.md); the Simulator-only variant (and the
 > on-device ZK self-test it powers) is in [`AGENTS.md` → Mobile end-to-end testing (iOS)](../AGENTS.md).
 
 **Step 1 — vendor the zkey** (if you have not already, §4):
