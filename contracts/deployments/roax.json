@@ -8,7 +8,8 @@
   "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
   "IssuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
   "Poseidon6": "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
-  "VerificationRegistry": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
+  "VerificationRegistry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+  "VerificationRegistry_4arg_legacy": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
   "VerificationRegistry_preMetaTx_legacy": "0x19C1B5f80c41EE864149500bdF998Dd18aec2a43",
   "VerificationRegistry_zk0_legacy": "0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8",
   "_zk_ceremony": "Repo ships testnet self-run v2 (public Hermez ptau + 3 contributions + drand beacon round 6245947); zkey sha256 9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992; see docs/CEREMONY_TRANSCRIPT.md. The v2 Groth16Verifier 0xEEFCfAF026931b7325472A88fd14Ee780Da13559 is the ACTIVE on-chain verifier since executeZkVerifier() ran on 2026-07-02 (block 103419); the prior verifier 0x138b433071Ad806E841B5AD53623290a9bf21761 (sha 45d0b6fb...03e) is retired. See _zk_verifier_swap below and docs/PRODUCTION_DEPLOYMENT.md §3.2.",
@@ -27,6 +28,15 @@
     "executed_tx": "0xe2e3270f991b901443dacd58158265f7b26c6ac0dc6925385c993c5a24940e70",
     "executed_block": 103419,
     "executed_utc": "2026-07-02T10:47:08Z"
+  },
+  "_verification_registry_redeploy": {
+    "status": "EXECUTED - the live VerificationRegistry was redeployed to carry the v2 six-arg recordVerificationZK(a,b,c,pub,recordType,deadline) (selector 0x423a45b6). The prior registry 0x8bA836 (now VerificationRegistry_4arg_legacy) was deployed at 21c9b15, BEFORE PR #7 (64ea1f8) added recordType/deadline, so its bytecode only dispatches the OLD 4-arg selector 0xdd080593; the v2 server/phone send 0x423a45b6, which the old bytecode had no case for -> bare revert -> `execution reverted, data: 0x` on the groomer ZK export. Diagnosis + repro: data/dogtag-zkfail-z9/report.md; deployed via contracts/script/RedeployVerificationRegistry.s.sol reusing all six live component contracts (incl. the existing ConsentKeyRegistry) with admin = the governance authority 0x8E27E117.",
+    "new_registry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+    "old_registry_4arg": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
+    "deploy_tx": "0x10806b6768e7a645a7cbb980708858031ed3404bb4c5fd429f26d91cfdf9ff12",
+    "deploy_block": 188169,
+    "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+    "components_reused": "IssuerRegistry, DogTagSBT, Groth16Verifier (v2), ConsentKeyRegistry, DogTagIssuerFactory, Poseidon6 - all unchanged; every cross-contract call in the ZK path is a view, so no role grants were needed on the components."
   },
   "admin": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
   "_governance": {
