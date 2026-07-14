@@ -180,7 +180,7 @@ The operator-facing **handle** is a small integer. The **on-chain** dogTagId min
 - Circuit `DogTagVerification(24,5)` = 94,459 constraints → needs **2^17** powers of tau (`PTAU_POW=17`).
 - Final artifacts: `circuits/build/verification_final.zkey` (proving key the Rust prover loads + pins SHA-256, impl §11.8(f)), `circuits/Groth16Verifier.sol` (vkey compiled in → deployed), `circuits/build/verification_key.json` (for `snarkjs groth16 verify`). `finalize` exports all three; verify with `snarkjs zkey verify r1cs ptau zkey` → `ZKey Ok!`.
 - On-chain verifier swap has **no single-call setter**: `VerificationRegistry.proposeZkVerifier(addr)` → wait `ZK_TIMELOCK = 2 days` → `executeZkVerifier()`; confirm with `zkVerifier()`. Live registry `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` (`contracts/deployments/roax.json`).
-- The **v2 ceremony verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` is the LIVE on-chain verifier** since the 2026-07-02 `executeZkVerifier()` cutover (tx `0xe2e3270f…40e70`, block 103419); the v1 verifier `0x138b4330…1761` is retired and rejects v2-key proofs (and vice versa). The live verifier address is baked in several places that must move together on any future swap: `contracts/deployments/roax.json`, `README.md` (Live ROAX addresses table), `stacks/owner/web/src/lib/config.ts`, `packages/ui/src/wallet/contracts.ts`, `scripts/e2e-zk.sh` (`ZKV=`), the live-chain parity tests (`crates/dogtag-standard-rs/tests/prove_parity.rs`, `stacks/vet/api/tests/prove_verification.rs`), and the docs that quote the live address (`docs/DEPLOY.md`, `docs/DEPLOYMENT.md`, `docs/DEMO.md`, `docs/CEREMONY_RUNBOOK.md`).
+- The **v2 ceremony verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` is the LIVE on-chain verifier** since the 2026-07-02 `executeZkVerifier()` cutover (tx `0xe2e3270f…40e70`, block 103419); the v1 verifier `0x138b4330…1761` is retired and rejects v2-key proofs (and vice versa). The live verifier address is baked in several places that must move together on any future swap: `contracts/deployments/roax.json`, `README.md` (Live ROAX addresses table), `stacks/owner/web/src/lib/config.ts`, `packages/ui/src/wallet/contracts.ts`, `scripts/e2e-zk.sh` (`ZKV=`), the live-chain parity tests (`crates/dogtag-standard-rs/tests/prove_parity.rs`, `stacks/vet/api/tests/prove_verification.rs`), and the docs that quote the live address (`docs/DEPLOY.md`, `docs/DEPLOYMENT.md`, `docs/DEMO.md`, `docs/CEREMONY_RUNBOOK.md`). The **mobile apps also carry the coupling** - each bundles the verifier's paired zkey/graph plus `roax.json` addresses and must be rebuilt + reinstalled on any swap (see "Building the mobile (iOS) holder app").
 
 ## Mobile end-to-end testing (Android, on-device ZK proof)
 
@@ -364,6 +364,112 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
 GitHub-hosted runners don't reliably provide the arm64 Simulator prover slice, and the proving
 artifacts are gitignored. Wiring it to push/PR would make a perpetually-red check. The validated signal
 is the local run above (this lab: iPhone 16 / iOS 18.6 simulator, real proof, `ZK-SELFTEST: PASS`).
+
+## Building the mobile (iOS) holder app
+
+This is the **signed build that installs the holder app on a physical iPhone** - the real-user device build.
+It is distinct from the Simulator/e2e build in the "Mobile end-to-end testing (iOS, on-device ZK proof)" section above: that one assembles a **sim-only** xcframework and installs unsigned onto a booted Simulator; this one adds the **`aarch64-apple-ios` device slice + code-signing** and installs onto a plugged-in iPhone.
+`docs/MOBILE_BUILD.md` §5 is the full cross-tier walkthrough; this section owns only the device delta, the canonical-checkout rule, and the zkey<->verifier gotcha that has actually shipped broken installs.
+
+### 0. Build from the canonical checkout, not a stale clone
+
+Build `origin/main` (or the exact release commit) in a checkout you have just `git fetch`ed - never a divergent local clone.
+The proving key, witness graph and `DogTagFFI.xcframework` are all **gitignored** (they never appear in a commit), so a stale clone silently ships **old code AND an old zkey** with no diff to warn you: the app builds green and installs fine, then every ZK verification reverts on-chain (the gotcha below).
+Multiple diverged clones of this repo on one machine is a real footgun - prep done in one worktree does not reach a phone built from another. Confirm before building:
+
+```bash
+git fetch origin && git rev-parse --short HEAD origin/main   # HEAD should equal, or descend from, origin/main
+```
+
+### 1. Build the DogTagFFI xcframework - device + simulator slices (`--features prover`)
+
+Same recipe as the sim build in the e2e section above, plus the `aarch64-apple-ios` **device** slice, combined into one xcframework.
+`--features prover` is mandatory: it compiles in the on-device Groth16 prover (`crates/dogtag-standard-rs/src/prover_ffi.rs`, gated `#[cfg(feature = "prover")]`); without it the `proveVerification` symbol is absent and the device build fails to link.
+
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+# device + simulator static libs (both arm64), plus a host build for the bindgen dylib
+cargo build -p dogtag-standard-rs --features prover --release --target aarch64-apple-ios     --lib
+cargo build -p dogtag-standard-rs --features prover --release --target aarch64-apple-ios-sim --lib
+cargo build -p dogtag-standard-rs --features prover --release --lib
+# regenerate the Swift bindings so the committed .swift stays ABI/checksum-consistent (see the e2e section)
+gen=$(mktemp -d); cargo run --features uniffi/cli --release --bin uniffi-bindgen -- \
+  generate --library target/release/libdogtag_standard.dylib --language swift --out-dir "$gen"
+cp "$gen/dogtag_standard.swift" apps/ios/DogTag/dogtag_standard.swift
+hdr=$(mktemp -d); cp "$gen/dogtag_standardFFI.h" "$hdr/"; cp "$gen/dogtag_standardFFI.modulemap" "$hdr/module.modulemap"
+# assemble BOTH slices (device ios-arm64 + simulator ios-arm64-simulator) into the xcframework
+rm -rf apps/ios/DogTagFFI.xcframework
+xcodebuild -create-xcframework \
+  -library target/aarch64-apple-ios/release/libdogtag_standard.a     -headers "$hdr" \
+  -library target/aarch64-apple-ios-sim/release/libdogtag_standard.a -headers "$hdr" \
+  -output apps/ios/DogTagFFI.xcframework
+```
+
+The sim-only recipe above omits the first `--target aarch64-apple-ios` build and the second `-library` line; a device install fails with a link/slice error until both are present.
+
+### 2. Vendor the ZK ceremony assets into the bundle
+
+Copy the proving key + witness graph into `apps/ios/DogTag/` (both gitignored, absent on a fresh checkout; `docs/MOBILE_BUILD.md` §4):
+
+```bash
+cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
+cp circuits/build/verification.graph      apps/ios/DogTag/verification.graph
+```
+
+**The `verification.graph` is not produced by a plain checkout.**
+`circuits/build/verification.graph` is itself gitignored and is built from `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); if it is missing, build it before this copy - the 26-byte `stub-graph-for-build-only` placeholder that ships in the tree will NOT prove.
+Validate the vendored pair on the host: `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
+
+### 3. Regenerate the Xcode project + set the signing team
+
+The project is generated from `apps/ios/project.yml` by `xcodegen`; the signing team is the `settings.base.DEVELOPMENT_TEAM` line there (with `CODE_SIGN_STYLE: Automatic`).
+Set it to **your** Apple Developer team, then regenerate - editing the generated `DogTag.xcodeproj` does not stick:
+
+```bash
+# edit apps/ios/project.yml -> settings.base.DEVELOPMENT_TEAM: <YOUR_TEAM_ID>   (repo default: AYDBUX9433)
+cd apps/ios && xcodegen
+```
+
+**Trap:** `xcodegen` enumerates `DogTag/`, so regenerating BEFORE step 2 silently drops the `verification_final.zkey`/`verification.graph` Copy-Bundle-Resources entries from the `pbxproj` (see the xcodegen traps under "Sharp edges / gotchas (iOS)" and "Building / verifying UI changes"). Vendor first, regenerate second.
+
+### 4. Build + install (signed) on the device
+
+Plug in + unlock the iPhone and Trust the Mac. Simplest path: open the project in Xcode, select the **DogTag** scheme + your device, press **Run** (Xcode builds, signs, installs, launches in one step). Or from the CLI:
+
+```bash
+open apps/ios/DogTag.xcodeproj                                # then pick the DogTag scheme + device + Run
+# --- OR the CLI path (Xcode Run is simpler for on-device debug; prefer it if signing gives trouble) ---
+xcrun devicectl list devices                                 # copy the plugged-in iPhone's identifier/UDID
+cd apps/ios && xcodebuild -project DogTag.xcodeproj -scheme DogTag \
+  -destination 'platform=iOS,id=<DEVICE_UDID>' -derivedDataPath /tmp/dtdev -allowProvisioningUpdates build
+xcrun devicectl device install app /tmp/dtdev/Build/Products/Debug-iphoneos/DogTag.app --device <DEVICE_UDID>
+```
+
+If the build fails with **code-signing / "no team" / "failed to register bundle identifier"**, the baked `DEVELOPMENT_TEAM` is not yours - fix it in `project.yml` and re-run `xcodegen` (step 3), never in the generated project (`docs/MOBILE_BUILD.md` §5/§9). If the phone shows **"Untrusted Developer"**, trust your team under **Settings -> General -> VPN & Device Management** on the phone, then relaunch.
+
+### THE CRITICAL GOTCHA - the bundled zkey/graph/FFI MUST match the on-chain verifier
+
+The bundled `verification_final.zkey` + `verification.graph` + the compiled-in FFI prover **must match the ZK verifier currently deployed on-chain** - `VerificationRegistry.zkVerifier()` for the target chain.
+Unlike the **server** prover, which fails closed on a mismatched key (it pins `EXPECTED_ZKEY_SHA256_HEX`, `crates/dogtag-prover-rs/src/lib.rs`; see "Deployment / production guards"), **the mobile bundle has no such guard** - it will happily ship any zkey and emit proofs the chain rejects.
+A stale bundled key produces a proof the on-chain verifier refuses: `VerificationRegistry.recordVerificationZK` reverts at `require(zkVerifier.verifyProof(...), "bad proof")` (`contracts/src/VerificationRegistry.sol`), surfacing to the operator as **`recordVerificationZK ... "bad proof"`** or a bare **`execution reverted, data: "0x"`**.
+This is audit finding **H-1 (no zkey<->verifier version handshake)** made concrete: nothing on-chain advertises which zkey it expects, so the match is a **manual, mobile-side responsibility**.
+
+Check it on every build:
+
+```bash
+# 1. hash the key you are bundling
+shasum -a 256 apps/ios/DogTag/verification_final.zkey
+# 2. read the LIVE on-chain verifier (ROAX; addresses in contracts/deployments/roax.json)
+cast call 0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1 "zkVerifier()(address)" --rpc-url https://devrpc.roax.net
+```
+
+The bundled zkey's sha256 must be the ceremony output paired with whatever `zkVerifier()` returns.
+Currently (see the "ZK trusted-setup ceremony" section and `roax.json` `_zk_ceremony`/`_zk_verifier_swap`) the live verifier is the **v2** `0xEEFCfAF026931b7325472A88fd14Ee780Da13559`, paired with zkey sha256 `9e3636b9…`; the retired **v1** verifier `0x138b433071Ad806E841B5AD53623290a9bf21761` pairs with sha256 `45d0b6fb…`, and a v1-key proof reverts "bad proof" against the v2 verifier (and vice versa). Do not transcribe these values into new places - `roax.json` and the ceremony section own them.
+
+**Rebuild + reinstall the app whenever the on-chain verifier is upgraded** - a trusted-setup/ceremony cutover done via `proposeZkVerifier(addr)` -> wait `ZK_TIMELOCK` (2 days) -> `executeZkVerifier()` (there is no single-call setter).
+Re-vendor the new ceremony's zkey/graph (step 2), rebuild the xcframework (step 1), reinstall (step 4).
+An already-installed app keeps proving against its **baked** key until you do, so a phone left on the old build silently starts reverting the moment the cutover lands on-chain.
+
 ## Contract sharp edges
 
 - `VerificationRegistry.recordVerificationZK(a, b, c, pub[7], bytes32 recordType, uint256 deadline)` —
