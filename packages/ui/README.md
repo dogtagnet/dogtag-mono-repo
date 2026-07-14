@@ -27,8 +27,11 @@ transpiles the `.ts`/`.tsx` in place. `pnpm --filter @dogtag/ui build` runs `tsc
   `VerifyFlow` (purpose + Normal/ZK toggle → session QR → poll → on-chain status).
 - **API client** (`createApiClient`): typed factory covering the vet backend + central
   issuer-application endpoints; wire types in `src/api/types.ts` mirror the Rust serde contracts.
-- **Schema** (`src/schema/recordTypes.ts`): schema-driven issue-form descriptors per impl §1.6
-  (RabiesVaccinationCertificate, DOG_PROFILE), with client-side validators.
+- **Schema** (`src/schema/recordTypes.ts`): schema-driven issue-form descriptors per impl §1.6,
+  with client-side validators. Only `RABIES_VACCINATION` is in `RECORD_TYPE_SCHEMAS` (the "Issue a
+  record" dropdown); the `DOG_PROFILE` descriptor is re-exported but intentionally excluded from that
+  set: the vet-api registers no DOG_PROFILE issuer, so it is minted by the separate "Register pet"
+  flow (audit §7B-1), not the record-issue form.
 
 ## Usage notes
 

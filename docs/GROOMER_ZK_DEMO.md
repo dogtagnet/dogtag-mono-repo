@@ -21,8 +21,8 @@ Verified on-chain (gasless, owner balance stayed 0): bind
 This builds on `docs/DEMO_CLICKS.md` (admin/vet setup, issue, import). The runbook below is the
 **authoritative LOCAL manual-test runbook** for the full proper onboarding flow:
 
-1. **Vets issue dog tags** — the phone creates a self-custodial wallet, then the **vet** "Issue dog
-   tag" wizard (operator enters the `ownerIdentity` + pet fields, demo-prefilled) starts a session and
+1. **Vets issue dog tags** — the phone creates a self-custodial wallet, then the **vet** "Register pet
+   (issue dog tag)" wizard (operator enters the `ownerIdentity` + pet fields, demo-prefilled) starts a session and
    shows a QR `/p/<token>`; the device scans it, sends its signed wallet address, and the **vet mints
    the `DogTagSBT` on-chain** and returns the credential. There is **no central `/v1/register`** and
    **no admin "Registered devices" / "Mint dog-tag" page** — every host the device talks to comes from
@@ -149,7 +149,7 @@ session + QR, mirroring import/export. The device just needs a self-custodial wa
    **24-word seed** and derives the **secp256k1** EVM **walletAddress** (the raw BIP-32 master key,
    **not** `m/44'/60'/0'/0/0`; stored encrypted, §6.4). The phone has **no** "Central API URL" setting — every host it talks to comes from
    a scanned QR.
-2. **Vet "Issue dog tag"** — vet portal → **Issue dog tag** → "Fill demo data". The operator enters the
+2. **Vet "Register pet"** — vet portal → **Register pet** → "Fill demo data". The operator enters the
    **`ownerIdentity`** that goes on the `DOG_PROFILE` credential (demo-prefilled) + the pet fields:
    - `ownerIdentity.countryOfIdentification` — e.g. **GB**
    - `ownerIdentity.identification` — gov-ID / passport number, e.g. **P1234567**
@@ -174,7 +174,7 @@ session + QR, mirroring import/export. The device just needs a self-custodial wa
 
 ## 5. Issue the vaccination + import on the phone
 
-- **Issue vaccination**: vet portal → **Issue** → "Fill demo data" (rabies cert, `VACCINATION`). The
+- **Issue vaccination**: vet portal → **Issue a record** → "Fill demo data" (rabies cert, `VACCINATION`). The
   demo-fill populates the cert fields but **leaves `dogTagId` blank** — set it to the **handle from §4**
   (the `dogTagId` the Issue-dog-tag wizard allocated). This must match: on-chain the SBT key is
   `field_of_value(handle)`, and the §6 ZK export checks `ownerOf(field_of_value(dogTagId)) == subject`;
