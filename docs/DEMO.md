@@ -67,7 +67,7 @@ QR (there is no central registration and no admin mint page). The phone has **no
 setting — every host it talks to comes from a scanned QR:
 1. **Phone**: **Profile → "Create embedded wallet"** → 24-word seed → derives the **secp256k1
    walletAddress**.
-2. **Vet** portal (:41873) → **Issue dog tag** → **Fill demo data**: the operator enters the
+2. **Vet** portal (:41873) → **Register pet** → **Fill demo data**: the operator enters the
    `DOG_PROFILE` **`ownerIdentity`** (demo-prefilled): country `GB`, identification `P1234567`, name
    `Alex Doe`, plus the pet fields — **but types NO wallet address** (the device sends its own). →
    **Start** (`POST /profiles/issue/session/start`) → renders a one-time QR `<vetHost>/p/<token>`
