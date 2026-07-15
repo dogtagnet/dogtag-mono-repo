@@ -900,7 +900,8 @@ which is why the existence gate is load-bearing rather than redundant).
 
 **✅ RESOLVED IN M5 (2026-07-15) - captain chose a fresh Level-B SBT.** The hijack described below is
 structurally closed on `DogTagSBTConsent`: `profileRoot` is **write-once**, set at mint, with **no setter at
-all**. See "M5 as-built" below for the reasoning and the redeploy cascade it forced. The description is kept
+all** and no burn/re-mint escape (`mintCustodial` rejects an id whose root is already set).
+See "M5 as-built" below for the reasoning and the redeploy cascade it forced. The description is kept
 because it is exactly why the Level-B SBT looks the way it does - and because it still applies verbatim to
 the Level-A `DogTagSBT`, which remains live and unchanged.
 
@@ -932,7 +933,15 @@ Minting alone yields a tag that reverts `unknown root` on EVERY verify. The spec
 **What `DogTagSBTConsent` changes vs Level-A, and why:**
 - `mintCustodial(id, root)` takes **no `to`** - the custodian is immutable, so an issuer cannot mint to an
   owner's wallet even by mistake. The owner's wallet is not an argument, so it is in neither calldata nor state.
-- **Write-once `profileRoot`**, no setter (closes the hijack - see the resolved note above).
+- **Write-once `profileRoot`**, no setter (closes the hijack - see the resolved note above). The seal holds
+  across a **burn** too: `mintCustodial` rejects any id whose `profileRoot` is already set. That guard is not
+  redundant with ERC-721's duplicate-mint check - OZ `_burn` leaves no tombstone and `_mint` only rejects a
+  re-mint when the previous owner was non-zero, so `_safeMint` alone would let an ISSUER holder burn a tag
+  and re-mint the same id under an attacker root, reaching the same forgery without a setter. Consequence,
+  intended: a `dogTagId` is single-use FOREVER, so a burned/GDPR-erased id can never be re-minted (erasure is
+  permanent) and recovery uses a fresh id per D3. `profileRoot` still deliberately SURVIVES the burn (never
+  cleared) - the M4 registry's `ownerOf` existence gate depends on that, and the mapping doubles as the
+  permanent "id already used" record. Pinned by `test_burned_dogTagId_can_never_be_reminted`.
 - **No `recover`/`Recovered`** (D3): a rebind names the new owner on-chain. Recovery = fresh issuance. The
   `_inRecovery` soulbound bypass is gone with it, so the lock is absolute.
 - `CUSTODIAN` is mandatory at deploy with no default: it must be neutral (not an owner, and not a vet

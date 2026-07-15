@@ -28,8 +28,10 @@ import {IERC5192} from "./IERC5192.sol";
 ///     that is exactly the mistake to make impossible, so the parameter is gone rather than merely
 ///     documented. There is no code path on this contract that mints anywhere else.
 ///   - **Write-once `profileRoot` (closes the M4 `setProfileRoot` hijack).** `profileRoot[id]` is set once,
-///     at mint, and can never change. Level-A's `setProfileRoot` is REMOVED, not just re-gated. See the
-///     hijack note below - this is the whole reason a fresh SBT is deployed.
+///     at mint, and can never change - not by a setter (there is none), and not by burning the tag and
+///     re-minting the same id (`mintCustodial` rejects an id whose root is already set). Level-A's
+///     `setProfileRoot` is REMOVED, not just re-gated. See the hijack note below - this is the whole reason
+///     a fresh SBT is deployed.
 ///   - **No `recover` / `Recovered` (D3, spec §"Recovery (M6)").** Recovery is a fresh custodial issuance:
 ///     new tree, new `R`, new tag. Level-A's signature-authorized rebind (and its `RECOVERY_ROLE`,
 ///     `recoverNonce`, EIP-712 typehashes, and `_inRecovery` soulbound bypass) are all gone - a rebind
@@ -47,6 +49,14 @@ import {IERC5192} from "./IERC5192.sol";
 /// Re-gating was considered and rejected. A `status == Active` gate does not fire (a hijacker targets an
 /// Active tag). Restricting to `issuerOf[id]` still lets a compromised issuer silently repoint a REAL
 /// owner's tag it once issued. Only write-once removes the vector rather than narrowing it.
+///
+/// The seal is enforced against BURN/RE-MINT too, which does not come for free: ERC-721 `_burn` leaves no
+/// tombstone (`_owners[id]` returns to zero) and `_mint` only rejects a re-mint when the previous owner was
+/// non-zero, so `_safeMint` alone would happily re-create a burned id and let the mint overwrite its root -
+/// the same forgery, reached via `burn` + re-mint instead of a setter. `mintCustodial` therefore rejects any
+/// id whose `profileRoot` is already set. The consequence is intended: a burned id is retired PERMANENTLY.
+/// That is what makes `burn` a real GDPR erasure (an erased tag cannot be quietly re-animated under its old
+/// id), and it costs nothing, since D3 already mandates that recovery issue a FRESH `dogTagId`.
 ///
 /// The cost is deliberate and bounded: a tag's tree is FROZEN at issuance, so ANY change to it - a rotated
 /// key, a corrected attribute, a new weight - is a fresh custodial issuance under a new `dogTagId`, exactly
@@ -79,8 +89,11 @@ contract DogTagSBTConsent is ERC721, AccessControlEnumerable, AccessControlDefau
     address public immutable custodian;
 
     mapping(uint256 => address) public issuerOf; // immutable, set at mint
-    /// @notice Write-once: set at mint, never mutable. There is deliberately no setter. See the contract
-    /// notice - a mutable root is a forgery vector once the `ownerOf` identity check is gone.
+    /// @notice Write-once: set at mint, never mutable - by any caller, on any path, for the life of the
+    /// contract. There is deliberately no setter, and a burned id cannot be re-minted to overwrite it. See
+    /// the contract notice - a mutable root is a forgery vector once the `ownerOf` identity check is gone.
+    /// @dev Never cleared, including on `burn`: the M4 registry's `ownerOf` existence gate is what fails a
+    /// burned tag closed, and this mapping doubles as the permanent "id already used" record.
     mapping(uint256 => bytes32) public profileRoot;
     mapping(uint256 => Status) public status;
 
@@ -129,14 +142,16 @@ contract DogTagSBTConsent is ERC721, AccessControlEnumerable, AccessControlDefau
     /// FROM the root (`rootIssuer[R]` → `isValid(R)`) to keep `revoke(R)` working, so a tag minted here
     /// whose root was never issued reverts `unknown root` on EVERY verify. Issue the root, then mint.
     ///
-    /// @param id The dogTagId - a non-personal identifier, allocated off-chain, NEVER a microchip hash.
+    /// @param id The dogTagId - a non-personal identifier, allocated off-chain, NEVER a microchip hash. Each
+    /// id is single-use FOREVER: once minted it can never be minted again, even after a `burn`.
     /// @param root The per-tag M1-engine tree root `R`. Non-zero and permanent: to change it, issue a new tag.
     function mintCustodial(uint256 id, bytes32 root) external onlyRole(ISSUER_ROLE) {
         if (root == bytes32(0)) revert BadRoot(); // never create a tag in a rootless state
+        if (profileRoot[id] != bytes32(0)) revert BadRoot(); // already minted, even if since burned
         _safeMint(custodian, id); // reverts on a duplicate id
         issuerOf[id] = msg.sender;
         status[id] = Status.Active;
-        profileRoot[id] = root; // write-once: no setter exists
+        profileRoot[id] = root; // write-once: no setter exists, and the id can never be re-minted
         emit Locked(id);
         emit Issued(id, msg.sender);
     }
@@ -154,6 +169,9 @@ contract DogTagSBTConsent is ERC721, AccessControlEnumerable, AccessControlDefau
     /// the tag closed at verify: `VerificationRegistryConsent` calls `ownerOf` purely as an existence gate,
     /// and OZ's `ownerOf` reverts on a burned token. Note `profileRoot[id]` deliberately SURVIVES the burn
     /// (that mapping is never cleared), which is exactly why that existence gate is load-bearing.
+    /// @dev PERMANENT: `mintCustodial` rejects any id whose root is already set, so a burned id is retired
+    /// for good and cannot be re-minted under a new root. Erasure is not reversible, and re-issuance after a
+    /// burn means a fresh `dogTagId` (D3).
     function burn(uint256 id) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _burn(id);
         emit Burned(id);

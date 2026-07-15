@@ -202,13 +202,14 @@ contract CustodialIssuanceTest is Test {
     }
 
     /// @dev Reads back every slot `target` wrote during the recorded window and asserts none holds the
-    /// owner. Scoped to WRITES because that is precisely "the on-chain state issuance created".
+    /// owner. Scoped to WRITES because that is precisely "the on-chain state issuance created". Uses the
+    /// same byte scan as the calldata leg rather than a word compare, so an owner packed alongside another
+    /// field in one slot (e.g. `address` + `uint96`) cannot slip through.
     function _assertOwnerAbsentFromWrites(address target, string memory label) internal {
         (, bytes32[] memory writes) = vm.accesses(target);
-        bytes32 ownerWord = bytes32(uint256(uint160(ownerAddress)));
         for (uint256 i; i < writes.length; i++) {
-            assertTrue(
-                vm.load(target, writes[i]) != ownerWord,
+            assertFalse(
+                _contains(abi.encode(vm.load(target, writes[i])), ownerAddress),
                 string.concat("owner leaked into ", label, " storage")
             );
         }
@@ -283,6 +284,24 @@ contract CustodialIssuanceTest is Test {
         vm.prank(vetSigner);
         vm.expectRevert();
         sbt.mintCustodial(dogTagId, root);
+    }
+
+    /// @notice The seal must survive a BURN, not just a duplicate mint. ERC-721 `_burn` leaves no tombstone
+    /// (`_owners[id]` goes back to zero) and `_mint` only rejects a re-mint when the previous owner was
+    /// non-zero, so without an explicit `profileRoot` guard an ISSUER holder could re-mint a burned id and
+    /// overwrite its sealed root - reopening the very hijack this SBT exists to close, and un-erasing a
+    /// GDPR-erased tag. `test_duplicate_dogTagId_reverts` never burns first, so it does not cover this.
+    function test_burned_dogTagId_can_never_be_reminted() public {
+        _issueCustodial();
+        vm.prank(admin);
+        sbt.burn(dogTagId);
+
+        bytes32 attackerRoot = keccak256("attacker root");
+        vm.prank(vetSigner);
+        vm.expectRevert(DogTagSBTConsent.BadRoot.selector);
+        sbt.mintCustodial(dogTagId, attackerRoot);
+
+        assertEq(sbt.profileRoot(dogTagId), root, "the sealed root survives a burn/re-mint attempt");
     }
 
     // ---- the flow must actually produce tags M4 verifies ----
