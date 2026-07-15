@@ -8,7 +8,7 @@
   "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
   "Groth16VerifierConsent": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
   "_m3_consent_verifier": {
-    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX. It is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf... (that registry swap is M4). M3 does NOT wire this into VerificationRegistry - M4 redeploys the registry to verify against this VK with the owner-blind Verified event + R==profileRoot check.",
+    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX. It is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf..., which remains the verifier the live Level-A registry uses. M3 does NOT wire this verifier into any registry. That wiring SHIPPED in M4, and it is ADDITIVE, NOT a swap or a redeploy of the live registry: M4 deployed a NEW contract, 'VerificationRegistryConsent' 0x53F988Ae0124b96069d90CBC78E6245FeB01E125, which verifies against this VK with the owner-blind Verified event + R==profileRoot check, ALONGSIDE the Level-A 'VerificationRegistry' 0x4E2f0996..., which remains LIVE, FROZEN and untouched with every committed consumer still pointing at it until the M7 cutover. See _m4_consent_registry below.",
     "address": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
     "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
     "deploy_tx": "0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af",

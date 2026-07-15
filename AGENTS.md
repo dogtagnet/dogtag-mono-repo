@@ -841,8 +841,10 @@ This mirrors how M2 froze `verification.circom` and M3 added `Groth16VerifierCon
 `recordVerificationZK(a, b, c, pub[7])` — **4 args**, because `recordType`/`deadline` are public SIGNALS
 now (Level-A took them as unbound calldata). `pub = [dogTagId, purpose, relayer, nullifier, R, recordType,
 deadline]`. In order: range-check all 7 signals; `relayer < 2^160` (audit L1); `deadline >= block.timestamp`;
-Art. 9 guard; `relayer == msg.sender`; `VERIFY:` whitelist; **`R == profileRoot(dogTagId)`**; `verifyProof`
-vs the consent VK; consume the nullifier; resolve `rootIssuer[R]` + `isValid(R)`; emit owner-blind `Verified`.
+Art. 9 guard; `relayer == msg.sender`; `VERIFY:` whitelist; **`R == profileRoot(dogTagId)`**; the
+`ownerOf(dogTagId)` token-EXISTENCE gate (fails burn/GDPR-erasure closed; the return value is DISCARDED, it
+is NOT an owner-identity check); `verifyProof` vs the consent VK; consume the nullifier; resolve
+`rootIssuer[R]` + `isValid(R)`; emit owner-blind `Verified`.
 
 - **`R == profileRoot(dogTagId)` is THE Level-B binding.** The circuit deliberately does not bind
   `dogTagId ↔ R`, so this is the ONLY place it happens. Without it a prover folds a tree they fully control

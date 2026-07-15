@@ -35,6 +35,12 @@ person:
 | **wallet ↔ SBT link** (`ownerOf(dogTagId)==wallet`) | the soulbound token binds a pet's `dogTagId` to the owner's wallet address. | An EVM address is **pseudonymous personal data**; a live `ownerOf` link associates a pet with a controllable wallet. | **Fresh per-pet derived address** (§5) — breaks cross-pet enumeration; **SBT burn** on erasure drops the live link. |
 | **verification-event linkage** | `Verified(dogTagId, relayer, subject, purpose, nullifier, ts)` — which pet was presented to which business, when. | `subject`+`dogTagId`+`relayer`+`ts` is **behavioural pseudonymous personal data** (who verified whom). | **ZK-default for sensitive purposes** (no `recordType`/`credentialRoot` on chain); **fresh per-pet `subject`** bounds linkage to one pet; off-chain consent copies are deletable. |
 
+**`dogTagId` is non-personal by construction.** It is a random/sequential identifier allocated at
+mint — it is **NEVER** `keccak256(microchip)` and **NEVER** `Poseidon(microchip)` (asserted on-chain
+by `test_dogTagId_is_not_hash_of_microchip` and off-chain by the Phase-8 gate
+`gate_pii_off_chain.rs`). `keyOf[subject]` (the bound BabyJubjub consent key) is also in scope and is
+covered by verifier-side erasure (`ownerId→verifier` index, impl §11.10(j)).
+
 ### 2.1 Queued refresh - Level-B owner-blind verification (pending M7)
 
 > **This refresh is QUEUED, not performed.** The assessment above, and in §4, describes the **live**
@@ -66,12 +72,6 @@ This is a forward-looking notice only; none of it is in effect today.
    **only** by virtue of that existence gate.
    Sharp edge: `DogTagSBT.burn` does **not** clear `profileRoot[id]`, so an erasure burn should be
    paired with `revoke(R)` for defence in depth.
-
-**`dogTagId` is non-personal by construction.** It is a random/sequential identifier allocated at
-mint — it is **NEVER** `keccak256(microchip)` and **NEVER** `Poseidon(microchip)` (asserted on-chain
-by `test_dogTagId_is_not_hash_of_microchip` and off-chain by the Phase-8 gate
-`gate_pii_off_chain.rs`). `keyOf[subject]` (the bound BabyJubjub consent key) is also in scope and is
-covered by verifier-side erasure (`ownerId→verifier` index, impl §11.10(j)).
 
 ## 3. Off-chain personal data (the deletable store)
 
