@@ -181,10 +181,11 @@ export function Issue() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>Issue a credential</CardTitle>
+          <CardTitle>Issue a record</CardTitle>
           <CardDescription>
-            Signing mode: <Badge variant="neutral">{signingMode}</Badge> — the document + merkle root
-            are built server-side; this form supplies the credential fields (§1.6).
+            Attaches to a pet a <strong>vet has already registered</strong> — groomers do not register
+            pets. Signing mode: <Badge variant="neutral">{signingMode}</Badge> — the document + merkle
+            root are built server-side; this form supplies the credential fields (§1.6).
           </CardDescription>
         </div>
         {env.demoMode && (

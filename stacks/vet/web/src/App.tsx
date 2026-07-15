@@ -19,8 +19,12 @@ export function App() {
   return (
     <Routes>
       <Route path="/setup" element={<Layout title="Setup"><Setup /></Layout>} />
-      <Route path="/issue" element={<Layout title="Issue credential"><Issue /></Layout>} />
-      <Route path="/issue-dog-tag" element={<Layout title="Issue dog tag"><IssueDogTag /></Layout>} />
+      {/* Register-first: registering a pet is the prerequisite, so it leads (see Layout's NAV). */}
+      <Route
+        path="/issue-dog-tag"
+        element={<Layout title="Register pet (issue dog tag)"><IssueDogTag /></Layout>}
+      />
+      <Route path="/issue" element={<Layout title="Issue a record (e.g. vaccination)"><Issue /></Layout>} />
       <Route path="/records" element={<Layout title="Records"><Records /></Layout>} />
       <Route path="/traceability" element={<Layout title="Traceability"><Traceability /></Layout>} />
       <Route path="/import" element={<Layout title="Import from user"><ImportFromUser /></Layout>} />
