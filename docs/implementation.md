@@ -870,6 +870,14 @@ GET  /v1/appointments?updatedSince=  // catch-up pull
 
 ### 3.11 Dog-tag issuance — the VET mints the DOG_PROFILE SBT (`/profiles/issue/*`)
 
+> **LEVEL-A - as-built and live, but superseded in design by Level-B M5.** This section mints the SBT to
+> the owner's wallet, which makes `ownerOf(dogTagId)` a permanent public pet↔owner link. Level-B mints to
+> a **neutral custodian** instead (`DogTagSBTConsent.mintCustodial`, no `to` parameter) and proves
+> ownership in-ZK. The M5 contract side has landed but is **NOT deployed and NOT wired**, and the app-side
+> rework (the owner's device builds the Merkle tree and supplies `R`) is a tracked follow-up, so what is
+> described below is what actually runs today. Cutover is M7. See architecture §4.3 and AGENTS.md
+> "M5 as-built".
+
 **Vets issue dog tags**, mirroring import/export: a session + a one-time QR. The device creates its
 self-custodial wallet on-device (§6.4), the vet operator enters the `ownerIdentity` + pet fields, and
 the device proves wallet ownership to the **vet** (not to central). The vet signer — which must hold

@@ -30,7 +30,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service.
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **Level-B** pair `VerificationRegistryConsent` + `Groth16VerifierConsent` also lives here and is deployed, but is **additive and not yet live** - the Level-A `VerificationRegistry` still serves every consumer until the M7 cutover; see "Level-B `VerificationRegistryConsent` (M4)" below.
+- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **Level-B** pair `VerificationRegistryConsent` + `Groth16VerifierConsent` also lives here and is deployed, but is **additive and not yet live** - the Level-A `VerificationRegistry` still serves every consumer until the M7 cutover; see "Level-B `VerificationRegistryConsent` (M4)" below. `DogTagSBTConsent` (M5) is the Level-B custodial SBT (write-once `profileRoot`, `mintCustodial` with no `to`); its contract side has landed but is **NOT deployed**, and deploying it also redeploys the M4 registry against it (the registry's `sbt` is immutable) - see "M5 as-built" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -811,14 +811,24 @@ must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/
 ## Level-B `VerificationRegistryConsent` (M4) — the owner-blind on-chain verify path
 
 Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spec.md`.
-Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: `contracts/script/DeployConsentRegistry.s.sol`.
-Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
+Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: **`contracts/script/DeployCustodialIssuance.s.sol`**
+(M5) - `DeployConsentRegistry.s.sol` is the M4 script and is **SUPERSEDED, do not run it**: it defaults `SBT` to the
+Level-A `DogTagSBT`, whose mutable `setProfileRoot` is the hijack M5 closes, and the registry's `sbt` is immutable so
+that mistake is unrepairable. Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof; deliberately still
+pairs the registry with the Level-A SBT, proving it is SBT-agnostic) + `contracts/test/CustodialIssuance.t.sol` (the
+production pairing). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
 
 **Deployed ROAX:** `VerificationRegistryConsent` **`0x53F988Ae0124b96069d90CBC78E6245FeB01E125`** (chainId 135,
 `--legacy`, deploy tx `0xbdcbb27d…`, block 195443, admin = governance `0x8E27E117…`). It verifies against the
 M3 `Groth16VerifierConsent` `0x272be146…`. Recorded in `contracts/deployments/roax.json`
 (`VerificationRegistryConsent` + `_m4_consent_registry`). The deployed runtime is **byte-identical** to the
 committed source once the 3 immutables are blanked (6317 bytes).
+
+**⚠ This instance will NOT be the one that goes live.** Its `sbt` is immutable and bound to the Level-A
+`DogTagSBT`, so M5 **redeploys this same registry code** against the custodial `DogTagSBTConsent`; that
+redeploy supersedes `0x53F988Ae…`. The registry CODE below is still current - only the deployed instance is
+provisional. Safe because this instance was never live (zero `Verified` events, verified on-chain 2026-07-15);
+see "M5 as-built" below and `roax.json` `_m5_custodial_issuance.why_the_m4_registry_is_redeployed`.
 
 **Superseded first deploy.** `0x57A2998…` (block 194489, runtime 6179 bytes, now
 `VerificationRegistryConsent_preErasureGate_legacy`) was deployed BEFORE the review-round hardening that

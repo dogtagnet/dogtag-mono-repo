@@ -404,8 +404,8 @@ function predictIssuer(bytes32 salt) external view returns (address);
 **Pet-onboarding (dog-tag issuance) handshake — the operator types NO address.** The vet issues the dog tag; the **device supplies its own wallet address** by proving control of it. The vet's `ownerIdentity` 3 fields + the device wallet (`ownerAddress`) become committed `DOG_PROFILE` Merkle **leaves** (§3.6 — salted, obfuscatable, never on-chain in cleartext). Flow (verified against `stacks/vet/api/src/routes.rs`, `stacks/vet/web/src/pages/IssueDogTag.tsx`):
 
 ```
-PET ONBOARDING (vet "Issue Dog Tag" — device supplies its address):
-  vet operator → "Issue Dog Tag" wizard (enters ownerIdentity{country,identification,name} + pet fields)
+PET ONBOARDING (vet "Register pet" — device supplies its address):
+  vet operator → "Register pet" wizard (enters ownerIdentity{country,identification,name} + pet fields)
   vet web → vet API: POST /profiles/issue/session/start  (operator-session gated)
   vet API: allocate a numeric HANDLE (skip ids already minted under field_of_value(handle))
            persist ProfileIssueSession + a fresh 16-byte one-time BIND TOKEN (180s TTL)

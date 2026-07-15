@@ -21,8 +21,8 @@ Verified on-chain (gasless, owner balance stayed 0): bind
 This builds on `docs/DEMO_CLICKS.md` (admin/vet setup, issue, import). The runbook below is the
 **authoritative LOCAL manual-test runbook** for the full proper onboarding flow:
 
-1. **Vets issue dog tags** — the phone creates a self-custodial wallet, then the **vet** "Issue dog
-   tag" wizard (operator enters the `ownerIdentity` + pet fields, demo-prefilled) starts a session and
+1. **Vets issue dog tags** — the phone creates a self-custodial wallet, then the **vet** "Register
+   pet" wizard (operator enters the `ownerIdentity` + pet fields, demo-prefilled) starts a session and
    shows a QR `/p/<token>`; the device scans it, sends its signed wallet address, and the **vet mints
    the `DogTagSBT` on-chain** and returns the credential. There is **no central `/v1/register`** and
    **no admin "Registered devices" / "Mint dog-tag" page** — every host the device talks to comes from

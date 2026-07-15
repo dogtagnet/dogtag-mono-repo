@@ -52,6 +52,9 @@ LIVE**.
 The live verification subsystem remains the Level-A `VerificationRegistry`, which is what this DPIA
 assesses.
 The cutover is **M7**, and it requires **M5** custodial issuance first.
+M5's contract side (`DogTagSBTConsent`, `contracts/src/DogTagSBTConsent.sol`) has since landed but is
+**NOT DEPLOYED and NOT wired**, so nothing below is in effect: issuance today still mints the SBT to the
+owner's wallet exactly as §2 and §4 assess it.
 
 When Level-B goes live, the living-document rule in the status block above fires and the following
 MUST be re-scored.
@@ -66,12 +69,17 @@ This is a forward-looking notice only; none of it is in effect today.
 2. **wallet ↔ SBT link** (§2) - under Level-B decision D1 the tag would be minted to a **neutral
    custodian**, so `ownerOf` would carry no owner meaning and the pet/wallet association changes
    character.
-   That lands with M5 custodial issuance.
+   That lands with M5 custodial issuance: `DogTagSBTConsent.mintCustodial(id, root)` takes no `to`
+   parameter at all, so the owner's wallet is not expressible in the calldata and never reaches
+   contract storage or an event.
 3. **erasure flow** (§4, step 4 "burn the SBT") - the Level-B registry reads `ownerOf` for token
    **existence** only and never for owner identity, so an erasure burn would fail verification closed
    **only** by virtue of that existence gate.
-   Sharp edge: `DogTagSBT.burn` does **not** clear `profileRoot[id]`, so an erasure burn should be
-   paired with `revoke(R)` for defence in depth.
+   Sharp edge: `burn` does **not** clear `profileRoot[id]` on either SBT (Level-A `DogTagSBT` or Level-B
+   `DogTagSBTConsent`, where the mapping is deliberately never cleared because that existence gate
+   depends on it), so an erasure burn should be paired with `revoke(R)` for defence in depth.
+   Under Level-B the erasure is also **irreversible**: `mintCustodial` rejects any id whose
+   `profileRoot` is already set, so a burned `dogTagId` can never be re-minted and re-animated.
 
 ## 3. Off-chain personal data (the deletable store)
 

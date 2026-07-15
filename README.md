@@ -14,8 +14,8 @@ approves + whitelists vet/groomer wallet addresses** — **both issuers and veri
 apply→approve** (approval whitelists issuance record-types **and** `VERIFY:<purpose>` on-chain) — it does
 **not** register devices or mint dog tags (there is **no** `POST /v1/register` and **no** admin
 "Registered devices" / "Mint dog-tag" page; the phone has **no** "Central API URL" — every host comes
-from a scanned QR). To get a dog tag: the phone creates a self-custodial wallet, the **vet** "Issue dog
-tag" wizard (operator enters an `ownerIdentity` + pet fields) starts a session and shows a QR
+from a scanned QR). To get a dog tag: the phone creates a self-custodial wallet, the **vet** "Register
+pet" wizard (operator enters an `ownerIdentity` + pet fields) starts a session and shows a QR
 `/p/<token>`, the device scans it and sends its **signed wallet address**, and the **vet mints the
 `DogTagSBT` on-chain** (`mint(walletAddress, dogTagId, root)`) and returns the credential, which the
 device verifies against the SBT and imports. This requires the vet signer to hold
@@ -51,7 +51,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 | **VerificationRegistry** (LIVE; Level-A; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
 | ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
-| VerificationRegistryConsent (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
+| VerificationRegistryConsent (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover; **provisional**: bound to the Level-A SBT, so the M5 deploy will supersede it with a redeploy against `DogTagSBTConsent`) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
 | ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
 | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
@@ -97,7 +97,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
-| `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `VerificationRegistryConsent` (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover) | ROAX |
+| `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `VerificationRegistryConsent` (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover) · `DogTagSBTConsent` (Level-B custodial SBT, write-once `profileRoot`; M5 contract side landed, **not deployed** - deploying it also redeploys the registry above) | ROAX |
 | `circuits` | Groth16 Poseidon-Merkle + EdDSA-BabyJubjub consent circuit (N=24, depth 5) | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
 | `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |
