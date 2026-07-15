@@ -18,7 +18,8 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 > testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
 > — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md). The on-chain
 > `recordVerificationZK` wiring (registry redeploy) is **M4 — now DONE**: `VerificationRegistryConsent`
-> `0x53F988Ae0124b96069d90CBC78E6245FeB01E125`. See the "Build + test" and "M4 binding" notes below.
+> `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` (**provisional** - M5 redeploys it, see below). See the
+> "Build + test" and "M4 binding" notes below.
 
 ## What it proves
 
@@ -125,8 +126,17 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 **M4 is done:** `contracts/src/VerificationRegistryConsent.sol`, deployed on ROAX at
 `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` against the M3 verifier `0x272be146…`. It is **additive** —
 the Level-A `VerificationRegistry` `0x4E2f0996…` is still the live one until the **M7** app cutover, and
-Level-B tags need **M5** custodial issuance first. `contracts/test/ConsentRegistry.t.sol` proves a REAL
-proof from the committed production zkey verifies through it, using the committed
+Level-B tags need **M5** custodial issuance first.
+
+**M5's contract side is done too, and it supersedes that address.** `DogTagSBTConsent` (the custodial SBT
+with a write-once `profileRoot`) has landed but is **not deployed**; because the registry's `sbt` is
+`immutable`, deploying it also redeploys the registry code above against the new SBT
+(`contracts/script/DeployCustodialIssuance.s.sol` does both; the M4 `DeployConsentRegistry.s.sol` is
+superseded). So `0x53F988Ae…` is provisional, not the instance that goes live at M7. Details: AGENTS.md
+"M5 as-built"; `roax.json` `_m5_custodial_issuance`.
+
+`contracts/test/ConsentRegistry.t.sol` proves a REAL proof from the committed production zkey verifies
+through it, using the committed
 `contracts/test/consent-fixture.json` (regenerate with `npm run gen-consent-fixture`). The deployed
 runtime is byte-identical to this source. An earlier deploy (`0x57A2998…`, now
 `VerificationRegistryConsent_preErasureGate_legacy`) predated the `ownerOf` token-existence gate and was

@@ -30,7 +30,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service.
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **Level-B** pair `VerificationRegistryConsent` + `Groth16VerifierConsent` also lives here and is deployed, but is **additive and not yet live** - the Level-A `VerificationRegistry` still serves every consumer until the M7 cutover; see "Level-B `VerificationRegistryConsent` (M4)" below.
+- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **Level-B** pair `VerificationRegistryConsent` + `Groth16VerifierConsent` also lives here and is deployed, but is **additive and not yet live** - the Level-A `VerificationRegistry` still serves every consumer until the M7 cutover; see "Level-B `VerificationRegistryConsent` (M4)" below. `DogTagSBTConsent` (M5) is the Level-B custodial SBT (write-once `profileRoot`, `mintCustodial` with no `to`); its contract side has landed but is **NOT deployed**, and deploying it also redeploys the M4 registry against it (the registry's `sbt` is immutable) - see "M5 as-built" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -811,14 +811,24 @@ must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/
 ## Level-B `VerificationRegistryConsent` (M4) — the owner-blind on-chain verify path
 
 Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spec.md`.
-Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: `contracts/script/DeployConsentRegistry.s.sol`.
-Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
+Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: **`contracts/script/DeployCustodialIssuance.s.sol`**
+(M5) - `DeployConsentRegistry.s.sol` is the M4 script and is **SUPERSEDED, do not run it**: it defaults `SBT` to the
+Level-A `DogTagSBT`, whose mutable `setProfileRoot` is the hijack M5 closes, and the registry's `sbt` is immutable so
+that mistake is unrepairable. Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof; deliberately still
+pairs the registry with the Level-A SBT, proving it is SBT-agnostic) + `contracts/test/CustodialIssuance.t.sol` (the
+production pairing). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
 
 **Deployed ROAX:** `VerificationRegistryConsent` **`0x53F988Ae0124b96069d90CBC78E6245FeB01E125`** (chainId 135,
 `--legacy`, deploy tx `0xbdcbb27d…`, block 195443, admin = governance `0x8E27E117…`). It verifies against the
 M3 `Groth16VerifierConsent` `0x272be146…`. Recorded in `contracts/deployments/roax.json`
 (`VerificationRegistryConsent` + `_m4_consent_registry`). The deployed runtime is **byte-identical** to the
 committed source once the 3 immutables are blanked (6317 bytes).
+
+**⚠ This instance will NOT be the one that goes live.** Its `sbt` is immutable and bound to the Level-A
+`DogTagSBT`, so M5 **redeploys this same registry code** against the custodial `DogTagSBTConsent`; that
+redeploy supersedes `0x53F988Ae…`. The registry CODE below is still current - only the deployed instance is
+provisional. Safe because this instance was never live (zero `Verified` events, verified on-chain 2026-07-15);
+see "M5 as-built" below and `roax.json` `_m5_custodial_issuance.why_the_m4_registry_is_redeployed`.
 
 **Superseded first deploy.** `0x57A2998…` (block 194489, runtime 6179 bytes, now
 `VerificationRegistryConsent_preErasureGate_legacy`) was deployed BEFORE the review-round hardening that
@@ -881,8 +891,12 @@ is NOT an owner-identity check); `verifyProof` vs the consent VK; consume the nu
 
 ### M5 handoff (issuance) — two hard requirements
 
-1. `profileRoot(dogTagId) = R`, the per-tag M1-engine tree root. **No SBT change is needed** — `DogTagSBT`
-   already stores `profileRoot` as `bytes32`.
+1. `profileRoot(dogTagId) = R`, the per-tag M1-engine tree root.
+   > **SUPERSEDED by M5 (2026-07-15).** This originally read *"No SBT change is needed - `DogTagSBT`
+   > already stores `profileRoot` as `bytes32`."* Storage-wise that was true, but it missed the
+   > `setProfileRoot` hijack below: a MUTABLE root is unsafe once the `ownerOf` identity check is gone.
+   > M5 therefore ships a fresh **`DogTagSBTConsent`** with a write-once root and a structural custodial
+   > mint. See "M5 as-built" below.
 2. **`issue(R)` the root into a `DogTagIssuer` clone too, not only `setProfileRoot`.** The registry keeps
    Level-A's revocation path (`rootIssuer[R]` → clone → `isValid(R)`), so a root that is only set as
    profileRoot and never issued reverts **`unknown root` on every verify**. This is what keeps `revoke(R)`
@@ -894,8 +908,15 @@ for EXISTENCE only (value discarded), never for owner identity.
 `test_burned_tag_cannot_verify` proves erasure fails closed (and asserts `profileRoot` SURVIVES the burn,
 which is why the existence gate is load-bearing rather than redundant).
 
-**⚠ OPEN SPEC QUESTION for the captain - `setProfileRoot` hijack (KNOWN, ACCEPTED while Level-B is not
-live; M5 must resolve it).** `R == profileRoot(dogTagId)` is the SOLE tag↔owner binding, and
+**✅ RESOLVED IN M5 (2026-07-15) - captain chose a fresh Level-B SBT.** The hijack described below is
+structurally closed on `DogTagSBTConsent`: `profileRoot` is **write-once**, set at mint, with **no setter at
+all** and no burn/re-mint escape (`mintCustodial` rejects an id whose root is already set).
+See "M5 as-built" below for the reasoning and the redeploy cascade it forced. The description is kept
+because it is exactly why the Level-B SBT looks the way it does - and because it still applies verbatim to
+the Level-A `DogTagSBT`, which remains live and unchanged.
+
+**⚠ ORIGINAL OPEN SPEC QUESTION - `setProfileRoot` hijack.** `R == profileRoot(dogTagId)` is the SOLE
+tag↔owner binding, and
 `DogTagSBT.setProfileRoot` is **mutable post-issuance** by `issuerOf[id]` or ANY `AUTHORITY_ROLE` holder.
 With no `ownerOf` identity gate left, a compromised issuer/authority can build a tree whose three reserved
 owner leaves it controls, `issue(R2)` it through its own whitelisted clone, call
@@ -904,6 +925,83 @@ requiring BOTH `ownerOf == subject` AND `keyOf(subject) == keyHash`, both owner-
 it (e.g. append-only/immutable `profileRoot` post-issuance, or a `status == Active` gate). Deliberately NOT
 fixed in M4: the SBT hardening belongs with the M5 issuance rework, and Level-B is not live (no consumer
 points at this registry until M7).
+
+### M5 as-built (custodial issuance) - contract/issuer side
+
+**Captain decision (2026-07-15): fresh Level-B SBT.** `DogTagSBTConsent` + a redeployed
+`VerificationRegistryConsent` pointing at it. Level-A (`DogTagSBT` 0x1FB89865…) stays FROZEN and live -
+the same additive pattern as M2/M3/M4. Deploy with `script/DeployCustodialIssuance.s.sol`.
+
+**The issuance flow is TWO writes, both required:**
+```solidity
+vacc.issue(R);                    // register the root in a DogTagIssuer clone (rootIssuer[R])
+sbt.mintCustodial(dogTagId, R);   // mint to the neutral custodian; sets profileRoot = R, sealed
+```
+Minting alone yields a tag that reverts `unknown root` on EVERY verify. The spec's step list names only
+`profileRoot`, so this is the trap to avoid; `test_root_must_also_be_issued_into_a_clone` pins it.
+
+**What `DogTagSBTConsent` changes vs Level-A, and why:**
+- `mintCustodial(id, root)` takes **no `to`** - the custodian is immutable, so an issuer cannot mint to an
+  owner's wallet even by mistake. The owner's wallet is not an argument, so it is in neither calldata nor state.
+- **Write-once `profileRoot`**, no setter (closes the hijack - see the resolved note above). The seal holds
+  across a **burn** too: `mintCustodial` rejects any id whose `profileRoot` is already set. That guard is not
+  redundant with ERC-721's duplicate-mint check - OZ `_burn` leaves no tombstone and `_mint` only rejects a
+  re-mint when the previous owner was non-zero, so `_safeMint` alone would let an ISSUER holder burn a tag
+  and re-mint the same id under an attacker root, reaching the same forgery without a setter. Consequence,
+  intended: a `dogTagId` is single-use FOREVER, so a burned/GDPR-erased id can never be re-minted (erasure is
+  permanent) and recovery uses a fresh id per D3. `profileRoot` still deliberately SURVIVES the burn (never
+  cleared) - the M4 registry's `ownerOf` existence gate depends on that, and the mapping doubles as the
+  permanent "id already used" record. Pinned by `test_burned_dogTagId_can_never_be_reminted`.
+- **No `recover`/`Recovered`** (D3): a rebind names the new owner on-chain. Recovery = fresh issuance. The
+  `_inRecovery` soulbound bypass is gone with it, so the lock is absolute.
+- `CUSTODIAN` is mandatory at deploy with no default: it must be neutral (not an owner, and not a vet
+  signer - that would re-link tags to the practice's key). It never signs; it is a sink, not an actor.
+
+**The owner-absence guard** - `CustodialIssuance.t.sol::test_owner_wallet_absent_from_issuance_state_and_calldata`
+is the load-bearing test: it byte-scans the issuance calldata, sweeps every storage slot the issuance
+writes, and checks the logs. It has a **positive control**
+(`test_owner_absence_scanner_actually_detects_the_owner`) because an absence assertion passes vacuously if
+the scanner is broken. Verified by mutation: reintroducing an owner-supplied recipient fails three guards.
+If you touch issuance, keep the control.
+
+#### Why a fresh SBT - the redeploy cascade (established 2026-07-15)
+
+Recorded so it is not re-derived or "simplified" back into a broken shape.
+
+1. **The suggested `status == Active` gate is already there and does NOT fix the hijack.**
+   `DogTagSBT.setProfileRoot` (`contracts/src/DogTagSBT.sol:89`) already does
+   `require(status[id] == Status.Active, "!active")`. A hijacker targets an *Active* victim tag, so this
+   gate never fires against them. **Append-only/immutable `profileRoot` is the only structural fix of the
+   two the open question offers.**
+2. **A standalone `CustodialIssuer` contract cannot close the hijack.** Routing issuance through one makes
+   `issuerOf[id]` the contract (killing the *issuerOf* vector), but `AUTHORITY_ROLE` holders call
+   `setProfileRoot` on the SBT **directly** - the gate lives on the SBT, so no external contract can
+   constrain it. Closing `AUTHORITY_ROLE` requires changing `DogTagSBT` itself.
+3. **Sealing therefore cascades:** new `setProfileRoot` semantics ⟹ new SBT bytecode ⟹ new SBT deploy ⟹
+   **new `VerificationRegistryConsent` deploy too**, because its `sbt` is `immutable`
+   (`VerificationRegistryConsent.sol:90`, set in the constructor) and cannot be repointed.
+4. **The M4 redeploy is near-free - verified on-chain, not assumed.** `0x53F988Ae…` carries exactly ONE log
+   (the deployment `RoleGranted`) and **zero `Verified` events**
+   (`cast logs --address 0x53F988Ae… --from-block 0`, topic0 `0xeb5f75f2…`). Nothing consumes it; M7 has not
+   cut over. Re-verify before relying on this.
+5. **`setProfileRoot` has ZERO production callers.** Only `ConsentRegistry.t.sol:198` (the hijack test) and
+   docs reference it - the vet-api mints the root directly via `mint(to,id,root)`. Sealing it breaks no
+   live flow, and D3 (recovery = re-issue a fresh tag ⇒ new `R`) means a tag's `profileRoot` never
+   legitimately changes after issuance. Both point at write-once.
+6. **PR #39 was CLOSED UNMERGED** (`mergedAt: null`; head `fm/dogtag-issfix-i4`), so none of it reached
+   `main` - not the dormant `mintNext`, and not the two "must-fix" items. M5 re-implemented the
+   owner-independent ones (7B-1 dead `DOG_PROFILE` option; register-first naming) and **deliberately did NOT
+   re-implement 7B-2's `ownerOf` existence pre-flight**: under D1 the tag is custodial, so an `ownerOf` read
+   says nothing about the owner and must not gate issuance. There was no code to delete - "dropping the
+   gate" means not building it. Do not confuse it with the dup-collision `owner_of` loop
+   (`routes.rs:1588-1600`) or the post-mint read-back (`routes.rs:1812-1819`), which are unrelated and stay.
+   `mintNext` was NOT re-implemented either: `DogTagSBTConsent` takes an issuer-supplied `id` like Level-A.
+   Contract-assigned ids remain open and are orthogonal to owner-unlinkability.
+7. **The live register-pet flow still mints to the OWNER's wallet** (`routes.rs:1796-1804`,
+   `mint_wallet = wallet`) and asserts `ownerOf == wallet`. That is the linkability M5 removes, and it is
+   **still live** - the contract side landing does NOT change it. Reworking it is the app-side follow-up,
+   because the custodial route cannot run until the owner's app builds the tree and supplies `R` (the API
+   builds the tree today). Level-A issuance is unaffected and keeps working meanwhile.
 
 ### Build / test
 

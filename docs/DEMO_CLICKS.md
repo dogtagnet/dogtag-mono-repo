@@ -62,7 +62,7 @@ The dog-tag is issued by the **vet**, not by an admin page (there is no admin "R
 "Mint dog-tag" page). Prereq: the vet signer is set up (§B), funded + whitelisted, and holds
 `ISSUER_ROLE` (the funding note above).
 
-1. Vet portal → **Issue dog tag** → **Fill demo data**. The form collects the `DOG_PROFILE`
+1. Vet portal → **Register pet** → **Fill demo data**. The form collects the `DOG_PROFILE`
    **`ownerIdentity`** (demo-prefilled): **countryOfIdentification** `GB`, **identification** `P1234567`,
    **name** `Alex Doe`, plus the pet fields.
 2. **Start** → `POST /profiles/issue/session/start` → renders a one-time QR `<vetHost>/p/<token>`
@@ -106,10 +106,10 @@ Setup is a linear wizard; each step auto-advances on success.
 
 ## C. Vet issues a vaccination credential → IMPORT QR — vet portal (:41873)
 
-1. Go to **Issue credential**.
+1. Go to **Issue a record**.
 2. Click **Fill demo data** (valid rabies cert; recordType `VACCINATION`). This fills the cert fields
    but **leaves `dogTagId` blank** — the demo-fill no longer clobbers it (a fixed footgun).
-3. **Set the `dogTagId` field = the dog tag's handle from §A1** (the numeric `dogTagId` the Issue-dog-tag
+3. **Set the `dogTagId` field = the dog tag's handle from §A1** (the numeric `dogTagId` the Register-pet
    wizard allocated). It **must match** — on-chain the SBT key is `field_of_value(handle)`, and the
    owner's §E ZK export checks `ownerOf(field_of_value(dogTagId)) == subject`; a mismatch reverts the
    export with `ERC721NonexistentToken`.

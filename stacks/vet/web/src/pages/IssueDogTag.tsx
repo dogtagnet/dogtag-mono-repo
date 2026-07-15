@@ -305,10 +305,11 @@ export function IssueDogTag() {
     <Card>
       <CardHeader className="flex flex-row items-start justify-between gap-4">
         <div>
-          <CardTitle>Issue a dog tag</CardTitle>
+          <CardTitle>Register pet (issue dog tag)</CardTitle>
           <CardDescription>
-            Signing mode: <Badge variant="neutral">{signingMode}</Badge> — capture the owner identity +
-            pet profile, then the owner's device binds the dog tag on-chain.
+            Do this <strong>once per pet</strong>, before issuing any records for it. Signing mode:{" "}
+            <Badge variant="neutral">{signingMode}</Badge> — capture the owner identity + pet profile,
+            then the owner's device binds the dog tag on-chain.
           </CardDescription>
         </div>
         {env.demoMode && (

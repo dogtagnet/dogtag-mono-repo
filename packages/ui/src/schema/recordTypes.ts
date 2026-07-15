@@ -167,7 +167,21 @@ export const DOG_PROFILE: RecordTypeSchema = {
   ],
 };
 
-export const RECORD_TYPE_SCHEMAS: RecordTypeSchema[] = [RABIES_VACCINATION, DOG_PROFILE];
+/**
+ * The record types the "Issue a record" form offers.
+ *
+ * DELIBERATELY EXCLUDES `DOG_PROFILE` (audit §7B-1, re-implemented in M5). The APIs register only a
+ * `VACCINATION` issuer, so `POST /credentials/prepare` with `recordType: DOG_PROFILE` always 400s
+ * ("unknown recordType / no issuer address") - offering it was a dead option that could only ever fail.
+ * Dog profiles are not issued through this form at all: they are minted by the separate "Register pet"
+ * flow, which builds the profile itself and has no dependency on this list.
+ *
+ * The `DOG_PROFILE` descriptor above is intentionally KEPT and still exported - it stays the schema for
+ * the profile credential, and admin-web keys mint-rights grants off the record-type string. What is
+ * removed is only its presence in this dropdown. Do NOT "fix" this by wiring a `DOG_PROFILE` issuer: that
+ * would create a second, competing profile-issuance path alongside Register pet.
+ */
+export const RECORD_TYPE_SCHEMAS: RecordTypeSchema[] = [RABIES_VACCINATION];
 
 export function schemaFor(recordType: string): RecordTypeSchema | undefined {
   return RECORD_TYPE_SCHEMAS.find((s) => s.recordType === recordType);

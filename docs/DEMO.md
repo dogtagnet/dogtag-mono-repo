@@ -67,7 +67,7 @@ QR (there is no central registration and no admin mint page). The phone has **no
 setting — every host it talks to comes from a scanned QR:
 1. **Phone**: **Profile → "Create embedded wallet"** → 24-word seed → derives the **secp256k1
    walletAddress**.
-2. **Vet** portal (:41873) → **Issue dog tag** → **Fill demo data**: the operator enters the
+2. **Vet** portal (:41873) → **Register pet** → **Fill demo data**: the operator enters the
    `DOG_PROFILE` **`ownerIdentity`** (demo-prefilled): country `GB`, identification `P1234567`, name
    `Alex Doe`, plus the pet fields — **but types NO wallet address** (the device sends its own). →
    **Start** (`POST /profiles/issue/session/start`) → renders a one-time QR `<vetHost>/p/<token>`
@@ -117,7 +117,7 @@ on-chain (central broadcasts as the wired admin signer); the **Whitelist viewer*
 ## 3. Vet issues a vaccination credential → QR (vet portal :41873)
 **Issue** → click **Fill demo data** (a valid rabies certificate; it fills the cert fields but **leaves
 `dogTagId` untouched**) → **set `dogTagId` = the dog tag's handle from §0.5** (the numeric `dogTagId`
-the Issue-dog-tag wizard allocated). This must match: on-chain the id is `field_of_value(handle)`, and
+the Register-pet wizard allocated). This must match: on-chain the id is `field_of_value(handle)`, and
 the owner's later ZK export checks `ownerOf(field_of_value(dogTagId)) == subject` — a mismatch reverts
 `ERC721NonexistentToken`. → **Sign & Issue**: the backend builds the doc, anchors the Merkle root with
 `issue(root)` on ROAX, and re-verifies the `RootIssued` event (waits for the receipt) before marking it

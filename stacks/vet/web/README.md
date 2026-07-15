@@ -19,7 +19,7 @@ pnpm --filter @dogtag/vet-web dev
 - **Setup** (`/setup`) — wizard: custody admin login → genesis (show 24 words → confirm
   challenge words + passphrase → unlock) → derive accounts → apply for whitelist
   (USDA#/license# → central `POST /v1/issuer-applications`) → DNS-TXT instructions.
-- **Issue credential** (`/issue`) — recordType picker → schema-driven form (§1.6 fields) with
+- **Issue a record** (`/issue`) — recordType picker → schema-driven form (§1.6 fields) with
   client-side validation → `POST /credentials/prepare`; **wallet mode** signs the `unsignedTx`
   with the connected wallet then `POST /credentials/confirm`, **backend mode** auto-confirms in
   prepare; shows txHash + "Show QR" (`POST /records/:id/share`).

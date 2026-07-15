@@ -14,10 +14,14 @@ import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useApp } from "./AppContext";
 
+// REGISTER-FIRST (audit §7, re-implemented in M5): "Register pet" is listed BEFORE "Issue a record"
+// because that is the actual order of operations - a record can only attach to a pet that already has a
+// dog tag. The old labels ("Issue credential" / "Issue dog tag") read as two interchangeable ways to
+// issue something and gave no hint that one is a prerequisite for the other.
 const NAV: NavItem[] = [
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
-  { key: "issue", href: "/issue", label: "Issue credential", icon: FilePlus2 },
-  { key: "issue-dog-tag", href: "/issue-dog-tag", label: "Issue dog tag", icon: Dog },
+  { key: "issue-dog-tag", href: "/issue-dog-tag", label: "Register pet", icon: Dog },
+  { key: "issue", href: "/issue", label: "Issue a record", icon: FilePlus2 },
   { key: "records", href: "/records", label: "Records", icon: ListChecks },
   { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
