@@ -352,7 +352,7 @@ function isWhitelistedFor(bytes32 recordType, address signer) external view retu
 
 Onboarding flow (off-chain → on-chain, also triggered on a signing-mode switch — see §6): a new signer address → vet submits `{issuerEntityId, address, mode, recordTypes, verifyPurposes[], USDA#, license#}` to the **central/admin backend** → admin verifies accreditation off-chain → admin calls `whitelistFor(recordType, addr)` per record type (and `whitelistFor(verify_key(purpose), addr)` per verify-purpose — see below) → app polls `isWhitelistedFor` until live. Only then can that address issue/verify. Delist inactive-mode addresses to avoid a stale, over-broad whitelist; backend key rotation = a new address to whitelist. **Whitelisting is the admin portal `approve_application`, not a script** — the only off-portal step is funding the signer with PLASMA gas.
 
-> **LEVEL-A — still the live flow, but superseded in design by Level-B M5.** The paragraph below mints the
+> **LEVEL-A - still the live flow, but superseded in design by Level-B M5.** The paragraph below mints the
 > SBT **to the owner's wallet** (`to=walletAddress`), which makes `ownerOf(dogTagId)` a public, permanent
 > link between a pet and its owner's address. Level-B removes that: under D1 the tag is minted to a
 > **neutral custodian**, and ownership is proven in-ZK instead (`DogTagSBTConsent.mintCustodial`, see

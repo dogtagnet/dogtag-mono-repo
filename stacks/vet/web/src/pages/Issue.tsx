@@ -191,7 +191,7 @@ export function Issue() {
         <div>
           <CardTitle>Issue a record (e.g. vaccination)</CardTitle>
           <CardDescription>
-            Attaches to a pet that is <strong>already registered</strong> — register the pet first to get
+            Attaches to a pet that is <strong>already registered</strong>; register the pet first to get
             its dog tag. Signing mode: <Badge variant="neutral">{signingMode}</Badge> — the document +
             merkle root are built server-side; this form supplies the credential fields (§1.6).
           </CardDescription>

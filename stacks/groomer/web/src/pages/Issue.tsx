@@ -183,7 +183,7 @@ export function Issue() {
         <div>
           <CardTitle>Issue a record</CardTitle>
           <CardDescription>
-            Attaches to a pet a <strong>vet has already registered</strong> — groomers do not register
+            Attaches to a pet a <strong>vet has already registered</strong>; groomers do not register
             pets. Signing mode: <Badge variant="neutral">{signingMode}</Badge> — the document + merkle
             root are built server-side; this form supplies the credential fields (§1.6).
           </CardDescription>
