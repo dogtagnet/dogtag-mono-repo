@@ -12,12 +12,12 @@ import {Groth16VerifierConsent} from "../src/Groth16VerifierConsent.sol";
 
 /// @notice M5 acceptance: custodial issuance produces owner-unlinkable tags that M4 actually verifies.
 ///
-/// This suite exercises the PRODUCTION Level-B pairing — `VerificationRegistryConsent` pointing at the
-/// `DogTagSBTConsent` custodial SBT — which is what the M5 redeploy establishes. (`ConsentRegistry.t.sol`
+/// This suite exercises the PRODUCTION Level-B pairing - `VerificationRegistryConsent` pointing at the
+/// `DogTagSBTConsent` custodial SBT - which is what the M5 redeploy establishes. (`ConsentRegistry.t.sol`
 /// deliberately still pairs the registry with the Level-A `DogTagSBT`; that remains valid coverage and
 /// usefully proves the registry is SBT-agnostic, since it reads only `profileRoot` + `ownerOf`.)
 ///
-/// The load-bearing property, per spec §"Issuance": **the owner's wallet never appears on-chain — not as
+/// The load-bearing property, per spec §"Issuance": **the owner's wallet never appears on-chain - not as
 /// `to`, not as `msg.sender`.** `test_owner_wallet_absent_from_issuance_state_and_calldata` is the guard:
 /// it sweeps every storage slot the issuance writes AND scans the raw calldata bytes, so a regression that
 /// reintroduced the owner anywhere in issuance fails here rather than silently shipping.
@@ -51,7 +51,7 @@ contract CustodialIssuanceTest is Test {
     bytes32 nullifier;
     bytes32 root;
     uint256 deadline;
-    /// @dev The REAL owner behind the fixture's tree — the address that must be absent everywhere on-chain.
+    /// @dev The REAL owner behind the fixture's tree - the address that must be absent everywhere on-chain.
     address ownerAddress;
 
     function setUp() public {
@@ -107,7 +107,7 @@ contract CustodialIssuanceTest is Test {
     }
 
     /// @dev The full M5 issuance: `issue(R)` into the clone, then mint custodially. BOTH writes are
-    /// required — see `test_root_must_also_be_issued_into_a_clone`.
+    /// required - see `test_root_must_also_be_issued_into_a_clone`.
     function _issueCustodial() internal {
         vm.prank(vetSigner);
         vacc.issue(root);
@@ -116,7 +116,7 @@ contract CustodialIssuanceTest is Test {
     }
 
     /// @dev Byte-level scan: does `hay` contain the 20 raw bytes of `needle` at ANY offset? Stronger than a
-    /// word-compare — it catches the owner appearing packed, offset, or inside a nested struct.
+    /// word-compare - it catches the owner appearing packed, offset, or inside a nested struct.
     function _contains(bytes memory hay, address needle) internal pure returns (bool) {
         bytes20 n = bytes20(needle);
         if (hay.length < 20) return false;
@@ -163,12 +163,12 @@ contract CustodialIssuanceTest is Test {
         assertEq(uint8(sbt.status(dogTagId)), uint8(DogTagSBTConsent.Status.Active));
     }
 
-    /// @notice THE load-bearing test (spec §"Issuance" step 4: *the owner's wallet never appears on-chain —
+    /// @notice THE load-bearing test (spec §"Issuance" step 4: *the owner's wallet never appears on-chain -
     /// not as `to`, not as `msg.sender`*). Three independent checks, because each catches a different
     /// regression:
-    ///   1. CALLDATA — a byte scan of the exact calldata both issuance txs carry.
-    ///   2. STATE — every storage slot the issuance WRITES, on the SBT and on the issuing clone.
-    ///   3. LOGS + `msg.sender` — the owner is not an emitter, a topic, or event data.
+    ///   1. CALLDATA - a byte scan of the exact calldata both issuance txs carry.
+    ///   2. STATE - every storage slot the issuance WRITES, on the SBT and on the issuing clone.
+    ///   3. LOGS + `msg.sender` - the owner is not an emitter, a topic, or event data.
     function test_owner_wallet_absent_from_issuance_state_and_calldata() public {
         bytes memory mintCalldata = abi.encodeCall(DogTagSBTConsent.mintCustodial, (dogTagId, root));
         bytes memory issueCalldata = abi.encodeCall(DogTagIssuer.issue, (root));
@@ -217,7 +217,7 @@ contract CustodialIssuanceTest is Test {
     /// @notice The owner's wallet is not even expressible in the mint: `mintCustodial` takes no `to`. A
     /// future change re-adding one would fail to compile against this test rather than quietly ship.
     function test_mint_has_no_recipient_parameter() public view {
-        // Selector is (uint256,bytes32) — no address. Level-A's was mint(address,uint256,bytes32).
+        // Selector is (uint256,bytes32) - no address. Level-A's was mint(address,uint256,bytes32).
         assertEq(
             DogTagSBTConsent.mintCustodial.selector,
             bytes4(keccak256("mintCustodial(uint256,bytes32)")),
@@ -230,7 +230,7 @@ contract CustodialIssuanceTest is Test {
 
     /// @notice The M4 hijack: with `ownerOf`/`keyOf` identity checks gone, `R == profileRoot` is the SOLE
     /// tag<->owner binding, so anyone able to repoint `profileRoot` could forge a `Verified` for a pet they
-    /// do not own. This SBT has NO setter at all — not a re-gated one. The call must not even dispatch.
+    /// do not own. This SBT has NO setter at all - not a re-gated one. The call must not even dispatch.
     function test_profileRoot_has_no_setter_at_all() public {
         _issueCustodial();
         (bool ok,) = address(sbt)
@@ -244,7 +244,7 @@ contract CustodialIssuanceTest is Test {
     }
 
     /// @notice AUTHORITY_ROLE was one of the hijack's two vectors on Level-A. Here the role still governs
-    /// status/lifecycle but has NO power over the root — there is nothing to overwrite.
+    /// status/lifecycle but has NO power over the root - there is nothing to overwrite.
     function test_authority_role_cannot_touch_the_root() public {
         _issueCustodial();
         bytes32 authorityRole = sbt.AUTHORITY_ROLE();
@@ -260,12 +260,12 @@ contract CustodialIssuanceTest is Test {
         assertFalse(ok, "an AUTHORITY holder must have no root-write path");
         assertEq(sbt.profileRoot(dogTagId), root, "victim tag still points at its real root");
 
-        // ...and the tag still verifies, i.e. the hijack did not merely fail — it never happened.
+        // ...and the tag still verifies, i.e. the hijack did not merely fail - it never happened.
         vm.prank(relayer);
         vr.recordVerificationZK(a, b, c, pub);
     }
 
-    /// @notice A tag is never created rootless — there is no later call that could seal it.
+    /// @notice A tag is never created rootless - there is no later call that could seal it.
     function test_mintCustodial_rejects_a_zero_root() public {
         vm.prank(vetSigner);
         vm.expectRevert(DogTagSBTConsent.BadRoot.selector);
@@ -303,7 +303,7 @@ contract CustodialIssuanceTest is Test {
 
     /// @notice Guards the M4 handoff note: issuance MUST `issue(R)` into a clone as well as set
     /// `profileRoot`, or the registry's revocation lookup (`rootIssuer[R]` -> `isValid`) reverts on EVERY
-    /// verify. Minting alone yields a tag that can never be used — the exact trap the spec's step list
+    /// verify. Minting alone yields a tag that can never be used - the exact trap the spec's step list
     /// (which names only `profileRoot`) invites.
     function test_root_must_also_be_issued_into_a_clone() public {
         vm.prank(vetSigner);
@@ -325,7 +325,7 @@ contract CustodialIssuanceTest is Test {
         vr.recordVerificationZK(a, b, c, pub);
     }
 
-    // ---- soulbound, absolutely (D3: no rebind — recovery is a fresh issuance) ----
+    // ---- soulbound, absolutely (D3: no rebind - recovery is a fresh issuance) ----
 
     function test_tag_is_soulbound_with_no_recovery_bypass() public {
         _issueCustodial();
@@ -354,7 +354,7 @@ contract CustodialIssuanceTest is Test {
     }
 
     /// @notice Erasure still fails closed (the registry's `ownerOf` existence gate), and `profileRoot`
-    /// deliberately survives the burn — which is why that gate is load-bearing rather than redundant.
+    /// deliberately survives the burn - which is why that gate is load-bearing rather than redundant.
     function test_burned_tag_cannot_verify() public {
         _issueCustodial();
         vm.prank(admin);

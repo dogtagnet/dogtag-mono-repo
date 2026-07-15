@@ -5,7 +5,7 @@ import {Script, console2} from "forge-std/Script.sol";
 import {DogTagSBTConsent} from "../src/DogTagSBTConsent.sol";
 import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.sol";
 
-/// @notice M5: deploy the Level-B custodial stack — the `DogTagSBTConsent` SBT, plus a REDEPLOYED
+/// @notice M5: deploy the Level-B custodial stack - the `DogTagSBTConsent` SBT, plus a REDEPLOYED
 /// `VerificationRegistryConsent` wired to it.
 ///
 /// ADDITIVE, like M3/M4 before it. Nothing live is touched: the Level-A `DogTagSBT` 0x1FB89865… and
@@ -14,7 +14,7 @@ import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.so
 /// ### Why the M4 registry is redeployed rather than reused
 /// `VerificationRegistryConsent.sbt` is `immutable` (set in the constructor), so the M4 instance
 /// 0x53F988Ae… is permanently bound to the Level-A SBT and CANNOT be repointed at the custodial one. The
-/// registry's CODE is unchanged — this deploys the same contract against a new SBT. That is cheap and safe
+/// registry's CODE is unchanged - this deploys the same contract against a new SBT. That is cheap and safe
 /// precisely because the M4 instance was never live: at the time of writing it carries exactly one log (its
 /// deployment `RoleGranted`) and ZERO `Verified` events, so nothing consumes it and no state is orphaned.
 /// Re-verify before broadcasting:
