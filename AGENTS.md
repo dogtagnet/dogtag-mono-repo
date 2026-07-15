@@ -10,7 +10,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cargo test -p indexer-api` — the oversight indexer (scope + store unit tests + `tests/query_api.rs` end-to-end over MemLogSource + MemStore). Hermetic, fast (no node/Mongo). See the "Oversight indexer (PR-4)" section.
 - `cargo test -p dogtag-standard-rs` — trust-core crypto + cross-language parity vectors.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` — 55 tests incl. `ZkIntegration.t.sol` (real Groth16 proof verified on-chain), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" — a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
+- `cd contracts && forge test` - 71 tests incl. `ZkIntegration.t.sol` and `ConsentRegistry.t.sol` (both verify a real Groth16 proof on-chain - Level-A and Level-B respectively), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
 - `cargo test -p vet-api --test verify_onchain` — on-chain integration (self-spawns anvil). The ZK-path
@@ -806,12 +806,20 @@ must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/
 
 Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spec.md`.
 Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: `contracts/script/DeployConsentRegistry.s.sol`.
-Tests: `contracts/test/ConsentRegistry.t.sol` (15, real M3 proof). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
+Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
 
 **Deployed ROAX:** `VerificationRegistryConsent` **`0x57A2998668B0F6332f7342016F5Df2Bb05cB900F`** (chainId 135,
 `--legacy`, deploy tx `0x4fb52230…`, block 194489, admin = governance `0x8E27E117…`). It verifies against the
 M3 `Groth16VerifierConsent` `0x272be146…`. Recorded in `contracts/deployments/roax.json`
 (`VerificationRegistryConsent` + `_m4_consent_registry`).
+
+**⚠ STALE DEPLOY - redeploy REQUIRED before M7.** The live `0x57A2998…` was deployed BEFORE the
+review-round hardening that added the `ownerOf` token-existence gate, so (a) its runtime is no longer
+byte-identical to source (as-deployed 6179 bytes; source now compiles to 6317), and (b) it LACKS the
+erasure gate, i.e. a burned tag would still verify there until someone separately calls `revoke(R)`.
+Nothing is broken today - this registry is not live, no consumer points at it until M7 - but it must be
+redeployed (`contracts/script/DeployConsentRegistry.s.sol`) and `roax.json` updated before the cutover.
+The `roax.json` `onchain_verify` string is the historical AS-DEPLOYED record; do NOT rewrite it.
 
 ### ADDITIVE, not a swap — the Level-A registry is still THE live one
 
@@ -833,9 +841,15 @@ vs the consent VK; consume the nullifier; resolve `rootIssuer[R]` + `isValid(R)`
 - **`R == profileRoot(dogTagId)` is THE Level-B binding.** The circuit deliberately does not bind
   `dogTagId ↔ R`, so this is the ONLY place it happens. Without it a prover folds a tree they fully control
   and consents as any tag.
-- **No `ownerOf`, no `keyOf`, no `ConsentKeyRegistry` (D2), no Poseidon6.** The nullifier is a public signal
-  bound in-circuit to the hidden `ownerSecret` + `consentNonce` (D5); Level-A derived it on-chain from
-  `subject`, which Level-B does not have. Constructor is 5-arg `(ir, sbt, zk, ridx, admin)`, not 7.
+- **No owner-IDENTITY check, no `keyOf`, no `ConsentKeyRegistry` (D2), no Poseidon6.** There is no
+  `ownerOf == subject` comparison. `ownerOf(dogTagId)` IS called, but purely as a **token-existence gate**
+  whose return value is DISCARDED (never compared) - under D1 it is the neutral custodian, so it leaks
+  nothing and the owner-blind property holds. It exists because `DogTagSBT.burn` (GDPR-erasure) does NOT
+  clear `profileRoot[id]`, so `R == profileRoot` still passes for an erased tag; OZ `ownerOf` is
+  `_requireOwned` and reverts on a burned token, which is what fails erasure closed. Level-A got that for
+  free as a side effect of its `ownerOf == subject` check. The nullifier is a public signal bound in-circuit
+  to the hidden `ownerSecret` + `consentNonce` (D5); Level-A derived it on-chain from `subject`, which
+  Level-B does not have. Constructor is 5-arg `(ir, sbt, zk, ridx, admin)`, not 7.
 - **`Verified(dogTagId, relayer, purpose, nullifier, deadline, ts)`** — `subject` is GONE. Same event NAME as
   Level-A but a different signature ⇒ **different topic0**; the indexer decodes by `Verified::SIGNATURE_HASH`
   and will silently skip Level-B events until **M8** teaches it the new shape.
@@ -866,15 +880,29 @@ vs the consent VK; consume the nullifier; resolve `rootIssuer[R]` + `isValid(R)`
    profileRoot and never issued reverts **`unknown root` on every verify**. This is what keeps `revoke(R)`
    working under Level-B.
 
-D1 (custodial mint) needs nothing from the registry: it reads only `profileRoot`, never `ownerOf`.
-`test_owner_is_never_read_from_chain` mints to a custodian and proves verification still passes.
+D1 (custodial mint) needs nothing from the registry: it reads `profileRoot` for the binding and `ownerOf`
+for EXISTENCE only (value discarded), never for owner identity.
+`test_owner_identity_is_never_read_from_chain` mints to a custodian and proves verification still passes;
+`test_burned_tag_cannot_verify` proves erasure fails closed (and asserts `profileRoot` SURVIVES the burn,
+which is why the existence gate is load-bearing rather than redundant).
+
+**⚠ OPEN SPEC QUESTION for the captain - `setProfileRoot` hijack (KNOWN, ACCEPTED while Level-B is not
+live; M5 must resolve it).** `R == profileRoot(dogTagId)` is the SOLE tag↔owner binding, and
+`DogTagSBT.setProfileRoot` is **mutable post-issuance** by `issuerOf[id]` or ANY `AUTHORITY_ROLE` holder.
+With no `ownerOf` identity gate left, a compromised issuer/authority can build a tree whose three reserved
+owner leaves it controls, `issue(R2)` it through its own whitelisted clone, call
+`setProfileRoot(victimTag, R2)`, and record a `Verified` for a victim tag - a forgery Level-A prevented by
+requiring BOTH `ownerOf == subject` AND `keyOf(subject) == keyHash`, both owner-controlled. M5 must resolve
+it (e.g. append-only/immutable `profileRoot` post-issuance, or a `status == Active` gate). Deliberately NOT
+fixed in M4: the SBT hardening belongs with the M5 issuance rework, and Level-B is not live (no consumer
+points at this registry until M7).
 
 ### Build / test
 
 ```bash
 # regenerate the real-proof fixture (needs the committed M3 zkey/wasm) -> contracts/test/consent-fixture.json
 node circuits/scripts/gen-consent-fixture.mjs      # or: pnpm --filter @dogtag/circuits run gen-consent-fixture
-forge test --match-contract ConsentRegistryTest    # 15 green, incl. a REAL Groth16 proof on-chain
+forge test --match-contract ConsentRegistryTest    # 16 green, incl. a REAL Groth16 proof on-chain
 ```
 
 Unlike `test-consent`, this suite runs in plain `forge test` (the fixture is committed, so it needs no
