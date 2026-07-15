@@ -1088,6 +1088,18 @@ wallet; the vet-api cutover to `mintCustodial` is **M7**, and it needs a decisio
 
 `apps/ios/DogTag/ProfileTreeStore.swift` builds via FFI and persists `Documents/dogtag-owner-secrets.json`
 (atomic + `.completeFileProtection`, because it holds recovery secrets - unlike `pets.json`).
+It is also flagged **`isExcludedFromBackup`**, which is what makes it genuinely DEVICE-LOCAL, at parity
+with the seed/entropy Keychain items' `…ThisDeviceOnly` class: `.completeFileProtection` governs at-rest
+encryption, NOT backup inclusion, and `Documents/` rides in iCloud/Finder backups by default. The flag is
+re-applied after EVERY write rather than once at creation: `.atomic` replaces the destination inode, and
+although Foundation was measured to copy this flag's xattr onto the replacement, that is an implementation
+detail and not a documented guarantee - re-setting it is idempotent and holds either way. Consequence for
+recovery, and the thing to state correctly: the file is NOT a
+cross-device backup, so recovery needs the **seed AND the credential** - the phrase re-derives the
+owner-control core (owner-secret, consent key, reserved-leaf salts), while the attribute values+salts are
+not seed-derivable and come back from the wrapped credential itself (`wrap_document` packs each leaf as
+`"<saltHex>:<tag>:<value>"`). The seed ALONE does not reproduce `R`. An in-app "I backed up my phrase"
+confirmation is required and still pending (nothing creates an owner-secret until M7).
 `Wallet.seedHex()` was added because the seed had NO public accessor (`loadBlob` is private).
 
 There is **no iOS unit-test target**, so the Swift side is covered by `swiftc -typecheck` (the recipe

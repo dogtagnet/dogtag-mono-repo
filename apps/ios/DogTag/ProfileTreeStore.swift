@@ -1,6 +1,7 @@
 import Foundation
 
-/// Device-side per-tag Merkle tree building + the recoverable owner-secret backup (Level-B M5).
+/// Device-side per-tag Merkle tree building + the recoverable owner-secret's device-local store
+/// (Level-B M5).
 ///
 /// The owner's app builds the tree LOCALLY and hands the issuer only the root `R`, which the issuer
 /// seals into `DogTagSBTConsent.profileRoot(dogTagId)` (write-once). The owner's wallet never
@@ -12,14 +13,21 @@ import Foundation
 /// through the `buildProfileTreeHex` FFI, so the Poseidon parameter set and the reserved-leaf
 /// encoding stay pinned in one place across Rust/TS/circom.
 ///
-/// # Two independent recovery paths (belt-and-suspenders)
+/// # Recovery: the seed, plus the credential - never this file
 ///
-/// 1. **Seed derivation (primary).** The owner-secret, the consent key and the reserved-leaf salts
-///    are all derived from the BIP-39 wallet seed, bound to `dogTagId`. Restoring the seed
-///    regenerates them, hence the same `R`. Nothing else is needed but the attribute values.
-/// 2. **This local file (backup).** `Documents/dogtag-owner-secrets.json` additionally records the
-///    secret, `R`, and the attribute leaves (values + salts) - the attribute salts are NOT
-///    seed-derivable, so without them the tree cannot be rebuilt from the seed alone.
+/// `Documents/dogtag-owner-secrets.json` is a DEVICE-LOCAL store, not a cross-device backup: it is
+/// excluded from device backups (`isExcludedFromBackup`) and written with `.completeFileProtection`,
+/// deliberately at parity with the seed/entropy Keychain items' `…ThisDeviceOnly` class. It never
+/// leaves the device, so it cannot carry a tag to a replacement one.
+///
+/// Cross-device recovery therefore rests on two inputs, both required:
+///
+/// 1. **The wallet seed (the 24-word phrase).** Regenerates the owner-control core - the
+///    owner-secret, the consent key, and the reserved-leaf salts - bound to `dogTagId`. It is the
+///    ONLY cross-device path to the owner-secret, so the phrase must be backed up.
+/// 2. **The credential's attribute leaves.** Values AND salts are caller-supplied and are NOT
+///    seed-derivable; they come back from the issued wrapped credential, which packs each leaf as
+///    `"<saltHex>:<tag>:<value>"`. The seed alone does not rebuild the tree.
 ///
 /// See `docs/MOBILE_OWNER_SECRET.md` for the file's documented contract.
 enum ProfileTreeStore {
@@ -179,5 +187,18 @@ enum ProfileTreeStore {
         // complete file protection (encrypted at rest whenever the device is locked). A torn write
         // here would cost the owner a tag's recoverability.
         try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
+        // `Documents/` rides in iCloud/Finder backups by default, and `.completeFileProtection`
+        // governs at-rest encryption, NOT backup inclusion - only this key keeps the secret on the
+        // device, at parity with the seed's `…ThisDeviceOnly` Keychain class. Re-applied after EVERY
+        // write, not once at creation: `.atomic` replaces the destination inode, and while Foundation
+        // was observed to carry this flag's xattr onto the replacement on the platform tested, that
+        // preservation is an implementation detail rather than a documented guarantee - too thin a
+        // thread to hang a secret on. Setting it every time is idempotent and holds either way. A
+        // failure means "never leaves the device" would silently stop being true, so it propagates
+        // rather than being swallowed.
+        var url = fileURL
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try url.setResourceValues(values)
     }
 }

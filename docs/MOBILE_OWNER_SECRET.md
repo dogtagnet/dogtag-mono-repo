@@ -8,7 +8,9 @@ Level-A tags predate this and are unaffected.
 > `Documents/dogtag-owner-secrets.json` contains the owner-secret for every Level-B tag on the
 > device.
 > Anyone who reads it can generate that tag's proofs.
-> It is never uploaded, never logged, and never leaves the device.
+> It is never uploaded, never logged, and never leaves the device: it is excluded from device
+> backups and encrypted at rest, so it is a **device-local store, not a cross-device backup**.
+> Cross-device recovery is the 24-word phrase plus the credential - see below.
 
 ## Why the owner-secret exists, and why the DEVICE must derive it
 
@@ -28,16 +30,31 @@ and hands the issuer only `R`.
 The issuer seals it with `DogTagSBTConsent.mintCustodial(dogTagId, R)`, which takes no recipient
 argument, so the owner's wallet appears nowhere on-chain.
 
-## The two recovery paths (belt-and-suspenders)
+## What recovery actually needs: the seed AND the credential
 
-Both must hold, and both are needed: they are **complementary, not redundant**.
-Seed derivation regenerates the owner-control core (the owner-secret, the consent key, the
-reserved-leaf salts); the local file supplies the attribute values and their salts, which are not
-seed-derivable.
-Neither path alone reproduces `R`, and `R` is what every existing proof is bound to - so the 24-word
-phrase by itself is **not** sufficient to rebuild a tag.
+Rebuilding a tag on a replacement device needs two inputs, and **both are required**:
 
-### 1. Seed derivation (primary)
+1. **The wallet seed** (the 24-word phrase) regenerates the owner-control core: the owner-secret, the
+   consent key, and the reserved-leaf salts.
+2. **The credential's attribute leaves** supply the attribute values and their salts, which are
+   caller-supplied and **not** seed-derivable. They come back from the issued wrapped credential
+   itself, which packs every leaf as `"<saltHex>:<tag>:<value>"`.
+
+Seed + credential attributes reproduce the same `R`; the seed alone does **not**.
+Never tell an owner the 24-word phrase by itself rebuilds a tag.
+
+The local file is **not** one of these paths.
+It is a device-local store, excluded from device backups (see [The file](#the-file)), so it never
+reaches a replacement device.
+
+> **The owner MUST back up their 24-word recovery phrase.**
+> It is the only cross-device path to the owner-secret.
+> A device lost without a phrase backup means the owner-secret is gone and the tag can never be
+> re-proven; per decision D3 the remedy is a fresh tag with a new id and a new `R`, not a rebind.
+> An in-app confirmation that the owner has backed up the phrase is **required and still pending** -
+> it is not shipped, and no owner-secret creation flow exists until M7.
+
+### 1. Seed derivation
 
 Every owner-control input is a pure function of the wallet seed, bound to `dogTagId`:
 
@@ -48,8 +65,9 @@ Every owner-control input is a pure function of the wallet seed, bound to `dogTa
 | reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId ‖ keyPath ‖ seed)`     |
 | owner-address       | the wallet address, itself seed-derived                        |
 
-Restoring the 24-word phrase restores the seed, which regenerates all of the above, which rebuilds
-the identical tree and the identical `R`.
+Restoring the 24-word phrase restores the seed, which regenerates the owner-control core above -
+which, together with the credential's attribute leaves, rebuilds the identical tree and the
+identical `R`.
 Binding to `dogTagId` means one wallet's two tags get independent secrets, so their nullifiers stay
 mutually unlinkable.
 
@@ -57,11 +75,17 @@ Deriving from the seed does not weaken unlinkability: the seed never leaves the 
 is one-way, so the secret stays exactly as opaque to an observer as a random one would be, while a
 random secret would be unrecoverable the moment the device was lost.
 
-### 2. The local file (backup)
+### 2. The credential's attribute leaves
 
 Seed derivation alone is not sufficient to rebuild the tree, because the tree also commits to the
 credential's **attribute** leaves, whose values come from the issuer and whose salts are random.
-Those are not derivable from the seed, so they are recorded here alongside the secret.
+Neither is derivable from the seed.
+They travel in the issued wrapped credential itself - `wrap_document` packs each leaf as
+`"<saltHex>:<tag>:<value>"` - so a holder who still has the credential (or can re-obtain it from the
+issuer) has them, and that is the path a replacement device uses.
+
+The local file records them too, but only as a device-local convenience: it is excluded from device
+backups, so it is never the thing that carries them across devices.
 
 ## The file
 
@@ -70,6 +94,14 @@ Those are not derivable from the seed, so they are recorded here alongside the s
 - **Protection:** written atomically with `.completeFileProtection`, so it is encrypted at rest
   whenever the device is locked.
   A torn write would cost the owner a tag's recoverability, hence the atomic write.
+- **Device-local:** flagged `isExcludedFromBackup`, so it stays out of iCloud and Finder/iTunes
+  device backups - deliberately at parity with the seed and entropy Keychain items, whose
+  `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` class excludes them the same way.
+  `.completeFileProtection` alone would **not** achieve this: it governs at-rest encryption, not
+  backup inclusion, and `Documents/` is backed up by default.
+  The flag is re-applied after every write rather than once at creation: the atomic write replaces
+  the file's inode, and Foundation's copying of the flag onto the replacement is an implementation
+  detail, not a guarantee. Re-setting it is idempotent and holds either way.
 - **Format:** a JSON array of records, one per tag.
 
 ```json
@@ -98,8 +130,10 @@ It must track `profile_tree::OWNER_SECRET_DOMAIN` in the Rust core.
 - **Never** transmit, log, or include the file in a bug report or analytics payload.
   Only `rootHex` is safe to send, and only to the issuer at issuance.
 - Treat it exactly like the 24-word phrase in any UX that offers export or backup.
-- It is not iCloud-synced today, matching the Keychain items' `…ThisDeviceOnly` protection class.
-  A user who loses the device recovers via the phrase (path 1), not via this file.
+- It is neither iCloud-synced nor included in device backups, matching the Keychain items'
+  `…ThisDeviceOnly` protection class.
+  A user who loses the device recovers via the phrase plus the credential, never via this file - it
+  does not survive the device.
 
 ## Where the code lives
 
@@ -133,7 +167,8 @@ Recovery is therefore not about keeping old proofs valid (they are bound to an i
 valid regardless).
 It is about being able to generate **new** proofs after a device loss, which needs the full witness:
 the owner-secret, the consent key, the salts, and the attribute leaves.
-That is why both recovery paths above must hold, not just the secret.
+That is why the seed and the credential must BOTH come back, not just the secret.
 
-Losing both (no phrase and no file) is unrecoverable by design: per decision D3, the remedy is a
-fresh tag with a new tree and a new `R`, not a rebind of the old one.
+Losing either (no phrase, or no credential to re-obtain the attribute leaves from) is unrecoverable
+by design: per decision D3, the remedy is a fresh tag with a new tree and a new `R`, not a rebind of
+the old one.
