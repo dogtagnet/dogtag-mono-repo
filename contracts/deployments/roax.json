@@ -8,7 +8,7 @@
   "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
   "Groth16VerifierConsent": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
   "_m3_consent_verifier": {
-    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX. It is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf... (that registry swap is M4). M3 does NOT wire this into VerificationRegistry - M4 redeploys the registry to verify against this VK with the owner-blind Verified event + R==profileRoot check.",
+    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX. It is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf..., which remains the verifier the live Level-A registry uses. M3 does NOT wire this verifier into any registry. That wiring SHIPPED in M4, and it is ADDITIVE, NOT a swap or a redeploy of the live registry: M4 deployed a NEW contract, 'VerificationRegistryConsent' 0x53F988Ae0124b96069d90CBC78E6245FeB01E125, which verifies against this VK with the owner-blind Verified event + R==profileRoot check, ALONGSIDE the Level-A 'VerificationRegistry' 0x4E2f0996..., which remains LIVE, FROZEN and untouched with every committed consumer still pointing at it until the M7 cutover. See _m4_consent_registry below.",
     "address": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
     "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
     "deploy_tx": "0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af",
@@ -23,10 +23,73 @@
   "IssuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
   "Poseidon6": "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
   "VerificationRegistry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+  "VerificationRegistryConsent": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
+  "VerificationRegistryConsent_preErasureGate_legacy": "0x57A2998668B0F6332f7342016F5Df2Bb05cB900F",
+  "_m4_consent_registry": {
+    "status": "DEPLOYED (M4), NOT YET LIVE. The Level-B owner-blind registry is deployed + validated on ROAX and verifies against the M3 Groth16VerifierConsent 0x272be146... It is ADDITIVE: the Level-A 'VerificationRegistry' 0x4E2f0996... remains THE live registry and every committed consumer still points at it. Cutting the apps over is M7 (see m7_cutover) and REQUIRES M5 custodial issuance first - see m5_requirements. Nothing is half-wired: the Level-A flow is untouched and fully working.",
+    "address": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
+    "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
+    "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+    "deploy_tx": "0xbdcbb27d5940246212de43b5d08c017e832ffcb56ef024344811ded22d92d1af",
+    "deploy_block": 195443,
+    "script": "contracts/script/DeployConsentRegistry.s.sol",
+    "contract": "VerificationRegistryConsent (contracts/src/VerificationRegistryConsent.sol)",
+    "components_reused": "IssuerRegistry, DogTagSBT, DogTagIssuerFactory (rootIndex) - unchanged. NOT wired: ConsentKeyRegistry (D2 retires it - the consent key lives in the tree) and Poseidon6 (the nullifier is a public signal, never derived on-chain). Constructor is 5-arg (ir, sbt, zk, ridx, admin), not Level-A's 7.",
+    "onchain_verify": "cast code == compiled runtime BYTE-IDENTICAL once the 3 immutables are blanked (6317 bytes); zkVerifier()==0x272be146...; sbt()==0x1FB89865...; admin role -> governance 0x8E27E117 (deployer 0x119F8c7F holds NO admin); recordVerificationZK dispatches and executes Level-B logic (reverts a proper Error(string) '!verify-wl', NOT the bare 0x that broke the 4-arg redeploy - see _selector_collision_WARNING); verifyProof(real consent proof)=true, (tampered R)=false against the registry's configured verifier.",
+    "public_signals": "[dogTagId, purpose, relayer, nullifier, R, recordType, deadline] - NO subject, NO keyHash. Order is frozen with the M3 VK (circuits/README.consent.md).",
+    "_selector_collision_WARNING": "recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7]) = 0xdd080593, which is BYTE-IDENTICAL to the RETIRED Level-A 4-arg selector (see _verification_registry_redeploy) - same ABI shape, COMPLETELY different pub semantics (Level-A pub[3]=subject/pub[4]=nullifier/pub[6]=R vs Level-B pub[3]=nullifier/pub[4]=R/pub[6]=deadline). A stale pre-PR#7 client aimed at this registry would DISPATCH rather than bounce, but fails closed twice (R!=profileRoot, then a Level-A proof cannot verify against the consent VK). Conversely a Level-B client aimed at the LIVE Level-A registry 0x4E2f0996 (which only dispatches the 6-arg 0x423a45b6) gets the bare `execution reverted, data: 0x` - the exact confusing symptom from data/dogtag-zkfail-z9. Check the ADDRESS first when debugging either.",
+    "m5_requirements": {
+      "profileRoot": "M5 MUST set profileRoot(dogTagId) = R, the per-tag Merkle root of the M1-engine tree (3 reserved owner leaves + attribute leaves). The SBT already stores profileRoot as bytes32 - NO SBT change is needed for M4. The registry asserts R == profileRoot(dogTagId); this is the ONLY place dogTagId <-> R is bound (the circuit deliberately does not).",
+      "issue_the_root": "M5 MUST ALSO issue(R) the per-tag root into a DogTagIssuer clone, not only setProfileRoot. The registry keeps the Level-A revocation path (resolve rootIssuer[R] -> clone, require isValid(R)), so a root that is only set as profileRoot and never issued reverts 'unknown root' on EVERY verify. This preserves revocation under Level-B: revoke(R) stops the tag verifying.",
+      "custodial_mint": "D1: mint to a neutral custodian, never the owner. The registry reads profileRoot for the binding and ownerOf for token EXISTENCE only (value DISCARDED, never compared), so a custodial ownerOf is correct and inert - ConsentRegistry.t.sol proves verification passes with ownerOf == custodian. The ownerOf call is NOT an owner-identity check: it exists because DogTagSBT.burn (GDPR-erasure) does not clear profileRoot[id], so R == profileRoot still passes for an erased tag, and OZ ownerOf (_requireOwned) reverting on a burned token is what fails erasure closed - see test_burned_tag_cannot_verify.",
+      "profileRoot_is_mutable_KNOWN_GAP": "OPEN SPEC QUESTION, KNOWN + ACCEPTED while Level-B is not live; M5 MUST resolve it. R == profileRoot(dogTagId) is the SOLE tag<->owner binding, and DogTagSBT.setProfileRoot is MUTABLE post-issuance by issuerOf[id] or ANY AUTHORITY_ROLE holder. With no ownerOf identity gate, a compromised issuer/authority can build a tree whose three reserved owner leaves it controls, issue(R2) it via its own whitelisted clone, setProfileRoot(victimTag, R2), and record a Verified for a victim tag - a forgery Level-A prevented by requiring BOTH ownerOf == subject AND keyOf(subject) == keyHash, both owner-controlled. M5 must resolve it (e.g. append-only/immutable profileRoot post-issuance, or a status == Active gate). Deliberately NOT fixed in M4: the SBT hardening belongs with the M5 issuance rework, and no consumer points at this registry until M7."
+    },
+    "m7_cutover": {
+      "_note": "Repoint these at 0x53F988Ae0124b96069d90CBC78E6245FeB01E125 ONLY when the apps prove against the M3 consent VK and Level-B custodial tags exist (M5). Repointing earlier breaks the live flow: today's clients send Level-A proofs. This is the same consumer list the 4-arg redeploy walked (see RedeployVerificationRegistry.s.sol).",
+      "canonical": "contracts/deployments/roax.json (this file)",
+      "mobile_bundles_compile_time_rebuild_and_reinstall": [
+        "apps/ios/DogTag/roax.json",
+        "apps/android/app/src/main/assets/roax.json"
+      ],
+      "web_shared_config": [
+        "packages/ui/src/wallet/contracts.ts",
+        "stacks/owner/web/src/lib/config.ts"
+      ],
+      "indexer": "stacks/indexer/api/src/main.rs DEFAULT_VREG + stacks/indexer/.env.example. NOTE (M8): the owner-blind Verified has a DIFFERENT topic0 than the Level-A one - stacks/indexer/api/src/chain.rs decodes by Verified::SIGNATURE_HASH and will silently skip Level-B events until M8 teaches it the new shape (dogTagId, relayer, purpose, nullifier, deadline, ts).",
+      "backend_zk_path": "stacks/vet/api/src/chain.rs (the recordVerificationZK sol! ABI is the 6-arg Level-A shape and must become 4-arg) + src/verify.rs. The ECDSA recordVerification path has NO Level-B equivalent (see _levelb_ecdsa_path).",
+      "demo_e2e_scripts": [
+        "scripts/e2e-zk.sh",
+        "scripts/demo-up.sh",
+        "scripts/e2e-smoke.sh"
+      ],
+      "env_examples": [
+        "stacks/vet/.env.example",
+        "stacks/vet/web/.env.example",
+        "stacks/groomer/.env.example",
+        "stacks/groomer/web/.env.example",
+        "stacks/admin/web/.env.example",
+        "stacks/indexer/.env.example"
+      ],
+      "docs": [
+        "README.md",
+        "AGENTS.md",
+        "docs/DEPLOY.md",
+        "docs/DEPLOYMENT.md",
+        "docs/DEMO.md",
+        "docs/GROOMER_ZK_DEMO.md",
+        "docs/REMOTE_DEPLOYMENT.md",
+        "docs/CEREMONY_RUNBOOK.md"
+      ],
+      "docs_normative_levelA_semantics": "These carry the NORMATIVE Level-A verify semantics (the subject-bearing Verified event, the keyOf/ownerOf==subject checks, the pub=[dogTagId,purpose,relayer,subject,nullifier,keyHash,R] vector, the ECDSA path) and go STALE the moment Level-B is the live path - they are deliberately untouched by M4 (Level-A is still live and they describe it accurately), but M7 MUST revise them, not just swap addresses: docs/architecture.md (\u00a74.1 contract set + \u00a74.7 VerificationRegistry normative body), docs/implementation.md (\u00a72.6 'Three new contracts' + the \u00a711.8 normative bodies), docs/ROLE_APPS.md (the contract list + the verifier-role descriptions).",
+      "docs_dpia": "docs/DPIA.md is a self-declared LIVING document that 'MUST be refreshed whenever the on-chain data model, the verification subsystem, or the erasure flow change'. Level-B changes all three: the Verified linkage row (line ~36) is scored on `subject`+dogTagId+relayer and its mitigation is 'fresh per-pet subject' - under Level-B there IS no subject, so the row must be RE-SCORED, not just edited. The re-scoring itself needs a data-protection judgement (DPO/captain) and is deliberately NOT done while Level-B is not live - crediting the live system with a privacy improvement it does not yet have is the dangerous direction to be wrong in for a regulatory artifact. M4 instead added docs/DPIA.md section 2.1, a FORWARD-LOOKING note recording the refresh as QUEUED and naming the three rows that must be re-scored (verification-event linkage, wallet<->SBT link, and the erasure-flow burn mitigation); every current Level-A risk row/rating/mitigation is untouched and still accurate. M7 MUST perform the actual re-scoring, and GDPR Art. 35 wants it done BEFORE processing starts, i.e. before the cutover - not after."
+    },
+    "_levelb_ecdsa_path": "There is deliberately NO ECDSA recordVerification on this registry. That path asserts ownerOf(dogTagId) == subject, which under D1 (custodial mint) resolves to the custodian and can never match a real owner - it is structurally dead under Level-B, and its subject-revealing Verified event would undo the circuit's purpose. Legacy ECDSA verification keeps working, unchanged, on the Level-A registry 0x4E2f0996 for as long as Level-A tags exist. If Level-B ever needs a non-ZK fallback that is a NEW spec decision (the owner has no on-chain identity to sign as), not a port of the Level-A path.",
+    "_supersedes_stale_deploy": "This address REPLACES the first M4 deploy 0x57A2998... (kept above as VerificationRegistryConsent_preErasureGate_legacy, block 194489, runtime 6179 bytes). That instance was deployed BEFORE the review-round hardening that added the ownerOf token-existence gate, so its bytecode LACKS the erasure gate: a GDPR-burned tag would still verify there. It was never live and no consumer ever pointed at it. This redeploy (runtime 6317 bytes) carries the gate and is byte-identical to the committed source, so the recorded address and the shipped code agree - which is the point: a canonical address whose bytecode differs from source is the same landmine class as data/dogtag-zkfail-z9. Do NOT use 0x57A2998."
+  },
   "VerificationRegistry_4arg_legacy": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
   "VerificationRegistry_preMetaTx_legacy": "0x19C1B5f80c41EE864149500bdF998Dd18aec2a43",
   "VerificationRegistry_zk0_legacy": "0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8",
-  "_zk_ceremony": "Repo ships testnet self-run v2 (public Hermez ptau + 3 contributions + drand beacon round 6245947); zkey sha256 9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992; see docs/CEREMONY_TRANSCRIPT.md. The v2 Groth16Verifier 0xEEFCfAF026931b7325472A88fd14Ee780Da13559 is the ACTIVE on-chain verifier since executeZkVerifier() ran on 2026-07-02 (block 103419); the prior verifier 0x138b433071Ad806E841B5AD53623290a9bf21761 (sha 45d0b6fb...03e) is retired. See _zk_verifier_swap below and docs/PRODUCTION_DEPLOYMENT.md §3.2.",
+  "_zk_ceremony": "Repo ships testnet self-run v2 (public Hermez ptau + 3 contributions + drand beacon round 6245947); zkey sha256 9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992; see docs/CEREMONY_TRANSCRIPT.md. The v2 Groth16Verifier 0xEEFCfAF026931b7325472A88fd14Ee780Da13559 is the ACTIVE on-chain verifier since executeZkVerifier() ran on 2026-07-02 (block 103419); the prior verifier 0x138b433071Ad806E841B5AD53623290a9bf21761 (sha 45d0b6fb...03e) is retired. See _zk_verifier_swap below and docs/PRODUCTION_DEPLOYMENT.md \u00a73.2.",
   "_zk_verifier_swap": {
     "status": "EXECUTED - executeZkVerifier() ran after the 2-day timelock; the v2 verifier is live on the registry",
     "registry": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",

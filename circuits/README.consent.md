@@ -17,7 +17,8 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 > ceremony + VK freeze (M3) is DONE**: `scripts/ceremony-consent.sh` (public Hermez pow-17 ptau + a single
 > testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
 > — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md). The on-chain
-> `recordVerificationZK` wiring (registry redeploy) remains **M4**. See the "Build + test" and "M4 binding" notes below.
+> `recordVerificationZK` wiring (registry redeploy) is **M4 — now DONE**: `VerificationRegistryConsent`
+> `0x53F988Ae0124b96069d90CBC78E6245FeB01E125`. See the "Build + test" and "M4 binding" notes below.
 
 ## What it proves
 
@@ -93,6 +94,7 @@ ptau is **power 16** (`2^16 = 65536 ≥ 38501`).
 ```
 bash scripts/ceremony-consent.sh   # M3: real testnet ceremony -> committed VK/zkey + Groth16VerifierConsent.sol
 npm run test-consent               # witness/proof round-trip + R-parity + negatives + keyPath-substitution + D5
+npm run gen-consent-fixture        # M4: real proofs vs the committed zkey -> contracts/test/consent-fixture.json
 npm run build-consent              # ⚠ DEV/throwaway setup — OVERWRITES the committed M3 zkey/VK with a forgeable key; avoid
 ```
 
@@ -108,16 +110,28 @@ the **real production key** (33/33 green: round-trip verify + R-parity + negativ
 > The **real (M3) VK** is the committed `build/consent_verification_key.json` (sha256 `27879dd7…`) paired
 > with `build/consent_final.zkey` (sha256 `f83a111f…`) and `Groth16VerifierConsent.sol`, produced by
 > `scripts/ceremony-consent.sh` — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md).
-> Running `build-consent` again would OVERWRITE those committed files with a forgeable dev key — don't. The on-chain verifier + registry swap is **M4**.
+> Running `build-consent` again would OVERWRITE those committed files with a forgeable dev key — don't.
+> Both the on-chain verifier (M3) and the registry that verifies against it (M4) are now deployed, so an
+> overwrite would also invalidate `contracts/test/consent-fixture.json` against the deployed VK.
 
-## M4 binding (out of scope for M2)
+## M4 binding — SHIPPED
 
-The snarkjs Solidity verifier will expose `verifyProof(a, b, c, pub[7])`. Per the spec,
+The snarkjs Solidity verifier exposes `verifyProof(a, b, c, pub[7])`. Per the spec,
 `recordVerificationZK` binds the proof to the real tag by requiring `pub[4] /*R*/ ==
 profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checked), enforces
 `deadline >= block.timestamp`, consumes `pub[3] /*nullifier*/`, and emits an **owner-blind**
-`Verified` event (no `subject`/`keyHash`). Full details: AGENTS.md "Level-B `DogTagConsent` circuit
-(M2)".
+`Verified` event (no `subject`/`keyHash`).
+
+**M4 is done:** `contracts/src/VerificationRegistryConsent.sol`, deployed on ROAX at
+`0x53F988Ae0124b96069d90CBC78E6245FeB01E125` against the M3 verifier `0x272be146…`. It is **additive** —
+the Level-A `VerificationRegistry` `0x4E2f0996…` is still the live one until the **M7** app cutover, and
+Level-B tags need **M5** custodial issuance first. `contracts/test/ConsentRegistry.t.sol` proves a REAL
+proof from the committed production zkey verifies through it, using the committed
+`contracts/test/consent-fixture.json` (regenerate with `npm run gen-consent-fixture`). The deployed
+runtime is byte-identical to this source. An earlier deploy (`0x57A2998…`, now
+`VerificationRegistryConsent_preErasureGate_legacy`) predated the `ownerOf` token-existence gate and was
+redeployed rather than left stale; it was never live. Full details: AGENTS.md "Level-B
+`VerificationRegistryConsent` (M4)"; circuit details: AGENTS.md "Level-B `DogTagConsent` circuit (M2)".
 
 ## M3 VK-freeze checkpoint — REVIEWED, VK FROZEN
 

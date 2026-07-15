@@ -12,6 +12,7 @@ fs_permissions = [
     { access = "read", path = "../circuits/poseidon-vectors.json" },
     { access = "read", path = "test/poseidon6.initcode" },
     { access = "read", path = "test/zk-fixture.json" },
+    { access = "read", path = "test/consent-fixture.json" },
     { access = "read-write", path = "deployments" },
 ]
 remappings = [

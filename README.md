@@ -49,11 +49,13 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | DogTagIssuerImpl (clone impl) | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
 | ConsentKeyRegistry (gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-| **VerificationRegistry** (ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
+| **VerificationRegistry** (LIVE; Level-A; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
 | ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
+| VerificationRegistryConsent (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
+| ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
 | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
-| Groth16VerifierConsent (Level-B; deployed M3, **not yet wired** - M4) | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` |
+| Groth16VerifierConsent (Level-B; wired into the M4 registry above) | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` |
 | deployer EOA (genesis; **stripped of all roles** in Governance Phase-2, 2026-07-05 block 123835) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 | **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
 | demo clone — VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
@@ -95,7 +97,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
-| `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` · `ConsentKeyRegistry` | ROAX |
+| `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `VerificationRegistryConsent` (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover) | ROAX |
 | `circuits` | Groth16 Poseidon-Merkle + EdDSA-BabyJubjub consent circuit (N=24, depth 5) | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
 | `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |
