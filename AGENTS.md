@@ -905,6 +905,40 @@ it (e.g. append-only/immutable `profileRoot` post-issuance, or a `status == Acti
 fixed in M4: the SBT hardening belongs with the M5 issuance rework, and Level-B is not live (no consumer
 points at this registry until M7).
 
+#### M5 scoping findings (2026-07-15) — the hijack fix forces a redeploy cascade
+
+Established while scoping M5; recorded so the next agent does not re-derive it.
+
+1. **The suggested `status == Active` gate is already there and does NOT fix the hijack.**
+   `DogTagSBT.setProfileRoot` (`contracts/src/DogTagSBT.sol:89`) already does
+   `require(status[id] == Status.Active, "!active")`. A hijacker targets an *Active* victim tag, so this
+   gate never fires against them. **Append-only/immutable `profileRoot` is the only structural fix of the
+   two the open question offers.**
+2. **A standalone `CustodialIssuer` contract cannot close the hijack.** Routing issuance through one makes
+   `issuerOf[id]` the contract (killing the *issuerOf* vector), but `AUTHORITY_ROLE` holders call
+   `setProfileRoot` on the SBT **directly** — the gate lives on the SBT, so no external contract can
+   constrain it. Closing `AUTHORITY_ROLE` requires changing `DogTagSBT` itself.
+3. **Sealing therefore cascades:** new `setProfileRoot` semantics ⟹ new SBT bytecode ⟹ new SBT deploy ⟹
+   **new `VerificationRegistryConsent` deploy too**, because its `sbt` is `immutable`
+   (`VerificationRegistryConsent.sol:90`, set in the constructor) and cannot be repointed.
+4. **The M4 redeploy is near-free — verified on-chain, not assumed.** `0x53F988Ae…` carries exactly ONE log
+   (the deployment `RoleGranted`) and **zero `Verified` events**
+   (`cast logs --address 0x53F988Ae… --from-block 0`, topic0 `0xeb5f75f2…`). Nothing consumes it; M7 has not
+   cut over. Re-verify before relying on this.
+5. **`setProfileRoot` has ZERO production callers.** Only `ConsentRegistry.t.sol:198` (the hijack test) and
+   docs reference it — the vet-api mints the root directly via `mint(to,id,root)`. Sealing it breaks no
+   live flow, and D3 (recovery = re-issue a fresh tag ⇒ new `R`) means a tag's `profileRoot` never
+   legitimately changes after issuance. Both point at write-once.
+6. **PR #39 was CLOSED UNMERGED** (`mergedAt: null`; head `fm/dogtag-issfix-i4`). None of it is on `main` —
+   not the dormant `mintNext`, and not the two "must-fix" items (7B-1 dead `DOG_PROFILE` option, still wired
+   at `stacks/vet/web/src/pages/Setup.tsx:449`; 7B-2 `ownerOf` pre-flight, absent). M5 "drops the `ownerOf`
+   existence gate" by simply **not** re-implementing 7B-2 — there is no code to delete. Do not confuse that
+   gate with the dup-collision `owner_of` loop (`routes.rs:1588-1600`) or the post-mint read-back
+   (`routes.rs:1812-1819`), which are legitimate and unrelated.
+7. **The live register-pet flow mints to the OWNER's wallet** (`routes.rs:1796-1804`, `mint_wallet = wallet`)
+   and asserts `ownerOf == wallet`. That is precisely the linkability M5 removes; it is the flow to rework,
+   not a bug to patch around.
+
 ### Build / test
 
 ```bash
