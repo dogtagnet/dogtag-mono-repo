@@ -116,9 +116,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     constructor(address ir, address sbt_, address zk, address ridx, address admin)
         AccessControlDefaultAdminRules(2 days, admin)
     {
-        require(
-            ir != address(0) && sbt_ != address(0) && zk != address(0) && ridx != address(0), "zero"
-        );
+        require(ir != address(0) && sbt_ != address(0) && zk != address(0) && ridx != address(0), "zero");
         issuerRegistry = IIssuerRegistry(ir);
         sbt = IDogTagSBT(sbt_);
         zkVerifier = IGroth16VerifierConsent(zk);
@@ -155,8 +153,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
         require(address(uint160(pub[P_RELAYER])) == msg.sender, "not relayer");
         if (restrictToWhitelistedRelayers) {
             require(
-                issuerRegistry.isWhitelistedFor(_verifyKey(bytes32(pub[P_PURPOSE])), msg.sender),
-                "!verify-wl"
+                issuerRegistry.isWhitelistedFor(_verifyKey(bytes32(pub[P_PURPOSE])), msg.sender), "!verify-wl"
             );
         }
 
@@ -195,12 +192,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
         require(IDogTagIssuer(clone).isValid(bytes32(pub[P_ROOT])), "cred !valid");
 
         emit Verified(
-            pub[P_DOGTAGID],
-            msg.sender,
-            bytes32(pub[P_PURPOSE]),
-            nf,
-            pub[P_DEADLINE],
-            block.timestamp
+            pub[P_DOGTAGID], msg.sender, bytes32(pub[P_PURPOSE]), nf, pub[P_DEADLINE], block.timestamp
         );
     }
 

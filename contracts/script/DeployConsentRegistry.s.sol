@@ -41,9 +41,8 @@ contract DeployConsentRegistry is Script {
         );
 
         vm.startBroadcast();
-        registryConsent = address(
-            new VerificationRegistryConsent(issuerRegistry, sbt, zkVerifier, rootIndex, admin)
-        );
+        registryConsent =
+            address(new VerificationRegistryConsent(issuerRegistry, sbt, zkVerifier, rootIndex, admin));
         vm.stopBroadcast();
 
         console2.log("--- reused live components ---");
