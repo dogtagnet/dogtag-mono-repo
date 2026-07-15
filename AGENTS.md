@@ -881,8 +881,12 @@ is NOT an owner-identity check); `verifyProof` vs the consent VK; consume the nu
 
 ### M5 handoff (issuance) — two hard requirements
 
-1. `profileRoot(dogTagId) = R`, the per-tag M1-engine tree root. **No SBT change is needed** — `DogTagSBT`
-   already stores `profileRoot` as `bytes32`.
+1. `profileRoot(dogTagId) = R`, the per-tag M1-engine tree root.
+   > **SUPERSEDED by M5 (2026-07-15).** This originally read *"No SBT change is needed — `DogTagSBT`
+   > already stores `profileRoot` as `bytes32`."* Storage-wise that was true, but it missed the
+   > `setProfileRoot` hijack below: a MUTABLE root is unsafe once the `ownerOf` identity check is gone.
+   > M5 therefore ships a fresh **`DogTagSBTConsent`** with a write-once root and a structural custodial
+   > mint. See "M5 as-built" below.
 2. **`issue(R)` the root into a `DogTagIssuer` clone too, not only `setProfileRoot`.** The registry keeps
    Level-A's revocation path (`rootIssuer[R]` → clone → `isValid(R)`), so a root that is only set as
    profileRoot and never issued reverts **`unknown root` on every verify**. This is what keeps `revoke(R)`
@@ -894,8 +898,14 @@ for EXISTENCE only (value discarded), never for owner identity.
 `test_burned_tag_cannot_verify` proves erasure fails closed (and asserts `profileRoot` SURVIVES the burn,
 which is why the existence gate is load-bearing rather than redundant).
 
-**⚠ OPEN SPEC QUESTION for the captain - `setProfileRoot` hijack (KNOWN, ACCEPTED while Level-B is not
-live; M5 must resolve it).** `R == profileRoot(dogTagId)` is the SOLE tag↔owner binding, and
+**✅ RESOLVED IN M5 (2026-07-15) — captain chose a fresh Level-B SBT.** The hijack described below is
+structurally closed on `DogTagSBTConsent`: `profileRoot` is **write-once**, set at mint, with **no setter at
+all**. See "M5 as-built" below for the reasoning and the redeploy cascade it forced. The description is kept
+because it is exactly why the Level-B SBT looks the way it does — and because it still applies verbatim to
+the Level-A `DogTagSBT`, which remains live and unchanged.
+
+**⚠ ORIGINAL OPEN SPEC QUESTION - `setProfileRoot` hijack.** `R == profileRoot(dogTagId)` is the SOLE
+tag↔owner binding, and
 `DogTagSBT.setProfileRoot` is **mutable post-issuance** by `issuerOf[id]` or ANY `AUTHORITY_ROLE` holder.
 With no `ownerOf` identity gate left, a compromised issuer/authority can build a tree whose three reserved
 owner leaves it controls, `issue(R2)` it through its own whitelisted clone, call
@@ -905,9 +915,39 @@ it (e.g. append-only/immutable `profileRoot` post-issuance, or a `status == Acti
 fixed in M4: the SBT hardening belongs with the M5 issuance rework, and Level-B is not live (no consumer
 points at this registry until M7).
 
-#### M5 scoping findings (2026-07-15) — the hijack fix forces a redeploy cascade
+### M5 as-built (custodial issuance) — contract/issuer side
 
-Established while scoping M5; recorded so the next agent does not re-derive it.
+**Captain decision (2026-07-15): fresh Level-B SBT.** `DogTagSBTConsent` + a redeployed
+`VerificationRegistryConsent` pointing at it. Level-A (`DogTagSBT` 0x1FB89865…) stays FROZEN and live —
+the same additive pattern as M2/M3/M4. Deploy with `script/DeployCustodialIssuance.s.sol`.
+
+**The issuance flow is TWO writes, both required:**
+```solidity
+vacc.issue(R);                    // register the root in a DogTagIssuer clone (rootIssuer[R])
+sbt.mintCustodial(dogTagId, R);   // mint to the neutral custodian; sets profileRoot = R, sealed
+```
+Minting alone yields a tag that reverts `unknown root` on EVERY verify. The spec's step list names only
+`profileRoot`, so this is the trap to avoid; `test_root_must_also_be_issued_into_a_clone` pins it.
+
+**What `DogTagSBTConsent` changes vs Level-A, and why:**
+- `mintCustodial(id, root)` takes **no `to`** — the custodian is immutable, so an issuer cannot mint to an
+  owner's wallet even by mistake. The owner's wallet is not an argument, so it is in neither calldata nor state.
+- **Write-once `profileRoot`**, no setter (closes the hijack — see the resolved note above).
+- **No `recover`/`Recovered`** (D3): a rebind names the new owner on-chain. Recovery = fresh issuance. The
+  `_inRecovery` soulbound bypass is gone with it, so the lock is absolute.
+- `CUSTODIAN` is mandatory at deploy with no default: it must be neutral (not an owner, and not a vet
+  signer — that would re-link tags to the practice's key). It never signs; it is a sink, not an actor.
+
+**The owner-absence guard** — `CustodialIssuance.t.sol::test_owner_wallet_absent_from_issuance_state_and_calldata`
+is the load-bearing test: it byte-scans the issuance calldata, sweeps every storage slot the issuance
+writes, and checks the logs. It has a **positive control**
+(`test_owner_absence_scanner_actually_detects_the_owner`) because an absence assertion passes vacuously if
+the scanner is broken. Verified by mutation: reintroducing an owner-supplied recipient fails three guards.
+If you touch issuance, keep the control.
+
+#### Why a fresh SBT — the redeploy cascade (established 2026-07-15)
+
+Recorded so it is not re-derived or "simplified" back into a broken shape.
 
 1. **The suggested `status == Active` gate is already there and does NOT fix the hijack.**
    `DogTagSBT.setProfileRoot` (`contracts/src/DogTagSBT.sol:89`) already does
@@ -929,15 +969,20 @@ Established while scoping M5; recorded so the next agent does not re-derive it.
    docs reference it — the vet-api mints the root directly via `mint(to,id,root)`. Sealing it breaks no
    live flow, and D3 (recovery = re-issue a fresh tag ⇒ new `R`) means a tag's `profileRoot` never
    legitimately changes after issuance. Both point at write-once.
-6. **PR #39 was CLOSED UNMERGED** (`mergedAt: null`; head `fm/dogtag-issfix-i4`). None of it is on `main` —
-   not the dormant `mintNext`, and not the two "must-fix" items (7B-1 dead `DOG_PROFILE` option, still wired
-   at `stacks/vet/web/src/pages/Setup.tsx:449`; 7B-2 `ownerOf` pre-flight, absent). M5 "drops the `ownerOf`
-   existence gate" by simply **not** re-implementing 7B-2 — there is no code to delete. Do not confuse that
-   gate with the dup-collision `owner_of` loop (`routes.rs:1588-1600`) or the post-mint read-back
-   (`routes.rs:1812-1819`), which are legitimate and unrelated.
-7. **The live register-pet flow mints to the OWNER's wallet** (`routes.rs:1796-1804`, `mint_wallet = wallet`)
-   and asserts `ownerOf == wallet`. That is precisely the linkability M5 removes; it is the flow to rework,
-   not a bug to patch around.
+6. **PR #39 was CLOSED UNMERGED** (`mergedAt: null`; head `fm/dogtag-issfix-i4`), so none of it reached
+   `main` — not the dormant `mintNext`, and not the two "must-fix" items. M5 re-implemented the
+   owner-independent ones (7B-1 dead `DOG_PROFILE` option; register-first naming) and **deliberately did NOT
+   re-implement 7B-2's `ownerOf` existence pre-flight**: under D1 the tag is custodial, so an `ownerOf` read
+   says nothing about the owner and must not gate issuance. There was no code to delete — "dropping the
+   gate" means not building it. Do not confuse it with the dup-collision `owner_of` loop
+   (`routes.rs:1588-1600`) or the post-mint read-back (`routes.rs:1812-1819`), which are unrelated and stay.
+   `mintNext` was NOT re-implemented either: `DogTagSBTConsent` takes an issuer-supplied `id` like Level-A.
+   Contract-assigned ids remain open and are orthogonal to owner-unlinkability.
+7. **The live register-pet flow still mints to the OWNER's wallet** (`routes.rs:1796-1804`,
+   `mint_wallet = wallet`) and asserts `ownerOf == wallet`. That is the linkability M5 removes, and it is
+   **still live** — the contract side landing does NOT change it. Reworking it is the app-side follow-up,
+   because the custodial route cannot run until the owner's app builds the tree and supplies `R` (the API
+   builds the tree today). Level-A issuance is unaffected and keeps working meanwhile.
 
 ### Build / test
 
