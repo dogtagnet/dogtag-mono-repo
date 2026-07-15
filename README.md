@@ -97,7 +97,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
-| `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` · `ConsentKeyRegistry` | ROAX |
+| `contracts` | `DogTagSBT` (ERC-5192) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `VerificationRegistryConsent` (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover) | ROAX |
 | `circuits` | Groth16 Poseidon-Merkle + EdDSA-BabyJubjub consent circuit (N=24, depth 5) | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
 | `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |
