@@ -777,7 +777,7 @@ public **drand** beacon (chain `8990e7a9…`, round `6286835`). Full transcript 
 - **verifier:** `circuits/Groth16Verifier.consent.sol` → `contracts/src/Groth16VerifierConsent.sol` (contract **`Groth16VerifierConsent`** — renamed so it does NOT collide with the live v2 `Groth16Verifier`). `verifyProof(a,b,c,pub[7])`.
 - This REPLACES the M2 DEV throwaway (dev VK `3f79a5ff…`, dev zkey `12df8ea4…`, both gitignored, forgeable, never deployed).
 - `node circuits/scripts/test-consent.mjs` → **33/33 green** against this production key (round-trip verify, R-parity {3,4,5,7,10,20} leaves, 6 negatives, D5 nullifier).
-- **Deployed ROAX `Groth16VerifierConsent`:** `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` (chainId 135, `--legacy`, deployer `0x119F8c…`, deploy tx `0xcd1cd5fa…`, block 190760). On-chain `cast code` == the compiled runtime (1933 bytes); `verifyProof`(valid consent proof)=`true`, (tampered `R`)=`false`. Recorded in `contracts/deployments/roax.json` (`Groth16VerifierConsent` + `_m3_consent_verifier`). This is a SEPARATE verifier — it does NOT replace the live Level-A `Groth16Verifier` `0xEEFCf…`. Wiring it in was **M4**, now **DONE**: `VerificationRegistryConsent` `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` verifies against it — see "Level-B `VerificationRegistryConsent` (M4)" below.
+- **Deployed ROAX `Groth16VerifierConsent`:** `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` (chainId 135, `--legacy`, deployer `0x119F8c…`, deploy tx `0xcd1cd5fa…`, block 190760). On-chain `cast code` == the compiled runtime (1933 bytes); `verifyProof`(valid consent proof)=`true`, (tampered `R`)=`false`. Recorded in `contracts/deployments/roax.json` (`Groth16VerifierConsent` + `_m3_consent_verifier`). This is a SEPARATE verifier — it does NOT replace the live Level-A `Groth16Verifier` `0xEEFCf…`. Wiring it in was **M4**, now **DONE**: `VerificationRegistryConsent` `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` verifies against it — see "Level-B `VerificationRegistryConsent` (M4)" below.
 
 **VK-freeze checkpoint (`M`-preimage) — reviewed, frozen.** `M = Poseidon5(dogTagId, purpose, relayer,
 deadline, consentNonce)` shares arity + first slot with the leaf hash `Poseidon5(DS_LEAF=1, …)` when
@@ -814,18 +814,18 @@ Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spe
 Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: `contracts/script/DeployConsentRegistry.s.sol`.
 Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
 
-**Deployed ROAX:** `VerificationRegistryConsent` **`0x57A2998668B0F6332f7342016F5Df2Bb05cB900F`** (chainId 135,
-`--legacy`, deploy tx `0x4fb52230…`, block 194489, admin = governance `0x8E27E117…`). It verifies against the
+**Deployed ROAX:** `VerificationRegistryConsent` **`0x53F988Ae0124b96069d90CBC78E6245FeB01E125`** (chainId 135,
+`--legacy`, deploy tx `0xbdcbb27d…`, block 195443, admin = governance `0x8E27E117…`). It verifies against the
 M3 `Groth16VerifierConsent` `0x272be146…`. Recorded in `contracts/deployments/roax.json`
-(`VerificationRegistryConsent` + `_m4_consent_registry`).
+(`VerificationRegistryConsent` + `_m4_consent_registry`). The deployed runtime is **byte-identical** to the
+committed source once the 3 immutables are blanked (6317 bytes).
 
-**⚠ STALE DEPLOY - redeploy REQUIRED before M7.** The live `0x57A2998…` was deployed BEFORE the
-review-round hardening that added the `ownerOf` token-existence gate, so (a) its runtime is no longer
-byte-identical to source (as-deployed 6179 bytes; source now compiles to 6317), and (b) it LACKS the
-erasure gate, i.e. a burned tag would still verify there until someone separately calls `revoke(R)`.
-Nothing is broken today - this registry is not live, no consumer points at it until M7 - but it must be
-redeployed (`contracts/script/DeployConsentRegistry.s.sol`) and `roax.json` updated before the cutover.
-The `roax.json` `onchain_verify` string is the historical AS-DEPLOYED record; do NOT rewrite it.
+**Superseded first deploy.** `0x57A2998…` (block 194489, runtime 6179 bytes, now
+`VerificationRegistryConsent_preErasureGate_legacy`) was deployed BEFORE the review-round hardening that
+added the `ownerOf` token-existence gate, so its bytecode LACKS the erasure gate: a burned tag would still
+verify there. It was **never live** and no consumer ever pointed at it. It was **redeployed** rather than
+left stale, because a canonical address whose bytecode differs from its source is the same landmine class
+as `data/dogtag-zkfail-z9`. **Do not use `0x57A2998…`.**
 
 ### ADDITIVE, not a swap — the Level-A registry is still THE live one
 

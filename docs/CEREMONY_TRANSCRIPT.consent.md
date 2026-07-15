@@ -117,7 +117,7 @@ node scripts/test-consent.mjs                     # ALL GREEN (33/33)
 ## On-chain deployment (ROAX, chainId 135)
 
 M3 deploys the verifier; **wiring it in was M4** — not done in this ceremony, and since **DONE**: the
-owner-blind `VerificationRegistryConsent` `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` verifies against
+owner-blind `VerificationRegistryConsent` `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` verifies against
 this VK (AGENTS.md "Level-B `VerificationRegistryConsent` (M4)"). The rest of this section is the M3
 deploy record as executed.
 
@@ -139,7 +139,7 @@ forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent \
 
 - **M4 (out of scope here, since SHIPPED):** M3 does **not** touch the registry. M4 has since added a NEW
   registry alongside the frozen Level-A one - `VerificationRegistryConsent`
-  `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` - which does `require(verifyProof(a,b,c,pub[7]))` against
+  `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` - which does `require(verifyProof(a,b,c,pub[7]))` against
   THIS verifier, asserts `pub[4] /*R*/ == profileRoot(pub[0] /*dogTagId*/)`, enforces `deadline`,
   consumes `pub[3] /*nullifier*/`, and emits an **owner-blind** `Verified` event. It is additive and not
   yet live (the app cutover is M7); see AGENTS.md "Level-B `VerificationRegistryConsent` (M4)".

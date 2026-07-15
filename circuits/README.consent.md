@@ -18,7 +18,7 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 > testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
 > — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md). The on-chain
 > `recordVerificationZK` wiring (registry redeploy) is **M4 — now DONE**: `VerificationRegistryConsent`
-> `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F`. See the "Build + test" and "M4 binding" notes below.
+> `0x53F988Ae0124b96069d90CBC78E6245FeB01E125`. See the "Build + test" and "M4 binding" notes below.
 
 ## What it proves
 
@@ -123,14 +123,15 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 `Verified` event (no `subject`/`keyHash`).
 
 **M4 is done:** `contracts/src/VerificationRegistryConsent.sol`, deployed on ROAX at
-`0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` against the M3 verifier `0x272be146…`. It is **additive** —
+`0x53F988Ae0124b96069d90CBC78E6245FeB01E125` against the M3 verifier `0x272be146…`. It is **additive** —
 the Level-A `VerificationRegistry` `0x4E2f0996…` is still the live one until the **M7** app cutover, and
 Level-B tags need **M5** custodial issuance first. `contracts/test/ConsentRegistry.t.sol` proves a REAL
 proof from the committed production zkey verifies through it, using the committed
-`contracts/test/consent-fixture.json` (regenerate with `npm run gen-consent-fixture`). Note the deployed
-instance is **stale vs source** (it predates the `ownerOf` token-existence gate) and must be redeployed
-before the M7 cutover. Full details: AGENTS.md "Level-B `VerificationRegistryConsent` (M4)"; circuit
-details: AGENTS.md "Level-B `DogTagConsent` circuit (M2)".
+`contracts/test/consent-fixture.json` (regenerate with `npm run gen-consent-fixture`). The deployed
+runtime is byte-identical to this source. An earlier deploy (`0x57A2998…`, now
+`VerificationRegistryConsent_preErasureGate_legacy`) predated the `ownerOf` token-existence gate and was
+redeployed rather than left stale; it was never live. Full details: AGENTS.md "Level-B
+`VerificationRegistryConsent` (M4)"; circuit details: AGENTS.md "Level-B `DogTagConsent` circuit (M2)".
 
 ## M3 VK-freeze checkpoint — REVIEWED, VK FROZEN
 
