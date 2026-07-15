@@ -1114,7 +1114,7 @@ Shared across vet, groomer, and admin portals (lives in `packages/ui`):
 
 ### 5.1 Vet portal (`stacks/vet/web`, port 41873)
 - **Setup wizard**: genesis (show 24 words → confirm challenge → set passphrase), derive accounts, apply for whitelist (enter USDA#/license#), set DNS-TXT instructions for their domain.
-- **Issue credential**: pick recordType → form (schema-driven, validates §1.6) → "Sign & Issue" (POST `/records`) → show txHash + "Show QR" (`/records/{id}/share`, render QR).
+- **Issue a record**: pick recordType → form (schema-driven, validates §1.6) → "Sign & Issue" (POST `/records`) → show txHash + "Show QR" (`/records/{id}/share`, render QR).
 - **Records list**: backed by the backend's own DB (`GET /records`, operator-gated) — status (issued/revoked/expired), the immutable on-chain proof (tx, block, contract) + explorer link, edit off-chain label/notes (`PATCH /records/{id}` — on-chain-derived fields rejected), mark expired, re-generate QR anytime, revoke (soft — row + proof kept).
 - **Import from user**: "Import Profile / Vaccination" → show scan prompt → `/import/pull` (off-chain; **decoupled** from Verify below).
 - **Export (on-chain proof-of-verification)** — CHANGESPEC §5: pick purpose + **Normal/ZK toggle** (ZK = default for sensitive purposes; no data imported) → `POST /verify/session/start` → render the one-time **export QR** (`/x/<token>?a=<relayer>`; owner scans, approves consent in-app) → poll session: the owner's phone generates the Groth16 proof **on-device** and POSTs `{proof, pubSignals, consent, bind}` (auth via the one-time `exportToken`) → the relayer submits on-chain → show **on-chain verification status** (pending → `Verified` txHash + explorer link). ZK shows "private — no credential data on chain."
