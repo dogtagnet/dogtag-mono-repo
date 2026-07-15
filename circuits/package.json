@@ -11,7 +11,8 @@
     "build-circuit": "bash scripts/setup.sh",
     "test-circuit": "node scripts/test-circuit.mjs",
     "build-consent": "bash scripts/setup-consent.sh",
-    "test-consent": "node scripts/test-consent.mjs"
+    "test-consent": "node scripts/test-consent.mjs",
+    "gen-consent-fixture": "node scripts/gen-consent-fixture.mjs"
   },
   "dependencies": {
     "circomlib": "2.0.5",

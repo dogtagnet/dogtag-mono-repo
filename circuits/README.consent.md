@@ -110,14 +110,20 @@ the **real production key** (33/33 green: round-trip verify + R-parity + negativ
 > `scripts/ceremony-consent.sh` — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md).
 > Running `build-consent` again would OVERWRITE those committed files with a forgeable dev key — don't. The on-chain verifier + registry swap is **M4**.
 
-## M4 binding (out of scope for M2)
+## M4 binding — SHIPPED
 
-The snarkjs Solidity verifier will expose `verifyProof(a, b, c, pub[7])`. Per the spec,
+The snarkjs Solidity verifier exposes `verifyProof(a, b, c, pub[7])`. Per the spec,
 `recordVerificationZK` binds the proof to the real tag by requiring `pub[4] /*R*/ ==
 profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checked), enforces
 `deadline >= block.timestamp`, consumes `pub[3] /*nullifier*/`, and emits an **owner-blind**
-`Verified` event (no `subject`/`keyHash`). Full details: AGENTS.md "Level-B `DogTagConsent` circuit
-(M2)".
+`Verified` event (no `subject`/`keyHash`).
+
+**M4 is done:** `contracts/src/VerificationRegistryConsent.sol`, deployed on ROAX at
+`0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` against the M3 verifier `0x272be146…`. It is **additive** —
+the Level-A `VerificationRegistry` `0x4E2f0996…` is still the live one until the **M7** app cutover, and
+Level-B tags need **M5** custodial issuance first. `contracts/test/ConsentRegistry.t.sol` proves a REAL
+proof from the committed production zkey verifies through it. Full details: AGENTS.md "Level-B
+`VerificationRegistryConsent` (M4)"; circuit details: AGENTS.md "Level-B `DogTagConsent` circuit (M2)".
 
 ## M3 VK-freeze checkpoint — REVIEWED, VK FROZEN
 

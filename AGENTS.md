@@ -799,3 +799,83 @@ Since M3, the **production** consent artifacts are **committed** (force-added pa
 must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/*.ptau`), and
 `Groth16Verifier.consent.dev.sol` (`*.dev.sol`). `test-consent` now runs against the committed prod key
 (33/33 green) and is a standalone heavy gate (like `test-circuit`), intentionally **not** in `make test`.
+
+---
+
+## Level-B `VerificationRegistryConsent` (M4) — the owner-blind on-chain verify path
+
+Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spec.md`.
+Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: `contracts/script/DeployConsentRegistry.s.sol`.
+Tests: `contracts/test/ConsentRegistry.t.sol` (15, real M3 proof). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
+
+**Deployed ROAX:** `VerificationRegistryConsent` **`0x57A2998668B0F6332f7342016F5Df2Bb05cB900F`** (chainId 135,
+`--legacy`, deploy tx `0x4fb52230…`, block 194489, admin = governance `0x8E27E117…`). It verifies against the
+M3 `Groth16VerifierConsent` `0x272be146…`. Recorded in `contracts/deployments/roax.json`
+(`VerificationRegistryConsent` + `_m4_consent_registry`).
+
+### ADDITIVE, not a swap — the Level-A registry is still THE live one
+
+`VerificationRegistry` `0x4E2f0996…` remains live and every committed consumer still points at it. M4 does
+**not** repoint anything: today's apps still produce **Level-A** proofs (`subject`/`keyHash`) and Level-B
+custodial tags do not exist until **M5**, so an early cutover would break the live verify flow. The app
+cutover is **M7**; the exhaustive consumer list lives in `roax.json` `_m4_consent_registry.m7_cutover`.
+This mirrors how M2 froze `verification.circom` and M3 added `Groth16VerifierConsent` alongside the live
+`Groth16Verifier` — **the Level-A registry is FROZEN, not edited.**
+
+### What it does (spec §"On-chain `recordVerificationZK`")
+
+`recordVerificationZK(a, b, c, pub[7])` — **4 args**, because `recordType`/`deadline` are public SIGNALS
+now (Level-A took them as unbound calldata). `pub = [dogTagId, purpose, relayer, nullifier, R, recordType,
+deadline]`. In order: range-check all 7 signals; `relayer < 2^160` (audit L1); `deadline >= block.timestamp`;
+Art. 9 guard; `relayer == msg.sender`; `VERIFY:` whitelist; **`R == profileRoot(dogTagId)`**; `verifyProof`
+vs the consent VK; consume the nullifier; resolve `rootIssuer[R]` + `isValid(R)`; emit owner-blind `Verified`.
+
+- **`R == profileRoot(dogTagId)` is THE Level-B binding.** The circuit deliberately does not bind
+  `dogTagId ↔ R`, so this is the ONLY place it happens. Without it a prover folds a tree they fully control
+  and consents as any tag.
+- **No `ownerOf`, no `keyOf`, no `ConsentKeyRegistry` (D2), no Poseidon6.** The nullifier is a public signal
+  bound in-circuit to the hidden `ownerSecret` + `consentNonce` (D5); Level-A derived it on-chain from
+  `subject`, which Level-B does not have. Constructor is 5-arg `(ir, sbt, zk, ridx, admin)`, not 7.
+- **`Verified(dogTagId, relayer, purpose, nullifier, deadline, ts)`** — `subject` is GONE. Same event NAME as
+  Level-A but a different signature ⇒ **different topic0**; the indexer decodes by `Verified::SIGNATURE_HASH`
+  and will silently skip Level-B events until **M8** teaches it the new shape.
+
+### ⚠ Two traps worth knowing before you touch this
+
+1. **`recordVerificationZK(...)` = selector `0xdd080593`, byte-identical to the RETIRED Level-A 4-arg
+   selector** — same ABI shape, completely different `pub` semantics (Level-A `pub[3]`=subject,
+   `pub[4]`=nullifier, `pub[6]`=R). A stale pre-PR#7 client aimed here DISPATCHES instead of bouncing, but
+   fails closed twice (`R !profileRoot`, then a Level-A proof cannot verify against the consent VK). The
+   reverse — a Level-B client aimed at the live Level-A registry (6-arg `0x423a45b6` only) — gives the bare
+   `execution reverted, data: "0x"` from `data/dogtag-zkfail-z9`. **Check the ADDRESS first when debugging.**
+2. **The Art. 9 constant MUST be reduced mod r.** `recordType` is a public signal, so it is always `< r`,
+   while raw `keccak256("SERVICE_ATTESTATION")` (`0xa757…ed43`) **EXCEEDS r** — copying Level-A's raw
+   constant makes the guard **dead code that can never fire**. The contract pins
+   `SERVICE_ATTESTATION_FIELD = keccak256("SERVICE_ATTESTATION") % r`
+   (`10025591956217394737855806998434905929145386518960477508456501950324730293568`); `ConsentRegistry.t.sol`
+   recomputes it natively in Solidity and fires it on a REAL proof, so the regression cannot come back
+   silently. The same applies to any bytes32 label crossing into a signal (`purpose` is already reduced —
+   `packages/dogtag-standard-ts/src/consent.ts`).
+
+### M5 handoff (issuance) — two hard requirements
+
+1. `profileRoot(dogTagId) = R`, the per-tag M1-engine tree root. **No SBT change is needed** — `DogTagSBT`
+   already stores `profileRoot` as `bytes32`.
+2. **`issue(R)` the root into a `DogTagIssuer` clone too, not only `setProfileRoot`.** The registry keeps
+   Level-A's revocation path (`rootIssuer[R]` → clone → `isValid(R)`), so a root that is only set as
+   profileRoot and never issued reverts **`unknown root` on every verify**. This is what keeps `revoke(R)`
+   working under Level-B.
+
+D1 (custodial mint) needs nothing from the registry: it reads only `profileRoot`, never `ownerOf`.
+`test_owner_is_never_read_from_chain` mints to a custodian and proves verification still passes.
+
+### Build / test
+
+```bash
+# regenerate the real-proof fixture (needs the committed M3 zkey/wasm) -> contracts/test/consent-fixture.json
+node circuits/scripts/gen-consent-fixture.mjs      # or: pnpm --filter @dogtag/circuits run gen-consent-fixture
+forge test --match-contract ConsentRegistryTest    # 15 green, incl. a REAL Groth16 proof on-chain
+```
+
+Unlike `test-consent`, this suite runs in plain `forge test` (the fixture is committed, so it needs no
+circuit toolchain) and is part of the normal contracts gate.
