@@ -109,7 +109,7 @@ Setup is a linear wizard; each step auto-advances on success.
 1. Go to **Issue a record**.
 2. Click **Fill demo data** (valid rabies cert; recordType `VACCINATION`). This fills the cert fields
    but **leaves `dogTagId` blank** — the demo-fill no longer clobbers it (a fixed footgun).
-3. **Set the `dogTagId` field = the dog tag's handle from §A1** (the numeric `dogTagId` the Issue-dog-tag
+3. **Set the `dogTagId` field = the dog tag's handle from §A1** (the numeric `dogTagId` the Register-pet
    wizard allocated). It **must match** — on-chain the SBT key is `field_of_value(handle)`, and the
    owner's §E ZK export checks `ownerOf(field_of_value(dogTagId)) == subject`; a mismatch reverts the
    export with `ERC721NonexistentToken`.
