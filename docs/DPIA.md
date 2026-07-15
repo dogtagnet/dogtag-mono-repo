@@ -35,6 +35,38 @@ person:
 | **wallet ↔ SBT link** (`ownerOf(dogTagId)==wallet`) | the soulbound token binds a pet's `dogTagId` to the owner's wallet address. | An EVM address is **pseudonymous personal data**; a live `ownerOf` link associates a pet with a controllable wallet. | **Fresh per-pet derived address** (§5) — breaks cross-pet enumeration; **SBT burn** on erasure drops the live link. |
 | **verification-event linkage** | `Verified(dogTagId, relayer, subject, purpose, nullifier, ts)` — which pet was presented to which business, when. | `subject`+`dogTagId`+`relayer`+`ts` is **behavioural pseudonymous personal data** (who verified whom). | **ZK-default for sensitive purposes** (no `recordType`/`credentialRoot` on chain); **fresh per-pet `subject`** bounds linkage to one pet; off-chain consent copies are deletable. |
 
+### 2.1 Queued refresh - Level-B owner-blind verification (pending M7)
+
+> **This refresh is QUEUED, not performed.** The assessment above, and in §4, describes the **live**
+> system and is accurate as written; nothing in it is re-scored here.
+
+Milestone M4 deployed a **Level-B owner-blind verification path**
+(`VerificationRegistryConsent`, `contracts/src/VerificationRegistryConsent.sol`) that is **NOT YET
+LIVE**.
+The live verification subsystem remains the Level-A `VerificationRegistry`, which is what this DPIA
+assesses.
+The cutover is **M7**, and it requires **M5** custodial issuance first.
+
+When Level-B goes live, the living-document rule in the status block above fires and the following
+MUST be re-scored.
+This is a forward-looking notice only; none of it is in effect today.
+
+1. **verification-event linkage** (§2) - the Level-B `Verified` event drops `subject` entirely, so
+   the recorded mitigation "fresh per-pet `subject` bounds linkage to one pet" would no longer apply
+   as written.
+   The owner would be proven in zero knowledge and would not appear in the public signals, in
+   contract storage, or in the event.
+   The row therefore needs a genuine **risk re-scoring**, not a text edit.
+2. **wallet ↔ SBT link** (§2) - under Level-B decision D1 the tag would be minted to a **neutral
+   custodian**, so `ownerOf` would carry no owner meaning and the pet/wallet association changes
+   character.
+   That lands with M5 custodial issuance.
+3. **erasure flow** (§4, step 4 "burn the SBT") - the Level-B registry reads `ownerOf` for token
+   **existence** only and never for owner identity, so an erasure burn would fail verification closed
+   **only** by virtue of that existence gate.
+   Sharp edge: `DogTagSBT.burn` does **not** clear `profileRoot[id]`, so an erasure burn should be
+   paired with `revoke(R)` for defence in depth.
+
 **`dogTagId` is non-personal by construction.** It is a random/sequential identifier allocated at
 mint — it is **NEVER** `keccak256(microchip)` and **NEVER** `Poseidon(microchip)` (asserted on-chain
 by `test_dogTagId_is_not_hash_of_microchip` and off-chain by the Phase-8 gate
