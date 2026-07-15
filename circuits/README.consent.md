@@ -71,6 +71,18 @@ against the SDK `fieldOfKeyPath()` by `scripts/test-consent.mjs` (a drift guard)
 canonical table. These three reserved leaves write a **raw field directly** into the value slot (NOT
 the length-prefixed `fieldOfValue` byte-fold used for disclosable attribute leaves).
 
+**The M5 device-side builder that matches this schema is
+[`crates/dogtag-standard-rs/src/profile_tree.rs`](../crates/dogtag-standard-rs/src/profile_tree.rs)**
+(`build_profile_tree`, reached from the holder apps via the `buildProfileTreeHex` FFI). It keeps the
+raw-field encoding in a separate `hash_reserved_leaf` (folding it back into `hash_leaf` would build
+leaves this circuit can never prove), and it **rejects** an attribute whose `keyPath` derives to a
+reserved one - `TypeTag::Bytes` IS the pinned typeTag, so such an attribute would be a second
+circuit-acceptable owner-secret leaf, which is the D5 break the pinning below exists to prevent. The
+owner-secret and the reserved leaves' salts are derived from the wallet **seed** there, not an RNG, so
+restoring the recovery phrase regenerates them (rebuilding `R` also needs the credential's attribute
+leaves, which are not seed-derivable); the circuit is indifferent - it takes both as opaque fields.
+See [`../docs/MOBILE_OWNER_SECRET.md`](../docs/MOBILE_OWNER_SECRET.md).
+
 **Why pinning `keyPath` is load-bearing (soundness, not cosmetic):** if `keyPath` were a free prover
 input, a prover could point the owner-secret inclusion proof at any other in-tree leaf, set
 `ownerSecret` to that leaf's value, and mint a **second valid nullifier for one signed consent** —
@@ -128,12 +140,14 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 the Level-A `VerificationRegistry` `0x4E2f0996…` is still the live one until the **M7** app cutover, and
 Level-B tags need **M5** custodial issuance first.
 
-**M5's contract side is done too, and it supersedes that address.** `DogTagSBTConsent` (the custodial SBT
-with a write-once `profileRoot`) has landed but is **not deployed**; because the registry's `sbt` is
+**M5 is done too, and it supersedes that address.** Its contract side, `DogTagSBTConsent` (the custodial
+SBT with a write-once `profileRoot`), has landed but is **not deployed**; because the registry's `sbt` is
 `immutable`, deploying it also redeploys the registry code above against the new SBT
 (`contracts/script/DeployCustodialIssuance.s.sol` does both; the M4 `DeployConsentRegistry.s.sol` is
-superseded). So `0x53F988Ae…` is provisional, not the instance that goes live at M7. Details: AGENTS.md
-"M5 as-built"; `roax.json` `_m5_custodial_issuance`.
+superseded). So `0x53F988Ae…` is provisional, not the instance that goes live at M7. Its app side - the
+device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) - has landed
+too, but nothing calls it in production: issuance still mints to the owner's wallet, and the cutover is
+**M7**. Details: AGENTS.md "M5 as-built" + "M5 app-side"; `roax.json` `_m5_custodial_issuance`.
 
 `contracts/test/ConsentRegistry.t.sol` proves a REAL proof from the committed production zkey verifies
 through it, using the committed

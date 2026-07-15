@@ -31,7 +31,8 @@ import Foundation
 ///
 /// See `docs/MOBILE_OWNER_SECRET.md` for the file's documented contract.
 enum ProfileTreeStore {
-    /// The documented backup file. Plain JSON in the app's Documents dir.
+    /// The documented device-local store (NOT a backup - see above). Plain JSON in the app's
+    /// Documents dir.
     static let fileName = "dogtag-owner-secrets.json"
 
     /// Stamped into every record so a future KDF change is detectable rather than silently

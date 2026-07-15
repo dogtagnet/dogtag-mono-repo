@@ -731,7 +731,11 @@ reserved leaves to these constants:
 
 `test-consent.mjs` re-derives these constants via the SDK `fieldOfKeyPath()` and asserts they match
 the circuit literals — a drift guard. `consentNonce` and the 16-byte salts stay private and
-per-leaf-random.
+per-leaf-distinct; the circuit consumes them as opaque field inputs either way. Since the M5 app-side
+builder landed, the split matters: the three **reserved** leaves' salts (and the owner-secret itself)
+are **seed-derived**, not random, so restoring the phrase regenerates them - **attribute** leaves'
+salts stay per-leaf-random and are NOT seed-derivable, so rebuilding `R` needs the credential too.
+See "M5 app-side" below.
 
 **Reserved-leaf value encoding (the sharpest M5 handoff edge):** unlike disclosable attribute leaves
 (whose value slot is `fieldOfValue(typedScalar)` — the length-prefixed byte-fold), the three reserved
