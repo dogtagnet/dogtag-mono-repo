@@ -495,6 +495,92 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 
 /**
+ * A disclosable attribute leaf crossing the FFI boundary. `tag`+`value` are reconstructed into a
+ * `TypedScalar` exactly like `hash_leaf_hex` does. `salt_hex` is 16 bytes.
+ */
+public struct AttributeLeafFfi {
+    public var keyPath: String
+    public var saltHex: String
+    public var tag: UInt8
+    public var value: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(keyPath: String, saltHex: String, tag: UInt8, value: String) {
+        self.keyPath = keyPath
+        self.saltHex = saltHex
+        self.tag = tag
+        self.value = value
+    }
+}
+
+
+
+extension AttributeLeafFfi: Equatable, Hashable {
+    public static func ==(lhs: AttributeLeafFfi, rhs: AttributeLeafFfi) -> Bool {
+        if lhs.keyPath != rhs.keyPath {
+            return false
+        }
+        if lhs.saltHex != rhs.saltHex {
+            return false
+        }
+        if lhs.tag != rhs.tag {
+            return false
+        }
+        if lhs.value != rhs.value {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(keyPath)
+        hasher.combine(saltHex)
+        hasher.combine(tag)
+        hasher.combine(value)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAttributeLeafFfi: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AttributeLeafFfi {
+        return
+            try AttributeLeafFfi(
+                keyPath: FfiConverterString.read(from: &buf), 
+                saltHex: FfiConverterString.read(from: &buf), 
+                tag: FfiConverterUInt8.read(from: &buf), 
+                value: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AttributeLeafFfi, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.keyPath, into: &buf)
+        FfiConverterString.write(value.saltHex, into: &buf)
+        FfiConverterUInt8.write(value.tag, into: &buf)
+        FfiConverterString.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAttributeLeafFfi_lift(_ buf: RustBuffer) throws -> AttributeLeafFfi {
+    return try FfiConverterTypeAttributeLeafFfi.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAttributeLeafFfi_lower(_ value: AttributeLeafFfi) -> RustBuffer {
+    return FfiConverterTypeAttributeLeafFfi.lower(value)
+}
+
+
+/**
  * A derived BabyJubjub consent keypair crossing the FFI boundary. `prvHex` is the 32-byte private
  * key (keep encrypted behind the platform keystore); Ax/Ay are 0x.. 32-byte BE public-point hex;
  * keyHashHex = Poseidon(Ax,Ay) is what the wallet binds in ConsentKeyRegistry.
@@ -771,6 +857,170 @@ public func FfiConverterTypeEddsaSignatureFfi_lower(_ value: EddsaSignatureFfi) 
 
 
 /**
+ * A device-built per-tag profile tree.
+ *
+ * Everything here except `root_hex` is OWNER-PRIVATE and must never be transmitted: only
+ * `root_hex` (`R`) is handed to the issuer, which seals it as `profileRoot(dogTagId)`.
+ */
+public struct ProfileTreeFfi {
+    /**
+     * `R` - the value the issuer seals as `profileRoot(dogTagId)`.
+     */
+    public var rootHex: String
+    /**
+     * The nullifier secret. Regenerable from the wallet seed; back it up, never send it.
+     */
+    public var ownerSecretHex: String
+    public var axHex: String
+    public var ayHex: String
+    public var consentPrvHex: String
+    public var keyHashHex: String
+    public var ownerSaltHex: String
+    public var keySaltHex: String
+    public var secretSaltHex: String
+    public var ownerAddressLeafHex: String
+    public var consentKeyLeafHex: String
+    public var ownerSecretLeafHex: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `R` - the value the issuer seals as `profileRoot(dogTagId)`.
+         */rootHex: String, 
+        /**
+         * The nullifier secret. Regenerable from the wallet seed; back it up, never send it.
+         */ownerSecretHex: String, axHex: String, ayHex: String, consentPrvHex: String, keyHashHex: String, ownerSaltHex: String, keySaltHex: String, secretSaltHex: String, ownerAddressLeafHex: String, consentKeyLeafHex: String, ownerSecretLeafHex: String) {
+        self.rootHex = rootHex
+        self.ownerSecretHex = ownerSecretHex
+        self.axHex = axHex
+        self.ayHex = ayHex
+        self.consentPrvHex = consentPrvHex
+        self.keyHashHex = keyHashHex
+        self.ownerSaltHex = ownerSaltHex
+        self.keySaltHex = keySaltHex
+        self.secretSaltHex = secretSaltHex
+        self.ownerAddressLeafHex = ownerAddressLeafHex
+        self.consentKeyLeafHex = consentKeyLeafHex
+        self.ownerSecretLeafHex = ownerSecretLeafHex
+    }
+}
+
+
+
+extension ProfileTreeFfi: Equatable, Hashable {
+    public static func ==(lhs: ProfileTreeFfi, rhs: ProfileTreeFfi) -> Bool {
+        if lhs.rootHex != rhs.rootHex {
+            return false
+        }
+        if lhs.ownerSecretHex != rhs.ownerSecretHex {
+            return false
+        }
+        if lhs.axHex != rhs.axHex {
+            return false
+        }
+        if lhs.ayHex != rhs.ayHex {
+            return false
+        }
+        if lhs.consentPrvHex != rhs.consentPrvHex {
+            return false
+        }
+        if lhs.keyHashHex != rhs.keyHashHex {
+            return false
+        }
+        if lhs.ownerSaltHex != rhs.ownerSaltHex {
+            return false
+        }
+        if lhs.keySaltHex != rhs.keySaltHex {
+            return false
+        }
+        if lhs.secretSaltHex != rhs.secretSaltHex {
+            return false
+        }
+        if lhs.ownerAddressLeafHex != rhs.ownerAddressLeafHex {
+            return false
+        }
+        if lhs.consentKeyLeafHex != rhs.consentKeyLeafHex {
+            return false
+        }
+        if lhs.ownerSecretLeafHex != rhs.ownerSecretLeafHex {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rootHex)
+        hasher.combine(ownerSecretHex)
+        hasher.combine(axHex)
+        hasher.combine(ayHex)
+        hasher.combine(consentPrvHex)
+        hasher.combine(keyHashHex)
+        hasher.combine(ownerSaltHex)
+        hasher.combine(keySaltHex)
+        hasher.combine(secretSaltHex)
+        hasher.combine(ownerAddressLeafHex)
+        hasher.combine(consentKeyLeafHex)
+        hasher.combine(ownerSecretLeafHex)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProfileTreeFfi: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProfileTreeFfi {
+        return
+            try ProfileTreeFfi(
+                rootHex: FfiConverterString.read(from: &buf), 
+                ownerSecretHex: FfiConverterString.read(from: &buf), 
+                axHex: FfiConverterString.read(from: &buf), 
+                ayHex: FfiConverterString.read(from: &buf), 
+                consentPrvHex: FfiConverterString.read(from: &buf), 
+                keyHashHex: FfiConverterString.read(from: &buf), 
+                ownerSaltHex: FfiConverterString.read(from: &buf), 
+                keySaltHex: FfiConverterString.read(from: &buf), 
+                secretSaltHex: FfiConverterString.read(from: &buf), 
+                ownerAddressLeafHex: FfiConverterString.read(from: &buf), 
+                consentKeyLeafHex: FfiConverterString.read(from: &buf), 
+                ownerSecretLeafHex: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProfileTreeFfi, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.rootHex, into: &buf)
+        FfiConverterString.write(value.ownerSecretHex, into: &buf)
+        FfiConverterString.write(value.axHex, into: &buf)
+        FfiConverterString.write(value.ayHex, into: &buf)
+        FfiConverterString.write(value.consentPrvHex, into: &buf)
+        FfiConverterString.write(value.keyHashHex, into: &buf)
+        FfiConverterString.write(value.ownerSaltHex, into: &buf)
+        FfiConverterString.write(value.keySaltHex, into: &buf)
+        FfiConverterString.write(value.secretSaltHex, into: &buf)
+        FfiConverterString.write(value.ownerAddressLeafHex, into: &buf)
+        FfiConverterString.write(value.consentKeyLeafHex, into: &buf)
+        FfiConverterString.write(value.ownerSecretLeafHex, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileTreeFfi_lift(_ buf: RustBuffer) throws -> ProfileTreeFfi {
+    return try FfiConverterTypeProfileTreeFfi.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileTreeFfi_lower(_ value: ProfileTreeFfi) -> RustBuffer {
+    return FfiConverterTypeProfileTreeFfi.lower(value)
+}
+
+
+/**
  * A Groth16 proof formatted exactly as the on-chain Solidity calldata expects (mirrors
  * `dogtag-prover-rs::Groth16Output`): `a`/`c` are G1 `[x,y]`; `b` is G2 with the snarkjs->Solidity
  * coordinate swap applied (`b[0]=[bx_c1,bx_c0]`, `b[1]=[by_c1,by_c0]`); `pub_signals` is the
@@ -943,6 +1193,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeAttributeLeafFfi: FfiConverterRustBuffer {
+    typealias SwiftType = [AttributeLeafFfi]
+
+    public static func write(_ value: [AttributeLeafFfi], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAttributeLeafFfi.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AttributeLeafFfi] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AttributeLeafFfi]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAttributeLeafFfi.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [[String]]
 
@@ -1006,6 +1281,26 @@ public func buildMerkleRootHex(leafHexes: [String])throws  -> String {
 })
 }
 /**
+ * Build the per-tag Merkle tree ON THE DEVICE (`profile_tree::build_profile_tree`) and return `R`
+ * plus the owner-private witness.
+ *
+ * This is spec §"Issuance" step 2: *the owner's app builds the tree locally (owner-address,
+ * consent-key, owner-secret, attributes as salted leaves), computes `R`*. Hand the issuer ONLY
+ * `root_hex`.
+ *
+ * `owner_address_hex` is the 20-byte wallet address; `dog_tag_id_hex` the canonical dogTagId field.
+ */
+public func buildProfileTreeHex(seedHex: String, dogTagIdHex: String, ownerAddressHex: String, attributes: [AttributeLeafFfi])throws  -> ProfileTreeFfi {
+    return try  FfiConverterTypeProfileTreeFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_build_profile_tree_hex(
+        FfiConverterString.lower(seedHex),
+        FfiConverterString.lower(dogTagIdHex),
+        FfiConverterString.lower(ownerAddressHex),
+        FfiConverterSequenceTypeAttributeLeafFfi.lower(attributes),$0
+    )
+})
+}
+/**
  * bytesToField: the length-prefixed, 31-byte-chunked, domain-separated Poseidon fold of raw
  * bytes (hex in) -> the 0x.. 32-byte field hex. Used for keyPath/value parity vectors.
  */
@@ -1044,6 +1339,24 @@ public func deriveBabyjubConsentKey(seedHex: String)throws  -> BabyjubConsentKey
     return try  FfiConverterTypeBabyjubConsentKeyFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
     uniffi_dogtag_standard_fn_func_derive_babyjub_consent_key(
         FfiConverterString.lower(seedHex),$0
+    )
+})
+}
+/**
+ * Derive the owner-secret from the wallet seed, bound to `dogTagId` - the RECOVERABLE nullifier
+ * secret (`profile_tree::derive_owner_secret`).
+ *
+ * Deterministic: restoring the seed regenerates the same secret, hence the same tree and the same
+ * `R`. `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
+ *
+ * The result is owner-private and MUST NOT be transmitted: a server that learned it could link
+ * nullifiers back to the owner, defeating the owner-unlinkable model.
+ */
+public func deriveOwnerSecretHex(seedHex: String, dogTagIdHex: String)throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_derive_owner_secret_hex(
+        FfiConverterString.lower(seedHex),
+        FfiConverterString.lower(dogTagIdHex),$0
     )
 })
 }
@@ -1312,6 +1625,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_build_merkle_root_hex() != 1024) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dogtag_standard_checksum_func_build_profile_tree_hex() != 20561) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dogtag_standard_checksum_func_bytes_to_field_hex() != 34986) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1319,6 +1635,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 3839) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex() != 50191) {

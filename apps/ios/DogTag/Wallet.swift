@@ -99,6 +99,17 @@ enum Wallet {
         return "0x" + priv.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The stored 64-byte BIP-39 seed as `0x…` hex, for the Rust FFI's seed-derived material
+    /// (`deriveBabyjubConsentKey`, `deriveOwnerSecretHex`, `buildProfileTreeHex`).
+    ///
+    /// This is the root secret of the wallet: keep it in memory only for the duration of a
+    /// derivation call, and never log, persist or transmit it. It stays derivable from the user's
+    /// 24-word phrase, which is what makes a restored wallet rebuild the same tree and the same `R`.
+    static func seedHex() -> String? {
+        guard let seed = loadBlob(account: seedAccount) else { return nil }
+        return "0x" + seed.map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func identity(from seed: Data, mnemonic: String) throws -> WalletIdentity {
         let priv = Bip39.seedToSecp256k1Priv(seed)              // 32-byte secp256k1 scalar
         let ethAddress = Secp256k1.address(fromPriv: priv)

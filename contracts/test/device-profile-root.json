@@ -1,0 +1,6 @@
+{
+  "R": "0x1747860aae2ab785c0c5c84138d69e6b4361b880ca0c9726eb44f9f75a9d6df2",
+  "_comment": "R built by the DEVICE-side builder (dogtag-standard-rs profile_tree::build_profile_tree) from the fixed demo wallet seed in profile_tree::device_root_fixture_witness(). CustodialIssuance.t.sol mints this R and asserts profileRoot(dogTagId) == R. Regenerate: cargo run -p dogtag-standard-rs --bin gen-device-profile-root",
+  "_ownerAddress": "0x00000000000000000000000000000000deadbeef",
+  "dogTagId": "424242"
+}

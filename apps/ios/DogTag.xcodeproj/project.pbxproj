@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05A35C55F156CE4480CF763C /* HomeScreen.swift */; };
 		01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21052A141B470C3ACE0815DA /* LocalStore.swift */; };
+		0A5E1C3D7F2B48E19C60D311 /* ProfileTreeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A5E1C3D7F2B48E19C60D312 /* ProfileTreeStore.swift */; };
 		069536323699D7A1734E92A9 /* CredentialDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */; };
 		07F3701552ACB02D59CD8698 /* zk_selftest.json in Resources */ = {isa = PBXBuildFile; fileRef = BAA8FE871C7EFE8AAB555A6C /* zk_selftest.json */; };
 		0A013EDB062A80EFCDB5BAD0 /* Consent.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8AB4F26FEB853C4B49F7988 /* Consent.swift */; };
@@ -45,6 +46,7 @@
 		05A35C55F156CE4480CF763C /* HomeScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreen.swift; sourceTree = "<group>"; };
 		1DE9492A41E44C4441AF7189 /* DogTagFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = DogTagFFI.xcframework; sourceTree = "<group>"; };
 		21052A141B470C3ACE0815DA /* LocalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStore.swift; sourceTree = "<group>"; };
+		0A5E1C3D7F2B48E19C60D312 /* ProfileTreeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileTreeStore.swift; sourceTree = "<group>"; };
 		3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagApp.swift; sourceTree = "<group>"; };
 		409155A71A31BD791C0561AD /* Net.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Net.swift; sourceTree = "<group>"; };
 		41B690C8C0288E6D92C49B1A /* verification_final.zkey */ = {isa = PBXFileReference; path = verification_final.zkey; sourceTree = "<group>"; };
@@ -110,6 +112,7 @@
 				05A35C55F156CE4480CF763C /* HomeScreen.swift */,
 				85DFF42E4A240519092B9764 /* Keccak256.swift */,
 				21052A141B470C3ACE0815DA /* LocalStore.swift */,
+				0A5E1C3D7F2B48E19C60D312 /* ProfileTreeStore.swift */,
 				78E305C5EDBCBAB54068928D /* Models.swift */,
 				409155A71A31BD791C0561AD /* Net.swift */,
 				4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */,
@@ -237,6 +240,7 @@
 				01CA1C7AB95C7C234B95A403 /* HomeScreen.swift in Sources */,
 				88E11CB08CC2C81AE51118FA /* Keccak256.swift in Sources */,
 				01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */,
+				0A5E1C3D7F2B48E19C60D311 /* ProfileTreeStore.swift in Sources */,
 				26286860F2F0C9B67191AAF6 /* Models.swift in Sources */,
 				E8D82ED92A758B3C7A009A2B /* Net.swift in Sources */,
 				D5B0677DB22C2B06A76051B5 /* ProfileScreen.swift in Sources */,

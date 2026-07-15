@@ -163,6 +163,39 @@ contract CustodialIssuanceTest is Test {
         assertEq(uint8(sbt.status(dogTagId)), uint8(DogTagSBTConsent.Status.Active));
     }
 
+    /// @notice M5 app-side: the root the OWNER'S APP builds locally is exactly what the contract seals as
+    /// `profileRoot`. Spec §"Issuance" steps 2-3: *the owner's app builds the tree locally, computes `R`;
+    /// the issuer sets `profileRoot(dogTagId) = R`*.
+    ///
+    /// `device-profile-root.json` is emitted by the REAL device builder
+    /// (`dogtag-standard-rs profile_tree::build_profile_tree`, run over a fixed demo wallet seed via
+    /// `cargo run -p dogtag-standard-rs --bin gen-device-profile-root`), NOT hand-written here. The Rust
+    /// gate keeps it honest from the other side: `profile_tree_parity.rs` fails if the committed file
+    /// drifts from a fresh build, and separately proves that same builder reproduces the `R` the M2 circuit
+    /// proved and this suite verifies on-chain.
+    ///
+    /// So the two gates together pin the whole chain: device-built R == circuit R == `profileRoot`. It is
+    /// deliberately a SEPARATE tag id from the fixture's, so this asserts a genuinely device-derived root
+    /// rather than re-asserting `setUp`'s.
+    function test_device_built_root_is_what_the_contract_stores_as_profileRoot() public {
+        string memory j = vm.readFile("test/device-profile-root.json");
+        bytes32 deviceRoot = bytes32(j.readUint(".R"));
+        uint256 deviceTagId = vm.parseUint(j.readString(".dogTagId"));
+        address deviceOwner = j.readAddress("._ownerAddress");
+
+        assertTrue(deviceRoot != bytes32(0), "device root must be non-zero");
+
+        vm.prank(vetSigner);
+        vacc.issue(deviceRoot);
+        vm.prank(vetSigner);
+        sbt.mintCustodial(deviceTagId, deviceRoot);
+
+        assertEq(sbt.profileRoot(deviceTagId), deviceRoot, "profileRoot == the app-built R");
+        // The device-side move must not reintroduce the linkability M5 removes.
+        assertEq(sbt.ownerOf(deviceTagId), custodian, "device-built tag is still custodial");
+        assertTrue(sbt.ownerOf(deviceTagId) != deviceOwner, "the owner must never hold the tag");
+    }
+
     /// @notice THE load-bearing test (spec §"Issuance" step 4: *the owner's wallet never appears on-chain -
     /// not as `to`, not as `msg.sender`*). Three independent checks, because each catches a different
     /// regression:
