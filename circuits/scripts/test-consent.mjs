@@ -66,12 +66,15 @@ function saltField(seed) {
 }
 
 // Adapt the SDK's explicit `Sibling | Promote` inclusion proof (DSDP §2.3) to the circuit's
-// FRONT-PACKED sibling array + length. merkleProof returns [{sibling},…,{promote:true},…]; the
-// circuit (MerkleInclusion) folds only the real siblings (a {promote} level is a pass-through, no
-// hashing — exactly what processProof does), so keep only {sibling} steps, set pathLen to that
-// count, and pad the unused tail with 0s.
+// FRONT-PACKED sibling array + length. `merkleProof` returns EITHER the current ProofStep form
+// [{sibling},…,{promote:true},…] OR — from an older built SDK dist — a bare sibling-field array
+// (promotes omitted). The circuit (MerkleInclusion) folds only the real siblings (a {promote} level
+// is a pass-through, no hashing — exactly what processProof does), so accept both shapes: keep the
+// real siblings, drop any {promote} pass-through level, set pathLen to that count, pad the tail with 0s.
 function padPath(proof) {
-  const siblings = proof.filter((s) => "sibling" in s).map((s) => s.sibling.toString());
+  const siblings = proof
+    .filter((s) => typeof s !== "object" || "sibling" in s)
+    .map((s) => (typeof s === "object" ? s.sibling : s).toString());
   if (siblings.length > DEPTH) throw new Error(`path too deep (${siblings.length} > ${DEPTH})`);
   const pathLen = siblings.length;
   while (siblings.length < DEPTH) siblings.push("0");
@@ -247,11 +250,13 @@ async function expectWitnessFailure(eddsa, opts, tag) {
 }
 
 async function main() {
-  // Heavy manual gate: the DEV zkey/wasm are gitignored (throwaway key). If they are not built,
-  // SKIP cleanly (exit 0) rather than red an unbuilt CI run — reproduce with `npm run build-consent`.
+  // Heavy manual gate: the consent zkey/wasm/VK are the committed M3 production ceremony output. If
+  // they are somehow absent, SKIP cleanly (exit 0) rather than red an unbuilt CI run - regenerate with
+  // scripts/ceremony-consent.sh (NOT `npm run build-consent`, the DEV/throwaway setup that would
+  // clobber the committed production key).
   for (const f of [WASM, ZKEY, VKEY]) {
     if (!existsSync(f)) {
-      console.log(`SKIP test-consent: missing build artifact ${f}\n  Build it first: npm run build-consent (scripts/setup-consent.sh, ~11 min, DEV/throwaway key).`);
+      console.log(`SKIP test-consent: missing committed artifact ${f}\n  It is the committed M3 production ceremony output; regenerate with scripts/ceremony-consent.sh (NOT build-consent, the DEV/throwaway setup that would clobber the committed production key).`);
       process.exit(0);
     }
   }

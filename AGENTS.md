@@ -174,6 +174,7 @@ The operator-facing **handle** is a small integer. The **on-chain** dogTagId min
 
 ## ZK trusted-setup ceremony
 
+- This section is the **Level-A `verification.circom`** ceremony. The **Level-B `consent.circom`** circuit has its OWN M3 ceremony — see "M3 trusted-setup ceremony" under "Level-B `DogTagConsent` circuit (M2)" and `docs/CEREMONY_TRANSCRIPT.consent.md`. Three ceremony scripts now exist, do not confuse them: `scripts/setup.sh` (DEV verification), `scripts/setup-consent.sh` (DEV consent), and the real ones — `scripts/ceremony.sh` (verification, multi-party) + `scripts/ceremony-consent.sh` (consent, testnet single-contributor).
 - Two scripts, do not confuse them: `circuits/scripts/setup.sh` is the **DEV/TEST** single-contributor setup (self-generated ptau, throwaway beacon) and must never secure production; `circuits/scripts/ceremony.sh` is the **production** multi-party ceremony (public Hermez phase-1 ptau + ≥3 independent contributors + public beacon). Subcommands: `init` → `contribute IN OUT "name"` (×N) → `beacon LAST 0x<hex> "note"` → `finalize`.
 - Security model is **1-of-N honest, NOT majority/multisig**: the setup is sound if *any one* contributor destroys their toxic waste (entropy); broken only if *all* collude. So maximize diverse, independent contributors — adding more can only help. Do not describe it as a threshold/quorum scheme.
 - The testnet key currently on-chain is a **single-operator self-run** (`docs/CEREMONY_TRANSCRIPT.md`, audit Finding H3) → forgeable; production requires re-running `ceremony.sh` per `docs/CEREMONY_RUNBOOK.md`. The ceremony gates only the ZK path (`recordVerificationZK`); the ECDSA path and three-pillar trust model are unaffected.
@@ -756,24 +757,45 @@ needs the private leaves + salts, not merely the signature), so the app — not 
 `recordType`. Groth16 still binds it to the specific proof (it cannot be swapped post-proof). **M4
 must treat `recordType` as a prover-supplied label, not as an owner-attested field.**
 
-### ⚠ Open item for the M3 VK-freeze checkpoint
+### M3 trusted-setup ceremony — DONE (VK FROZEN, testnet-grade)
 
-`M` is `Poseidon5` and shares arity + first slot with the leaf hash `Poseidon5(DS_LEAF=1, …)` when
-`dogTagId == 1`. No exploit is known (EdDSA needs the private key; leaves are never signed), so M2
-implements `M` exactly as the captain-approved spec states (no DS tag). **M3 is the last point to
-reconsider `M`'s preimage structure before the VK is locked** — if a domain tag is added, the spec,
-this circuit, and M7's app proof-gen must change together, and the ceremony re-run.
+The **M3 ceremony is complete**. `circuits/scripts/ceremony-consent.sh` ran a **testnet-grade
+single-contributor** phase-2 (captain-approved for ROAX testnet; the mainnet ≥3-independent-contributor
+re-run stays deferred): public Hermez `powersOfTau28_hez_final_17.ptau` (reused, phase-1 NOT re-run;
+sha256 `6b662a32…`, byte-identical to the v2 ptau) → one contribution (fresh entropy, destroyed) →
+public **drand** beacon (chain `8990e7a9…`, round `6286835`). Full transcript + reproduce/audit steps:
+`docs/CEREMONY_TRANSCRIPT.consent.md`. Pinned outputs (committed, force-added past the `build/` ignore):
+
+- **VK:** `circuits/build/consent_verification_key.json` (sha256 `27879dd7c4eabb6acea4d1be1249ba3c4212f95a27237e7e1e1220557b4e2d7f`, `nPublic=7`).
+- **proving zkey:** `circuits/build/consent_final.zkey` (sha256 `f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868`) — `snarkjs zkey verify` → `ZKey Ok!`; M7's prover pins this hash.
+- **verifier:** `circuits/Groth16Verifier.consent.sol` → `contracts/src/Groth16VerifierConsent.sol` (contract **`Groth16VerifierConsent`** — renamed so it does NOT collide with the live v2 `Groth16Verifier`). `verifyProof(a,b,c,pub[7])`.
+- This REPLACES the M2 DEV throwaway (dev VK `3f79a5ff…`, dev zkey `12df8ea4…`, both gitignored, forgeable, never deployed).
+- `node circuits/scripts/test-consent.mjs` → **33/33 green** against this production key (round-trip verify, R-parity {3,4,5,7,10,20} leaves, 6 negatives, D5 nullifier).
+- **Deployed ROAX `Groth16VerifierConsent`:** `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` (chainId 135, `--legacy`, deployer `0x119F8c…`, deploy tx `0xcd1cd5fa…`, block 190760). On-chain `cast code` == the compiled runtime (1933 bytes); `verifyProof`(valid consent proof)=`true`, (tampered `R`)=`false`. Recorded in `contracts/deployments/roax.json` (`Groth16VerifierConsent` + `_m3_consent_verifier`). This is a SEPARATE verifier — it does NOT replace the live Level-A `Groth16Verifier` `0xEEFCf…`; wiring it into `VerificationRegistry` is **M4** (NOT done here).
+
+**VK-freeze checkpoint (`M`-preimage) — reviewed, frozen.** `M = Poseidon5(dogTagId, purpose, relayer,
+deadline, consentNonce)` shares arity + first slot with the leaf hash `Poseidon5(DS_LEAF=1, …)` when
+`dogTagId == 1`. **No exploit exists** (EdDSA needs the private key; leaves are never signed); the
+public-signal order/count was re-verified from the freshly compiled circuit (7 outputs, 0 public
+inputs); the captain-approved spec fixes `M` in this exact form (no DS tag). Changing `M` would require
+changing the spec, this circuit, and M7's app proof-gen together, and re-running the ceremony — out of
+M3 scope. VK **frozen** against `consent.circom` as merged in #42.
 
 ### Build / test / reproduce
 
 ```bash
-# one-time (~11 min): DEV/THROWAWAY trusted setup -> build/consent_final.zkey (+ dev .sol, NON-PRODUCTION)
-pnpm --filter @dogtag/circuits run build-consent
-# fast: witness/proof round-trip + R-parity + negatives + keyPath-substitution + D5 nullifier
+# M3 REAL testnet ceremony -> committed build/consent_final.zkey + VK + Groth16VerifierConsent.sol (see transcript)
+bash circuits/scripts/ceremony-consent.sh
+# fast: witness/proof round-trip + R-parity + negatives + keyPath-substitution + D5 nullifier (vs the committed prod key)
 pnpm --filter @dogtag/circuits run test-consent
+# ⚠ DEV/THROWAWAY setup — self-generated ptau, forgeable; OVERWRITES the committed M3 zkey/VK. Do NOT run to deploy.
+pnpm --filter @dogtag/circuits run build-consent
 ```
 
-The consent build artifacts (`build/consent_*`, `Groth16Verifier.consent.dev.sol`) are **gitignored**
-— they come from a **throwaway single-contributor key** and must never be deployed. The real VK is
-the M3 ceremony's. This circuit test is a standalone heavy gate (like `test-circuit`), intentionally
-**not** wired into `make test`.
+Since M3, the **production** consent artifacts are **committed** (force-added past the `build/` ignore):
+`build/consent.r1cs`, `build/consent_final.zkey`, `build/consent_verification_key.json`,
+`build/consent_js/consent.wasm`, plus `circuits/Groth16Verifier.consent.sol` /
+`contracts/src/Groth16VerifierConsent.sol`. The **intermediate/DEV** artifacts stay **gitignored** and
+must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/*.ptau`), and
+`Groth16Verifier.consent.dev.sol` (`*.dev.sol`). `test-consent` now runs against the committed prod key
+(33/33 green) and is a standalone heavy gate (like `test-circuit`), intentionally **not** in `make test`.

@@ -103,6 +103,7 @@ authoritative copy is `contracts/deployments/roax.json`"), and `README.md` — a
 | **ConsentKeyRegistry** | **`0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671`** | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` = `_preMetaTx_legacy` |
 | DogTagSBT | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` | profile/credential mint target |
 | Groth16Verifier | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` | v2 ceremony verifier, wired into current VR since the 2026-07-02 cutover; `0x138b433071Ad806E841B5AD53623290a9bf21761` = `_v1_legacy` |
+| Groth16VerifierConsent | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` | Level-B consent verifier - deployed M3, **not yet wired** into any VerificationRegistry (that swap is M4) |
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` | circomlib-exact |
 | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` | `onlyOwner createIssuer` |
 | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` | clone impl |

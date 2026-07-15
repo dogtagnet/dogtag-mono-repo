@@ -32,8 +32,10 @@ pragma circom 2.1.9;
 // leaf, so ownerSecret / (Ax,Ay) are collision-bound to the genuine owner leaves. M5 issuance
 // MUST build these three leaves with exactly these keyPath+typeTag values (see AGENTS.md).
 //
-// CEREMONY: DEV trusted setup only (scripts/setup-consent.sh, throwaway key marked NON-PRODUCTION).
-// The real phase-2 ceremony + VK freeze is M3.
+// CEREMONY: the real testnet-grade phase-2 ceremony (M3) is DONE. The committed production VK/zkey
+// (build/consent_verification_key.json, build/consent_final.zkey) + the Groth16VerifierConsent verifier
+// are its output - see docs/CEREMONY_TRANSCRIPT.consent.md. scripts/setup-consent.sh remains the
+// DEV/throwaway setup (NON-PRODUCTION); the production key is regenerated with scripts/ceremony-consent.sh.
 
 include "poseidon.circom";
 include "bitify.circom";
@@ -159,8 +161,8 @@ template DogTagConsent(depth) {
     //     No DS tag (matches level-b-spec.md §Verify #4 and the Level-A no-tag convention).
     //     NOTE (M3 hygiene): M is Poseidon5 and so shares arity+first-slot with the leaf hash
     //     Poseidon5(DS_LEAF=1, ...) when dogTagId==1. No exploit exists (EdDSA needs the key,
-    //     leaves aren't signed), but the VK-freeze checkpoint should re-review M's preimage
-    //     structure before locking. See AGENTS.md.
+    //     leaves aren't signed); the VK-freeze checkpoint reviewed M's preimage structure and
+    //     confirmed no exploit, and the VK is now FROZEN against this circuit. See AGENTS.md.
     // ===================================================================
     component mh = Poseidon(5);
     mh.inputs[0] <== dogTagId;

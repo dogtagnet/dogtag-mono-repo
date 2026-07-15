@@ -26,6 +26,7 @@
 > | **VerificationRegistry** (current; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
 > | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 > | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
+> | Groth16VerifierConsent (Level-B; deployed M3, **not yet wired** - M4) | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` |
 > | deployer EOA (genesis; **stripped of all roles** in Governance Phase-2, 2026-07-05 block 123835) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 > | **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
 > | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
