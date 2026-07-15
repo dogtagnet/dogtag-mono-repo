@@ -51,8 +51,21 @@ reaches a replacement device.
 > It is the only cross-device path to the owner-secret.
 > A device lost without a phrase backup means the owner-secret is gone and the tag can never be
 > re-proven; per decision D3 the remedy is a fresh tag with a new id and a new `R`, not a rebind.
-> An in-app confirmation that the owner has backed up the phrase is **required and still pending** -
-> it is not shipped, and no owner-secret creation flow exists until M7.
+
+Because that loss is silent and permanent, the app does not rely on the owner reading the warning:
+**owner-secret creation is gated on an explicit confirmation.**
+`ProfileTreeStore.buildAndPersist` throws `StoreError.seedBackupNotConfirmed` unless
+`SeedBackup.isConfirmed` (`Wallet.swift`), so a tag cannot be created for an owner who has not
+affirmed they stored the phrase offline.
+The confirmation is recorded by the existing "I've saved it" action on the recovery-phrase panel
+(`ProfileScreen.swift`), which the wallet-genesis and export flows both surface.
+
+It records an assertion, not proof: the app cannot verify a phrase was really written down, and a
+determined owner can tap through.
+The gate closes the *silent* failure (a tag minted against a phrase the owner never saw), not the
+dishonest one.
+`SeedBackup` lives in `UserDefaults` because it is not a secret; if it is ever lost the gate simply
+re-prompts, which fails safe.
 
 ### 1. Seed derivation
 
@@ -141,8 +154,10 @@ It must track `profile_tree::OWNER_SECRET_DOMAIN` in the Rust core.
 |---|---|
 | tree + KDF (source of truth) | `crates/dogtag-standard-rs/src/profile_tree.rs` |
 | FFI surface | `crates/dogtag-standard-rs/src/ffi.rs` (`buildProfileTreeHex`, `deriveOwnerSecretHex`) |
-| iOS store + backup file | `apps/ios/DogTag/ProfileTreeStore.swift` |
+| iOS store + device-local file | `apps/ios/DogTag/ProfileTreeStore.swift` |
 | seed accessor | `apps/ios/DogTag/Wallet.swift` (`Wallet.seedHex()`) |
+| seed-backup gate | `apps/ios/DogTag/Wallet.swift` (`SeedBackup`), enforced in `ProfileTreeStore.buildAndPersist` |
+| confirmation UI | `apps/ios/DogTag/ProfileScreen.swift` (the "I've saved it" action) |
 
 The math is in Rust so the Poseidon parameter set and the reserved-leaf encoding stay pinned in one
 place across Rust / TS / circom.

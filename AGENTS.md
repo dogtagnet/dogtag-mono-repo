@@ -1098,9 +1098,19 @@ recovery, and the thing to state correctly: the file is NOT a
 cross-device backup, so recovery needs the **seed AND the credential** - the phrase re-derives the
 owner-control core (owner-secret, consent key, reserved-leaf salts), while the attribute values+salts are
 not seed-derivable and come back from the wrapped credential itself (`wrap_document` packs each leaf as
-`"<saltHex>:<tag>:<value>"`). The seed ALONE does not reproduce `R`. An in-app "I backed up my phrase"
-confirmation is required and still pending (nothing creates an owner-secret until M7).
+`"<saltHex>:<tag>:<value>"`). The seed ALONE does not reproduce `R`.
 `Wallet.seedHex()` was added because the seed had NO public accessor (`loadBlob` is private).
+
+**The seed-backup gate is load-bearing, not a nag - do not "simplify" it into a warning.** Because the
+store is device-local, the phrase is the ONLY thing that regenerates an owner-secret on a replacement
+phone, and `profileRoot` is write-once so there is no on-chain remedy (D3: re-issue). So
+`ProfileTreeStore.buildAndPersist` THROWS `seedBackupNotConfirmed` unless `SeedBackup.isConfirmed`
+(`Wallet.swift`); the existing "I've saved it" action on the recovery-phrase panel
+(`ProfileScreen.swift`) is what records it, so genesis and export both satisfy it. It records an
+ASSERTION, not proof - it closes the SILENT failure (a tag minted against a phrase the owner never
+saw), not a determined tap-through. It lives in `UserDefaults` because it is not a secret; losing it
+just re-prompts, which fails safe. **M7 owns the other half:** the credential (values + salts) must be
+re-obtainable after device loss, or a phrase backup alone still will not save the tag.
 
 There is **no iOS unit-test target**, so the Swift side is covered by `swiftc -typecheck` (the recipe
 in "Getting real Swift signal without the xcframework") and every assertion worth making lives in the

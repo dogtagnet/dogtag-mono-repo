@@ -158,6 +158,29 @@ enum Wallet {
 
 enum WalletError: Error { case keychain(OSStatus); case randomGenerationFailed }
 
+/// Records that the user has confirmed they wrote down their 24-word recovery phrase.
+///
+/// Load-bearing for Level-B recovery, not a nag: the wallet seed is the ONLY cross-device path to a
+/// tag's owner-secret. `Documents/dogtag-owner-secrets.json` is excluded from device backups
+/// (`ProfileTreeStore`), and the seed/entropy Keychain items are `…ThisDeviceOnly`, so a replacement
+/// phone can regenerate the owner-secret ONLY by restoring the phrase. Minting an owner-secret for a
+/// user who has not written the phrase down would mean a lost phone silently and permanently
+/// destroys that tag - `profileRoot` is write-once, so there is no on-chain remedy (D3: re-issue a
+/// fresh tag). `ProfileTreeStore.buildAndPersist` therefore GATES creation on this flag.
+///
+/// It records a user ASSERTION, not proof - the app cannot verify a phrase was really written down.
+/// It is not a secret, so plain `UserDefaults` (where the app keeps its other non-secret prefs) is
+/// the right home rather than the Keychain. If it is ever lost the gate simply re-prompts, which
+/// fails safe in the direction that matters.
+enum SeedBackup {
+    private static let confirmedKey = "seed_backup_confirmed_v1"
+
+    static var isConfirmed: Bool { UserDefaults.standard.bool(forKey: confirmedKey) }
+
+    /// Call when the user affirms they have stored the phrase offline (the "I've saved it" action).
+    static func confirm() { UserDefaults.standard.set(true, forKey: confirmedKey) }
+}
+
 /// AndroidX BiometricPrompt analogue: LAContext-gated authentication.
 enum Biometric {
     static func authenticate(reason: String, completion: @escaping (Bool, String?) -> Void) {

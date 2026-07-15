@@ -66,6 +66,7 @@ enum ProfileTreeStore {
     enum StoreError: Error, LocalizedError {
         case rootMismatch(expected: String, got: String)
         case unreadableFile(underlying: Error)
+        case seedBackupNotConfirmed
 
         var errorDescription: String? {
             switch self {
@@ -74,6 +75,9 @@ enum ProfileTreeStore {
             case let .unreadableFile(underlying):
                 return "\(fileName) exists but could not be read; refusing to overwrite it "
                     + "(it holds recovery secrets): \(underlying)"
+            case .seedBackupNotConfirmed:
+                return "the wallet recovery phrase has not been confirmed as backed up; refusing to "
+                    + "create an owner-secret that a lost phone would destroy permanently"
             }
         }
     }
@@ -88,6 +92,13 @@ enum ProfileTreeStore {
     /// Build the tag's tree on-device from the wallet seed and persist the recovery record.
     ///
     /// Returns the full owner-private witness; hand the issuer ONLY `rootHex`.
+    ///
+    /// Throws `StoreError.seedBackupNotConfirmed` unless the user has confirmed they backed up their
+    /// recovery phrase ([`SeedBackup`]). That gate is the point: this store is excluded from device
+    /// backups, so the phrase is the ONLY thing that can regenerate this owner-secret on a
+    /// replacement phone. Creating one without it would let a lost phone permanently destroy the tag
+    /// with no warning and no on-chain remedy (`profileRoot` is write-once). Call
+    /// `SeedBackup.confirm()` from the phrase-backup UX first.
     @discardableResult
     static func buildAndPersist(
         seedHex: String,
@@ -95,6 +106,7 @@ enum ProfileTreeStore {
         ownerAddress: String,
         attributes: [BackedUpAttribute]
     ) throws -> ProfileTreeFfi {
+        guard SeedBackup.isConfirmed else { throw StoreError.seedBackupNotConfirmed }
         let dogTagIdHex = try dogTagIdFieldHex(dogTagIdDec: dogTagIdDec)
         let tree = try buildProfileTreeHex(
             seedHex: seedHex,

@@ -116,6 +116,11 @@ struct ProfileScreen: View {
                             HStack(spacing: 10) {
                                 CopyButton(title: "Copy phrase", value: m, secret: true)
                                 Button {
+                                    // Load-bearing, not just a dismiss: the phrase is the ONLY way to
+                                    // regenerate a tag's owner-secret on a replacement phone (the
+                                    // owner-secret store is device-local, excluded from backups), so
+                                    // ProfileTreeStore refuses to create one until this is recorded.
+                                    SeedBackup.confirm()
                                     mnemonic = nil
                                     walletMsg = "Recovery phrase hidden. Export it again anytime from “Export account keys”."
                                 } label: {
