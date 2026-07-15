@@ -203,6 +203,11 @@ pub struct ProfileTree {
 ///
 /// `dog_tag_id` is the **canonical dogTagId field** (`field_of_value(Integer(dec))`, what
 /// `dog_tag_id_field_hex` returns), not the raw decimal id.
+///
+/// An attribute whose keyPath resolves to one of the reserved owner-control keyPaths
+/// ([`RESERVED_KEY_PATH_FIELDS`]) is **rejected**: `TypeTag::Bytes` IS [`RESERVED_TYPE_TAG`], so such
+/// an attribute would build a second leaf the circuit accepts as a reserved leaf, defeating the
+/// keyPath pinning that makes the real one unique (`consent.circom` header; D5).
 pub fn build_profile_tree(
     seed: &[u8],
     dog_tag_id: Fr,
@@ -228,6 +233,19 @@ pub fn build_profile_tree(
 
     let mut leaves = vec![owner_address_leaf, consent_key_leaf, owner_secret_leaf];
     for a in attributes {
+        // Compared on the DERIVED field, not the raw string: the leaf commits to
+        // `field_of_keypath(kp)`, and that NFC-normalizes, so two distinct strings reaching the same
+        // field build the same leaf and a raw string compare would miss them.
+        let key_path_field = field_of_keypath(&a.key_path);
+        if RESERVED_KEY_PATH_FIELDS
+            .iter()
+            .any(|(reserved, _)| field_of_keypath(reserved) == key_path_field)
+        {
+            return Err(DogTagError::Other(format!(
+                "attribute keyPath {:?} is reserved for the owner-control leaves",
+                a.key_path
+            )));
+        }
         leaves.push(hash_leaf(&a.key_path, &a.salt, &a.value)?);
     }
 
@@ -423,6 +441,47 @@ mod tests {
         assert!(hash_reserved_leaf(KP_OWNER_SECRET, &[0u8; 15], Fr::from(1u64)).is_err());
         assert!(derive_owner_secret(b"", tag_id()).is_err());
         assert!(build_profile_tree(b"", tag_id(), &addr(), &attrs()).is_err());
+    }
+
+    /// An attribute must never be able to occupy a reserved keyPath. `TypeTag::Bytes` IS
+    /// `RESERVED_TYPE_TAG` (5), so `hash_leaf(KP_OWNER_SECRET, salt, Bytes(v))` builds a leaf shaped
+    /// exactly like the real owner-secret leaf, and the circuit takes `ownerSecret` as an opaque
+    /// field - a prover could aim the inclusion proof at either leaf and mint two nullifiers from one
+    /// signed consent (D5). `profileRoot` is write-once, so one such tree would be permanent.
+    #[test]
+    fn rejects_an_attribute_that_collides_with_a_reserved_key_path() {
+        for kp in [KP_OWNER_ADDRESS, KP_CONSENT_KEY, KP_OWNER_SECRET] {
+            let mut with_collision = attrs();
+            with_collision.push(AttributeLeaf {
+                key_path: kp.to_string(),
+                salt: [5u8; SALT_LEN],
+                value: TypedScalar::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+            });
+            let err = match build_profile_tree(SEED, tag_id(), &addr(), &with_collision) {
+                Err(e) => e,
+                Ok(_) => panic!("keyPath {kp} must not be usable as an attribute"),
+            };
+            assert!(
+                err.to_string().contains(kp),
+                "the error must name the offending keyPath, got: {err}"
+            );
+        }
+    }
+
+    /// The guard must not fire on ordinary attributes - `R` must not move for any non-colliding
+    /// input (`contracts/test/device-profile-root.json` and the consent-fixture parity test pin it).
+    #[test]
+    fn ordinary_attributes_are_unaffected_by_the_reserved_key_path_guard() {
+        let t = build_profile_tree(SEED, tag_id(), &addr(), &attrs()).unwrap();
+        // A keyPath that merely CONTAINS a reserved one is a different field, hence a different leaf.
+        let mut near_miss = attrs();
+        near_miss.push(AttributeLeaf {
+            key_path: format!("credentialSubject.{KP_OWNER_SECRET}"),
+            salt: [5u8; SALT_LEN],
+            value: TypedScalar::Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
+        });
+        let n = build_profile_tree(SEED, tag_id(), &addr(), &near_miss).unwrap();
+        assert_ne!(t.root, n.root);
     }
 
     /// The three reserved leaves must be provable members of `R` - the circuit proves exactly this.
