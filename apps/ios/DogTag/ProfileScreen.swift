@@ -115,20 +115,10 @@ struct ProfileScreen: View {
                                 .hideWhenInactive()
                             HStack(spacing: 10) {
                                 CopyButton(title: "Copy phrase", value: m, secret: true)
-                                Button {
-                                    // Load-bearing, not just a dismiss: the phrase is the ONLY way to
-                                    // regenerate a tag's owner-secret on a replacement phone (the
-                                    // owner-secret store is device-local, excluded from backups), so
-                                    // ProfileTreeStore refuses to create one until this is recorded.
-                                    SeedBackup.confirm()
+                                SeedBackupConfirmationButton {
                                     mnemonic = nil
                                     walletMsg = "Recovery phrase hidden. Export it again anytime from “Export account keys”."
-                                } label: {
-                                    Text("I've saved it")
-                                        .font(.system(size: 12, weight: .semibold)).foregroundColor(c.onAccent)
-                                        .padding(.vertical, 8).padding(.horizontal, 12)
-                                        .background(RoundedRectangle(cornerRadius: 10).fill(c.accent))
-                                }.buttonStyle(.plain)
+                                }
                             }
                         }
                         .padding(12)
@@ -280,6 +270,24 @@ private struct CopyButton: View {
     }
 }
 
+private struct SeedBackupConfirmationButton: View {
+    @Environment(\.dogTagColors) var c
+    let onConfirmed: () -> Void
+
+    var body: some View {
+        Button {
+            guard let seedHex = Wallet.seedHex(), SeedBackup.confirm(seedHex: seedHex) else { return }
+            onConfirmed()
+        } label: {
+            Text("I've saved it")
+                .font(.system(size: 12, weight: .semibold)).foregroundColor(c.onAccent)
+                .padding(.vertical, 8).padding(.horizontal, 12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(c.accent))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// Carries the revealed secrets into `ExportAccountSheet` via `.sheet(item:)`, so they are delivered
 /// by the payload rather than read from sibling `@State` (which SwiftUI evaluates stale on the first
 /// presentation). A fresh `id` per reveal re-presents the sheet each time Export is tapped.
@@ -324,7 +332,10 @@ private struct ExportAccountSheet: View {
                 if let m = mnemonic, !m.isEmpty {
                     Text("Recovery phrase (24 words)").font(.system(size: 13, weight: .semibold)).foregroundColor(c.muted)
                     mnemonicGrid(m).hideWhenInactive()
-                    CopyButton(title: "Copy recovery phrase", value: m, secret: true)
+                    HStack(spacing: 10) {
+                        CopyButton(title: "Copy recovery phrase", value: m, secret: true)
+                        SeedBackupConfirmationButton { dismiss() }
+                    }
                     Text("Restores your account in DogTag (or a wallet using the same derivation). The copy clears from the clipboard automatically.")
                         .font(.system(size: 11)).foregroundColor(c.muted)
                 } else {

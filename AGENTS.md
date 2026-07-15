@@ -1029,8 +1029,8 @@ seed - while additionally being *recoverable*, which a random secret is not:
 
 | input | derivation |
 |---|---|
-| owner-secret | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId ‖ seed)` → `from_be_bytes_mod_order` over all **64** bytes |
-| reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId ‖ len(keyPath) ‖ keyPath ‖ seed)[0..16]` |
+| owner-secret | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)` → `from_be_bytes_mod_order` over all **64** bytes |
+| reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId[32B BE] ‖ u64be(len(UTF8(keyPath))) ‖ UTF8(keyPath) ‖ seed)[0..16]` |
 | consent-key | `eddsa::derive_babyjub_consent_key_from_seed` (pre-existing, already seed-derived) |
 
 Reduce the **full 64-byte** digest, never a 32-byte prefix: a bare 32-byte hash mod r is measurably
@@ -1050,8 +1050,8 @@ into the value slot; `hash_leaf` always runs the value through `field_of_value`.
 **What pins device-built `R` to the chain - three gates, each catching a different regression:**
 
 ```bash
-cargo test -p dogtag-standard-rs profile_tree   # core + FFI round-trip + the circuit-R parity
-forge test --match-contract CustodialIssuanceTest   # 17 green, incl. the device-built-root test
+cargo test -p dogtag-standard-rs   # core + FFI round-trip + circuit-R parity + fixture drift
+(cd contracts && forge test --match-contract CustodialIssuanceTest)   # 17 green, incl. device-root
 cargo run -p dogtag-standard-rs --bin gen-device-profile-root   # regenerate the bridge fixture
 ```
 
@@ -1086,14 +1086,12 @@ wallet; the vet-api cutover to `mintCustodial` is **M7**, and it needs a decisio
 
 ### iOS wiring
 
-`apps/ios/DogTag/ProfileTreeStore.swift` builds via FFI and persists `Documents/dogtag-owner-secrets.json`
-(atomic + `.completeFileProtection`, because it holds recovery secrets - unlike `pets.json`).
+`apps/ios/DogTag/ProfileTreeStore.swift` builds via FFI and persists `Documents/dogtag-owner-secrets.json`.
+New contents are written into an already-protected, already-backup-excluded sibling before an atomic
+replacement; the previous protected file is retained until the destination's exclusion flag is reasserted.
 It is also flagged **`isExcludedFromBackup`**, which is what makes it genuinely DEVICE-LOCAL, at parity
 with the seed/entropy Keychain items' `…ThisDeviceOnly` class: `.completeFileProtection` governs at-rest
-encryption, NOT backup inclusion, and `Documents/` rides in iCloud/Finder backups by default. The flag is
-re-applied after EVERY write rather than once at creation: `.atomic` replaces the destination inode, and
-although Foundation was measured to copy this flag's xattr onto the replacement, that is an implementation
-detail and not a documented guarantee - re-setting it is idempotent and holds either way. Consequence for
+encryption, NOT backup inclusion, and `Documents/` rides in iCloud/Finder backups by default. Consequence for
 recovery, and the thing to state correctly: the file is NOT a
 cross-device backup, so recovery needs the **seed AND the credential** - the phrase re-derives the
 owner-control core (owner-secret, consent key, reserved-leaf salts), while the attribute values+salts are
@@ -1104,13 +1102,19 @@ not seed-derivable and come back from the wrapped credential itself (`wrap_docum
 **The seed-backup gate is load-bearing, not a nag - do not "simplify" it into a warning.** Because the
 store is device-local, the phrase is the ONLY thing that regenerates an owner-secret on a replacement
 phone, and `profileRoot` is write-once so there is no on-chain remedy (D3: re-issue). So
-`ProfileTreeStore.buildAndPersist` THROWS `seedBackupNotConfirmed` unless `SeedBackup.isConfirmed`
-(`Wallet.swift`); the existing "I've saved it" action on the recovery-phrase panel
-(`ProfileScreen.swift`) is what records it, so genesis and export both satisfy it. It records an
-ASSERTION, not proof - it closes the SILENT failure (a tag minted against a phrase the owner never
-saw), not a determined tap-through. It lives in `UserDefaults` because it is not a secret; losing it
-just re-prompts, which fails safe. **M7 owns the other half:** the credential (values + salts) must be
+`ProfileTreeStore.buildAndPersist` THROWS `seedBackupNotConfirmed` unless
+`SeedBackup.isConfirmed(forSeedHex:)` matches the exact seed supplied to the builder (`Wallet.swift`).
+The shared "I've saved it" action appears on both the genesis phrase card and export sheet
+(`ProfileScreen.swift`). It records an ASSERTION, not proof - it closes the SILENT failure (a tag minted
+against a phrase the owner never saw), not a determined tap-through. `UserDefaults` stores only a
+domain-separated SHA-256 fingerprint of the confirmed seed, so a migrated preference cannot confirm a
+new `…ThisDeviceOnly` wallet. **M7 owns the other half:** the credential (values + salts) must be
 re-obtainable after device loss, or a phrase backup alone still will not save the tag.
+
+`ProfileTreeStore.upsert` is deliberately fail-closed for the write-once root: an identical root is
+an idempotent retry, while a different root for the same canonical `dogTagIdHex` is rejected before
+the existing witness is changed. Explicit draft/sealed state, replacement, and issuance-handoff
+tracking remain deferred to M7.
 
 There is **no iOS unit-test target**, so the Swift side is covered by `swiftc -typecheck` (the recipe
 in "Getting real Swift signal without the xcframework") and every assertion worth making lives in the
@@ -1137,6 +1141,7 @@ change and diffing against the committed file: it should be byte-identical.
   Realistic pet credentials are far under it.
 
 > Note: `crates/dogtag-standard-rs/bindings/{swift,kotlin}/` are a STALE snapshot (they predate #40 and
-> already lacked `dogTagIdFieldHex`/`hashNodeHex` before this change). Nothing consumes them - CI
-> generates into a temp dir and copies over the `apps/` copies, which are the live ones. Left as-is
-> rather than half-updated; delete or regenerate them as a separate cleanup.
+> already lacked `dogTagIdFieldHex`/`hashNodeHex` before this change). Nothing consumes them. iOS CI
+> regenerates and copies the live Swift binding, but Android CI rebuilds only the native `.so` and
+> consumes the committed `apps/android/.../dogtag_standard.kt` unchanged. Regenerate and commit BOTH
+> live `apps/` bindings after every FFI change; leave the stale crate snapshots for separate cleanup.

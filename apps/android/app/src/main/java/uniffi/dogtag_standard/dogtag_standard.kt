@@ -1014,7 +1014,7 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 3839.toShort()) {
+    if (lib.uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 61221.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex() != 50191.toShort()) {
@@ -1435,7 +1435,8 @@ data class ProfileTreeFfi (
      */
     var `rootHex`: kotlin.String, 
     /**
-     * The nullifier secret. Regenerable from the wallet seed; back it up, never send it.
+     * The nullifier secret. Regenerable from the wallet seed; keep it device-local and never send
+     * or back it up separately.
      */
     var `ownerSecretHex`: kotlin.String, 
     var `axHex`: kotlin.String, 
@@ -1809,8 +1810,9 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
          * Derive the owner-secret from the wallet seed, bound to `dogTagId` - the RECOVERABLE nullifier
          * secret (`profile_tree::derive_owner_secret`).
          *
-         * Deterministic: restoring the seed regenerates the same secret, hence the same tree and the same
-         * `R`. `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
+         * Deterministic: restoring the seed regenerates the same secret. Rebuilding the same tree and `R`
+         * additionally requires the original owner address plus the exact attribute values and salts.
+         * `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
          *
          * The result is owner-private and MUST NOT be transmitted: a server that learned it could link
          * nullifiers back to the owner, defeating the owner-unlinkable model.

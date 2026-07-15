@@ -171,12 +171,14 @@ contract CustodialIssuanceTest is Test {
     /// (`dogtag-standard-rs profile_tree::build_profile_tree`, run over a fixed demo wallet seed via
     /// `cargo run -p dogtag-standard-rs --bin gen-device-profile-root`), NOT hand-written here. The Rust
     /// gate keeps it honest from the other side: `profile_tree_parity.rs` fails if the committed file
-    /// drifts from a fresh build, and separately proves that same builder reproduces the `R` the M2 circuit
-    /// proved and this suite verifies on-chain.
+    /// drifts from a fresh build, and separately proves that the builder's primitives reproduce an `R`
+    /// the M2 circuit proved and this suite verifies on-chain.
     ///
-    /// So the two gates together pin the whole chain: device-built R == circuit R == `profileRoot`. The
-    /// assertion is genuinely device-derived rather than a re-assertion of `setUp`'s because the device root
-    /// DIFFERS from the fixture's; the two fixtures deliberately SHARE one dogTagId (424242). Since
+    /// These are two separate legs: the primitives reproduce the circuit-verified fixture root, while
+    /// `build_profile_tree` produces the distinct demo root this test stores as `profileRoot`. The demo root
+    /// is not itself circuit-proven; that end-to-end prover path belongs to M7. The assertion is genuinely
+    /// device-derived rather than a re-assertion of `setUp`'s because the device root DIFFERS from the
+    /// fixture's; the two fixtures deliberately SHARE one dogTagId (424242). Since
     /// `mintCustodial` is write-once per id, they can therefore never both be minted in the same test: any
     /// future change that makes `setUp` mint, or that adds `_issueCustodial()` here, MUST first give the
     /// device witness a distinct id - which moves `R`, so `device-profile-root.json` must be regenerated.

@@ -65,6 +65,7 @@ enum ProfileTreeStore {
 
     enum StoreError: Error, LocalizedError {
         case rootMismatch(expected: String, got: String)
+        case conflictingRoot(dogTagId: String, existing: String, proposed: String)
         case unreadableFile(underlying: Error)
         case seedBackupNotConfirmed
 
@@ -72,6 +73,8 @@ enum ProfileTreeStore {
             switch self {
             case let .rootMismatch(expected, got):
                 return "rebuilt R \(got) != recorded R \(expected)"
+            case let .conflictingRoot(dogTagId, existing, proposed):
+                return "dogTagId \(dogTagId) already has root \(existing); refusing replacement with \(proposed)"
             case let .unreadableFile(underlying):
                 return "\(fileName) exists but could not be read; refusing to overwrite it "
                     + "(it holds recovery secrets): \(underlying)"
@@ -87,6 +90,14 @@ enum ProfileTreeStore {
             .appendingPathComponent(fileName)
     }
 
+    private static let storeLock = NSLock()
+
+    private static func withStoreLock<T>(_ body: () throws -> T) rethrows -> T {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+        return try body()
+    }
+
     // ---- build ---------------------------------------------------------------------------------
 
     /// Build the tag's tree on-device from the wallet seed and persist the recovery record.
@@ -98,7 +109,7 @@ enum ProfileTreeStore {
     /// backups, so the phrase is the ONLY thing that can regenerate this owner-secret on a
     /// replacement phone. Creating one without it would let a lost phone permanently destroy the tag
     /// with no warning and no on-chain remedy (`profileRoot` is write-once). Call
-    /// `SeedBackup.confirm()` from the phrase-backup UX first.
+    /// `SeedBackup.confirm(seedHex:)` from the phrase-backup UX first.
     @discardableResult
     static func buildAndPersist(
         seedHex: String,
@@ -106,7 +117,9 @@ enum ProfileTreeStore {
         ownerAddress: String,
         attributes: [BackedUpAttribute]
     ) throws -> ProfileTreeFfi {
-        guard SeedBackup.isConfirmed else { throw StoreError.seedBackupNotConfirmed }
+        guard SeedBackup.isConfirmed(forSeedHex: seedHex) else {
+            throw StoreError.seedBackupNotConfirmed
+        }
         let dogTagIdHex = try dogTagIdFieldHex(dogTagIdDec: dogTagIdDec)
         let tree = try buildProfileTreeHex(
             seedHex: seedHex,
@@ -161,9 +174,14 @@ enum ProfileTreeStore {
     /// empty array over it and wipe every other tag's attribute salts, which are not seed-derivable
     /// and therefore exist nowhere else.
     static func load() throws -> [OwnerSecretRecord] {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        try withStoreLock { try loadUnlocked() }
+    }
+
+    private static func loadUnlocked() throws -> [OwnerSecretRecord] {
+        let url = fileURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         do {
-            let data = try Data(contentsOf: fileURL)
+            let data = try Data(contentsOf: url)
             let dec = JSONDecoder()
             dec.dateDecodingStrategy = .iso8601
             return try dec.decode([OwnerSecretRecord].self, from: data)
@@ -181,13 +199,25 @@ enum ProfileTreeStore {
     }
 
     static func upsert(_ record: OwnerSecretRecord) throws {
-        var records = try load()
-        if let idx = records.firstIndex(where: { $0.dogTagIdDec == record.dogTagIdDec }) {
-            records[idx] = record
-        } else {
-            records.append(record)
+        try withStoreLock {
+            var records = try loadUnlocked()
+            if let idx = records.firstIndex(where: {
+                $0.dogTagIdHex.caseInsensitiveCompare(record.dogTagIdHex) == .orderedSame
+            }) {
+                let existing = records[idx]
+                guard existing.rootHex.caseInsensitiveCompare(record.rootHex) == .orderedSame else {
+                    throw StoreError.conflictingRoot(
+                        dogTagId: record.dogTagIdDec,
+                        existing: existing.rootHex,
+                        proposed: record.rootHex
+                    )
+                }
+                records[idx] = record
+            } else {
+                records.append(record)
+            }
+            try write(records)
         }
-        try write(records)
     }
 
     private static func write(_ records: [OwnerSecretRecord]) throws {
@@ -195,19 +225,72 @@ enum ProfileTreeStore {
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
         let data = try enc.encode(records)
-        // The file holds recovery secrets, so unlike pets.json it is written ATOMICALLY and with
-        // complete file protection (encrypted at rest whenever the device is locked). A torn write
-        // here would cost the owner a tag's recoverability.
-        try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
-        // `Documents/` rides in iCloud/Finder backups by default, and `.completeFileProtection`
-        // governs at-rest encryption, NOT backup inclusion - only this key keeps the secret on the
-        // device, at parity with the seed's `…ThisDeviceOnly` Keychain class. Re-applied after EVERY
-        // write, not once at creation: `.atomic` replaces the destination inode, and while Foundation
-        // was observed to carry this flag's xattr onto the replacement on the platform tested, that
-        // preservation is an implementation detail rather than a documented guarantee - too thin a
-        // thread to hang a secret on. Setting it every time is idempotent and holds either way. A
-        // failure means "never leaves the device" would silently stop being true, so it propagates
-        // rather than being swallowed.
+        let manager = FileManager.default
+        let destinationURL = fileURL
+        let directoryURL = destinationURL.deletingLastPathComponent()
+        let token = UUID().uuidString
+        let stagingURL = directoryURL.appendingPathComponent(".\(fileName).\(token).tmp")
+        let backupName = ".\(fileName).\(token).bak"
+        let backupURL = directoryURL.appendingPathComponent(backupName)
+        var replacedExisting = false
+
+        defer {
+            if manager.fileExists(atPath: stagingURL.path) {
+                try? manager.removeItem(at: stagingURL)
+            }
+        }
+
+        try Data().write(to: stagingURL, options: [.completeFileProtection])
+        try excludeFromBackup(stagingURL)
+        let handle = try FileHandle(forWritingTo: stagingURL)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            try? handle.close()
+            throw error
+        }
+        try excludeFromBackup(stagingURL)
+
+        if manager.fileExists(atPath: destinationURL.path) {
+            _ = try manager.replaceItemAt(
+                destinationURL,
+                withItemAt: stagingURL,
+                backupItemName: backupName,
+                options: [.usingNewMetadataOnly, .withoutDeletingBackupItem]
+            )
+            replacedExisting = true
+        } else {
+            try manager.moveItem(at: stagingURL, to: destinationURL)
+        }
+
+        do {
+            try excludeFromBackup(destinationURL)
+            if replacedExisting {
+                try manager.removeItem(at: backupURL)
+            }
+        } catch {
+            let commitError = error
+            if replacedExisting, manager.fileExists(atPath: backupURL.path) {
+                if manager.fileExists(atPath: destinationURL.path) {
+                    _ = try manager.replaceItemAt(
+                        destinationURL,
+                        withItemAt: backupURL,
+                        options: [.usingNewMetadataOnly]
+                    )
+                } else {
+                    try manager.moveItem(at: backupURL, to: destinationURL)
+                }
+                try excludeFromBackup(destinationURL)
+            } else if manager.fileExists(atPath: destinationURL.path) {
+                try manager.removeItem(at: destinationURL)
+            }
+            throw commitError
+        }
+    }
+
+    private static func excludeFromBackup(_ fileURL: URL) throws {
         var url = fileURL
         var values = URLResourceValues()
         values.isExcludedFromBackup = true

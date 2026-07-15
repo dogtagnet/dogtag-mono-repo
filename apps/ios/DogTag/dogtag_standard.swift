@@ -868,7 +868,8 @@ public struct ProfileTreeFfi {
      */
     public var rootHex: String
     /**
-     * The nullifier secret. Regenerable from the wallet seed; back it up, never send it.
+     * The nullifier secret. Regenerable from the wallet seed; keep it device-local and never send
+     * or back it up separately.
      */
     public var ownerSecretHex: String
     public var axHex: String
@@ -889,7 +890,8 @@ public struct ProfileTreeFfi {
          * `R` - the value the issuer seals as `profileRoot(dogTagId)`.
          */rootHex: String, 
         /**
-         * The nullifier secret. Regenerable from the wallet seed; back it up, never send it.
+         * The nullifier secret. Regenerable from the wallet seed; keep it device-local and never send
+         * or back it up separately.
          */ownerSecretHex: String, axHex: String, ayHex: String, consentPrvHex: String, keyHashHex: String, ownerSaltHex: String, keySaltHex: String, secretSaltHex: String, ownerAddressLeafHex: String, consentKeyLeafHex: String, ownerSecretLeafHex: String) {
         self.rootHex = rootHex
         self.ownerSecretHex = ownerSecretHex
@@ -1346,8 +1348,9 @@ public func deriveBabyjubConsentKey(seedHex: String)throws  -> BabyjubConsentKey
  * Derive the owner-secret from the wallet seed, bound to `dogTagId` - the RECOVERABLE nullifier
  * secret (`profile_tree::derive_owner_secret`).
  *
- * Deterministic: restoring the seed regenerates the same secret, hence the same tree and the same
- * `R`. `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
+ * Deterministic: restoring the seed regenerates the same secret. Rebuilding the same tree and `R`
+ * additionally requires the original owner address plus the exact attribute values and salts.
+ * `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
  *
  * The result is owner-private and MUST NOT be transmitted: a server that learned it could link
  * nullifiers back to the owner, defeating the owner-unlinkable model.
@@ -1637,7 +1640,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 3839) {
+    if (uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 61221) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex() != 50191) {

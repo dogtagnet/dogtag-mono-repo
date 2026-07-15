@@ -55,17 +55,18 @@ reaches a replacement device.
 Because that loss is silent and permanent, the app does not rely on the owner reading the warning:
 **owner-secret creation is gated on an explicit confirmation.**
 `ProfileTreeStore.buildAndPersist` throws `StoreError.seedBackupNotConfirmed` unless
-`SeedBackup.isConfirmed` (`Wallet.swift`), so a tag cannot be created for an owner who has not
-affirmed they stored the phrase offline.
-The confirmation is recorded by the existing "I've saved it" action on the recovery-phrase panel
-(`ProfileScreen.swift`), which the wallet-genesis and export flows both surface.
+`SeedBackup.isConfirmed(forSeedHex:)` (`Wallet.swift`), so a tag cannot be created for an owner who
+has not affirmed they stored that wallet's phrase offline.
+The shared "I've saved it" action appears on both the wallet-genesis phrase card and the account
+export sheet (`ProfileScreen.swift`).
 
 It records an assertion, not proof: the app cannot verify a phrase was really written down, and a
 determined owner can tap through.
 The gate closes the *silent* failure (a tag minted against a phrase the owner never saw), not the
 dishonest one.
-`SeedBackup` lives in `UserDefaults` because it is not a secret; if it is ever lost the gate simply
-re-prompts, which fails safe.
+`SeedBackup` stores a domain-separated SHA-256 fingerprint of the confirmed seed in `UserDefaults`.
+The fingerprint is not a secret, and binding the assertion to it prevents a migrated preference
+from confirming a new `…ThisDeviceOnly` Keychain seed. Absence or mismatch re-prompts.
 
 ### 1. Seed derivation
 
@@ -73,9 +74,9 @@ Every owner-control input is a pure function of the wallet seed, bound to `dogTa
 
 | input               | derivation                                                     |
 |---------------------|----------------------------------------------------------------|
-| owner-secret        | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId ‖ seed)`, wide-reduced mod r |
+| owner-secret        | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)`, wide-reduced mod r |
 | consent-key (Ax,Ay) | `BLAKE-512("DogTag/consent-key/babyjubjub/v1" ‖ seed)` (pre-existing)       |
-| reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId ‖ keyPath ‖ seed)`     |
+| reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId[32B BE] ‖ u64be(len(UTF8(keyPath))) ‖ UTF8(keyPath) ‖ seed)` |
 | owner-address       | the wallet address, itself seed-derived                        |
 
 Restoring the 24-word phrase restores the seed, which regenerates the owner-control core above -
@@ -104,17 +105,16 @@ backups, so it is never the thing that carries them across devices.
 
 - **Path:** `<App Container>/Documents/dogtag-owner-secrets.json` (iOS).
 - **Written by:** `apps/ios/DogTag/ProfileTreeStore.swift`.
-- **Protection:** written atomically with `.completeFileProtection`, so it is encrypted at rest
-  whenever the device is locked.
-  A torn write would cost the owner a tag's recoverability, hence the atomic write.
+- **Protection:** new contents are staged in a `.completeFileProtection` sibling, then atomically
+  replace the destination, so the file is encrypted at rest whenever the device is locked.
+  The previous protected file is retained for rollback until the replacement is fully committed.
 - **Device-local:** flagged `isExcludedFromBackup`, so it stays out of iCloud and Finder/iTunes
   device backups - deliberately at parity with the seed and entropy Keychain items, whose
   `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` class excludes them the same way.
   `.completeFileProtection` alone would **not** achieve this: it governs at-rest encryption, not
   backup inclusion, and `Documents/` is backed up by default.
-  The flag is re-applied after every write rather than once at creation: the atomic write replaces
-  the file's inode, and Foundation's copying of the flag onto the replacement is an implementation
-  detail, not a guarantee. Re-setting it is idempotent and holds either way.
+  The empty protected staging file is excluded before secret bytes are written, and the flag is
+  re-asserted after replacement because metadata preservation is not a documented guarantee.
 - **Format:** a JSON array of records, one per tag.
 
 ```json
@@ -168,12 +168,14 @@ Swift never reimplements it.
 - `crates/dogtag-standard-rs/src/profile_tree.rs` - `owner_secret_and_root_regenerate_from_the_seed`
   is the recovery round-trip: regenerate the secret from the seed, rebuild the tree, assert the same
   `R`.
-- `crates/dogtag-standard-rs/tests/profile_tree_parity.rs` - asserts the device builder reproduces
-  the `R` that the M2 circuit proved and the M4 registry verified on-chain, so a device-built tree is
-  provable rather than merely self-consistent.
+- `crates/dogtag-standard-rs/tests/profile_tree_parity.rs` - asserts the device builder's primitives
+  reproduce the `R` that the M2 circuit proved and the M4 registry verified on-chain.
 - `contracts/test/CustodialIssuance.t.sol` -
   `test_device_built_root_is_what_the_contract_stores_as_profileRoot` mints a real device-built `R`
   and asserts `profileRoot(dogTagId) == R`.
+
+Those are separate legs over different roots: the demo root stored by the contract test is not
+itself circuit-proven. Generating a proof over that seed-derived root belongs to M7.
 
 ## A note on "existing proofs keep verifying"
 

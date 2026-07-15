@@ -20,9 +20,9 @@
 //! | consent-key    | [`crate::eddsa::derive_babyjub_consent_key_from_seed`] (pre-existing) |
 //! | reserved salts | [`derive_reserved_salt`] - BLAKE-512 KDF, per keyPath          |
 //!
-//! So restoring the seed regenerates the identical owner-control core → the identical `R`. Attribute
-//! values and their salts are NOT seed-derivable (they come from the issuer), so a caller that wants
-//! to rebuild an existing tree must retain them; that is what the device's local backup file is for
+//! Restoring the seed regenerates the identical owner-control core. Rebuilding the identical `R`
+//! additionally requires the original owner address plus every attribute value and salt; those are
+//! NOT seed-derivable and must be retained or recovered from the credential
 //! (`docs/MOBILE_OWNER_SECRET.md`).
 //!
 //! Deriving from the seed does not weaken unlinkability: the seed never leaves the device, and
@@ -385,6 +385,15 @@ mod tests {
 
         // And the standalone KDF agrees with what the builder embedded.
         assert_eq!(derive_owner_secret(SEED, tag_id()).unwrap(), first.owner_secret);
+    }
+
+    #[test]
+    fn owner_secret_kdf_matches_known_answer() {
+        let secret = derive_owner_secret(SEED, tag_id()).unwrap();
+        assert_eq!(
+            crate::field::to_hex32(&secret),
+            "0x2b9e3bbc643ef7b5e78776470743d23745ca259e82458595862dcaafa16e5371"
+        );
     }
 
     #[test]

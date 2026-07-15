@@ -599,7 +599,8 @@ pub struct AttributeLeafFfi {
 pub struct ProfileTreeFfi {
     /// `R` - the value the issuer seals as `profileRoot(dogTagId)`.
     pub root_hex: String,
-    /// The nullifier secret. Regenerable from the wallet seed; back it up, never send it.
+    /// The nullifier secret. Regenerable from the wallet seed; keep it device-local and never send
+    /// or back it up separately.
     pub owner_secret_hex: String,
     pub ax_hex: String,
     pub ay_hex: String,
@@ -634,8 +635,9 @@ fn attr_leaves_from_ffi(
 /// Derive the owner-secret from the wallet seed, bound to `dogTagId` - the RECOVERABLE nullifier
 /// secret (`profile_tree::derive_owner_secret`).
 ///
-/// Deterministic: restoring the seed regenerates the same secret, hence the same tree and the same
-/// `R`. `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
+/// Deterministic: restoring the seed regenerates the same secret. Rebuilding the same tree and `R`
+/// additionally requires the original owner address plus the exact attribute values and salts.
+/// `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
 ///
 /// The result is owner-private and MUST NOT be transmitted: a server that learned it could link
 /// nullifiers back to the owner, defeating the owner-unlinkable model.
