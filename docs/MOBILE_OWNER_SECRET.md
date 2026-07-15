@@ -30,8 +30,12 @@ argument, so the owner's wallet appears nowhere on-chain.
 
 ## The two recovery paths (belt-and-suspenders)
 
-Both must hold.
-Either one alone reproduces the same `R`, and `R` is what every existing proof is bound to.
+Both must hold, and both are needed: they are **complementary, not redundant**.
+Seed derivation regenerates the owner-control core (the owner-secret, the consent key, the
+reserved-leaf salts); the local file supplies the attribute values and their salts, which are not
+seed-derivable.
+Neither path alone reproduces `R`, and `R` is what every existing proof is bound to - so the 24-word
+phrase by itself is **not** sufficient to rebuild a tag.
 
 ### 1. Seed derivation (primary)
 

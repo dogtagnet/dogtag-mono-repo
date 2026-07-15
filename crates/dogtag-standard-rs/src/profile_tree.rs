@@ -258,9 +258,14 @@ pub fn build_profile_tree(
 /// **Test material only** - this seed is committed in the clear and must never hold value.
 pub struct DeviceRootFixtureWitness {
     pub seed: Vec<u8>,
-    /// The canonical dogTagId field.
+    /// The raw demo handle (424242) used DIRECTLY as a field element - **not** the canonical dogTagId
+    /// field (`field_of_value(Integer(dec))`, what `dog_tag_id_field_hex` returns). Mirrors
+    /// `gen-consent-fixture.mjs`, which also binds the raw handle. Production must pass the canonical
+    /// field to `build_profile_tree` instead; do not copy this fixture's shortcut into the M7 issuance
+    /// path.
     pub dog_tag_id: Fr,
-    /// The same id as the decimal uint256 the contract is minted with.
+    /// The same raw handle in decimal - both the KDF binding above and the uint256 the contract is
+    /// minted with.
     pub dog_tag_id_dec: String,
     pub owner_address: [u8; 20],
     pub attributes: Vec<AttributeLeaf>,

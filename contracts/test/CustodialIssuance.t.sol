@@ -174,9 +174,12 @@ contract CustodialIssuanceTest is Test {
     /// drifts from a fresh build, and separately proves that same builder reproduces the `R` the M2 circuit
     /// proved and this suite verifies on-chain.
     ///
-    /// So the two gates together pin the whole chain: device-built R == circuit R == `profileRoot`. It is
-    /// deliberately a SEPARATE tag id from the fixture's, so this asserts a genuinely device-derived root
-    /// rather than re-asserting `setUp`'s.
+    /// So the two gates together pin the whole chain: device-built R == circuit R == `profileRoot`. The
+    /// assertion is genuinely device-derived rather than a re-assertion of `setUp`'s because the device root
+    /// DIFFERS from the fixture's; the two fixtures deliberately SHARE one dogTagId (424242). Since
+    /// `mintCustodial` is write-once per id, they can therefore never both be minted in the same test: any
+    /// future change that makes `setUp` mint, or that adds `_issueCustodial()` here, MUST first give the
+    /// device witness a distinct id - which moves `R`, so `device-profile-root.json` must be regenerated.
     function test_device_built_root_is_what_the_contract_stores_as_profileRoot() public {
         string memory j = vm.readFile("test/device-profile-root.json");
         bytes32 deviceRoot = bytes32(j.readUint(".R"));

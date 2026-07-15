@@ -57,11 +57,15 @@ enum ProfileTreeStore {
 
     enum StoreError: Error, LocalizedError {
         case rootMismatch(expected: String, got: String)
+        case unreadableFile(underlying: Error)
 
         var errorDescription: String? {
             switch self {
             case let .rootMismatch(expected, got):
                 return "rebuilt R \(got) != recorded R \(expected)"
+            case let .unreadableFile(underlying):
+                return "\(fileName) exists but could not be read; refusing to overwrite it "
+                    + "(it holds recovery secrets): \(underlying)"
             }
         }
     }
@@ -131,11 +135,25 @@ enum ProfileTreeStore {
 
     // ---- persistence ---------------------------------------------------------------------------
 
+    /// The only legitimately empty state is "no file yet". An existing-but-unreadable file (corrupt,
+    /// written by a newer schema, or simply locked - the file is `.completeFileProtection`) throws
+    /// `StoreError.unreadableFile` rather than reporting zero records, so `upsert` cannot rebuild an
+    /// empty array over it and wipe every other tag's attribute salts, which are not seed-derivable
+    /// and therefore exist nowhere else.
+    static func load() throws -> [OwnerSecretRecord] {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let dec = JSONDecoder()
+            dec.dateDecodingStrategy = .iso8601
+            return try dec.decode([OwnerSecretRecord].self, from: data)
+        } catch {
+            throw StoreError.unreadableFile(underlying: error)
+        }
+    }
+
     static func all() -> [OwnerSecretRecord] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        let dec = JSONDecoder()
-        dec.dateDecodingStrategy = .iso8601
-        return (try? dec.decode([OwnerSecretRecord].self, from: data)) ?? []
+        (try? load()) ?? []
     }
 
     static func record(forDogTagIdDec dec: String) -> OwnerSecretRecord? {
@@ -143,7 +161,7 @@ enum ProfileTreeStore {
     }
 
     static func upsert(_ record: OwnerSecretRecord) throws {
-        var records = all()
+        var records = try load()
         if let idx = records.firstIndex(where: { $0.dogTagIdDec == record.dogTagIdDec }) {
             records[idx] = record
         } else {
