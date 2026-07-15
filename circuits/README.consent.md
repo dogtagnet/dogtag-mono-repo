@@ -94,6 +94,7 @@ ptau is **power 16** (`2^16 = 65536 ≥ 38501`).
 ```
 bash scripts/ceremony-consent.sh   # M3: real testnet ceremony -> committed VK/zkey + Groth16VerifierConsent.sol
 npm run test-consent               # witness/proof round-trip + R-parity + negatives + keyPath-substitution + D5
+npm run gen-consent-fixture        # M4: real proofs vs the committed zkey -> contracts/test/consent-fixture.json
 npm run build-consent              # ⚠ DEV/throwaway setup — OVERWRITES the committed M3 zkey/VK with a forgeable key; avoid
 ```
 
@@ -125,8 +126,11 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` against the M3 verifier `0x272be146…`. It is **additive** —
 the Level-A `VerificationRegistry` `0x4E2f0996…` is still the live one until the **M7** app cutover, and
 Level-B tags need **M5** custodial issuance first. `contracts/test/ConsentRegistry.t.sol` proves a REAL
-proof from the committed production zkey verifies through it. Full details: AGENTS.md "Level-B
-`VerificationRegistryConsent` (M4)"; circuit details: AGENTS.md "Level-B `DogTagConsent` circuit (M2)".
+proof from the committed production zkey verifies through it, using the committed
+`contracts/test/consent-fixture.json` (regenerate with `npm run gen-consent-fixture`). Note the deployed
+instance is **stale vs source** (it predates the `ownerOf` token-existence gate) and must be redeployed
+before the M7 cutover. Full details: AGENTS.md "Level-B `VerificationRegistryConsent` (M4)"; circuit
+details: AGENTS.md "Level-B `DogTagConsent` circuit (M2)".
 
 ## M3 VK-freeze checkpoint — REVIEWED, VK FROZEN
 

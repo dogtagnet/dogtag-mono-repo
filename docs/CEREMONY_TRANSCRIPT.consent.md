@@ -126,7 +126,7 @@ deploy record as executed.
   - deploy tx: `0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af` (block **190760**, status success).
   - on-chain `cast code` == the compiled `Groth16VerifierConsent` runtime bytecode (1933 bytes) — byte-identical, so the deployed contract is exactly this VK's verifier.
   - **on-chain functional check:** a real consent proof (built via `test-consent.mjs`'s honest witness) → `verifyProof(a,b,c,pub[7])` returns **`true`**; the same proof with a tampered `pub[4] /*R*/` returns **`false`**. Public signals decoded on-chain match `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`.
-  - This is a **separate** verifier for the Level-B consent circuit; it does **not** replace the live Level-A `Groth16Verifier` `0xEEFCf…` (that registry swap is M4).
+  - This is a **separate** verifier for the Level-B consent circuit; it does **not** replace the live Level-A `Groth16Verifier` `0xEEFCf…` (wiring it into a registry was M4 - since shipped, additively, as `VerificationRegistryConsent`; see the M4 note below).
 
 Deploy command used (reusing the v2 deploy path; forge 1.5.1 needs `--broadcast`):
 
@@ -137,9 +137,12 @@ forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent \
   --rpc-url "$ROAX_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --legacy --broadcast --json
 ```
 
-- **M4 (out of scope here):** `VerificationRegistry` must be redeployed to `require(verifyProof(a,b,c,pub[7]))`
-  against THIS verifier, assert `pub[4] /*R*/ == profileRoot(pub[0] /*dogTagId*/)`, enforce `deadline`,
-  consume `pub[3] /*nullifier*/`, and emit an **owner-blind** `Verified` event. M3 does **not** touch the registry.
+- **M4 (out of scope here, since SHIPPED):** M3 does **not** touch the registry. M4 has since added a NEW
+  registry alongside the frozen Level-A one - `VerificationRegistryConsent`
+  `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` - which does `require(verifyProof(a,b,c,pub[7]))` against
+  THIS verifier, asserts `pub[4] /*R*/ == profileRoot(pub[0] /*dogTagId*/)`, enforces `deadline`,
+  consumes `pub[3] /*nullifier*/`, and emits an **owner-blind** `Verified` event. It is additive and not
+  yet live (the app cutover is M7); see AGENTS.md "Level-B `VerificationRegistryConsent` (M4)".
 
 ## ⚠ M3 VK-freeze checkpoint — review conclusion
 

@@ -24,7 +24,7 @@
 > | **ConsentKeyRegistry** (current; gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 > | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 > | **VerificationRegistry** (current/LIVE; Level-A; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
-> | VerificationRegistryConsent (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
+> | VerificationRegistryConsent (Level-B owner-blind; deployed M4, **not yet live** - M7 cutover; deployed instance is **stale vs source**, redeploy before cutover) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
 > | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 > | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
 > | Groth16VerifierConsent (Level-B; wired into the M4 registry above) | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` |

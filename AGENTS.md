@@ -30,7 +30,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service.
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`.
+- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **Level-B** pair `VerificationRegistryConsent` + `Groth16VerifierConsent` also lives here and is deployed, but is **additive and not yet live** - the Level-A `VerificationRegistry` still serves every consumer until the M7 cutover; see "Level-B `VerificationRegistryConsent` (M4)" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -687,9 +687,11 @@ public signals are declared as outputs to fix the order; verified via `build/con
 
 **No `subject`, no `keyHash`.** The owner never appears in the public signals.
 
-### Intended on-chain calldata shape (M4 `recordVerificationZK`)
+### On-chain calldata shape (M4 `recordVerificationZK`) - SHIPPED as specced
 
-The snarkjs Solidity verifier exposes:
+This was M2's forward spec for M4; M4 has since built exactly it in
+`contracts/src/VerificationRegistryConsent.sol` (see "Level-B `VerificationRegistryConsent` (M4)" below
+for the as-built contract, incl. the one deviation noted in step 6). The snarkjs Solidity verifier exposes:
 
 ```solidity
 function verifyProof(
@@ -700,15 +702,19 @@ function verifyProof(
 ) external view returns (bool);
 ```
 
-`recordVerificationZK` should therefore take `(a, b, c, pubSignals[7])` (or the same fields unpacked)
-and, per spec §"On-chain `recordVerificationZK`":
+`recordVerificationZK` therefore takes `(a, b, c, pubSignals[7])` and, per spec
+§"On-chain `recordVerificationZK`":
 1. `require(verifyProof(a,b,c,pubSignals))` against the **new VK** (from the M3 ceremony).
 2. `require(pubSignals[4] /*R*/ == profileRoot(pubSignals[0] /*dogTagId*/))` — binds the proof to the
    real tag. **This is the only place `dogTagId ↔ R` is checked; the circuit does NOT bind it.**
 3. `require(deadline >= block.timestamp)` (pubSignals[6]).
 4. `require(!nullifierConsumed[pubSignals[3]])` then consume it.
 5. `emit Verified(dogTagId, relayer, purpose, nullifier, deadline, block.timestamp)` — **owner-blind**.
-6. **Delete** the old `ownerOf` / `keyOf` checks and the `subject`/`keyHash` handling.
+6. **Delete** the old `ownerOf` / `keyOf` checks and the `subject`/`keyHash` handling. **As built, with one
+   deviation:** the `keyOf` check and all `subject`/`keyHash` handling are gone, and no owner IDENTITY is
+   ever compared - but `ownerOf(dogTagId)` is still CALLED, with its return value discarded, purely as a
+   token-existence gate. Deleting that call would reopen the burn/GDPR-erasure hole (`burn` does not clear
+   `profileRoot`), so do not "finish" step 6 by removing it; see the M4 section below.
 
 ### Reserved owner-leaf schema (M5 issuance MUST match this exactly)
 
