@@ -5,10 +5,12 @@ Groth16 circuit proving a **consent-bound credential verification** (impl §11.8
 
 > This is the **Level-A** circuit (exposes `subject` + `keyHash` as public signals). It is
 > **frozen** (pinned dev zkey, its own test) and superseded by the owner-unlinkable **Level-B**
-> [`consent.circom`](README.consent.md) (authored in redesign milestone M2). As of **M3** the
-> Level-B circuit has its production (testnet-grade) VK + a deployed `Groth16VerifierConsent`, but
-> it does **not** replace this circuit on-chain yet (the `VerificationRegistry` swap is **M4**). Do
-> not edit `verification.circom`.
+> [`consent.circom`](README.consent.md) (authored in redesign milestone M2). As of **M4** the Level-B
+> circuit has its production (testnet-grade) VK, a deployed `Groth16VerifierConsent`, AND a deployed
+> owner-blind `VerificationRegistryConsent` — but it still does **not** replace this circuit in the LIVE
+> flow: the Level-A `VerificationRegistry` `0x4E2f0996…` remains the live registry and today's apps still
+> prove against THIS circuit. That cutover is **M7** (and needs **M5** custodial issuance first). Do not
+> edit `verification.circom`.
 
 ## What it proves
 

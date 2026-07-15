@@ -17,7 +17,8 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 > ceremony + VK freeze (M3) is DONE**: `scripts/ceremony-consent.sh` (public Hermez pow-17 ptau + a single
 > testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
 > — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md). The on-chain
-> `recordVerificationZK` wiring (registry redeploy) remains **M4**. See the "Build + test" and "M4 binding" notes below.
+> `recordVerificationZK` wiring (registry redeploy) is **M4 — now DONE**: `VerificationRegistryConsent`
+> `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F`. See the "Build + test" and "M4 binding" notes below.
 
 ## What it proves
 
@@ -108,7 +109,9 @@ the **real production key** (33/33 green: round-trip verify + R-parity + negativ
 > The **real (M3) VK** is the committed `build/consent_verification_key.json` (sha256 `27879dd7…`) paired
 > with `build/consent_final.zkey` (sha256 `f83a111f…`) and `Groth16VerifierConsent.sol`, produced by
 > `scripts/ceremony-consent.sh` — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md).
-> Running `build-consent` again would OVERWRITE those committed files with a forgeable dev key — don't. The on-chain verifier + registry swap is **M4**.
+> Running `build-consent` again would OVERWRITE those committed files with a forgeable dev key — don't.
+> Both the on-chain verifier (M3) and the registry that verifies against it (M4) are now deployed, so an
+> overwrite would also invalidate `contracts/test/consent-fixture.json` against the deployed VK.
 
 ## M4 binding — SHIPPED
 

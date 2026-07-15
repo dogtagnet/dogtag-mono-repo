@@ -116,7 +116,10 @@ node scripts/test-consent.mjs                     # ALL GREEN (33/33)
 
 ## On-chain deployment (ROAX, chainId 135)
 
-M3 deploys the verifier; **wiring it into `VerificationRegistry` is M4** (not done here — see the M4 note below).
+M3 deploys the verifier; **wiring it in was M4** — not done in this ceremony, and since **DONE**: the
+owner-blind `VerificationRegistryConsent` `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` verifies against
+this VK (AGENTS.md "Level-B `VerificationRegistryConsent` (M4)"). The rest of this section is the M3
+deploy record as executed.
 
 - **`Groth16VerifierConsent` DEPLOYED at `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a`** on ROAX (chainId 135),
   ROAX `--legacy`, deployer `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`.
