@@ -117,7 +117,7 @@ on-chain (central broadcasts as the wired admin signer); the **Whitelist viewer*
 ## 3. Vet issues a vaccination credential → QR (vet portal :41873)
 **Issue** → click **Fill demo data** (a valid rabies certificate; it fills the cert fields but **leaves
 `dogTagId` untouched**) → **set `dogTagId` = the dog tag's handle from §0.5** (the numeric `dogTagId`
-the Issue-dog-tag wizard allocated). This must match: on-chain the id is `field_of_value(handle)`, and
+the Register-pet wizard allocated). This must match: on-chain the id is `field_of_value(handle)`, and
 the owner's later ZK export checks `ownerOf(field_of_value(dogTagId)) == subject` — a mismatch reverts
 `ERC721NonexistentToken`. → **Sign & Issue**: the backend builds the doc, anchors the Merkle root with
 `issue(root)` on ROAX, and re-verifies the `RootIssued` event (waits for the receipt) before marking it

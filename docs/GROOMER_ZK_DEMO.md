@@ -176,7 +176,7 @@ session + QR, mirroring import/export. The device just needs a self-custodial wa
 
 - **Issue vaccination**: vet portal → **Issue** → "Fill demo data" (rabies cert, `VACCINATION`). The
   demo-fill populates the cert fields but **leaves `dogTagId` blank** — set it to the **handle from §4**
-  (the `dogTagId` the Issue-dog-tag wizard allocated). This must match: on-chain the SBT key is
+  (the `dogTagId` the Register-pet wizard allocated). This must match: on-chain the SBT key is
   `field_of_value(handle)`, and the §6 ZK export checks `ownerOf(field_of_value(dogTagId)) == subject`;
   a mismatch reverts the export with `ERC721NonexistentToken`. (The demo-fill **no longer clobbers** the
   `dogTagId` field — a fixed footgun — but you must still type the matching handle.) → **Sign & Issue**
