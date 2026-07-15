@@ -83,7 +83,11 @@ contract CustodialIssuanceTest is Test {
         sbt = new DogTagSBTConsent(admin, custodian); // the M5 custodial SBT
         verifier = new Groth16VerifierConsent();
         vr = new VerificationRegistryConsent( // the M5 redeploy: same registry code, new SBT
-            address(registry), address(sbt), address(verifier), address(factory), admin
+            address(registry),
+            address(sbt),
+            address(verifier),
+            address(factory),
+            admin
         );
         vm.stopPrank();
 
@@ -142,7 +146,10 @@ contract CustodialIssuanceTest is Test {
             "must detect an unaligned owner (e.g. behind a selector)"
         );
         assertTrue(
-            _contains(abi.encodeWithSignature("mint(address,uint256,bytes32)", ownerAddress, dogTagId, root), ownerAddress),
+            _contains(
+                abi.encodeWithSignature("mint(address,uint256,bytes32)", ownerAddress, dogTagId, root),
+                ownerAddress
+            ),
             "must detect the owner in a Level-A style mint calldata"
         );
         assertFalse(_contains(abi.encode(custodian), ownerAddress), "must not false-positive on custodian");
@@ -226,9 +233,12 @@ contract CustodialIssuanceTest is Test {
     /// do not own. This SBT has NO setter at all — not a re-gated one. The call must not even dispatch.
     function test_profileRoot_has_no_setter_at_all() public {
         _issueCustodial();
-        (bool ok,) = address(sbt).call(
-            abi.encodeWithSignature("setProfileRoot(uint256,bytes32)", dogTagId, keccak256("attacker root"))
-        );
+        (bool ok,) = address(sbt)
+            .call(
+                abi.encodeWithSignature(
+                    "setProfileRoot(uint256,bytes32)", dogTagId, keccak256("attacker root")
+                )
+            );
         assertFalse(ok, "setProfileRoot must not exist on the Level-B SBT");
         assertEq(sbt.profileRoot(dogTagId), root, "root is write-once");
     }
@@ -241,9 +251,12 @@ contract CustodialIssuanceTest is Test {
         vm.prank(admin);
         sbt.grantRole(authorityRole, admin);
 
-        (bool ok,) = address(sbt).call(
-            abi.encodeWithSignature("setProfileRoot(uint256,bytes32)", dogTagId, keccak256("attacker root"))
-        );
+        (bool ok,) = address(sbt)
+            .call(
+                abi.encodeWithSignature(
+                    "setProfileRoot(uint256,bytes32)", dogTagId, keccak256("attacker root")
+                )
+            );
         assertFalse(ok, "an AUTHORITY holder must have no root-write path");
         assertEq(sbt.profileRoot(dogTagId), root, "victim tag still points at its real root");
 
@@ -325,17 +338,18 @@ contract CustodialIssuanceTest is Test {
     /// removes. Recovery is a fresh custodial issuance, so the function must not exist here.
     function test_no_recover_surface() public {
         _issueCustodial();
-        (bool ok,) = address(sbt).call(
-            abi.encodeWithSignature(
-                "recover(uint256,address,uint256,uint256,bytes,bytes)",
-                dogTagId,
-                address(0xD00D),
-                uint256(0),
-                block.timestamp + 1,
-                bytes(""),
-                bytes("")
-            )
-        );
+        (bool ok,) = address(sbt)
+            .call(
+                abi.encodeWithSignature(
+                    "recover(uint256,address,uint256,uint256,bytes,bytes)",
+                    dogTagId,
+                    address(0xD00D),
+                    uint256(0),
+                    block.timestamp + 1,
+                    bytes(""),
+                    bytes("")
+                )
+            );
         assertFalse(ok, "recover must not exist on the Level-B SBT");
     }
 

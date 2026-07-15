@@ -56,8 +56,9 @@ contract DeployCustodialIssuance is Script {
 
         vm.startBroadcast();
         sbtConsent = address(new DogTagSBTConsent(admin, custodian));
-        registryConsent =
-            address(new VerificationRegistryConsent(issuerRegistry, sbtConsent, zkVerifier, rootIndex, admin));
+        registryConsent = address(
+            new VerificationRegistryConsent(issuerRegistry, sbtConsent, zkVerifier, rootIndex, admin)
+        );
         vm.stopBroadcast();
 
         console2.log("--- reused live components ---");
