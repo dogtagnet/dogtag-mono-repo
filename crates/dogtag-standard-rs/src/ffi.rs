@@ -577,6 +577,186 @@ pub fn verify_whitelist_key_hex(purpose_label: String) -> String {
     format!("0x{}", hex::encode(key))
 }
 
+// ---------------------------------------------------------------------------------------------
+// Level-B M5 - device-side per-tag profile tree + recoverable owner-secret.
+// ---------------------------------------------------------------------------------------------
+
+/// A disclosable attribute leaf crossing the FFI boundary. `tag`+`value` are reconstructed into a
+/// `TypedScalar` exactly like `hash_leaf_hex` does. `salt_hex` is 16 bytes.
+#[derive(uniffi::Record)]
+pub struct AttributeLeafFfi {
+    pub key_path: String,
+    pub salt_hex: String,
+    pub tag: u8,
+    pub value: String,
+}
+
+/// A device-built per-tag profile tree.
+///
+/// Everything here except `root_hex` is OWNER-PRIVATE and must never be transmitted: only
+/// `root_hex` (`R`) is handed to the issuer, which seals it as `profileRoot(dogTagId)`.
+#[derive(uniffi::Record)]
+pub struct ProfileTreeFfi {
+    /// `R` - the value the issuer seals as `profileRoot(dogTagId)`.
+    pub root_hex: String,
+    /// The nullifier secret. Regenerable from the wallet seed; keep it device-local and never send
+    /// or back it up separately.
+    pub owner_secret_hex: String,
+    pub ax_hex: String,
+    pub ay_hex: String,
+    pub consent_prv_hex: String,
+    pub key_hash_hex: String,
+    pub owner_salt_hex: String,
+    pub key_salt_hex: String,
+    pub secret_salt_hex: String,
+    pub owner_address_leaf_hex: String,
+    pub consent_key_leaf_hex: String,
+    pub owner_secret_leaf_hex: String,
+}
+
+fn attr_leaves_from_ffi(
+    attributes: &[AttributeLeafFfi],
+) -> Result<Vec<crate::profile_tree::AttributeLeaf>, FfiError> {
+    attributes
+        .iter()
+        .map(|a| {
+            let salt = decode_word::<{ crate::profile_tree::SALT_LEN }>("salt", &a.salt_hex)?;
+            let type_tag = TypeTag::from_u8(a.tag)
+                .ok_or_else(|| FfiError::Invalid(format!("unknown tag {}", a.tag)))?;
+            Ok(crate::profile_tree::AttributeLeaf {
+                key_path: a.key_path.clone(),
+                salt,
+                value: scalar_from_packed(type_tag, &a.value)?,
+            })
+        })
+        .collect()
+}
+
+/// Derive the owner-secret from the wallet seed, bound to `dogTagId` - the RECOVERABLE nullifier
+/// secret (`profile_tree::derive_owner_secret`).
+///
+/// Deterministic: restoring the seed regenerates the same secret. Rebuilding the same tree and `R`
+/// additionally requires the original owner address plus the exact attribute values and salts.
+/// `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
+///
+/// The result is owner-private and MUST NOT be transmitted: a server that learned it could link
+/// nullifiers back to the owner, defeating the owner-unlinkable model.
+#[uniffi::export]
+pub fn derive_owner_secret_hex(seed_hex: String, dog_tag_id_hex: String) -> Result<String, FfiError> {
+    let s = seed_hex.strip_prefix("0x").unwrap_or(&seed_hex);
+    let seed = hex::decode(s).map_err(|e| err(format!("bad seed hex: {e}")))?;
+    let dog_tag_id = from_hex32(&dog_tag_id_hex).map_err(FfiError::from)?;
+    let secret = crate::profile_tree::derive_owner_secret(&seed, dog_tag_id)?;
+    Ok(to_hex32(&secret))
+}
+
+/// Build the per-tag Merkle tree ON THE DEVICE (`profile_tree::build_profile_tree`) and return `R`
+/// plus the owner-private witness.
+///
+/// This is spec §"Issuance" step 2: *the owner's app builds the tree locally (owner-address,
+/// consent-key, owner-secret, attributes as salted leaves), computes `R`*. Hand the issuer ONLY
+/// `root_hex`.
+///
+/// `owner_address_hex` is the 20-byte wallet address; `dog_tag_id_hex` the canonical dogTagId field.
+#[uniffi::export]
+pub fn build_profile_tree_hex(
+    seed_hex: String,
+    dog_tag_id_hex: String,
+    owner_address_hex: String,
+    attributes: Vec<AttributeLeafFfi>,
+) -> Result<ProfileTreeFfi, FfiError> {
+    let s = seed_hex.strip_prefix("0x").unwrap_or(&seed_hex);
+    let seed = hex::decode(s).map_err(|e| err(format!("bad seed hex: {e}")))?;
+    let dog_tag_id = from_hex32(&dog_tag_id_hex).map_err(FfiError::from)?;
+    let owner_address = decode_word::<20>("ownerAddress", &owner_address_hex)?;
+    let attrs = attr_leaves_from_ffi(&attributes)?;
+
+    let t = crate::profile_tree::build_profile_tree(&seed, dog_tag_id, &owner_address, &attrs)?;
+    Ok(ProfileTreeFfi {
+        root_hex: to_hex32(&t.root),
+        owner_secret_hex: to_hex32(&t.owner_secret),
+        ax_hex: to_hex32(&t.ax),
+        ay_hex: to_hex32(&t.ay),
+        consent_prv_hex: format!("0x{}", hex::encode(t.consent_prv)),
+        key_hash_hex: format!("0x{}", hex::encode(crate::consent::key_hash(t.ax, t.ay))),
+        owner_salt_hex: format!("0x{}", hex::encode(t.owner_salt)),
+        key_salt_hex: format!("0x{}", hex::encode(t.key_salt)),
+        secret_salt_hex: format!("0x{}", hex::encode(t.secret_salt)),
+        owner_address_leaf_hex: to_hex32(&t.owner_address_leaf),
+        consent_key_leaf_hex: to_hex32(&t.consent_key_leaf),
+        owner_secret_leaf_hex: to_hex32(&t.owner_secret_leaf),
+    })
+}
+
+#[cfg(test)]
+mod profile_tree_ffi_tests {
+    use super::*;
+
+    const SEED_HEX: &str = "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    const ADDR_HEX: &str = "0x00000000000000000000000000000000deadbeef";
+
+    fn tag_id_hex() -> String {
+        to_hex32(&ark_bn254::Fr::from(424242u64))
+    }
+
+    fn attrs() -> Vec<AttributeLeafFfi> {
+        vec![AttributeLeafFfi {
+            key_path: "credentialSubject.name".to_string(),
+            salt_hex: "0x0102030405060708090a0b0c0d0e0f10".to_string(),
+            tag: TypeTag::String as u8,
+            value: "Rex".to_string(),
+        }]
+    }
+
+    /// The FFI is the device's entry point, so the recoverability round-trip must hold ACROSS the
+    /// boundary too - not just in the core.
+    #[test]
+    fn ffi_round_trips_the_root_and_secret_from_the_seed() {
+        let a = build_profile_tree_hex(
+            SEED_HEX.to_string(),
+            tag_id_hex(),
+            ADDR_HEX.to_string(),
+            attrs(),
+        )
+        .unwrap();
+        let b = build_profile_tree_hex(
+            SEED_HEX.to_string(),
+            tag_id_hex(),
+            ADDR_HEX.to_string(),
+            attrs(),
+        )
+        .unwrap();
+
+        assert_eq!(a.root_hex, b.root_hex, "same seed must rebuild the same R");
+        assert_eq!(a.owner_secret_hex, b.owner_secret_hex);
+        // The standalone derivation agrees with the one the builder embedded.
+        assert_eq!(
+            derive_owner_secret_hex(SEED_HEX.to_string(), tag_id_hex()).unwrap(),
+            a.owner_secret_hex
+        );
+    }
+
+    #[test]
+    fn ffi_rejects_malformed_inputs() {
+        assert!(build_profile_tree_hex(
+            "0xzz".to_string(),
+            tag_id_hex(),
+            ADDR_HEX.to_string(),
+            attrs()
+        )
+        .is_err());
+        // A 19-byte address must not silently pass.
+        assert!(build_profile_tree_hex(
+            SEED_HEX.to_string(),
+            tag_id_hex(),
+            "0x000000000000000000000000000000deadbeef".to_string(),
+            attrs()
+        )
+        .is_err());
+        assert!(derive_owner_secret_hex("".to_string(), tag_id_hex()).is_err());
+    }
+}
+
 #[cfg(test)]
 mod obfuscate_ffi_tests {
     use super::*;

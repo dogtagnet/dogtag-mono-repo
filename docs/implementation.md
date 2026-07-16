@@ -350,6 +350,13 @@ a PII-free presentation copy whose root still equals the on-chain `R`), the `con
 `derive_babyjub_consent_key`) (and value encoders) over **UniFFI** so Android (Kotlin) and iOS (Swift)
 call the *same* verification + consent-signing code. `custody`/RPC stay server-side only.
 
+Level-B M5 adds the device-side `profile_tree` module - `build_profile_tree` and `derive_owner_secret`,
+surfaced as `buildProfileTreeHex` / `deriveOwnerSecretHex`. The owner's app builds the per-tag Merkle
+tree locally and hands the issuer **only** the root `R`; the owner-secret (the nullifier's secret leaf)
+is derived from the wallet seed and must never be transmitted, or a server could recompute every
+nullifier and link it back to the owner. Nothing calls it in production yet - the issuance cutover is
+M7. See `docs/MOBILE_OWNER_SECRET.md`.
+
 ### 1.10 Consent module — `VerificationConsent` EIP-712 typed-data (CHANGESPEC §0/§1; research 11)
 
 Shared `consent` module (both SDKs, UniFFI-exported for mobile §6). Encodes the EIP-712

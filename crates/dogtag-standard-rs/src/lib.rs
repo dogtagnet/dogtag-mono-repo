@@ -31,6 +31,11 @@ pub mod consent;
 pub mod blake512;
 pub mod eddsa;
 
+// Level-B M5 - the DEVICE-side per-tag profile tree (3 reserved owner-control leaves + attribute
+// leaves -> R) and the recoverable, seed-derived owner-secret. Additive: builds on
+// field/leaf/merkle/eddsa without modifying them.
+pub mod profile_tree;
+
 // Phase 6 — mobile UniFFI binding surface (additive; does not touch the core algorithm modules).
 pub mod ffi;
 

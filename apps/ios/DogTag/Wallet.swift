@@ -99,6 +99,18 @@ enum Wallet {
         return "0x" + priv.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The stored 64-byte BIP-39 seed as `0x…` hex, for the Rust FFI's seed-derived material
+    /// (`deriveBabyjubConsentKey`, `deriveOwnerSecretHex`, `buildProfileTreeHex`).
+    ///
+    /// This is the root secret of the wallet: keep it in memory only for the duration of a
+    /// derivation call, and never log, persist or transmit it. The user's 24-word phrase restores
+    /// the owner-control core; rebuilding the same tree and `R` also requires the original owner
+    /// address plus the credential's attribute values and salts.
+    static func seedHex() -> String? {
+        guard let seed = loadBlob(account: seedAccount) else { return nil }
+        return "0x" + seed.map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func identity(from seed: Data, mnemonic: String) throws -> WalletIdentity {
         let priv = Bip39.seedToSecp256k1Priv(seed)              // 32-byte secp256k1 scalar
         let ethAddress = Secp256k1.address(fromPriv: priv)
@@ -146,6 +158,59 @@ enum Wallet {
 }
 
 enum WalletError: Error { case keychain(OSStatus); case randomGenerationFailed }
+
+/// Records that the user has confirmed they wrote down their 24-word recovery phrase.
+///
+/// Load-bearing for Level-B recovery, not a nag: the wallet seed is the ONLY cross-device path to a
+/// tag's owner-secret. `Documents/dogtag-owner-secrets.json` is excluded from device backups
+/// (`ProfileTreeStore`), and the seed/entropy Keychain items are `…ThisDeviceOnly`, so a replacement
+/// phone can regenerate the owner-secret ONLY by restoring the phrase. Minting an owner-secret for a
+/// user who has not written the phrase down would mean a lost phone silently and permanently
+/// destroys that tag - `profileRoot` is write-once, so there is no on-chain remedy (D3: re-issue a
+/// fresh tag). `ProfileTreeStore.buildAndPersist` therefore GATES creation on this flag.
+///
+/// It records a user ASSERTION, not proof - the app cannot verify a phrase was really written down.
+/// The assertion is bound to a one-way fingerprint of the seed so restored `UserDefaults` cannot
+/// confirm a newly-created wallet whose `…ThisDeviceOnly` Keychain seed did not migrate. The
+/// fingerprint is not a secret, so plain `UserDefaults` is the right home. A missing or mismatched
+/// fingerprint re-prompts, which fails safe.
+enum SeedBackup {
+    private static let fingerprintKey = "seed_backup_fingerprint_v1"
+    private static let fingerprintDomain = "DogTag/seed-backup-fingerprint/v1"
+
+    static func isConfirmed(forSeedHex seedHex: String) -> Bool {
+        guard let expected = fingerprint(seedHex: seedHex) else { return false }
+        return UserDefaults.standard.string(forKey: fingerprintKey) == expected
+    }
+
+    /// Call when the user affirms they have stored the phrase offline (the "I've saved it" action).
+    @discardableResult
+    static func confirm(seedHex: String) -> Bool {
+        guard let value = fingerprint(seedHex: seedHex) else { return false }
+        UserDefaults.standard.set(value, forKey: fingerprintKey)
+        return true
+    }
+
+    private static func fingerprint(seedHex: String) -> String? {
+        let hex = seedHex.hasPrefix("0x") || seedHex.hasPrefix("0X")
+            ? String(seedHex.dropFirst(2))
+            : seedHex
+        guard !hex.isEmpty, hex.count.isMultiple(of: 2) else { return nil }
+
+        var seed = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            seed.append(byte)
+            index = next
+        }
+
+        var material = Data(fingerprintDomain.utf8)
+        material.append(seed)
+        return SHA256.hash(data: material).map { String(format: "%02x", $0) }.joined()
+    }
+}
 
 /// AndroidX BiometricPrompt analogue: LAContext-gated authentication.
 enum Biometric {

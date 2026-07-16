@@ -753,6 +753,10 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -774,11 +778,15 @@ internal interface UniffiLib : Library {
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_build_merkle_root_hex(`leafHexes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_build_profile_tree_hex(`seedHex`: RustBuffer.ByValue,`dogTagIdHex`: RustBuffer.ByValue,`ownerAddressHex`: RustBuffer.ByValue,`attributes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_bytes_to_field_hex(`inputHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_consent_nullifier_hex(`dogTagIdHex`: RustBuffer.ByValue,`recordTypeHex`: RustBuffer.ByValue,`purposeHex`: RustBuffer.ByValue,`credentialRootHex`: RustBuffer.ByValue,`challengeHex`: RustBuffer.ByValue,`relayerHex`: RustBuffer.ByValue,`subjectHex`: RustBuffer.ByValue,`nonceHex`: RustBuffer.ByValue,`deadlineHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_derive_babyjub_consent_key(`seedHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_derive_owner_secret_hex(`seedHex`: RustBuffer.ByValue,`dogTagIdHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_dog_tag_id_field_hex(`dogTagIdDec`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -928,11 +936,15 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_dogtag_standard_checksum_func_build_merkle_root_hex(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_build_profile_tree_hex(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_bytes_to_field_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_consent_nullifier_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key(
+    ): Short
+    fun uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex(
     ): Short
@@ -990,6 +1002,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_dogtag_standard_checksum_func_build_merkle_root_hex() != 1024.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_dogtag_standard_checksum_func_build_profile_tree_hex() != 20561.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_dogtag_standard_checksum_func_bytes_to_field_hex() != 34986.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -997,6 +1012,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 61221.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_dog_tag_id_field_hex() != 50191.toShort()) {
@@ -1220,6 +1238,50 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 
 
 /**
+ * A disclosable attribute leaf crossing the FFI boundary. `tag`+`value` are reconstructed into a
+ * `TypedScalar` exactly like `hash_leaf_hex` does. `salt_hex` is 16 bytes.
+ */
+data class AttributeLeafFfi (
+    var `keyPath`: kotlin.String, 
+    var `saltHex`: kotlin.String, 
+    var `tag`: kotlin.UByte, 
+    var `value`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAttributeLeafFfi: FfiConverterRustBuffer<AttributeLeafFfi> {
+    override fun read(buf: ByteBuffer): AttributeLeafFfi {
+        return AttributeLeafFfi(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUByte.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AttributeLeafFfi) = (
+            FfiConverterString.allocationSize(value.`keyPath`) +
+            FfiConverterString.allocationSize(value.`saltHex`) +
+            FfiConverterUByte.allocationSize(value.`tag`) +
+            FfiConverterString.allocationSize(value.`value`)
+    )
+
+    override fun write(value: AttributeLeafFfi, buf: ByteBuffer) {
+            FfiConverterString.write(value.`keyPath`, buf)
+            FfiConverterString.write(value.`saltHex`, buf)
+            FfiConverterUByte.write(value.`tag`, buf)
+            FfiConverterString.write(value.`value`, buf)
+    }
+}
+
+
+
+/**
  * A derived BabyJubjub consent keypair crossing the FFI boundary. `prvHex` is the 32-byte private
  * key (keep encrypted behind the platform keystore); Ax/Ay are 0x.. 32-byte BE public-point hex;
  * keyHashHex = Poseidon(Ax,Ay) is what the wallet binds in ConsentKeyRegistry.
@@ -1356,6 +1418,91 @@ public object FfiConverterTypeEddsaSignatureFfi: FfiConverterRustBuffer<EddsaSig
             FfiConverterString.write(value.`r8xDec`, buf)
             FfiConverterString.write(value.`r8yDec`, buf)
             FfiConverterString.write(value.`sDec`, buf)
+    }
+}
+
+
+
+/**
+ * A device-built per-tag profile tree.
+ *
+ * Everything here except `root_hex` is OWNER-PRIVATE and must never be transmitted: only
+ * `root_hex` (`R`) is handed to the issuer, which seals it as `profileRoot(dogTagId)`.
+ */
+data class ProfileTreeFfi (
+    /**
+     * `R` - the value the issuer seals as `profileRoot(dogTagId)`.
+     */
+    var `rootHex`: kotlin.String, 
+    /**
+     * The nullifier secret. Regenerable from the wallet seed; keep it device-local and never send
+     * or back it up separately.
+     */
+    var `ownerSecretHex`: kotlin.String, 
+    var `axHex`: kotlin.String, 
+    var `ayHex`: kotlin.String, 
+    var `consentPrvHex`: kotlin.String, 
+    var `keyHashHex`: kotlin.String, 
+    var `ownerSaltHex`: kotlin.String, 
+    var `keySaltHex`: kotlin.String, 
+    var `secretSaltHex`: kotlin.String, 
+    var `ownerAddressLeafHex`: kotlin.String, 
+    var `consentKeyLeafHex`: kotlin.String, 
+    var `ownerSecretLeafHex`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeProfileTreeFfi: FfiConverterRustBuffer<ProfileTreeFfi> {
+    override fun read(buf: ByteBuffer): ProfileTreeFfi {
+        return ProfileTreeFfi(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ProfileTreeFfi) = (
+            FfiConverterString.allocationSize(value.`rootHex`) +
+            FfiConverterString.allocationSize(value.`ownerSecretHex`) +
+            FfiConverterString.allocationSize(value.`axHex`) +
+            FfiConverterString.allocationSize(value.`ayHex`) +
+            FfiConverterString.allocationSize(value.`consentPrvHex`) +
+            FfiConverterString.allocationSize(value.`keyHashHex`) +
+            FfiConverterString.allocationSize(value.`ownerSaltHex`) +
+            FfiConverterString.allocationSize(value.`keySaltHex`) +
+            FfiConverterString.allocationSize(value.`secretSaltHex`) +
+            FfiConverterString.allocationSize(value.`ownerAddressLeafHex`) +
+            FfiConverterString.allocationSize(value.`consentKeyLeafHex`) +
+            FfiConverterString.allocationSize(value.`ownerSecretLeafHex`)
+    )
+
+    override fun write(value: ProfileTreeFfi, buf: ByteBuffer) {
+            FfiConverterString.write(value.`rootHex`, buf)
+            FfiConverterString.write(value.`ownerSecretHex`, buf)
+            FfiConverterString.write(value.`axHex`, buf)
+            FfiConverterString.write(value.`ayHex`, buf)
+            FfiConverterString.write(value.`consentPrvHex`, buf)
+            FfiConverterString.write(value.`keyHashHex`, buf)
+            FfiConverterString.write(value.`ownerSaltHex`, buf)
+            FfiConverterString.write(value.`keySaltHex`, buf)
+            FfiConverterString.write(value.`secretSaltHex`, buf)
+            FfiConverterString.write(value.`ownerAddressLeafHex`, buf)
+            FfiConverterString.write(value.`consentKeyLeafHex`, buf)
+            FfiConverterString.write(value.`ownerSecretLeafHex`, buf)
     }
 }
 
@@ -1501,6 +1648,34 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeAttributeLeafFfi: FfiConverterRustBuffer<List<AttributeLeafFfi>> {
+    override fun read(buf: ByteBuffer): List<AttributeLeafFfi> {
+        val len = buf.getInt()
+        return List<AttributeLeafFfi>(len) {
+            FfiConverterTypeAttributeLeafFfi.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AttributeLeafFfi>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAttributeLeafFfi.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AttributeLeafFfi>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAttributeLeafFfi.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<List<kotlin.String>>> {
     override fun read(buf: ByteBuffer): List<List<kotlin.String>> {
         val len = buf.getInt()
@@ -1569,6 +1744,26 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     
 
         /**
+         * Build the per-tag Merkle tree ON THE DEVICE (`profile_tree::build_profile_tree`) and return `R`
+         * plus the owner-private witness.
+         *
+         * This is spec §"Issuance" step 2: *the owner's app builds the tree locally (owner-address,
+         * consent-key, owner-secret, attributes as salted leaves), computes `R`*. Hand the issuer ONLY
+         * `root_hex`.
+         *
+         * `owner_address_hex` is the 20-byte wallet address; `dog_tag_id_hex` the canonical dogTagId field.
+         */
+    @Throws(FfiException::class) fun `buildProfileTreeHex`(`seedHex`: kotlin.String, `dogTagIdHex`: kotlin.String, `ownerAddressHex`: kotlin.String, `attributes`: List<AttributeLeafFfi>): ProfileTreeFfi {
+            return FfiConverterTypeProfileTreeFfi.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_build_profile_tree_hex(
+        FfiConverterString.lower(`seedHex`),FfiConverterString.lower(`dogTagIdHex`),FfiConverterString.lower(`ownerAddressHex`),FfiConverterSequenceTypeAttributeLeafFfi.lower(`attributes`),_status)
+}
+    )
+    }
+    
+
+        /**
          * bytesToField: the length-prefixed, 31-byte-chunked, domain-separated Poseidon fold of raw
          * bytes (hex in) -> the 0x.. 32-byte field hex. Used for keyPath/value parity vectors.
          */
@@ -1606,6 +1801,27 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_derive_babyjub_consent_key(
         FfiConverterString.lower(`seedHex`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Derive the owner-secret from the wallet seed, bound to `dogTagId` - the RECOVERABLE nullifier
+         * secret (`profile_tree::derive_owner_secret`).
+         *
+         * Deterministic: restoring the seed regenerates the same secret. Rebuilding the same tree and `R`
+         * additionally requires the original owner address plus the exact attribute values and salts.
+         * `dog_tag_id_hex` is the canonical dogTagId field (what `dogTagIdFieldHex` returns).
+         *
+         * The result is owner-private and MUST NOT be transmitted: a server that learned it could link
+         * nullifiers back to the owner, defeating the owner-unlinkable model.
+         */
+    @Throws(FfiException::class) fun `deriveOwnerSecretHex`(`seedHex`: kotlin.String, `dogTagIdHex`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_derive_owner_secret_hex(
+        FfiConverterString.lower(`seedHex`),FfiConverterString.lower(`dogTagIdHex`),_status)
 }
     )
     }
