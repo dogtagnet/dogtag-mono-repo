@@ -275,7 +275,7 @@ pub fn decode_log(log: &RawLog, ctx: &WatchContext, known: &mut HashSet<String>)
         // subject intentionally left None: the Level-B event drops it.
         e.purpose = Some(hexb(&d.purpose));
         e.nullifier = Some(hexb(&d.nullifier));
-        e.deadline = Some(d.deadline.to::<u64>());
+        e.deadline = Some(d.deadline.saturating_to::<u64>());
         e.onchain_ts = Some(d.ts.to::<u64>());
         Some(e)
     } else {
@@ -706,5 +706,60 @@ pub mod emit {
                 ts: U256::from(ts),
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::U256;
+    use alloy::sol_types::SolEvent;
+
+    fn watch_ctx(consent_registry: &str) -> WatchContext {
+        WatchContext {
+            factory: "0xfactory".to_string(),
+            registry: "0xregistry".to_string(),
+            verification_registry: "0xvreg".to_string(),
+            verification_registry_consent: consent_registry.to_ascii_lowercase(),
+            known_clones: HashSet::new(),
+        }
+    }
+
+    /// A Level-B `Verified` can carry a `deadline` far above `u64::MAX` (the contract bounds it only by
+    /// `< SNARK_SCALAR_FIELD` and `>= block.timestamp`, and the circuit range-checks only `relayer`), so
+    /// the decode must NOT panic on an oversized value — it saturates to `u64::MAX` instead of aborting
+    /// the fire-and-forget ingest task (which would silently freeze the oversight feed).
+    #[test]
+    fn level_b_verified_oversized_deadline_saturates_without_panic() {
+        let consent_registry = "0x00000000000000000000000000000000000000cc";
+        let relayer = "0x00000000000000000000000000000000000000a1";
+        let ev = IVerificationRegistryConsent::Verified {
+            dogTagId: U256::from(7u64),
+            relayer: relayer.parse().expect("relayer"),
+            purpose: B256::ZERO,
+            nullifier: B256::ZERO,
+            deadline: U256::MAX,
+            ts: U256::from(1_900_000_000u64),
+        };
+        let mut topics: Vec<B256> = Vec::new();
+        for t in ev.encode_topics() {
+            topics.push(t.into());
+        }
+        let raw = RawLog {
+            address: consent_registry.to_string(),
+            topics,
+            data: ev.encode_data(),
+            block_number: 1,
+            block_hash: "0xhash".to_string(),
+            tx_hash: "0xtx".to_string(),
+            log_index: 0,
+            block_timestamp: 1_900_000_000,
+        };
+        let ctx = watch_ctx(consent_registry);
+        let mut known = HashSet::new();
+        let e = decode_log(&raw, &ctx, &mut known).expect("Level-B Verified should decode");
+        assert_eq!(e.event_type, EventType::Verified);
+        assert_eq!(e.deadline, Some(u64::MAX));
+        assert_eq!(e.subject, None);
     }
 }
