@@ -20,7 +20,8 @@ use indexer_api::store::{MemStore, Store};
 
 const FACTORY: &str = "0x00000000000000000000000000000000000fac70";
 const REGISTRY: &str = "0x0000000000000000000000000000000000c0ce61";
-const VREG: &str = "0x0000000000000000000000000000000000000e61"; // verification registry
+const VREG: &str = "0x0000000000000000000000000000000000000e61"; // Level-A verification registry
+const VREG_CONSENT: &str = "0x0000000000000000000000000000000000c05e61"; // Level-B consent registry
 const GOV_CLONE: &str = "0x0000000000000000000000000000000000c10e01";
 const GOV_SIGNER: &str = "0x00000000000000000000000000000000516e0001";
 const OTHER_CLONE: &str = "0x0000000000000000000000000000000000c10e02";
@@ -37,6 +38,7 @@ fn cfg() -> Config {
         factory_addr: FACTORY.to_ascii_lowercase(),
         registry_addr: REGISTRY.to_ascii_lowercase(),
         verification_registry_addr: VREG.to_ascii_lowercase(),
+        verification_registry_consent_addr: VREG_CONSENT.to_ascii_lowercase(),
         seed_clones: vec![], // discovered via IssuerCreated
         start_block: 0,
         confirmations: 0, // scripted head; index everything immediately
@@ -296,4 +298,84 @@ async fn promotion_at_watermark() {
     let (_, body) = get(&state, "/v1/stats", Some("gov")).await;
     assert_eq!(body["finalized"], 7, "all promoted to finalized");
     assert_eq!(body["pending"], 0);
+}
+
+/// M8 additive dual-decode: the indexer decodes BOTH `Verified` shapes through the SAME real ingest
+/// path (`decode_log` via `indexer.tick()` over `MemLogSource`). A Level-A `Verified` (subject-
+/// bearing, from the Level-A registry) and a Level-B `Verified` (subject-less, deadline-bearing, from
+/// the consent registry) are both ingested and queryable as `verified` rows: the Level-B row carries
+/// NO `subject` and a `deadline`; the Level-A row is unchanged (subject present, no deadline). A
+/// Level-B-shaped log emitted by a stranger address is dropped by the anti-spoof gate.
+#[tokio::test]
+async fn level_b_consent_verified_dual_decode() {
+    let c = cfg();
+    let mem = MemLogSource::new();
+    let rt = keccak_key("TRAVEL_CLEARANCE");
+    let purpose = keccak_key("boarding_intake");
+    let subject = "0x00000000000000000000000000000000deadbeef";
+    let stranger = "0x000000000000000000000000000000005778a06e"; // not a registry — must be dropped
+    let deadline: u64 = 1_900_000_000; // consent validity horizon carried by the Level-B event
+
+    mem.push_empty_block("0x00", 1000); // genesis
+    mem.push_events("0x01", 1012, vec![emit::issuer_created(&c.factory_addr, GOV_CLONE, &rt, "Gov Travel")]);
+    mem.push_events("0x02", 1024, vec![emit::whitelisted(&c.registry_addr, &rt, GOV_SIGNER)]);
+    // Level-A Verified (subject-bearing) from the Level-A registry.
+    mem.push_events(
+        "0x03",
+        1036,
+        vec![emit::verified(&c.verification_registry_addr, 42, GOV_SIGNER, subject, &purpose, &b32(0x33), 1036)],
+    );
+    // Level-B Verified (no subject, carries a deadline) from the Level-B consent registry.
+    mem.push_events(
+        "0x04",
+        1048,
+        vec![emit::verified_consent(&c.verification_registry_consent_addr, 43, GOV_SIGNER, &purpose, &b32(0x44), deadline, 1048)],
+    );
+    // Anti-spoof: a Level-B-shaped Verified from a stranger address must be dropped, not indexed.
+    mem.push_events(
+        "0x05",
+        1060,
+        vec![emit::verified_consent(stranger, 44, GOV_SIGNER, &purpose, &b32(0x55), deadline, 1060)],
+    );
+
+    let store: Arc<dyn Store> = Arc::new(MemStore::new());
+    let directory = Arc::new(Directory::new(HashMap::new(), None, None));
+    let state = AppState {
+        store,
+        source: Arc::new(mem),
+        scopes: Arc::new(scopes()),
+        directory,
+        cfg: Arc::new(c),
+    };
+    let indexer = Arc::new(Indexer::new(state.clone()));
+    indexer.rebuild_known_clones().await;
+    indexer.tick().await.expect("tick");
+
+    // Both real Verified events are ingested; the spoofed one is dropped.
+    let (st, body) = get(&state, "/v1/events?type=verified", Some("gov")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["total"], 2, "both Level-A and Level-B Verified ingested; stranger-emitted one dropped");
+
+    let events = body["events"].as_array().unwrap();
+    // newest-first: block 4 (Level-B) then block 3 (Level-A).
+    let level_b = &events[0];
+    let level_a = &events[1];
+
+    // Level-B row: subject omitted entirely (JSON null), deadline present, correct dogTagId/nullifier.
+    assert_eq!(level_b["dogTagId"], "43");
+    assert!(level_b["subject"].is_null(), "Level-B Verified must produce a row with NO subject");
+    assert_eq!(level_b["deadline"].as_u64(), Some(deadline), "Level-B Verified carries the deadline");
+    assert_eq!(level_b["nullifier"].as_str().unwrap(), b32(0x44));
+    assert_eq!(level_b["actor"].as_str().unwrap(), GOV_SIGNER.to_ascii_lowercase());
+    assert_eq!(level_b["contract"].as_str().unwrap(), VREG_CONSENT.to_ascii_lowercase());
+
+    // Level-A row is unbroken: subject present, no deadline field.
+    assert_eq!(level_a["dogTagId"], "42");
+    assert_eq!(level_a["subject"].as_str().unwrap(), subject);
+    assert!(level_a["deadline"].is_null(), "Level-A Verified has no deadline");
+    assert_eq!(level_a["contract"].as_str().unwrap(), VREG.to_ascii_lowercase());
+
+    // Both shapes are counted as verifications by the stats endpoint.
+    let (_, stats) = get(&state, "/v1/stats", Some("gov")).await;
+    assert_eq!(stats["verifications"], 2, "both Verified shapes count as verifications");
 }

@@ -19,6 +19,10 @@ use indexer_api::store::{MemStore, Store};
 const DEFAULT_FACTORY: &str = "0xd3179abbfb0274d0a5f7017d76015a93c159511d";
 const DEFAULT_REGISTRY: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const DEFAULT_VREG: &str = "0x4e2f0996e1cb4e24f1053346f3da2186906835e8";
+// Level-B `VerificationRegistryConsent` (roax.json canonical M5 pairing), lowercased. Watched
+// ALONGSIDE the Level-A `DEFAULT_VREG` above so the indexer recognizes both `Verified` shapes during
+// the transition — M8. This is additive: M7 (not this change) later flips which registry is primary.
+const DEFAULT_VREG_CONSENT: &str = "0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87";
 const GOV_TRAVEL_CLONE: &str = "0x8e276bd4c57740766a7e173d05f4f02013681c6a";
 const GOV_EUHEALTH_CLONE: &str = "0xe30a17396c0fb75d3e8bfc862a49677b3dd568e2";
 const DEMO_DOGPROFILE_CLONE: &str = "0xdb8d39eb83ddfaaa7481c4af4e47d0044116db25";
@@ -64,6 +68,10 @@ async fn main() {
         factory_addr: lc(env("FACTORY_ADDR", DEFAULT_FACTORY)),
         registry_addr: lc(env("ISSUER_REGISTRY_ADDR", DEFAULT_REGISTRY)),
         verification_registry_addr: lc(env("VERIFICATION_REGISTRY_ADDR", DEFAULT_VREG)),
+        verification_registry_consent_addr: lc(env(
+            "VERIFICATION_REGISTRY_CONSENT_ADDR",
+            DEFAULT_VREG_CONSENT,
+        )),
         seed_clones,
         start_block: env("START_BLOCK", "0").parse().unwrap_or(0),
         // Demo has no reorgs and a scripted head — index everything immediately.

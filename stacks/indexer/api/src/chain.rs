@@ -51,6 +51,22 @@ sol! {
             uint256 ts
         );
     }
+    // Level-B consent registry (`VerificationRegistryConsent`). Its `Verified` has a DIFFERENT
+    // event signature — hence a different topic0 — from the Level-A one above: `subject` is dropped
+    // and `deadline` is added, so it carries 2 indexed topics (dogTagId, relayer) instead of 3. The
+    // indexer decodes BOTH shapes during the Level-B transition (M8), so the later M7 `DEFAULT_VREG`
+    // flip has no blind window. See VerificationRegistryConsent.sol `event Verified`.
+    #[sol(rpc)]
+    contract IVerificationRegistryConsent {
+        event Verified(
+            uint256 indexed dogTagId,
+            address indexed relayer,
+            bytes32 purpose,
+            bytes32 nullifier,
+            uint256 deadline,
+            uint256 ts
+        );
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,7 +83,12 @@ pub enum ChainError {
 pub struct WatchContext {
     pub factory: String,
     pub registry: String,
+    /// The Level-A `VerificationRegistry` — anti-spoof gate for the subject-bearing `Verified`.
     pub verification_registry: String,
+    /// The Level-B `VerificationRegistryConsent` — anti-spoof gate for the subject-less (deadline-
+    /// bearing) `Verified`. Recognized ALONGSIDE the Level-A registry during the M7 transition so no
+    /// legitimate `Verified` is dropped; each shape is gated to the address that actually emits it.
+    pub verification_registry_consent: String,
     /// The clones known *before* this range (deployment seed + earlier `IssuerCreated`). Clones
     /// discovered *within* the range are folded in during decode (an `IssuerCreated` always precedes
     /// that clone's first `RootIssued` in `(block, logIndex)` order), so same-range issuance is caught.
@@ -84,6 +105,7 @@ pub fn watched_topic0() -> Vec<B256> {
         IDogTagIssuer::RootIssued::SIGNATURE_HASH,
         IDogTagIssuer::RootRevoked::SIGNATURE_HASH,
         IVerificationRegistry::Verified::SIGNATURE_HASH,
+        IVerificationRegistryConsent::Verified::SIGNATURE_HASH,
     ]
 }
 
@@ -161,6 +183,7 @@ pub fn decode_log(log: &RawLog, ctx: &WatchContext, known: &mut HashSet<String>)
         subject: None,
         purpose: None,
         nullifier: None,
+        deadline: None,
         onchain_ts: None,
     };
     // alloy's SolEvent::decode_raw_log validates topic0 + arity for us.
@@ -236,6 +259,23 @@ pub fn decode_log(log: &RawLog, ctx: &WatchContext, known: &mut HashSet<String>)
         e.subject = Some(hexa(&d.subject).to_ascii_lowercase());
         e.purpose = Some(hexb(&d.purpose));
         e.nullifier = Some(hexb(&d.nullifier));
+        e.onchain_ts = Some(d.ts.to::<u64>());
+        Some(e)
+    } else if topic0 == IVerificationRegistryConsent::Verified::SIGNATURE_HASH {
+        // Level-B `Verified` (VerificationRegistryConsent): same `EventType::Verified` row, but a
+        // different on-chain shape — no `subject` (stays `None`), and it carries a `deadline`. Gated
+        // to the Level-B registry address; a Level-B-shaped log from any other emitter is dropped.
+        if addr != ctx.verification_registry_consent {
+            return None;
+        }
+        let d = IVerificationRegistryConsent::Verified::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
+        let mut e = base(EventType::Verified);
+        e.dog_tag_id = Some(d.dogTagId.to_string());
+        e.actor = Some(hexa(&d.relayer).to_ascii_lowercase());
+        // subject intentionally left None: the Level-B event drops it.
+        e.purpose = Some(hexb(&d.purpose));
+        e.nullifier = Some(hexb(&d.nullifier));
+        e.deadline = Some(d.deadline.to::<u64>());
         e.onchain_ts = Some(d.ts.to::<u64>());
         Some(e)
     } else {
@@ -641,6 +681,28 @@ pub mod emit {
                 subject: addr(subject),
                 purpose: b256(purpose),
                 nullifier: b256(nullifier),
+                ts: U256::from(ts),
+            },
+        )
+    }
+    /// Level-B `Verified` (VerificationRegistryConsent): no `subject`, carries a `deadline`.
+    pub fn verified_consent(
+        vreg_consent: &str,
+        dog_tag_id: u64,
+        relayer: &str,
+        purpose: &str,
+        nullifier: &str,
+        deadline: u64,
+        ts: u64,
+    ) -> EncodedLog {
+        encode(
+            vreg_consent,
+            IVerificationRegistryConsent::Verified {
+                dogTagId: U256::from(dog_tag_id),
+                relayer: addr(relayer),
+                purpose: b256(purpose),
+                nullifier: b256(nullifier),
+                deadline: U256::from(deadline),
                 ts: U256::from(ts),
             },
         )
