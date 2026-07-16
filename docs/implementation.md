@@ -1647,6 +1647,9 @@ POST /v1/consents/{id}/withdraw -> stop processing for purpose; trigger retentio
 Resolves `research/09-sbt-lifecycle.md` + audit-04/05/06 v2 items.
 
 **(a) DogTagSBT with granular roles + issuerOf + soft status + recover (replaces §11.1 burn-and-remint):**
+
+> **STALE for Level-B - do not port into the custodial stack.** The `DogTagSBT` below is the Level-A spec (still live until the M7 cutover). The Level-B custodial `DogTagSBTConsent` (M5) deliberately has NO `recover()` / `RECOVERY_ROLE` / `_recoveryRebind` / `_inRecovery` (D3): a keyed rebind names the new owner on-chain, which is exactly what owner-unlinkability removes, so the soulbound lock is absolute. Recovery is a **fresh custodial issuance under a new `dogTagId` + new `R`** (`ProfileTreeStore.reissue`), and unlike Level-A its referencing credentials do **not** survive - the owner re-obtains each fresh from its issuer under the new id (accept-the-break, 2026-07-16). See AGENTS.md "M6 app-side - recovery is re-issue" and architecture.md §13.6.
+
 ```solidity
 // AccessControlDefaultAdminRules gives DEFAULT_ADMIN a two-step + 3-day timelocked hand-off (H-3, matches
 // IssuerRegistry/VerificationRegistry); AccessControlEnumerable keeps the accredited set publicly auditable.

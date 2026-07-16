@@ -208,7 +208,10 @@ Which branch applies is decided by whether the owner-secret can be regenerated:
   remedy is a **fresh custodial issuance under a new `dogTagId` with a new `R`**: the issuer allocates
   a fresh id (a burned/abandoned id is retired forever), the app builds a fresh tree
   (`ProfileTreeStore.reissue`), and the issuer seals the new root. The abandoned tag is simply left
-  behind - there is no rebind.
+  behind - there is no rebind. Any credentials another issuer anchored to the abandoned id are **not**
+  carried over (that would forge attestation applicability); the owner re-obtains each fresh from its
+  issuer under the new id. The live issuer-side re-issue endpoint lands with the M7 custodial-issuance
+  cutover - M6 is the device/app flow and the recovery semantics.
 
 The re-issued tag is **mutually unlinkable** from the abandoned one. The owner-secret is bound to
 `dogTagId` ([§1](#1-seed-derivation)), so even the same wallet's fresh tag derives an independent

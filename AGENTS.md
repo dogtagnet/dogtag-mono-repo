@@ -1164,6 +1164,18 @@ the owner linkage the recent ZK audit validated as absent. The seed-backup gate
 (`StoreError.seedBackupNotConfirmed`) applies to `reissue` exactly as to `buildAndPersist` - the fresh
 tag's owner-secret is just as reliant on the phrase.
 
+**Referencing credentials across issuers - accept the break (captain decision, 2026-07-16).** A
+re-issued pet gets a NEW `dogTagId`, so any credential another issuer (vet/government) previously
+anchored to the OLD id now points at the abandoned tag - Level-A preserved these across `recover()`
+via a stable `tokenId` + `issuerOf`, but Level-B re-issue deliberately does NOT. Prior attestations
+are **not** re-anchored or transferred to the new id: doing so would forge attestation applicability
+(a vet/gov signature applying to an id it never signed), breaking the cross-issuer trust model. The
+owner re-obtains each referencing credential fresh from its issuer under the new id, via normal
+issuance. **M6 ships the device/app re-issue flow + these semantics + docs/tests only - there is NO
+live issuer-side custodial re-issue endpoint.** The custodial path is not wired into vet-api until M7
+(Level-A serves all issuance until then; `routes.rs:1796` still mints to the owner's wallet), and M7
+reworks `mint -> mintCustodial`; the issuer-side re-issue endpoint lands with that cutover.
+
 ### Known-uncovered surfaces (deliberate, not oversights)
 
 - **`ProfileTreeStore` has ZERO runtime coverage.** No iOS test target exists and nothing calls it
