@@ -30,7 +30,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service.
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **Level-B** pair `VerificationRegistryConsent` + `Groth16VerifierConsent` also lives here and is deployed, but is **additive and not yet live** - the Level-A `VerificationRegistry` still serves every consumer until the M7 cutover; see "Level-B `VerificationRegistryConsent` (M4)" below. `DogTagSBTConsent` (M5) is the Level-B custodial SBT (write-once `profileRoot`, `mintCustodial` with no `to`); its contract side has landed but is **NOT deployed**, and deploying it also redeploys the M4 registry against it (the registry's `sbt` is immutable) - see "M5 as-built" below.
+- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **canonical Level-B M5 stack** is deployed + bytecode/wiring verified: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`. It is additive and **not live**: the Level-A `DogTagSBT` + `VerificationRegistry` still serve every consumer until M7. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable Level-A SBT; see "M5 as-built" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -103,12 +103,12 @@ It scans the ROAX (chainId 135) contract event logs into a **non-PII** queryable
 ### Governance / admin (audit H-3)
 - Governed contracts split admin two ways: `IssuerRegistry` (3-day), `VerificationRegistry` (2-day), and `DogTagSBT` (3-day) use OZ `AccessControlDefaultAdminRules` (two-step `begin`/`acceptDefaultAdminTransfer` + timelock); `DogTagIssuerFactory` uses `Ownable2Step`. `DogTagIssuer` clones have no own admin — they read `IssuerRegistry.hasRole(0x00)`. `ConsentKeyRegistry`/`Groth16Verifier`/`Poseidon6` have no admin.
 - `DogTagSBT` inherits BOTH `AccessControlEnumerable` and `AccessControlDefaultAdminRules`, so it must explicitly override `grantRole`/`revokeRole`/`renounceRole`/`_setRoleAdmin` (`override(AccessControl, IAccessControl, AccessControlDefaultAdminRules)`) plus `_grantRole`/`_revokeRole`/`supportsInterface` — `super` resolves to the ACDAR rules first, then chains the enumerable bookkeeping. Do NOT `_grantRole(DEFAULT_ADMIN_ROLE,...)` in the constructor; the `AccessControlDefaultAdminRules(delay, admin)` base already does, and a second grant reverts (`AccessControlEnforcedDefaultAdminRules`).
-- **Governance handover is DONE on ROAX (Phase-2 executed).** The governance signer **signer-1 `0x8E27E117…`** now holds the registry `DEFAULT_ADMIN_ROLE` + `WHITELIST_ADMIN` AND is the `DogTagIssuerFactory` `Ownable2Step` owner; the old deployer EOA `0x119F8c7F…` (`roax.json:admin`, kept as the historical deploy record) was **stripped of all roles**. Consequence for tooling: the demo/relayer/admin `ADMIN_PRIVATE_KEY` (the control-plane / GovernanceAction signer) **must now be signer-1 `0x8E27E117…`** — with the old EOA any privileged write (`createIssuer`/`whitelistFor`/`adminRevoke`) correctly downgrades to a `Disposition::Proposed` payload instead of broadcasting. The key value itself is captain-managed env, never committed. The EOA→governance migration is shipped as reviewable code (`contracts/script/GovernanceMigration.sol` library + `MigrateGovernance.s.sol` two-phase Begin/Accept scripts + `GovernanceMigration.t.sol`) and lives on mainline (merged via PR #8) — see `docs/GOVERNANCE_MIGRATION.md`. The **live** `DogTagSBT` (`0x1FB8…`) predates the two-step upgrade and is still plain `AccessControlEnumerable`; it can't be retrofitted without a state-orphaning redeploy, so the migration hands it over with an atomic `grantRole`→`revokeRole` (the script's `supportsTwoStep` auto-picks the branch). Never re-run the migration on live testnet without explicit captain approval.
+- **Governance handover is DONE on ROAX (Phase-2 executed).** The governance signer **signer-1 `0x8E27E117…`** now holds the registry `DEFAULT_ADMIN_ROLE` + `WHITELIST_ADMIN` AND is the `DogTagIssuerFactory` `Ownable2Step` owner; the old deployer EOA `0x119F8c7F…` (`roax.json:admin`, kept as the historical deploy record) lost those governance/admin authorities. **Do not call it role-free or neutral:** the M5 deployment preflight re-verified on 2026-07-16 that it still holds the live Level-A SBT `ISSUER_ROLE` and remains whitelisted for the four known record types. Consequence for tooling: the demo/relayer/admin `ADMIN_PRIVATE_KEY` (the control-plane / GovernanceAction signer) **must now be signer-1 `0x8E27E117…`** — with the old EOA any governance write (`createIssuer`/`whitelistFor`/`adminRevoke`) correctly downgrades to a `Disposition::Proposed` payload instead of broadcasting. The key value itself is captain-managed env, never committed. The EOA→governance migration is shipped as reviewable code (`contracts/script/GovernanceMigration.sol` library + `MigrateGovernance.s.sol` two-phase Begin/Accept scripts + `GovernanceMigration.t.sol`) and lives on mainline (merged via PR #8) — see `docs/GOVERNANCE_MIGRATION.md`. The **live** `DogTagSBT` (`0x1FB8…`) predates the two-step upgrade and is still plain `AccessControlEnumerable`; it can't be retrofitted without a state-orphaning redeploy. Never re-run the migration on live testnet without explicit captain approval.
 - Removed dead governance surface: `IssuerRegistry.PROFILE_ISSUER_ROLE` and `DogTagSBT.UPDATER_ROLE` were declared but never enforced (SBT mint = `ISSUER_ROLE`; `setProfileRoot` = originator-or-`AUTHORITY_ROLE`). Don't re-add them.
 
 ### Admin control-plane foundation (PR-A: `GovernanceAction` + factory bindings)
 The admin portal is the protocol control plane — it **extends** the existing `stacks/admin/web` (shared `@dogtag/ui` `AppShell`) + its `stacks/admin/api` AlloyChain signer; it is NOT a greenfield build (scout `dogtag-adminportal-a3`). "See on-chain activity" = the UNSCOPED consumer of the PR-4 indexer above (that UI is PR-B/PR-D). This PR-A landed only the backend **foundation**: the governance-action abstraction + factory bindings (no new web pages).
-- **Three distinct on-chain authorities (`chain.rs`, plan Part 2).** Every privileged write is gated by ONE of: the **factory `Ownable2Step` owner** (`createIssuer`), the registry **`WHITELIST_ADMIN` role** (`whitelistFor`/`delistFor`), or the registry **`DEFAULT_ADMIN_ROLE`** (`adminRevoke`/role-admin/verifier+consent-key swaps, behind the 2–3 day ACDAR timelock). Governance Phase-2 has **executed**: all three now rest with the governance signer `0x8E27E117…` (the deployer EOA `0x119F8c7F…` was stripped). **Do NOT hardcode any EOA as the authority** — the dispatcher reads the holder live, so the control plane keeps working (executing when the hosted key IS the holder, else proposing) across the handover.
+- **Three distinct on-chain authorities (`chain.rs`, plan Part 2).** Every privileged write is gated by ONE of: the **factory `Ownable2Step` owner** (`createIssuer`), the registry **`WHITELIST_ADMIN` role** (`whitelistFor`/`delistFor`), or the registry **`DEFAULT_ADMIN_ROLE`** (`adminRevoke`/role-admin/verifier+consent-key swaps, behind the 2–3 day ACDAR timelock). Governance Phase-2 has **executed**: all three now rest with the governance signer `0x8E27E117…` (the deployer EOA `0x119F8c7F…` was stripped of these three governance authorities, but NOT of its legacy Level-A SBT `ISSUER_ROLE` + record-type whitelists, so it is not role-free; see "Governance / admin" above). **Do NOT hardcode any EOA as the authority** — the dispatcher reads the holder live, so the control plane keeps working (executing when the hosted key IS the holder, else proposing) across the handover.
 - **`GovernanceAction` (`src/governance.rs`) — the key-holder-agnostic abstraction.** A privileged write is a value `{target, calldata, authority, summary}` where `authority` is `Owner{owner_target}` or `Role{role_target, role, default_admin}`. `governance::dispatch(chain, signer_index, &action)` asks the chain WHO holds the authority (factory `owner()` / registry `hasRole()` / `defaultAdmin()`): if the hosted signer holds it → `send_action` (sign-and-broadcast, the existing legacy-gas path) returning `Disposition::Executed{txHash,holder}`; else → `Disposition::Proposed{holder,target,calldata,…}` for the governance signer / Safe to execute out-of-band. This survives the Phase-2 split BY CONSTRUCTION: an action silently flips executed→proposed the moment its role leaves the hosted key — no code path assumes which key holds which role.
 - **Factory bindings added to `chain.rs` (`ChainClient` trait, both `AlloyChain` + `MemChain`):** `predict_issuer` (deterministic clone preview, `salt = keccak256(recordType, business)` — exact BEFORE deploy), `create_issuer_calldata`, `is_clone`, `root_issuer`, plus the authority reads `ownable_owner`/`ownable_pending_owner`, `has_role`, `default_admin`, `pending_default_admin` (the Phase-2 handover surfaces here), and `signer_address(index)` (Alloy derives it from the key) so the dispatcher can test hosted-key holdership. `MemChain` gains seed setters (`set_factory_owner`, `set_role`, `set_default_admin`, `set_pending_default_admin`) + a deterministic (non-CREATE2) clone preview for hermetic tests.
 - **Endpoints (`admin_router`, admin-session gated):** `POST /v1/admin/factory/predict` (address preview), `POST /v1/admin/factory/issuers` (deploy via `GovernanceAction`; `business` defaults to the hosted signer = single-authority topology, matching the deployed government clones; returns predicted address + `Disposition`), `GET /v1/admin/governance/authority` (the live authority map: factory owner + pending, WHITELIST_ADMIN/DEFAULT_ADMIN holders, `heldByHosted` per authority, pending DEFAULT_ADMIN transfer + ETA — best-effort, unreachable target → `null`). `recordType` accepts a human label (keccak'd server-side via `record_type_key`) or a raw `0x`+64-hex key.
@@ -483,17 +483,18 @@ An already-installed app keeps proving against its **baked** key until you do, s
 ## Governance authority (Phase-2 executed) - tooling signer
 
 - **Governance authority is signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`; the tooling ADMIN key
-  is signer-1.** Governance Phase-2 executed on-chain 2026-07-05 (block 123835), stripping the old deployer
-  EOA `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` of ALL roles (registry `DEFAULT_ADMIN_ROLE` +
-  `WHITELIST_ADMIN`, the `DogTagIssuerFactory` `Ownable2Step` ownership, and `DogTagSBT` `ISSUER_ROLE`) and
-  moving them to governance signer-1. Any tooling that signs a privileged write (`whitelistFor` / SBT
-  `mint` / factory `createIssuer` / `adminRevoke`) as the old EOA now reverts (or, in the admin control
-  plane, downgrades to a `Disposition::Proposed`), so **wire the admin authority to signer-1, never `0x119F…`.**
+  is signer-1.** Governance Phase-2 executed on-chain 2026-07-05 (block 123835), moving registry
+  `DEFAULT_ADMIN_ROLE` + `WHITELIST_ADMIN` and `DogTagIssuerFactory` `Ownable2Step` ownership off the old
+  deployer EOA `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`. A 2026-07-16 audit found the old EOA still has the
+  Level-A `DogTagSBT` `ISSUER_ROLE` and known record-type whitelists, so it is **not role-free** and must
+  never be treated as a neutral custodian. Governance writes (`whitelistFor` / factory `createIssuer` /
+  `adminRevoke`) still require signer-1; separately retire the old EOA's legacy issuance capabilities.
 - **Demo / relayer / demo-script tooling reads signer-1 from a captain-managed env var - the private-key
   VALUE is never committed.** The `scripts/*.sh` demo + e2e harnesses (`demo-up.sh`, `demo-bootstrap.sh`,
   `demo-prepare-phone.sh`, `e2e-smoke.sh`, `e2e-zk.sh`) source **`GOVERNANCE_PRIVATE_KEY` /
   `GOVERNANCE_ADDRESS`** (signer-1) from `contracts/.env` and fail closed if unset; `DEPLOYER_*` is kept
-  only for `forge` contract deploys / ceremony scripts (it holds no roles post-Phase-2). The admin stack
+  only for `forge` contract deploys / ceremony scripts and must not be confused with a neutral key (the
+  old deployer retains legacy issuance capabilities). The admin stack
   reads the same authority as `ADMIN_PRIVATE_KEY` / `ADMIN_ADDRESS` (`stacks/admin/.env`). See
   `docs/PREREQUISITES.md` §2.1. (The on-chain / backend-signer record lives in the "Governance / admin"
   section above and in `contracts/deployments/roax.json`.)
@@ -781,7 +782,7 @@ public **drand** beacon (chain `8990e7a9…`, round `6286835`). Full transcript 
 - **verifier:** `circuits/Groth16Verifier.consent.sol` → `contracts/src/Groth16VerifierConsent.sol` (contract **`Groth16VerifierConsent`** — renamed so it does NOT collide with the live v2 `Groth16Verifier`). `verifyProof(a,b,c,pub[7])`.
 - This REPLACES the M2 DEV throwaway (dev VK `3f79a5ff…`, dev zkey `12df8ea4…`, both gitignored, forgeable, never deployed).
 - `node circuits/scripts/test-consent.mjs` → **33/33 green** against this production key (round-trip verify, R-parity {3,4,5,7,10,20} leaves, 6 negatives, D5 nullifier).
-- **Deployed ROAX `Groth16VerifierConsent`:** `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` (chainId 135, `--legacy`, deployer `0x119F8c…`, deploy tx `0xcd1cd5fa…`, block 190760). On-chain `cast code` == the compiled runtime (1933 bytes); `verifyProof`(valid consent proof)=`true`, (tampered `R`)=`false`. Recorded in `contracts/deployments/roax.json` (`Groth16VerifierConsent` + `_m3_consent_verifier`). This is a SEPARATE verifier — it does NOT replace the live Level-A `Groth16Verifier` `0xEEFCf…`. Wiring it in was **M4**, now **DONE**: `VerificationRegistryConsent` `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` verifies against it — see "Level-B `VerificationRegistryConsent` (M4)" below.
+- **Deployed ROAX `Groth16VerifierConsent`:** `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` (chainId 135, `--legacy`, deployer `0x119F8c…`, deploy tx `0xcd1cd5fa…`, block 190760). On-chain `cast code` == the compiled runtime (1933 bytes); `verifyProof`(valid consent proof)=`true`, (tampered `R`)=`false`. Recorded in `contracts/deployments/roax.json` (`Groth16VerifierConsent` + `_m3_consent_verifier`). This is a SEPARATE verifier — it does NOT replace the live Level-A `Groth16Verifier` `0xEEFCf…`. It is wired into the canonical M5 `VerificationRegistryConsent` `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`; the former M4 `0x53F988Ae…` instance is deprecated.
 
 **VK-freeze checkpoint (`M`-preimage) — reviewed, frozen.** `M = Poseidon5(dogTagId, purpose, relayer,
 deadline, consentNonce)` shares arity + first slot with the leaf hash `Poseidon5(DS_LEAF=1, …)` when
@@ -822,17 +823,19 @@ that mistake is unrepairable. Tests: `contracts/test/ConsentRegistry.t.sol` (16,
 pairs the registry with the Level-A SBT, proving it is SBT-agnostic) + `contracts/test/CustodialIssuance.t.sol` (the
 production pairing). Fixture: `circuits/scripts/gen-consent-fixture.mjs`.
 
-**Deployed ROAX:** `VerificationRegistryConsent` **`0x53F988Ae0124b96069d90CBC78E6245FeB01E125`** (chainId 135,
+**Former M4 ROAX instance (superseded):** `VerificationRegistryConsent`
+**`0x53F988Ae0124b96069d90CBC78E6245FeB01E125`** (chainId 135,
 `--legacy`, deploy tx `0xbdcbb27d…`, block 195443, admin = governance `0x8E27E117…`). It verifies against the
 M3 `Groth16VerifierConsent` `0x272be146…`. Recorded in `contracts/deployments/roax.json`
-(`VerificationRegistryConsent` + `_m4_consent_registry`). The deployed runtime is **byte-identical** to the
+(`VerificationRegistryConsent_M4_mutableRoot_legacy` + `_m4_consent_registry`). The deployed runtime is **byte-identical** to the
 committed source once the 3 immutables are blanked (6317 bytes).
 
-**⚠ This instance will NOT be the one that goes live.** Its `sbt` is immutable and bound to the Level-A
-`DogTagSBT`, so M5 **redeploys this same registry code** against the custodial `DogTagSBTConsent`; that
-redeploy supersedes `0x53F988Ae…`. The registry CODE below is still current - only the deployed instance is
-provisional. Safe because this instance was never live (zero `Verified` events, verified on-chain 2026-07-15);
-see "M5 as-built" below and `roax.json` `_m5_custodial_issuance.why_the_m4_registry_is_redeployed`.
+**⚠ DEPRECATED / DO NOT USE for Level-B.** Its `sbt` is immutable and bound to the mutable Level-A
+`DogTagSBT`, so M5 redeployed this same registry code against the custodial `DogTagSBTConsent`; canonical
+M5 registry `0xb9B313C1…` supersedes `0x53F988Ae…`. The registry CODE below is still current - only the
+deployed instance is deprecated. Safe because this instance was never live (zero `Verified` events,
+re-verified immediately before the M5 broadcast on 2026-07-16);
+see "M5 as-built" below and `roax.json` `_m5_custodial_issuance.old_instance_safety_check`.
 
 **Superseded first deploy.** `0x57A2998…` (block 194489, runtime 6179 bytes, now
 `VerificationRegistryConsent_preErasureGate_legacy`) was deployed BEFORE the review-round hardening that
@@ -932,9 +935,16 @@ points at this registry until M7).
 
 ### M5 as-built (custodial issuance) - contract/issuer side
 
-**Captain decision (2026-07-15): fresh Level-B SBT.** `DogTagSBTConsent` + a redeployed
-`VerificationRegistryConsent` pointing at it. Level-A (`DogTagSBT` 0x1FB89865…) stays FROZEN and live -
-the same additive pattern as M2/M3/M4. Deploy with `script/DeployCustodialIssuance.s.sol`.
+**Captain decision (2026-07-15): fresh Level-B SBT. Deployed + verified 2026-07-16.**
+`DogTagSBTConsent` `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` (tx `0xbf4b52f5…`, block
+202601) + `VerificationRegistryConsent` `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` (tx
+`0xc215d980…`, block 202602). Both exact deployed runtimes match the compiled source, including expected
+immutable values; the registry points at the new SBT, M3 verifier `0x272be146…`, IssuerRegistry
+`0x5d86e4CF…`, and root index `0xd3179AbB…`; both admins are governance `0x8E27E117…`. The SBT's immutable
+neutral custodian is `0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10`, with no code, prior role, or
+whitelist history. Deployment grants no `ISSUER_ROLE` (member count zero). Level-A (`DogTagSBT`
+`0x1FB89865…`) stays FROZEN and live - the same additive pattern as M2/M3/M4. **No consumer was changed:**
+the canonical M5 pair is the M7 target, not yet live. Deploy script: `script/DeployCustodialIssuance.s.sol`.
 
 **The issuance flow is TWO writes, both required:**
 ```solidity
@@ -984,10 +994,10 @@ Recorded so it is not re-derived or "simplified" back into a broken shape.
 3. **Sealing therefore cascades:** new `setProfileRoot` semantics ⟹ new SBT bytecode ⟹ new SBT deploy ⟹
    **new `VerificationRegistryConsent` deploy too**, because its `sbt` is `immutable`
    (`VerificationRegistryConsent.sol:90`, set in the constructor) and cannot be repointed.
-4. **The M4 redeploy is near-free - verified on-chain, not assumed.** `0x53F988Ae…` carries exactly ONE log
+4. **The M4 redeploy was near-free - verified on-chain, not assumed.** `0x53F988Ae…` carries exactly ONE log
    (the deployment `RoleGranted`) and **zero `Verified` events**
-   (`cast logs --address 0x53F988Ae… --from-block 0`, topic0 `0xeb5f75f2…`). Nothing consumes it; M7 has not
-   cut over. Re-verify before relying on this.
+   (`cast logs --address 0x53F988Ae… --from-block 0`, topic0 `0xeb5f75f2…`), re-verified through block
+   202680 after M5 finality. Nothing consumes it; M7 has not cut over.
 5. **`setProfileRoot` has ZERO production callers.** Only `ConsentRegistry.t.sol:198` (the hijack test) and
    docs reference it - the vet-api mints the root directly via `mint(to,id,root)`. Sealing it breaks no
    live flow, and D3 (recovery = re-issue a fresh tag ⇒ new `R`) means a tag's `profileRoot` never

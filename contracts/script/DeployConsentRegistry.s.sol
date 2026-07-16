@@ -9,7 +9,9 @@ import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.so
 ///
 /// ### ⚠ SUPERSEDED BY M5 - DO NOT RUN THIS TO DEPLOY. Use `DeployCustodialIssuance.s.sol`.
 /// This script is kept because it documents the M4 deployment that is already on-chain
-/// (`VerificationRegistryConsent` 0x53F988Ae..., see deployments/roax.json `_m4_consent_registry`); it is
+/// (0x53F988Ae..., recorded as `VerificationRegistryConsent_M4_mutableRoot_legacy` - the bare
+/// `VerificationRegistryConsent` key now names the canonical M5 registry 0xb9B313C1..., which this
+/// script does NOT deploy; see deployments/roax.json `_m4_consent_registry`); it is
 /// merged history, not a live path. Its `SBT` default 0x1FB89865... is the Level-A `DogTagSBT`, whose
 /// `setProfileRoot` is MUTABLE - the exact hijack M5 exists to close (with the M4 registry's ownerOf/keyOf
 /// identity checks gone, `R == profileRoot` is the SOLE tag<->owner binding, so anyone who can repoint the
@@ -20,15 +22,18 @@ import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.so
 ///
 /// This is an ADDITIVE deployment, not a swap. The Level-A `VerificationRegistry` 0x4E2f0996... stays
 /// live and keeps serving the ECDSA + Level-A ZK flow: today's apps still produce Level-A proofs
-/// (subject/keyHash) and Level-B tags do not exist yet (custodial issuance is M5). Repointing the live
-/// consumers at this registry is M7's cutover, once the apps prove against the new VK — see
-/// deployments/roax.json `_m4_consent_registry.m7_cutover` for the exhaustive list.
+/// (subject/keyHash) and no Level-B tag is minted yet (M5 is deployed, but the M5 SBT's `ISSUER_ROLE`
+/// member count is zero). M7's cutover repoints the live consumers at the canonical M5 pairing
+/// (`DogTagSBTConsent` 0x96Cba458... + `VerificationRegistryConsent` 0xb9B313C1...), NEVER at this
+/// superseded registry - see deployments/roax.json `_m4_consent_registry.m7_cutover` for the
+/// exhaustive list, which this deprecated key still owns.
 ///
 /// @dev Constructor = (issuerRegistry, sbt, zkVerifier, rootIndex, admin) — four components, not
 /// Level-A's six: there is no ConsentKeyRegistry (D2: the consent key lives in the tree) and no
 /// Poseidon6 (the nullifier is a public signal, never derived on-chain). `rootIndex` is the
 /// DogTagIssuerFactory. Defaults are the live ROAX values (deployments/roax.json); override via env.
-/// ADMIN defaults to the governance authority 0x8E27E117... (Phase-2), NOT the stripped deployer EOA.
+/// ADMIN defaults to the governance authority 0x8E27E117... (Phase-2), NOT the former deployer EOA
+/// (which lost the governance authorities but still holds legacy Level-A ISSUER_ROLE + whitelists).
 ///
 /// Broadcast with the governance signer:
 ///   forge script contracts/script/DeployConsentRegistry.s.sol:DeployConsentRegistry \
@@ -70,8 +75,11 @@ contract DeployConsentRegistry is Script {
         console2.log("--- NEW (M4) ---");
         console2.log("VerificationRegistryConsent", registryConsent);
         console2.log("");
-        console2.log("Record in contracts/deployments/roax.json as VerificationRegistryConsent.");
-        console2.log("Do NOT repoint the live consumers yet: the apps still prove Level-A (that is M7),");
-        console2.log("and Level-B custodial tags do not exist until M5. See _m4_consent_registry.");
+        console2.log("Record in roax.json ONLY as VerificationRegistryConsent_M4_mutableRoot_legacy.");
+        console2.log("Do NOT write the VerificationRegistryConsent key: that names the canonical M5");
+        console2.log("registry 0xb9B313C1, and overwriting it would point consumers at a mutable-root SBT.");
+        console2.log("Do NOT repoint the live consumers: the apps still prove Level-A (that is M7), and");
+        console2.log("no Level-B tag is minted yet (the M5 SBT's ISSUER_ROLE member count is zero).");
+        console2.log("See _m4_consent_registry and _m5_custodial_issuance.");
     }
 }

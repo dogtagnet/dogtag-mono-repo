@@ -11,6 +11,14 @@ import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.so
 /// ADDITIVE, like M3/M4 before it. Nothing live is touched: the Level-A `DogTagSBT` 0x1FB89865… and
 /// `VerificationRegistry` 0x4E2f0996… keep serving today's apps until the M7 cutover.
 ///
+/// ### ⚠ ALREADY EXECUTED ON ROAX - do NOT re-broadcast there without captain approval.
+/// The canonical ROAX pair is DEPLOYED and bytecode/wiring-verified (2026-07-16): `DogTagSBTConsent`
+/// 0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc (block 202601) + `VerificationRegistryConsent`
+/// 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87 (block 202602), custodian
+/// 0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10 - see deployments/roax.json `_m5_custodial_issuance`.
+/// Re-running this on ROAX deploys a SECOND, unwired pair and would overwrite those canonical entries.
+/// The script stays a valid template for a fresh chain/environment.
+///
 /// ### Why the M4 registry is redeployed rather than reused
 /// `VerificationRegistryConsent.sbt` is `immutable` (set in the constructor), so the M4 instance
 /// 0x53F988Ae… is permanently bound to the Level-A SBT and CANNOT be repointed at the custodial one. The

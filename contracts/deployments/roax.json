@@ -4,11 +4,12 @@
   "DogTagIssuerFactory": "0xd3179AbBfb0274D0a5F7017d76015A93C159511D",
   "DogTagIssuerImpl": "0x16671686a5926606aB05f5e167fC65B0f8825B85",
   "DogTagSBT": "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
+  "DogTagSBTConsent": "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
   "Groth16Verifier": "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
   "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
   "Groth16VerifierConsent": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
   "_m3_consent_verifier": {
-    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX. It is a SEPARATE verifier for the Level-B consent circuit; it does NOT replace the live Level-A 'Groth16Verifier' 0xEEFCf..., which remains the verifier the live Level-A registry uses. M3 does NOT wire this verifier into any registry. That wiring SHIPPED in M4, and it is ADDITIVE, NOT a swap or a redeploy of the live registry: M4 deployed a NEW contract, 'VerificationRegistryConsent' 0x53F988Ae0124b96069d90CBC78E6245FeB01E125, which verifies against this VK with the owner-blind Verified event + R==profileRoot check, ALONGSIDE the Level-A 'VerificationRegistry' 0x4E2f0996..., which remains LIVE, FROZEN and untouched with every committed consumer still pointing at it until the M7 cutover. See _m4_consent_registry below.",
+    "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX and wired into the canonical M5 VerificationRegistryConsent 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87. It remains separate from the live Level-A Groth16Verifier 0xEEFCf..., and the M5 pairing is additive and NOT LIVE until the M7 consumer cutover. The former M4 registry 0x53F988Ae... is superseded because it is bound to the mutable Level-A SBT.",
     "address": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
     "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
     "deploy_tx": "0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af",
@@ -23,10 +24,11 @@
   "IssuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
   "Poseidon6": "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
   "VerificationRegistry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
-  "VerificationRegistryConsent": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
+  "VerificationRegistryConsent": "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
+  "VerificationRegistryConsent_M4_mutableRoot_legacy": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
   "VerificationRegistryConsent_preErasureGate_legacy": "0x57A2998668B0F6332f7342016F5Df2Bb05cB900F",
   "_m4_consent_registry": {
-    "status": "DEPLOYED (M4), NOT YET LIVE. The Level-B owner-blind registry is deployed + validated on ROAX and verifies against the M3 Groth16VerifierConsent 0x272be146... It is ADDITIVE: the Level-A 'VerificationRegistry' 0x4E2f0996... remains THE live registry and every committed consumer still points at it. Cutting the apps over is M7 (see m7_cutover) and REQUIRES M5 custodial issuance first - see m5_requirements. Nothing is half-wired: the Level-A flow is untouched and fully working.",
+    "status": "SUPERSEDED / DEPRECATED / DO NOT USE FOR LEVEL-B. This former M4 owner-blind registry is permanently bound to the mutable-root Level-A DogTagSBT 0x1FB89865... It was never live and had zero Verified events before M5 deployment. The canonical Level-B pairing is DogTagSBTConsent 0x96Cba458... + VerificationRegistryConsent 0xb9B313C1...; the Level-A VerificationRegistry 0x4E2f0996... remains live until M7.",
     "address": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
     "deployer": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
     "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
@@ -42,32 +44,38 @@
       "profileRoot": "M5 MUST set profileRoot(dogTagId) = R, the per-tag Merkle root of the M1-engine tree (3 reserved owner leaves + attribute leaves). The SBT already stores profileRoot as bytes32 - NO SBT change is needed for M4. The registry asserts R == profileRoot(dogTagId); this is the ONLY place dogTagId <-> R is bound (the circuit deliberately does not).",
       "issue_the_root": "M5 MUST ALSO issue(R) the per-tag root into a DogTagIssuer clone, not only setProfileRoot. The registry keeps the Level-A revocation path (resolve rootIssuer[R] -> clone, require isValid(R)), so a root that is only set as profileRoot and never issued reverts 'unknown root' on EVERY verify. This preserves revocation under Level-B: revoke(R) stops the tag verifying.",
       "custodial_mint": "D1: mint to a neutral custodian, never the owner. The registry reads profileRoot for the binding and ownerOf for token EXISTENCE only (value DISCARDED, never compared), so a custodial ownerOf is correct and inert - ConsentRegistry.t.sol proves verification passes with ownerOf == custodian. The ownerOf call is NOT an owner-identity check: it exists because DogTagSBT.burn (GDPR-erasure) does not clear profileRoot[id], so R == profileRoot still passes for an erased tag, and OZ ownerOf (_requireOwned) reverting on a burned token is what fails erasure closed - see test_burned_tag_cannot_verify.",
-      "profileRoot_is_mutable_KNOWN_GAP": "OPEN SPEC QUESTION, KNOWN + ACCEPTED while Level-B is not live; M5 MUST resolve it. R == profileRoot(dogTagId) is the SOLE tag<->owner binding, and DogTagSBT.setProfileRoot is MUTABLE post-issuance by issuerOf[id] or ANY AUTHORITY_ROLE holder. With no ownerOf identity gate, a compromised issuer/authority can build a tree whose three reserved owner leaves it controls, issue(R2) it via its own whitelisted clone, setProfileRoot(victimTag, R2), and record a Verified for a victim tag - a forgery Level-A prevented by requiring BOTH ownerOf == subject AND keyOf(subject) == keyHash, both owner-controlled. M5 must resolve it (e.g. append-only/immutable profileRoot post-issuance, or a status == Active gate). Deliberately NOT fixed in M4: the SBT hardening belongs with the M5 issuance rework, and no consumer points at this registry until M7."
+      "profileRoot_mutability_RESOLVED_IN_M5": "M5 resolves the mutable-root gap structurally with DogTagSBTConsent: profileRoot is set only by mintCustodial and there is no setProfileRoot function. The canonical M5 registry is constructed against that SBT. This M4 registry remains unsafe for real Level-B credentials because its immutable sbt pointer cannot be changed."
     },
     "m7_cutover": {
-      "_note": "Repoint these at 0x53F988Ae0124b96069d90CBC78E6245FeB01E125 ONLY when the apps prove against the M3 consent VK and Level-B custodial tags exist (M5). Repointing earlier breaks the live flow: today's clients send Level-A proofs. This is the same consumer list the 4-arg redeploy walked (see RedeployVerificationRegistry.s.sol).",
+      "_note": "TWO canonical Level-B addresses must move TOGETHER in M7, not one: (1) VerificationRegistry 0x4E2f0996... -> VerificationRegistryConsent 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87, AND (2) DogTagSBT 0x1FB8986573Ac36d532cF7d5a5352202B094D4233 -> DogTagSBTConsent 0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc. Repoint ONLY in M7, when the apps prove against the M3 consent VK and the Level-B custodial issuance path is ready. The on-chain M5 prerequisite is deployed, but repointing now would break the live flow because today's clients still send Level-A proofs. Never point a consumer at the superseded M4 registry 0x53F988Ae.... Repointing only ONE of the two addresses, or only some consumers, is exactly the split-brain recorded in _verification_registry_redeploy - the swap is not done until BOTH keys move everywhere below.",
       "canonical": "contracts/deployments/roax.json (this file)",
+      "_two_key_warning": "Most files below carry BOTH keys. A file listed here is NOT 'done' after its registry value is swapped - check it for a DogTagSBT / SBT_ADDR / VITE_DOGTAG_SBT_ADDR / PROFILE_DOCUMENT_STORE value too. The SBT swap is also NOT a pure address substitution: DogTagSBTConsent has no setProfileRoot and its mint entrypoint is mintCustodial(dogTagId, root) (no `to`), so callers of DogTagSBT.mint(to,id,root) need a code rework, not a config edit - see backend_zk_path and _m5_custodial_issuance.issuance_is_two_writes.",
       "mobile_bundles_compile_time_rebuild_and_reinstall": [
-        "apps/ios/DogTag/roax.json",
-        "apps/android/app/src/main/assets/roax.json"
+        "apps/ios/DogTag/roax.json (BOTH keys: VerificationRegistry + DogTagSBT)",
+        "apps/android/app/src/main/assets/roax.json (BOTH keys: VerificationRegistry + DogTagSBT)"
       ],
       "web_shared_config": [
-        "packages/ui/src/wallet/contracts.ts",
-        "stacks/owner/web/src/lib/config.ts"
+        "packages/ui/src/wallet/contracts.ts (BOTH keys: VerificationRegistry + DogTagSBT)",
+        "stacks/owner/web/src/lib/config.ts (BOTH keys: VerificationRegistry + DogTagSBT)"
       ],
       "indexer": "stacks/indexer/api/src/main.rs DEFAULT_VREG + stacks/indexer/.env.example. NOTE (M8): the owner-blind Verified has a DIFFERENT topic0 than the Level-A one - stacks/indexer/api/src/chain.rs decodes by Verified::SIGNATURE_HASH and will silently skip Level-B events until M8 teaches it the new shape (dogTagId, relayer, purpose, nullifier, deadline, ts).",
-      "backend_zk_path": "stacks/vet/api/src/chain.rs (the recordVerificationZK sol! ABI is the 6-arg Level-A shape and must become 4-arg) + src/verify.rs. The ECDSA recordVerification path has NO Level-B equivalent (see _levelb_ecdsa_path).",
+      "backend_zk_path": "stacks/vet/api/src/chain.rs (the recordVerificationZK sol! ABI is the 6-arg Level-A shape and must become 4-arg; the IDogTagSBT sol! block + mint_calldata bind DogTagSBT.mint(to,id,root) and must become DogTagSBTConsent.mintCustodial(id,root)) + src/verify.rs. The ECDSA recordVerification path has NO Level-B equivalent (see _levelb_ecdsa_path).",
+      "backend_issuance_path_SBT_swap": "stacks/vet/api/src/routes.rs is the LIVE Level-A mint site (register-pet mints to the OWNER's wallet and asserts ownerOf == wallet) - under D1 custodial issuance that becomes mintCustodial with no owner recipient, so this is a CODE rework, not an address swap, and it is the whole point of the M5 unlinkability work. Also stacks/vet/api/src/main.rs (SBT_ADDR / PROFILE_DOCUMENT_STORE env wiring) and src/app.rs (the sbt_addr config field). Blocked on the owner's device supplying R: no endpoint accepts an app-built root today (see _m5_custodial_issuance.m7_handoff). NOTE: vet-api is NOT the only backend that binds the SBT - stacks/admin/api binds it independently, see backend_admin_api_SBT_swap.",
+      "backend_admin_api_SBT_swap": "stacks/admin/api ALSO binds the SBT directly, with its own copy of the ABI - swapping only its SBT_ADDR to DogTagSBTConsent 0x96Cba458... yields reverting mints/grants, because DogTagSBTConsent has NO mint(to,id,root) entrypoint (only mintCustodial(id,root)) and no setProfileRoot. Files/symbols: src/chain.rs (its own IDogTagSBT sol! block declaring mint(to,id,root) + ownerOf + grantRole + hasRole, plus mint_calldata / grant_issuer_role_calldata / has_issuer_role - vet-api's mint_calldata is commented as mirroring this one, so the two must be reworked together), src/main.rs (SBT_ADDR + PROFILE_DOCUMENT_STORE env wiring), src/app.rs (the sbt_addr config field), src/routes.rs (a central-signer mint that mints to the pet owner's wallet - the same mint(to,id,root) -> mintCustodial(id,root) rework vet-api needs - plus the has_issuer_role reads and the PR-E whitelist-console DOG_PROFILE ISSUER_ROLE grant, which under Level-B must target DogTagSBTConsent's ISSUER_ROLE and pairs with the M7 issuance-actor grant). The admin stack's env is listed under env_examples; the env entry alone does NOT make the admin stack done.",
       "demo_e2e_scripts": [
         "scripts/e2e-zk.sh",
         "scripts/demo-up.sh",
-        "scripts/e2e-smoke.sh"
+        "scripts/e2e-smoke.sh",
+        "scripts/demo-bootstrap.sh (SBT only - grants DogTagSBT ISSUER_ROLE to the vet signer; the Level-B analogue is the M7 issuance-actor grant on DogTagSBTConsent)",
+        "scripts/demo-prepare-phone.sh (SBT only - reads .DogTagSBT from this file and calls mint(to,id,root); becomes mintCustodial under Level-B)"
       ],
       "env_examples": [
         "stacks/vet/.env.example",
-        "stacks/vet/web/.env.example",
+        "stacks/vet/web/.env.example (VITE_DOGTAG_SBT_ADDR)",
         "stacks/groomer/.env.example",
-        "stacks/groomer/web/.env.example",
-        "stacks/admin/web/.env.example",
+        "stacks/groomer/web/.env.example (VITE_DOGTAG_SBT_ADDR)",
+        "stacks/admin/.env.example (SBT_ADDR + PROFILE_DOCUMENT_STORE - SBT only; was missing from this list. Env alone is NOT enough: admin-api binds the SBT in code too - see backend_admin_api_SBT_swap)",
+        "stacks/admin/web/.env.example (VITE_DOGTAG_SBT_ADDR)",
         "stacks/indexer/.env.example"
       ],
       "docs": [
@@ -87,13 +95,42 @@
     "_supersedes_stale_deploy": "This address REPLACES the first M4 deploy 0x57A2998... (kept above as VerificationRegistryConsent_preErasureGate_legacy, block 194489, runtime 6179 bytes). That instance was deployed BEFORE the review-round hardening that added the ownerOf token-existence gate, so its bytecode LACKS the erasure gate: a GDPR-burned tag would still verify there. It was never live and no consumer ever pointed at it. This redeploy (runtime 6317 bytes) carries the gate and is byte-identical to the committed source, so the recorded address and the shipped code agree - which is the point: a canonical address whose bytecode differs from source is the same landmine class as data/dogtag-zkfail-z9. Do NOT use 0x57A2998."
   },
   "_m5_custodial_issuance": {
-    "status": "NOT YET DEPLOYED (M5 contract side merged; deployment is a governance action). The Level-B custodial stack - DogTagSBTConsent + a VerificationRegistryConsent REDEPLOYED against it - is implemented and tested but not broadcast. Nothing live is affected: Level-A (DogTagSBT 0x1FB89865..., VerificationRegistry 0x4E2f0996...) remains THE live stack and every consumer still points at it until the M7 cutover.",
+    "status": "DEPLOYED + BYTECODE/WIRING VERIFIED (M5); CANONICAL LEVEL-B PAIRING; NOT LIVE. DogTagSBTConsent 0x96Cba458... and its fresh VerificationRegistryConsent 0xb9B313C1... close the Level-B go-live gate. They supersede the mutable-root M4 pairing for all future Level-B credentials. No vet-api, app, indexer, script, or environment was repointed: Level-A remains live until M7.",
     "script": "contracts/script/DeployCustodialIssuance.s.sol",
-    "contracts": "DogTagSBTConsent (new), VerificationRegistryConsent (same code as M4, new SBT)",
-    "why_the_m4_registry_is_redeployed": "VerificationRegistryConsent.sbt is IMMUTABLE (set in the constructor), so the M4 instance 0x53F988Ae... is permanently bound to the Level-A DogTagSBT and CANNOT be repointed at the custodial SBT. The registry CODE is unchanged - only the SBT it is constructed against. Safe because the M4 instance was never live: verified 2026-07-15 that it carries exactly ONE log (its deploy RoleGranted) and ZERO Verified events. RE-VERIFY before broadcasting: cast logs --rpc-url $ROAX_RPC --address 0x53F988Ae0124b96069d90CBC78E6245FeB01E125 --from-block 0 0xeb5f75f2727c9d0d91b1fe9120ed35d6867952fa5f5103488f44a7afe21f532b -- if that returns anything, STOP: a consumer exists and this needs a migration plan.",
-    "custodian": "MANDATORY env var at deploy, no default, IMMUTABLE once set. The single neutral address every Level-B tag is minted to and the only address ownerOf can ever return, so the unlinkability of every tag rests on it being owner-independent. MUST NOT be any pet owner; SHOULD NOT be a vet/issuer signer (that re-links tags to the practice's key). It never signs - tags are soulbound and the contract has no transfer path - so it is a neutral sink, not an actor, and a custodian key compromise grants nothing.",
+    "contracts": {
+      "DogTagSBTConsent": "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
+      "VerificationRegistryConsent": "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87"
+    },
+    "deployment": {
+      "deployer": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+      "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+      "custodian": "0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10",
+      "sbt_deploy_tx": "0xbf4b52f574bc1af46f5f5b829f2d13520a7ca86ba8a0598602eb63099b995d65",
+      "sbt_deploy_block": 202601,
+      "registry_deploy_tx": "0xc215d98044268fe00beda455f271ac62786b5f0d8dea33b00a64a79540abbeb4",
+      "registry_deploy_block": 202602,
+      "finality_check": "Both receipts succeeded and both canonical block hashes were finalized at ROAX finalized block 202612 on 2026-07-16."
+    },
+    "constructor_wiring": {
+      "registry_sbt": "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
+      "registry_zkVerifier": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
+      "registry_issuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
+      "registry_rootIndex": "0xd3179AbBfb0274D0a5F7017d76015A93C159511D",
+      "registry_restrictionEnabled": true
+    },
+    "role_separation": "The immutable custodian is the dedicated neutral platform address 0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10, not the admin and not an issuer/whitelisted signing key. Governance 0x8E27E117... alone holds DEFAULT_ADMIN_ROLE. The new SBT's ISSUER_ROLE member count is zero at deployment and the custodian does not hold ISSUER_ROLE; granting a dedicated issuance actor is an M7 cutover action.",
+    "onchain_verify": {
+      "DogTagSBTConsent": "Exact 9670-byte runtime matches the compiled source after inserting the custodian immutable; keccak256 0xe09f0775184c655126a6ef8e753a7da7830cf74ab048705a049da3aad7419518; normalized compiler-runtime hash 0x5d828262cc6e109c9977a0743f7475f13d397e922d9eb7e8b7d0b6414be27b5c; custodian(), default admin, 3-day admin delay, zero ISSUER members, and write-once ABI all checked by RPC.",
+      "VerificationRegistryConsent": "Exact 6317-byte runtime matches the compiled source after inserting the three constructor immutables; keccak256 0xc8b251bf2cf219286f49b76accccdd087d5cd3cd74066d58a561d3891aa6f3de; normalized compiler-runtime hash 0x0eea105f6adcdbec21ad0fc154f0566b9bc0e7a5d8a3b9a6f53949fcd0e3649d; sbt(), zkVerifier(), issuerRegistry(), rootIndex(), default admin, 2-day admin delay, and restriction gate checked by RPC. The M3 fixture verifies and tampered R fails.",
+      "explorer_submissions": "ROAX explorer verification submissions returned GUID c9654f4427f8e686a7939adf2e2ae27b (SBT) and 4e511356953eefd15a2f59d272e8ddc5 (registry), but its legacy status API cannot poll them and getsourcecode still reports unverified. Exact finalized RPC creation/runtime parity is the authoritative verification; do not infer explorer source publication from these GUIDs."
+    },
+    "old_instance_safety_check": "Immediately before deployment and again through ROAX block 202680 on 2026-07-16, the superseded M4 registry 0x53F988Ae0124b96069d90CBC78E6245FeB01E125 had ZERO Verified events and exactly one total log, its deployment RoleGranted event.",
+    "supersedes": {
+      "VerificationRegistryConsent_M4_mutableRoot_legacy": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125 - DEPRECATED / DO NOT USE for Level-B; immutable sbt points at the mutable-root Level-A SBT; never live; zero Verified events",
+      "DogTagSBT_LevelA_mutableRoot": "0x1FB8986573Ac36d532cF7d5a5352202B094D4233 - DEPRECATED / DO NOT USE for new Level-B credentials; remains live only for the existing Level-A flow until M7"
+    },
     "issuance_is_two_writes": "vacc.issue(R) into a DogTagIssuer clone AND sbt.mintCustodial(dogTagId, R). Minting alone yields a tag that reverts 'unknown root' on EVERY verify, because the registry resolves the issuing clone from the root (rootIssuer[R] -> isValid(R)) to keep revoke(R) working. The spec's step list names only profileRoot, so this is the trap.",
-    "post_deploy": "1) Record DogTagSBTConsent + the new VerificationRegistryConsent here, superseding _m4_consent_registry. 2) Grant ISSUER_ROLE on the new SBT to the vet signer or issuance reverts. 3) The app-side follow-up (owner's app builds the tree + owner-secret) must land before the custodial route can run end-to-end: the API builds the tree today, and the owner-secret leaf is device-only.",
+    "m7_handoff": "M7 must explicitly grant the intended issuance actor, complete the owner-device tree flow, update Level-B proof/event consumers, and repoint every consumer on the file-by-file list at _m4_consent_registry.m7_cutover. That cutover is a TWO-ADDRESS swap and both halves must land together: VerificationRegistry 0x4E2f0996... -> VerificationRegistryConsent 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87, AND DogTagSBT 0x1FB8986573Ac36d532cF7d5a5352202B094D4233 -> DogTagSBTConsent 0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc. The SBT half is not a config-only edit: DogTagSBTConsent replaces mint(to,id,root) with mintCustodial(id,root) and has no setProfileRoot, so the vet-api AND admin-api issuance paths are a code rework, not a config edit (see _m4_consent_registry.m7_cutover.backend_issuance_path_SBT_swap and .backend_admin_api_SBT_swap). The m4 key is DEPRECATED as an address but still owns the canonical cutover checklist - read it, do not skip it because of its status header; repointing only one address, or only some consumers, is exactly the split-brain recorded in _verification_registry_redeploy. This M5 deployment changed no consumer configuration.",
     "profileRoot_is_write_once": "DogTagSBTConsent has NO setProfileRoot at all - the root is set at mint and sealed. This structurally closes the setProfileRoot hijack that AGENTS.md flagged for M5 (R == profileRoot is the SOLE tag<->owner binding once M4 removed the ownerOf/keyOf identity checks, so a mutable root is a forgery vector). The seal also survives a burn/re-mint: mintCustodial rejects any id whose profileRoot is already set, because ERC-721 _burn leaves no tombstone and _mint only rejects a re-mint when the previous owner was non-zero, so without that guard an ISSUER holder could burn a tag and re-mint the same id under an attacker root. Consequence: a tag's tree is FROZEN at issuance and a dogTagId is single-use FOREVER (a burned/GDPR-erased id can never be re-minted) - any change means a fresh tag, exactly as D3 already mandates for recovery."
   },
   "VerificationRegistry_4arg_legacy": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
@@ -127,11 +164,11 @@
   },
   "admin": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
   "_governance": {
-    "status": "HANDOVER EXECUTED (Phase-2). Governance authority moved off the original deployer EOA to the governance signer 'signer-1' 0x8E27E117... which now holds the IssuerRegistry DEFAULT_ADMIN_ROLE + WHITELIST_ADMIN AND is the DogTagIssuerFactory Ownable2Step owner. The 'admin' field above (0x119F8c7F...) is the HISTORICAL deployer EOA kept as the deploy record; it was stripped of all roles in Phase-2. Migration shipped as reviewable code and merged to mainline (PR #8): contracts/script/GovernanceMigration.sol + MigrateGovernance.s.sol (two-phase Begin/Accept) + test/GovernanceMigration.t.sol; runbook docs/GOVERNANCE_MIGRATION.md.",
+    "status": "HANDOVER EXECUTED (Phase-2). Governance authority moved off the original deployer EOA to governance signer 'signer-1' 0x8E27E117..., which now holds the IssuerRegistry DEFAULT_ADMIN_ROLE + WHITELIST_ADMIN and owns DogTagIssuerFactory. The historical deployer 0x119F8c7F... lost governance/admin authority but still holds legacy Level-A DogTagSBT ISSUER_ROLE and known record-type whitelists, so it is not role-free and must not be used as a neutral custodian. Migration shipped as reviewable code and merged to mainline (PR #8): contracts/script/GovernanceMigration.sol + MigrateGovernance.s.sol (two-phase Begin/Accept) + test/GovernanceMigration.t.sol; runbook docs/GOVERNANCE_MIGRATION.md.",
     "authority": "0x8E27E117...",
     "authority_label": "signer-1 (governance signer)",
     "former_deployer_eoa": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
-    "tooling_note": "The demo/relayer/admin ADMIN_PRIVATE_KEY (the control-plane GovernanceAction signer) MUST now be signer-1 0x8E27E117... - with the stripped deployer EOA any privileged write (createIssuer / whitelistFor / adminRevoke) correctly downgrades to a Disposition::Proposed payload instead of broadcasting. The private key value is captain-managed env, NEVER committed; only the address is recorded here (truncated, per convention).",
+    "tooling_note": "The demo/relayer/admin ADMIN_PRIVATE_KEY (the control-plane GovernanceAction signer) MUST now be signer-1 0x8E27E117... The former deployer cannot perform current governance writes (createIssuer / whitelistFor / adminRevoke), but its legacy issuance capabilities remain and should be separately retired. Private key values are captain-managed env and NEVER committed; only addresses are recorded here.",
     "authorities": {
       "factory_owner": "DogTagIssuerFactory (Ownable2Step) -> 0x8E27E117... (createIssuer)",
       "whitelist_admin": "IssuerRegistry WHITELIST_ADMIN -> 0x8E27E117... (whitelistFor / delistFor)",

@@ -21,8 +21,15 @@ interface IOwnable2Step {
 ///   Phase 1 `begin()`  — broadcast by the CURRENT EOA admin. Proposes / starts the hand-off on every
 ///                        governed contract and pre-grants the multisig the operational `WHITELIST_ADMIN`.
 ///   Phase 2 `accept()` — executed BY (or through) the multisig AFTER each contract's timelock elapses.
-///                        The multisig accepts admin/ownership everywhere, then strips the EOA's residual
-///                        roles so the deployer key can no longer act.
+///                        The multisig accepts admin/ownership everywhere, then strips the EOA's
+///                        GOVERNANCE roles (DEFAULT_ADMIN / WHITELIST_ADMIN / factory ownership) so the
+///                        deployer key can no longer govern.
+///
+/// SCOPE — what this migration does NOT do: it never revokes the EOA's Level-A `DogTagSBT` ISSUER_ROLE or
+/// its `IssuerRegistry` record-type whitelists. After a completed hand-off the deployer EOA is stripped of
+/// governance but is NOT role-free: it can still mint/issue on the live Level-A surface (confirmed by the
+/// 2026-07-16 audit). Retire those legacy issuance capabilities separately, and never treat the old EOA as
+/// a neutral or role-free key.
 ///
 /// Coverage of the governed surface (see architecture §13.1 H-3):
 ///   - IssuerRegistry        AccessControlDefaultAdminRules (3-day) DEFAULT_ADMIN + WHITELIST_ADMIN role
@@ -80,7 +87,9 @@ library GovernanceMigration {
     }
 
     /// @notice Phase 2 — must be sent by/through the multisig AFTER the per-contract timelocks elapse.
-    /// @param oldAdmin the deployer EOA whose residual roles are stripped.
+    /// @param oldAdmin the deployer EOA whose GOVERNANCE roles are stripped (DEFAULT_ADMIN /
+    /// WHITELIST_ADMIN / factory ownership). Its legacy Level-A ISSUER_ROLE + record-type whitelists are
+    /// left intact — see the SCOPE note in the library header.
     function accept(Targets memory t, address oldAdmin) internal {
         // IssuerRegistry: accept admin, then revoke the EOA's operational WHITELIST_ADMIN. (Accepting the
         // two-step transfer already revokes the EOA's DEFAULT_ADMIN_ROLE.)

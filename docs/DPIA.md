@@ -51,10 +51,10 @@ Milestone M4 deployed a **Level-B owner-blind verification path**
 LIVE**.
 The live verification subsystem remains the Level-A `VerificationRegistry`, which is what this DPIA
 assesses.
-The cutover is **M7**, and it requires **M5** custodial issuance first.
-M5's contract side (`DogTagSBTConsent`, `contracts/src/DogTagSBTConsent.sol`) has since landed but is
-**NOT DEPLOYED and NOT wired**, so nothing below is in effect: issuance today still mints the SBT to the
-owner's wallet exactly as §2 and §4 assess it.
+The cutover is **M7**. Its M5 on-chain prerequisite is now deployed + verified: `DogTagSBTConsent`
+`0x96Cba458…` is paired with `VerificationRegistryConsent` `0xb9B313C1…` on ROAX. The pair is **NOT
+LIVE and NOT wired to any consumer**, so nothing below is in effect: issuance today still mints the SBT
+to the owner's wallet exactly as §2 and §4 assess it. M7 must perform this DPIA refresh before cutover.
 
 When Level-B goes live, the living-document rule in the status block above fires and the following
 MUST be re-scored.

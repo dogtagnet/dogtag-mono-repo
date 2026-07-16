@@ -57,7 +57,7 @@ import {
  * IssuerRegistry `DEFAULT_ADMIN` (ACDAR two-step + 3-day timelock), whether the hosted control-plane
  * key holds each (→ writes execute directly) or not (→ writes downgrade to `GovernanceAction`
  * proposals), and any pending two-step admin transfer with its live timelock countdown. The page is
- * READ-ONLY: it never assumes the stripped deployer EOA and it never broadcasts — actual transfers
+ * READ-ONLY: it never assumes the former deployer EOA and it never broadcasts — actual transfers
  * are captain-initiated through the ACDAR two-step flow, documented here but not wired as live buttons.
  * Non-PII: chain + admin authority directory only.
  */
@@ -133,7 +133,7 @@ export function Governance() {
 function AuthorityHeader({ authority }: { authority: GovernanceAuthorityResp }) {
   const hosted = authority.hostedSigner;
   const hostedIsSigner1 = isGovernanceSigner1(hosted);
-  const hostedIsStripped = isFormerDeployer(hosted);
+  const hostedIsFormerDeployer = isFormerDeployer(hosted);
 
   return (
     <Card>
@@ -142,7 +142,7 @@ function AuthorityHeader({ authority }: { authority: GovernanceAuthorityResp }) 
           <Landmark className="h-5 w-5 text-primary" /> Protocol governance
         </CardTitle>
         <CardDescription>
-          Post-Phase-2, all on-chain authority sits with the governance signer{" "}
+          Post-Phase-2, all governance/admin authority sits with the governance signer{" "}
           <span className="font-medium text-onSurface">{GOVERNANCE_SIGNER_1_LABEL}</span>. This
           console reads the live authority map directly from ROAX
           {authority.chainId ? ` (chain ${authority.chainId})` : ""}.
@@ -182,9 +182,9 @@ function AuthorityHeader({ authority }: { authority: GovernanceAuthorityResp }) 
                 <Badge variant="success">
                   <CheckCircle2 className="h-3 w-3" /> is signer-1 → privileged writes execute directly
                 </Badge>
-              ) : hostedIsStripped ? (
+              ) : hostedIsFormerDeployer ? (
                 <Badge variant="danger">
-                  <TriangleAlert className="h-3 w-3" /> stripped deployer EOA → writes downgrade to proposals
+                  <TriangleAlert className="h-3 w-3" /> former deployer EOA → writes downgrade to proposals
                 </Badge>
               ) : hosted ? (
                 <Badge variant="warning">not signer-1 → writes route as proposals</Badge>
@@ -202,8 +202,13 @@ function AuthorityHeader({ authority }: { authority: GovernanceAuthorityResp }) 
               <AddrLink addr={FORMER_DEPLOYER_EOA} />
             </div>
             <div className="mt-2">
-              <Badge variant="neutral">stripped in Phase-2 — holds zero roles</Badge>
+              <Badge variant="neutral">no governance authority - not role-free</Badge>
             </div>
+            <p className="mt-2 text-xs text-muted">
+              Phase-2 removed its factory ownership, WHITELIST_ADMIN and DEFAULT_ADMIN. It still holds
+              the legacy Level-A DogTagSBT ISSUER_ROLE and record-type whitelists, so never reuse it as
+              a neutral key.
+            </p>
           </div>
         </div>
       </CardContent>
@@ -573,7 +578,7 @@ function Phase2RunbookCard() {
           <Gavel className="h-5 w-5 text-primary" /> Phase-2 handover
         </CardTitle>
         <CardDescription>
-          The scheduled migration of all protocol authority to the governance signer.
+          The scheduled migration of the governance/admin authority to the governance signer.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -592,7 +597,7 @@ function Phase2RunbookCard() {
           />
           <RunbookStep
             icon={<TriangleAlert className="h-4 w-4 text-muted" />}
-            text="The original deployer EOA was stripped of every role and is retained only as the historical deploy record."
+            text="The original deployer EOA lost those three governance authorities in Phase-2, but it is not role-free: it still holds the legacy Level-A DogTagSBT ISSUER_ROLE + record-type whitelists, so never reuse it as a neutral key."
           />
           <RunbookStep
             icon={<History className="h-4 w-4 text-primary" />}
@@ -600,7 +605,7 @@ function Phase2RunbookCard() {
           />
           <RunbookStep
             icon={<Send className="h-4 w-4 text-primary" />}
-            text="The control-plane ADMIN_PRIVATE_KEY is now signer-1: privileged writes execute directly; were it the stripped EOA they would correctly downgrade to GovernanceAction proposals."
+            text="The control-plane ADMIN_PRIVATE_KEY is now signer-1: privileged writes execute directly; were it the former deployer EOA they would correctly downgrade to GovernanceAction proposals."
           />
         </ul>
       </CardContent>
