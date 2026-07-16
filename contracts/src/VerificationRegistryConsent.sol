@@ -101,7 +101,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     /// circuit's whole purpose. `deadline` replaces it so a consumer can still bound the consent window.
     /// @dev Same NAME but a different signature from the Level-A `Verified` (which carried `subject`),
     /// hence a different topic0. The two never collide on one address: this event only ever comes from a
-    /// Level-B registry. The indexer must learn this topic0 — that is M8.
+    /// Level-B registry. The oversight indexer learned this topic0 in M8 (additive dual-decode).
     event Verified(
         uint256 indexed dogTagId,
         address indexed relayer,
