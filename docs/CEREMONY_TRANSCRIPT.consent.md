@@ -118,19 +118,15 @@ node scripts/test-consent.mjs                     # ALL GREEN (33/33)
 
 M3 deploys the verifier; **wiring it in was M4** — not done in this ceremony, and since **DONE**: the
 owner-blind `VerificationRegistryConsent` `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` verifies against
-this VK (AGENTS.md "Level-B `VerificationRegistryConsent` (M4)"). **M5 has since superseded that
-instance:** the canonical Level-B registry is `VerificationRegistryConsent`
-`0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`, paired with `DogTagSBTConsent`
-`0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc`, and it verifies against this same VK; `0x53F988Ae…` is
-**deprecated / do not use for Level-B** (bound to the mutable-root Level-A SBT, never live, zero
-`Verified` events). The rest of this section is the M3 deploy record as executed.
+this VK (AGENTS.md "Level-B `VerificationRegistryConsent` (M4)"). The rest of this section is the M3
+deploy record as executed.
 
 - **`Groth16VerifierConsent` DEPLOYED at `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a`** on ROAX (chainId 135),
   ROAX `--legacy`, deployer `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`.
   - deploy tx: `0xcd1cd5fa968981c5d18a41e38346622b917f3b2e78bd1e4a1880989e3c0540af` (block **190760**, status success).
   - on-chain `cast code` == the compiled `Groth16VerifierConsent` runtime bytecode (1933 bytes) — byte-identical, so the deployed contract is exactly this VK's verifier.
   - **on-chain functional check:** a real consent proof (built via `test-consent.mjs`'s honest witness) → `verifyProof(a,b,c,pub[7])` returns **`true`**; the same proof with a tampered `pub[4] /*R*/` returns **`false`**. Public signals decoded on-chain match `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`.
-  - This is a **separate** verifier for the Level-B consent circuit; it does **not** replace the live Level-A `Groth16Verifier` `0xEEFCf…` (wiring it into a registry was M4 - since shipped, additively, as `VerificationRegistryConsent`; M5 then redeployed that registry code against the custodial SBT, so the canonical registry verifying against this verifier is now `0xb9B313C1…`; see the M4/M5 note below).
+  - This is a **separate** verifier for the Level-B consent circuit; it does **not** replace the live Level-A `Groth16Verifier` `0xEEFCf…` (wiring it into a registry was M4 - since shipped, additively, as `VerificationRegistryConsent`; see the M4 note below).
 
 Deploy command used (reusing the v2 deploy path; forge 1.5.1 needs `--broadcast`):
 
@@ -141,15 +137,12 @@ forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent \
   --rpc-url "$ROAX_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --legacy --broadcast --json
 ```
 
-- **M4/M5 (out of scope here, since SHIPPED):** M3 does **not** touch the registry. M4 added a NEW
+- **M4 (out of scope here, since SHIPPED):** M3 does **not** touch the registry. M4 has since added a NEW
   registry alongside the frozen Level-A one - `VerificationRegistryConsent`
   `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` - which does `require(verifyProof(a,b,c,pub[7]))` against
   THIS verifier, asserts `pub[4] /*R*/ == profileRoot(pub[0] /*dogTagId*/)`, enforces `deadline`,
-  consumes `pub[3] /*nullifier*/`, and emits an **owner-blind** `Verified` event. M5 redeployed that
-  registry code against the custodial `DogTagSBTConsent` `0x96Cba458…`, so the **canonical** registry
-  verifying against THIS verifier is now `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` and `0x53F988Ae…`
-  is deprecated. It is additive and not yet live (the app cutover is M7); see AGENTS.md "Level-B
-  `VerificationRegistryConsent` (M4)" + "M5 as-built".
+  consumes `pub[3] /*nullifier*/`, and emits an **owner-blind** `Verified` event. It is additive and not
+  yet live (the app cutover is M7); see AGENTS.md "Level-B `VerificationRegistryConsent` (M4)".
 
 ## ⚠ M3 VK-freeze checkpoint — review conclusion
 
