@@ -77,6 +77,8 @@ contract MigrateGovernanceAccept is MigrateGovernanceBase {
         GovernanceMigration.accept(t, oldAdmin);
         vm.stopBroadcast();
 
-        console2.log("Hand-off complete. Verify: defaultAdmin()==MULTISIG and OLD_ADMIN has no roles.");
+        console2.log("Hand-off complete. Verify: defaultAdmin()==MULTISIG and OLD_ADMIN has no");
+        console2.log("governance roles. It may still hold legacy Level-A ISSUER_ROLE + whitelists,");
+        console2.log("which this migration does not touch - retire those separately.");
     }
 }

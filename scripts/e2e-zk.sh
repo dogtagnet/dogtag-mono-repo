@@ -39,12 +39,13 @@ VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53   # VACCINATION issuer clo
 ZKV=0xEEFCfAF026931b7325472A88fd14Ee780Da13559          # Groth16Verifier (v2, live since 2026-07-02 cutover)
 
 set -a; source "$ROOT/contracts/.env"; set +a   # DEPLOYER_PRIVATE_KEY / DEPLOYER_ADDRESS
-# Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved admin authority (WHITELIST_ADMIN
-# / DEFAULT_ADMIN / SBT ISSUER / factory owner) off the old deployer EOA 0x119F… (now zero roles) onto
-# governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2. This harness establishes every on-chain
-# precondition (whitelistFor / grantRole / issue / mint) as ONE key, so point the deployer vars it uses at
-# the captain-managed signer-1 key (GOVERNANCE_PRIVATE_KEY / GOVERNANCE_ADDRESS in contracts/.env); the
-# old EOA's admin txs would revert.
+# Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved the governance/admin authority
+# (WHITELIST_ADMIN / DEFAULT_ADMIN / factory owner) off the old deployer EOA 0x119F… onto governance
+# signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2. The old EOA is NOT role-free, though - it still
+# holds the legacy Level-A SBT ISSUER_ROLE + record-type whitelists, so never reuse it as a neutral key.
+# This harness establishes every on-chain precondition (whitelistFor / grantRole / issue / mint) as ONE
+# key, so point the deployer vars it uses at the captain-managed signer-1 key (GOVERNANCE_PRIVATE_KEY /
+# GOVERNANCE_ADDRESS in contracts/.env); the old EOA's admin txs would revert.
 DEPLOYER_PRIVATE_KEY="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - Phase-2 removed the governance/admin authority from the old deployer EOA 0x119F…, which still holds legacy Level-A ISSUER_ROLE + record-type whitelists and is NOT a neutral key}"
 DEPLOYER_ADDRESS="${GOVERNANCE_ADDRESS:?set GOVERNANCE_ADDRESS (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env}"
 PK="$DEPLOYER_PRIVATE_KEY"

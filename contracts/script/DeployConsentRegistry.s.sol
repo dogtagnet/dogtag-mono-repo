@@ -28,7 +28,8 @@ import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.so
 /// Level-A's six: there is no ConsentKeyRegistry (D2: the consent key lives in the tree) and no
 /// Poseidon6 (the nullifier is a public signal, never derived on-chain). `rootIndex` is the
 /// DogTagIssuerFactory. Defaults are the live ROAX values (deployments/roax.json); override via env.
-/// ADMIN defaults to the governance authority 0x8E27E117... (Phase-2), NOT the stripped deployer EOA.
+/// ADMIN defaults to the governance authority 0x8E27E117... (Phase-2), NOT the former deployer EOA
+/// (which lost the governance authorities but still holds legacy Level-A ISSUER_ROLE + whitelists).
 ///
 /// Broadcast with the governance signer:
 ///   forge script contracts/script/DeployConsentRegistry.s.sol:DeployConsentRegistry \

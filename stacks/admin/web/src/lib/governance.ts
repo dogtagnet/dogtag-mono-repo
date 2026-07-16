@@ -2,7 +2,7 @@
  * Governance identities + the on-chain two-step / timelock model, grounded in the reconciled
  * deployment record (`contracts/deployments/roax.json` → `_governance`) and the deployed contracts.
  *
- * Phase-2 moved ALL protocol authority off the original deployer EOA to the governance signer
+ * Phase-2 moved the governance/admin authority off the original deployer EOA to the governance signer
  * "signer-1" (`0x8E27…`). The console reads the LIVE authority map from the backend
  * (`GET /v1/admin/governance/authority`) and reconciles it against these known identities so the
  * page can say, at a glance, whether each authority currently resolves to signer-1.
@@ -16,8 +16,10 @@
 export const GOVERNANCE_SIGNER_1 = "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2";
 export const GOVERNANCE_SIGNER_1_LABEL = "signer-1";
 /**
- * The original deployer EOA. STRIPPED of every role in Phase-2 — it is kept only as the historical
- * deploy record and must never be assumed to hold authority again.
+ * The original deployer EOA. Phase-2 stripped it of the three governance authorities (factory owner,
+ * WHITELIST_ADMIN, DEFAULT_ADMIN), so it must never be assumed to hold governance authority again.
+ * It is NOT role-free: a 2026-07-16 audit found it still holds the legacy Level-A `DogTagSBT`
+ * `ISSUER_ROLE` and known record-type whitelists, so it must not be reused as a neutral custodian.
  */
 export const FORMER_DEPLOYER_EOA = "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96";
 

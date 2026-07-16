@@ -20,7 +20,8 @@ import {VerificationRegistry} from "../src/VerificationRegistry.sol";
 /// @dev VR constructor order = (issuerRegistry, sbt, zkVerifier, consentKeys, rootIndex, poseidon6, admin),
 /// where `rootIndex` is the DogTagIssuerFactory. All seven default to the current live ROAX values
 /// (deployments/roax.json); override any via env for another environment. ADMIN defaults to the
-/// governance authority 0x8E27E117... (the Phase-2 authority), NOT the stripped deployer EOA 0x119F8c7F...
+/// governance authority 0x8E27E117... (the Phase-2 authority), NOT the former deployer EOA 0x119F8c7F...
+/// (which lost the governance authorities but still holds legacy Level-A ISSUER_ROLE + whitelists).
 /// Broadcast with the governance signer (index 1):
 ///   forge script contracts/script/RedeployVerificationRegistry.s.sol:RedeployVerificationRegistry \
 ///     --rpc-url https://devrpc.roax.net --broadcast --private-key $GOV_KEY
