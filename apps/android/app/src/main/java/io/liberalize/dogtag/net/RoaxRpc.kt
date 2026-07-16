@@ -20,15 +20,25 @@ object RoaxRpc {
             .joinToString("") { "%02x".format(it) }
 
     /**
-     * `DogTagIssuer.isValid(bytes32)` selector, DERIVED from the canonical signature rather than
-     * hard-coded: keccak256("isValid(bytes32)")[:4] = 0x6a938567 - the exact selector viem, the
-     * Rust/alloy ABI, the vet-api `verify_credential` handler and the web direct-RPC path all bind.
-     * It was previously a stale constant `0x6d04f0bc` whose comment *claimed* to be this hash but
-     * wasn't; that selector REVERTS on the deployed ROAX clone, so every read fell through to Unknown
-     * (accept-with-caveat) and a revoked credential never surfaced as revoked. Deriving it from the
-     * signature makes it impossible to drift again.
+     * Selectors for every `eth_call` below, DERIVED from the canonical signature rather than
+     * hard-coded, so they cannot drift away from the deployed contracts.
+     *
+     * A hard-coded selector can silently disagree with the chain: `isValid` once shipped as the
+     * literal `0x6d04f0bc`, whose comment *claimed* to be keccak256("isValid(bytes32)")[:4] but
+     * wasn't. That selector REVERTS on the deployed ROAX clone, so every validity read fell through
+     * to Unknown (accept-with-caveat) and a revoked credential never surfaced as revoked. The
+     * canonical value is 0x6a938567 - what viem, the Rust/alloy ABI, the vet-api `verify_credential`
+     * handler and the web direct-RPC path all bind. `RoaxRpcSelectorTest` pins each value here.
      */
     private val IS_VALID_SELECTOR = functionSelector("isValid(bytes32)")
+    private val IS_WHITELISTED_FOR_SELECTOR = functionSelector("isWhitelistedFor(bytes32,address)")
+    private val BIND_NONCE_SELECTOR = functionSelector("bindNonce(address)")
+    private val KEY_OF_SELECTOR = functionSelector("keyOf(address)")
+    private val CONSUMED_SELECTOR = functionSelector("consumed(bytes32)")
+    private val PROFILE_ROOT_SELECTOR = functionSelector("profileRoot(uint256)")
+
+    /** ERC-721 standard signature, not a DogTag-specific one. */
+    private val OWNER_OF_SELECTOR = functionSelector("ownerOf(uint256)")
 
     sealed class Result {
         object Valid : Result()
@@ -72,15 +82,6 @@ object RoaxRpc {
             Result.Unknown(e.message ?: "rpc unreachable")
         }
     }
-
-    // keccak256("isWhitelistedFor(bytes32,address)")[:4]
-    private const val IS_WHITELISTED_FOR_SELECTOR = "0x779c3985"
-    // keccak256("bindNonce(address)")[:4]
-    private const val BIND_NONCE_SELECTOR = "0x15c95be6"
-    // keccak256("profileRoot(uint256)")[:4]
-    private const val PROFILE_ROOT_SELECTOR = "0x85105cb3"
-    // keccak256("ownerOf(uint256)")[:4] (ERC-721)
-    private const val OWNER_OF_SELECTOR = "0x6352211e"
 
     /**
      * `DogTagSBT.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or null on
@@ -149,9 +150,6 @@ object RoaxRpc {
         }
     }
 
-    // keccak256("consumed(bytes32)")[:4]
-    private const val CONSUMED_SELECTOR = "0x4648c943"
-
     /**
      * `VerificationRegistry.consumed(nullifier)` → true once the relayer's `recordVerificationZK`
      * (or the legacy path) has landed on-chain for this nullifier. This is the CANONICAL completion
@@ -172,8 +170,7 @@ object RoaxRpc {
     /** `VerificationRegistry.keyOf(subject)` → the bound consent keyHash (0x..), or null/0x00.. if unbound. */
     suspend fun keyOf(rpcUrl: String, verificationRegistry: String, subject: String): String? {
         if (verificationRegistry.isBlank() || subject.isBlank()) return null
-        // keyOf(address) selector = keccak256("keyOf(address)")[:4]
-        val data = "0xfa073d76" + padAddr(subject)
+        val data = KEY_OF_SELECTOR + padAddr(subject)
         return when (val r = ethCall(rpcUrl, verificationRegistry, data)) {
             is CallResult.Ok -> "0x" + r.hex.padStart(64, '0')
             is CallResult.Err -> null
