@@ -24,13 +24,14 @@ HMAC=dev-central-hmac-secret
 # Override with: LAN_IP=192.168.x.x scripts/demo-up.sh
 LAN_IP="${LAN_IP:-172.24.230.152}"
 # Governance signer-1 key = registry WHITELIST_ADMIN + SBT ISSUER + factory owner + PLASMA source
-# (contracts/.env). Governance Phase-2 (executed on-chain 2026-07-05, block 123835) stripped the old
-# deployer EOA 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 of ALL roles and moved admin authority to
+# (contracts/.env). Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved the
+# governance/admin authority off the old deployer EOA 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 to
 # governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2, so the central stack must broadcast
 # whitelistFor/mint AS signer-1. Set GOVERNANCE_PRIVATE_KEY / GOVERNANCE_ADDRESS (signer-1) in
-# contracts/.env; the old DEPLOYER_* EOA now holds zero roles and its admin txs would revert.
+# contracts/.env; governance txs from the old DEPLOYER_* EOA would revert. It is NOT role-free, though -
+# it still holds the legacy Level-A ISSUER_ROLE + record-type whitelists, so never reuse it as neutral.
 set -a; source "$ROOT/contracts/.env"; set +a
-ADMIN_PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - the old deployer EOA 0x119F… was stripped of all roles in Phase-2}"
+ADMIN_PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - Phase-2 removed the governance/admin authority from the old deployer EOA 0x119F…, which still holds legacy Level-A ISSUER_ROLE + record-type whitelists and is NOT a neutral key}"
 ADMIN_ADDR="${GOVERNANCE_ADDRESS:?set GOVERNANCE_ADDRESS (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env}"
 run(){ echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & echo $! >> .demo/pids ); }
 

@@ -17,10 +17,11 @@ PHONE="$1"
 set -a; source contracts/.env; set +a
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
 # The DogTagSBT mint below needs ISSUER_ROLE, held by governance signer-1 after Phase-2 (executed
-# 2026-07-05, block 123835) stripped the old deployer EOA 0x119F… of all roles and moved admin authority
-# to signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2. Set GOVERNANCE_PRIVATE_KEY (signer-1) in
-# contracts/.env; the old deployer EOA can no longer mint.
-PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - the old deployer EOA 0x119F… holds zero roles post-Phase-2}"
+# 2026-07-05, block 123835) moved the governance/admin authority off the old deployer EOA 0x119F… to
+# signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2. Set GOVERNANCE_PRIVATE_KEY (signer-1) in
+# contracts/.env. The old deployer EOA still holds the legacy Level-A ISSUER_ROLE + record-type
+# whitelists, so it is NOT role-free and must not be reused as a neutral key.
+PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - Phase-2 removed the governance/admin authority from the old deployer EOA 0x119F…, which still holds legacy Level-A ISSUER_ROLE + record-type whitelists and is NOT a neutral key}"
 SBT=$(jq -r .DogTagSBT contracts/deployments/roax.json)
 
 # The CANONICAL on-chain dogTagId is field_of_value(Integer(rawNumeric)) — the SAME value the credential

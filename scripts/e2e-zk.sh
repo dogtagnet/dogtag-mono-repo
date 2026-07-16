@@ -45,7 +45,7 @@ set -a; source "$ROOT/contracts/.env"; set +a   # DEPLOYER_PRIVATE_KEY / DEPLOYE
 # precondition (whitelistFor / grantRole / issue / mint) as ONE key, so point the deployer vars it uses at
 # the captain-managed signer-1 key (GOVERNANCE_PRIVATE_KEY / GOVERNANCE_ADDRESS in contracts/.env); the
 # old EOA's admin txs would revert.
-DEPLOYER_PRIVATE_KEY="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - the old deployer EOA 0x119F… was stripped of all roles in Phase-2}"
+DEPLOYER_PRIVATE_KEY="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - Phase-2 removed the governance/admin authority from the old deployer EOA 0x119F…, which still holds legacy Level-A ISSUER_ROLE + record-type whitelists and is NOT a neutral key}"
 DEPLOYER_ADDRESS="${GOVERNANCE_ADDRESS:?set GOVERNANCE_ADDRESS (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env}"
 PK="$DEPLOYER_PRIVATE_KEY"
 

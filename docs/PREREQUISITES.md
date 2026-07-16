@@ -97,8 +97,11 @@ never committed** — generate them with `openssl rand -hex 32` (REMOTE/PROD).
 LOCAL sources `contracts/.env` and wires its **governance signer-1** key as the central stack's on-chain
 admin signer (it is also read by `demo-bootstrap.sh`, `demo-prepare-phone.sh`, and the `e2e-*.sh`
 harnesses). Since Governance Phase-2 (executed on-chain 2026-07-05, block 123835) the demo tooling's admin
-authority is **governance signer-1** (`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`) - Phase-2 stripped the
-old deployer EOA `0x119F8c7F…` of ALL roles, so it can no longer whitelist / mint / own the factory. The
+authority is **governance signer-1** (`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`) - Phase-2 removed the
+old deployer EOA `0x119F8c7F…`'s governance/admin authority, so it can no longer grant whitelists or own
+the factory. It is **not role-free**: it still holds the legacy Level-A `DogTagSBT` `ISSUER_ROLE` and
+record-type whitelists (re-verified 2026-07-16), so it can still mint and must never be treated as a
+neutral custodian. The
 `DEPLOYER_*` key is retained only for `forge` contract deploys and the ceremony verifier-swap scripts.
 **`contracts/.env` is LOCAL-only** - REMOTE/PROD use `stacks/admin/.env`'s `ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS`
 (also governance signer-1) instead.
@@ -107,7 +110,7 @@ old deployer EOA `0x119F8c7F…` of ALL roles, so it can no longer whitelist / m
 |---|---|---|---|
 | `GOVERNANCE_PRIVATE_KEY` | the demo tooling's on-chain admin signer - **governance signer-1** (whitelistFor / SBT mint / factory createIssuer) + PLASMA gas source | signer-1's private key (`0x…`, 64 hex) - must be **FUNDED with PLASMA**; its address must be `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | **YES - never commit** |
 | `GOVERNANCE_ADDRESS` | the address of `GOVERNANCE_PRIVATE_KEY` (governance signer-1) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` (derive: `cast wallet address --private-key <GOVERNANCE_PRIVATE_KEY>`) | no |
-| `DEPLOYER_PRIVATE_KEY` | deploying EOA for `forge` contract deploys / the ceremony verifier-swap scripts only - **NOT** admin ops (Phase-2 stripped it of all roles) | a funded ROAX EOA private key (`0x…`, 64 hex) | **YES - never commit** |
+| `DEPLOYER_PRIVATE_KEY` | deploying EOA for `forge` contract deploys / the ceremony verifier-swap scripts only - **NOT** admin ops (Phase-2 removed its governance/admin authority; it still holds legacy Level-A `ISSUER_ROLE` + record-type whitelists, so it is not a neutral key) | a funded ROAX EOA private key (`0x…`, 64 hex) | **YES - never commit** |
 | `DEPLOYER_ADDRESS` | the address of `DEPLOYER_PRIVATE_KEY` | derive: `cast wallet address --private-key <DEPLOYER_PRIVATE_KEY>` | no |
 | `ROAX_RPC` | chain RPC | `https://devrpc.roax.net` | no |
 

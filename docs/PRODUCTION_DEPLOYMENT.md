@@ -352,8 +352,10 @@ issuers / mint).
 **STOP if** `ADMIN_ADDRESS` is the demo deployer (`0x119F8c7F…`) or has zero balance → onboarding will
 either reuse the demo key in production or fail with out-of-gas. Use a dedicated funded EOA that holds
 the on-chain admin roles. (On the **live ROAX testnet** that authority is governance signer-1
-`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` - Governance Phase-2 (2026-07-05, block 123835) stripped the
-`0x119F…` deployer EOA of all roles, so it can no longer whitelist or mint.)
+`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` - Governance Phase-2 (2026-07-05, block 123835) removed the
+`0x119F…` deployer EOA's governance/admin authority, so it can no longer grant whitelists. It is **not
+role-free** - it still holds the legacy Level-A `ISSUER_ROLE` + record-type whitelists, so it can still
+mint and must not be reused as a neutral key.)
 
 ### 4.3 Edge-lock the admin surface (Caddy)
 

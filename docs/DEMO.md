@@ -216,7 +216,9 @@ Five backend issues fixed while bringing the system up live on ROAX — worth kn
   (the backend chain client falls back to `gas_price`).
 - **The central stack needs its admin signer wired** (`ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS` — set by
   `demo-up.sh` from `contracts/.env`'s `GOVERNANCE_PRIVATE_KEY`/`GOVERNANCE_ADDRESS`, i.e. governance
-  signer-1 `0x8E27…F4A2` since Phase-2; the old deployer EOA `0x119F…` holds zero roles) to broadcast
+  signer-1 `0x8E27…F4A2` since Phase-2; the old deployer EOA `0x119F…` no longer has governance/admin
+  authority, though it does still hold legacy Level-A `ISSUER_ROLE` + record-type whitelists, so it is
+  not a neutral key) to broadcast
   `whitelistFor`. Without it, Approve no-ops. (The
   dog-tag `mint` is broadcast by the **vet** signer, which must hold `DogTagSBT.ISSUER_ROLE`.)
 - **`sign_and_send` waits for the receipt** before reporting success (so issue/verify reflect the real
