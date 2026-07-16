@@ -53,7 +53,8 @@ It all runs against the **live ROAX testnet** (chainId **135**, gas token **PLAS
 > - **git + `cmake` + a C toolchain** — needed to build the prover-service (`--features prover`).
 > - **a funded `contracts/.env`** - `GOVERNANCE_PRIVATE_KEY` + `GOVERNANCE_ADDRESS` for the **funded
 >   governance signer-1 EOA** (`0x8E27…F4A2`), plus `ROAX_RPC`. Since Governance Phase-2 (2026-07-05, block
->   123835) this signer-1 is the admin authority (the old deployer EOA `0x119F…` was stripped of all roles).
+>   123835) this signer-1 is the admin authority. The old deployer EOA `0x119F…` lost governance/admin
+>   authority but retains legacy Level-A issuer/whitelist capabilities, so it is not a neutral key.
 >   `demo-up.sh` wires it as the central stack's signer; `demo-bootstrap.sh` and `demo-prepare-phone.sh`
 >   also use it to whitelist/mint and pay gas. (`DEPLOYER_*` stays only for `forge` deploys.)
 >   **`contracts/.env` is LOCAL-only.**

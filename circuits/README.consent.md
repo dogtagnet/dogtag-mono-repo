@@ -17,8 +17,10 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 > ceremony + VK freeze (M3) is DONE**: `scripts/ceremony-consent.sh` (public Hermez pow-17 ptau + a single
 > testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
 > — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md). The on-chain
-> `recordVerificationZK` wiring (registry redeploy) is **M4 — now DONE**: `VerificationRegistryConsent`
-> `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` (**provisional** - M5 redeploys it, see below). See the
+> `recordVerificationZK` wiring is **M5 — now DEPLOYED + VERIFIED**: the canonical
+> `VerificationRegistryConsent` is `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`, paired with
+> `DogTagSBTConsent` `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc`. It remains additive and
+> **not live until M7**; no consumer was changed. See the
 > "Build + test" and "M4 binding" notes below.
 
 ## What it proves
@@ -135,16 +137,14 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 `deadline >= block.timestamp`, consumes `pub[3] /*nullifier*/`, and emits an **owner-blind**
 `Verified` event (no `subject`/`keyHash`).
 
-**M4 is done:** `contracts/src/VerificationRegistryConsent.sol`, deployed on ROAX at
-`0x53F988Ae0124b96069d90CBC78E6245FeB01E125` against the M3 verifier `0x272be146…`. It is **additive** —
-the Level-A `VerificationRegistry` `0x4E2f0996…` is still the live one until the **M7** app cutover, and
-Level-B tags need **M5** custodial issuance first.
-
-**M5 is done too, and it supersedes that address.** Its contract side, `DogTagSBTConsent` (the custodial
-SBT with a write-once `profileRoot`), has landed but is **not deployed**; because the registry's `sbt` is
-`immutable`, deploying it also redeploys the registry code above against the new SBT
-(`contracts/script/DeployCustodialIssuance.s.sol` does both; the M4 `DeployConsentRegistry.s.sol` is
-superseded). So `0x53F988Ae…` is provisional, not the instance that goes live at M7. Its app side - the
+**M5 is deployed + verified:** `DogTagSBTConsent` `0x96Cba458…` (the custodial SBT with a write-once
+`profileRoot`) is paired with `VerificationRegistryConsent` `0xb9B313C1…`, which verifies against the M3
+verifier `0x272be146…`. Both runtimes and constructor wiring match the compiled source. Because the
+registry's `sbt` is immutable, this deployment supersedes M4's `0x53F988Ae…`, which is permanently bound
+to the mutable Level-A SBT and is **deprecated / do not use for Level-B** (it was never live and has zero
+`Verified` events). `contracts/script/DeployCustodialIssuance.s.sol` deploys the canonical pair; the M4
+`DeployConsentRegistry.s.sol` is superseded. The pair remains **additive and not live**: the Level-A
+`VerificationRegistry` `0x4E2f0996…` still serves every consumer until the **M7** cutover. The M5 app side - the
 device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) - has landed
 too, but nothing calls it in production: issuance still mints to the owner's wallet, and the cutover is
 **M7**. Details: AGENTS.md "M5 as-built" + "M5 app-side"; `roax.json` `_m5_custodial_issuance`.

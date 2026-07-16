@@ -880,9 +880,10 @@ GET  /v1/appointments?updatedSince=  // catch-up pull
 > **LEVEL-A - as-built and live, but superseded in design by Level-B M5.** This section mints the SBT to
 > the owner's wallet, which makes `ownerOf(dogTagId)` a permanent public pet↔owner link. Level-B mints to
 > a **neutral custodian** instead (`DogTagSBTConsent.mintCustodial`, no `to` parameter) and proves
-> ownership in-ZK. The M5 contract side has landed but is **NOT deployed and NOT wired**, and the app-side
-> rework (the owner's device builds the Merkle tree and supplies `R`) is a tracked follow-up, so what is
-> described below is what actually runs today. Cutover is M7. See architecture §4.3 and AGENTS.md
+> ownership in-ZK. The canonical M5 pair is deployed + verified on ROAX (`DogTagSBTConsent`
+> `0x96Cba458…`, `VerificationRegistryConsent` `0xb9B313C1…`) but is **NOT live and NOT wired**, and the
+> app-side rework (the owner's device builds the Merkle tree and supplies `R`) remains a tracked follow-up,
+> so what is described below is what actually runs today. Cutover is M7. See architecture §4.3 and AGENTS.md
 > "M5 as-built".
 
 **Vets issue dog tags**, mirroring import/export: a session + a one-time QR. The device creates its
