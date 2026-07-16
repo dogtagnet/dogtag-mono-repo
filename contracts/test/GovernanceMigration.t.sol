@@ -27,9 +27,9 @@ contract LegacySbtMock is AccessControlEnumerable {
 /// admin/ownership of every governed contract and the deployer EOA can no longer GOVERN — including the
 /// timelock actually gating Phase 2 and the legacy-SBT atomic hand-over.
 /// @dev Scope: this proves the loss of GOVERNANCE authority only. The migration does not revoke a
-/// pre-existing Level-A ISSUER_ROLE or record-type whitelist, and this fixture never grants the EOA
-/// either, so nothing here says the decommissioned EOA cannot still mint/issue on a live Level-A
-/// deployment — it can (2026-07-16 audit). See the SCOPE note in GovernanceMigration.sol.
+/// pre-existing Level-A ISSUER_ROLE or record-type whitelist, so nothing here says the decommissioned
+/// EOA cannot still mint/issue on a live Level-A deployment - it can (2026-07-16 audit). See the SCOPE
+/// note in GovernanceMigration.sol.
 contract GovernanceMigrationTest is Test {
     using GovernanceMigration for GovernanceMigration.Targets;
 
