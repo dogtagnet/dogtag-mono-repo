@@ -60,7 +60,9 @@ contract MigrateGovernanceBegin is MigrateGovernanceBase {
 }
 
 /// @notice Phase 2: executed BY (or through) the multisig AFTER the timelocks elapse. Accepts admin /
-/// ownership everywhere and strips the EOA's residual roles.
+/// ownership everywhere and strips the EOA's governance roles (DEFAULT_ADMIN / WHITELIST_ADMIN / factory
+/// ownership). The EOA's legacy Level-A ISSUER_ROLE and record-type whitelists are NOT touched here and
+/// must be retired separately — after this runs the deployer key still cannot govern, but can still mint.
 /// @dev When the multisig is a Safe (a contract, not an EOA key), do NOT broadcast this script: instead
 /// submit each `accept`/`revoke` call from the Safe (the begin-phase log + GovernanceMigration.accept list
 /// are the call set). Broadcasting works only when MULTISIG is a key you control (anvil / a 1-of-1 / an
