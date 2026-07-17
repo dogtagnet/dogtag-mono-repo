@@ -1137,6 +1137,52 @@ and the Android `.kt` - a clean regen is **purely additive**; if you see removal
 ≠ 0.28.x and you should stop rather than commit the churn. Canary it by regenerating BEFORE your
 change and diffing against the committed file: it should be byte-identical.
 
+### M6 app-side - recovery is re-issue (D3), never a rebind
+
+M6 is deliberately SMALL: the deployed contract already forces the whole model, so it needs NO
+contract change.
+`mintCustodial` + write-once `profileRoot` + permanent burn-retirement mean a lost owner-secret has
+no on-chain repair, and `CustodialIssuance.t.sol::test_no_recover_surface` already pins that
+`recover()` does not exist (a keyed rebind would name the new owner on-chain, which is exactly what
+Level-B removes).
+M6 makes the re-issue path a first-class, tested device flow.
+
+Recovery has two branches, decided by whether the owner-secret can be regenerated
+(`docs/MOBILE_OWNER_SECRET.md`):
+- **Repair** - the owner still has seed + credential, which rebuild the same `R`; the same tag keeps
+  working (`crates/dogtag-standard-rs/tests/device_recovery_journey.rs`).
+- **Re-issue (D3)** - the owner-secret is gone for good, so the remedy is a fresh custodial issuance
+  under a NEW `dogTagId` with a new `R`.
+  The forks are FORCED by the model, not chosen: a fresh id (a burned/abandoned id is retired forever,
+  `test_burned_dogTagId_can_never_be_reminted`), a new `R` (write-once), and the old tag left
+  abandoned (no on-chain remedy).
+
+Device side: `ProfileTreeStore.reissue(...)` builds the fresh tag and marks the abandoned record,
+keeping the old<->new link **device-local only** (the store is `isExcludedFromBackup` and never
+transmitted).
+The re-issued tag is mutually unlinkable from the abandoned one because the owner-secret is bound to
+`dogTagId`, so even the SAME wallet's fresh tag derives an independent nullifier secret - pinned
+end-to-end through the FFI by `tests/device_reissue_journey.rs`.
+**Never** surface the old<->new link in an on-chain event, a `setStatus` reason, or an issuer record:
+that would reintroduce the owner linkage the recent ZK audit validated as absent.
+The seed-backup gate (`StoreError.seedBackupNotConfirmed`) applies to `reissue` exactly as to
+`buildAndPersist` - the fresh tag's owner-secret is just as reliant on the phrase.
+
+**Referencing credentials across issuers - accept the break (captain decision, 2026-07-16).**
+A re-issued pet gets a NEW `dogTagId`, so any credential another issuer (vet/government) previously
+anchored to the OLD id now points at the abandoned tag - Level-A preserved these across `recover()`
+via a stable `tokenId` + `issuerOf`, but Level-B re-issue deliberately does NOT.
+Prior attestations are **not** re-anchored or transferred to the new id: doing so would forge
+attestation applicability (a vet/gov signature applying to an id it never signed), breaking the
+cross-issuer trust model.
+The owner re-obtains each referencing credential fresh from its issuer under the new id, via normal
+issuance.
+**M6 ships the device/app re-issue flow + these semantics + docs/tests only - there is NO live
+issuer-side custodial re-issue endpoint.**
+The custodial path is not wired into vet-api until M7 (Level-A serves all issuance until then;
+`routes.rs:1796` still mints to the owner's wallet), and M7 reworks `mint -> mintCustodial`; the
+issuer-side re-issue endpoint lands with that cutover.
+
 ### Known-uncovered surfaces (deliberate, not oversights)
 
 - **`ProfileTreeStore` has ZERO runtime coverage.** No iOS test target exists and nothing calls it

@@ -130,6 +130,9 @@ backups, so it is never the thing that carries them across devices.
     ],
     "derivationVersion": "DogTag/owner-secret/v1",
     "savedAt": "2026-07-15T00:00:00Z"
+    // --- re-issue bookkeeping (M6, D3); all OPTIONAL and DEVICE-LOCAL, absent on a normal tag ---
+    // on an ABANDONED record:  "abandonedAt": "2026-07-16T…", "replacedByDogTagIdDec": "515151"
+    // on the RE-ISSUED record: "replacesDogTagIdDec": "424242"
   }
 ]
 ```
@@ -137,6 +140,11 @@ backups, so it is never the thing that carries them across devices.
 `derivationVersion` is stamped so a future KDF change is detectable rather than silently producing a
 different `R`.
 It must track `profile_tree::OWNER_SECRET_DOMAIN` in the Rust core.
+
+The three re-issue fields (`abandonedAt`, `replacedByDogTagIdDec`, `replacesDogTagIdDec`) are written
+by `ProfileTreeStore.reissue` and are all optional, so a record written before M6 decodes unchanged.
+They link an abandoned tag to the fresh tag that replaced it (decision D3), and they stay device-local
+like every other field here - never transmit the old<->new link.
 
 ## Handling rules
 
@@ -155,6 +163,7 @@ It must track `profile_tree::OWNER_SECRET_DOMAIN` in the Rust core.
 | tree + KDF (source of truth) | `crates/dogtag-standard-rs/src/profile_tree.rs` |
 | FFI surface | `crates/dogtag-standard-rs/src/ffi.rs` (`buildProfileTreeHex`, `deriveOwnerSecretHex`) |
 | iOS store + device-local file | `apps/ios/DogTag/ProfileTreeStore.swift` |
+| re-issue affordance (D3) | `apps/ios/DogTag/ProfileTreeStore.swift` (`ProfileTreeStore.reissue`) |
 | seed accessor | `apps/ios/DogTag/Wallet.swift` (`Wallet.seedHex()`) |
 | seed-backup gate | `apps/ios/DogTag/Wallet.swift` (`SeedBackup`), enforced in `ProfileTreeStore.buildAndPersist` |
 | confirmation UI | `apps/ios/DogTag/ProfileScreen.swift` (the "I've saved it" action) |
@@ -170,6 +179,11 @@ Swift never reimplements it.
   `R`.
 - `crates/dogtag-standard-rs/tests/profile_tree_parity.rs` - asserts the device builder's primitives
   reproduce the `R` that the M2 circuit proved and the M4 registry verified on-chain.
+- `crates/dogtag-standard-rs/tests/device_recovery_journey.rs` - the REPAIR branch through the FFI:
+  seed + credential rebuild the same `R`; a wrong phrase or a lost credential does not.
+- `crates/dogtag-standard-rs/tests/device_reissue_journey.rs` - the RE-ISSUE branch (D3): a lost
+  owner-secret is recovered by re-issuing a fresh tag under a NEW `dogTagId`, with an independent
+  owner-secret and `R` that keep it mutually unlinkable from the abandoned one.
 - `contracts/test/CustodialIssuance.t.sol` -
   `test_device_built_root_is_what_the_contract_stores_as_profileRoot` mints a real device-built `R`
   and asserts `profileRoot(dogTagId) == R`.
@@ -189,3 +203,34 @@ That is why the seed and the credential must BOTH come back, not just the secret
 Losing either (no phrase, or no credential to re-obtain the attribute leaves from) is unrecoverable
 by design: per decision D3, the remedy is a fresh tag with a new tree and a new `R`, not a rebind of
 the old one.
+
+## The two recovery branches: repair vs re-issue (D3)
+
+Which branch applies is decided by whether the owner-secret can be regenerated:
+
+- **Repair (same tag).**
+  The owner still has the phrase AND the credential's attribute leaves.
+  Seed + credential rebuild the identical `R`, so the SAME tag keeps working - `profileRoot` is
+  write-once and is never moved.
+  This is the round-trip in [Tests that hold this together](#tests-that-hold-this-together)
+  (`device_recovery_journey.rs`).
+- **Re-issue (fresh tag).**
+  The owner-secret is gone for good.
+  There is no on-chain repair, so the remedy is a **fresh custodial issuance under a new `dogTagId`
+  with a new `R`**: the issuer allocates a fresh id (a burned/abandoned id is retired forever), the
+  app builds a fresh tree (`ProfileTreeStore.reissue`), and the issuer seals the new root.
+  The abandoned tag is simply left behind - there is no rebind.
+  Any credentials another issuer anchored to the abandoned id are **not** carried over (that would
+  forge attestation applicability); the owner re-obtains each fresh from its issuer under the new id.
+  The live issuer-side re-issue endpoint lands with the M7 custodial-issuance cutover - M6 is the
+  device/app flow and the recovery semantics.
+
+The re-issued tag is **mutually unlinkable** from the abandoned one.
+The owner-secret is bound to `dogTagId` ([§1](#1-seed-derivation)), so even the same wallet's fresh
+tag derives an independent nullifier secret; the abandoned tag's on-chain nullifiers cannot be
+correlated with the re-issued tag's.
+A "recovery" that reused the secret, or that surfaced the old<->new link anywhere off the device,
+would reintroduce exactly the linkage Level B removes.
+`ProfileTreeStore.reissue` MAY record the old<->new link because the store is excluded from device
+backups and never transmitted; that link must never reach an on-chain event, a status reason, or an
+issuer record.

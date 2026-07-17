@@ -29,6 +29,11 @@ import Foundation
 ///    seed-derivable; they come back from the issued wrapped credential, which packs each leaf as
 ///    `"<saltHex>:<tag>:<value>"`. The seed alone does not rebuild the tree.
 ///
+/// When BOTH cannot be recovered - the owner-secret is gone for good - there is no on-chain repair
+/// (`profileRoot` is write-once). Per decision D3, recovery is then a **re-issue**: a fresh custodial
+/// issuance under a NEW `dogTagId` with a new `R`, via `reissue(...)`. The abandoned tag is retired
+/// forever; the fresh tag is mutually unlinkable from it.
+///
 /// See `docs/MOBILE_OWNER_SECRET.md` for the file's documented contract.
 enum ProfileTreeStore {
     /// The documented device-local store (NOT a backup - see above). Plain JSON in the app's
@@ -62,6 +67,24 @@ enum ProfileTreeStore {
         let attributes: [BackedUpAttribute]
         let derivationVersion: String
         let savedAt: Date
+
+        // ---- re-issue bookkeeping (Level-B M6, decision D3) ------------------------------------
+        //
+        // A lost owner-secret is NOT repaired on-chain (`profileRoot` is write-once); the remedy is
+        // a fresh custodial issuance under a NEW `dogTagId` (`reissue(...)`). These fields record,
+        // DEVICE-LOCALLY, that this tag was abandoned and which fresh tag replaced it. This file is
+        // excluded from device backups and never transmitted, so keeping the old<->new link here
+        // does NOT reintroduce the correlation Level-B keeps off-chain. Never put this linkage in an
+        // on-chain event, a `setStatus` reason, or any issuer record.
+        //
+        // Optional so records written before M6 decode unchanged (a missing key is `nil`).
+
+        /// When a re-issue abandoned this tag; `nil` for an active tag.
+        var abandonedAt: Date? = nil
+        /// The fresh tag's decimal id that replaced this one (set on the abandoned record).
+        var replacedByDogTagIdDec: String? = nil
+        /// The abandoned tag's decimal id this one replaced (set on the re-issued record).
+        var replacesDogTagIdDec: String? = nil
     }
 
     enum StoreError: Error, LocalizedError {
@@ -69,6 +92,7 @@ enum ProfileTreeStore {
         case conflictingRoot(dogTagId: String, existing: String, proposed: String)
         case unreadableFile(underlying: Error)
         case seedBackupNotConfirmed
+        case reissueRequiresFreshId(dogTagId: String)
 
         var errorDescription: String? {
             switch self {
@@ -82,6 +106,9 @@ enum ProfileTreeStore {
             case .seedBackupNotConfirmed:
                 return "the wallet recovery phrase has not been confirmed as backed up; refusing to "
                     + "create an owner-secret that a lost phone would destroy permanently"
+            case let .reissueRequiresFreshId(dogTagId):
+                return "re-issue must allocate a NEW dogTagId; \(dogTagId) is the tag being abandoned "
+                    + "(D3: a burned/abandoned id is retired forever and can never be reused)"
             }
         }
     }
@@ -144,6 +171,75 @@ enum ProfileTreeStore {
         return tree
     }
 
+    // ---- re-issue (Level-B M6, decision D3) ----------------------------------------------------
+
+    /// Recover from a permanently-lost owner-secret by RE-ISSUING: abandon the old tag and persist a
+    /// fresh one under a NEW `dogTagId`.
+    ///
+    /// This is NOT an on-chain repair. `profileRoot` is write-once, so once a tag's owner-secret is
+    /// gone (no seed backup, or the credential's attribute leaves cannot be re-obtained) the tag can
+    /// never be proven again - there is no rebind. Per decision D3 the remedy is a fresh custodial
+    /// issuance: the issuer allocates a fresh `dogTagId` (a burned/abandoned id is retired forever),
+    /// the app builds a fresh tree here, and the issuer seals its new `R`.
+    ///
+    /// The re-issued tag is mutually unlinkable from the abandoned one: the owner-secret is bound to
+    /// `dogTagId`, so even the SAME wallet's fresh tag gets an independent nullifier secret. The
+    /// old<->new linkage this records stays DEVICE-LOCAL (this file is backup-excluded and never
+    /// transmitted); it must never reach an on-chain event or an issuer record.
+    ///
+    /// `attributes` are the RE-ISSUED credential's leaves (the issuer draws fresh salts), not the
+    /// abandoned tag's. Hand the issuer only `rootHex` from the returned witness.
+    ///
+    /// Throws `StoreError.seedBackupNotConfirmed` under the same gate as `buildAndPersist`: the fresh
+    /// tag's owner-secret is just as reliant on the phrase as any other.
+    @discardableResult
+    static func reissue(
+        seedHex: String,
+        abandoningDogTagIdDec: String,
+        newDogTagIdDec: String,
+        ownerAddress: String,
+        attributes: [BackedUpAttribute]
+    ) throws -> ProfileTreeFfi {
+        guard newDogTagIdDec != abandoningDogTagIdDec else {
+            throw StoreError.reissueRequiresFreshId(dogTagId: newDogTagIdDec)
+        }
+        guard SeedBackup.isConfirmed(forSeedHex: seedHex) else {
+            throw StoreError.seedBackupNotConfirmed
+        }
+        let newDogTagIdHex = try dogTagIdFieldHex(dogTagIdDec: newDogTagIdDec)
+        let tree = try buildProfileTreeHex(
+            seedHex: seedHex,
+            dogTagIdHex: newDogTagIdHex,
+            ownerAddressHex: ownerAddress,
+            attributes: attributes.map {
+                AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
+            }
+        )
+        let newRecord = OwnerSecretRecord(
+            dogTagIdHex: newDogTagIdHex,
+            dogTagIdDec: newDogTagIdDec,
+            ownerSecretHex: tree.ownerSecretHex,
+            rootHex: tree.rootHex,
+            ownerAddress: ownerAddress,
+            attributes: attributes,
+            derivationVersion: derivationVersion,
+            savedAt: Date(),
+            replacesDogTagIdDec: abandoningDogTagIdDec
+        )
+        try withStoreLock {
+            var records = try loadUnlocked()
+            if let idx = records.firstIndex(where: {
+                $0.dogTagIdDec == abandoningDogTagIdDec && $0.abandonedAt == nil
+            }) {
+                records[idx].abandonedAt = Date()
+                records[idx].replacedByDogTagIdDec = newDogTagIdDec
+            }
+            try applyUpsert(&records, newRecord)
+            try write(records)
+        }
+        return tree
+    }
+
     // ---- recover -------------------------------------------------------------------------------
 
     /// Rebuild a tag's `R` from the wallet seed + the record's attributes and assert it still equals
@@ -199,25 +295,42 @@ enum ProfileTreeStore {
         all().first { $0.dogTagIdDec == dec }
     }
 
+    /// Records for tags NOT abandoned by a re-issue - what the UI should present as usable. An
+    /// abandoned tag stays in the file (its owner-secret is the only record a support flow could
+    /// inspect) but is no longer a live credential.
+    static func activeRecords() -> [OwnerSecretRecord] {
+        all().filter { $0.abandonedAt == nil }
+    }
+
     static func upsert(_ record: OwnerSecretRecord) throws {
         try withStoreLock {
             var records = try loadUnlocked()
-            if let idx = records.firstIndex(where: {
-                $0.dogTagIdHex.caseInsensitiveCompare(record.dogTagIdHex) == .orderedSame
-            }) {
-                let existing = records[idx]
-                guard existing.rootHex.caseInsensitiveCompare(record.rootHex) == .orderedSame else {
-                    throw StoreError.conflictingRoot(
-                        dogTagId: record.dogTagIdDec,
-                        existing: existing.rootHex,
-                        proposed: record.rootHex
-                    )
-                }
-                records[idx] = record
-            } else {
-                records.append(record)
-            }
+            try applyUpsert(&records, record)
             try write(records)
+        }
+    }
+
+    /// Conflict-checked insert/replace keyed by canonical `dogTagIdHex`. Fail-closed for the
+    /// write-once root: an identical root is an idempotent retry, a different root for the same id is
+    /// rejected before the existing witness is touched. Caller MUST hold the store lock.
+    private static func applyUpsert(
+        _ records: inout [OwnerSecretRecord],
+        _ record: OwnerSecretRecord
+    ) throws {
+        if let idx = records.firstIndex(where: {
+            $0.dogTagIdHex.caseInsensitiveCompare(record.dogTagIdHex) == .orderedSame
+        }) {
+            let existing = records[idx]
+            guard existing.rootHex.caseInsensitiveCompare(record.rootHex) == .orderedSame else {
+                throw StoreError.conflictingRoot(
+                    dogTagId: record.dogTagIdDec,
+                    existing: existing.rootHex,
+                    proposed: record.rootHex
+                )
+            }
+            records[idx] = record
+        } else {
+            records.append(record)
         }
     }
 
