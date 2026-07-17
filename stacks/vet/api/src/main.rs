@@ -122,10 +122,13 @@ async fn main() {
     // Choose the prover: if CIRCUITS_BUILD_DIR points at a circuits `build` dir, load the REAL
     // ark-circom Groth16 prover; otherwise fall back to the StubProver (ZK control-flow only).
     //
-    // WHICH artifacts it loads comes from the version-keyed table (`artifact::resolve`), not from
-    // hard-coded filenames. PROTOCOL_VERSION names the version to serve; unset ⇒ the current Level-A
-    // version, i.e. exactly the pre-M7 artifact set. An unknown version fails closed here rather than
-    // booting a prover that silently serves the wrong one.
+    // WHICH artifacts the real prover loads comes from the version-keyed table (`artifact::resolve`),
+    // not from hard-coded filenames. PROTOCOL_VERSION names the version the REAL prover serves; unset
+    // ⇒ the current Level-A version, i.e. exactly the pre-M7 artifact set. It is resolved BEFORE the
+    // prover choice so an unknown version fails closed at boot whether or not a build dir is
+    // configured, rather than being silently discarded in stub mode. The StubProver serves the
+    // current Level-A version only (`ProverClient::version`'s default) and cannot stand in for
+    // another, so a resolvable PROTOCOL_VERSION only takes effect on the real-prover path.
     //
     // EXPECTED_ZKEY_SHA256, when set, overrides that version's pinned zkey hash so a production
     // ceremony output (a different zkey) is a pure config swap — not a code change that would
@@ -136,15 +139,15 @@ async fn main() {
     let requested_version = std::env::var("PROTOCOL_VERSION")
         .ok()
         .filter(|s| !s.trim().is_empty());
+    let descriptor = match dogtag_prover::artifact::resolve(requested_version.as_deref()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("FATAL: PROTOCOL_VERSION names a version this build cannot prove: {e}");
+            std::process::exit(1);
+        }
+    };
     let prover: Arc<dyn ProverClient> = match std::env::var("CIRCUITS_BUILD_DIR") {
         Ok(dir) if !dir.is_empty() => {
-            let descriptor = match dogtag_prover::artifact::resolve(requested_version.as_deref()) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("FATAL: PROTOCOL_VERSION names a version this build cannot prove: {e}");
-                    std::process::exit(1);
-                }
-            };
             match ArkProver::load_versioned(&dir, descriptor, expected_zkey.as_deref()) {
                 Ok(p) => {
                     tracing::info!(

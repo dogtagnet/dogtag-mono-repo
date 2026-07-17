@@ -246,6 +246,16 @@ impl Prover {
             )));
         }
 
+        // `ProveInputs`' leaf arrays are a fixed N width, so a version whose circuit is wider or
+        // narrower cannot be fed by this build either. Refuse at load rather than let the mismatch
+        // surface as an obscure witness-generation failure far from its cause.
+        if descriptor.max_leaves != N {
+            return Err(ProverError::Load(format!(
+                "version {} proves up to {} leaves, but this build feeds {N}",
+                descriptor.version, descriptor.max_leaves
+            )));
+        }
+
         let build_dir = build_dir.as_ref().to_path_buf();
         let r1cs_path = build_dir.join(descriptor.r1cs.rel_path);
         let wasm_path = build_dir.join(descriptor.wasm.rel_path);

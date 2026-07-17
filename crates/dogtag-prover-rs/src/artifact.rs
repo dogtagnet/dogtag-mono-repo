@@ -262,6 +262,20 @@ mod tests {
                 d.version
             );
             assert_eq!(
+                d.num_public,
+                crate::NUM_PUBLIC,
+                "{}: this build formats a fixed NUM_PUBLIC-wide `pub` vector, so a registered version \
+                 exposing a different count would be rejected by `Prover::load_versioned`",
+                d.version
+            );
+            assert_eq!(
+                d.max_leaves,
+                crate::N,
+                "{}: this build feeds fixed N-wide leaf arrays, so a registered version proving a \
+                 different width would be rejected by `Prover::load_versioned`",
+                d.version
+            );
+            assert_eq!(
                 resolve(Some(d.version)).unwrap().version,
                 d.version,
                 "{}: registered but not resolvable",
