@@ -121,35 +121,51 @@ async fn main() {
 
     // Choose the prover: if CIRCUITS_BUILD_DIR points at a circuits `build` dir, load the REAL
     // ark-circom Groth16 prover; otherwise fall back to the StubProver (ZK control-flow only).
-    // EXPECTED_ZKEY_SHA256, when set, overrides the crate's hardcoded testnet zkey hash so a
-    // production ceremony output (a different zkey) is a pure config swap — not a code change that
-    // would otherwise make this fail-closed boot path refuse to start.
+    //
+    // WHICH artifacts it loads comes from the version-keyed table (`artifact::resolve`), not from
+    // hard-coded filenames. PROTOCOL_VERSION names the version to serve; unset ⇒ the current Level-A
+    // version, i.e. exactly the pre-M7 artifact set. An unknown version fails closed here rather than
+    // booting a prover that silently serves the wrong one.
+    //
+    // EXPECTED_ZKEY_SHA256, when set, overrides that version's pinned zkey hash so a production
+    // ceremony output (a different zkey) is a pure config swap — not a code change that would
+    // otherwise make this fail-closed boot path refuse to start.
     let expected_zkey = std::env::var("EXPECTED_ZKEY_SHA256")
         .ok()
         .filter(|s| !s.trim().is_empty());
+    let requested_version = std::env::var("PROTOCOL_VERSION")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let prover: Arc<dyn ProverClient> = match std::env::var("CIRCUITS_BUILD_DIR") {
-        Ok(dir) if !dir.is_empty() => match expected_zkey
-            .as_deref()
-            .map(|hash| ArkProver::load_with_expected_zkey(&dir, hash))
-            .unwrap_or_else(|| ArkProver::load(&dir))
-        {
-            Ok(p) => {
-                tracing::info!(
-                    "loaded real Groth16 prover from {dir} (zkey {})",
-                    p.zkey_hash_hex()
-                );
-                Arc::new(p)
+        Ok(dir) if !dir.is_empty() => {
+            let descriptor = match dogtag_prover::artifact::resolve(requested_version.as_deref()) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("FATAL: PROTOCOL_VERSION names a version this build cannot prove: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match ArkProver::load_versioned(&dir, descriptor, expected_zkey.as_deref()) {
+                Ok(p) => {
+                    tracing::info!(
+                        "loaded real Groth16 prover from {dir} (version {}, zkey {})",
+                        p.version(),
+                        p.zkey_hash_hex()
+                    );
+                    Arc::new(p)
+                }
+                Err(e) => {
+                    // Fail-closed (audit M1): a configured real prover that fails to load must NOT
+                    // silently degrade to the StubProver (which emits zeroed proofs the chain would
+                    // reject). A prover-service whose whole job is real proofs has no business booting
+                    // without them.
+                    eprintln!(
+                        "FATAL: CIRCUITS_BUILD_DIR is set but the real Groth16 prover failed to load: {e}"
+                    );
+                    std::process::exit(1);
+                }
             }
-            Err(e) => {
-                // Fail-closed (audit M1): a configured real prover that fails to load must NOT silently
-                // degrade to the StubProver (which emits zeroed proofs the chain would reject). A
-                // prover-service whose whole job is real proofs has no business booting without them.
-                eprintln!(
-                    "FATAL: CIRCUITS_BUILD_DIR is set but the real Groth16 prover failed to load: {e}"
-                );
-                std::process::exit(1);
-            }
-        },
+        }
         _ => Arc::new(StubProver),
     };
 

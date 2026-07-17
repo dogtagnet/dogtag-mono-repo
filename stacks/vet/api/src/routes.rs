@@ -1402,6 +1402,13 @@ struct ProveVerificationReq {
     /// The EdDSA-BabyJubjub consent signature + public key: `{ r8xDec, r8yDec, sDec, axHex, ayHex }`.
     #[serde(rename = "eddsaSig")]
     eddsa_sig: EddsaSigReq,
+    /// OPTIONAL protocol version to prove for (e.g. `"dogtag-levela/1"`).
+    ///
+    /// Absent ⇒ the version this service loaded, which is the current Level-A one unless configured
+    /// otherwise — so every pre-M7 caller keeps working unchanged. A version this service did not
+    /// load is refused, never silently proven with the artifacts it has.
+    #[serde(default)]
+    version: Option<String>,
 }
 
 /// The pass-through EdDSA signature fields (mirrors the on-device `EddsaSigInput` UniFFI record).
@@ -1441,6 +1448,14 @@ async fn prove_verification(
     State(st): State<AppState>,
     Json(body): Json<ProveVerificationReq>,
 ) -> Resp {
+    // Resolve the artifact version BEFORE touching the witness: a request naming no version gets the
+    // one this service loaded (back-compat — the pre-M7 body has no `version` field), and a request
+    // naming one this service cannot serve is refused rather than proven with the wrong key. The
+    // proof would verify against the wrong VK, so answering is worse than refusing (M7 §7.4).
+    if let Err(e) = st.prover.accepts_version(body.version.as_deref()) {
+        return err(StatusCode::BAD_REQUEST, &format!("prover: {e}"));
+    }
+
     // The wrapped doc / consent may arrive as an embedded object or a JSON string; normalize to text.
     let as_text = |v: &Value| -> String {
         match v {

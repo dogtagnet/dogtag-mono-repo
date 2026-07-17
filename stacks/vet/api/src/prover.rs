@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-pub use dogtag_prover::{Groth16Output, ProveInputs, Prover as ArkInnerProver};
+pub use dogtag_prover::{
+    artifact, ArtifactDescriptor, Groth16Output, ProveInputs, Prover as ArkInnerProver,
+};
 
 /// Inputs the verify backend hands the prover (impl §3.10).
 ///
@@ -60,11 +62,39 @@ pub enum ProverError {
     Unavailable(String),
     #[error("prove failed: {0}")]
     Prove(String),
+    /// The caller asked for a protocol version this prover cannot serve. Fail-closed: another
+    /// version's artifacts are never substituted (M7 §7.4).
+    #[error("unsupported protocol version {requested:?} (this prover serves {loaded:?})")]
+    UnsupportedVersion { requested: String, loaded: String },
 }
 
 #[async_trait]
 pub trait ProverClient: Send + Sync {
     async fn prove(&self, input: ProveInput) -> Result<ZkProof, ProverError>;
+
+    /// The protocol version this prover proves for — what a request naming no version resolves to.
+    ///
+    /// Defaults to the current (Level-A) version: the [`StubProver`] stands in for the real prover on
+    /// the current version, so the default is right for it.
+    fn version(&self) -> &'static str {
+        artifact::LEVEL_A_V1
+    }
+
+    /// Check that this prover can serve `requested`.
+    ///
+    /// `None` (the caller named no version) always resolves to [`ProverClient::version`] — the
+    /// back-compat contract for every pre-M7 caller. A named version must be the one this prover
+    /// loaded; anything else fails closed rather than being proven with the wrong artifacts.
+    fn accepts_version(&self, requested: Option<&str>) -> Result<(), ProverError> {
+        match requested {
+            None => Ok(()),
+            Some(v) if v == self.version() => Ok(()),
+            Some(v) => Err(ProverError::UnsupportedVersion {
+                requested: v.to_string(),
+                loaded: self.version().to_string(),
+            }),
+        }
+    }
 }
 
 /// Placeholder prover — NOT a real Groth16 proof. Returns zeroed (a,b,c) and echoes the public
@@ -101,14 +131,10 @@ pub struct ArkProver {
 }
 
 impl ArkProver {
-    /// Load the circuit artifacts from `build_dir` (the `circuits/build` directory), enforcing the
-    /// crate-pinned testnet zkey hash.
+    /// Load the CURRENT (Level-A) version's circuit artifacts from `build_dir` (the `circuits/build`
+    /// directory), enforcing that version's pinned zkey hash.
     pub fn load(build_dir: impl AsRef<std::path::Path>) -> Result<Self, ProverError> {
-        let inner =
-            ArkInnerProver::load(build_dir).map_err(|e| ProverError::Unavailable(e.to_string()))?;
-        Ok(ArkProver {
-            inner: Arc::new(inner),
-        })
+        Self::load_versioned(build_dir, artifact::current(), None)
     }
 
     /// Like [`ArkProver::load`] but pins an explicit expected zkey SHA-256 (lowercase hex), so a
@@ -118,9 +144,26 @@ impl ArkProver {
         build_dir: impl AsRef<std::path::Path>,
         expected_zkey_sha256_hex: &str,
     ) -> Result<Self, ProverError> {
-        let inner = ArkInnerProver::load_with_expected_zkey(build_dir, expected_zkey_sha256_hex)
-            .map_err(|e| ProverError::Unavailable(e.to_string()))?;
-        Ok(ArkProver { inner: Arc::new(inner) })
+        Self::load_versioned(build_dir, artifact::current(), Some(expected_zkey_sha256_hex))
+    }
+
+    /// Load the artifacts a named protocol version pins, optionally overriding its zkey hash.
+    ///
+    /// Resolve `descriptor` from a version key with [`artifact::resolve`] (`None` ⇒ the current
+    /// version). Nothing is fetched: `build_dir` must already hold the files.
+    pub fn load_versioned(
+        build_dir: impl AsRef<std::path::Path>,
+        descriptor: &'static ArtifactDescriptor,
+        expected_zkey_sha256_hex: Option<&str>,
+    ) -> Result<Self, ProverError> {
+        let inner = match expected_zkey_sha256_hex {
+            Some(hex) => ArkInnerProver::load_versioned_with_expected_zkey(build_dir, descriptor, hex),
+            None => ArkInnerProver::load_versioned(build_dir, descriptor),
+        }
+        .map_err(|e| ProverError::Unavailable(e.to_string()))?;
+        Ok(ArkProver {
+            inner: Arc::new(inner),
+        })
     }
 
     /// Direct full-fidelity prove from the complete circuit inputs (used by tests / the real ZK leg).
@@ -137,10 +180,19 @@ impl ArkProver {
     pub fn zkey_hash_hex(&self) -> String {
         self.inner.zkey_hash_hex()
     }
+
+    /// The protocol version whose artifacts this prover loaded.
+    pub fn version(&self) -> &'static str {
+        self.inner.version()
+    }
 }
 
 #[async_trait]
 impl ProverClient for ArkProver {
+    fn version(&self) -> &'static str {
+        self.inner.version()
+    }
+
     async fn prove(&self, input: ProveInput) -> Result<ZkProof, ProverError> {
         let json = input.circuit_input_json.ok_or_else(|| {
             ProverError::Unavailable("real prover requires circuit_input_json".to_string())
