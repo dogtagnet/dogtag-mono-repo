@@ -407,6 +407,10 @@ cargo build --release -p vet-api --features prover --target-dir target/prover
 # production ceremony zkey would be REJECTED at load (hash mismatch -> FATAL) unless you tell it the new
 # hash. Set EXPECTED_ZKEY_SHA256 to your §3 ceremony zkey's sha256 (the value scripts/ceremony.sh finalize
 # printed; also re-vendored into the apps in §2.4). This is a pure config swap, not a code change.
+#
+# WHICH artifact set it loads is version-keyed (PROTOCOL_VERSION). Leave it UNSET: one version exists
+# today ("dogtag-levela/1" = the Level-A set), and unset means exactly that. A version this build cannot
+# prove FATALs at boot rather than falling back. EXPECTED_ZKEY_SHA256 overrides the served version's pin.
 CIRCUITS_BUILD_DIR=<path to circuits/build with the ceremony zkey+graph> \
 EXPECTED_ZKEY_SHA256=<sha256 of the §3 ceremony verification_final.zkey> \
 ROAX_RPC=<NEW_RPC> \

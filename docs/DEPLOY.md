@@ -154,7 +154,8 @@ Production requirements:
   random beacon** (e.g. a future drand round / block hash) so no single party knows the toxic waste.
 - **Publish** the full contribution transcript and **pin the `.zkey` hash** — the prover binary itself
   **enforces** it at load (fail-closed on a hash mismatch — audit M4), not just CI. The crate's hardcoded
-  pin is the testnet hash, so a production ceremony zkey needs `EXPECTED_ZKEY_SHA256` set to its sha256;
+  pin is the testnet hash of the **Level-A** artifact version (each version pins its own), so a production
+  ceremony zkey needs `EXPECTED_ZKEY_SHA256` set to its sha256;
   the API loads the real prover only when `CIRCUITS_BUILD_DIR` is set.
 - **Generate** `Groth16Verifier.sol` via `snarkjs zkey export solidityverifier`, deploy it, then wire
   it through the timelock (§3.2).

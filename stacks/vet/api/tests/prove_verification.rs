@@ -307,6 +307,67 @@ async fn prove_verification_returns_calldata_shape_and_echoes_inputs() {
     }
 }
 
+/// BACK-COMPAT: naming the current version explicitly is identical to naming none.
+///
+/// The pre-M7 request body has no `version` field at all, so "absent ⇒ current" is the contract every
+/// existing caller (the phone's POST) depends on. Both forms must reach the same prover and produce
+/// the same public signals.
+#[tokio::test]
+async fn prove_verification_explicit_current_version_matches_absent_version() {
+    let (router, _is_real) = router_with_best_prover();
+
+    let (absent_body, _) = fixed_request();
+    let (mut explicit_body, _) = fixed_request();
+    explicit_body["version"] = serde_json::json!(dogtag_prover::artifact::LEVEL_A_V1);
+
+    let (absent_status, absent) =
+        common::call(&router, "POST", "/prove-verification", None, Some(absent_body)).await;
+    let (explicit_status, explicit) = common::call(
+        &router,
+        "POST",
+        "/prove-verification",
+        None,
+        Some(explicit_body),
+    )
+    .await;
+
+    assert_eq!(absent_status, axum::http::StatusCode::OK, "resp: {absent}");
+    assert_eq!(
+        explicit_status,
+        axum::http::StatusCode::OK,
+        "naming the current version must be accepted: {explicit}"
+    );
+    // The public signals are a deterministic function of the inputs (the proof's a/b/c are not —
+    // Groth16 is randomised), so `pub` is what parity is asserted on.
+    assert_eq!(
+        absent["pub"], explicit["pub"],
+        "absent and explicit-current version must prove the same thing"
+    );
+}
+
+/// FAIL-CLOSED: a version this service did not load is refused, not proven with the artifacts it has.
+///
+/// Silently proving a v2 request with v1's key would return a proof the v2 verifier rejects — a
+/// confusing failure far from the cause. The refusal is a 4xx: the caller asked for something this
+/// service cannot do.
+#[tokio::test]
+async fn prove_verification_unknown_version_is_refused() {
+    let (router, _is_real) = router_with_best_prover();
+    let (mut body, _) = fixed_request();
+    body["version"] = serde_json::json!("dogtag-levelb/1");
+
+    let (status, resp) = common::call(&router, "POST", "/prove-verification", None, Some(body)).await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "an unserveable version must be refused, not proven with the loaded key: {resp}"
+    );
+    assert!(
+        resp.to_string().contains("dogtag-levelb/1"),
+        "the error must name the version that was refused: {resp}"
+    );
+}
+
 /// Real-prover full assertion + (behind DOGTAG_LIVE_VERIFIER=1) on-chain cast-verify against the
 /// LIVE Groth16Verifier. Self-skips when the circuit artifacts are absent or `cast` is unavailable.
 #[tokio::test]

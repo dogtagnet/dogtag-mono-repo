@@ -13,9 +13,19 @@
 //!
 //! # API
 //!
-//! - [`Prover::load`] — load the r1cs + wasm witness calculator + zkey ONCE.
+//! - [`Prover::load`] — load the r1cs + wasm witness calculator + zkey ONCE, for the CURRENT version.
+//! - [`Prover::load_versioned`] — the same, for an explicitly named protocol version.
 //! - [`Prover::prove`] — generate a [`Groth16Output`] per request.
 //! - [`Prover::zkey_hash`] — SHA-256 of the zkey file (pinned at load, impl §11.8(f)).
+//!
+//! # Version-keyed artifacts
+//!
+//! Which files a prover loads, and the hashes it pins them to, come from an
+//! [`artifact::ArtifactDescriptor`] resolved by protocol version ([`artifact::resolve`]) rather than
+//! from hard-coded filenames. The Level-A set ([`artifact::LEVEL_A_V1_DESCRIPTOR`]) is the seed entry
+//! and the default: [`Prover::load`] is [`Prover::load_versioned`] against [`artifact::current`], so
+//! callers naming no version behave exactly as before. See [`artifact`] for the model — including why
+//! the zkey hash and the VK hash are distinct fields, and why nothing is fetched here.
 //!
 //! # ark version isolation
 //!
@@ -41,19 +51,34 @@ use ark_groth16::{Groth16, ProvingKey};
 use num_bigint::BigInt;
 use sha2::{Digest, Sha256};
 
+pub mod artifact;
+
+pub use artifact::ArtifactDescriptor;
+
 /// `N` — maximum number of leaves the circuit supports (`DogTagVerification(24, 5)`).
+///
+/// This is the CURRENT (Level-A) version's width, and the width [`ProveInputs`]' fixed-size arrays
+/// carry. Per-version it is [`ArtifactDescriptor::max_leaves`].
 pub const N: usize = 24;
 
 /// Number of public signals the circuit exposes:
 /// `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]`.
+///
+/// This is the CURRENT (Level-A) version's count, and the width of
+/// [`Groth16Output::public_signals`]. Per-version it is [`ArtifactDescriptor::num_public`], which
+/// [`Prover::load_versioned`] checks against this width.
 pub const NUM_PUBLIC: usize = 7;
 
-/// Expected SHA-256 (lowercase hex) of the pinned `verification_final.zkey` — the testnet self-run
-/// ceremony output recorded in `contracts/deployments/roax.json` (`_zk_ceremony`) and
+/// Expected SHA-256 (lowercase hex) of the CURRENT (Level-A) `verification_final.zkey` — the testnet
+/// self-run ceremony output recorded in `contracts/deployments/roax.json` (`_zk_ceremony`) and
 /// `docs/CEREMONY_TRANSCRIPT.md`. [`Prover::load`] refuses any zkey whose hash differs, so a swapped
 /// or corrupt proving key fails closed instead of silently producing proofs against the wrong key
 /// (audit M4). A deployment pinning a DIFFERENT zkey (e.g. a production ceremony output) loads it via
 /// [`Prover::load_with_expected_zkey`].
+///
+/// This is the Level-A version's pin specifically, not "the" pin: it is the value of
+/// [`artifact::LEVEL_A_V1_DESCRIPTOR`]'s [`artifact::ZkeyArtifact::sha256`], and each further version
+/// pins its own. It is NOT the VK hash — see [`artifact`].
 pub const EXPECTED_ZKEY_SHA256_HEX: &str =
     "9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992";
 
@@ -76,8 +101,18 @@ pub enum ProverError {
     Verify,
     #[error("zkey hash mismatch: expected {expected}, got {got}")]
     ZkeyHashMismatch { expected: String, got: String },
+    #[error("{artifact} hash mismatch: expected {expected}, got {got}")]
+    ArtifactHashMismatch {
+        artifact: String,
+        expected: String,
+        got: String,
+    },
     #[error("unexpected public-signal count: got {got}, expected {expected}")]
     PublicSignals { got: usize, expected: usize },
+    /// A caller named a protocol version this build has no artifact set for. Fail-closed: never
+    /// substitute another version's artifacts (`artifact::resolve`).
+    #[error("unknown protocol version {version:?} (known: {})", known.join(", "))]
+    UnknownVersion { version: String, known: Vec<String> },
 }
 
 /// Named inputs mirroring the circuit's private signals.
@@ -135,6 +170,7 @@ pub struct Groth16Output {
 /// cached paths. The expensive zkey/proving-key parse happens once at load.
 pub struct Prover {
     build_dir: PathBuf,
+    descriptor: &'static ArtifactDescriptor,
     wasm_path: PathBuf,
     r1cs_path: PathBuf,
     proving_key: ProvingKey<Bn254>,
@@ -142,15 +178,17 @@ pub struct Prover {
 }
 
 impl Prover {
-    /// Load the circuit artifacts from `build_dir` (the `circuits/build` directory), enforcing the
-    /// pinned [`EXPECTED_ZKEY_SHA256_HEX`] — a zkey whose hash differs is rejected (audit M4).
+    /// Load the CURRENT (Level-A) version's artifacts from `build_dir` (the `circuits/build`
+    /// directory), enforcing the pinned [`EXPECTED_ZKEY_SHA256_HEX`] — a zkey whose hash differs is
+    /// rejected (audit M4).
     ///
-    /// Expects:
+    /// Equivalent to [`Prover::load_versioned`] against [`artifact::current`], which is where the
+    /// filenames come from:
     /// - `verification.r1cs`
     /// - `verification_js/verification.wasm`
     /// - `verification_final.zkey`
     pub fn load(build_dir: impl AsRef<Path>) -> Result<Self, ProverError> {
-        Self::load_with_expected_zkey(build_dir, EXPECTED_ZKEY_SHA256_HEX)
+        Self::load_inner(build_dir, artifact::current(), None)
     }
 
     /// Like [`Prover::load`] but pins an explicit expected zkey SHA-256 (lowercase hex). Use this when
@@ -161,10 +199,67 @@ impl Prover {
         build_dir: impl AsRef<Path>,
         expected_zkey_sha256_hex: &str,
     ) -> Result<Self, ProverError> {
+        Self::load_inner(build_dir, artifact::current(), Some(expected_zkey_sha256_hex))
+    }
+
+    /// Load the artifacts a specific protocol version names, from `build_dir`.
+    ///
+    /// The descriptor supplies the filenames AND the hashes: every pinned file is verified before it
+    /// is parsed, so a swapped artifact fails closed regardless of which version asked for it. Resolve
+    /// a descriptor from a version key with [`artifact::resolve`].
+    ///
+    /// Nothing is fetched — `build_dir` must already hold the files (see [`artifact`]).
+    pub fn load_versioned(
+        build_dir: impl AsRef<Path>,
+        descriptor: &'static ArtifactDescriptor,
+    ) -> Result<Self, ProverError> {
+        Self::load_inner(build_dir, descriptor, None)
+    }
+
+    /// [`Prover::load_versioned`] with the version's zkey pin overridden by an explicit expected
+    /// SHA-256 (the deployment-config escape hatch [`Prover::load_with_expected_zkey`] offers, for a
+    /// named version).
+    pub fn load_versioned_with_expected_zkey(
+        build_dir: impl AsRef<Path>,
+        descriptor: &'static ArtifactDescriptor,
+        expected_zkey_sha256_hex: &str,
+    ) -> Result<Self, ProverError> {
+        Self::load_inner(build_dir, descriptor, Some(expected_zkey_sha256_hex))
+    }
+
+    /// The one real load path every public loader composes from.
+    ///
+    /// `expected_zkey_override`: `None` uses the descriptor's own pin; `Some(hex)` replaces it (the
+    /// deployment override). Either way the check is mandatory — there is no unpinned zkey load.
+    fn load_inner(
+        build_dir: impl AsRef<Path>,
+        descriptor: &'static ArtifactDescriptor,
+        expected_zkey_override: Option<&str>,
+    ) -> Result<Self, ProverError> {
+        // The output's public-signal array is a fixed NUM_PUBLIC width, so a version whose circuit
+        // exposes a different count cannot be formatted by this build. Refuse at load rather than
+        // silently truncating/padding `pub` at prove time.
+        if descriptor.num_public != NUM_PUBLIC {
+            return Err(ProverError::Load(format!(
+                "version {} exposes {} public signals, but this build formats {NUM_PUBLIC}",
+                descriptor.version, descriptor.num_public
+            )));
+        }
+
+        // `ProveInputs`' leaf arrays are a fixed N width, so a version whose circuit is wider or
+        // narrower cannot be fed by this build either. Refuse at load rather than let the mismatch
+        // surface as an obscure witness-generation failure far from its cause.
+        if descriptor.max_leaves != N {
+            return Err(ProverError::Load(format!(
+                "version {} proves up to {} leaves, but this build feeds {N}",
+                descriptor.version, descriptor.max_leaves
+            )));
+        }
+
         let build_dir = build_dir.as_ref().to_path_buf();
-        let r1cs_path = build_dir.join("verification.r1cs");
-        let wasm_path = build_dir.join("verification_js").join("verification.wasm");
-        let zkey_path = build_dir.join("verification_final.zkey");
+        let r1cs_path = build_dir.join(descriptor.r1cs.rel_path);
+        let wasm_path = build_dir.join(descriptor.wasm.rel_path);
+        let zkey_path = build_dir.join(descriptor.zkey.rel_path);
 
         for p in [&r1cs_path, &wasm_path, &zkey_path] {
             if !p.exists() {
@@ -173,6 +268,7 @@ impl Prover {
         }
 
         // Pin the zkey hash at load (impl §11.8(f)) and ENFORCE it: reject a swapped/corrupt key.
+        let expected_zkey_sha256_hex = expected_zkey_override.unwrap_or(descriptor.zkey.sha256);
         let zkey_bytes = std::fs::read(&zkey_path).map_err(|e| ProverError::Io {
             path: zkey_path.display().to_string(),
             source: e,
@@ -188,6 +284,12 @@ impl Prover {
             });
         }
 
+        // The witness artifacts carry the same discipline as the zkey: verify before parse, so the
+        // constraint system / witness calculator a proof is built from is the one the version pinned.
+        // An unpinned file (`sha256: None`) is skipped — see `artifact::ArtifactFile`.
+        verify_pinned_file(&r1cs_path, &descriptor.r1cs)?;
+        verify_pinned_file(&wasm_path, &descriptor.wasm)?;
+
         // Parse the proving key once.
         let mut zkey_reader = std::io::Cursor::new(zkey_bytes);
         let (proving_key, _matrices) =
@@ -199,6 +301,7 @@ impl Prover {
 
         Ok(Self {
             build_dir,
+            descriptor,
             wasm_path,
             r1cs_path,
             proving_key,
@@ -209,6 +312,16 @@ impl Prover {
     /// The build directory the prover was loaded from.
     pub fn build_dir(&self) -> &Path {
         &self.build_dir
+    }
+
+    /// The artifact set this prover loaded — its version key, circuit id, pins and signal layout.
+    pub fn descriptor(&self) -> &'static ArtifactDescriptor {
+        self.descriptor
+    }
+
+    /// The protocol version key this prover proves for (e.g. [`artifact::LEVEL_A_V1`]).
+    pub fn version(&self) -> &'static str {
+        self.descriptor.version
     }
 
     /// SHA-256 of the `verification_final.zkey` file, pinned at load (impl §11.8(f)).
@@ -240,10 +353,10 @@ impl Prover {
             .get_public_inputs()
             .ok_or_else(|| ProverError::Prove("circuit produced no public inputs".into()))?;
 
-        if public_inputs.len() != NUM_PUBLIC {
+        if public_inputs.len() != self.descriptor.num_public {
             return Err(ProverError::PublicSignals {
                 got: public_inputs.len(),
-                expected: NUM_PUBLIC,
+                expected: self.descriptor.num_public,
             });
         }
 
@@ -262,6 +375,32 @@ impl Prover {
 
         Ok(format_output(&proof, &public_inputs))
     }
+}
+
+/// Verify a version-pinned artifact file against its hash, BEFORE anything parses it.
+///
+/// An [`artifact::ArtifactFile`] with `sha256: None` publishes no pin, so there is nothing to check
+/// and the file is accepted (the zkey is not routed through here — its pin is mandatory and checked
+/// inline in [`Prover::load_inner`]).
+fn verify_pinned_file(path: &Path, file: &artifact::ArtifactFile) -> Result<(), ProverError> {
+    let Some(expected) = file.sha256 else {
+        return Ok(());
+    };
+    let bytes = std::fs::read(path).map_err(|e| ProverError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let got_hex = hex::encode::<[u8; 32]>(hasher.finalize().into());
+    if !got_hex.eq_ignore_ascii_case(expected) {
+        return Err(ProverError::ArtifactHashMismatch {
+            artifact: file.rel_path.to_string(),
+            expected: expected.to_ascii_lowercase(),
+            got: got_hex,
+        });
+    }
+    Ok(())
 }
 
 /// Convert a BN254 base/scalar field element to a base-10 decimal string.

@@ -66,8 +66,10 @@ bash scripts/ceremony.sh finalize build/ceremony_final.zkey
 Publish the full transcript (every `ceremony_*.zkey`, contributor names, the beacon value + source) so
 anyone can reproduce `snarkjs zkey verify`. **Pin the sha256** — the prover **enforces** it at load
 (fail-closed on mismatch, audit M4). The crate's hardcoded `EXPECTED_ZKEY_SHA256_HEX` is the testnet
-hash, so a production prover-service running this ceremony key must set the **`EXPECTED_ZKEY_SHA256`** env
-var to the new sha256 (or bump the crate constant) — otherwise it FATALs on a hash mismatch.
+hash - it is the **Level-A** artifact version's pin (`crates/dogtag-prover-rs/src/artifact.rs`; each
+version pins its own), so a production prover-service running this ceremony key must set the
+**`EXPECTED_ZKEY_SHA256`** env var to the new sha256 (or bump the crate constant) — otherwise it FATALs
+on a hash mismatch.
 
 ## Deploy & wire the verifier (on-chain)
 

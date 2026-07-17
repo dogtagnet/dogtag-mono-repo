@@ -28,7 +28,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
-- `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service.
+- `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service. Its artifacts are **version-keyed** (`src/artifact.rs`) — see "Version-keyed proving artifacts".
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
 - `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **canonical Level-B M5 stack** is deployed + bytecode/wiring verified: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`. It is additive and **not live**: the Level-A `DogTagSBT` + `VerificationRegistry` still serve every consumer until M7. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable Level-A SBT; see "M5 as-built" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
@@ -168,9 +168,31 @@ The operator-facing **handle** is a small integer. The **on-chain** dogTagId min
 - Demo vs prod is gated by `DEMO_MODE` / `VITE_DEMO_MODE` (set = demo/local, unset = production).
 - Both backends call `startup::validate_production_secrets(...)` at boot: in production they **refuse to start** if `OPERATOR_PASSWORD`/`ADMIN_PASSWORD`/`CENTRAL_HMAC_SECRET` (vet) or `ADMIN_PASSWORD`/`ADMIN_PRIVATE_KEY` (admin) are unset or equal to the known dev defaults. Set `DEMO_MODE=1` to keep the convenient demo defaults.
 - vet-api: if `CIRCUITS_BUILD_DIR` is set but the real `ArkProver` fails to load, the process **exits** (it must not silently degrade to `StubProver`, which emits zeroed proofs the chain rejects). Unset `CIRCUITS_BUILD_DIR` still uses `StubProver` (demo / on-device-proof production model).
-- The prover **enforces a pinned zkey sha256** (`dogtag-prover-rs::EXPECTED_ZKEY_SHA256_HEX`, the testnet ceremony hash): `Prover::load` rejects any zkey whose hash differs, so a swapped/corrupt key fails closed instead of proving against the wrong key (audit M4). A deployment shipping a **different** zkey (a production ceremony output) sets the `EXPECTED_ZKEY_SHA256` env var on vet-api (→ `load_with_expected_zkey`) — a config swap, not a code change. Leave it unset to enforce the bundled testnet hash.
+- The prover **enforces a pinned zkey sha256** (`dogtag-prover-rs::EXPECTED_ZKEY_SHA256_HEX`, the testnet ceremony hash — now also the Level-A descriptor's pin, see "Version-keyed proving artifacts"): `Prover::load` rejects any zkey whose hash differs, so a swapped/corrupt key fails closed instead of proving against the wrong key (audit M4). The r1cs/wasm are pinned + verified the same way (before parse). A deployment shipping a **different** zkey (a production ceremony output) sets the `EXPECTED_ZKEY_SHA256` env var on vet-api (→ `load_with_expected_zkey`) — a config swap, not a code change. Leave it unset to enforce the bundled testnet hash.
 - **Shared JWT signing key** (`SHARE_JWT_SIGNING_KEY`, 32-byte hex; vet + admin): the Ed25519 share/record JWT key. MUST be identical across restarts and horizontally-scaled instances or tokens break (audit L4). `load_jwt_keys` requires it (fail-closed) in production (same `DEMO_MODE` signal as the secret guard above), and uses an ephemeral key + warning in demo. `JwtKeys::generate()` alone is per-process/ephemeral — never the production path.
 - **Admin password hashing** (`ADMIN_PASSWORD_HASH`, `"<salt_hex>$<hash_hex>"` from `auth::hash_password`; admin): the stored hash `admin_login` verifies against with `auth::verify_password` (audit L4 — replaces the old cosmetic plaintext compare). Optional; unset → the H2-required `ADMIN_PASSWORD` plaintext is hashed once at startup.
+
+## Version-keyed proving artifacts (M7 brick 1)
+
+Which files a prover loads, and the hashes it pins them to, come from a **version-keyed table** rather than hard-coded filenames.
+This is the structure M7's fully-dynamic proving (lock C) plugs fetch into; the brick itself is additive and **fetches nothing**.
+
+- **The model** (`crates/dogtag-prover-rs/src/artifact.rs`): a version key → `ArtifactDescriptor { version, circuit_id, num_public, max_leaves, public_signal_layout, zkey, r1cs, wasm, witness_graph, vk }`.
+  `REGISTRY` holds every version this build can prove; `artifact::resolve(Option<&str>)` looks one up.
+- **One entry today**: `LEVEL_A_V1` (`"dogtag-levela/1"`) — the Level-A set, unchanged. Adding a version = adding a const + a `REGISTRY` line.
+- **`resolve(None)` ⇒ the current (Level-A) version.** This is the back-compat contract: every pre-M7 caller names no version, so it keeps getting exactly what it got before.
+  **A named-but-unknown version FAILS CLOSED** — never fall back to the current artifacts, since a proof built with the wrong key is rejected by that version's verifier (a confusing failure far from the cause).
+- **`zkey.sha256` is NOT the VK hash.** Two different things, deliberately two fields (M7 §3.2; the ZK cross-check calls out the conflation):
+  `ZkeyArtifact::sha256` = the **fetch/integrity pin** of the proving-key file (hashed BEFORE parse, fail-closed, audit M4);
+  `VerifyingKeyIdentity` = **which VK the proof verifies against** (authoritatively the on-chain `Groth16Verifier`, identified by address; `verification_key.json`'s hash is its off-chain identity). The prover never reads that file — the VK it proves with is inside the zkey.
+- **Pins are checked facts, not decorative strings**: `level_a_descriptor_pins_match_the_real_artifacts` hashes the tree's actual artifacts, so a pin that rots fails the test rather than production.
+  The zkey pin is mandatory (the type makes an unpinned zkey unrepresentable); r1cs/wasm are pinned + verified before parse too. `witness_graph` is deliberately **unpinned** (`sha256: None`) — unlike the others it is NOT committed; CI fetches it from `DOGTAG_ARTIFACTS_URL`, so there is no byte-stable in-tree hash.
+- **Loader shape**: `Prover::load_versioned(build_dir, descriptor)` is the real path; `Prover::load` = it against `artifact::current()`, and `load_with_expected_zkey` still overrides just the hash. All compose from one `load_inner`, so every entry point shares the fail-closed check.
+  `load_inner` also **width-guards** the descriptor before any file I/O: this build formats a fixed `NUM_PUBLIC`-wide `pub` vector and feeds fixed `N`-wide leaf arrays, so a version whose `num_public`/`max_leaves` differ is refused at load rather than surfacing as a truncated `pub` or an obscure witness failure. Unreachable today (the one registry entry matches), so it is pinned directly by `load_rejects_a_version_whose_width_this_build_cannot_handle` - it exists for the multi-version state M7 builds toward.
+- **Service** (`stacks/vet/api`): `PROTOCOL_VERSION` env names the version to serve (unset ⇒ current Level-A). The prover is still **eagerly loaded at boot and still `exit(1)`s** on failure — deliberately NOT the lazy per-request map M7 §3.5 sketches, which belongs with the fetch. `POST /prove-verification` takes an **optional** `version`; absent ⇒ the loaded one (the pre-M7 body has no such field), unknown ⇒ 400.
+- **Mobile** (`apps/android/.../data/ZkeyAsset.kt`, `apps/ios/DogTag/ZkeyAsset.swift`): the same version-keyed resolver over the SAME bundled assets — Android still copies from APK assets into `filesDir` (size-matched), iOS still resolves from `Bundle.main`. Both default to the Level-A descriptor, so all existing call sites (`ensure(context)` / `ensureGraph()`) are untouched. Bundled artifacts carry no hash: their integrity is the package signature's, not a runtime check.
+- **The version key `"dogtag-levela/1"` is declared three times** (Rust `artifact::LEVEL_A_V1`, Kotlin `ZkeyAsset.LEVEL_A_V1`, Swift `ZkeyAsset.levelAV1`) — one protocol constant, three languages, no shared source. A typo is a runtime rejection, not a compile error; `ZkeyAssetTest.levelAVersionKeyMatchesTheProtocolConstant` pins the Kotlin side.
+- **NOT here (deliberately)**: no network fetch, no consent entry. A consent version needs the consent *code path* first (M7 P1) — `Prover::prove` pushes Level-A signal names, so a resolvable consent descriptor with no code behind it would be a trap. Per the ZK cross-check, build that entry from `circuits/consent.circom` (NOT the stale Level-A `consent.rs` stub, whose nullifier/M differ), and pin its own zkey AND its own VK.
 
 ## ZK trusted-setup ceremony
 
@@ -254,6 +276,15 @@ maestro test apps/android/maestro/zk_e2e.yaml
   `build-circuit` binary (only `calc-witness`/`cvm-compile`). It is built from
   `circuits/verification.circom` by iden3's `build-circuit` tool. Validate any graph against the
   zkey with `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
+  **Consequence:** a fresh clone/worktree FAILS `prove_parity` with `missing witness graph:
+  circuits/build/verification.graph` until you vendor one — that failure is environmental, not a
+  regression. Past iOS builds leave real copies under
+  `~/Library/Developer/Xcode/DerivedData/DogTag-*/Build/Products/*/DogTag.app/verification.graph`;
+  `cp` one into `circuits/build/` (gitignored) to run the test. **More than one graph is in
+  circulation** — the one that validates against the committed testnet zkey is sha256
+  `81824b2fb5ae8b22570549d572e6af0471bfc9366b2ba25019360cb8449c72b9` (~2 991 853 B); a `cf87364c…`
+  copy also exists and is NOT the one. This is also why the version-keyed descriptor leaves the graph
+  unpinned (see "Version-keyed proving artifacts").
 - **arm64 emulator only** — see above. `Build.SUPPORTED_64_BIT_ABIS` being empty (32-bit-only) routes
   to the remote prover-service instead, which is a different (network) path the self-test does not cover.
 - **Gradle wrapper jar gitignored** — a global `*.jar` ignore drops `gradle-wrapper.jar`. Use system
