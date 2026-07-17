@@ -186,7 +186,8 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `BUSINESS_TYPE` | groomer | run `vet-api` as groomer | `groomer` | `groomer` |
 | `CENTRAL_BASE_URL` | vet, groomer | central api base for HMAC events | `http://localhost:39742` | `https://api.<DOMAIN>` (your admin stack) |
 | `CIRCUITS_BUILD_DIR` | **prover only** | load real ArkProver vs StubProver | `circuits/build` | set **only** on the prover-service (§8) |
-| `EXPECTED_ZKEY_SHA256` | **prover only** | override the crate's pinned testnet zkey hash | unset (enforce testnet hash) | leave **unset** with the bundled testnet zkey; set to the ceremony zkey's sha256 only if you ship a different key (§8) |
+| `EXPECTED_ZKEY_SHA256` | **prover only** | override the pinned testnet zkey hash of the version being served | unset (enforce testnet hash) | leave **unset** with the bundled testnet zkey; set to the ceremony zkey's sha256 only if you ship a different key (§8) |
+| `PROTOCOL_VERSION` | **prover only** | which version-keyed artifact set the real prover loads | unset (the current Level-A set, `dogtag-levela/1`) | leave **unset** - one version exists today; an unknown value is fail-closed at boot (FATAL + exit) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALENDAR_ID` | vet, groomer | Phase-7 calendar OAuth | unset / `primary` | optional |
 
 > **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`, `VERIFICATION_REGISTRY_ADDR`,

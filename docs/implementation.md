@@ -762,8 +762,11 @@ never touches it. Same loaded artifacts as the on-device prover.
 
 ```
 # crates/dogtag-prover-rs — ark-circom + ark-groth16 (pure Rust, integrated witness-gen, no native deps)
-boot:  load circuits/verification.{r1cs,wasm} + the phase-2 verification.zkey ONCE; ENFORCE the pinned
-       .zkey hash (EXPECTED_ZKEY_SHA256_HEX, env-overridable) — a mismatched/corrupt key fails closed (M4)
+boot:  resolve the protocol version -> an ArtifactDescriptor (src/artifact.rs); WHICH files to load and
+       WHICH hashes to pin them to come from it, not from hard-coded filenames. Unnamed version => the
+       current Level-A set ("dogtag-levela/1") = the same artifacts as before; an unknown one fails closed.
+       load that version's .{r1cs,wasm} + phase-2 .zkey ONCE; ENFORCE each pinned hash BEFORE the parse
+       (zkey pin = EXPECTED_ZKEY_SHA256_HEX for Level-A, env-overridable) — mismatched/corrupt fails closed (M4)
 prove({ dogTagId, purpose, relayer, subject, nonce, R, eddsaSig, leafValues, leafSalts, merklePath, babyJubPubKey }):
    witness = build_witness(private:{ leaves/salts/typeTags/keyPathHashes, poseidon merklePath,
                                      consentNonce:nonce, eddsaSig{R8x,R8y,S}, babyJubPubKey{Ax,Ay} },
@@ -785,10 +788,14 @@ record and then submits THAT proof to the groomer itself — so the groomer stil
 # (CIRCUITS_BUILD_DIR set -> a real ArkProver, not the StubProver). The groomer api is built WITHOUT
 # this feature, so it can never be asked to prove. Route is UNAUTHENTICATED by design — anyone may ask
 # for a proof of a record THEY already hold; it discloses nothing the caller didn't already have.
-POST /prove-verification { wrappedDoc, consent, eddsaSig }   # stacks/vet/api/src/routes.rs (prove_verification)
+POST /prove-verification { wrappedDoc, consent, eddsaSig, version? }   # stacks/vet/api/src/routes.rs (prove_verification)
    # wrappedDoc = the stored WrappedDoc (raw salted leaves = the WITNESS; object or stringified)
    # consent    = the §1.10 consent (all 0x.. hex fields)
    # eddsaSig   = { r8xDec, r8yDec, sDec, axHex, ayHex }   # EdDSA-BabyJubjub sig + consent pubkey
+   # version    = OPTIONAL protocol version ("dogtag-levela/1"). ABSENT => the version this service
+   #              loaded (PROTOCOL_VERSION, default Level-A) - the pre-M7 body has no such field, so
+   #              every existing caller keeps working. A version this service did NOT load -> 400,
+   #              never proven with the artifacts it has (the proof would fail that version's verifier).
    circuitInput = assemble_circuit_input(wrappedDoc, consent, eddsaSig)   # the SHARED assembly (below)
    proof = ArkProver.prove(circuitInput)                    # ark-0.6 Arkworks; the SAME prover whose
                                                             #   proofs cast-verify on the live Groth16Verifier
@@ -1914,7 +1921,12 @@ random beacon**; publish the transcript (anyone can `zkey verify`), pin the fina
 ship it in the prover image. The pin is **ENFORCED, not just asserted in CI** (audit M4): the prover
 crate hardcodes the testnet zkey SHA-256 as `EXPECTED_ZKEY_SHA256_HEX` and `Prover::load` **rejects**
 any zkey whose hash differs (fail-closed) — a swapped or corrupt proving key never silently produces
-proofs against the wrong key. A deployment shipping a **different** zkey (a production ceremony output)
+proofs against the wrong key. The r1cs + wasm carry the same discipline (pinned, verified before parse).
+Pins are **per protocol version**, not global: each version's artifact set + hashes live in an
+`ArtifactDescriptor` (`crates/dogtag-prover-rs/src/artifact.rs`), and `EXPECTED_ZKEY_SHA256_HEX` is the
+**Level-A** entry's zkey pin specifically. A zkey hash is NOT a VK hash: the descriptor carries the VK
+its proofs verify against as a separate identity, so the two can never be conflated.
+A deployment shipping a **different** zkey (a production ceremony output)
 loads it via `Prover::load_with_expected_zkey(dir, hash)`; the `vet-api` prover-service exposes this as
 the **`EXPECTED_ZKEY_SHA256`** env var, so a production-ceremony swap is a pure config change (set it to
 the ceremony zkey's sha256) rather than a code edit — leave it unset to enforce the bundled testnet hash. A compromised phase-2 lets a party **forge attestations, not leak data**

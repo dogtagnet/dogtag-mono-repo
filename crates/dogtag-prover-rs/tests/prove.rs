@@ -288,3 +288,42 @@ fn load_rejects_tampered_witness_artifact() {
         Err(other) => panic!("expected ArtifactHashMismatch, got {other:?}"),
     }
 }
+
+/// The load-time width guards reject a version this build cannot feed or format, BEFORE any artifact
+/// is read.
+///
+/// Today's registry has one entry whose widths match, so `resolve` can never hand `load_versioned` a
+/// mismatched descriptor — which is precisely why these guards need a direct test: nothing else
+/// executes them, so a refactor could drop one and every other test would still pass. They exist for
+/// the multi-version state M7 builds toward, where a descriptor's width is no longer guaranteed to be
+/// this build's.
+#[test]
+fn load_rejects_a_version_whose_width_this_build_cannot_handle() {
+    // Paths/pins are irrelevant: the width guards run before any file I/O, so a descriptor pointing
+    // at nothing still reaches them. If a guard were removed the load would fail differently (a
+    // missing-file `Load`), which the message assertions below catch.
+    const BAD_LEAVES: artifact::ArtifactDescriptor = artifact::ArtifactDescriptor {
+        max_leaves: dogtag_prover::N + 1,
+        ..artifact::LEVEL_A_V1_DESCRIPTOR
+    };
+    const BAD_PUBLIC: artifact::ArtifactDescriptor = artifact::ArtifactDescriptor {
+        num_public: NUM_PUBLIC + 1,
+        ..artifact::LEVEL_A_V1_DESCRIPTOR
+    };
+
+    match Prover::load_versioned("/nonexistent-build-dir", &BAD_LEAVES).map(|_| ()) {
+        Err(dogtag_prover::ProverError::Load(msg)) => assert!(
+            msg.contains("leaves") && msg.contains(&(dogtag_prover::N + 1).to_string()),
+            "the error must name the width mismatch, got: {msg}"
+        ),
+        other => panic!("a wider-than-N version must be refused at load, got {other:?}"),
+    }
+
+    match Prover::load_versioned("/nonexistent-build-dir", &BAD_PUBLIC).map(|_| ()) {
+        Err(dogtag_prover::ProverError::Load(msg)) => assert!(
+            msg.contains("public signals"),
+            "the error must name the public-signal mismatch, got: {msg}"
+        ),
+        other => panic!("a version with a different public count must be refused, got {other:?}"),
+    }
+}
