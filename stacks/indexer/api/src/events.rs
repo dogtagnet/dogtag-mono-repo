@@ -28,7 +28,10 @@ pub enum EventType {
     RootIssued,
     /// `DogTagIssuer.RootRevoked(root, by, ts)` — a credential root was invalidated.
     RootRevoked,
-    /// `VerificationRegistry.Verified(dogTagId, relayer, subject, purpose, nullifier, ts)`.
+    /// A registry `Verified` event. Two on-chain shapes map to this one kind: the Level-A
+    /// `VerificationRegistry.Verified(dogTagId, relayer, subject, purpose, nullifier, ts)` and the
+    /// Level-B `VerificationRegistryConsent.Verified(dogTagId, relayer, purpose, nullifier, deadline,
+    /// ts)`. Level-A rows carry `subject`; Level-B rows carry `deadline` and leave `subject` absent.
     Verified,
 }
 
@@ -156,6 +159,10 @@ pub struct IndexedEvent {
     /// The one-time verification nullifier (Verified) — a Poseidon image, unlinkable.
     #[serde(rename = "nullifier", skip_serializing_if = "Option::is_none")]
     pub nullifier: Option<String>,
+    /// The consent deadline (Unix seconds) carried by the Level-B `Verified` only — the validity
+    /// horizon the proof was bound to. `None` for Level-A rows (that event has no deadline).
+    #[serde(rename = "deadline", skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<u64>,
     /// The on-chain `ts` field carried by RootIssued/RootRevoked/Verified (== emit block timestamp).
     #[serde(rename = "onchainTs", skip_serializing_if = "Option::is_none")]
     pub onchain_ts: Option<u64>,

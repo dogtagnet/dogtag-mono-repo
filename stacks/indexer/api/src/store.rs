@@ -253,6 +253,7 @@ mod tests {
             subject: None,
             purpose: None,
             nullifier: None,
+            deadline: None,
             onchain_ts: None,
         }
     }
