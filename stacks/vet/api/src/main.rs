@@ -212,6 +212,10 @@ async fn main() {
         store,
         chain: Arc::new(chain),
         prover,
+        // The Level-B consent prover is loaded LAZILY on the first /prove-consent request (from the
+        // same CIRCUITS_BUILD_DIR the Level-A boot prover uses), so an instance serving Level-A never
+        // refuses to boot for want of consent artifacts (M7 §3.5, fail-closed per request not boot).
+        consent_prover: Arc::new(vet_api::prover::ConsentProver::from_env()),
         calendar,
         central,
         custody: Custody::new(),

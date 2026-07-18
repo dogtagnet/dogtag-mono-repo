@@ -178,10 +178,12 @@ contract CustodialIssuanceTest is Test {
     /// `build_profile_tree` produces the distinct demo root this test stores as `profileRoot`. The demo root
     /// is not itself circuit-proven; that end-to-end prover path belongs to M7. The assertion is genuinely
     /// device-derived rather than a re-assertion of `setUp`'s because the device root DIFFERS from the
-    /// fixture's; the two fixtures deliberately SHARE one dogTagId (424242). Since
-    /// `mintCustodial` is write-once per id, they can therefore never both be minted in the same test: any
-    /// future change that makes `setUp` mint, or that adds `_issueCustodial()` here, MUST first give the
-    /// device witness a distinct id - which moves `R`, so `device-profile-root.json` must be regenerated.
+    /// fixture's. The two fixtures also now carry DIFFERENT dogTagIds: `consent-fixture.json` binds the
+    /// canonical field (`field_of_value(424242)` = 19282...896), while `device-profile-root.json` is still
+    /// keyed by the raw handle 424242 (regenerating it under the canonical field is P6, out of scope here).
+    /// So this test mints its own `deviceTagId` and does not collide with `setUp`'s fixture id; if a future
+    /// change unified the two ids AND both got minted in one test, `mintCustodial`'s write-once guard would
+    /// force `device-profile-root.json` to be regenerated under a distinct id.
     function test_device_built_root_is_what_the_contract_stores_as_profileRoot() public {
         string memory j = vm.readFile("test/device-profile-root.json");
         bytes32 deviceRoot = bytes32(j.readUint(".R"));

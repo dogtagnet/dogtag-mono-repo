@@ -1533,6 +1533,71 @@ async fn prove_verification(
     }))
 }
 
+/// `POST /prove-consent` body — the Level-B consent proving request (M7 P0).
+///
+/// Unlike `/prove-verification` (which assembles the witness server-side from `{wrappedDoc, consent,
+/// eddsaSig}`), the consent witness cannot be assembled without the owner's wallet SEED, and the seed
+/// must never leave the device. So the device assembles the consent circuit input LOCALLY (cheap
+/// field math that runs fine on 32-bit ARM, via `consent_assemble` / the `prove_consent` FFI's
+/// assembly step) and POSTs the assembled `circuitInput`; only the heavy Groth16 prove runs here.
+#[cfg(feature = "prover")]
+#[derive(Deserialize)]
+struct ProveConsentReq {
+    /// The PRE-ASSEMBLED `DogTagConsent(6)` circuit input (the shape
+    /// `dogtag_standard::consent_assemble::consent_circuit_input_value` emits): scalars as decimal
+    /// strings, the three `*Siblings` signals as length-6 arrays.
+    #[serde(rename = "circuitInput")]
+    circuit_input: Value,
+    /// OPTIONAL protocol version. If named it MUST be the Level-B consent version; a different one is
+    /// refused (fail-closed) rather than proven with the consent key. Absent ⇒ the consent version.
+    #[serde(default)]
+    version: Option<String>,
+}
+
+/// `POST /prove-consent` — the TRUSTED CONSENT PROVER SERVICE (M7 P0).
+///
+/// Selects the version-keyed CONSENT artifact set and generates a Groth16 proof for the frozen
+/// `consent.circom` from the device-assembled `circuitInput`. The consent prover is loaded LAZILY on
+/// the first request (from `CIRCUITS_BUILD_DIR`) and is FAIL-CLOSED PER REQUEST: a missing/hash-
+/// mismatched artifact set errors THIS request (503), never boot — so an instance serving Level-A
+/// `/prove-verification` coexists with `/prove-consent` without either blocking the other. Returns
+/// the Solidity calldata `{a, b, c, pub}` with `pub` in the frozen OUTPUT order `[dogTagId, purpose,
+/// relayer, nullifier, R, recordType, deadline]`.
+#[cfg(feature = "prover")]
+async fn prove_consent(State(st): State<AppState>, Json(body): Json<ProveConsentReq>) -> Resp {
+    // The consent route serves ONLY the Level-B consent version; naming another is refused up front.
+    if let Some(v) = body.version.as_deref() {
+        if v != st.consent_prover.version() {
+            return err(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "prover: unsupported version {v:?} (this route serves {:?})",
+                    st.consent_prover.version()
+                ),
+            );
+        }
+    }
+
+    match st.consent_prover.prove(body.circuit_input).await {
+        Ok(proof) => ok(json!({
+            "a": proof.a,
+            "b": proof.b,
+            "c": proof.c,
+            "pub": proof.pub_signals,
+        })),
+        // A malformed device-assembled circuitInput is a CLIENT error — 400, not a 5xx a client
+        // would retry (mirrors the Level-A route's in-route assemble 400).
+        Err(crate::prover::ProverError::BadInput(m)) => {
+            err(StatusCode::BAD_REQUEST, &format!("consent prover: {m}"))
+        }
+        // No consent artifacts on THIS instance (or they failed to load) — fail closed per request.
+        Err(crate::prover::ProverError::Unavailable(m)) => {
+            err(StatusCode::SERVICE_UNAVAILABLE, &format!("consent prover: {m}"))
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, &format!("consent prover: {e}")),
+    }
+}
+
 // --------------------------------------------------------------------------------------------
 // DOG_PROFILE (SBT) issuance — the VET issues dog tags (operator starts a session showing a QR; the
 // device scans, posts its wallet + signature; the vet mints the DOG_PROFILE SBT to that wallet with
@@ -2388,7 +2453,9 @@ pub fn public_router(state: AppState) -> Router {
     // a real ArkProver). The groomer instance is built WITHOUT this feature, so it can never be asked
     // to prove and therefore never sees a witness through this path. See `prove_verification`.
     #[cfg(feature = "prover")]
-    let prove_route = Router::new().route("/prove-verification", post(prove_verification));
+    let prove_route = Router::new()
+        .route("/prove-verification", post(prove_verification))
+        .route("/prove-consent", post(prove_consent));
     #[cfg(not(feature = "prover"))]
     let prove_route = Router::<AppState>::new();
 

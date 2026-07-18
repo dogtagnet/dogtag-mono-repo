@@ -34,18 +34,28 @@ use circom_prover::{
     CircomProver,
 };
 
+use ark_bn254::Fr;
+use ark_ff::PrimeField;
+
+use crate::consent_assemble::{assemble_consent, consent_input_map, ConsentWitness};
 use crate::ffi::FfiError;
 // Reuse the prover-independent assembly (shared with the server proving path).
 use crate::prover_assemble::{assemble, consent_from_json, err, input_map};
-use crate::wrap::WrappedDoc;
+use crate::profile_tree::{AttributeLeaf, SALT_LEN};
+use crate::types::TypeTag;
+use crate::wrap::{scalar_from_packed, WrappedDoc};
 
 // Re-export `EddsaSigInput` at the historical `prover_ffi::EddsaSigInput` path so existing consumers
 // (e.g. the `prove_parity` live regression test, the generated UniFFI bindings) keep working — it
 // now physically lives in `prover_assemble` (shared with the server proving path).
 pub use crate::prover_assemble::EddsaSigInput;
 
-/// Number of public signals the circuit exposes.
+/// Number of public signals the Level-A verification circuit exposes.
 const NUM_PUBLIC: usize = 7;
+
+/// Number of public signals the Level-B consent circuit exposes
+/// (`[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`).
+const NUM_PUBLIC_CONSENT: usize = 7;
 
 // ---------------------------------------------------------------------------------------------
 // Graph witness calculator (`circom-witnesscalc`).
@@ -186,4 +196,310 @@ pub fn prove_verification(
         c,
         pub_signals,
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Level-B CONSENT proving (M7 P0).
+// ---------------------------------------------------------------------------------------------
+
+/// Strip an optional `0x`, hex-decode, and require exactly `M` bytes.
+fn decode_fixed<const M: usize>(label: &str, h: &str) -> Result<[u8; M], FfiError> {
+    let s = h.strip_prefix("0x").unwrap_or(h);
+    let bytes = hex::decode(s).map_err(|e| err(format!("bad {label} hex: {e}")))?;
+    if bytes.len() != M {
+        return Err(FfiError::Invalid(format!(
+            "{label} must be {M} bytes (got {})",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; M];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Parse a 0x.. 32-byte big-endian word into a field element (reduces mod r, like the assembler seams).
+fn field_from_word(label: &str, h: &str) -> Result<Fr, FfiError> {
+    Ok(Fr::from_be_bytes_mod_order(&decode_fixed::<32>(label, h)?))
+}
+
+/// Parse the credential attribute leaves from JSON into [`AttributeLeaf`]s.
+///
+/// Shape: `[{ "keyPath": "credentialSubject.name", "salt": "0x..16B", "tag": 2, "value": "Rex" }, ...]`
+/// (`tag` is the [`TypeTag`] byte; `value` is the raw scalar string the tag interprets). These are the
+/// SAME disclosable attributes `build_profile_tree` folds into `R`, so they MUST match issuance.
+fn parse_attributes(attributes_json: &str) -> Result<Vec<AttributeLeaf>, FfiError> {
+    let arr: Value = serde_json::from_str(attributes_json)
+        .map_err(|e| err(format!("bad attributes json: {e}")))?;
+    let items = arr
+        .as_array()
+        .ok_or_else(|| FfiError::Invalid("attributes must be a JSON array".into()))?;
+    let mut leaves = Vec::with_capacity(items.len());
+    for (i, it) in items.iter().enumerate() {
+        let get = |k: &str| -> Result<&str, FfiError> {
+            it.get(k)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| FfiError::Invalid(format!("attribute[{i}].{k}: missing or not a string")))
+        };
+        let key_path = get("keyPath")?.to_string();
+        let salt = decode_fixed::<SALT_LEN>(&format!("attribute[{i}].salt"), get("salt")?)?;
+        let tag_n = it
+            .get("tag")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| FfiError::Invalid(format!("attribute[{i}].tag: missing or not a number")))?;
+        let tag = TypeTag::from_u8(tag_n as u8)
+            .ok_or_else(|| FfiError::Invalid(format!("attribute[{i}].tag {tag_n} is not a valid TypeTag")))?;
+        let value = scalar_from_packed(tag, get("value")?).map_err(FfiError::from)?;
+        leaves.push(AttributeLeaf {
+            key_path,
+            salt,
+            value,
+        });
+    }
+    Ok(leaves)
+}
+
+/// The owned parts a consent proof needs, parsed from the FFI's string params. Held separately from
+/// [`ConsentWitness`] (which borrows) so the parsing can be unit-tested without proving.
+struct ConsentFfiInputs {
+    seed: Vec<u8>,
+    dog_tag_id_handle: String,
+    owner_address: [u8; 20],
+    attributes: Vec<AttributeLeaf>,
+    purpose: Fr,
+    relayer: [u8; 20],
+    record_type: Fr,
+    deadline: Fr,
+    consent_nonce: Fr,
+}
+
+impl ConsentFfiInputs {
+    /// Borrow the owned parts into a [`ConsentWitness`] the assembler consumes.
+    fn witness(&self) -> ConsentWitness<'_> {
+        ConsentWitness {
+            seed: &self.seed,
+            dog_tag_id_handle: &self.dog_tag_id_handle,
+            owner_address: self.owner_address,
+            attributes: &self.attributes,
+            purpose: self.purpose,
+            relayer: self.relayer,
+            record_type: self.record_type,
+            deadline: self.deadline,
+            consent_nonce: self.consent_nonce,
+        }
+    }
+}
+
+/// Parse the FFI's string params into the owned [`ConsentFfiInputs`] (fail-closed on any bad hex /
+/// length / attribute shape). Kept separate from the prove so it is hermetically testable.
+#[allow(clippy::too_many_arguments)]
+fn parse_consent_ffi_inputs(
+    seed_hex: &str,
+    dog_tag_id_handle: &str,
+    owner_address_hex: &str,
+    attributes_json: &str,
+    purpose_hex: &str,
+    relayer_hex: &str,
+    record_type_hex: &str,
+    consent_nonce_hex: &str,
+    deadline_dec: &str,
+) -> Result<ConsentFfiInputs, FfiError> {
+    let seed = {
+        let s = seed_hex.strip_prefix("0x").unwrap_or(seed_hex);
+        hex::decode(s).map_err(|e| err(format!("bad seed hex: {e}")))?
+    };
+    Ok(ConsentFfiInputs {
+        seed,
+        dog_tag_id_handle: dog_tag_id_handle.to_string(),
+        owner_address: decode_fixed::<20>("ownerAddress", owner_address_hex)?,
+        attributes: parse_attributes(attributes_json)?,
+        purpose: field_from_word("purpose", purpose_hex)?,
+        relayer: decode_fixed::<20>("relayer", relayer_hex)?,
+        record_type: field_from_word("recordType", record_type_hex)?,
+        consent_nonce: field_from_word("consentNonce", consent_nonce_hex)?,
+        deadline: Fr::from(
+            deadline_dec
+                .parse::<u128>()
+                .map_err(|e| err(format!("bad deadline decimal: {e}")))?,
+        ),
+    })
+}
+
+/// Generate a Groth16 proof for the DogTag CONSENT circuit (`consent.circom`, `DogTagConsent(6)`) ON
+/// DEVICE (M7 P0).
+///
+/// Mirrors [`prove_verification`] (same `circom-witnesscalc` GRAPH backend — deliberately not
+/// rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM), but for the Level-B
+/// owner-unlinkable consent circuit: it ASSEMBLES the inputs with [`assemble_consent`] (the canonical
+/// `dogTagId` field is computed once and used for both the circuit input and the `build_profile_tree`
+/// KDF binding), then proves.
+///
+/// - `seed_hex`            — the owner wallet seed (0x..); owner-secret/consent-key/salts derive from it.
+/// - `dog_tag_id_handle`   — the off-chain decimal handle; field-hashed to the canonical `dogTagId`.
+/// - `owner_address_hex`   — 0x.. 20-byte owner address (the owner-address reserved leaf value).
+/// - `attributes_json`     — the disclosable credential attributes (see [`parse_attributes`]); MUST
+///   match issuance so the rebuilt `R` equals the minted `profileRoot`.
+/// - `purpose_hex` / `record_type_hex` / `consent_nonce_hex` — 0x.. 32-byte field words.
+/// - `relayer_hex`         — 0x.. 20-byte relayer address (range-checked `< 2^160` by the circuit).
+/// - `deadline_dec`        — the consent expiry as a decimal string.
+/// - `zkey_path` / `graph_path` — `consent_final.zkey` + `consent.graph` (bundled/fetched app assets).
+///
+/// Returns the proof as Solidity calldata plus the 7 public signals in the FROZEN OUTPUT order
+/// `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]` (all decimal).
+#[allow(clippy::too_many_arguments)]
+#[uniffi::export]
+pub fn prove_consent(
+    seed_hex: String,
+    dog_tag_id_handle: String,
+    owner_address_hex: String,
+    attributes_json: String,
+    purpose_hex: String,
+    relayer_hex: String,
+    record_type_hex: String,
+    consent_nonce_hex: String,
+    deadline_dec: String,
+    zkey_path: String,
+    graph_path: String,
+) -> Result<ProofFfi, FfiError> {
+    let parsed = parse_consent_ffi_inputs(
+        &seed_hex,
+        &dog_tag_id_handle,
+        &owner_address_hex,
+        &attributes_json,
+        &purpose_hex,
+        &relayer_hex,
+        &record_type_hex,
+        &consent_nonce_hex,
+        &deadline_dec,
+    )?;
+
+    let inp = assemble_consent(&parsed.witness())?;
+    let input_json = serde_json::to_string(&consent_input_map(&inp))
+        .map_err(|e| err(format!("serialize consent circuit input: {e}")))?;
+
+    // Same graph-witness plumbing as `prove_verification` (cached per path, read on circom-prover's
+    // own thread through the process-global cell).
+    load_graph(&graph_path)?;
+
+    let proof = CircomProver::prove(
+        ProofLib::Arkworks,
+        WitnessFn::CircomWitnessCalc(graph_witness),
+        input_json,
+        zkey_path,
+    )
+    .map_err(|e| err(format!("circom-prover prove consent: {e}")))?;
+
+    let pub_signals: Vec<String> = proof.pub_inputs.0.iter().map(|b| b.to_string()).collect();
+    if pub_signals.len() != NUM_PUBLIC_CONSENT {
+        return Err(FfiError::Invalid(format!(
+            "unexpected consent public-signal count: got {}, expected {NUM_PUBLIC_CONSENT}",
+            pub_signals.len()
+        )));
+    }
+
+    let (a_t, b_t, c_t) = proof.proof.as_tuple();
+    let a = vec![a_t.0.to_string(), a_t.1.to_string()];
+    let c = vec![c_t.0.to_string(), c_t.1.to_string()];
+    let b = vec![
+        vec![b_t.0[0].to_string(), b_t.0[1].to_string()],
+        vec![b_t.1[0].to_string(), b_t.1[1].to_string()],
+    ];
+
+    Ok(ProofFfi {
+        a,
+        b,
+        c,
+        pub_signals,
+    })
+}
+
+#[cfg(test)]
+mod consent_tests {
+    use super::*;
+    use crate::types::TypedScalar;
+
+    fn word32(hi: u64) -> String {
+        let mut w = [0u8; 32];
+        w[24..].copy_from_slice(&hi.to_be_bytes());
+        format!("0x{}", hex::encode(w))
+    }
+
+    /// The FFI param parsing produces exactly the witness a caller would build in-Rust: parse the
+    /// string params, assemble, and assert the resulting `R` / canonical `dogTagId` match a directly
+    /// constructed [`ConsentWitness`] with the same values. Hermetic — no proving, no graph.
+    #[test]
+    fn parse_consent_ffi_inputs_round_trips_to_the_same_witness() {
+        let seed = b"ffi parse test wallet seed - TEST MATERIAL ONLY".to_vec();
+        let owner_address = [0xabu8; 20];
+        let salt = [7u8; SALT_LEN];
+        let attributes_json = format!(
+            r#"[{{"keyPath":"credentialSubject.name","salt":"0x{}","tag":2,"value":"Rex"}}]"#,
+            hex::encode(salt)
+        );
+
+        let parsed = parse_consent_ffi_inputs(
+            &format!("0x{}", hex::encode(&seed)),
+            "424242",
+            &format!("0x{}", hex::encode(owner_address)),
+            &attributes_json,
+            &word32(7),
+            "0x1111111111111111111111111111111111111111",
+            &word32(19),
+            &word32(99),
+            "1893456000",
+        )
+        .expect("parse consent ffi inputs");
+
+        let from_ffi = assemble_consent(&parsed.witness()).expect("assemble from parsed");
+
+        // A directly-built witness with the SAME values must assemble identically.
+        let direct_attrs = vec![AttributeLeaf {
+            key_path: "credentialSubject.name".to_string(),
+            salt,
+            value: TypedScalar::Str("Rex".to_string()),
+        }];
+        let direct = assemble_consent(&ConsentWitness {
+            seed: &seed,
+            dog_tag_id_handle: "424242",
+            owner_address,
+            attributes: &direct_attrs,
+            purpose: Fr::from(7u64),
+            relayer: [0x11u8; 20],
+            record_type: Fr::from(19u64),
+            deadline: Fr::from(1_893_456_000u64),
+            consent_nonce: Fr::from(99u64),
+        })
+        .expect("assemble direct");
+
+        assert_eq!(from_ffi.root, direct.root, "parsed witness must bind the same R");
+        assert_eq!(from_ffi.dog_tag_id_field, direct.dog_tag_id_field);
+        assert_eq!(from_ffi.dog_tag_id, direct.dog_tag_id);
+        assert_eq!(from_ffi.nullifier, direct.nullifier);
+    }
+
+    /// Fail-closed parsing: bad length, an invalid attribute tag, and a bad deadline are all rejected.
+    #[test]
+    fn parse_consent_ffi_inputs_is_fail_closed() {
+        let ok_addr = format!("0x{}", "ab".repeat(20));
+        let parse = |over: &str| -> Result<ConsentFfiInputs, FfiError> {
+            parse_consent_ffi_inputs(
+                "0xdeadbeef",
+                "1",
+                if over == "addr" { "0x00" } else { &ok_addr },
+                if over == "attr_tag" {
+                    r#"[{"keyPath":"k","salt":"0x00000000000000000000000000000000","tag":9,"value":"v"}]"#
+                } else {
+                    "[]"
+                },
+                &word32(1),
+                if over == "relayer" { "0xff" } else { "0x1111111111111111111111111111111111111111" },
+                &word32(1),
+                &word32(1),
+                if over == "deadline" { "not-a-number" } else { "1" },
+            )
+        };
+        assert!(parse("ok").is_ok(), "the baseline inputs must parse");
+        for bad in ["addr", "attr_tag", "relayer", "deadline"] {
+            assert!(parse(bad).is_err(), "the `{bad}` mutation must be rejected");
+        }
+    }
 }

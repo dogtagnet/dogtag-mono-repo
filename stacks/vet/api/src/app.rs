@@ -66,6 +66,10 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub chain: Arc<dyn ChainClient>,
     pub prover: Arc<dyn ProverClient>,
+    /// The Level-B consent prover (M7 P0), lazily loaded per request (fail-closed per request, not at
+    /// boot — see [`crate::prover::ConsentProver`]). `disabled()` on instances that do not serve
+    /// `/prove-consent`; `from_env()` (reads `CIRCUITS_BUILD_DIR`) on the prover-service.
+    pub consent_prover: Arc<crate::prover::ConsentProver>,
     /// Google Calendar provider (real `GoogleCalendar` in prod, `MockCalendar` in tests).
     pub calendar: Arc<dyn CalendarProvider>,
     /// the appointment-events callback to central (real `ReqwestCentralClient` / mock in tests).

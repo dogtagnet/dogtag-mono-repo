@@ -143,6 +143,41 @@ pub struct ProveInputs {
     pub s: String,
 }
 
+/// Inclusion-path depth for the Level-B consent circuit — `component main = DogTagConsent(6)`.
+pub const CONSENT_DEPTH: usize = 6;
+
+/// Named inputs mirroring the Level-B **consent** circuit's private signals (`DogTagConsent(6)`).
+///
+/// Every value is a decimal string (a base-10 field element). The three inclusion paths are
+/// front-packed: `*_siblings[0..*_path_len]` are the real siblings (leaf→root order), the tail is
+/// zero-padded to [`CONSENT_DEPTH`], exactly as `consent.circom`'s `MerkleInclusion` consumes them.
+/// This is the shape the SDK's `consent_assemble::consent_circuit_input_value` emits.
+#[derive(Debug, Clone)]
+pub struct ConsentProveInputs {
+    pub dog_tag_id: String,
+    pub purpose: String,
+    pub relayer: String,
+    pub record_type: String,
+    pub deadline: String,
+    pub consent_nonce: String,
+    pub owner_address: String,
+    pub owner_secret: String,
+    pub ax: String,
+    pub ay: String,
+    pub r8x: String,
+    pub r8y: String,
+    pub s: String,
+    pub owner_salt: String,
+    pub key_salt: String,
+    pub secret_salt: String,
+    pub owner_siblings: [String; CONSENT_DEPTH],
+    pub owner_path_len: String,
+    pub key_siblings: [String; CONSENT_DEPTH],
+    pub key_path_len: String,
+    pub secret_siblings: [String; CONSENT_DEPTH],
+    pub secret_path_len: String,
+}
+
 /// A Groth16 proof formatted as the on-chain Solidity calldata expects.
 ///
 /// - `a` / `c` are G1 points `[x, y]`.
@@ -246,14 +281,18 @@ impl Prover {
             )));
         }
 
-        // `ProveInputs`' leaf arrays are a fixed N width, so a version whose circuit is wider or
-        // narrower cannot be fed by this build either. Refuse at load rather than let the mismatch
-        // surface as an obscure witness-generation failure far from its cause.
-        if descriptor.max_leaves != N {
-            return Err(ProverError::Load(format!(
-                "version {} proves up to {} leaves, but this build feeds {N}",
-                descriptor.version, descriptor.max_leaves
-            )));
+        // The Level-A `ProveInputs`' leaf arrays are a fixed N width, so a version that DECLARES a
+        // fixed leaf-array width (`max_leaves: Some(_)`) but a different one cannot be fed by that
+        // path. Refuse at load rather than let the mismatch surface as an obscure witness-generation
+        // failure far from its cause. A circuit with no fixed leaf array (`None`, e.g. the Level-B
+        // consent circuit's depth-6 inclusion paths) is exempt — it is fed by `ConsentProveInputs`.
+        if let Some(max_leaves) = descriptor.max_leaves {
+            if max_leaves != N {
+                return Err(ProverError::Load(format!(
+                    "version {} proves up to {max_leaves} leaves, but this build feeds {N}",
+                    descriptor.version
+                )));
+            }
         }
 
         let build_dir = build_dir.as_ref().to_path_buf();
@@ -334,8 +373,33 @@ impl Prover {
         hex::encode(self.zkey_sha256)
     }
 
-    /// Generate a Groth16 proof for the given inputs.
+    /// Generate a Groth16 proof for the Level-A verification circuit's named inputs.
     pub fn prove(&self, inputs: ProveInputs) -> Result<Groth16Output, ProverError> {
+        self.prove_with(|builder| push_named_inputs(builder, &inputs))
+    }
+
+    /// Generate a Groth16 proof for the Level-B **consent** circuit's named inputs (M7 P0).
+    ///
+    /// The consent circuit (`DogTagConsent(6)`) has a different named-signal set from Level-A — no
+    /// `N`-wide leaf table; three depth-6 inclusion PATHS instead — so it takes [`ConsentProveInputs`]
+    /// and pushes those signals ([`push_consent_inputs`]) rather than [`ProveInputs`]. Everything else
+    /// (fresh `CircomConfig` per call, in-process self-verify, the seven-wide `pub` formatting) is
+    /// shared, because consent is also a seven-public-signal circuit. The prover MUST have been loaded
+    /// with the consent descriptor ([`artifact::LEVEL_B_V1_DESCRIPTOR`]); the pinned zkey/r1cs/wasm
+    /// are what make the self-verify a verification against the frozen consent VK.
+    pub fn prove_consent_inputs(
+        &self,
+        inputs: ConsentProveInputs,
+    ) -> Result<Groth16Output, ProverError> {
+        self.prove_with(|builder| push_consent_inputs(builder, &inputs))
+    }
+
+    /// The shared prove core: build the witness from `push`, prove, self-verify, format. `push`
+    /// supplies the circuit's named inputs (Level-A or consent), which is the only part that differs.
+    fn prove_with<F>(&self, push: F) -> Result<Groth16Output, ProverError>
+    where
+        F: FnOnce(&mut CircomBuilder<Fr>) -> Result<(), ProverError>,
+    {
         // A fresh CircomConfig per call: the wasmer witness calculator + store are
         // not cheaply shareable across threads/calls. The r1cs parse is the only
         // re-done cost here; the proving key is reused.
@@ -343,7 +407,7 @@ impl Prover {
             .map_err(|e| ProverError::Prove(format!("CircomConfig::new: {e}")))?;
         let mut builder = CircomBuilder::new(cfg);
 
-        push_named_inputs(&mut builder, &inputs)?;
+        push(&mut builder)?;
 
         let circom = builder
             .build()
@@ -491,6 +555,49 @@ fn push_named_inputs(
     Ok(())
 }
 
+/// Push the Level-B **consent** circuit's named signals into the builder (M7 P0).
+///
+/// Distinct from [`push_named_inputs`]: the consent circuit's signal set is `dogTagId, purpose,
+/// relayer, recordType, deadline, consentNonce, ownerAddress, ownerSecret, Ax, Ay, R8x, R8y, S,
+/// ownerSalt, keySalt, secretSalt` plus three depth-[`CONSENT_DEPTH`] inclusion PATHS (front-packed
+/// `*Siblings` + `*PathLen`). Order does not matter to `CircomBuilder` (it maps by signal name).
+fn push_consent_inputs(
+    builder: &mut CircomBuilder<Fr>,
+    inputs: &ConsentProveInputs,
+) -> Result<(), ProverError> {
+    let push_path =
+        |b: &mut CircomBuilder<Fr>, name: &str, siblings: &[String; CONSENT_DEPTH]| -> Result<(), ProverError> {
+            for v in siblings.iter() {
+                b.push_input(name, parse_bigint(name, v)?);
+            }
+            Ok(())
+        };
+
+    push_scalar(builder, "dogTagId", &inputs.dog_tag_id)?;
+    push_scalar(builder, "purpose", &inputs.purpose)?;
+    push_scalar(builder, "relayer", &inputs.relayer)?;
+    push_scalar(builder, "recordType", &inputs.record_type)?;
+    push_scalar(builder, "deadline", &inputs.deadline)?;
+    push_scalar(builder, "consentNonce", &inputs.consent_nonce)?;
+    push_scalar(builder, "ownerAddress", &inputs.owner_address)?;
+    push_scalar(builder, "ownerSecret", &inputs.owner_secret)?;
+    push_scalar(builder, "Ax", &inputs.ax)?;
+    push_scalar(builder, "Ay", &inputs.ay)?;
+    push_scalar(builder, "R8x", &inputs.r8x)?;
+    push_scalar(builder, "R8y", &inputs.r8y)?;
+    push_scalar(builder, "S", &inputs.s)?;
+    push_scalar(builder, "ownerSalt", &inputs.owner_salt)?;
+    push_scalar(builder, "keySalt", &inputs.key_salt)?;
+    push_scalar(builder, "secretSalt", &inputs.secret_salt)?;
+    push_path(builder, "ownerSiblings", &inputs.owner_siblings)?;
+    push_scalar(builder, "ownerPathLen", &inputs.owner_path_len)?;
+    push_path(builder, "keySiblings", &inputs.key_siblings)?;
+    push_scalar(builder, "keyPathLen", &inputs.key_path_len)?;
+    push_path(builder, "secretSiblings", &inputs.secret_siblings)?;
+    push_scalar(builder, "secretPathLen", &inputs.secret_path_len)?;
+    Ok(())
+}
+
 impl ProveInputs {
     /// Build [`ProveInputs`] from the JSON object produced by the circuits'
     /// `gen-zk-fixture.mjs` input builder (all string-valued; arrays of length `N`).
@@ -552,6 +659,72 @@ impl ProveInputs {
             r8x: s(v, "R8x")?,
             r8y: s(v, "R8y")?,
             s: s(v, "S")?,
+        })
+    }
+}
+
+impl ConsentProveInputs {
+    /// Build [`ConsentProveInputs`] from the consent circuit-input JSON the SDK's
+    /// `consent_assemble::consent_circuit_input_value` emits (all string-valued; the three sibling
+    /// signals are arrays of length [`CONSENT_DEPTH`]). This is the seam the server `/prove-consent`
+    /// route feeds and the ground-truth prove→verify test drives.
+    pub fn from_circuit_input_json(v: &serde_json::Value) -> Result<Self, ProverError> {
+        fn s(v: &serde_json::Value, k: &str) -> Result<String, ProverError> {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .map(|x| x.to_string())
+                .ok_or_else(|| ProverError::Input {
+                    field: k.to_string(),
+                    reason: "missing or not a string".into(),
+                })
+        }
+        fn path(v: &serde_json::Value, k: &str) -> Result<[String; CONSENT_DEPTH], ProverError> {
+            let raw = v
+                .get(k)
+                .and_then(|x| x.as_array())
+                .ok_or_else(|| ProverError::Input {
+                    field: k.to_string(),
+                    reason: "missing or not an array".into(),
+                })?;
+            if raw.len() != CONSENT_DEPTH {
+                return Err(ProverError::Input {
+                    field: k.to_string(),
+                    reason: format!("expected {CONSENT_DEPTH} entries, got {}", raw.len()),
+                });
+            }
+            let mut out: [String; CONSENT_DEPTH] = Default::default();
+            for (i, item) in raw.iter().enumerate() {
+                out[i] = item.as_str().map(|x| x.to_string()).ok_or_else(|| ProverError::Input {
+                    field: format!("{k}[{i}]"),
+                    reason: "not a string".into(),
+                })?;
+            }
+            Ok(out)
+        }
+
+        Ok(ConsentProveInputs {
+            dog_tag_id: s(v, "dogTagId")?,
+            purpose: s(v, "purpose")?,
+            relayer: s(v, "relayer")?,
+            record_type: s(v, "recordType")?,
+            deadline: s(v, "deadline")?,
+            consent_nonce: s(v, "consentNonce")?,
+            owner_address: s(v, "ownerAddress")?,
+            owner_secret: s(v, "ownerSecret")?,
+            ax: s(v, "Ax")?,
+            ay: s(v, "Ay")?,
+            r8x: s(v, "R8x")?,
+            r8y: s(v, "R8y")?,
+            s: s(v, "S")?,
+            owner_salt: s(v, "ownerSalt")?,
+            key_salt: s(v, "keySalt")?,
+            secret_salt: s(v, "secretSalt")?,
+            owner_siblings: path(v, "ownerSiblings")?,
+            owner_path_len: s(v, "ownerPathLen")?,
+            key_siblings: path(v, "keySiblings")?,
+            key_path_len: s(v, "keyPathLen")?,
+            secret_siblings: path(v, "secretSiblings")?,
+            secret_path_len: s(v, "secretPathLen")?,
         })
     }
 }

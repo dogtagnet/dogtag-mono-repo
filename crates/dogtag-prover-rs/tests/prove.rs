@@ -292,7 +292,8 @@ fn load_rejects_tampered_witness_artifact() {
 /// The load-time width guards reject a version this build cannot feed or format, BEFORE any artifact
 /// is read.
 ///
-/// Today's registry has one entry whose widths match, so `resolve` can never hand `load_versioned` a
+/// Today's registered versions all have widths the guard accepts (Level-A matches `N`; the Level-B
+/// consent entry's `max_leaves: None` is exempt), so `resolve` can never hand `load_versioned` a
 /// mismatched descriptor — which is precisely why these guards need a direct test: nothing else
 /// executes them, so a refactor could drop one and every other test would still pass. They exist for
 /// the multi-version state M7 builds toward, where a descriptor's width is no longer guaranteed to be
@@ -303,7 +304,7 @@ fn load_rejects_a_version_whose_width_this_build_cannot_handle() {
     // at nothing still reaches them. If a guard were removed the load would fail differently (a
     // missing-file `Load`), which the message assertions below catch.
     const BAD_LEAVES: artifact::ArtifactDescriptor = artifact::ArtifactDescriptor {
-        max_leaves: dogtag_prover::N + 1,
+        max_leaves: Some(dogtag_prover::N + 1),
         ..artifact::LEVEL_A_V1_DESCRIPTOR
     };
     const BAD_PUBLIC: artifact::ArtifactDescriptor = artifact::ArtifactDescriptor {

@@ -47,6 +47,12 @@ pub mod ffi;
 #[cfg(feature = "assemble")]
 pub mod prover_assemble;
 
+// Workstream A — Level-B CONSENT circuit-input assembly (M7 P0). Same lightweight `assemble` gating
+// and ark-disjoint discipline as `prover_assemble`, but for the frozen `consent.circom` seven-signal
+// public layout; built from the circuit, NOT the stale Level-A `consent.rs` (ZK cross-check §2).
+#[cfg(feature = "assemble")]
+pub mod consent_assemble;
+
 // Workstream A — on-device Groth16 prover (mopro/circom-prover + circom-witnesscalc graph witness).
 // Gated behind the OFF-by-default `prover` feature so default workspace builds never pull the heavy
 // ark-0.5 deps. It layers the circom-prover proving on top of `prover_assemble`'s assembly.

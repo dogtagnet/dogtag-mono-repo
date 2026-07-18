@@ -1466,6 +1466,46 @@ public func obfuscateDocumentJson(wrappedDocJson: String, keyPaths: [String])thr
 })
 }
 /**
+ * Generate a Groth16 proof for the DogTag CONSENT circuit (`consent.circom`, `DogTagConsent(6)`) ON
+ * DEVICE (M7 P0).
+ *
+ * Mirrors [`prove_verification`] (same `circom-witnesscalc` GRAPH backend — deliberately not
+ * rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM), but for the Level-B
+ * owner-unlinkable consent circuit: it ASSEMBLES the inputs with [`assemble_consent`] (the canonical
+ * `dogTagId` field is computed once and used for both the circuit input and the `build_profile_tree`
+ * KDF binding), then proves.
+ *
+ * - `seed_hex`            — the owner wallet seed (0x..); owner-secret/consent-key/salts derive from it.
+ * - `dog_tag_id_handle`   — the off-chain decimal handle; field-hashed to the canonical `dogTagId`.
+ * - `owner_address_hex`   — 0x.. 20-byte owner address (the owner-address reserved leaf value).
+ * - `attributes_json`     — the disclosable credential attributes (see [`parse_attributes`]); MUST
+ * match issuance so the rebuilt `R` equals the minted `profileRoot`.
+ * - `purpose_hex` / `record_type_hex` / `consent_nonce_hex` — 0x.. 32-byte field words.
+ * - `relayer_hex`         — 0x.. 20-byte relayer address (range-checked `< 2^160` by the circuit).
+ * - `deadline_dec`        — the consent expiry as a decimal string.
+ * - `zkey_path` / `graph_path` — `consent_final.zkey` + `consent.graph` (bundled/fetched app assets).
+ *
+ * Returns the proof as Solidity calldata plus the 7 public signals in the FROZEN OUTPUT order
+ * `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]` (all decimal).
+ */
+public func proveConsent(seedHex: String, dogTagIdHandle: String, ownerAddressHex: String, attributesJson: String, purposeHex: String, relayerHex: String, recordTypeHex: String, consentNonceHex: String, deadlineDec: String, zkeyPath: String, graphPath: String)throws  -> ProofFfi {
+    return try  FfiConverterTypeProofFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_prove_consent(
+        FfiConverterString.lower(seedHex),
+        FfiConverterString.lower(dogTagIdHandle),
+        FfiConverterString.lower(ownerAddressHex),
+        FfiConverterString.lower(attributesJson),
+        FfiConverterString.lower(purposeHex),
+        FfiConverterString.lower(relayerHex),
+        FfiConverterString.lower(recordTypeHex),
+        FfiConverterString.lower(consentNonceHex),
+        FfiConverterString.lower(deadlineDec),
+        FfiConverterString.lower(zkeyPath),
+        FfiConverterString.lower(graphPath),$0
+    )
+})
+}
+/**
  * Generate a Groth16 proof for the DogTag verification circuit ON DEVICE.
  *
  * - `wrapped_doc_json` — the stored WrappedDoc (raw salted leaves; the witness source).
@@ -1662,6 +1702,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_obfuscate_document_json() != 27517) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_prove_consent() != 4634) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_prove_verification() != 3014) {
