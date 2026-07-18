@@ -108,9 +108,18 @@ A credential, once issued, is a **wrapped document**:
     "documentStore": "0x…",                 // issuer contract address
     "recordType": "VACCINATION"
   },
-  "privacy": { "obfuscated": [] }            // hashes of redacted leaves (selective disclosure)
+  "privacy": { "obfuscated": [] },           // hashes of redacted leaves (selective disclosure)
+  "protocol": {                              // OPTIONAL provenance block (M7 §4.2); absent on pre-M7 docs, carried BESIDE R (never inside it)
+    "chainId": 135,
+    "version": "dogtag-levela/1",            // PROTOCOL level - distinct from the "dogtag/1.0" envelope version above
+    "verificationRegistry": "0x…",           // routing key: which VerificationRegistry this record targets
+    "issuerClone": "0x…",                    // == issuer.documentStore
+    "issuerSigner": "0x…"                     // CLAIM of who issued; validated vs on-chain issuedBy[R], never treated as authority
+  }
 }
 ```
+
+> **The optional `protocol` block (M7 provenance, M7 §4.2)** records which protocol/contract the credential was created on and who issued it, carried **BESIDE `merkleRoot` - never inside `R` or the ZK proof** - so a receiver can route to the right registry/clone. Pre-M7 docs omit it and stay verifiable; the SDK's `resolvedProtocol`/`resolved_protocol` defaults an absent block to Level-A. `issuerSigner` is a routing **hint** (the issuer's claim), never authority: `verify()` may validate it against on-chain `issuedBy[R]` and always re-derives issuance against `issuer.documentStore`, never the untrusted block.
 
 > **Single-record now, batch later** (your decision): `proof` is empty and `merkleRoot == targetHash` today. When batching is added, `targetHash` stays the per-document root, `proof` carries batch siblings, and `merkleRoot` becomes the batch root. **The anchored value is always a `bytes32` root and verification always calls `isValid(root)` — no format break.**
 

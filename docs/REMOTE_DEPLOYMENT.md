@@ -166,7 +166,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `ISSUER_NAME` | all | display name | "Example Veterinary Clinic" / "Example Grooming Salon" / "DogTag Central" | real name |
 | `ISSUER_DOMAIN` | all | **the real DNS-TXT issuer-domain binding** | `*.local` | your real domain |
 | `ISSUER_REGISTRY_ADDR` | all | IssuerRegistry | (roax.json, pre-filled) | per chain |
-| `VERIFICATION_REGISTRY_ADDR` | vet, groomer | **current** VR (`0x4E2f0996…`; `0x8bA836eCe9…` is `_4arg_legacy`) | (roax.json, pre-filled) | current, **not** legacy |
+| `VERIFICATION_REGISTRY_ADDR` | vet, groomer, admin | **current** VR (`0x4E2f0996…`; `0x8bA836eCe9…` is `_4arg_legacy`). admin reads it as the M7 provenance routing key (§4.2) stamped into pet/credential rows, not as a relay target | (roax.json, pre-filled) | current, **not** legacy |
 | `CONSENT_KEY_REGISTRY_ADDR` | vet, groomer | gasless `bindConsentKeyFor` (`0xA74DDe4a9b…`) | (roax.json, pre-filled) | current, **not** legacy |
 | `SBT_ADDR` | admin | DogTagSBT | (roax.json, pre-filled) | per chain |
 | `PROFILE_DOCUMENT_STORE` | admin | SBT mint target | `=SBT_ADDR` | usually `=SBT_ADDR` |
@@ -190,9 +190,10 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `PROTOCOL_VERSION` | **prover only** | which version-keyed artifact set the real prover loads | unset (the current Level-A set, `dogtag-levela/1`) | leave **unset** - one version exists today; an unknown value is fail-closed at boot (FATAL + exit) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALENDAR_ID` | vet, groomer | Phase-7 calendar OAuth | unset / `primary` | optional |
 
-> **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`, `VERIFICATION_REGISTRY_ADDR`,
+> **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`,
 > `CONSENT_KEY_REGISTRY_ADDR`, `BUSINESS_TYPE`, `CENTRAL_BASE_URL`, or `DEPLOYMENT_DOMAIN` — it is the
-> central stack, not a business issuer.
+> central stack, not a business issuer. (It **does** read `VERIFICATION_REGISTRY_ADDR` since M7 — the
+> provenance routing key stamped into pet/credential rows.)
 
 ### Portal `VITE_` keys (canonical — owned by this doc)
 
