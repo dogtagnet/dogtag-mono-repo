@@ -694,8 +694,15 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
     // `RootIssued`-derived `signer`) fills the mirror column AND the envelope block's `issuerSigner`.
     // The block sits OUTSIDE `R`, so patching it never perturbs the anchored root.
     r.issuer_signer = Some(signer.clone());
-    if let Some(p) = r.wrapped_doc.get_mut("protocol").and_then(|v| v.as_object_mut()) {
-        p.insert("issuerSigner".to_string(), serde_json::Value::String(signer.clone()));
+    if let Some(p) = r
+        .wrapped_doc
+        .get_mut("protocol")
+        .and_then(|v| v.as_object_mut())
+    {
+        p.insert(
+            "issuerSigner".to_string(),
+            serde_json::Value::String(signer.clone()),
+        );
     }
     r.signing_mode = Some(st.store.get_settings().await.signing_mode);
     // Persist the immutable on-chain proof: block number + a ready-to-click explorer link.

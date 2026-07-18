@@ -202,7 +202,10 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
     let block = &issued["wrappedDoc"]["protocol"];
     assert_eq!(block["chainId"], 135);
     assert_eq!(block["version"], "dogtag-levela/1");
-    assert_eq!(block["verificationRegistry"], "0x4E2f0996e1CB4E24F1053346f3da2186906835E8");
+    assert_eq!(
+        block["verificationRegistry"],
+        "0x4E2f0996e1CB4E24F1053346f3da2186906835E8"
+    );
     assert_eq!(block["issuerClone"], ISSUER_ADDR);
     assert_eq!(
         block["issuerSigner"].as_str().unwrap().to_lowercase(),
@@ -211,7 +214,11 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
     );
 
     // Persisted record mirrors the block into queryable columns (persist, don't just transmit).
-    let cred = state.store.get_credential(&root).await.expect("credential persisted");
+    let cred = state
+        .store
+        .get_credential(&root)
+        .await
+        .expect("credential persisted");
     assert_eq!(cred.chain_id, Some(135));
     assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levela/1"));
     assert_eq!(

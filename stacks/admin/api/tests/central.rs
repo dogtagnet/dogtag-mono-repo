@@ -520,25 +520,37 @@ async fn pet_mint_produces_valid_dog_profile_sbt() {
         stored.issuer_signer.as_deref(),
         Some("0x00000000000000000000000000000000000000ad")
     );
-    let block = doc.protocol.expect("sealed envelope carries the protocol block");
+    let block = doc
+        .protocol
+        .expect("sealed envelope carries the protocol block");
     assert_eq!(block.chain_id, 135);
     assert_eq!(block.version, "dogtag-levela/1");
     assert_eq!(block.issuer_clone, SBT);
-    assert_eq!(block.issuer_signer, "0x00000000000000000000000000000000000000ad");
+    assert_eq!(
+        block.issuer_signer,
+        "0x00000000000000000000000000000000000000ad"
+    );
 }
 
 #[tokio::test]
-async fn import_projects_level_a_default_provenance(
-) {
+async fn import_projects_level_a_default_provenance() {
     // §4.4 live consumer: importing a pre-M7 doc (no `protocol` block) projects the DEFAULTED Level-A
     // provenance into the queryable columns - existing records stay importable + still resolve.
     let (state, _chain, _vault, _biz) = hermetic_state();
     let store = state.store.clone();
     let app = admin_api::router(state);
-    let (_oid, sess) = signup(&app, "prov@x.io", "0x00000000000000000000000000000000000000e9").await;
+    let (_oid, sess) = signup(
+        &app,
+        "prov@x.io",
+        "0x00000000000000000000000000000000000000e9",
+    )
+    .await;
     let cred_id = import_a_credential(&app, &sess).await; // build_sample_wrapped_doc has no protocol block
 
-    let cred = store.get_credential(&cred_id).await.expect("credential persisted");
+    let cred = store
+        .get_credential(&cred_id)
+        .await
+        .expect("credential persisted");
     assert_eq!(cred.chain_id, Some(135));
     assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levela/1"));
     assert_eq!(

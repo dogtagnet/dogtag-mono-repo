@@ -95,7 +95,12 @@ pub fn issuer_meta(cfg: &Config, record_type: &str, issuer_addr: &str) -> Issuer
 /// the clone the root anchors to (== `documentStore`); `issuer_signer` is the *claim* of who issued
 /// (empty until the authoritative on-chain `issuedBy[R]` is learned at confirm). A routing hint only -
 /// authority stays the on-chain re-derivation; the claim is validated against `issuedBy[R]` at verify.
-pub fn protocol_meta(cfg: &Config, chain_id: u64, issuer_clone: &str, issuer_signer: &str) -> ProtocolMeta {
+pub fn protocol_meta(
+    cfg: &Config,
+    chain_id: u64,
+    issuer_clone: &str,
+    issuer_signer: &str,
+) -> ProtocolMeta {
     ProtocolMeta {
         chain_id,
         version: LEVEL_A_VERSION.to_string(),
