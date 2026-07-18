@@ -139,7 +139,7 @@ fn front_pack(proof: &[ProofStep]) -> Result<([String; DEPTH], String), FfiError
     }
     let path_len = siblings.len().to_string();
     let mut packed: [String; DEPTH] = Default::default();
-    for (slot, sib) in packed.iter_mut().zip(siblings.into_iter()) {
+    for (slot, sib) in packed.iter_mut().zip(siblings) {
         *slot = sib;
     }
     // Zero-pad the tail (Default::default() gives empty strings).

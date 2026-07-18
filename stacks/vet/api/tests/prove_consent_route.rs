@@ -88,6 +88,29 @@ async fn prove_consent_unavailable_without_artifacts_is_503() {
     );
 }
 
+/// A malformed device-assembled `circuitInput` is a CLIENT error → 400 (not a 5xx), and this holds
+/// even on an instance with NO consent artifacts: the input is parsed BEFORE the prover load, so a
+/// bad body is distinguished from this instance being unable to prove (503) or a genuine prove
+/// failure (502). Mirrors the Level-A route's in-route assemble 400.
+#[tokio::test]
+async fn prove_consent_malformed_input_is_400() {
+    let state = base_state(); // consent_prover defaults to disabled() — no artifacts needed
+    let router = vet_api::public_router(state);
+    // `{}` cannot parse into `ConsentProveInputs` (missing every named signal).
+    let body = json!({ "circuitInput": {} });
+
+    let (status, resp) = common::call(&router, "POST", "/prove-consent", None, Some(body)).await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "a malformed circuitInput must be a client 400, not a 5xx: {resp}"
+    );
+    assert!(
+        resp.to_string().contains("consent circuit input"),
+        "the 400 body must name the parse cause: {resp}"
+    );
+}
+
 /// Fail-closed on version: naming a version this route does not serve is refused up front (400),
 /// before any prove — the consent route only serves the Level-B consent version.
 #[tokio::test]

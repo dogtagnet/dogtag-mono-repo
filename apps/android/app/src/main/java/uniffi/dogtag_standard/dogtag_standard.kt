@@ -757,6 +757,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -801,6 +803,8 @@ internal interface UniffiLib : Library {
     fun uniffi_dogtag_standard_fn_func_nfc_normalize(`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_obfuscate_document_json(`wrappedDocJson`: RustBuffer.ByValue,`keyPaths`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_prove_consent(`seedHex`: RustBuffer.ByValue,`dogTagIdHandle`: RustBuffer.ByValue,`ownerAddressHex`: RustBuffer.ByValue,`attributesJson`: RustBuffer.ByValue,`purposeHex`: RustBuffer.ByValue,`relayerHex`: RustBuffer.ByValue,`recordTypeHex`: RustBuffer.ByValue,`consentNonceHex`: RustBuffer.ByValue,`deadlineDec`: RustBuffer.ByValue,`zkeyPath`: RustBuffer.ByValue,`graphPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_prove_verification(`wrappedDocJson`: RustBuffer.ByValue,`consentJson`: RustBuffer.ByValue,`eddsaSig`: RustBuffer.ByValue,`zkeyPath`: RustBuffer.ByValue,`graphPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -960,6 +964,8 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_dogtag_standard_checksum_func_obfuscate_document_json(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_prove_consent(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_prove_verification(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_sign_consent_eddsa(
@@ -1036,6 +1042,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_obfuscate_document_json() != 27517.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_dogtag_standard_checksum_func_prove_consent() != 4634.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_prove_verification() != 3014.toShort()) {
@@ -1930,6 +1939,39 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_obfuscate_document_json(
         FfiConverterString.lower(`wrappedDocJson`),FfiConverterSequenceString.lower(`keyPaths`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Generate a Groth16 proof for the DogTag CONSENT circuit (`consent.circom`, `DogTagConsent(6)`) ON
+         * DEVICE (M7 P0).
+         *
+         * Mirrors [`prove_verification`] (same `circom-witnesscalc` GRAPH backend — deliberately not
+         * rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM), but for the Level-B
+         * owner-unlinkable consent circuit: it ASSEMBLES the inputs with [`assemble_consent`] (the canonical
+         * `dogTagId` field is computed once and used for both the circuit input and the `build_profile_tree`
+         * KDF binding), then proves.
+         *
+         * - `seed_hex`            — the owner wallet seed (0x..); owner-secret/consent-key/salts derive from it.
+         * - `dog_tag_id_handle`   — the off-chain decimal handle; field-hashed to the canonical `dogTagId`.
+         * - `owner_address_hex`   — 0x.. 20-byte owner address (the owner-address reserved leaf value).
+         * - `attributes_json`     — the disclosable credential attributes (see [`parse_attributes`]); MUST
+         * match issuance so the rebuilt `R` equals the minted `profileRoot`.
+         * - `purpose_hex` / `record_type_hex` / `consent_nonce_hex` — 0x.. 32-byte field words.
+         * - `relayer_hex`         — 0x.. 20-byte relayer address (range-checked `< 2^160` by the circuit).
+         * - `deadline_dec`        — the consent expiry as a decimal string.
+         * - `zkey_path` / `graph_path` — `consent_final.zkey` + `consent.graph` (bundled/fetched app assets).
+         *
+         * Returns the proof as Solidity calldata plus the 7 public signals in the FROZEN OUTPUT order
+         * `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]` (all decimal).
+         */
+    @Throws(FfiException::class) fun `proveConsent`(`seedHex`: kotlin.String, `dogTagIdHandle`: kotlin.String, `ownerAddressHex`: kotlin.String, `attributesJson`: kotlin.String, `purposeHex`: kotlin.String, `relayerHex`: kotlin.String, `recordTypeHex`: kotlin.String, `consentNonceHex`: kotlin.String, `deadlineDec`: kotlin.String, `zkeyPath`: kotlin.String, `graphPath`: kotlin.String): ProofFfi {
+            return FfiConverterTypeProofFfi.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_prove_consent(
+        FfiConverterString.lower(`seedHex`),FfiConverterString.lower(`dogTagIdHandle`),FfiConverterString.lower(`ownerAddressHex`),FfiConverterString.lower(`attributesJson`),FfiConverterString.lower(`purposeHex`),FfiConverterString.lower(`relayerHex`),FfiConverterString.lower(`recordTypeHex`),FfiConverterString.lower(`consentNonceHex`),FfiConverterString.lower(`deadlineDec`),FfiConverterString.lower(`zkeyPath`),FfiConverterString.lower(`graphPath`),_status)
 }
     )
     }

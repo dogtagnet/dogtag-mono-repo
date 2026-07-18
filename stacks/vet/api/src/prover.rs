@@ -62,6 +62,11 @@ impl From<Groth16Output> for ZkProof {
 pub enum ProverError {
     #[error("prover unavailable: {0}")]
     Unavailable(String),
+    /// The caller-supplied circuit input is malformed — a CLIENT error, not a server/prove failure.
+    /// Routes map this to 400 (mirroring the Level-A route's in-route assemble 400), so a client does
+    /// not retry a fundamentally bad body against a 5xx.
+    #[error("bad input: {0}")]
+    BadInput(String),
     #[error("prove failed: {0}")]
     Prove(String),
     /// The caller asked for a protocol version this prover cannot serve. Fail-closed: another
@@ -158,6 +163,22 @@ impl ArkProver {
         descriptor: &'static ArtifactDescriptor,
         expected_zkey_sha256_hex: Option<&str>,
     ) -> Result<Self, ProverError> {
+        // This Level-A prover feeds the circuit through `ProveInputs` / `push_named_inputs` over fixed
+        // N-wide leaf arrays, so it can only serve a version whose inputs are that shape — one that
+        // declares a fixed leaf-array width (`max_leaves: Some(_)`). A `max_leaves: None` descriptor is
+        // the Level-B consent circuit, which folds depth-6 inclusion PATHS via `ConsentProveInputs` and
+        // has no N-wide leaf table; loading it here would boot green and then push Level-A signal names
+        // into a consent circuit, failing every request at runtime. Reject it at LOAD so a
+        // prover-service misconfigured with PROTOCOL_VERSION=dogtag-levelb/1 fails closed at boot
+        // (main.rs exit(1)) instead of mis-proving. The dedicated `ConsentProver` load path is
+        // unaffected — it loads the same descriptor through the inner `Prover` + `prove_consent_inputs`.
+        if descriptor.max_leaves.is_none() {
+            return Err(ProverError::Unavailable(format!(
+                "version {} has no fixed leaf-array width (max_leaves=None); the Level-A prover cannot \
+                 serve it — the consent circuit is served by the dedicated /prove-consent path",
+                descriptor.version
+            )));
+        }
         let inner = match expected_zkey_sha256_hex {
             Some(hex) => ArkInnerProver::load_versioned_with_expected_zkey(build_dir, descriptor, hex),
             None => ArkInnerProver::load_versioned(build_dir, descriptor),
@@ -296,9 +317,13 @@ impl ConsentProver {
         &self,
         circuit_input: serde_json::Value,
     ) -> Result<ZkProof, ProverError> {
-        let inner = self.loaded()?;
+        // Parse the device-assembled input FIRST, so a malformed body is a distinct CLIENT error
+        // (400) regardless of whether this instance can prove: a bad request is a bad request even on
+        // an instance that lacks consent artifacts (which otherwise fails closed as Unavailable/503).
+        // This mirrors the Level-A route, which validates the witness in-route and returns 400.
         let inputs = ConsentProveInputs::from_circuit_input_json(&circuit_input)
-            .map_err(|e| ProverError::Prove(format!("bad consent circuit input: {e}")))?;
+            .map_err(|e| ProverError::BadInput(format!("bad consent circuit input: {e}")))?;
+        let inner = self.loaded()?;
         let out = tokio::task::spawn_blocking(move || inner.prove_consent_inputs(inputs))
             .await
             .map_err(|e| ProverError::Prove(format!("join: {e}")))?
@@ -375,6 +400,38 @@ mod tests {
         let b = StubProver.prove(with_extras).await.unwrap();
         assert_eq!(a.pub_signals, b.pub_signals);
         assert_eq!(a.a, b.a);
+    }
+
+    /// Fail-closed at LOAD: the Level-A `ArkProver` REJECTS a `max_leaves: None` descriptor (the
+    /// Level-B consent circuit) before any file I/O, so a prover-service booted with
+    /// `PROTOCOL_VERSION=dogtag-levelb/1` exit(1)s at boot (`main.rs`) rather than booting green and
+    /// then mis-proving every `/prove-verification` request through the Level-A signal names.
+    #[test]
+    fn ark_prover_rejects_a_max_leaves_none_descriptor_at_load() {
+        // `ArkProver` is not `Debug`, so match the `Result` directly rather than `expect_err`.
+        match ArkProver::load_versioned(
+            "/nonexistent-build-dir",
+            &artifact::LEVEL_B_V1_DESCRIPTOR,
+            None,
+        ) {
+            Err(ProverError::Unavailable(m)) => assert!(
+                m.contains("max_leaves") && m.contains(artifact::LEVEL_B_V1),
+                "the error must name the cause + version: {m}"
+            ),
+            Err(other) => panic!("expected Unavailable, got {other:?}"),
+            Ok(_) => panic!("a max_leaves:None (consent) descriptor must be rejected by Level-A"),
+        }
+
+        // Over-fire check: the Level-A descriptor (`max_leaves: Some(N)`) is NOT rejected by the width
+        // guard — it passes it and only then errors on the missing build dir.
+        match ArkProver::load_versioned("/nonexistent-build-dir", artifact::current(), None) {
+            Err(ProverError::Unavailable(m)) => assert!(
+                !m.contains("max_leaves"),
+                "Level-A must fail on the missing artifact, not the width guard: {m}"
+            ),
+            Err(other) => panic!("expected Unavailable (missing artifact), got {other:?}"),
+            Ok(_) => panic!("a missing build dir must still error"),
+        }
     }
 
     /// `From<Groth16Output>` is a verbatim field copy into `ZkProof`.

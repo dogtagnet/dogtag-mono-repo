@@ -1585,6 +1585,11 @@ async fn prove_consent(State(st): State<AppState>, Json(body): Json<ProveConsent
             "c": proof.c,
             "pub": proof.pub_signals,
         })),
+        // A malformed device-assembled circuitInput is a CLIENT error — 400, not a 5xx a client
+        // would retry (mirrors the Level-A route's in-route assemble 400).
+        Err(crate::prover::ProverError::BadInput(m)) => {
+            err(StatusCode::BAD_REQUEST, &format!("consent prover: {m}"))
+        }
         // No consent artifacts on THIS instance (or they failed to load) — fail closed per request.
         Err(crate::prover::ProverError::Unavailable(m)) => {
             err(StatusCode::SERVICE_UNAVAILABLE, &format!("consent prover: {m}"))
