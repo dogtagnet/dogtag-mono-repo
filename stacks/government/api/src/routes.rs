@@ -290,10 +290,15 @@ async fn issue(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let meta = app::issuer_meta(&st.cfg, &body.record_type, &issuer_addr);
-    let doc = match app::wrap(meta, &vc) {
+    let mut doc = match app::wrap(meta, &vc) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::BAD_REQUEST, &e),
     };
+    // Stamp the M7 provenance block (§4.2), BESIDE R. This authority anchors server-side, so its
+    // issuing signer (`signer_address`) is the authoritative on-chain `issuedBy[R]`; empty on dry-run
+    // (no signer / Draft).
+    let issuer_signer = st.chain.signer_address().unwrap_or_default();
+    doc.protocol = Some(app::protocol_meta(&st.cfg, &issuer_addr, &issuer_signer));
     let root = doc.signature.merkle_root.clone();
 
     // ANCHOR on-chain unless dry-run / no signer. issue() is idempotent-guarded on-chain (a
@@ -324,6 +329,15 @@ async fn issue(
         record_type: body.record_type.clone(),
         dog_tag_id: body.dog_tag_id.clone(),
         issuer_addr: issuer_addr.clone(),
+        // M7 provenance mirror (§4.2), from the `protocol` block just stamped on `doc`.
+        chain_id: Some(st.cfg.chain_id),
+        protocol_version: Some(dogtag_standard::wrap::LEVEL_A_VERSION.to_string()),
+        verification_registry: Some(st.cfg.verification_registry_addr.clone()),
+        issuer_signer: if issuer_signer.is_empty() {
+            None
+        } else {
+            Some(issuer_signer.clone())
+        },
         receipt_id: Some(receipt_id.clone()),
         subject,
         valid_until,

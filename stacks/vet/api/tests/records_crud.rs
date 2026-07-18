@@ -95,6 +95,36 @@ async fn issue_persists_onchain_proof_and_lists_from_db() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue_stamps_m7_provenance_block_and_columns() {
+    // M7 P2 (§4.2): a prepared+confirmed record carries a populated `protocol` block on the envelope
+    // (BESIDE R) AND mirrored columns. `issuer_signer` is the authoritative on-chain `issuedBy[R]`,
+    // learned at confirm from the `RootIssued` log (== the record's `signer_address`).
+    let (app, _mem, op) = booted().await;
+    let (_record_id, _root) = issue_one(&app, &op, "77").await;
+
+    let (s, b) = call(&app, "GET", "/records", Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "list: {b}");
+    let rec = &b["records"][0];
+
+    // mirrored columns (verification_registry mirrors the deployment config - zero in this harness).
+    assert_eq!(rec["chain_id"], 135);
+    assert_eq!(rec["protocol_version"], "dogtag-levela/1");
+    assert_eq!(rec["verification_registry"], "0x0000000000000000000000000000000000000000");
+    let signer = rec["signer_address"].as_str().expect("signer set at confirm");
+    assert_eq!(rec["issuer_signer"], signer, "issuer_signer mirrors the confirmed issuedBy[R]");
+
+    // envelope block, beside R; issuerSigner patched to the authoritative signer at confirm.
+    let block = &rec["wrapped_doc"]["protocol"];
+    assert_eq!(block["chainId"], 135);
+    assert_eq!(block["version"], "dogtag-levela/1");
+    assert_eq!(
+        block["issuerClone"].as_str().unwrap().to_lowercase(),
+        rec["issuer_addr"].as_str().unwrap().to_lowercase()
+    );
+    assert_eq!(block["issuerSigner"], signer);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn patch_updates_offchain_but_rejects_onchain_fields() {
     let (app, _mem, op) = booted().await;
     let (record_id, root) = issue_one(&app, &op, "7").await;

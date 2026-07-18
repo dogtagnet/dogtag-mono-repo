@@ -12,6 +12,13 @@ export interface RpcAdapter {
   isValid(documentStore: string, merkleRoot: string, confirmations: number): Promise<boolean>;
   /** DogTagSBT.ownerOf(dogTagId). Throw to signal a transient ERROR. */
   ownerOf(dogTagId: string): Promise<string>;
+  /**
+   * DogTagIssuer.issuedBy(root) - the authoritative signer that issued `R` (== `clone.issuedBy[R]`),
+   * used to validate the envelope's `protocol.issuerSigner` *claim* (§4.3). OPTIONAL: when absent
+   * (unwired), the additive issuer-signer check is skipped and base validity governs. Live per-backend
+   * eth-calls are the later verify-path hardening brick (M7 P5); the SDK enforces it whenever wired.
+   */
+  issuedBy?(documentStore: string, merkleRoot: string): Promise<string>;
 }
 export interface DnsAdapter {
   /** True iff a TXT record of `domain` binds `documentStore` on `chainId`. Throw for ERROR. */
@@ -88,6 +95,23 @@ export async function verify(doc: WrappedDoc, opts: VerifyOpts): Promise<Verdict
       : "INVALID";
   } catch {
     issuance = "ERROR";
+  }
+
+  // M7 provenance (§4.2/§4.3): a stamped `protocol.issuerSigner` is only the envelope's CLAIM of who
+  // issued; validate it against the authoritative on-chain `clone.issuedBy[R]`. A wrong/forged claim
+  // fails closed (issuance -> INVALID). This can only make verification STRICTER - the on-chain
+  // validity re-derivation above still targets `doc.issuer.documentStore`, NEVER the untrusted block,
+  // so a forged `protocol` block can neither reroute validation nor make an invalid record verify.
+  // Skipped when the block is absent (pre-M7) or the adapter is unwired - base validity governs.
+  // Mirror of the Rust `verify`; live per-backend `issuedBy` reads are the later hardening brick (P5).
+  if (doc.protocol && issuance === "VALID" && opts.rpc.issuedBy) {
+    try {
+      const onchain = await opts.rpc.issuedBy(doc.issuer.documentStore, doc.signature.merkleRoot);
+      issuance = onchain.toLowerCase() === doc.protocol.issuerSigner.toLowerCase() ? "VALID" : "INVALID";
+    } catch {
+      // transient/unwired read -> skip the additive check; base validity governs (mirror Rust `Err -> Valid`).
+      issuance = "VALID";
+    }
   }
 
   let identity: FragmentState;

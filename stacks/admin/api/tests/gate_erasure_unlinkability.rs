@@ -41,6 +41,11 @@ async fn after_erase_dek_destroyed_and_salts_pii_unrecoverable() {
             dog_tag_id: "7".into(),
             root: "0x1111111111111111111111111111111111111111111111111111111111111111".into(),
             sealed_doc: cred_sealed.clone(),
+            chain_id: None,
+            protocol_version: None,
+            verification_registry: None,
+            issuer_addr: None,
+            issuer_signer: None,
         })
         .await;
 

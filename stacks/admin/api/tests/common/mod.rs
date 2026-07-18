@@ -36,6 +36,8 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         deployment_url: "http://localhost:39742".to_string(),
         rpc_url: "http://localhost:0".to_string(),
         issuer_registry_addr: REGISTRY.to_string(),
+        chain_id: 135,
+        verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string(),
         sbt_addr: SBT.to_string(),
         factory_addr: FACTORY.to_string(),
         issuer_name: "DogTag Central".to_string(),

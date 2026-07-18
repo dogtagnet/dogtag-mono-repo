@@ -48,6 +48,11 @@ fn pet(id: &str, owner_id: &str, microchip: &str) -> Pet {
         root: None,
         mint_tx: None,
         sealed_doc: Some(sealed("doc")),
+        chain_id: None,
+        protocol_version: None,
+        verification_registry: None,
+        issuer_addr: None,
+        issuer_signer: None,
     }
 }
 
@@ -58,6 +63,11 @@ fn credential(id: &str, owner_id: &str) -> Credential {
         dog_tag_id: "1".to_string(),
         root: "0xroot".to_string(),
         sealed_doc: sealed("cred"),
+        chain_id: None,
+        protocol_version: None,
+        verification_registry: None,
+        issuer_addr: None,
+        issuer_signer: None,
     }
 }
 

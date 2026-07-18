@@ -27,6 +27,36 @@ pub struct IssuerMeta {
     pub record_type: String,
 }
 
+/// The Level-A protocol version string (M7 §4.4). This is the *protocol level* stamped in the
+/// `protocol` block, distinct from the envelope schema `WrappedDoc.version` (`"dogtag/1.0"`).
+pub const LEVEL_A_VERSION: &str = "dogtag-levela/1";
+
+/// M7 record-provenance block (§4.2): which protocol/contract a record was created on **and who
+/// issued it**, carried BESIDE `signature.merkleRoot` - NEVER inside `R` or the ZK proof.
+///
+/// It is a **routing hint only, never authority**: the on-chain re-derivation stays authoritative
+/// (`clone = rootIssuer[R]`, `R == profileRoot(id)`, `isValid(R)`). In particular `issuerSigner` is
+/// the envelope's *claim* of who issued; a verifier validates it against the on-chain
+/// `clone.issuedBy[R]` (see `verify`) and a wrong/forged claim fails closed. Absent on pre-M7
+/// records - consumers default it via [`WrappedDoc::resolved_protocol`] (§4.4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProtocolMeta {
+    #[serde(rename = "chainId")]
+    pub chain_id: u64,
+    /// protocol level, e.g. `"dogtag-levela/1"` / `"dogtag-levelb/1"` - resolves circuit/VK/artifact
+    /// via the discovery anchor. NOT the envelope `WrappedDoc.version`.
+    pub version: String,
+    /// THE routing key -> derives `sbt()` + `rootIndex()` after a trio migration.
+    #[serde(rename = "verificationRegistry")]
+    pub verification_registry: String,
+    /// == today's `issuer.documentStore`; the direct `isValid` target.
+    #[serde(rename = "issuerClone")]
+    pub issuer_clone: String,
+    /// the signer that issued (claim, == on-chain `clone.issuedBy[R]`); validated, never trusted.
+    #[serde(rename = "issuerSigner")]
+    pub issuer_signer: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Signature {
     #[serde(rename = "type")]
@@ -51,6 +81,33 @@ pub struct WrappedDoc {
     pub signature: Signature,
     pub privacy: Privacy,
     pub issuer: IssuerMeta,
+    /// M7 provenance block (§4.2), beside `signature.merkleRoot` - NOT inside `R`. Absent on pre-M7
+    /// records; default it with [`WrappedDoc::resolved_protocol`]. A routing hint only, never authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ProtocolMeta>,
+}
+
+impl WrappedDoc {
+    /// The effective provenance for routing (§4.4 back-compat). A stamped block is returned as-is
+    /// (a routing hint only - never authority). An **absent** block defaults to Level-A:
+    /// `verificationRegistry` = the Level-A registry, `version` = [`LEVEL_A_VERSION`],
+    /// `issuerClone` = `IssuerMeta.documentStore`, `issuerSigner` = the on-chain `clone.issuedBy[R]`
+    /// (supplied by the caller, which reads it on-chain - it exists for Level-A too). Existing
+    /// records self-route to the old trio and keep verifying unchanged.
+    pub fn resolved_protocol(
+        &self,
+        chain_id: u64,
+        level_a_verification_registry: &str,
+        onchain_issued_by: &str,
+    ) -> ProtocolMeta {
+        self.protocol.clone().unwrap_or_else(|| ProtocolMeta {
+            chain_id,
+            version: LEVEL_A_VERSION.to_string(),
+            verification_registry: level_a_verification_registry.to_string(),
+            issuer_clone: self.issuer.document_store.clone(),
+            issuer_signer: onchain_issued_by.to_string(),
+        })
+    }
 }
 
 /// Parse a 0x.. 32-byte hex back into a field element (mirror of TS `fromHex32`).
@@ -177,6 +234,9 @@ pub fn wrap_document(
         },
         privacy: Privacy { obfuscated: Vec::new() },
         issuer,
+        // The pure wrap knows the leaves, not the deployment: the issuing stack attaches the
+        // `protocol` block (§4.2) after wrapping, from its chain/registry/signer config.
+        protocol: None,
     })
 }
 

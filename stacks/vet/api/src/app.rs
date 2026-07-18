@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use dogtag_standard::schema::{validate_schema, DOGTAG_CONTEXT_URI};
-use dogtag_standard::wrap::{wrap_document, IssuerMeta, WrappedDoc};
+use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION};
 use serde_json::{json, Value};
 
 use crate::auth::JwtKeys;
@@ -88,6 +88,20 @@ pub fn issuer_meta(cfg: &Config, record_type: &str, issuer_addr: &str) -> Issuer
         domain: cfg.issuer_domain.clone(),
         document_store: issuer_addr.to_string(),
         record_type: record_type.to_string(),
+    }
+}
+
+/// Build the M7 provenance block (§4.2) for a record anchored on this deployment. `issuer_clone` is
+/// the clone the root anchors to (== `documentStore`); `issuer_signer` is the *claim* of who issued
+/// (empty until the authoritative on-chain `issuedBy[R]` is learned at confirm). A routing hint only -
+/// authority stays the on-chain re-derivation; the claim is validated against `issuedBy[R]` at verify.
+pub fn protocol_meta(cfg: &Config, chain_id: u64, issuer_clone: &str, issuer_signer: &str) -> ProtocolMeta {
+    ProtocolMeta {
+        chain_id,
+        version: LEVEL_A_VERSION.to_string(),
+        verification_registry: cfg.verification_registry_addr.clone(),
+        issuer_clone: issuer_clone.to_string(),
+        issuer_signer: issuer_signer.to_string(),
     }
 }
 

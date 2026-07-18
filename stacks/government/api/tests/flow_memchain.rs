@@ -23,6 +23,7 @@ fn demo_state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "DogTag Government Authority".into(),
@@ -179,6 +180,50 @@ async fn issue_then_verify_end_to_end() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
+    // M7 P2 (§4.2): a newly-issued credential carries a populated `protocol` block on the envelope
+    // (BESIDE R) AND mirrored, queryable columns on the persisted record.
+    let (state, _) = demo_state();
+    let signer = state.chain.signer_address().unwrap();
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7", "fields": { "animalName": "Rex" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    let root = issued["root"].as_str().unwrap().to_string();
+
+    // Envelope carries the block, with the routing key + the issuer's own signer as the claim.
+    let block = &issued["wrappedDoc"]["protocol"];
+    assert_eq!(block["chainId"], 135);
+    assert_eq!(block["version"], "dogtag-levela/1");
+    assert_eq!(block["verificationRegistry"], "0x4E2f0996e1CB4E24F1053346f3da2186906835E8");
+    assert_eq!(block["issuerClone"], ISSUER_ADDR);
+    assert_eq!(
+        block["issuerSigner"].as_str().unwrap().to_lowercase(),
+        signer.to_lowercase(),
+        "issuerSigner is this authority's own signer (== on-chain issuedBy[R])"
+    );
+
+    // Persisted record mirrors the block into queryable columns (persist, don't just transmit).
+    let cred = state.store.get_credential(&root).await.expect("credential persisted");
+    assert_eq!(cred.chain_id, Some(135));
+    assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levela/1"));
+    assert_eq!(
+        cred.verification_registry.as_deref(),
+        Some("0x4E2f0996e1CB4E24F1053346f3da2186906835E8")
+    );
+    assert_eq!(
+        cred.issuer_signer.map(|s| s.to_lowercase()),
+        Some(signer.to_lowercase())
+    );
+    // issuer_addr (== issuerClone) is unchanged from before M7.
+    assert_eq!(cred.issuer_addr, ISSUER_ADDR);
 }
 
 #[tokio::test]

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use dogtag_standard::wrap::{wrap_document, IssuerMeta, WrappedDoc};
+use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION};
 use serde_json::{json, Value};
 
 use crate::chain::ChainClient;
@@ -30,6 +30,9 @@ pub struct Config {
     pub chain_id: u64,
     /// IssuerRegistry (the whitelist gate) — used to read issuer-identity of a credential's signer.
     pub issuer_registry_addr: String,
+    /// VerificationRegistry address - THE routing key stamped in the M7 `protocol` block (§4.2).
+    /// Defaults to the Level-A registry.
+    pub verification_registry_addr: String,
     /// DogTagIssuer clone this authority anchors TRAVEL_CLEARANCE roots to (documentStore).
     pub travel_clearance_issuer_addr: String,
     /// DogTagIssuer clone this authority anchors EU_HEALTH_CERT roots to (documentStore).
@@ -89,6 +92,19 @@ pub fn issuer_meta(cfg: &Config, record_type: &str, issuer_addr: &str) -> Issuer
         domain: cfg.issuer_domain.clone(),
         document_store: issuer_addr.to_string(),
         record_type: record_type.to_string(),
+    }
+}
+
+/// Build the M7 provenance block (§4.2) for a government credential. `issuer_clone` == `documentStore`;
+/// `issuer_signer` is this authority's issuing signer (== the on-chain `clone.issuedBy[R]`, since gov
+/// anchors server-side). A routing hint only - the claim is validated against `issuedBy[R]` at verify.
+pub fn protocol_meta(cfg: &Config, issuer_clone: &str, issuer_signer: &str) -> ProtocolMeta {
+    ProtocolMeta {
+        chain_id: cfg.chain_id,
+        version: LEVEL_A_VERSION.to_string(),
+        verification_registry: cfg.verification_registry_addr.clone(),
+        issuer_clone: issuer_clone.to_string(),
+        issuer_signer: issuer_signer.to_string(),
     }
 }
 
@@ -307,6 +323,7 @@ mod tests {
             rpc_url: "https://devrpc.roax.net".into(),
             chain_id: 135,
             issuer_registry_addr: "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c".into(),
+            verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".into(),
             travel_clearance_issuer_addr: "0x1111111111111111111111111111111111111111".into(),
             eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
             issuer_name: "DogTag Government Authority".into(),
