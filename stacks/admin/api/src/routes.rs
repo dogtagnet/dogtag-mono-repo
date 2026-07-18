@@ -303,6 +303,12 @@ async fn create_pet(
         root: None,
         mint_tx: None,
         sealed_doc: None,
+        // M7 provenance mirror (§4.2): populated at mint (see `mint_pet`), None until then.
+        chain_id: None,
+        protocol_version: None,
+        verification_registry: None,
+        issuer_addr: None,
+        issuer_signer: None,
     };
     st.store.put_pet(pet.clone()).await;
     ok(pet_json(pet))
@@ -339,10 +345,23 @@ async fn mint_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path
         &owner_identity,
         &dog_tag_id,
     );
-    let doc = match app::wrap_vc(meta, &vc) {
+    let mut doc = match app::wrap_vc(meta, &vc) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::BAD_REQUEST, &e),
     };
+    // Stamp the M7 provenance block (§4.2), BESIDE R. `issuerClone` == the profile store (the SBT);
+    // `issuerSigner` is the central minting signer (== `DogTagSBT.issuerOf[id]`). Stamped before the
+    // seal so the sealed copy AND the queryable columns agree.
+    let issuer_signer = st
+        .chain
+        .signer_address(st.cfg.admin_signer_index)
+        .await
+        .unwrap_or_default();
+    doc.protocol = Some(app::protocol_meta(
+        &st.cfg,
+        &st.cfg.profile_document_store,
+        &issuer_signer,
+    ));
     let root = doc.signature.merkle_root.clone();
     // central protocol signer mints the SBT to the USER'S wallet.
     let sent = match st
@@ -368,6 +387,16 @@ async fn mint_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path
     pet.root = Some(root.clone());
     pet.mint_tx = Some(sent.tx_hash.clone());
     pet.sealed_doc = Some(sealed);
+    // M7 provenance mirror (§4.2): close the admin gap with queryable plaintext columns.
+    pet.chain_id = Some(st.cfg.chain_id);
+    pet.protocol_version = Some(dogtag_standard::wrap::LEVEL_A_VERSION.to_string());
+    pet.verification_registry = Some(st.cfg.verification_registry_addr.clone());
+    pet.issuer_addr = Some(st.cfg.profile_document_store.clone());
+    pet.issuer_signer = if issuer_signer.is_empty() {
+        None
+    } else {
+        Some(issuer_signer.clone())
+    };
     st.store.put_pet(pet).await;
     ok(json!({
         "dogTagId": dog_tag_id,
@@ -427,6 +456,11 @@ async fn import_credential(
         );
     }
     let dog_tag_id = crate::verify::dog_tag_id_of(&doc).unwrap_or_else(|| "unknown".to_string());
+    // M7 provenance (§4.4): project the imported doc's `protocol` block into queryable columns, or its
+    // Level-A default when absent (a pre-M7 doc self-routes to the old trio). `issuerSigner`'s default
+    // is the on-chain `issuedBy[R]`, not resolvable off-chain here -> left absent for pre-M7 imports
+    // (the live per-backend read is the P5 verify-path brick); a stamped block carries it directly.
+    let prov = doc.resolved_protocol(st.cfg.chain_id, &st.cfg.verification_registry_addr, "");
     let sealed = match crypto::seal_json(st.vault.as_ref(), &body.wrapped_doc).await {
         Ok(s) => s,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "seal failed"),
@@ -439,6 +473,15 @@ async fn import_credential(
             dog_tag_id,
             root: doc.signature.merkle_root.clone(),
             sealed_doc: sealed,
+            chain_id: Some(prov.chain_id),
+            protocol_version: Some(prov.version),
+            verification_registry: Some(prov.verification_registry),
+            issuer_addr: Some(prov.issuer_clone),
+            issuer_signer: if prov.issuer_signer.is_empty() {
+                None
+            } else {
+                Some(prov.issuer_signer)
+            },
         })
         .await;
     ok(json!({ "credentialId": credential_id, "root": doc.signature.merkle_root }))

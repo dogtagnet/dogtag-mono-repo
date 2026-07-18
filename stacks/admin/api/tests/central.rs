@@ -504,6 +504,67 @@ async fn pet_mint_produces_valid_dog_profile_sbt() {
         m["dogTagId"].as_str(),
         "dogTagId disclosed in the wrapped doc",
     );
+
+    // M7 P2 (§4.2): mint closes the admin gap - queryable provenance columns on the Pet row AND the
+    // `protocol` block inside the (sealed) envelope, both populated + consistent.
+    assert_eq!(stored.chain_id, Some(135));
+    assert_eq!(stored.protocol_version.as_deref(), Some("dogtag-levela/1"));
+    assert_eq!(
+        stored.verification_registry.as_deref(),
+        Some("0x4E2f0996e1CB4E24F1053346f3da2186906835E8")
+    );
+    // issuerClone == the profile store (the SBT contract).
+    assert_eq!(stored.issuer_addr.as_deref(), Some(SBT));
+    // issuerSigner == the central minting signer (registered at index 0 in the hermetic chain).
+    assert_eq!(
+        stored.issuer_signer.as_deref(),
+        Some("0x00000000000000000000000000000000000000ad")
+    );
+    let block = doc
+        .protocol
+        .expect("sealed envelope carries the protocol block");
+    assert_eq!(block.chain_id, 135);
+    assert_eq!(block.version, "dogtag-levela/1");
+    assert_eq!(block.issuer_clone, SBT);
+    assert_eq!(
+        block.issuer_signer,
+        "0x00000000000000000000000000000000000000ad"
+    );
+}
+
+#[tokio::test]
+async fn import_projects_level_a_default_provenance() {
+    // §4.4 live consumer: importing a pre-M7 doc (no `protocol` block) projects the DEFAULTED Level-A
+    // provenance into the queryable columns - existing records stay importable + still resolve.
+    let (state, _chain, _vault, _biz) = hermetic_state();
+    let store = state.store.clone();
+    let app = admin_api::router(state);
+    let (_oid, sess) = signup(
+        &app,
+        "prov@x.io",
+        "0x00000000000000000000000000000000000000e9",
+    )
+    .await;
+    let cred_id = import_a_credential(&app, &sess).await; // build_sample_wrapped_doc has no protocol block
+
+    let cred = store
+        .get_credential(&cred_id)
+        .await
+        .expect("credential persisted");
+    assert_eq!(cred.chain_id, Some(135));
+    assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levela/1"));
+    assert_eq!(
+        cred.verification_registry.as_deref(),
+        Some("0x4E2f0996e1CB4E24F1053346f3da2186906835E8")
+    );
+    // issuerClone defaults to the imported doc's own documentStore.
+    assert_eq!(
+        cred.issuer_addr.as_deref(),
+        Some("0x0000000000000000000000000000000000000001")
+    );
+    // issuerSigner's default is the on-chain issuedBy[R], not resolvable off-chain at import -> absent
+    // (the live per-backend read is the deferred P5 verify-path brick).
+    assert_eq!(cred.issuer_signer, None);
 }
 
 #[tokio::test]

@@ -51,6 +51,8 @@ interface MockCfg {
   owner?: string | "throw";
   txt?: boolean | "throw";
   knows?: boolean;
+  /** on-chain `issuedBy[R]` the RpcAdapter reports; omit to leave the adapter method UNWIRED. */
+  issuedBy?: string | "throw";
 }
 
 function opts(mode: "self-import" | "third-party", cfg: MockCfg, userWalletAddress?: string): VerifyOpts {
@@ -63,6 +65,15 @@ function opts(mode: "self-import" | "third-party", cfg: MockCfg, userWalletAddre
       if (cfg.owner === "throw") throw new Error("rpc down");
       return cfg.owner ?? OWNER;
     },
+    // Only present when the test wires it - mirrors the optional/unwired Rust default.
+    ...(cfg.issuedBy !== undefined
+      ? {
+          async issuedBy() {
+            if (cfg.issuedBy === "throw") throw new Error("rpc down");
+            return cfg.issuedBy as string;
+          },
+        }
+      : {}),
   };
   const dns: DnsAdapter = {
     async txtMatches() {
@@ -160,5 +171,76 @@ describe("verify() three-pillar orchestration", () => {
     const third = await verify(tampered, opts("third-party", {}));
     expect(third.fragments.integrity).toBe("INVALID");
     expect(third.valid).toBe(false);
+  });
+});
+
+// M7 provenance: the `protocol` block is a routing hint, NEVER authority (§4.2/§4.3). Mirror of the
+// Rust `verify::tests::provenance_*` cases. `issuerSigner` is only the envelope's CLAIM of who issued;
+// verify() validates it against the on-chain `clone.issuedBy[R]` (the injected `issuedBy`).
+const SIGNER = "0x00000000000000000000000000000000000515e6";
+
+function withProtocol(doc: WrappedDoc, issuerSigner: string): WrappedDoc {
+  return {
+    ...doc,
+    protocol: {
+      chainId: 135,
+      version: "dogtag-levela/1",
+      verificationRegistry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+      issuerClone: doc.issuer.documentStore,
+      issuerSigner,
+    },
+  };
+}
+
+describe("verify() M7 provenance issuer-signer check", () => {
+  it("matching issuerSigner claim verifies", async () => {
+    const doc = withProtocol(validDoc(), SIGNER);
+    const v = await verify(doc, opts("third-party", {issuedBy: SIGNER}));
+    expect(v.fragments.issuance).toBe("VALID");
+    expect(v.valid).toBe(true);
+  });
+
+  it("wrong/forged issuerSigner does NOT verify (routing hint, not authority)", async () => {
+    const doc = withProtocol(validDoc(), "0x00000000000000000000000000000000deadbeef");
+    const v = await verify(doc, opts("third-party", {issuedBy: SIGNER})); // on-chain != claim
+    expect(v.fragments.issuance).toBe("INVALID");
+    expect(v.valid).toBe(false);
+  });
+
+  it("a matching block cannot rescue an on-chain-invalid record", async () => {
+    // The literal acceptance property: a present block must NOT make an INVALID record verify, even
+    // when its issuerSigner matches on-chain - the additive check only ever tightens.
+    const doc = withProtocol(validDoc(), SIGNER);
+    const v = await verify(doc, opts("third-party", {isValid: false, issuedBy: SIGNER}));
+    expect(v.fragments.issuance).toBe("INVALID");
+    expect(v.valid).toBe(false);
+  });
+
+  it("absent block verifies unchanged (§4.4 back-compat)", async () => {
+    const v = await verify(validDoc(), opts("third-party", {issuedBy: SIGNER}));
+    expect(v.fragments.issuance).toBe("VALID");
+    expect(v.valid).toBe(true);
+  });
+
+  it("unwired adapter (no issuedBy) skips the additive check, never regresses", async () => {
+    const doc = withProtocol(validDoc(), "0xanything");
+    const v = await verify(doc, opts("third-party", {})); // issuedBy omitted -> unwired
+    expect(v.fragments.issuance).toBe("VALID");
+    expect(v.valid).toBe(true);
+  });
+
+  it("resolvedProtocol defaults a pre-M7 doc to Level-A, returns a stamped block as-is", async () => {
+    const {resolvedProtocol, LEVEL_A_VERSION} = await import("../src/wrap.js");
+    const reg = "0x4E2f0996e1CB4E24F1053346f3da2186906835E8";
+    const resolved = resolvedProtocol(validDoc(), 135, reg, SIGNER);
+    expect(resolved).toEqual({
+      chainId: 135,
+      version: LEVEL_A_VERSION,
+      verificationRegistry: reg,
+      issuerClone: issuer.documentStore,
+      issuerSigner: SIGNER,
+    });
+    const stamped = withProtocol(validDoc(), SIGNER);
+    expect(resolvedProtocol(stamped, 1, "0xzzz", "0xother")).toEqual(stamped.protocol);
   });
 });

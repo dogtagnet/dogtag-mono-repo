@@ -46,8 +46,33 @@ pub struct IssuedCredential {
     #[serde(rename = "dogTagId")]
     pub dog_tag_id: String,
     /// The DogTagIssuer clone (contract) address the root was anchored to. IMMUTABLE.
+    /// == the `protocol` block's `issuerClone` (M7 §4.2).
     #[serde(rename = "issuerAddr")]
     pub issuer_addr: String,
+    /// M7 provenance mirror (§4.2), populated from the `WrappedDoc.protocol` block - persisted BESIDE
+    /// `R`, never inside it. IMMUTABLE once set. `issuer_signer` is the on-chain `clone.issuedBy[R]`
+    /// (== this authority's issuing signer). `Option`/defaulted so rows written before M7 still load
+    /// (resolve the default via `WrappedDoc::resolved_protocol`).
+    #[serde(rename = "chainId", default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<u64>,
+    #[serde(
+        rename = "protocolVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub protocol_version: Option<String>,
+    #[serde(
+        rename = "verificationRegistry",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub verification_registry: Option<String>,
+    #[serde(
+        rename = "issuerSigner",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub issuer_signer: Option<String>,
     /// The public Crockford-base32 receipt handle (also a salted leaf committed in R, so it is
     /// IMMUTABLE). This is the `/r/:receiptId` lookup key — unique across the authority's records.
     /// `Option` for backward-compat with rows written before receipts existed.

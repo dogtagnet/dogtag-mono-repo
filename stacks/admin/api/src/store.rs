@@ -116,6 +116,20 @@ pub struct Pet {
     pub mint_tx: Option<String>,
     /// encrypted credential salts/data blob (the wrapped profile VC) — erasure shreds it.
     pub sealed_doc: Option<Sealed>,
+    // M7 provenance mirror (§4.2): QUERYABLE plaintext columns that close the admin gap - provenance
+    // previously lived ONLY inside the encrypted `sealed_doc`. Persisted BESIDE `R`, never inside it.
+    // `issuer_addr` is the issuer clone (== `WrappedDoc.protocol.issuerClone`/`issuer.documentStore`);
+    // `issuer_signer` is who issued/minted. `Option`/defaulted so pre-M7 rows still load.
+    #[serde(default)]
+    pub chain_id: Option<u64>,
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    #[serde(default)]
+    pub verification_registry: Option<String>,
+    #[serde(default)]
+    pub issuer_addr: Option<String>,
+    #[serde(default)]
+    pub issuer_signer: Option<String>,
 }
 
 // ---- credentials ----
@@ -129,6 +143,19 @@ pub struct Credential {
     pub root: String,
     /// encrypted wrapped-doc reference (salts/data) — erasure shreds it.
     pub sealed_doc: Sealed,
+    // M7 provenance mirror (§4.2): QUERYABLE plaintext columns projected from the imported
+    // `WrappedDoc.protocol` block, or its §4.4 Level-A default when absent (pre-M7 doc). Persisted
+    // BESIDE `R`. `Option`/defaulted so pre-M7 rows still load.
+    #[serde(default)]
+    pub chain_id: Option<u64>,
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    #[serde(default)]
+    pub verification_registry: Option<String>,
+    #[serde(default)]
+    pub issuer_addr: Option<String>,
+    #[serde(default)]
+    pub issuer_signer: Option<String>,
 }
 
 // ---- share refs (one-time JWT bookkeeping) ----

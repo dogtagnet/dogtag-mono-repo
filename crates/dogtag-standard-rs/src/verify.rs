@@ -46,6 +46,14 @@ pub trait RpcAdapter {
     ) -> Result<bool, AdapterError>;
     /// DogTagSBT.ownerOf(dogTagId). Err -> transient ERROR.
     fn owner_of(&self, dog_tag_id: &str) -> Result<String, AdapterError>;
+
+    /// DogTagIssuer.issuedBy(root) - the authoritative signer that issued `R` (== `clone.issuedBy[R]`),
+    /// used to validate the envelope's `protocol.issuerSigner` *claim* (§4.3). Default: unwired => `Err`,
+    /// which makes the additive issuer-signer check skip (base validity still governs). Live per-backend
+    /// eth-calls are the later verify-path hardening brick (M7 P5); the SDK enforces it whenever wired.
+    fn issued_by(&self, _document_store: &str, _merkle_root: &str) -> Result<String, AdapterError> {
+        Err(AdapterError("issued_by not wired".to_string()))
+    }
 }
 
 pub trait DnsAdapter {
@@ -174,6 +182,27 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
         Ok(true) => FragmentState::Valid,
         Ok(false) => FragmentState::Invalid,
         Err(_) => FragmentState::Error,
+    };
+
+    // M7 provenance (§4.2/§4.3): a stamped `protocol.issuerSigner` is only the envelope's CLAIM of
+    // who issued; validate it against the authoritative on-chain `clone.issuedBy[R]`. A wrong/forged
+    // claim fails closed (issuance -> INVALID). This can only make verification STRICTER - the on-chain
+    // validity re-derivation above still targets `doc.issuer.document_store`, NEVER the untrusted
+    // block, so a forged `protocol` block can neither reroute validation nor make an invalid record
+    // verify. Skipped when the block is absent (pre-M7) or the adapter is unwired (`Err`) - the base
+    // validity governs. Wiring live per-backend `issuedBy` reads is the later hardening brick (M7 P5).
+    let issuance = match (&doc.protocol, issuance) {
+        (Some(p), FragmentState::Valid) => {
+            match opts
+                .rpc
+                .issued_by(&doc.issuer.document_store, &doc.signature.merkle_root)
+            {
+                Ok(onchain) if onchain.eq_ignore_ascii_case(&p.issuer_signer) => FragmentState::Valid,
+                Ok(_) => FragmentState::Invalid,
+                Err(_) => FragmentState::Valid,
+            }
+        }
+        (_, other) => other,
     };
 
     let identity = match (
@@ -567,5 +596,154 @@ mod tests {
         let mut doc = wrap_document(&sample_credential(), issuer(), &mut sp).unwrap();
         doc.signature.proof.push(doc.signature.target_hash.clone());
         assert_eq!(check_integrity(&doc).0, FragmentState::Invalid);
+    }
+
+    // --- M7 provenance: the `protocol` block is a routing hint, NEVER authority (§4.2/§4.3) ----
+    //
+    // A stamped `protocol.issuerSigner` is only the envelope's CLAIM of who issued; verify()
+    // validates it against the authoritative on-chain `clone.issuedBy[R]` (here the injected
+    // `issued_by`). A wrong/forged claim must NOT make a record verify.
+
+    use crate::wrap::{ProtocolMeta, LEVEL_A_VERSION};
+
+    /// The signer that actually issued R on-chain (== `clone.issuedBy[R]`).
+    const SIGNER: &str = "0x00000000000000000000000000000000000515e6";
+
+    struct MockRpcSigner {
+        is_valid: bool,
+        issued_by: String,
+    }
+    impl RpcAdapter for MockRpcSigner {
+        fn is_valid(&self, _ds: &str, _root: &str, _c: u32) -> Result<bool, AdapterError> {
+            Ok(self.is_valid)
+        }
+        fn owner_of(&self, _id: &str) -> Result<String, AdapterError> {
+            Err(AdapterError("ownerOf unused (third-party)".into()))
+        }
+        fn issued_by(&self, _ds: &str, _root: &str) -> Result<String, AdapterError> {
+            Ok(self.issued_by.clone())
+        }
+    }
+
+    fn protocol_block(issuer_signer: &str) -> ProtocolMeta {
+        ProtocolMeta {
+            chain_id: 135,
+            version: LEVEL_A_VERSION.to_string(),
+            verification_registry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string(),
+            issuer_clone: issuer().document_store,
+            issuer_signer: issuer_signer.to_string(),
+        }
+    }
+
+    fn provenance_opts<'a>(rpc: &'a MockRpcSigner) -> VerifyOpts<'a> {
+        VerifyOpts {
+            rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        }
+    }
+
+    #[test]
+    fn provenance_matching_issuer_signer_verifies() {
+        let mut doc = good_doc();
+        doc.protocol = Some(protocol_block(SIGNER)); // claim == on-chain issuedBy[R]
+        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let v = verify(&doc, &provenance_opts(&rpc));
+        assert_eq!(v.issuance, FragmentState::Valid);
+        assert!(v.valid);
+    }
+
+    #[test]
+    fn provenance_wrong_issuer_signer_does_not_verify() {
+        // The load-bearing property: a forged `issuerSigner` claim must NOT make the record verify,
+        // even though the record is otherwise on-chain-valid (is_valid == true). Provenance is a
+        // routing hint, never authority.
+        let mut doc = good_doc();
+        doc.protocol = Some(protocol_block("0x00000000000000000000000000000000deadbeef"));
+        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let v = verify(&doc, &provenance_opts(&rpc));
+        assert_eq!(v.issuance, FragmentState::Invalid);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn provenance_absent_block_verifies_unchanged() {
+        // §4.4 back-compat: a pre-M7 record (no `protocol` block) verifies exactly as before -
+        // the additive issuer-signer check is skipped entirely.
+        let doc = good_doc(); // protocol == None
+        assert!(doc.protocol.is_none());
+        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let v = verify(&doc, &provenance_opts(&rpc));
+        assert_eq!(v.issuance, FragmentState::Valid);
+        assert!(v.valid);
+    }
+
+    #[test]
+    fn provenance_unwired_adapter_skips_check_not_fails() {
+        // If the on-chain read is unwired (the default `issued_by` -> Err), the additive check is
+        // skipped and base validity governs - a stamped block never regresses an unwired backend.
+        let mut doc = good_doc();
+        doc.protocol = Some(protocol_block("0xanything"));
+        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) }; // no issued_by
+        let opts = VerifyOpts {
+            rpc: &rpc,
+            dns: &MockDns(Ok(true)),
+            registry: &MockRegistry(Ok(true)),
+            mode: VerifyMode::ThirdParty,
+            user_wallet_address: None,
+            confirmations: None,
+        };
+        let v = verify(&doc, &opts);
+        assert_eq!(v.issuance, FragmentState::Valid);
+        assert!(v.valid);
+    }
+
+    #[test]
+    fn provenance_matching_block_cannot_rescue_onchain_invalid_record() {
+        // The literal acceptance property: a forged/present block must NOT make an INVALID record
+        // verify. Even a block whose issuerSigner MATCHES on-chain cannot rescue a record the chain
+        // reports invalid (is_valid == false) - the additive check only ever tightens.
+        let mut doc = good_doc();
+        doc.protocol = Some(protocol_block(SIGNER)); // claim == on-chain, yet base validity is false
+        let rpc = MockRpcSigner { is_valid: false, issued_by: SIGNER.to_string() };
+        let v = verify(&doc, &provenance_opts(&rpc));
+        assert_eq!(v.issuance, FragmentState::Invalid);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn provenance_block_does_not_weaken_integrity() {
+        // A stamped block cannot make an integrity-tampered doc verify.
+        let mut doc = good_doc();
+        let subj = doc.data["credentialSubject"].as_object_mut().unwrap();
+        let packed = subj["name"].as_str().unwrap();
+        let parts: Vec<&str> = packed.splitn(3, ':').collect();
+        subj.insert("name".to_string(), Value::String(format!("{}:{}:Max", parts[0], parts[1])));
+        doc.protocol = Some(protocol_block(SIGNER));
+        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let v = verify(&doc, &provenance_opts(&rpc));
+        assert_eq!(v.integrity, FragmentState::Invalid);
+        assert!(!v.valid);
+    }
+
+    #[test]
+    fn resolved_protocol_defaults_pre_m7_to_level_a() {
+        // §4.4: an absent block resolves to the Level-A provenance; a present block is returned as-is.
+        let doc = good_doc();
+        let reg = "0x4E2f0996e1CB4E24F1053346f3da2186906835E8";
+        let resolved = doc.resolved_protocol(135, reg, SIGNER);
+        assert_eq!(resolved.version, LEVEL_A_VERSION);
+        assert_eq!(resolved.chain_id, 135);
+        assert_eq!(resolved.verification_registry, reg);
+        assert_eq!(resolved.issuer_clone, doc.issuer.document_store);
+        assert_eq!(resolved.issuer_signer, SIGNER);
+
+        let mut stamped = good_doc();
+        let block = protocol_block(SIGNER);
+        stamped.protocol = Some(block.clone());
+        assert_eq!(stamped.resolved_protocol(1, "0xzzz", "0xother"), block);
     }
 }

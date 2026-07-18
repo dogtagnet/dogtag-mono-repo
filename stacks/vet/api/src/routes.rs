@@ -482,10 +482,14 @@ async fn prepare(
     // build (ALWAYS server-side, identical both modes).
     let meta = app::issuer_meta(&st.cfg, &body.record_type, &issuer_addr);
     let vc = app::build_vc(&body.record_type, &body.fields, &body.dog_tag_id);
-    let doc = match app::wrap(&body.record_type, meta, &vc) {
+    let mut doc = match app::wrap(&body.record_type, meta, &vc) {
         Ok(d) => d,
         Err(e) => return err(StatusCode::BAD_REQUEST, &e),
     };
+    // Stamp the M7 provenance block (§4.2), BESIDE R - never inside it. `issuerSigner` is left empty
+    // until the authoritative on-chain `issuedBy[R]` is derived at confirm (the `RootIssued` log).
+    let chain_id = st.chain.chain_id();
+    doc.protocol = Some(app::protocol_meta(&st.cfg, chain_id, &issuer_addr, ""));
     let root = doc.signature.merkle_root.clone();
     let target = doc.signature.target_hash.clone();
     let calldata = crate::chain::issue_calldata(&root);
@@ -500,6 +504,12 @@ async fn prepare(
         root: root.clone(),
         prepared_calldata: calldata.clone(),
         issuer_addr: issuer_addr.clone(),
+        // M7 provenance mirror (§4.2): the routing-fixed fields are known now; `issuer_signer` is the
+        // on-chain `issuedBy[R]`, filled at confirm from the `RootIssued` log.
+        chain_id: Some(chain_id),
+        protocol_version: Some(dogtag_standard::wrap::LEVEL_A_VERSION.to_string()),
+        verification_registry: Some(st.cfg.verification_registry_addr.clone()),
+        issuer_signer: None,
         status: RecordStatus::Prepared,
         tx_hash: None,
         confirmed_tx_hash: None,
@@ -680,6 +690,20 @@ async fn confirm_inner(st: &AppState, record_id: &str, tx_hash: &str) -> Result<
     r.confirmed_tx_hash = Some(tx_hash.to_string());
     r.tx_hash = Some(tx_hash.to_string());
     r.signer_address = Some(signer.clone());
+    // M7 provenance (§4.2): the authoritative issuer signer (== `clone.issuedBy[R]`, here the
+    // `RootIssued`-derived `signer`) fills the mirror column AND the envelope block's `issuerSigner`.
+    // The block sits OUTSIDE `R`, so patching it never perturbs the anchored root.
+    r.issuer_signer = Some(signer.clone());
+    if let Some(p) = r
+        .wrapped_doc
+        .get_mut("protocol")
+        .and_then(|v| v.as_object_mut())
+    {
+        p.insert(
+            "issuerSigner".to_string(),
+            serde_json::Value::String(signer.clone()),
+        );
+    }
     r.signing_mode = Some(st.store.get_settings().await.signing_mode);
     // Persist the immutable on-chain proof: block number + a ready-to-click explorer link.
     r.block_number = view.block_number;

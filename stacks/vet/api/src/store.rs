@@ -31,7 +31,24 @@ pub struct Record {
     /// hex calldata for issue(root), pinned at prepare time.
     pub prepared_calldata: String,
     /// the issuer clone (contract) address (documentStore) this record anchors to. IMMUTABLE.
+    /// == the `protocol` block's `issuerClone` (M7 §4.2).
     pub issuer_addr: String,
+    /// M7 provenance mirror (§4.2), populated from the `WrappedDoc.protocol` block - persisted BESIDE
+    /// `R`, never inside it. IMMUTABLE once set. `chain_id`/`protocol_version`/`verification_registry`
+    /// are known at prepare; `issuer_signer` is the on-chain `clone.issuedBy[R]`, learned at confirm
+    /// (== the `signer_address` derived from the `RootIssued` log). `Option`/defaulted so pre-M7 rows
+    /// still load (resolve the default via `WrappedDoc::resolved_protocol`).
+    #[serde(default)]
+    pub chain_id: Option<u64>,
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    #[serde(default)]
+    pub verification_registry: Option<String>,
+    /// The signer that issued (== `clone.issuedBy[R]`). Mirrors `signer_address` (which is set from the
+    /// same `RootIssued` log at confirm); kept as a distinct provenance column so all three stacks
+    /// expose a uniform `issuer_signer`, and to decouple the provenance mirror from the signing-flow field.
+    #[serde(default)]
+    pub issuer_signer: Option<String>,
     pub status: RecordStatus,
     pub tx_hash: Option<String>,
     pub confirmed_tx_hash: Option<String>,

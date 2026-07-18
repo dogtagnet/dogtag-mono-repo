@@ -41,6 +41,12 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
+        // M7 §4.2: mirror the chain client's id + the routing-key registry into the provenance block.
+        chain_id,
+        verification_registry_addr: env(
+            "VERIFICATION_REGISTRY_ADDR",
+            "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+        ),
         sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
         factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         issuer_name: env("ISSUER_NAME", "DogTag Central"),

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use dogtag_standard::schema::{validate_schema, DOGTAG_CONTEXT_URI};
-use dogtag_standard::wrap::{wrap_document, IssuerMeta, WrappedDoc};
+use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION};
 use serde_json::{json, Value};
 
 use crate::auth::JwtKeys;
@@ -23,6 +23,12 @@ pub struct Config {
     pub deployment_url: String,
     pub rpc_url: String,
     pub issuer_registry_addr: String,
+    /// EIP-155 chain id stamped in the M7 `protocol` block (§4.2); mirrors the chain client's id
+    /// (env `CHAIN_ID`, default `ROAX_CHAIN_ID` = 135).
+    pub chain_id: u64,
+    /// VerificationRegistry address - THE routing key stamped in the M7 `protocol` block (§4.2).
+    /// Defaults to the Level-A registry.
+    pub verification_registry_addr: String,
     pub sbt_addr: String,
     /// DogTagIssuerFactory address — the `createIssuer`/`predictIssuer` target + the Ownable owner whose
     /// key gates deploys (plan PR-A). Empty (zero) until `FACTORY_ADDR` is configured.
@@ -64,6 +70,19 @@ pub fn profile_issuer_meta(cfg: &Config) -> IssuerMeta {
         domain: cfg.issuer_domain.clone(),
         document_store: cfg.profile_document_store.clone(),
         record_type: DOG_PROFILE.to_string(),
+    }
+}
+
+/// Build the M7 provenance block (§4.2) for a profile the central admin mints. `issuer_clone` ==
+/// `profile_document_store` (the SBT acts as the profile store); `issuer_signer` is the central
+/// minting signer (== `DogTagSBT.issuerOf[id]`). A routing hint only - validated on-chain at verify.
+pub fn protocol_meta(cfg: &Config, issuer_clone: &str, issuer_signer: &str) -> ProtocolMeta {
+    ProtocolMeta {
+        chain_id: cfg.chain_id,
+        version: LEVEL_A_VERSION.to_string(),
+        verification_registry: cfg.verification_registry_addr.clone(),
+        issuer_clone: issuer_clone.to_string(),
+        issuer_signer: issuer_signer.to_string(),
     }
 }
 
@@ -236,6 +255,8 @@ mod tests {
             deployment_url: "http://localhost:8080".to_string(),
             rpc_url: "http://localhost:8545".to_string(),
             issuer_registry_addr: "0x1111".to_string(),
+            chain_id: 135,
+            verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string(),
             sbt_addr: "0x2222".to_string(),
             factory_addr: "0x4444".to_string(),
             issuer_name: "DogTag Central".to_string(),

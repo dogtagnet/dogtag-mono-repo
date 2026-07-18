@@ -32,6 +32,7 @@ fn gov_state(feed: Arc<dyn OversightFeed>) -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "DogTag Government Authority".into(),

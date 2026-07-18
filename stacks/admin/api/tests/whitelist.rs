@@ -151,6 +151,8 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         deployment_url: "http://localhost:39742".to_string(),
         rpc_url: rpc.to_string(),
         issuer_registry_addr: registry.to_lowercase(),
+        chain_id: 135,
+        verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string(),
         sbt_addr: sbt.to_lowercase(),
         factory_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_name: "DogTag Central".to_string(),
