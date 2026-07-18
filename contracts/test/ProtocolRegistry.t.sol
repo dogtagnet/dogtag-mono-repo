@@ -35,10 +35,7 @@ contract ProtocolRegistryTest is Test {
         reg.executeVersion(v.versionId);
     }
 
-    function _assertEqVersion(ProtocolRegistry.Version memory got, ProtocolRegistry.Version memory want)
-        internal
-        pure
-    {
+    function _assertEqVersion(ProtocolRegistry.Version memory got, ProtocolRegistry.Version memory want) internal pure {
         assertEq(got.versionId, want.versionId, "versionId");
         assertEq(got.factory, want.factory, "factory");
         assertEq(got.verificationRegistry, want.verificationRegistry, "verificationRegistry");
@@ -137,9 +134,7 @@ contract ProtocolRegistryTest is Test {
     /// caught, and the immediately-following pranked call is the one that must revert.
     function _expectUnauthorized(address who) internal {
         bytes32 role = reg.PUBLISHER_ROLE();
-        vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, who, role)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, who, role));
     }
 
     function test_propose_requires_publisher_role() public {
