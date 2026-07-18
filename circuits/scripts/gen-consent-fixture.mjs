@@ -29,7 +29,7 @@ const SDK = resolve(ROOT, "..", "packages", "dogtag-standard-ts", "dist");
 const {buildMerkle, merkleProof, processProof} = await import(resolve(SDK, "merkle.js"));
 const {DS_LEAF, DS_NULLIFIER, FIELD_P, poseidon, fieldFromScalarBytes} =
   await import(resolve(SDK, "field.js"));
-const {fieldOfKeyPath} = await import(resolve(SDK, "leaf.js"));
+const {fieldOfKeyPath, fieldOfValue} = await import(resolve(SDK, "leaf.js"));
 
 const DEPTH = 6; // must match `component main = DogTagConsent(6)`
 
@@ -88,7 +88,13 @@ function padPath(proof) {
 async function buildInput(eddsa, {recordType}) {
   const F = eddsa.babyJub.F;
 
-  const dogTagId = 424242n;
+  // The off-chain handle (what the operator types) -> the CANONICAL on-chain dogTagId field via
+  // fieldOfValue(Integer(handle)). This is what the M7 issuance path (`field-hash` / `build_profile_tree`
+  // / the consent assembler) and the SBT mint all use, so the committed vector binds the CANONICAL
+  // field, not the raw handle. Do NOT revert to `424242n` raw — that is the shortcut the ZK cross-check
+  // (§2) and profile_tree.rs:279-287 warn against; a raw-bound fixture diverges from the minted id.
+  const dogTagIdHandle = "424242";
+  const dogTagId = fieldOfValue({tag: 3 /* TypeTag.Integer */, value: dogTagIdHandle});
   const purpose = labelField("GROOMING_INTAKE");
   const relayer = 0x1111111111111111111111111111111111111111n;
   const deadline = 1893456000n; // 2030-01-01

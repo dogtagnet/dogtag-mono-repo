@@ -31,18 +31,25 @@
 //!
 //! # Adding a version
 //!
-//! Add an [`ArtifactDescriptor`] const and register it in [`REGISTRY`]. A consent version (M7 P1) is
-//! the next expected entry; it is deliberately absent here because its *code path* — the consent
-//! input assembler and its public-signal layout — does not exist yet, and a resolvable descriptor
-//! with no code behind it would be a trap ([`crate::Prover::prove`] pushes Level-A signal names).
-//! Per the ZK cross-check, that entry must be built from `circuits/consent.circom`, not the stale
-//! Level-A `consent.rs` stub, and must pin its own zkey AND its own VK.
+//! Add an [`ArtifactDescriptor`] const and register it in [`REGISTRY`]. The Level-B consent version
+//! ([`LEVEL_B_V1_DESCRIPTOR`]) landed with the M7 P0 consent proving path: its code path is
+//! [`crate::ConsentProveInputs`] / [`crate::Prover::prove_consent_inputs`] (distinct signal names
+//! from Level-A's [`crate::Prover::prove`]), fed by the SDK's `consent_assemble` assembler. It is
+//! built from `circuits/consent.circom` (NOT the stale Level-A `consent.rs`, ZK cross-check §2) and
+//! pins its own zkey AND its own VK, separately.
 
 /// The Level-A verification circuit, version 1 — the current (and today only) protocol version.
 ///
 /// This is what every caller that names no version resolves to ([`resolve`]), so the pre-M7 path is
 /// simply this entry.
 pub const LEVEL_A_V1: &str = "dogtag-levela/1";
+
+/// The Level-B owner-unlinkable consent circuit, version 1 (M7 P0).
+///
+/// Its proofs verify against the frozen `Groth16VerifierConsent` VK; its inputs are the
+/// [`crate::ConsentProveInputs`] shape (NOT Level-A's `ProveInputs`), and its public-signal vector is
+/// `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`.
+pub const LEVEL_B_V1: &str = "dogtag-levelb/1";
 
 /// A file an artifact set is made of, addressed relative to a build/bundle directory.
 ///
@@ -96,8 +103,11 @@ pub struct ArtifactDescriptor {
     pub circuit_id: &'static str,
     /// How many public signals the circuit exposes.
     pub num_public: usize,
-    /// The circuit's max leaf count (the `N` width its fixed-size input arrays carry).
-    pub max_leaves: usize,
+    /// The circuit's max leaf count — the `N` width its fixed-size leaf arrays carry — for versions
+    /// whose inputs are the Level-A `ProveInputs` shape. `None` for a circuit that feeds no such
+    /// fixed-width leaf array (the Level-B consent circuit folds depth-6 inclusion PATHS, not an
+    /// `N`-wide leaf table), so the `max_leaves == N` load guard does not apply to it.
+    pub max_leaves: Option<usize>,
     /// The public-signal vector in snarkjs order — the meaning of each slot of
     /// [`crate::Groth16Output::public_signals`].
     pub public_signal_layout: &'static [&'static str],
@@ -123,7 +133,7 @@ pub const LEVEL_A_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     version: LEVEL_A_V1,
     circuit_id: "verification.circom/DogTagVerification(24,5)",
     num_public: crate::NUM_PUBLIC,
-    max_leaves: crate::N,
+    max_leaves: Some(crate::N),
     public_signal_layout: &[
         "dogTagId",
         "purpose",
@@ -161,11 +171,56 @@ pub const LEVEL_A_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     },
 };
 
-/// Every version this build can prove.
+/// The Level-B consent artifact set (M7 P0).
 ///
-/// One entry today. A consent version joins it in M7 P1 (see the module docs for why it is not here
-/// yet).
-pub const REGISTRY: &[&ArtifactDescriptor] = &[&LEVEL_A_V1_DESCRIPTOR];
+/// The zkey/VK are the frozen M3 testnet-grade ceremony output (`docs/CEREMONY_TRANSCRIPT.consent.md`,
+/// committed under `circuits/build`). `max_leaves` is `None`: `DogTagConsent(6)` feeds depth-6
+/// inclusion PATHS via [`crate::ConsentProveInputs`], not an `N`-wide leaf table, so the
+/// `max_leaves == N` load guard does not apply. Its public-signal layout is the frozen seven-OUTPUT
+/// order; the graph is not committed (fetched in CI, like Level-A's).
+pub const LEVEL_B_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
+    version: LEVEL_B_V1,
+    circuit_id: "consent.circom/DogTagConsent(6)",
+    num_public: crate::NUM_PUBLIC,
+    max_leaves: None,
+    public_signal_layout: &[
+        "dogTagId",
+        "purpose",
+        "relayer",
+        "nullifier",
+        "R",
+        "recordType",
+        "deadline",
+    ],
+    zkey: ZkeyArtifact {
+        rel_path: "consent_final.zkey",
+        sha256: "f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868",
+    },
+    r1cs: ArtifactFile {
+        rel_path: "consent.r1cs",
+        sha256: Some("828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7"),
+    },
+    wasm: ArtifactFile {
+        rel_path: "consent_js/consent.wasm",
+        sha256: Some("482debcff5a4325c008dd00e4476bba011d0a706da955e3129d114f996a913e6"),
+    },
+    witness_graph: ArtifactFile {
+        rel_path: "consent.graph",
+        // Unpinned: the graph is not committed (CI fetches it from DOGTAG_ARTIFACTS_URL), like
+        // Level-A's. The mobile resolver pins it from the discovery anchor at fetch time.
+        sha256: None,
+    },
+    vk: VerifyingKeyIdentity {
+        verification_key_json: ArtifactFile {
+            rel_path: "consent_verification_key.json",
+            sha256: Some("27879dd7c4eabb6acea4d1be1249ba3c4212f95a27237e7e1e1220557b4e2d7f"),
+        },
+    },
+};
+
+/// Every version this build can prove: Level-A verification + Level-B consent (M7 P0).
+pub const REGISTRY: &[&ArtifactDescriptor] =
+    &[&LEVEL_A_V1_DESCRIPTOR, &LEVEL_B_V1_DESCRIPTOR];
 
 /// The version a caller gets when it names none — the current Level-A artifact set.
 pub fn current() -> &'static ArtifactDescriptor {
@@ -213,13 +268,28 @@ mod tests {
         assert_eq!(d.zkey.rel_path, "verification_final.zkey");
     }
 
+    /// The Level-B consent version (M7 P0) is now a registered, resolvable entry.
+    #[test]
+    fn resolve_consent_version_returns_its_descriptor() {
+        let d = resolve(Some(LEVEL_B_V1)).unwrap();
+        assert_eq!(d.version, LEVEL_B_V1);
+        assert_eq!(d.zkey.rel_path, "consent_final.zkey");
+        assert_eq!(d.circuit_id, "consent.circom/DogTagConsent(6)");
+        assert_eq!(d.max_leaves, None, "consent feeds inclusion paths, not an N-wide leaf array");
+        assert_eq!(
+            d.public_signal_layout,
+            ["dogTagId", "purpose", "relayer", "nullifier", "R", "recordType", "deadline"],
+            "frozen seven-OUTPUT order (consent.circom, README.consent.md)"
+        );
+    }
+
     /// An unknown version FAILS CLOSED — it must never silently resolve to the current artifact set.
     #[test]
     fn resolve_unknown_version_fails_closed() {
-        match resolve(Some("dogtag-levelb/1")) {
+        match resolve(Some("dogtag-levelc/9")) {
             Err(crate::ProverError::UnknownVersion { version, known }) => {
-                assert_eq!(version, "dogtag-levelb/1");
-                assert_eq!(known, vec![LEVEL_A_V1.to_string()]);
+                assert_eq!(version, "dogtag-levelc/9");
+                assert_eq!(known, vec![LEVEL_A_V1.to_string(), LEVEL_B_V1.to_string()]);
             }
             other => panic!("unknown version must fail closed, got {other:?}"),
         }
@@ -268,13 +338,18 @@ mod tests {
                  exposing a different count would be rejected by `Prover::load_versioned`",
                 d.version
             );
-            assert_eq!(
-                d.max_leaves,
-                crate::N,
-                "{}: this build feeds fixed N-wide leaf arrays, so a registered version proving a \
-                 different width would be rejected by `Prover::load_versioned`",
-                d.version
-            );
+            // A version that DECLARES a fixed leaf-array width must match this build's N (the guard
+            // `Prover::load_versioned` enforces). A version with `None` (the consent circuit) feeds
+            // inclusion paths, not a fixed leaf table, so it is exempt.
+            if let Some(max_leaves) = d.max_leaves {
+                assert_eq!(
+                    max_leaves,
+                    crate::N,
+                    "{}: a fixed-width leaf-array version must feed exactly N; \
+                     `Prover::load_versioned` would reject any other width",
+                    d.version
+                );
+            }
             assert_eq!(
                 resolve(Some(d.version)).unwrap().version,
                 d.version,

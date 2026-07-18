@@ -18,7 +18,7 @@ use ark_bn254::Fr;
 use ark_ff::PrimeField;
 use dogtag_standard::eddsa::consent_key_from_raw_prv;
 use dogtag_standard::field::{field_from_scalar_bytes, field_from_uint, to_hex32};
-use dogtag_standard::leaf::field_of_keypath;
+use dogtag_standard::leaf::{field_of_keypath, field_of_value};
 use dogtag_standard::merkle::build_merkle;
 use dogtag_standard::poseidon::{poseidon, DS_LEAF, DS_NULLIFIER};
 use dogtag_standard::profile_tree::{
@@ -144,10 +144,14 @@ fn the_owner_secret_reproduces_the_fixtures_nullifier() {
     let owner_secret =
         fr_from_hex("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
 
+    // dogTagId is the CANONICAL field `field_of_value(Integer(handle))` — the fixture (regenerated
+    // by M7 P0) binds the canonical field, not the raw `424242n` handle (ZK cross-check §2).
+    let dog_tag_id = field_of_value(&dogtag_standard::types::TypedScalar::Integer("424242".to_string()))
+        .expect("canonical dogTagId field");
     let nullifier = poseidon(&[
         Fr::from(DS_NULLIFIER),
         owner_secret,
-        Fr::from(424242u64),                                  // dogTagId
+        dog_tag_id,                                           // dogTagId (canonical field)
         fr_from_hex(f["purpose"].as_str().unwrap()),          // purpose
         fr_from_hex(f["relayer"].as_str().unwrap()),          // relayer (uint160)
         Fr::from(99u64),                                      // consentNonce

@@ -303,7 +303,7 @@ fn load_rejects_a_version_whose_width_this_build_cannot_handle() {
     // at nothing still reaches them. If a guard were removed the load would fail differently (a
     // missing-file `Load`), which the message assertions below catch.
     const BAD_LEAVES: artifact::ArtifactDescriptor = artifact::ArtifactDescriptor {
-        max_leaves: dogtag_prover::N + 1,
+        max_leaves: Some(dogtag_prover::N + 1),
         ..artifact::LEVEL_A_V1_DESCRIPTOR
     };
     const BAD_PUBLIC: artifact::ArtifactDescriptor = artifact::ArtifactDescriptor {
