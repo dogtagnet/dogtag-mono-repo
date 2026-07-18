@@ -2977,12 +2977,14 @@ dependencies = [
  "ark-groth16 0.6.0",
  "ark-serialize 0.6.0",
  "ark-std 0.6.0",
+ "ed25519-dalek",
  "hex",
  "num-bigint",
  "rand 0.8.6",
  "serde",
  "serde_json",
  "sha2",
+ "sha3",
  "thiserror 2.0.18",
 ]
 

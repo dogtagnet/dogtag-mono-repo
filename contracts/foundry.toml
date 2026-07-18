@@ -14,6 +14,8 @@ fs_permissions = [
     { access = "read", path = "test/zk-fixture.json" },
     { access = "read", path = "test/consent-fixture.json" },
     { access = "read", path = "test/device-profile-root.json" },
+    # ProtocolRegistry pin-verification test hashes the committed proving artifacts (M7 P3).
+    { access = "read", path = "../circuits/build" },
     { access = "read-write", path = "deployments" },
 ]
 remappings = [

@@ -29,6 +29,12 @@ ark-std = "0.6"
 num-bigint = "0.4"
 rand = { workspace = true }
 sha2 = "0.10"
+# Signed-manifest fallback (M7 §5.1 1B): the dogtag-key-signed discovery manifest an app verifies
+# OFFLINE. ed25519 is the compact, deterministic, malleability-free primitive for it.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# keccak256 for the manifest's versionId (== the on-chain ProtocolRegistry key). Independent of the
+# ark stack, so it does not reintroduce the ark-0.5/0.6 boundary this crate avoids.
+sha3 = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

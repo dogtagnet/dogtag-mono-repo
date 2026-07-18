@@ -52,6 +52,7 @@ use num_bigint::BigInt;
 use sha2::{Digest, Sha256};
 
 pub mod artifact;
+pub mod manifest;
 
 pub use artifact::ArtifactDescriptor;
 
