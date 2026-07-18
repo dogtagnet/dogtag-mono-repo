@@ -816,6 +816,33 @@ POST /prove-verification { wrappedDoc, consent, eddsaSig, version? }   # stacks/
   instance. The Android client (`CentralApi.kt`) POSTs to `<proverApiUrl>/prove-verification`; 64-bit
   devices never call it (`ScanScreen.kt` branches on `SUPPORTED_64_BIT_ABIS`).
 
+### 3.10b Level-B consent proving API (`POST /prove-consent`) - M7 P0
+
+The Level-B **consent** sibling of §3.10a: a distinct route on the SAME prover-service that proves the
+frozen `consent.circom` (`DogTagConsent(6)`) instead of `verification.circom`. It touches no
+circuit/VK/ceremony/contract (all frozen) - only a new prover code path. Full brick: AGENTS.md
+"Level-B consent proving path (M7 P0)". The API-surface deltas from §3.10a:
+
+```
+POST /prove-consent { circuitInput, version? }        # stacks/vet/api/src/routes.rs (prove_consent)
+   # circuitInput = the PRE-ASSEMBLED DogTagConsent(6) input the DEVICE built locally
+   #   (dogtag_standard::consent_assemble / the prove_consent FFI): scalars as decimal strings, the
+   #   three *Siblings signals as length-6 arrays. Unlike /prove-verification the server does NOT
+   #   assemble - the consent witness needs the owner's wallet SEED, which must never leave the device,
+   #   so only the heavy Groth16 prove runs here (owner-unlinkability preserved even for this fallback).
+   # version = OPTIONAL; must be the Level-B consent version ("dogtag-levelb/1"), else 400.
+   proof = ConsentProver.prove(circuitInput)           # ark-0.6; verifies against the frozen consent VK
+   return { a, b, c, pub }                              # pub=[dogTagId,purpose,relayer,nullifier,R,
+                                                        #      recordType,deadline] (7, frozen OUTPUT order;
+                                                        #      no subject/keyHash)
+```
+
+- **Lazy, fail-closed PER REQUEST - not at boot.** Unlike the Level-A boot prover, the `ConsentProver`
+  (`stacks/vet/api/src/prover.rs`) loads on the FIRST `/prove-consent` request (from the same
+  `CIRCUITS_BUILD_DIR`); a missing/hash-mismatched artifact set 503s THAT request, so a Level-A
+  `/prove-verification` instance and a consent instance coexist without either blocking the other's boot
+  (M7 §3.5). A malformed `circuitInput` is a 400 (client error), never a 5xx the caller would retry.
+
 ### 3.4 QR / JWT sharing
 ```
 POST /records/{id}/share -> { qrUrl }

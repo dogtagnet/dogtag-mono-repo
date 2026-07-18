@@ -38,7 +38,7 @@
 //! built from `circuits/consent.circom` (NOT the stale Level-A `consent.rs`, ZK cross-check §2) and
 //! pins its own zkey AND its own VK, separately.
 
-/// The Level-A verification circuit, version 1 — the current (and today only) protocol version.
+/// The Level-A verification circuit, version 1 - the default (unnamed-version) protocol version.
 ///
 /// This is what every caller that names no version resolves to ([`resolve`]), so the pre-M7 path is
 /// simply this entry.

@@ -292,7 +292,8 @@ fn load_rejects_tampered_witness_artifact() {
 /// The load-time width guards reject a version this build cannot feed or format, BEFORE any artifact
 /// is read.
 ///
-/// Today's registry has one entry whose widths match, so `resolve` can never hand `load_versioned` a
+/// Today's registered versions all have widths the guard accepts (Level-A matches `N`; the Level-B
+/// consent entry's `max_leaves: None` is exempt), so `resolve` can never hand `load_versioned` a
 /// mismatched descriptor — which is precisely why these guards need a direct test: nothing else
 /// executes them, so a refactor could drop one and every other test would still pass. They exist for
 /// the multi-version state M7 builds toward, where a descriptor's width is no longer guaranteed to be
