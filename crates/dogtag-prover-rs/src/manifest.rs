@@ -34,10 +34,16 @@ use sha3::{Digest, Keccak256};
 
 use crate::artifact::ArtifactDescriptor;
 
+/// `0x`-hex keccak256 of a UTF-8 string — the encoding the on-chain `ProtocolRegistry` uses for the
+/// bytes32 fields it derives from strings (`versionId`, `circuitId`).
+fn keccak_hex(s: &str) -> String {
+    format!("0x{}", hex::encode(Keccak256::digest(s.as_bytes())))
+}
+
 /// `0x`-hex keccak256 of a version string — the on-chain `ProtocolRegistry` map key for that version.
 /// MUST match `keccak256(bytes(version))` in `ProtocolVersions.sol`.
 pub fn version_id(version: &str) -> String {
-    format!("0x{}", hex::encode(Keccak256::digest(version.as_bytes())))
+    keccak_hex(version)
 }
 
 /// The signature scheme tag carried in the envelope (only ed25519 is defined).
@@ -200,6 +206,15 @@ pub struct FieldConflict {
 
 /// The authoritative on-chain fields a manifest is reconciled against (read from
 /// `ProtocolRegistry.getVersion`). On any disagreement THESE win.
+///
+/// It mirrors EVERY member of the on-chain `Version` struct that the signed manifest also carries, so
+/// [`reconcile`] can cross-check all of them — the trio + verifier, the artifact fetch-pins, `circuitId`,
+/// `artifactBaseUrl` and `minAppVersion`. The only on-chain members omitted are `publishedAt`/`active`,
+/// which are lifecycle state the manifest deliberately does not carry.
+///
+/// `circuit_id` holds the on-chain `bytes32` value, i.e. `keccak256(circuit-string)` as `0x`-hex;
+/// [`reconcile`] hashes the manifest's plain circuit string before comparing (§3.2 — this is distinct
+/// from the verifier VK identity and is NOT one of the fetch pins).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnchainVersion {
     pub version_id: String,
@@ -207,10 +222,14 @@ pub struct OnchainVersion {
     pub verification_registry: String,
     pub sbt: String,
     pub verifier: String,
+    /// `keccak256(circuit-string)` as `0x`-hex — the authoritative on-chain `circuitId` bytes32.
+    pub circuit_id: String,
     pub zkey_sha256: String,
     pub witness_mobile_sha256: Option<String>,
     pub witness_server_r1cs_sha256: Option<String>,
     pub witness_server_wasm_sha256: Option<String>,
+    pub artifact_base_url: String,
+    pub min_app_version: String,
 }
 
 /// The result of [`reconcile`]: the AUTHORITATIVE (always on-chain) shared fields, the manifest's
@@ -291,11 +310,15 @@ pub fn verify(signed: &SignedManifest, pinned: &VerifyingKey) -> Result<(), Mani
 
 /// Verify a manifest AND reconcile it against the on-chain record, enforcing on-chain precedence.
 ///
-/// Verification runs first (a bad signature is rejected before any field is trusted). Then every shared
-/// field is compared; the returned [`Reconciliation::authoritative`] is ALWAYS the on-chain value, and
-/// each disagreement is recorded. This is how "on-chain wins on conflict" is enforced in code: the
-/// caller reads authoritative fields from `authoritative` (on-chain) and only trusts the manifest's
-/// signed extras when [`Reconciliation::manifest_agrees`] holds.
+/// Verification runs first (a bad signature is rejected before any field is trusted). Then EVERY
+/// on-chain field the manifest mirrors is compared — the trio + verifier, every artifact fetch-pin,
+/// `circuit_id`, `artifact_base_url` and `min_app_version` (only the on-chain lifecycle members
+/// `publishedAt`/`active`, which the manifest does not carry, are out of scope). The returned
+/// [`Reconciliation::authoritative`] is ALWAYS the on-chain value, and each disagreement is recorded.
+/// This is how "on-chain wins on conflict" is enforced in code: the caller reads authoritative fields
+/// from `authoritative` (on-chain) and only trusts the manifest's signed extras when
+/// [`Reconciliation::manifest_agrees`] holds — so a stale/compromised manifest can never slip a
+/// differing `min_app_version` (the deprecation lever) or `circuit_id` past the check.
 pub fn reconcile(
     signed: &SignedManifest,
     pinned: &VerifyingKey,
@@ -321,16 +344,35 @@ pub fn reconcile(
     cmp("verification_registry", &onchain.verification_registry, &m.verification_registry);
     cmp("sbt", &onchain.sbt, &m.sbt);
     cmp("verifier", &onchain.verifier, &m.verifier);
+    // On-chain `circuitId` is a bytes32 (`keccak256(circuit-string)`) while the manifest carries the
+    // plain circuit string, so hash the manifest's before the (case-insensitive hex) compare.
+    cmp("circuit_id", &onchain.circuit_id, &keccak_hex(&m.circuit_id));
     cmp("zkey_sha256", &onchain.zkey_sha256, &m.zkey_sha256);
     cmp_opt(&mut conflicts, "witness_mobile_sha256", &onchain.witness_mobile_sha256, &m.witness_mobile_sha256);
     cmp_opt(&mut conflicts, "witness_server_r1cs_sha256", &onchain.witness_server_r1cs_sha256, &m.witness_server_r1cs_sha256);
     cmp_opt(&mut conflicts, "witness_server_wasm_sha256", &onchain.witness_server_wasm_sha256, &m.witness_server_wasm_sha256);
+    // The two string extras are compared EXACTLY (not case-folded): a URL path and a semver are
+    // case-sensitive, so `eq_ignore_ascii_case` could mask a real disagreement.
+    cmp_str(&mut conflicts, "artifact_base_url", &onchain.artifact_base_url, &m.artifact_base_url);
+    cmp_str(&mut conflicts, "min_app_version", &onchain.min_app_version, &m.min_app_version);
 
     Ok(Reconciliation {
         authoritative: onchain.clone(),
         manifest: signed.content.clone(),
         conflicts,
     })
+}
+
+/// Exact (case-sensitive) string comparison — for the on-chain string members (`artifactBaseUrl`,
+/// `minAppVersion`) where case is significant, unlike the case-folded hex/address fields.
+fn cmp_str(conflicts: &mut Vec<FieldConflict>, field: &'static str, oc: &str, mf: &str) {
+    if oc != mf {
+        conflicts.push(FieldConflict {
+            field,
+            onchain: oc.to_string(),
+            manifest: mf.to_string(),
+        });
+    }
 }
 
 fn cmp_opt(
@@ -377,10 +419,15 @@ mod tests {
             verification_registry: m.verification_registry.clone(),
             sbt: m.sbt.clone(),
             verifier: m.verifier.clone(),
+            // On-chain the circuitId is `keccak256(circuit-string)`, mirrored here from the manifest's
+            // plain circuit string so an agreeing manifest reconciles clean.
+            circuit_id: keccak_hex(&m.circuit_id),
             zkey_sha256: m.zkey_sha256.clone(),
             witness_mobile_sha256: m.witness_mobile_sha256.clone(),
             witness_server_r1cs_sha256: m.witness_server_r1cs_sha256.clone(),
             witness_server_wasm_sha256: m.witness_server_wasm_sha256.clone(),
+            artifact_base_url: m.artifact_base_url.clone(),
+            min_app_version: m.min_app_version.clone(),
         }
     }
 
@@ -442,6 +489,36 @@ mod tests {
         // The authoritative value the caller must use is the CHAIN's, not the manifest's.
         assert_eq!(r.authoritative.verifier, true_verifier);
         assert_ne!(r.authoritative.verifier, signed.content.verifier);
+    }
+
+    /// The precedence invariant covers `circuit_id` + the string extras too: a validly-signed manifest
+    /// whose `circuit_id`/`min_app_version`/`artifact_base_url` disagree with on-chain is reported as a
+    /// conflict and the authoritative values stay the on-chain ones (not the manifest's). Without these
+    /// three in the comparison a stale/compromised manifest could slip a differing `min_app_version` (the
+    /// deprecation lever) past `manifest_agrees()`.
+    #[test]
+    fn differing_circuit_id_and_string_extras_are_conflicts() {
+        let key = test_key();
+        let signed = sign(&levelb_manifest(), &key);
+
+        // Start from an agreeing on-chain record, then diverge exactly the three newly-covered fields.
+        let mut onchain = onchain_from(&signed.content);
+        let true_circuit = keccak_hex("verification.circom/DogTagVerification(24,5)");
+        onchain.circuit_id = true_circuit.clone();
+        onchain.min_app_version = "9.9.9".to_string();
+        onchain.artifact_base_url = "https://true.dogtag.io/levelb1".to_string();
+
+        let r = reconcile(&signed, &key.verifying_key(), &onchain).unwrap();
+        assert!(!r.manifest_agrees(), "differing circuit_id/min_app_version/artifact_base_url conflict");
+        let fields: Vec<&str> = r.conflicts.iter().map(|c| c.field).collect();
+        assert!(fields.contains(&"circuit_id"), "circuit_id conflict reported, got {fields:?}");
+        assert!(fields.contains(&"min_app_version"), "min_app_version conflict reported, got {fields:?}");
+        assert!(fields.contains(&"artifact_base_url"), "artifact_base_url conflict reported, got {fields:?}");
+        // On-chain wins: the authoritative values are the chain's, not the (validly signed) manifest's.
+        assert_eq!(r.authoritative.circuit_id, true_circuit);
+        assert_ne!(r.authoritative.circuit_id, keccak_hex(&signed.content.circuit_id));
+        assert_eq!(r.authoritative.min_app_version, "9.9.9");
+        assert_ne!(r.authoritative.min_app_version, signed.content.min_app_version);
     }
 
     /// A verified manifest that AGREES with on-chain reconciles cleanly (no conflicts).

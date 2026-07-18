@@ -19,11 +19,40 @@ use serde_json::json;
 /// PUBLIC key is what an app pins to verify offline (`dogtag_prover::manifest::DOGTAG_MANIFEST_PUBKEY`).
 pub const SIGNING_KEY_ENV: &str = "DOGTAG_MANIFEST_SIGNING_KEY";
 
-/// Load the dogtag manifest signing key from env, or `None` if unset/malformed.
-pub fn signing_key() -> Option<SigningKey> {
-    let hex_seed = std::env::var(SIGNING_KEY_ENV).ok()?;
-    let bytes: [u8; 32] = hex::decode(hex_seed.trim()).ok()?.try_into().ok()?;
-    Some(SigningKey::from_bytes(&bytes))
+/// Why the manifest signing key could not be loaded — kept distinct so the serving path can tell an
+/// UNSET key (feature simply off) apart from a SET-but-broken one (operator misconfiguration worth
+/// surfacing), instead of collapsing both into a silent "not configured" 503.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningKeyError {
+    /// `DOGTAG_MANIFEST_SIGNING_KEY` is unset — the serving path is intentionally disabled.
+    NotConfigured,
+    /// The env var IS set but is not a 32-byte ed25519 seed as 64 hex chars — a misconfiguration.
+    Malformed,
+}
+
+/// Parse a raw env value into the signing key. Pure (no env access) so the unset/malformed distinction
+/// is unit-testable without mutating process-global env vars. `None` ⇒ unset.
+fn parse_signing_key(raw: Option<&str>) -> Result<SigningKey, SigningKeyError> {
+    let hex_seed = raw.ok_or(SigningKeyError::NotConfigured)?;
+    let bytes: [u8; 32] = hex::decode(hex_seed.trim())
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or(SigningKeyError::Malformed)?;
+    Ok(SigningKey::from_bytes(&bytes))
+}
+
+/// Load the dogtag manifest signing key from env.
+///
+/// Fail-closed and case-distinguished: [`SigningKeyError::NotConfigured`] when the env var is unset,
+/// [`SigningKeyError::Malformed`] when it is set but not a valid 32-byte hex seed (including a
+/// non-Unicode value). Either way no key is returned, so no manifest is ever served with a bad key.
+pub fn signing_key() -> Result<SigningKey, SigningKeyError> {
+    match std::env::var(SIGNING_KEY_ENV) {
+        Ok(v) => parse_signing_key(Some(&v)),
+        Err(std::env::VarError::NotPresent) => Err(SigningKeyError::NotConfigured),
+        // Set, but not valid UTF-8 — it is present-but-broken, not unset.
+        Err(std::env::VarError::NotUnicode(_)) => Err(SigningKeyError::Malformed),
+    }
 }
 
 /// Build + sign the manifest for a known version, or `None` if the version is unrecognized.
@@ -46,12 +75,28 @@ pub struct ManifestQuery {
 /// with the convenience tier is P4. Fail-closed: 503 when no signing key is configured, 404 for an
 /// unrecognized version, else 200 with the [`SignedManifest`] JSON.
 pub async fn get_manifest(Query(q): Query<ManifestQuery>) -> impl IntoResponse {
-    let Some(key) = signing_key() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "manifest signing key not configured" })),
-        )
-            .into_response();
+    let key = match signing_key() {
+        Ok(key) => key,
+        Err(SigningKeyError::NotConfigured) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "manifest signing key not configured" })),
+            )
+                .into_response();
+        }
+        Err(SigningKeyError::Malformed) => {
+            // Set but broken: surface it (never chase a silent unset-style 503) without logging the
+            // secret value. Still fail-closed — a bad key serves no manifest.
+            eprintln!(
+                "protocol: {SIGNING_KEY_ENV} is set but malformed (expected a 32-byte ed25519 seed as \
+                 64 hex chars); refusing to serve manifests"
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "manifest signing key misconfigured" })),
+            )
+                .into_response();
+        }
     };
     match signed_manifest(&q.version, &key) {
         Some(sm) => (StatusCode::OK, Json(sm)).into_response(),
@@ -97,5 +142,24 @@ mod tests {
     #[test]
     fn unknown_version_is_not_served() {
         assert!(signed_manifest("dogtag-levelc/9", &test_key()).is_none());
+    }
+
+    /// The signing-key loader tells UNSET apart from SET-but-malformed, so the serving path can log a
+    /// misconfiguration instead of masking it as a silent unset-style 503. Pure over `parse_signing_key`
+    /// so it needs no process-global env mutation.
+    #[test]
+    fn signing_key_distinguishes_unset_from_malformed() {
+        // `.err()` collapses to Option<SigningKeyError> so this asserts without needing SigningKey: Eq.
+        assert_eq!(parse_signing_key(None).err(), Some(SigningKeyError::NotConfigured));
+        // non-hex
+        assert_eq!(parse_signing_key(Some("not-hex-at-all")).err(), Some(SigningKeyError::Malformed));
+        // valid hex but the wrong length (16 bytes, not 32)
+        assert_eq!(
+            parse_signing_key(Some(&hex::encode([1u8; 16]))).err(),
+            Some(SigningKeyError::Malformed)
+        );
+        // a well-formed 32-byte seed loads (whitespace-trimmed).
+        let seed = hex::encode([7u8; 32]);
+        assert!(parse_signing_key(Some(&format!("  {seed}\n"))).is_ok());
     }
 }
