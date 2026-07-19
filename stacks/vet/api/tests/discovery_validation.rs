@@ -50,6 +50,7 @@ fn agreeing_onchain(m: &manifest::Manifest) -> OnchainVersion {
         witness_server_wasm_sha256: m.witness_server_wasm_sha256.clone(),
         artifact_base_url: m.artifact_base_url.clone(),
         min_app_version: m.min_app_version.clone(),
+        active: true,
     }
 }
 
@@ -144,7 +145,7 @@ fn reconciled_anchor_enforces_onchain_precedence() {
     // Agreeing on-chain record -> reconcile clean -> anchor validates honest claims.
     let onchain = agreeing_onchain(&m);
     let recon = manifest::reconcile(&signed, &key.verifying_key(), &onchain).unwrap();
-    let anchor = anchor_from_reconciliation(&recon, true).expect("agreeing manifest yields an anchor");
+    let anchor = anchor_from_reconciliation(&recon).expect("agreeing manifest yields an anchor");
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
     assert!(validate(&claims, &anchor, &ctx).is_ok());
@@ -154,7 +155,7 @@ fn reconciled_anchor_enforces_onchain_precedence() {
     let mut liar = agreeing_onchain(&m);
     liar.verification_registry = "0x1111111111111111111111111111111111111111".to_string();
     let recon_bad = manifest::reconcile(&signed, &key.verifying_key(), &liar).unwrap();
-    match anchor_from_reconciliation(&recon_bad, true) {
+    match anchor_from_reconciliation(&recon_bad) {
         Err(conflicts) => {
             assert!(
                 conflicts.iter().any(|c| c.field == "verification_registry"),
@@ -163,4 +164,36 @@ fn reconciled_anchor_enforces_onchain_precedence() {
         }
         Ok(_) => panic!("a manifest disagreeing with on-chain must NOT yield a trusted anchor"),
     }
+}
+
+/// The anti-downgrade defense is WIRED, not merely documented: an on-chain record whose `active=false`
+/// (what `ProtocolRegistry.deprecateVersion` produces) flows through `reconcile` ->
+/// `anchor_from_reconciliation` -> a `TrustedAnchor` with `active=false`, and the validator then fails
+/// closed with `DeprecatedVersion` — even though the signed manifest itself carries no lifecycle bit and
+/// agrees on every field it DOES carry. This is what makes "deprecate `dogtag-levela/1` at the M7 cutover"
+/// an enforceable lever rather than a caller-supplied guess.
+#[test]
+fn onchain_deprecation_flows_through_reconciliation_and_fails_closed() {
+    let key = test_key();
+    let m = manifest::build(VERSION).unwrap();
+    let signed: SignedManifest = manifest::sign(&m, &key);
+
+    let mut deprecated = agreeing_onchain(&m);
+    deprecated.active = false;
+
+    let recon = manifest::reconcile(&signed, &key.verifying_key(), &deprecated).unwrap();
+    assert!(
+        recon.manifest_agrees(),
+        "deprecation is a lifecycle bit the manifest does not attest, so it must NOT read as a conflict"
+    );
+
+    let anchor = anchor_from_reconciliation(&recon).expect("an agreeing manifest still yields an anchor");
+    assert!(!anchor.active, "the anchor must inherit the on-chain lifecycle bit, not assume active");
+
+    let claims = honest_claims(&m);
+    let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
+    assert!(
+        matches!(validate(&claims, &anchor, &ctx), Err(DiscoveryError::DeprecatedVersion { .. })),
+        "a chain-deprecated version must be refused even when every other axis is honest"
+    );
 }

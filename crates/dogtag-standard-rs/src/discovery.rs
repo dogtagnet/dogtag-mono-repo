@@ -184,8 +184,11 @@ pub fn validate(
     //     `dogtag-levelb/1` is the standard, `dogtag-levela/1` MUST be marked `active=false`, which
     //     check (2) below then refuses;
     //   - `minAppVersion` (check 6), which floors out builds that predate a required change.
+    // The `versionId` halves are `0x`-hex, so they compare case-insensitively (an app that formats an
+    // `eth_call` bytes32 as uppercase hex must not hard-fail); `protocol_version` is a semantic version
+    // STRING, not hex, so it stays an exact compare.
     if claims.protocol_version != anchor.version
-        || version_id(&claims.protocol_version) != anchor.version_id
+        || !version_id(&claims.protocol_version).eq_ignore_ascii_case(&anchor.version_id)
     {
         return Err(DiscoveryError::VersionMismatch {
             claimed: claims.protocol_version.clone(),
@@ -430,6 +433,19 @@ mod tests {
             }
             other => panic!("expected VersionMismatch, got {other:?}"),
         }
+    }
+
+    /// The anchor's `versionId` may differ only in HEX CASE and still validate — an app that formats an
+    /// `eth_call` bytes32 as uppercase hex must not hard-fail every validation (parity with the
+    /// case-insensitive registry compare). The version STRING itself stays an exact compare.
+    #[test]
+    fn version_id_case_insensitive_still_validates() {
+        let mut a = anchor();
+        a.version_id = version_id(VERSION).to_uppercase();
+        assert!(
+            validate(&claims(), &a, &ctx()).is_ok(),
+            "an uppercase-hex versionId is a formatting artifact, not a mismatch"
+        );
     }
 
     /// A DEPRECATED (inactive) anchor version FAILS CLOSED even when every claim matches — the

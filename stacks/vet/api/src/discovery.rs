@@ -17,10 +17,10 @@ use dogtag_standard::discovery::TrustedAnchor;
 
 /// Assemble a [`TrustedAnchor`] from a signed-manifest CONTENT (§5.2 TRUST tier, the 1B fallback).
 ///
-/// `active` is supplied separately because the manifest does NOT carry the on-chain lifecycle bit: an
-/// ONLINE caller passes the on-chain `Version.active`; an OFFLINE (manifest-only) caller passes `true` —
-/// a served manifest is presumed active, and deprecation is authoritative only on-chain (a deprecated
-/// version is still refused there, and `minAppVersion` remains enforced offline).
+/// `active` is supplied separately because the manifest does NOT carry the on-chain lifecycle bit. This
+/// is the OFFLINE (manifest-only) path, whose callers pass `true` — a served manifest is presumed active,
+/// and deprecation is authoritative only on-chain (`minAppVersion` remains enforced offline). The ONLINE
+/// path must go through [`anchor_from_reconciliation`], which sources `active` from the chain itself.
 pub fn anchor_from_manifest(m: &Manifest, active: bool) -> TrustedAnchor {
     TrustedAnchor {
         version: m.version.clone(),
@@ -39,12 +39,15 @@ pub fn anchor_from_manifest(m: &Manifest, active: bool) -> TrustedAnchor {
 /// Returns `Err(conflicts)` if the signed manifest disagrees with the chain on ANY field — so a
 /// stale/compromised manifest can never feed the validator (on-chain wins, exactly as P3 designed). On
 /// agreement the readable fields come from the (verified, agreeing) manifest.
-pub fn anchor_from_reconciliation(
-    r: &Reconciliation,
-    active: bool,
-) -> Result<TrustedAnchor, Vec<FieldConflict>> {
+///
+/// `active` is NOT a parameter: it is sourced from the reconciled ON-CHAIN record
+/// (`ProtocolRegistry.Version.active`, carried through `Reconciliation::authoritative`), because a
+/// caller-supplied lifecycle bit would leave the anti-downgrade check (§8.4) attested by nobody. This is
+/// what wires `deprecateVersion` end-to-end: a version deprecated on-chain yields `active=false` here, and
+/// [`dogtag_standard::discovery::validate`] then fails closed with `DeprecatedVersion`.
+pub fn anchor_from_reconciliation(r: &Reconciliation) -> Result<TrustedAnchor, Vec<FieldConflict>> {
     if !r.manifest_agrees() {
         return Err(r.conflicts.clone());
     }
-    Ok(anchor_from_manifest(&r.manifest, active))
+    Ok(anchor_from_manifest(&r.manifest, r.authoritative.active))
 }

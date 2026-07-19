@@ -209,8 +209,9 @@ pub struct FieldConflict {
 ///
 /// It mirrors EVERY member of the on-chain `Version` struct that the signed manifest also carries, so
 /// [`reconcile`] can cross-check all of them — the trio + verifier, the artifact fetch-pins, `circuitId`,
-/// `artifactBaseUrl` and `minAppVersion`. The only on-chain members omitted are `publishedAt`/`active`,
-/// which are lifecycle state the manifest deliberately does not carry.
+/// `artifactBaseUrl` and `minAppVersion` — PLUS the `active` lifecycle bit, which the manifest does NOT
+/// carry and which is therefore a pass-through rather than a cross-checked field (see [`OnchainVersion::active`]).
+/// The only on-chain member omitted is `publishedAt`.
 ///
 /// `circuit_id` holds the on-chain `bytes32` value, i.e. `keccak256(circuit-string)` as `0x`-hex;
 /// [`reconcile`] hashes the manifest's plain circuit string before comparing (§3.2 — this is distinct
@@ -230,6 +231,12 @@ pub struct OnchainVersion {
     pub witness_server_wasm_sha256: Option<String>,
     pub artifact_base_url: String,
     pub min_app_version: String,
+    /// The on-chain `Version.active` lifecycle bit — `deprecateVersion` flips it false and the record is
+    /// never deleted. It is attested ONLY on-chain (the signed manifest deliberately carries no lifecycle
+    /// state), so [`reconcile`] never compares it; it simply rides through into
+    /// [`Reconciliation::authoritative`], which is what lets a consumer enforce the anti-downgrade check
+    /// against real chain state rather than a caller-supplied guess.
+    pub active: bool,
 }
 
 /// The result of [`reconcile`]: the AUTHORITATIVE (always on-chain) shared fields, the manifest's
@@ -312,8 +319,9 @@ pub fn verify(signed: &SignedManifest, pinned: &VerifyingKey) -> Result<(), Mani
 ///
 /// Verification runs first (a bad signature is rejected before any field is trusted). Then EVERY
 /// on-chain field the manifest mirrors is compared — the trio + verifier, every artifact fetch-pin,
-/// `circuit_id`, `artifact_base_url` and `min_app_version` (only the on-chain lifecycle members
-/// `publishedAt`/`active`, which the manifest does not carry, are out of scope). The returned
+/// `circuit_id`, `artifact_base_url` and `min_app_version` (the on-chain lifecycle state is out of scope:
+/// `publishedAt` is not mirrored at all, and `active` is carried through `authoritative` UNCOMPARED
+/// because the manifest does not attest it). The returned
 /// [`Reconciliation::authoritative`] is ALWAYS the on-chain value, and each disagreement is recorded.
 /// This is how "on-chain wins on conflict" is enforced in code: the caller reads authoritative fields
 /// from `authoritative` (on-chain) and only trusts the manifest's signed extras when
@@ -428,6 +436,7 @@ mod tests {
             witness_server_wasm_sha256: m.witness_server_wasm_sha256.clone(),
             artifact_base_url: m.artifact_base_url.clone(),
             min_app_version: m.min_app_version.clone(),
+            active: true,
         }
     }
 
