@@ -29,6 +29,9 @@ pub mod consent;
 // circomlibjs-compatible BLAKE-512 + BabyJubjub Edwards curve + signer over the existing Poseidon.
 // Does NOT modify poseidon/field/leaf/merkle/encode.
 pub mod blake512;
+// The ONE per-tag KDF preimage builder shared by every seed-derived owner-control secret (owner
+// secret, reserved-leaf salts, per-tag consent key). Internal: a second builder is the drift that
+// once let the consent key stay seed-only while its siblings were already per-tag.
 mod kdf;
 pub mod eddsa;
 

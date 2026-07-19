@@ -171,7 +171,8 @@ pub struct ProfileTree {
     pub tree: MerkleTree,
     /// The nullifier secret (circuit input `ownerSecret`). Never leaves the device.
     pub owner_secret: Fr,
-    /// BabyJubJub consent pubkey, seed-derived (circuit inputs `Ax` / `Ay`).
+    /// BabyJubJub consent pubkey, derived from `(seed, dogTagId)` so it is per-TAG, not per-wallet
+    /// (circuit inputs `Ax` / `Ay`).
     pub ax: Fr,
     pub ay: Fr,
     /// 32-byte BabyJubJub consent private key - signs the consent message `M`.

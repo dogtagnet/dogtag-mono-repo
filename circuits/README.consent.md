@@ -80,7 +80,8 @@ raw-field encoding in a separate `hash_reserved_leaf` (folding it back into `has
 leaves this circuit can never prove), and it **rejects** an attribute whose `keyPath` derives to a
 reserved one - `TypeTag::Bytes` IS the pinned typeTag, so such an attribute would be a second
 circuit-acceptable owner-secret leaf, which is the D5 break the pinning below exists to prevent. The
-owner-secret and the reserved leaves' salts are derived from the wallet **seed** there, not an RNG, so
+owner-secret, the consent key and the reserved leaves' salts are all derived from the wallet **seed**
+there (each bound to `dogTagId`, so one wallet's tags share none of them), not an RNG, so
 restoring the recovery phrase regenerates them (rebuilding `R` also needs the credential's attribute
 leaves, which are not seed-derivable); the circuit is indifferent - it takes both as opaque fields.
 See [`../docs/MOBILE_OWNER_SECRET.md`](../docs/MOBILE_OWNER_SECRET.md).
