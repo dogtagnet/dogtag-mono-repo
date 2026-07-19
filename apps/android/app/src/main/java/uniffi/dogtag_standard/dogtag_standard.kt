@@ -759,6 +759,8 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -809,6 +811,8 @@ internal interface UniffiLib : Library {
     fun uniffi_dogtag_standard_fn_func_prove_verification(`wrappedDocJson`: RustBuffer.ByValue,`consentJson`: RustBuffer.ByValue,`eddsaSig`: RustBuffer.ByValue,`zkeyPath`: RustBuffer.ByValue,`graphPath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_sign_consent_eddsa(`prvHex`: RustBuffer.ByValue,`dogTagIdHex`: RustBuffer.ByValue,`recordTypeHex`: RustBuffer.ByValue,`purposeHex`: RustBuffer.ByValue,`credentialRootHex`: RustBuffer.ByValue,`challengeHex`: RustBuffer.ByValue,`relayerHex`: RustBuffer.ByValue,`subjectHex`: RustBuffer.ByValue,`nonceHex`: RustBuffer.ByValue,`deadlineHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_validate_discovery(`claims`: RustBuffer.ByValue,`anchor`: RustBuffer.ByValue,`appVersion`: RustBuffer.ByValue,`expectedPurpose`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_verification_consent_typehash_hex(uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -970,6 +974,8 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_dogtag_standard_checksum_func_sign_consent_eddsa(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_validate_discovery(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_verification_consent_typehash_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_verify_consent_eddsa(
@@ -1051,6 +1057,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_sign_consent_eddsa() != 33682.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_dogtag_standard_checksum_func_validate_discovery() != 58309.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_verification_consent_typehash_hex() != 21064.toShort()) {
@@ -1336,6 +1345,74 @@ public object FfiConverterTypeBabyjubConsentKeyFfi: FfiConverterRustBuffer<Babyj
 
 
 /**
+ * The CONVENIENCE tier (§5.2): the platform-OWNED claims a resolve GET returns. NONE of these is
+ * authority — every trust-critical field is validated against the [`TrustedAnchor`] before use
+ * ([`validate`]). Serialized camelCase so it is the exact nested `unverifiedClaims` block the resolve GET emits
+ * and the app deserializes.
+ */
+data class ConvenienceClaims (
+    /**
+     * CLAIMED protocol version, e.g. `dogtag-levelb/1`. The app resolves the anchor BY this string.
+     */
+    var `protocolVersion`: kotlin.String, 
+    /**
+     * CLAIMED chain id. A lying platform would forge this to point at a fork/testnet.
+     */
+    var `chainId`: kotlin.ULong, 
+    /**
+     * CLAIMED verification registry address — THE redirect target a lying platform would forge.
+     */
+    var `verificationRegistry`: kotlin.String, 
+    /**
+     * CLAIMED issuer clone (documentStore) the platform will issue/verify against. Carried for the app;
+     * it is NOT a trust-tier axis — the on-chain re-derivation binds the clone from `rootIssuer[R]`
+     * (§4.3), so a forged `issuerClone` cannot make an invalid record verify.
+     */
+    var `issuerClone`: kotlin.String, 
+    /**
+     * CLAIMED purpose (the verify-gate namespace / consent purpose). Checked against the app's
+     * out-of-band expected purpose ([`ClientContext::expected_purpose`]), never the platform's session.
+     */
+    var `purpose`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeConvenienceClaims: FfiConverterRustBuffer<ConvenienceClaims> {
+    override fun read(buf: ByteBuffer): ConvenienceClaims {
+        return ConvenienceClaims(
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ConvenienceClaims) = (
+            FfiConverterString.allocationSize(value.`protocolVersion`) +
+            FfiConverterULong.allocationSize(value.`chainId`) +
+            FfiConverterString.allocationSize(value.`verificationRegistry`) +
+            FfiConverterString.allocationSize(value.`issuerClone`) +
+            FfiConverterString.allocationSize(value.`purpose`)
+    )
+
+    override fun write(value: ConvenienceClaims, buf: ByteBuffer) {
+            FfiConverterString.write(value.`protocolVersion`, buf)
+            FfiConverterULong.write(value.`chainId`, buf)
+            FfiConverterString.write(value.`verificationRegistry`, buf)
+            FfiConverterString.write(value.`issuerClone`, buf)
+            FfiConverterString.write(value.`purpose`, buf)
+    }
+}
+
+
+
+/**
  * The pass-through EdDSA-BabyJubjub consent signature + public key (decimal scalars + hex point).
  *
  * `r8x_dec` / `r8y_dec` / `s_dec` come from `sign_consent_eddsa` (ffi.rs `EddsaSignatureFfi`);
@@ -1558,6 +1635,139 @@ public object FfiConverterTypeProofFfi: FfiConverterRustBuffer<ProofFfi> {
             FfiConverterSequenceSequenceString.write(value.`b`, buf)
             FfiConverterSequenceString.write(value.`c`, buf)
             FfiConverterSequenceString.write(value.`pubSignals`, buf)
+    }
+}
+
+
+
+/**
+ * The dogtag-owned TRUST tier (§5.2) for one version, RESOLVED by the caller from
+ * `ProtocolRegistry.getVersion` (root of truth) or the P3 signed-manifest fallback (both mirror the
+ * same on-chain `Version`). These are the AUTHORITATIVE values a platform's [`ConvenienceClaims`] are
+ * checked against. Constructed from plain fields so the app can build it from an `eth_call` result or a
+ * parsed/reconciled manifest, and the server can map it from `dogtag_prover::manifest` types — keeping
+ * this crate free of any prover/manifest dependency.
+ */
+data class TrustedAnchor (
+    /**
+     * The version string this record certifies (e.g. `dogtag-levelb/1`).
+     */
+    var `version`: kotlin.String, 
+    /**
+     * keccak256(version) `0x`-hex — the on-chain map key; ties the claimed version STRING to the
+     * on-chain `versionId` so a caller cannot silently validate against the wrong record.
+     */
+    var `versionId`: kotlin.String, 
+    /**
+     * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
+     * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+     */
+    var `chainId`: kotlin.ULong, 
+    /**
+     * The registry a proof is submitted to (trio leg). The anti-redirect anchor.
+     */
+    var `verificationRegistry`: kotlin.String, 
+    /**
+     * The circuit this version proves (`<source>/<template>(<params>)`) — the artifact-selection key
+     * (§5.3 step 6; version↔circuit_id is 1:1 in `dogtag_prover::artifact`).
+     */
+    var `circuitId`: kotlin.String, 
+    /**
+     * Minimum app build (semver) allowed to use this version — the deprecation lever (§5.3 step 5).
+     */
+    var `minAppVersion`: kotlin.String, 
+    /**
+     * Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
+     * CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
+     * so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
+     * `Version.active` when online — see `anchor_from_manifest` on the server side.
+     */
+    var `active`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAnchor> {
+    override fun read(buf: ByteBuffer): TrustedAnchor {
+        return TrustedAnchor(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: TrustedAnchor) = (
+            FfiConverterString.allocationSize(value.`version`) +
+            FfiConverterString.allocationSize(value.`versionId`) +
+            FfiConverterULong.allocationSize(value.`chainId`) +
+            FfiConverterString.allocationSize(value.`verificationRegistry`) +
+            FfiConverterString.allocationSize(value.`circuitId`) +
+            FfiConverterString.allocationSize(value.`minAppVersion`) +
+            FfiConverterBoolean.allocationSize(value.`active`)
+    )
+
+    override fun write(value: TrustedAnchor, buf: ByteBuffer) {
+            FfiConverterString.write(value.`version`, buf)
+            FfiConverterString.write(value.`versionId`, buf)
+            FfiConverterULong.write(value.`chainId`, buf)
+            FfiConverterString.write(value.`verificationRegistry`, buf)
+            FfiConverterString.write(value.`circuitId`, buf)
+            FfiConverterString.write(value.`minAppVersion`, buf)
+            FfiConverterBoolean.write(value.`active`, buf)
+    }
+}
+
+
+
+/**
+ * The result of a PASSING validation (§5.3): the version + its artifact-selection key + the
+ * authoritative trust-critical fields the caller may now act on. The caller selects the proving
+ * artifact by `version`/`circuit_id` (§5.3 step 6): `dogtag_prover::artifact::resolve(Some(&version))`
+ * yields the descriptor, whose `circuit_id` MUST equal this.
+ */
+data class ValidatedVersion (
+    var `version`: kotlin.String, 
+    var `circuitId`: kotlin.String, 
+    var `chainId`: kotlin.ULong, 
+    var `verificationRegistry`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeValidatedVersion: FfiConverterRustBuffer<ValidatedVersion> {
+    override fun read(buf: ByteBuffer): ValidatedVersion {
+        return ValidatedVersion(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ValidatedVersion) = (
+            FfiConverterString.allocationSize(value.`version`) +
+            FfiConverterString.allocationSize(value.`circuitId`) +
+            FfiConverterULong.allocationSize(value.`chainId`) +
+            FfiConverterString.allocationSize(value.`verificationRegistry`)
+    )
+
+    override fun write(value: ValidatedVersion, buf: ByteBuffer) {
+            FfiConverterString.write(value.`version`, buf)
+            FfiConverterString.write(value.`circuitId`, buf)
+            FfiConverterULong.write(value.`chainId`, buf)
+            FfiConverterString.write(value.`verificationRegistry`, buf)
     }
 }
 
@@ -2011,6 +2221,21 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_sign_consent_eddsa(
         FfiConverterString.lower(`prvHex`),FfiConverterString.lower(`dogTagIdHex`),FfiConverterString.lower(`recordTypeHex`),FfiConverterString.lower(`purposeHex`),FfiConverterString.lower(`credentialRootHex`),FfiConverterString.lower(`challengeHex`),FfiConverterString.lower(`relayerHex`),FfiConverterString.lower(`subjectHex`),FfiConverterString.lower(`nonceHex`),FfiConverterString.lower(`deadlineHex`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Thin UniFFI surface so the mobile app's resolve→validate step can call the same pure validator the
+         * server uses (§5.3). Takes the two `ClientContext` strings directly (the borrow struct cannot cross
+         * the boundary) and flattens [`DiscoveryError`] into the crate's single [`crate::ffi::FfiError`].
+         */
+    @Throws(FfiException::class) fun `validateDiscovery`(`claims`: ConvenienceClaims, `anchor`: TrustedAnchor, `appVersion`: kotlin.String, `expectedPurpose`: kotlin.String): ValidatedVersion {
+            return FfiConverterTypeValidatedVersion.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_validate_discovery(
+        FfiConverterTypeConvenienceClaims.lower(`claims`),FfiConverterTypeTrustedAnchor.lower(`anchor`),FfiConverterString.lower(`appVersion`),FfiConverterString.lower(`expectedPurpose`),_status)
 }
     )
     }

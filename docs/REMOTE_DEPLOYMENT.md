@@ -166,7 +166,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `ISSUER_NAME` | all | display name | "Example Veterinary Clinic" / "Example Grooming Salon" / "DogTag Central" | real name |
 | `ISSUER_DOMAIN` | all | **the real DNS-TXT issuer-domain binding** | `*.local` | your real domain |
 | `ISSUER_REGISTRY_ADDR` | all | IssuerRegistry | (roax.json, pre-filled) | per chain |
-| `VERIFICATION_REGISTRY_ADDR` | vet, groomer, admin | **current** VR (`0x4E2f0996…`; `0x8bA836eCe9…` is `_4arg_legacy`). admin reads it as the M7 provenance routing key (§4.2) stamped into pet/credential rows, not as a relay target | (roax.json, pre-filled) | current, **not** legacy |
+| `VERIFICATION_REGISTRY_ADDR` | vet, groomer, admin | **current** VR (`0x4E2f0996…`; `0x8bA836eCe9…` is `_4arg_legacy`). admin reads it as the M7 provenance routing key (§4.2) stamped into pet/credential rows, not as a relay target. Since M7 P4 vet also publishes it in the resolve GETs' `unverifiedClaims` block, where a validating app checks it against the dogtag discovery anchor — it must stay COHERENT with the hardcoded `protocolVersion` (Level-A today), or every such app fails closed with `RegistryMismatch` | (roax.json, pre-filled) | current, **not** legacy |
 | `CONSENT_KEY_REGISTRY_ADDR` | vet, groomer | gasless `bindConsentKeyFor` (`0xA74DDe4a9b…`) | (roax.json, pre-filled) | current, **not** legacy |
 | `SBT_ADDR` | admin | DogTagSBT | (roax.json, pre-filled) | per chain |
 | `PROFILE_DOCUMENT_STORE` | admin | SBT mint target | `=SBT_ADDR` | usually `=SBT_ADDR` |

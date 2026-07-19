@@ -668,6 +668,138 @@ public func FfiConverterTypeBabyjubConsentKeyFfi_lower(_ value: BabyjubConsentKe
 
 
 /**
+ * The CONVENIENCE tier (§5.2): the platform-OWNED claims a resolve GET returns. NONE of these is
+ * authority — every trust-critical field is validated against the [`TrustedAnchor`] before use
+ * ([`validate`]). Serialized camelCase so it is the exact nested `unverifiedClaims` block the resolve GET emits
+ * and the app deserializes.
+ */
+public struct ConvenienceClaims {
+    /**
+     * CLAIMED protocol version, e.g. `dogtag-levelb/1`. The app resolves the anchor BY this string.
+     */
+    public var protocolVersion: String
+    /**
+     * CLAIMED chain id. A lying platform would forge this to point at a fork/testnet.
+     */
+    public var chainId: UInt64
+    /**
+     * CLAIMED verification registry address — THE redirect target a lying platform would forge.
+     */
+    public var verificationRegistry: String
+    /**
+     * CLAIMED issuer clone (documentStore) the platform will issue/verify against. Carried for the app;
+     * it is NOT a trust-tier axis — the on-chain re-derivation binds the clone from `rootIssuer[R]`
+     * (§4.3), so a forged `issuerClone` cannot make an invalid record verify.
+     */
+    public var issuerClone: String
+    /**
+     * CLAIMED purpose (the verify-gate namespace / consent purpose). Checked against the app's
+     * out-of-band expected purpose ([`ClientContext::expected_purpose`]), never the platform's session.
+     */
+    public var purpose: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * CLAIMED protocol version, e.g. `dogtag-levelb/1`. The app resolves the anchor BY this string.
+         */protocolVersion: String, 
+        /**
+         * CLAIMED chain id. A lying platform would forge this to point at a fork/testnet.
+         */chainId: UInt64, 
+        /**
+         * CLAIMED verification registry address — THE redirect target a lying platform would forge.
+         */verificationRegistry: String, 
+        /**
+         * CLAIMED issuer clone (documentStore) the platform will issue/verify against. Carried for the app;
+         * it is NOT a trust-tier axis — the on-chain re-derivation binds the clone from `rootIssuer[R]`
+         * (§4.3), so a forged `issuerClone` cannot make an invalid record verify.
+         */issuerClone: String, 
+        /**
+         * CLAIMED purpose (the verify-gate namespace / consent purpose). Checked against the app's
+         * out-of-band expected purpose ([`ClientContext::expected_purpose`]), never the platform's session.
+         */purpose: String) {
+        self.protocolVersion = protocolVersion
+        self.chainId = chainId
+        self.verificationRegistry = verificationRegistry
+        self.issuerClone = issuerClone
+        self.purpose = purpose
+    }
+}
+
+
+
+extension ConvenienceClaims: Equatable, Hashable {
+    public static func ==(lhs: ConvenienceClaims, rhs: ConvenienceClaims) -> Bool {
+        if lhs.protocolVersion != rhs.protocolVersion {
+            return false
+        }
+        if lhs.chainId != rhs.chainId {
+            return false
+        }
+        if lhs.verificationRegistry != rhs.verificationRegistry {
+            return false
+        }
+        if lhs.issuerClone != rhs.issuerClone {
+            return false
+        }
+        if lhs.purpose != rhs.purpose {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(protocolVersion)
+        hasher.combine(chainId)
+        hasher.combine(verificationRegistry)
+        hasher.combine(issuerClone)
+        hasher.combine(purpose)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeConvenienceClaims: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ConvenienceClaims {
+        return
+            try ConvenienceClaims(
+                protocolVersion: FfiConverterString.read(from: &buf), 
+                chainId: FfiConverterUInt64.read(from: &buf), 
+                verificationRegistry: FfiConverterString.read(from: &buf), 
+                issuerClone: FfiConverterString.read(from: &buf), 
+                purpose: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ConvenienceClaims, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.protocolVersion, into: &buf)
+        FfiConverterUInt64.write(value.chainId, into: &buf)
+        FfiConverterString.write(value.verificationRegistry, into: &buf)
+        FfiConverterString.write(value.issuerClone, into: &buf)
+        FfiConverterString.write(value.purpose, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConvenienceClaims_lift(_ buf: RustBuffer) throws -> ConvenienceClaims {
+    return try FfiConverterTypeConvenienceClaims.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeConvenienceClaims_lower(_ value: ConvenienceClaims) -> RustBuffer {
+    return FfiConverterTypeConvenienceClaims.lower(value)
+}
+
+
+/**
  * The pass-through EdDSA-BabyJubjub consent signature + public key (decimal scalars + hex point).
  *
  * `r8x_dec` / `r8y_dec` / `s_dec` come from `sign_consent_eddsa` (ffi.rs `EddsaSignatureFfi`);
@@ -1107,6 +1239,262 @@ public func FfiConverterTypeProofFfi_lift(_ buf: RustBuffer) throws -> ProofFfi 
 #endif
 public func FfiConverterTypeProofFfi_lower(_ value: ProofFfi) -> RustBuffer {
     return FfiConverterTypeProofFfi.lower(value)
+}
+
+
+/**
+ * The dogtag-owned TRUST tier (§5.2) for one version, RESOLVED by the caller from
+ * `ProtocolRegistry.getVersion` (root of truth) or the P3 signed-manifest fallback (both mirror the
+ * same on-chain `Version`). These are the AUTHORITATIVE values a platform's [`ConvenienceClaims`] are
+ * checked against. Constructed from plain fields so the app can build it from an `eth_call` result or a
+ * parsed/reconciled manifest, and the server can map it from `dogtag_prover::manifest` types — keeping
+ * this crate free of any prover/manifest dependency.
+ */
+public struct TrustedAnchor {
+    /**
+     * The version string this record certifies (e.g. `dogtag-levelb/1`).
+     */
+    public var version: String
+    /**
+     * keccak256(version) `0x`-hex — the on-chain map key; ties the claimed version STRING to the
+     * on-chain `versionId` so a caller cannot silently validate against the wrong record.
+     */
+    public var versionId: String
+    /**
+     * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
+     * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+     */
+    public var chainId: UInt64
+    /**
+     * The registry a proof is submitted to (trio leg). The anti-redirect anchor.
+     */
+    public var verificationRegistry: String
+    /**
+     * The circuit this version proves (`<source>/<template>(<params>)`) — the artifact-selection key
+     * (§5.3 step 6; version↔circuit_id is 1:1 in `dogtag_prover::artifact`).
+     */
+    public var circuitId: String
+    /**
+     * Minimum app build (semver) allowed to use this version — the deprecation lever (§5.3 step 5).
+     */
+    public var minAppVersion: String
+    /**
+     * Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
+     * CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
+     * so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
+     * `Version.active` when online — see `anchor_from_manifest` on the server side.
+     */
+    public var active: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The version string this record certifies (e.g. `dogtag-levelb/1`).
+         */version: String, 
+        /**
+         * keccak256(version) `0x`-hex — the on-chain map key; ties the claimed version STRING to the
+         * on-chain `versionId` so a caller cannot silently validate against the wrong record.
+         */versionId: String, 
+        /**
+         * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
+         * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+         */chainId: UInt64, 
+        /**
+         * The registry a proof is submitted to (trio leg). The anti-redirect anchor.
+         */verificationRegistry: String, 
+        /**
+         * The circuit this version proves (`<source>/<template>(<params>)`) — the artifact-selection key
+         * (§5.3 step 6; version↔circuit_id is 1:1 in `dogtag_prover::artifact`).
+         */circuitId: String, 
+        /**
+         * Minimum app build (semver) allowed to use this version — the deprecation lever (§5.3 step 5).
+         */minAppVersion: String, 
+        /**
+         * Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
+         * CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
+         * so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
+         * `Version.active` when online — see `anchor_from_manifest` on the server side.
+         */active: Bool) {
+        self.version = version
+        self.versionId = versionId
+        self.chainId = chainId
+        self.verificationRegistry = verificationRegistry
+        self.circuitId = circuitId
+        self.minAppVersion = minAppVersion
+        self.active = active
+    }
+}
+
+
+
+extension TrustedAnchor: Equatable, Hashable {
+    public static func ==(lhs: TrustedAnchor, rhs: TrustedAnchor) -> Bool {
+        if lhs.version != rhs.version {
+            return false
+        }
+        if lhs.versionId != rhs.versionId {
+            return false
+        }
+        if lhs.chainId != rhs.chainId {
+            return false
+        }
+        if lhs.verificationRegistry != rhs.verificationRegistry {
+            return false
+        }
+        if lhs.circuitId != rhs.circuitId {
+            return false
+        }
+        if lhs.minAppVersion != rhs.minAppVersion {
+            return false
+        }
+        if lhs.active != rhs.active {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(version)
+        hasher.combine(versionId)
+        hasher.combine(chainId)
+        hasher.combine(verificationRegistry)
+        hasher.combine(circuitId)
+        hasher.combine(minAppVersion)
+        hasher.combine(active)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TrustedAnchor {
+        return
+            try TrustedAnchor(
+                version: FfiConverterString.read(from: &buf), 
+                versionId: FfiConverterString.read(from: &buf), 
+                chainId: FfiConverterUInt64.read(from: &buf), 
+                verificationRegistry: FfiConverterString.read(from: &buf), 
+                circuitId: FfiConverterString.read(from: &buf), 
+                minAppVersion: FfiConverterString.read(from: &buf), 
+                active: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TrustedAnchor, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.version, into: &buf)
+        FfiConverterString.write(value.versionId, into: &buf)
+        FfiConverterUInt64.write(value.chainId, into: &buf)
+        FfiConverterString.write(value.verificationRegistry, into: &buf)
+        FfiConverterString.write(value.circuitId, into: &buf)
+        FfiConverterString.write(value.minAppVersion, into: &buf)
+        FfiConverterBool.write(value.active, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrustedAnchor_lift(_ buf: RustBuffer) throws -> TrustedAnchor {
+    return try FfiConverterTypeTrustedAnchor.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTrustedAnchor_lower(_ value: TrustedAnchor) -> RustBuffer {
+    return FfiConverterTypeTrustedAnchor.lower(value)
+}
+
+
+/**
+ * The result of a PASSING validation (§5.3): the version + its artifact-selection key + the
+ * authoritative trust-critical fields the caller may now act on. The caller selects the proving
+ * artifact by `version`/`circuit_id` (§5.3 step 6): `dogtag_prover::artifact::resolve(Some(&version))`
+ * yields the descriptor, whose `circuit_id` MUST equal this.
+ */
+public struct ValidatedVersion {
+    public var version: String
+    public var circuitId: String
+    public var chainId: UInt64
+    public var verificationRegistry: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(version: String, circuitId: String, chainId: UInt64, verificationRegistry: String) {
+        self.version = version
+        self.circuitId = circuitId
+        self.chainId = chainId
+        self.verificationRegistry = verificationRegistry
+    }
+}
+
+
+
+extension ValidatedVersion: Equatable, Hashable {
+    public static func ==(lhs: ValidatedVersion, rhs: ValidatedVersion) -> Bool {
+        if lhs.version != rhs.version {
+            return false
+        }
+        if lhs.circuitId != rhs.circuitId {
+            return false
+        }
+        if lhs.chainId != rhs.chainId {
+            return false
+        }
+        if lhs.verificationRegistry != rhs.verificationRegistry {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(version)
+        hasher.combine(circuitId)
+        hasher.combine(chainId)
+        hasher.combine(verificationRegistry)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeValidatedVersion: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ValidatedVersion {
+        return
+            try ValidatedVersion(
+                version: FfiConverterString.read(from: &buf), 
+                circuitId: FfiConverterString.read(from: &buf), 
+                chainId: FfiConverterUInt64.read(from: &buf), 
+                verificationRegistry: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ValidatedVersion, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.version, into: &buf)
+        FfiConverterString.write(value.circuitId, into: &buf)
+        FfiConverterUInt64.write(value.chainId, into: &buf)
+        FfiConverterString.write(value.verificationRegistry, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeValidatedVersion_lift(_ buf: RustBuffer) throws -> ValidatedVersion {
+    return try FfiConverterTypeValidatedVersion.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeValidatedVersion_lower(_ value: ValidatedVersion) -> RustBuffer {
+    return FfiConverterTypeValidatedVersion.lower(value)
 }
 
 
@@ -1552,6 +1940,21 @@ public func signConsentEddsa(prvHex: String, dogTagIdHex: String, recordTypeHex:
 })
 }
 /**
+ * Thin UniFFI surface so the mobile app's resolve→validate step can call the same pure validator the
+ * server uses (§5.3). Takes the two `ClientContext` strings directly (the borrow struct cannot cross
+ * the boundary) and flattens [`DiscoveryError`] into the crate's single [`crate::ffi::FfiError`].
+ */
+public func validateDiscovery(claims: ConvenienceClaims, anchor: TrustedAnchor, appVersion: String, expectedPurpose: String)throws  -> ValidatedVersion {
+    return try  FfiConverterTypeValidatedVersion.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_validate_discovery(
+        FfiConverterTypeConvenienceClaims.lower(claims),
+        FfiConverterTypeTrustedAnchor.lower(anchor),
+        FfiConverterString.lower(appVersion),
+        FfiConverterString.lower(expectedPurpose),$0
+    )
+})
+}
+/**
  * keccak256 of the EIP-712 VerificationConsent type string (0x.. 32-byte hex).
  */
 public func verificationConsentTypehashHex() -> String {
@@ -1711,6 +2114,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_sign_consent_eddsa() != 33682) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_validate_discovery() != 58309) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_verification_consent_typehash_hex() != 21064) {

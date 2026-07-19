@@ -357,6 +357,15 @@ is derived from the wallet seed and must never be transmitted, or a server could
 nullifier and link it back to the owner. Nothing calls it in production yet - the issuance cutover is
 M7. See `docs/MOBILE_OWNER_SECRET.md`.
 
+M7 P4 adds the `discovery` module - `validate`, surfaced as **`validateDiscovery`** - the pure client
+TRUST gate that checks a platform's `unverifiedClaims` (the resolve-GET convenience tier) against the
+dogtag-owned discovery anchor before the app trusts any platform-supplied version/registry (§3.10d). It
+lives in this crate rather than `dogtag-prover-rs` precisely because the app links this one and not the
+ark-heavy prover; it does string/int/semver compares only. Regenerating **both** committed bindings
+(`apps/ios/DogTag/dogtag_standard.swift`, `apps/android/.../dogtag_standard.kt`) is mandatory after any
+FFI change - Android CI bundles the committed `.kt` as-is, so a stale binding silently makes the
+validator uncallable.
+
 ### 1.10 Consent module — `VerificationConsent` EIP-712 typed-data (CHANGESPEC §0/§1; research 11)
 
 Shared `consent` module (both SDKs, UniFFI-exported for mobile §6). Encodes the EIP-712
@@ -712,9 +721,12 @@ POST /verify/session/start { purpose, recordType, mode? }      # mode: "normal" 
 # (1b) phone resolves the export session WITHOUT consuming the token (consume on submit)
 GET /x/{token}
    s = verify_sessions[token]; require s.status=="pending"
-   return { relayer, purpose, recordType, challenge, mode }    # phone: assert groomerAddr(QR)==relayer,
+   claims = { protocolVersion, chainId, verificationRegistry, issuerClone, purpose:s.purpose }   # §3.10d CONVENIENCE tier
+   return { sessionId, relayer, purpose, recordType, challenge, mode,
+            unverifiedClaims: claims }                          # phone: assert groomerAddr(QR)==relayer,
                                                                 #        isWhitelistedFor(VERIFY:purpose, relayer),
-                                                                #        DNS-verify groomer (prod/remote; skip local)
+                                                                #        DNS-verify groomer (prod/remote; skip local),
+                                                                #        validate unverifiedClaims vs the dogtag anchor (§3.10d)
 
 # (2) consent + ON-DEVICE proof arrive RELAYED from central /v1/verify/consent (§4)
 POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bind? }  # consent = VerificationConsent (§1.10)
@@ -849,7 +861,7 @@ The OFFLINE fallback for the on-chain `ProtocolRegistry` discovery anchor (§5.1
 SAME version content (trio + verifier + artifact fetch-pins) as a **dogtag-key-signed JSON** an app can
 verify with a pinned dogtag key (no RPC, no server liveness). It is a CACHE/FALLBACK, never a second
 authority - on any conflict the on-chain record wins (`dogtag_prover::manifest::reconcile`). A NEW route
-that does **not** touch the resolve GET (`/p/`, `/x/`); that resolve-GET extension is P4. Unlike §3.10a/b
+that does **not** touch the resolve GET (`/p/`, `/x/`); that resolve-GET extension landed in P4 (§3.10d). Unlike §3.10a/b
 it needs **no** prover feature - it lives on the main `public_router`. Full brick: AGENTS.md
 "ProtocolRegistry discovery anchor + signed-manifest fallback (M7 P3)".
 
@@ -868,7 +880,55 @@ GET /protocol/manifest?version=dogtag-levelb/1        # stacks/vet/api/src/proto
   surface + key loading. `verify` checks against the app's PINNED dogtag key, not the envelope's advertised
   `public_key`, so a wrong-signer or tampered manifest fails; `reconcile` reports every field that disagrees
   with on-chain and always returns the on-chain value as authoritative (the deprecation lever
-  `min_app_version` and `circuit_id` included).
+  `min_app_version` and `circuit_id` included). The on-chain `active` lifecycle bit rides through
+  `reconcile` into `authoritative` UNCOMPARED (the signed manifest carries no lifecycle state, so a
+  disagreement is impossible by construction) - that pass-through is what wires `deprecateVersion` into the
+  §3.10d anti-downgrade check.
+
+### 3.10d Discovery API + app anchor-validation (resolve GET convenience tier) - M7 P4
+
+The client TRUST gate on top of §3.10c: the two NON-consuming resolve GETs (`GET /x/{token}` §3.9, `GET
+/p/{token}` §3.11) now ALSO return a nested `unverifiedClaims` block - the CONVENIENCE tier (§5.2), the
+platform's own CLAIMS about which protocol version / chain / registry / issuer clone / purpose this flow
+belongs to. It is **additive**: every pre-existing top-level field is unchanged, so an older app that
+ignores the block keeps working. Built by `app::convenience_claims` (`stacks/vet/api/src/app.rs`) from this
+deployment's config. Full brick: AGENTS.md "Discovery API + app anchor-validation (M7 P4)".
+
+```
+# the block both resolve GETs add (wire key is `unverifiedClaims`, NOT `claims` — it is deliberately
+# labelled as unverified, because to a consuming app these are claims, not authority)
+"unverifiedClaims": { protocolVersion, chainId, verificationRegistry, issuerClone, purpose }
+   #  /x/ (verify)   -> issuerClone = the clone for the session recordType; purpose = VerifySession.purpose
+   #  /p/ (issuance) -> issuerClone = PROFILE_DOCUMENT_STORE;  purpose = "DOG_PROFILE" (no verify-purpose
+   #                    exists for issuance, so the record type is the namespace the app already knows)
+
+# the app then RESOLVES the dogtag-owned anchor (§3.10c / on-chain ProtocolRegistry.getVersion) and gates:
+dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version, expected_purpose })
+   -> Ok(ValidatedVersion{ version, circuit_id })   # feeds artifact selection (dogtag_prover::artifact::resolve)
+   -> Err(..)                                       # ABORT — never prove against an unvalidated claim
+```
+
+- **The validator is PURE and lives in the STANDARD crate** (`crates/dogtag-standard-rs/src/discovery.rs`),
+  not the prover crate, because the mobile app links `dogtag-standard-rs` over UniFFI but NOT the ark-heavy
+  `dogtag-prover-rs`. It does string/int/semver compares only - no ZK, no chain I/O, no signature check.
+  RESOLVING the anchor (the `getVersion` eth-call, or the §3.10c manifest `verify` + `reconcile`) is the
+  CALLER's job. The FFI export is `validateDiscovery` (committed Swift + Kotlin bindings regenerated).
+- **Fail-closed axes**, each aborting the flow: version-coherence, `active` (a deprecated version is refused
+  - the anti-downgrade lever §8.4), `chainId`, `verificationRegistry` (**the anti-redirect trip** - a lying
+  platform cannot steer a proof onto an attacker registry), `purpose`, and `minAppVersion`. The two `0x`-hex
+  axes (`versionId`, `verificationRegistry`) compare case-insensitively; `minAppVersion` compares
+  NUMERICALLY (`1.10.0` > `1.9.0`), tolerating a `-rc1`/`+build` suffix and failing closed on a malformed core.
+- **`purpose` is checked against the app's OUT-OF-BAND intent** (`ClientContext::expected_purpose`), not a
+  chain field: the on-chain `Version` struct deliberately carries no purpose (purpose is per-verification,
+  not per-version), and comparing the platform's claim against the platform's own session would be vacuous.
+- **Server-side trust-tier mapping** is `stacks/vet/api/src/discovery.rs` (`anchor_from_manifest` /
+  `anchor_from_reconciliation`) - the only place linking both crates. `anchor_from_reconciliation` enforces
+  on-chain precedence (it returns the conflicts if the signed manifest disagrees) and sources `active` from
+  the reconciled ON-CHAIN record, so a chain-deprecated version fails closed as `DeprecatedVersion`.
+- **Cutover trap:** `convenience_claims` hardcodes the `LEVEL_A_VERSION` `protocolVersion` while
+  `verificationRegistry` comes from `VERIFICATION_REGISTRY_ADDR`. Pointing that env at the Level-B registry
+  WITHOUT bumping the version constant emits an internally incoherent claim pair and every validating client
+  trips `RegistryMismatch` - safe (fail-closed) but broken; flip both in the same change.
 
 ### 3.4 QR / JWT sharing
 ```
@@ -966,7 +1026,11 @@ POST /profiles/issue/session/start { ownerIdentity, ...petFields }   # operator 
 # (1b) phone resolves the issue session WITHOUT consuming the token (consume on bind)
 GET /p/{token}
    s = issue_sessions[token]; require s.status=="pending"
-   return { dogTagId, ownerIdentity_display? }              # phone shows what it's about to receive
+   claims = { protocolVersion, chainId, verificationRegistry,       # §3.10d CONVENIENCE tier; issuance has no verify
+              issuerClone: profile_document_store, purpose:"DOG_PROFILE" }   #   purpose, so the record type is the namespace
+   return { sessionId, dogTagId, status, registrationMessagePrefix,
+            unverifiedClaims: claims }                       # phone shows what it's about to receive, and
+                                                             #   validates unverifiedClaims vs the dogtag anchor (§3.10d)
 
 # (2) device proves wallet ownership -> vet mints the SBT (mint is ASYNC; see below)
 POST /profiles/issue/bind { token, walletAddress, signature }   # token-authenticated; NO operator session
@@ -1312,6 +1376,14 @@ fn bindConsentKeyAuth():
 # --- per-verification: scan the verifier's QR -> review -> sign -> relay to central ---
 fn approveVerification(sessionJwt):
     claims = parseQrJwt(sessionJwt)                          # {relayer, purpose, recordType, challenge, mode}
+    # M7 P4 (§3.10d): the resolve GET also returns `unverifiedClaims` — the platform's CONVENIENCE tier.
+    # Resolve the dogtag-owned anchor (ProtocolRegistry.getVersion / signed manifest) and gate on it
+    # BEFORE proving; a failure ABORTS (never fall back to the platform's claim).
+    v = validateDiscovery(unverifiedClaims, anchor,
+                          {appVersion, expectedPurpose: <the app/user's OWN out-of-band intent for this scan>})
+    #   ^ expectedPurpose must NOT be claims.purpose / unverifiedClaims.purpose: both are platform-supplied,
+    #     so checking one against the other is vacuous (§3.10d). It is the purpose the owner is knowingly
+    #     consenting to, sourced independently of the scanned session.   # -> {version, circuitId}
     show "Approve {purpose} by {relayer}?"                   # single tap; owner sees pet + verifier + purpose
     nonce = nextConsentNonce(claims.relayer, dogTagId)
     dogTagIdField = dogTagIdFieldHex(handle)                 # field_of_value(Integer(handle)) (§1.4a) — NOT the raw id
@@ -1998,8 +2070,10 @@ POST /verify/session/start { purpose, recordType, mode }    // groomer; mode def
 
 GET /x/{token}                                              // phone resolves the export session (token NOT consumed)
    s=verify_sessions[token]; require s.status=="pending"
-   return { relayer, purpose, recordType, challenge, mode } // phone: assert groomerAddr(QR)==relayer; isWhitelistedFor;
-                                                            //        DNS-verify groomer (prod/remote; skip local)
+   return { sessionId, relayer, purpose, recordType, challenge, mode,
+            unverifiedClaims }                              // phone: assert groomerAddr(QR)==relayer; isWhitelistedFor;
+                                                            //        DNS-verify groomer (prod/remote; skip local);
+                                                            //        validate unverifiedClaims vs the dogtag anchor (§3.10d)
 
 # owner (mobile §6.6) signs VerificationConsent + PROVES ON-DEVICE -> central /v1/verify/consent (§4) -> relayed here:
 POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bind? }

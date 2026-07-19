@@ -1247,14 +1247,24 @@ async fn export_session_resolve(State(st): State<AppState>, Path(token): Path<St
         None => return err(StatusCode::NOT_FOUND, "export token missing or expired"),
     };
     match st.store.get_session(&session_id).await {
-        Some(s) => ok(json!({
-            "sessionId": s.session_id,
-            "relayer": s.relayer,
-            "purpose": s.purpose,
-            "recordType": s.record_type,
-            "challenge": s.challenge,
-            "mode": s.mode,
-        })),
+        Some(s) => {
+            // M7 P4 (§5.2): the CONVENIENCE tier — platform-OWNED, UNVERIFIED claims. Additive to the
+            // existing fields (back-compat). The verify-flow issuer clone is the one for this record
+            // type; the purpose is the session's verify purpose. The app validates these against the
+            // dogtag ProtocolRegistry / signed-manifest anchor before trusting them.
+            let issuer_clone = st.cfg.issuer_addr_for(&s.record_type).unwrap_or_default();
+            let claims =
+                app::convenience_claims(&st.cfg, st.chain.chain_id(), &issuer_clone, &s.purpose);
+            ok(json!({
+                "sessionId": s.session_id,
+                "relayer": s.relayer,
+                "purpose": s.purpose,
+                "recordType": s.record_type,
+                "challenge": s.challenge,
+                "mode": s.mode,
+                "unverifiedClaims": serde_json::to_value(&claims).expect("ConvenienceClaims serializes"),
+            }))
+        }
         None => err(StatusCode::NOT_FOUND, "session not found"),
     }
 }
@@ -1779,13 +1789,27 @@ async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<Stri
         None => return err(StatusCode::NOT_FOUND, "bind token missing or expired"),
     };
     match st.store.get_profile_session(&session_id).await {
-        Some(s) => ok(json!({
-            "sessionId": s.session_id,
-            "dogTagId": s.dog_tag_id,
-            "status": s.status,
-            // the device signs `register_message(walletAddress)` = "DogTag wallet registration: <lc>".
-            "registrationMessagePrefix": "DogTag wallet registration: ",
-        })),
+        Some(s) => {
+            // M7 P4 (§5.2): the CONVENIENCE tier — platform-OWNED, UNVERIFIED claims, additive to the
+            // existing fields. Issuance has no verify-purpose, so the purpose is the record type
+            // (`DOG_PROFILE`) — the namespace the app independently knows for this flow (never
+            // fabricated). The issuer clone is this deployment's DOG_PROFILE documentStore. The app
+            // validates these against the dogtag anchor before trusting them.
+            let claims = app::convenience_claims(
+                &st.cfg,
+                st.chain.chain_id(),
+                &st.cfg.profile_document_store,
+                app::DOG_PROFILE,
+            );
+            ok(json!({
+                "sessionId": s.session_id,
+                "dogTagId": s.dog_tag_id,
+                "status": s.status,
+                // the device signs `register_message(walletAddress)` = "DogTag wallet registration: <lc>".
+                "registrationMessagePrefix": "DogTag wallet registration: ",
+                "unverifiedClaims": serde_json::to_value(&claims).expect("ConvenienceClaims serializes"),
+            }))
+        }
         None => err(StatusCode::NOT_FOUND, "session not found"),
     }
 }
