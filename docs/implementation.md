@@ -843,6 +843,33 @@ POST /prove-consent { circuitInput, version? }        # stacks/vet/api/src/route
   `/prove-verification` instance and a consent instance coexist without either blocking the other's boot
   (M7 §3.5). A malformed `circuitInput` is a 400 (client error), never a 5xx the caller would retry.
 
+### 3.10c Signed-manifest discovery API (`GET /protocol/manifest`) - M7 P3
+
+The OFFLINE fallback for the on-chain `ProtocolRegistry` discovery anchor (§5.1 lock B): dogtag serves the
+SAME version content (trio + verifier + artifact fetch-pins) as a **dogtag-key-signed JSON** an app can
+verify with a pinned dogtag key (no RPC, no server liveness). It is a CACHE/FALLBACK, never a second
+authority - on any conflict the on-chain record wins (`dogtag_prover::manifest::reconcile`). A NEW route
+that does **not** touch the resolve GET (`/p/`, `/x/`); that resolve-GET extension is P4. Unlike §3.10a/b
+it needs **no** prover feature - it lives on the main `public_router`. Full brick: AGENTS.md
+"ProtocolRegistry discovery anchor + signed-manifest fallback (M7 P3)".
+
+```
+GET /protocol/manifest?version=dogtag-levelb/1        # stacks/vet/api/src/protocol.rs (get_manifest)
+   # version = the protocol version string; a QUERY param, not a path segment (it contains `/`)
+   key = env DOGTAG_MANIFEST_SIGNING_KEY              # 32-byte ed25519 seed, 64 hex chars
+      #   UNSET -> 503 (feature disabled, fail-closed); SET-but-malformed -> 503 (logged, secret NOT logged)
+   content = manifest::build(version)                 # unknown version -> None -> 404
+      #   DRY from the file-verified dogtag-prover-rs artifact descriptor + the version's deployment
+   return SignedManifest { content, alg:"ed25519", signature, public_key }   # 200; app verifies vs a PINNED key
+```
+
+- **ed25519, offline-verifiable, on-chain-wins.** The content + signature + offline `verify`/`reconcile`
+  helpers live in `crates/dogtag-prover-rs/src/manifest.rs`; this route (`protocol.rs`) is only the HTTP
+  surface + key loading. `verify` checks against the app's PINNED dogtag key, not the envelope's advertised
+  `public_key`, so a wrong-signer or tampered manifest fails; `reconcile` reports every field that disagrees
+  with on-chain and always returns the on-chain value as authoritative (the deprecation lever
+  `min_app_version` and `circuit_id` included).
+
 ### 3.4 QR / JWT sharing
 ```
 POST /records/{id}/share -> { qrUrl }

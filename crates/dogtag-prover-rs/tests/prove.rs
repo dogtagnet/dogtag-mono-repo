@@ -241,6 +241,32 @@ fn level_a_descriptor_pins_match_the_real_artifacts() {
     }
 }
 
+/// The SAME file-verification for the Level-B consent descriptor — so BOTH versions the M7 P3
+/// `ProtocolRegistry`/signed-manifest publish are pin-verified against the committed artifacts (the
+/// registry's Solidity test can only re-hash the ~4 MB wasm in-EVM; the 24 MB zkey / 11 MB r1cs are
+/// verified here, where streaming is cheap).
+#[test]
+fn level_b_descriptor_pins_match_the_real_artifacts() {
+    let build_dir = repo_root().join("circuits").join("build");
+    let d = artifact::resolve(Some(artifact::LEVEL_B_V1)).expect("level-b descriptor");
+
+    assert_eq!(
+        sha256_hex(&build_dir.join(d.zkey.rel_path)),
+        d.zkey.sha256,
+        "zkey pin does not match {}",
+        d.zkey.rel_path
+    );
+    for f in [&d.r1cs, &d.wasm, &d.vk.verification_key_json] {
+        let Some(expected) = f.sha256 else { continue };
+        assert_eq!(
+            sha256_hex(&build_dir.join(f.rel_path)),
+            expected,
+            "pin does not match {}",
+            f.rel_path
+        );
+    }
+}
+
 /// PARITY, the acceptance bar: naming no version and naming the current one load the SAME artifacts.
 /// `Prover::load` is the pre-M7 entry point, so this is what "back-compat" means concretely.
 #[test]

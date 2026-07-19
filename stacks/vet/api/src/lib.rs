@@ -17,6 +17,7 @@ pub mod calendar;
 pub mod chain;
 pub mod custody;
 pub mod oversight;
+pub mod protocol;
 pub mod prover;
 pub mod routes;
 pub mod startup;

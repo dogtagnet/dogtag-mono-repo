@@ -2494,6 +2494,10 @@ pub fn public_router(state: AppState) -> Router {
         .route("/profiles/issue/bind", post(profile_issue_bind))
         // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
         .route("/p/:token", get(profile_bind_resolve))
+        // discovery signed-manifest fallback (M7 §5.1 1B) — the dogtag-signed version manifest an app
+        // verifies OFFLINE. A NEW route, distinct from the resolve GET (`/p/`, `/x/`); on any conflict
+        // the on-chain ProtocolRegistry (1C) wins. UNAUTHENTICATED (public discovery data).
+        .route("/protocol/manifest", get(crate::protocol::get_manifest))
         // issuer signers
         .route("/issuer/signers", get(issuer_signers))
         // import
