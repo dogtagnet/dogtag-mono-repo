@@ -150,6 +150,16 @@ like every other field here - never transmit the old<->new link.
 
 - **Never** transmit, log, or include the file in a bug report or analytics payload.
   Only `rootHex` is safe to send, and only to the issuer at issuance.
+- **The one deliberate exception: the `/prove-consent` server-prove fallback.**
+  That route exists for devices that cannot run the Groth16 prove locally, and the assembled
+  `circuit_input` it receives carries `ownerSecret` and `ownerAddress` by construction.
+  The wallet seed still never leaves the device, so a compromised prover operator cannot reach the
+  owner's other tags or forge future consents - but it CAN name the owner and link that tag's entire
+  verification history, because it can recompute the nullifier.
+  Owner-unlinkability therefore holds against a chain observer and against the relayer, and does
+  **not** hold against the prover operator.
+  On-device proving leaks none of this and remains the default; see the trust-boundary note on
+  `ConsentProver::prove` in `stacks/vet/api/src/prover.rs`.
 - Treat it exactly like the 24-word phrase in any UX that offers export or backup.
 - It is neither iCloud-synced nor included in device backups, matching the Keychain items'
   `…ThisDeviceOnly` protection class.

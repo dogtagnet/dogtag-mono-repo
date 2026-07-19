@@ -119,11 +119,39 @@ fn on_device_consent_proof_verifies_and_pub_matches() {
     let zkey = build_dir.join("consent_final.zkey");
     let graph = build_dir.join("consent.graph");
     if !zkey.exists() || !graph.exists() {
-        eprintln!(
-            "SKIP: consent zkey/graph absent ({} / {}) — the graph is not committed (CI fetches it)",
-            zkey.display(),
-            graph.display()
+        // This is the repo's ONLY empirical proof that the prover agrees with the frozen consent VK.
+        // Skipping it silently made that proof optional: the run reported green whether or not the
+        // one thing it exists to check had actually been checked.
+        //
+        // So the skip is now LOUD in two ways. A bare skip emits a GitHub `::error::` annotation, the
+        // same convention `.github/workflows/*-mobile-e2e.yml` uses for missing proving artifacts, so
+        // it surfaces in the run summary instead of scrolling past in stdout. And any environment
+        // that is supposed to have fetched the artifacts sets `DOGTAG_REQUIRE_ZK_ARTIFACTS=1`, which
+        // turns the skip into a FAILURE — a missing artifact there means the fetch step regressed,
+        // which is exactly the thing that must not pass silently.
+        //
+        // Local checkouts keep the skip (the graph is gitignored and not committed).
+        // Name the artifact that is ACTUALLY missing. The old wording listed both paths whichever one
+        // was absent, which reads as "neither was fetched" when usually only the graph is (the zkey is
+        // large but obtainable; the graph is the one that is never committed).
+        let missing: Vec<String> = [(&zkey, "consent_final.zkey"), (&graph, "consent.graph")]
+            .iter()
+            .filter(|(p, _)| !p.exists())
+            .map(|(p, name)| format!("{name} ({})", p.display()))
+            .collect();
+        let msg = format!(
+            "consent proving artifact(s) absent: {} — the graph is not committed (CI fetches it \
+             from DOGTAG_ARTIFACTS_URL)",
+            missing.join(", ")
         );
+        if std::env::var("DOGTAG_REQUIRE_ZK_ARTIFACTS").is_ok_and(|v| v == "1") {
+            panic!(
+                "DOGTAG_REQUIRE_ZK_ARTIFACTS=1 but {msg}. This environment is configured to REQUIRE \
+                 the prove<->VK parity check; refusing to report green without running it."
+            );
+        }
+        println!("::error::SKIP: {msg} — prove<->VK parity was NOT verified in this run");
+        eprintln!("SKIP: {msg}");
         return;
     }
 

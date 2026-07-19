@@ -9,6 +9,14 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cargo check --workspace` / `cargo build` — Rust workspace: `dogtag-standard-rs`, `dogtag-prover-rs`, `vet-api`, `admin-api`, `government-api`, `indexer-api`.
 - `cargo test -p indexer-api` — the oversight indexer (scope + store unit tests + `tests/query_api.rs` end-to-end over MemLogSource + MemStore). Hermetic, fast (no node/Mongo). See the "Oversight indexer (PR-4)" section.
 - `cargo test -p dogtag-standard-rs` — trust-core crypto + cross-language parity vectors.
+- `cargo test -p dogtag-standard-rs --features prover --test consent_prove_parity` — the repo's ONLY
+  empirical proof that the on-device consent prover agrees with the frozen consent VK. Two things make
+  it optional, and both are easy to mistake for a pass: it is `#![cfg(feature = "prover")]`, so without
+  `--features prover` it reports `running 0 tests`; and it self-skips when `circuits/build/consent.graph`
+  is absent (gitignored, never committed). The skip now prints a GitHub `::error::` annotation, and any
+  environment that is supposed to have fetched the artifacts must set **`DOGTAG_REQUIRE_ZK_ARTIFACTS=1`**,
+  which turns the skip into a hard failure. Set it wherever the artifacts are fetched; a missing artifact
+  there means the fetch regressed.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
 - `cd contracts && forge test` - 71 tests incl. `ZkIntegration.t.sol` and `ConsentRegistry.t.sol` (both verify a real Groth16 proof on-chain - Level-A and Level-B respectively), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
@@ -24,7 +32,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `gen-vectors.mjs` rewrites `poseidon-vectors.json` deterministically, so running `make parity` leaves the tree clean (no spurious diff).
 - `rust-analyzer` in this worktree can't find the proc-macro server and emits false `E0308`/`tokio::test` errors; trust `cargo`, not the IDE diagnostics.
 - Pre-existing harmless warning: unused import `BigInteger` in `crates/dogtag-standard-rs/src/bin/field-hash.rs`.
-- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`); `apps/android/app/src/test/.../RoaxRpcSelectorTest.kt` pins it. **Android now derives ALL seven selectors** (`isValid`, `isWhitelistedFor`, `bindNonce`, `keyOf`, `consumed`, `profileRoot`, `ownerOf`) - `RoaxRpc.kt` holds no selector literals. **iOS `Net.swift` still hard-codes the six non-`isValid` selectors**: each was reconfirmed correct via `cast sig`, so this is latent drift risk rather than a live bug, and it stays open only because iOS has no unit-test target (so a change there is unverifiable locally - see the Maestro note). Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
+- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`); `apps/android/app/src/test/.../RoaxRpcSelectorTest.kt` pins it. **Android now derives ALL seven selectors** (`isValid`, `isWhitelistedFor`, `bindNonce`, `keyOf`, `consumed`, `profileRoot`, `ownerOf`) - `RoaxRpc.kt` holds no selector literals. **iOS `Net.swift` still hard-codes the six non-`isValid` selectors**: each was reconfirmed correct via `cast sig`, so this is latent drift risk rather than a live bug, and it stays open only because `Net.swift` is not yet covered by the iOS unit-test target (which exists now - see "iOS unit tests" - but is host-less/FFI-free, and `Net.swift` would need the selector helpers extracted into an FFI-free source before it can be pinned the way `RoaxRpcSelectorTest.kt` pins Android's). Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
 
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
@@ -714,6 +722,33 @@ Add it **surgically** to `apps/ios/DogTag.xcodeproj/project.pbxproj` (four entri
 existing sibling: a `PBXBuildFile`, a `PBXFileReference`, a group child, and a Sources build-phase
 entry, using fresh 24-char hex IDs). Do NOT blindly `xcodegen generate` — regenerating the project
 silently strips the vendored prover resources (zkey / witness graph) from the pbxproj.
+
+If you genuinely need a regen (e.g. adding a target), the safe procedure is: `touch
+apps/ios/DogTag/verification_final.zkey apps/ios/DogTag/verification.graph` so xcodegen sees the
+paths, `xcodegen generate`, delete the placeholders, then confirm with
+`git diff --no-color apps/ios/DogTag.xcodeproj/project.pbxproj | grep '^-'` that **no** zkey/graph
+line was removed. Both files are gitignored, so the placeholders can never be committed. Expect a
+large but harmless diff: xcodegen re-randomises every object ID, so hand-written IDs churn while
+target membership is unchanged — diff membership, not IDs. (Piping `git diff` without `--no-color`
+into `grep '^-'` silently matches nothing because of the ANSI prefix; that false "clean" reading is
+easy to trust by mistake.)
+
+### iOS unit tests (`apps/ios/DogTagTests`)
+
+There **is** now an XCTest target. It is deliberately **host-less and FFI-free**: it lists the
+self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift]` in
+`project.yml`) rather than using `@testable import DogTag`, because the app module links
+`DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core. That
+keeps the suite runnable on a plain checkout:
+
+```
+cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
+  -destination 'id=<simulator-udid>'      # `-destination 'name=iPhone 16'` is ambiguous; use the UDID
+```
+
+Adding a source here that transitively imports the FFI will break that property — extract the pure
+logic instead. `QrPayloadTests.swift` mirrors `QrPayloadTest.kt` case-for-case; keep them in step, as
+their whole point is that the two platforms cannot silently diverge on what a QR means.
 
 ### Getting real Swift signal without the xcframework
 

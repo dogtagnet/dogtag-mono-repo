@@ -52,6 +52,12 @@ android {
         noCompress += "zkey"
         noCompress += "graph"
     }
+
+    // Robolectric-backed unit tests (QrPayloadTest) need the Android resource/asset table on the
+    // unit-test classpath; without this the runtime cannot initialise and every such test errors out.
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 kotlin {
@@ -96,4 +102,10 @@ dependencies {
     // JVM unit tests (pure-JVM, no Android runtime): pins the on-chain `isValid` selector derivation
     // (RoaxRpcSelectorTest) so it can never drift back to a reverting value. Run: `./gradlew test`.
     testImplementation("junit:junit:4.13.2")
+
+    // Robolectric supplies the Android runtime classes that a few units genuinely cannot be tested
+    // without: `QrPayload.parse` is built on `android.net.Uri`, and QR content is fully attacker-
+    // controlled, so its edge cases (duplicate query keys, malformed input) must be covered by a test
+    // that exercises the REAL Uri parser rather than a hand-rolled stand-in. Still `./gradlew test`.
+    testImplementation("org.robolectric:robolectric:4.12.2")
 }
