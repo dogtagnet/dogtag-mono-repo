@@ -31,7 +31,7 @@ const CONSENT_KEY_DOMAIN: &[u8] = b"DogTag/consent-key/babyjubjub/v1";
 /// `owner.consentKey` leaf and therefore `R`.
 ///
 /// `v2` because the derivation changed shape: `v1` hashed the seed alone, `v2` binds `dogTagId`
-/// through the shared [`crate::kdf::kdf`] preimage. Bumping rather than silently redefining `v1`
+/// through the shared `crate::kdf::kdf` preimage. Bumping rather than silently redefining `v1`
 /// is the project convention - a domain IS its derivation, so a changed derivation is a new
 /// domain. Free to do here: no Level-B tag has been minted, so nothing needs migrating.
 const CONSENT_KEY_PER_TAG_DOMAIN: &[u8] = b"DogTag/consent-key/babyjubjub/v2";

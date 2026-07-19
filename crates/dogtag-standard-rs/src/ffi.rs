@@ -399,9 +399,19 @@ pub struct EddsaSignatureFfi {
     pub s_dec: String,
 }
 
-/// Derive a deterministic BabyJubjub consent key from a hex seed (any length). The seed is wrapped
-/// in a distinct domain from the secp256k1 wallet path (§6) before BLAKE-512, so the two keys are
-/// independent. Returns the 32-byte private key + public point (Ax, Ay) + keyHash.
+/// Derive the **wallet-level** BabyJubjub consent key from a hex seed (any length) - one key per
+/// wallet, NOT per tag. The seed is wrapped in a distinct domain from the secp256k1 wallet path
+/// (§6) before BLAKE-512, so the two keys are independent. Returns the 32-byte private key +
+/// public point (Ax, Ay) + keyHash.
+///
+/// # Callers: this is the Level-A key, not the profile-tree key
+///
+/// Use this ONLY for the Level-A path (`verification.circom` + the per-wallet
+/// `ConsentKeyRegistry.keyOf` bind). The Level-B `owner.consentKey` leaf uses a **per-tag** key
+/// derived from `(seed, dogTagId)`; you get it from
+/// [`build_profile_tree_hex`]'s `consentPrvHex` (or implicitly via `prove_consent`, which derives
+/// it internally from the `dogTagId` it already receives). See
+/// [`crate::eddsa::derive_babyjub_consent_key_per_tag`].
 #[uniffi::export]
 pub fn derive_babyjub_consent_key(seed_hex: String) -> Result<BabyjubConsentKeyFfi, FfiError> {
     let s = seed_hex.strip_prefix("0x").unwrap_or(&seed_hex);

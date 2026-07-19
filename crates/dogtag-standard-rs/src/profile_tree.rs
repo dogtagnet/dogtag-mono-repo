@@ -20,7 +20,7 @@
 //! | consent-key    | [`crate::eddsa::derive_babyjub_consent_key_per_tag`] - BLAKE-512 KDF -> `prv2pub` |
 //! | reserved salts | [`derive_reserved_salt`] - BLAKE-512 KDF, per keyPath          |
 //!
-//! All three share the single [`crate::kdf::kdf`] preimage builder, so the `(seed, dogTagId)`
+//! All three share the single `crate::kdf::kdf` preimage builder, so the `(seed, dogTagId)`
 //! binding is uniform across the owner-control core rather than per-derivation folklore.
 //!
 //! Restoring the seed regenerates the identical owner-control core. Rebuilding the identical `R`
