@@ -155,7 +155,7 @@ fn front_pack(proof: &[ProofStep]) -> Result<([String; DEPTH], String), FfiError
 ///
 /// Builds the per-tag profile tree on-device (owner-secret + consent key + reserved salts derived
 /// from `seed`, bound to the canonical `dogTagId`), EdDSA-signs `M = Poseidon5(dogTagId, purpose,
-/// relayer, deadline, consentNonce)` with the seed-derived consent key, and computes the three
+/// relayer, deadline, consentNonce)` with that tag's OWN consent key, and computes the three
 /// reserved-leaf inclusion paths. The canonical `dogTagId` field is computed ONCE and used for both
 /// the circuit input and the tree KDF (see the module docs).
 pub fn assemble_consent(w: &ConsentWitness) -> Result<ConsentAssembledInputs, FfiError> {
@@ -348,6 +348,22 @@ mod tests {
     /// THE canonical-field round-trip (ZK cross-check §2, acceptance): the handle is field-hashed
     /// ONCE and the SAME field is the circuit `dogTagId` input, the on-chain mint id, and the KDF
     /// binding that produces `R` — so `R == profileRoot(dogTagId)` and `dogTagId(input) == mint id`.
+    /// The per-tag consent key must survive all the way into the ASSEMBLED PROVER INPUTS, not just
+    /// into the tree: `Ax`/`Ay` are what the circuit actually consumes. One seed, two tags → two
+    /// different `(Ax, Ay)` and therefore two different `owner.consentKey` leaves and two different
+    /// `R`. This is the end of the chain the per-tag binding exists to protect.
+    #[test]
+    fn two_tags_of_one_wallet_assemble_different_consent_keys() {
+        let a = attrs();
+        let one = assemble_consent(&witness("1000000000000000001", &a)).unwrap();
+        let two = assemble_consent(&witness("1000000000000000002", &a)).unwrap();
+
+        assert_ne!(one.dog_tag_id, two.dog_tag_id, "precondition: distinct tags");
+        assert_ne!(one.ax, two.ax, "assembled Ax must differ per tag");
+        assert_ne!(one.ay, two.ay, "assembled Ay must differ per tag");
+        assert_ne!(one.root, two.root, "R must differ per tag");
+    }
+
     #[test]
     fn canonical_field_is_used_across_circuit_input_kdf_and_mint_id() {
         let a = attrs();
