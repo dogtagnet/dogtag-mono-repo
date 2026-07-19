@@ -173,6 +173,17 @@ pub fn validate(
     // (1) Version coherence: the anchor MUST be the record for the version the platform claimed — else
     // the caller resolved the wrong anchor (or a record was swapped). Tie by BOTH the string and its
     // on-chain keccak key, so neither a mismatched string nor a mismatched `versionId` slips through.
+    //
+    // This is a CALLER-INTEGRITY guard, NOT the downgrade defense. The caller resolves the anchor BY
+    // `claims.protocol_version`, so a platform that merely CLAIMS an older version resolves that
+    // version's own legitimate record and coheres with it. The app is version-AGNOSTIC by design (lock
+    // C: nothing bundled - it discovers the version), so there is deliberately no `expected_version` to
+    // pin against; adding one would contradict the architecture. The version-DOWNGRADE defense is
+    // therefore OPERATIONAL, enforced by two levers this function only executes:
+    //   - dogtag MUST `deprecateVersion` a superseded version in the `ProtocolRegistry` - once
+    //     `dogtag-levelb/1` is the standard, `dogtag-levela/1` MUST be marked `active=false`, which
+    //     check (2) below then refuses;
+    //   - `minAppVersion` (check 6), which floors out builds that predate a required change.
     if claims.protocol_version != anchor.version
         || version_id(&claims.protocol_version) != anchor.version_id
     {
@@ -254,9 +265,14 @@ fn compare_semver(
 }
 
 /// Parse a `major.minor.patch` (or shorter, missing components == 0) dotted-numeric version into a
-/// `[u64; 3]`. Accepts an optional single leading `v`. Rejects (fail-closed [`DiscoveryError::BadSemver`])
-/// empty input, an empty component, a non-numeric component, or more than three components — anything
-/// ambiguous is refused rather than guessed.
+/// `[u64; 3]`. Accepts an optional single leading `v` and a trailing semver prerelease/build suffix
+/// (`1.4.0-rc1`, `1.4.0+build.5`) - real mobile builds carry those, and they must not lock an app out of
+/// verifying, so only the numeric `major.minor.patch` CORE is compared (prerelease ORDERING is
+/// deliberately not modelled: a `-rc` build counts as its release core, which errs toward letting a
+/// genuinely new-enough build through rather than gating an unrelated axis on release-candidate
+/// semantics). Rejects (fail-closed [`DiscoveryError::BadSemver`]) an empty core, an empty component, a
+/// non-numeric component, or more than three components — anything ambiguous is refused rather than
+/// guessed.
 fn parse_semver(v: &str, which: &'static str) -> Result<[u64; 3], DiscoveryError> {
     let bad = || DiscoveryError::BadSemver {
         which,
@@ -264,6 +280,12 @@ fn parse_semver(v: &str, which: &'static str) -> Result<[u64; 3], DiscoveryError
     };
     let core = v.trim();
     let core = core.strip_prefix('v').or_else(|| core.strip_prefix('V')).unwrap_or(core);
+    // Drop everything from the first `-` (prerelease) or `+` (build metadata); the numeric core alone is
+    // compared. An input that is ONLY a suffix (`-rc1`) leaves an empty core and fails closed below.
+    let core = match core.find(['-', '+']) {
+        Some(i) => &core[..i],
+        None => core,
+    };
     if core.is_empty() {
         return Err(bad());
     }
@@ -457,6 +479,41 @@ mod tests {
         // A shorter build string is zero-extended: 1.4 == 1.4.0 meets the floor.
         let ctx3 = ClientContext { app_version: "1.4", expected_purpose: PURPOSE };
         assert!(validate(&claims(), &anchor(), &ctx3).is_ok(), "1.4 == 1.4.0 meets the floor");
+    }
+
+    /// A real mobile build carries a prerelease/build suffix (`1.4.0-rc1`, `1.4.0+build.5`). Only the
+    /// numeric core is compared, so such a build is NOT locked out of verifying, while a core that is
+    /// not dotted-numeric still FAILS CLOSED.
+    #[test]
+    fn prerelease_and_build_metadata_compare_by_numeric_core() {
+        for build in ["1.4.0-rc1", "1.4.0+build.5", "v1.4.0-rc.1+exp.sha.5114f85"] {
+            let ctx = ClientContext { app_version: build, expected_purpose: PURPOSE };
+            assert!(
+                validate(&claims(), &anchor(), &ctx).is_ok(),
+                "{build} must satisfy a 1.4.0 floor"
+            );
+        }
+
+        // The suffix does not rescue a build that is numerically too old.
+        let ctx_old = ClientContext { app_version: "1.3.9-rc1", expected_purpose: PURPOSE };
+        assert!(matches!(
+            validate(&claims(), &anchor(), &ctx_old),
+            Err(DiscoveryError::AppTooOld { .. })
+        ));
+
+        // A non-numeric core is still refused, suffix or not.
+        let ctx_bad = ClientContext { app_version: "1.x.0-rc1", expected_purpose: PURPOSE };
+        assert!(matches!(
+            validate(&claims(), &anchor(), &ctx_bad),
+            Err(DiscoveryError::BadSemver { which: "app_version", .. })
+        ));
+
+        // A suffix with NO numeric core leaves nothing to compare - fail closed.
+        let ctx_empty = ClientContext { app_version: "-rc1", expected_purpose: PURPOSE };
+        assert!(matches!(
+            validate(&claims(), &anchor(), &ctx_empty),
+            Err(DiscoveryError::BadSemver { which: "app_version", .. })
+        ));
     }
 
     /// A malformed version on EITHER side FAILS CLOSED — a bad semver is never treated as new enough.
