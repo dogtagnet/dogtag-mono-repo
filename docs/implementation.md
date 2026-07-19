@@ -841,7 +841,10 @@ POST /prove-consent { circuitInput, version? }        # stacks/vet/api/src/route
    #   (dogtag_standard::consent_assemble / the prove_consent FFI): scalars as decimal strings, the
    #   three *Siblings signals as length-6 arrays. Unlike /prove-verification the server does NOT
    #   assemble - the consent witness needs the owner's wallet SEED, which must never leave the device,
-   #   so only the heavy Groth16 prove runs here (owner-unlinkability preserved even for this fallback).
+   #   so only the heavy Groth16 prove runs here. TRUST BOUNDARY: the seed stays on the device, but the
+   #   assembled input DOES carry ownerSecret + ownerAddress - so owner-unlinkability holds against a
+   #   chain observer and the relayer, and NOT against this service's operator (which can name the owner
+   #   and recompute the nullifier). See the trust-boundary note on `ConsentProver::prove` in prover.rs.
    # version = OPTIONAL; must be the Level-B consent version ("dogtag-levelb/1"), else 400.
    proof = ConsentProver.prove(circuitInput)           # ark-0.6; verifies against the frozen consent VK
    return { a, b, c, pub }                              # pub=[dogTagId,purpose,relayer,nullifier,R,

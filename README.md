@@ -131,6 +131,10 @@ from the `…/x/<token>` link it scans.
 make build     # SDKs (TS + Rust) + contracts
 make test      # Poseidon 4-language parity gate + TS/Rust SDK + Foundry
 make parity    # the NORMATIVE Poseidon anchor gate (t=2/3/6/7) — blocks downstream
+
+make test-consent-parity   # consent prove <-> frozen VK agreement — LOUD gate, deliberately NOT in
+                           # `make test`: it fails closed when the (gitignored, never-committed)
+                           # circuits/build/consent.graph is absent, which a plain checkout lacks.
 ```
 
 **Per stack:**

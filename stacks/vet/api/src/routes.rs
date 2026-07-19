@@ -1550,6 +1550,10 @@ async fn prove_verification(
 /// must never leave the device. So the device assembles the consent circuit input LOCALLY (cheap
 /// field math that runs fine on 32-bit ARM, via `consent_assemble` / the `prove_consent` FFI's
 /// assembly step) and POSTs the assembled `circuitInput`; only the heavy Groth16 prove runs here.
+///
+/// The seed staying on-device is NOT owner-unlinkability against this service: the assembled
+/// `circuitInput` carries `ownerSecret` + `ownerAddress`. See the per-adversary trust-boundary note on
+/// `ConsentProver::prove` (`prover.rs`) before describing this route's privacy.
 #[cfg(feature = "prover")]
 #[derive(Deserialize)]
 struct ProveConsentReq {

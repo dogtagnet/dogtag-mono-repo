@@ -276,7 +276,7 @@ It touches NO circuit/VK/ceremony (all frozen) and NO contract; it is a prover-p
 - **FFI** (`prover_ffi::prove_consent`, `prover` feature): mirrors `prove_verification` and its **circom-witnesscalc GRAPH backend** (kept over rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM). Takes the owner seed + disclosed params + `zkey`/`graph` paths; `NUM_PUBLIC_CONSENT = 7`; returns `pub` in the FROZEN OUTPUT order `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. Param parsing is split into `parse_consent_ffi_inputs` (hermetically unit-tested).
 - **Backend** (`crates/dogtag-prover-rs`): `LEVEL_B_V1_DESCRIPTOR` in the version-keyed `REGISTRY`; `ConsentProveInputs` + `Prover::prove_consent_inputs` push the consent signal names (distinct from Level-A's `push_named_inputs`) and share the self-verify/format core with `prove`. The self-verify against the zkey's embedded VK IS a verify against the frozen consent VK (zkey sha256 `f83a111f…`, its exported VK json `27879dd7…`).
 - **Service** (`stacks/vet/api`): `POST /prove-consent` selects the version-keyed consent artifact via a **lazy per-request** `ConsentProver` (`prover.rs`): loaded on first request from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), **fail-closed per REQUEST not boot** (503 on missing/hash-mismatch) so a Level-A `/prove-verification` instance coexists without either blocking the other (M7 §3.5). The device assembles the `circuitInput` **on-device** (cheap field math) and POSTs it; only the heavy Groth16 prove runs server-side. **State the threat model when describing this route's privacy:** the wallet SEED never reaches the server (so the operator cannot reach the owner's other tags or forge future consents), and owner-unlinkability holds against a chain observer and against the relayer - but the POSTed `circuitInput` carries `ownerSecret` AND `ownerAddress` (`consent_assemble.rs:245-246`), so it does **NOT** hold against the prover operator, which can name the owner and link that tag's entire verification history. `docs/MOBILE_OWNER_SECRET.md` marks `ownerSecret` "Never transmit"; this route is the one deliberate exception, kept for devices that cannot prove locally. On-device proving leaks none of it. (The bare claim "preserves owner-unlinkability" was wrong here and in `prover.rs` - e9 E-2.)
-- **The ground truth** is `stacks/vet/api/tests/consent_prove.rs` (`--features prover`): the REAL Rust assembler → `prove_consent_inputs` → verify vs frozen VK → assert the 7 signals in frozen order + `pub[0]==canonical dogTagId` + `pub[4]==R`. It runs against the committed `consent_final.zkey`/`consent.r1cs`/`consent.wasm` (~2 min real prove; self-skips if absent). `consent_prove_parity.rs` verifies the FFI GRAPH proof vs the frozen VK json (CI-only — the graph is not committed). `contracts/test/consent-fixture.json` is regenerated to bind the CANONICAL field (`gen-consent-fixture.mjs` no longer uses raw `424242n`); `forge test --match-contract ConsentRegistry` (16 tests) verifies it on-chain.
+- **The ground truth** is `stacks/vet/api/tests/consent_prove.rs` (`--features prover`): the REAL Rust assembler → `prove_consent_inputs` → verify vs frozen VK → assert the 7 signals in frozen order + `pub[0]==canonical dogTagId` + `pub[4]==R`. It runs against the committed `consent_final.zkey`/`consent.r1cs`/`consent.wasm` (~2 min real prove; self-skips if absent). `consent_prove_parity.rs` verifies the FFI GRAPH proof vs the frozen VK json — run it through `make test-consent-parity`, never the bare cargo command, and note it is **operator-invoked, not CI-run**: no workflow fetches `consent.graph` (see the entry under "Build & test"). `contracts/test/consent-fixture.json` is regenerated to bind the CANONICAL field (`gen-consent-fixture.mjs` no longer uses raw `424242n`); `forge test --match-contract ConsentRegistry` (16 tests) verifies it on-chain.
 
 ## Record provenance block (M7 brick 2 / P2)
 
@@ -1318,9 +1318,11 @@ an idempotent retry, while a different root for the same canonical `dogTagIdHex`
 the existing witness is changed. Explicit draft/sealed state, replacement, and issuance-handoff
 tracking remain deferred to M7.
 
-There is **no iOS unit-test target**, so the Swift side is covered by `swiftc -typecheck` (the recipe
-in "Getting real Swift signal without the xcframework") and every assertion worth making lives in the
-Rust tests instead. Adding the FFI export forced regenerating BOTH `apps/ios/DogTag/dogtag_standard.swift`
+The `DogTagTests` target (see "iOS unit tests") does not reach this code: it is host-less and FFI-free,
+while `ProfileTreeStore` builds through the FFI. So the Swift side here is still covered only by
+`swiftc -typecheck` (the recipe in "Getting real Swift signal without the xcframework") and every
+assertion worth making lives in the Rust tests instead.
+Adding the FFI export forced regenerating BOTH `apps/ios/DogTag/dogtag_standard.swift`
 and the Android `.kt` - a clean regen is **purely additive**; if you see removals, your local uniffi
 ≠ 0.28.x and you should stop rather than commit the churn. Canary it by regenerating BEFORE your
 change and diffing against the committed file: it should be byte-identical.
@@ -1373,9 +1375,11 @@ issuer-side re-issue endpoint lands with that cutover.
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
-- **`ProfileTreeStore` has ZERO runtime coverage.** No iOS test target exists and nothing calls it
-  until M7, so the Codable round-trip, the atomic/`.completeFileProtection` write and
-  `verifyRecoverable` have only been typechecked, never run. First M7 caller should exercise them.
+- **`ProfileTreeStore` has ZERO runtime coverage.** The `DogTagTests` target (see "iOS unit tests")
+  cannot reach it: that suite is deliberately FFI-free and `ProfileTreeStore` builds through the FFI,
+  so it stays out of scope until the pure logic is extracted. Nothing calls it until M7 either, so the
+  Codable round-trip, the atomic/`.completeFileProtection` write and `verifyRecoverable` have only
+  been typechecked, never run. First M7 caller should exercise them.
 - **The `[u8; 20] -> Fr` owner-address packing is untested.** The parity test feeds an `Fr` straight
   to `hash_reserved_leaf`, bypassing `build_profile_tree`'s `field_from_scalar_bytes(&addr)`. It is
   the documented address-packing primitive and the device is the sole builder (no external encoder to
