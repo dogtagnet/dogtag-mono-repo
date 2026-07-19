@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use dogtag_standard::discovery::ConvenienceClaims;
 use dogtag_standard::schema::{validate_schema, DOGTAG_CONTEXT_URI};
 use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION};
 use serde_json::{json, Value};
@@ -111,6 +112,28 @@ pub fn protocol_meta(
         verification_registry: cfg.verification_registry_addr.clone(),
         issuer_clone: issuer_clone.to_string(),
         issuer_signer: issuer_signer.to_string(),
+    }
+}
+
+/// Build the CONVENIENCE-tier claims (§5.2, M7 P4) a resolve GET returns: the platform-OWNED,
+/// UNVERIFIED `{protocolVersion, chainId, verificationRegistry, issuerClone, purpose}`. Every value is
+/// read straight from THIS deployment's config — but to a consuming app they are CLAIMS, not authority
+/// (§1.2 trust boundary). The app MUST resolve the dogtag ProtocolRegistry / signed-manifest anchor and
+/// call `dogtag_standard::discovery::validate` before trusting the `{version, registry, chainId}` here,
+/// so a lying platform cannot steer a proof onto an attacker registry. `issuer_clone`/`purpose` vary by
+/// flow (verify vs issuance); the rest are deployment-wide.
+pub fn convenience_claims(
+    cfg: &Config,
+    chain_id: u64,
+    issuer_clone: &str,
+    purpose: &str,
+) -> ConvenienceClaims {
+    ConvenienceClaims {
+        protocol_version: LEVEL_A_VERSION.to_string(),
+        chain_id,
+        verification_registry: cfg.verification_registry_addr.clone(),
+        issuer_clone: issuer_clone.to_string(),
+        purpose: purpose.to_string(),
     }
 }
 

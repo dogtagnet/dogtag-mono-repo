@@ -81,6 +81,16 @@ async fn profile_issue_session_start_bind_mints_to_wallet() {
     let (s, b) = call(&app, "GET", &format!("/p/{token}"), None, None).await;
     assert_eq!(s, StatusCode::OK, "resolve: {b}");
     assert_eq!(b["dogTagId"].as_str().unwrap(), dog_tag_id);
+    // M7 P4 (§5.2): the resolve GET also returns the CONVENIENCE tier — the platform's UNVERIFIED
+    // claims — ALONGSIDE the existing fields. The device validates these against the dogtag anchor
+    // (`dogtag_standard::discovery::validate`) before trusting them; here we only assert the block is
+    // present and well-formed on the wire.
+    let claims = &b["unverifiedClaims"];
+    assert_eq!(claims["protocolVersion"], "dogtag-levela/1", "convenience tier version claim");
+    assert!(claims["chainId"].is_u64(), "chainId claim present as a number: {claims}");
+    assert!(claims["verificationRegistry"].is_string(), "verificationRegistry claim present: {claims}");
+    assert!(claims["issuerClone"].is_string(), "issuerClone claim present: {claims}");
+    assert_eq!(claims["purpose"], "DOG_PROFILE", "issuance purpose == the record-type namespace");
 
     // --- portal polls status: still pending ---
     let (s, b) = call(&app, "GET", &format!("/profiles/issue/session/{session_id}"), Some(&op), None).await;

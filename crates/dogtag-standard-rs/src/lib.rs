@@ -39,6 +39,11 @@ pub mod profile_tree;
 // Phase 6 — mobile UniFFI binding surface (additive; does not touch the core algorithm modules).
 pub mod ffi;
 
+// M7 P4 — discovery anchor-validation: the pure client TRUST gate that checks a platform's convenience
+// tier against the dogtag-owned ProtocolRegistry / signed-manifest anchor before proving (§5.3). Lives
+// here (not the server-only prover crate) because the mobile app links this crate; additive, no ark.
+pub mod discovery;
+
 // Workstream A — circuit-input ASSEMBLY (prover-independent). Gated behind the lightweight
 // `assemble` feature: it pulls NO circom-prover (ark-0.5) deps, only the SDK's own field/merkle, so
 // the 64-bit backend (vet-api, on ark-0.6 dogtag-prover-rs) can reuse the SAME 19-input assembly to
