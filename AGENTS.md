@@ -162,6 +162,44 @@ The vet/groomer verifier product now has a direct, operator-facing **pasted cred
 - **Web (`stacks/vet/web`, `stacks/groomer/web`)**: the shared `@dogtag/ui` `CredentialVerifyPanel` is mounted on each Verify page above `VerifyFlow`. It accepts wrappedDoc JSON, optional issuer signer, and renders pass/fail plus integrity/on-chain/issued/revoked/whitelist pillars with issuer/root details. **As of `webverify-n3` the panel no longer calls `POST /verify/credential`** - see the next section.
 - **Tests/builds**: `stacks/vet/api/tests/flow_memchain.rs::full_issuance_share_revoke_flow` now proves issue -> direct verify valid -> revoke -> direct verify revoked over `MemChain`.
 
+### Public-signal indices: ALWAYS via the named constants, never a literal (e9 E-1)
+
+Both circuits emit a **7-element** public-signal vector and the two orders **disagree from index 3 on**:
+
+| index | Level-A (`verification.circom`) | Level-B (`consent.circom`) |
+|---|---|---|
+| 0-2 | dogTagId, purpose, relayer | dogTagId, purpose, relayer |
+| 3 | **subject** | **nullifier** |
+| 4 | **nullifier** | **R** |
+| 5 | keyHash | recordType |
+| 6 | R | deadline |
+
+Same width, same `[String; 7]` type, so a mix-up is invisible to every compiler and produces a
+plausible-looking field element instead of an error. The canonical failure: reading `pubSignals[4]` as
+the nullifier under Level-B actually yields `R`, so the phone polls `consumed(R)` - never set - and a
+verification that **succeeded on-chain** hangs until timeout.
+
+The constants live in three mirrored files, each with a `level_a`/`levelA`/`LevelA` and a
+`level_b`/`levelB`/`LevelB` set: `crates/dogtag-standard-rs/src/public_signals.rs`,
+`apps/ios/DogTag/PublicSignalIndex.swift`,
+`apps/android/app/src/main/java/io/liberalize/dogtag/zk/PublicSignalIndex.kt`. Rust
+(`public_signals::tests`) and iOS (`PublicSignalIndexTests`) both pin Level-B against
+`VerificationRegistryConsent.sol:80-87`'s `P_*` constants.
+
+- **Everything on the live serving path is `level_a`, deliberately.** Both apps bundle
+  `verification_final.zkey` (pinned `dogtag-levela/1`; Android's `ZkeyAssetTest` asserts
+  `dogtag-levelb/1` FAILS to resolve) and call `proveVerification`; `verify.rs`/`chain.rs` read a
+  `subject` signal and drive `ConsentKeyRegistry`, neither of which exists under Level-B. **Do not
+  "fix" these to Level-B indices** - that is the M-4 cutover, and doing it early breaks the only live
+  end-to-end path rather than repairing it.
+- `level_b` is used only by the consent tests today. At M-4 each call site flips one import.
+- **Never add a third, level-neutral set.** It would have to pick one value and would then silently
+  contradict either the live off-chain code or the contract (whose `P_NULLIFIER = 3` is Level-B-valued).
+  Naming the level *is* the safety property.
+- `crates/dogtag-prover-rs` cannot import these (it pins ark 0.6 vs `dogtag-standard-rs`'s 0.5 and the
+  two coexist only because ark types never cross the boundary - see its `Cargo.toml`). Its
+  `Groth16Output` doc lists both orders and must be kept in step by hand.
+
 ### Web credential verify is permissionless direct-to-RPC (webverify-n3)
 Credential verification is permissionless + on-chain, so the web `CredentialVerifyPanel` reads the chain itself instead of the operator-gated `POST /verify/credential`. The server endpoint is retained (it may serve other callers) but the web panel no longer depends on it.
 - **Where**: `packages/ui/src/wallet/verifyCredential.ts` `verifyCredentialOnchain(...)` is a byte-for-byte TS port of the Rust `verify_credential` handler's classification. It runs `@dogtag/standard` `checkIntegrity` (pure offline recompute) then reads `DogTagIssuer.issuedAt/isValid/isRevoked` (and optional `IssuerRegistry.isWhitelistedFor`) via viem `eth_call` over the public ROAX RPC (`roax` chain def, chainId 135, `https://devrpc.roax.net`). All chain reads use the **claimed** root (`signature.merkleRoot`); the recomputed root only populates the `recomputedRoot` display field. Returns the identical `VerifyCredentialResp` shape, so the result renderer is unchanged.
@@ -213,7 +251,7 @@ It touches NO circuit/VK/ceremony (all frozen) and NO contract; it is a prover-p
 - **`nullifier` (`pub[3]`) and `R` (`pub[4]`) are circuit OUTPUTS** — the assembler recomputes them only for on-chain wiring / test assertions; it never feeds them in. `ownerAddress` is the **raw** reserved-leaf field (`field_from_scalar_bytes(addr)`), not `field_of_value`.
 - **FFI** (`prover_ffi::prove_consent`, `prover` feature): mirrors `prove_verification` and its **circom-witnesscalc GRAPH backend** (kept over rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM). Takes the owner seed + disclosed params + `zkey`/`graph` paths; `NUM_PUBLIC_CONSENT = 7`; returns `pub` in the FROZEN OUTPUT order `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. Param parsing is split into `parse_consent_ffi_inputs` (hermetically unit-tested).
 - **Backend** (`crates/dogtag-prover-rs`): `LEVEL_B_V1_DESCRIPTOR` in the version-keyed `REGISTRY`; `ConsentProveInputs` + `Prover::prove_consent_inputs` push the consent signal names (distinct from Level-A's `push_named_inputs`) and share the self-verify/format core with `prove`. The self-verify against the zkey's embedded VK IS a verify against the frozen consent VK (zkey sha256 `f83a111f…`, its exported VK json `27879dd7…`).
-- **Service** (`stacks/vet/api`): `POST /prove-consent` selects the version-keyed consent artifact via a **lazy per-request** `ConsentProver` (`prover.rs`): loaded on first request from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), **fail-closed per REQUEST not boot** (503 on missing/hash-mismatch) so a Level-A `/prove-verification` instance coexists without either blocking the other (M7 §3.5). The device assembles the `circuitInput` **on-device** (cheap field math; the seed never reaches the server, preserving owner-unlinkability) and POSTs it; only the heavy Groth16 prove runs server-side.
+- **Service** (`stacks/vet/api`): `POST /prove-consent` selects the version-keyed consent artifact via a **lazy per-request** `ConsentProver` (`prover.rs`): loaded on first request from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), **fail-closed per REQUEST not boot** (503 on missing/hash-mismatch) so a Level-A `/prove-verification` instance coexists without either blocking the other (M7 §3.5). The device assembles the `circuitInput` **on-device** (cheap field math) and POSTs it; only the heavy Groth16 prove runs server-side. **State the threat model when describing this route's privacy:** the wallet SEED never reaches the server (so the operator cannot reach the owner's other tags or forge future consents), and owner-unlinkability holds against a chain observer and against the relayer - but the POSTed `circuitInput` carries `ownerSecret` AND `ownerAddress` (`consent_assemble.rs:245-246`), so it does **NOT** hold against the prover operator, which can name the owner and link that tag's entire verification history. `docs/MOBILE_OWNER_SECRET.md` marks `ownerSecret` "Never transmit"; this route is the one deliberate exception, kept for devices that cannot prove locally. On-device proving leaks none of it. (The bare claim "preserves owner-unlinkability" was wrong here and in `prover.rs` - e9 E-2.)
 - **The ground truth** is `stacks/vet/api/tests/consent_prove.rs` (`--features prover`): the REAL Rust assembler → `prove_consent_inputs` → verify vs frozen VK → assert the 7 signals in frozen order + `pub[0]==canonical dogTagId` + `pub[4]==R`. It runs against the committed `consent_final.zkey`/`consent.r1cs`/`consent.wasm` (~2 min real prove; self-skips if absent). `consent_prove_parity.rs` verifies the FFI GRAPH proof vs the frozen VK json (CI-only — the graph is not committed). `contracts/test/consent-fixture.json` is regenerated to bind the CANONICAL field (`gen-consent-fixture.mjs` no longer uses raw `424242n`); `forge test --match-contract ConsentRegistry` (16 tests) verifies it on-chain.
 
 ## Record provenance block (M7 brick 2 / P2)

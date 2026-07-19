@@ -154,8 +154,12 @@ object RoaxRpc {
      * `VerificationRegistry.consumed(nullifier)` → true once the relayer's `recordVerificationZK`
      * (or the legacy path) has landed on-chain for this nullifier. This is the CANONICAL completion
      * signal for the async export/verify flow: the groomer host records in the background, so the
-     * phone polls this until it flips true. `nullifier` is the proof's `pubSignals[4]` (a decimal
-     * field element or 0x.. hex), encoded here as a 32-byte word. Returns false on any RPC failure so
+     * phone polls this until it flips true. `nullifier` is the proof's nullifier signal —
+     * `PublicSignalIndex.LevelA.NULLIFIER` for the Level-A proofs this app produces today, which is
+     * index 4; note Level-B puts `R` in that slot and the nullifier at 3, so callers must resolve the
+     * index through `PublicSignalIndex` rather than hard-coding it (passing `R` here would poll a key
+     * that is never set and hang on a verification that actually succeeded). Accepts a decimal field
+     * element or 0x.. hex, encoded here as a 32-byte word. Returns false on any RPC failure so
      * the caller simply keeps polling (and ultimately times out) rather than treating it as success.
      */
     suspend fun consumed(rpcUrl: String, verificationRegistry: String, nullifier: String): Boolean {

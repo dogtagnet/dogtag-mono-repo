@@ -12,6 +12,11 @@ use alloy::sol;
 use alloy::sol_types::SolEvent;
 use async_trait::async_trait;
 
+// LEVEL-A public-signal indices. The `recordVerificationZK` surface here is the 4-arg Level-A one
+// (it carries `subject` and a ConsentKeyRegistry-bound `keyHash`); M-4 introduces a separate Level-B
+// interface rather than editing this one, so these stay `level_a`.
+use dogtag_standard::public_signals::level_a as P;
+
 pub const ROAX_CHAIN_ID: u64 = 135;
 
 sol! {
@@ -666,7 +671,9 @@ impl ChainClient for MemChain {
         _record_type: &str,
         _deadline: u64,
     ) -> Result<SentTx, ChainError> {
-        let nf = format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[4])));
+        // LEVEL-A indices: this mock mirrors the Level-A `recordVerificationZK` the relayer actually
+        // broadcasts (it carries a `subject`, which Level-B has no signal for).
+        let nf = format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[P::NULLIFIER])));
         let mut g = self.inner.lock().unwrap();
         let _from = g
             .signers
@@ -687,10 +694,10 @@ impl ChainClient for MemChain {
         g.nonce += 1;
         let tx_hash = format!("0x{:064x}", g.nonce);
         let ev = VerifiedEvent {
-            dog_tag_id: parse_u256_dec_or_hex(&pub_signals[0]),
-            relayer: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[2])),
-            subject: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[3])),
-            purpose: format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[1]))),
+            dog_tag_id: parse_u256_dec_or_hex(&pub_signals[P::DOG_TAG_ID]),
+            relayer: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[P::RELAYER])),
+            subject: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[P::SUBJECT])),
+            purpose: format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[P::PURPOSE]))),
             nullifier: nf,
             ts,
         };

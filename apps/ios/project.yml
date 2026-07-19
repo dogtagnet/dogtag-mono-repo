@@ -47,6 +47,7 @@ targets:
     sources:
       - path: DogTagTests
       - path: DogTag/QrPayload.swift
+      - path: DogTag/PublicSignalIndex.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.liberalize.dogtag.tests

@@ -350,9 +350,10 @@ impl ConsentProver {
 mod tests {
     use super::*;
 
-    /// The stub echoes the four lean caller-supplied signals into pub_signals[0..4]
-    /// and R into pub_signals[6], zeroes the two circuit-output signals (nullifier,
-    /// keyHash) at [4]/[5], and returns an all-zero (a,b,c) proof.
+    /// LEVEL-A layout (`dogtag_standard::public_signals::level_a`): the stub echoes the four lean
+    /// caller-supplied signals into pub_signals[0..4] (dogTagId, purpose, relayer, subject) and R into
+    /// pub_signals[6], zeroes the two circuit-output signals (nullifier, keyHash) at [4]/[5], and
+    /// returns an all-zero (a,b,c) proof.
     #[tokio::test]
     async fn stub_prove_echoes_lean_signals_and_zeros_proof() {
         let input = ProveInput {

@@ -62,6 +62,7 @@ import io.liberalize.dogtag.qr.QrScannerView
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.wallet.Biometric
 import io.liberalize.dogtag.wallet.Wallet
+import io.liberalize.dogtag.zk.PublicSignalIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -611,10 +612,14 @@ private fun ExportPanel(
                                 ConsentKeyBind(wallet.ethAddress, wallet.consent.keyHashHex, ownerSig)
                             }.getOrNull()
 
-                            // The proof's nullifier = pubSignals[4] (a decimal field element). This is
-                            // the on-chain `VerificationRegistry.consumed(bytes32)` key — the canonical
-                            // completion signal we poll the CHAIN for below.
-                            val nullifier = proof.pubSignals.getOrNull(4).orEmpty()
+                            // The proof's nullifier (a decimal field element). This is the on-chain
+                            // `VerificationRegistry.consumed(bytes32)` key — the canonical completion
+                            // signal we poll the CHAIN for below. LEVEL-A index: this screen proves with
+                            // the bundled Level-A zkey. Under Level-B that same slot is `R`, so a bare
+                            // `pubSignals[4]` here would poll a key that is never set and hang on a
+                            // SUCCESSFUL verification.
+                            val nullifier = proof.pubSignals
+                                .getOrNull(PublicSignalIndex.LevelA.NULLIFIER).orEmpty()
 
                             // PRE-SUBMIT REPLAY GUARD: if this nullifier is already consumed on-chain,
                             // the verification was recorded before — submitting again is a doomed replay

@@ -30,6 +30,8 @@ use dogtag_standard::consent_assemble::{
 };
 use dogtag_standard::profile_tree::{AttributeLeaf, SALT_LEN};
 use dogtag_standard::types::TypedScalar;
+// LEVEL-B indices: these exercise the consent circuit.
+use dogtag_standard::public_signals::level_b as P;
 
 fn repo_root() -> PathBuf {
     // tests/ -> api -> vet -> stacks -> <root>
@@ -138,10 +140,13 @@ fn consent_proves_and_verifies_against_the_frozen_vk() {
 
     // 5. The canonical-field discipline, visible on-chain: pub[0] is the canonical dogTagId field
     //    (the id the SBT must be minted with), and pub[4]/R is profileRoot(dogTagId).
-    assert_eq!(out.public_signals[0], fe_to_dec(&inp.dog_tag_id_field));
-    assert_eq!(out.public_signals[4], fe_to_dec(&inp.root));
+    assert_eq!(out.public_signals[P::DOG_TAG_ID], fe_to_dec(&inp.dog_tag_id_field));
+    assert_eq!(out.public_signals[P::ROOT], fe_to_dec(&inp.root));
     // The nullifier is a non-trivial circuit output (not echoed / zeroed).
-    assert_ne!(out.public_signals[3], "0", "nullifier (pub[3]) must be a real circuit output");
+    assert_ne!(
+        out.public_signals[P::NULLIFIER], "0",
+        "nullifier must be a real circuit output"
+    );
 }
 
 /// Fail-closed at load: the consent prover refuses a zkey whose hash differs from the pinned one —
