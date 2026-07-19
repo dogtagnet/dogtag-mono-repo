@@ -133,12 +133,12 @@ fn two_tags_of_one_wallet_both_verify_against_the_frozen_vk_and_are_unlinkable()
         prover.version(),
         prover.zkey_hash_hex()
     );
-    println!("{:<12} {:<26} {:<26} {}", "public signal", "Rex (tag 424242)", "Milo (tag 424243)", "");
-    for i in 0..7 {
+    println!("{:<12} {:<26} {:<26}", "public signal", "Rex (tag 424242)", "Milo (tag 424243)");
+    for (i, label) in LABELS.iter().enumerate() {
         let (x, y) = (&a_out.public_signals[i], &b_out.public_signals[i]);
         let verdict = if x == y { "same (disclosed session param)" } else { "unlinkable" };
         let trunc = |s: &String| if s.len() > 24 { format!("{}…", &s[..23]) } else { s.clone() };
-        println!("pub[{i}] {:<6} {:<26} {:<26} {verdict}", LABELS[i], trunc(x), trunc(y));
+        println!("pub[{i}] {label:<6} {:<26} {:<26} {verdict}", trunc(x), trunc(y));
     }
     println!(
         "\nconsent Ax   {:<26} {:<26} unlinkable",
