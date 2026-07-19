@@ -292,8 +292,12 @@ fn parse_client_proof(v: &Value) -> Result<ClientProof, String> {
         .get("pubSignals")
         .and_then(|x| x.as_array())
         .ok_or_else(|| "pubSignals: missing/!array".to_string())?;
-    if pv.len() != 7 {
-        return Err(format!("pubSignals: expected len 7, got {}", pv.len()));
+    if pv.len() != dogtag_standard::public_signals::NUM_PUBLIC {
+        return Err(format!(
+            "pubSignals: expected len {}, got {}",
+            dogtag_standard::public_signals::NUM_PUBLIC,
+            pv.len()
+        ));
     }
     let mut pub_signals: [String; 7] = Default::default();
     for (i, x) in pv.iter().enumerate() {

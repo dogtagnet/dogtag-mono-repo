@@ -81,9 +81,12 @@ pub mod level_b {
 mod tests {
     use super::*;
 
-    /// Pins the Level-B constants against `VerificationRegistryConsent.sol:80-87`. If the circuit's
-    /// output order is ever changed, this and the contract must move together or on-chain and
-    /// off-chain silently disagree about what they are comparing.
+    /// Guards the Level-B constants against accidental drift, the repo's usual mirrored-constant
+    /// pattern. The values were transcribed from `VerificationRegistryConsent.sol:81-87`'s `P_*`
+    /// constants, which remain the authority - but this test asserts literals and never reads the
+    /// Solidity, so a CONTRACT-side change would not fail it. If the circuit's output order is ever
+    /// changed, this and the contract must be moved together by hand, or on-chain and off-chain
+    /// silently disagree about what they are comparing.
     #[test]
     fn level_b_matches_the_on_chain_constants() {
         assert_eq!(level_b::DOG_TAG_ID, 0, "P_DOGTAGID");

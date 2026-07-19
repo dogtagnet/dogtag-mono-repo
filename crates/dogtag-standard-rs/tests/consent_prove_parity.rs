@@ -13,8 +13,13 @@
 //!
 //! This is the success criterion for the on-device FFI: `prove_consent`'s proof verifies under the
 //! SAME VK the on-chain verifier uses, with matching public signals. It self-skips when the graph or
-//! zkey is absent (the graph is not committed — CI fetches it from DOGTAG_ARTIFACTS_URL), so it never
-//! reds an unbuilt checkout.
+//! zkey is absent, so it never reds an unbuilt checkout - `consent.graph` is gitignored, is not
+//! committed, and nothing fetches it automatically.
+//!
+//! Because that skip is invisible from inside libtest (stdout is captured for PASSING tests), the
+//! LOUD entry point is the shell wrapper `scripts/test-consent-parity.sh` (`make test-consent-parity`):
+//! it checks the artifacts before cargo runs, emits a `::error::` annotation naming the missing one,
+//! and exits non-zero. Prefer it over invoking this test directly.
 #![cfg(feature = "prover")]
 
 use std::path::PathBuf;
@@ -123,25 +128,27 @@ fn on_device_consent_proof_verifies_and_pub_matches() {
         // Skipping it silently made that proof optional: the run reported green whether or not the
         // one thing it exists to check had actually been checked.
         //
-        // So the skip is now LOUD in two ways. A bare skip emits a GitHub `::error::` annotation, the
-        // same convention `.github/workflows/*-mobile-e2e.yml` uses for missing proving artifacts, so
-        // it surfaces in the run summary instead of scrolling past in stdout. And any environment
-        // that is supposed to have fetched the artifacts sets `DOGTAG_REQUIRE_ZK_ARTIFACTS=1`, which
-        // turns the skip into a FAILURE — a missing artifact there means the fetch step regressed,
-        // which is exactly the thing that must not pass silently.
+        // Two mechanisms make the skip visible, and only one of them can live here. Annotating from
+        // inside a PASSING libtest cannot work - libtest captures stdout unless the runner passes
+        // `--nocapture` - so the `::error::` annotation belongs to the shell wrapper
+        // (`scripts/test-consent-parity.sh`), which checks the artifacts before cargo even starts.
+        // What DOES work here is the hard-fail leg: `DOGTAG_REQUIRE_ZK_ARTIFACTS=1` turns the skip
+        // into a panic, and libtest prints captured output for FAILING tests. Any environment that is
+        // supposed to have the artifacts sets it - a missing artifact there means the fetch regressed.
         //
-        // Local checkouts keep the skip (the graph is gitignored and not committed).
+        // Local checkouts keep the plain skip (the graph is gitignored and not committed).
         // Name the artifact that is ACTUALLY missing. The old wording listed both paths whichever one
         // was absent, which reads as "neither was fetched" when usually only the graph is (the zkey is
-        // large but obtainable; the graph is the one that is never committed).
+        // committed; the graph is the one that is never committed).
         let missing: Vec<String> = [(&zkey, "consent_final.zkey"), (&graph, "consent.graph")]
             .iter()
             .filter(|(p, _)| !p.exists())
             .map(|(p, name)| format!("{name} ({})", p.display()))
             .collect();
         let msg = format!(
-            "consent proving artifact(s) absent: {} — the graph is not committed (CI fetches it \
-             from DOGTAG_ARTIFACTS_URL)",
+            "consent proving artifact(s) absent: {} - consent.graph is gitignored, is NOT committed, \
+             and nothing fetches it automatically; build it locally from circuits/consent.circom with \
+             iden3's build-circuit tool",
             missing.join(", ")
         );
         if std::env::var("DOGTAG_REQUIRE_ZK_ARTIFACTS").is_ok_and(|v| v == "1") {
@@ -150,8 +157,7 @@ fn on_device_consent_proof_verifies_and_pub_matches() {
                  the prove<->VK parity check; refusing to report green without running it."
             );
         }
-        println!("::error::SKIP: {msg} — prove<->VK parity was NOT verified in this run");
-        eprintln!("SKIP: {msg}");
+        eprintln!("SKIP: {msg} - prove<->VK parity was NOT verified in this run");
         return;
     }
 

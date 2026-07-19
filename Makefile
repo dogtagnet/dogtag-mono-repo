@@ -1,6 +1,6 @@
 # DogTag monorepo — root task runner (just is unavailable; GNU Make 3.81)
 .DEFAULT_GOAL := help
-.PHONY: help dev build test parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer
+.PHONY: help dev build test parity sdk-ts sdk-rs contracts deploy-contracts clean up-admin up-vet up-groomer up-government up-indexer test-consent-parity
 
 help: ## list targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -24,6 +24,9 @@ test-ts: ## TS SDK tests (incl. shared testvectors.json)
 
 test-rs: ## Rust SDK tests (incl. shared testvectors.json)
 	cargo test -p dogtag-standard-rs
+
+test-consent-parity: ## consent prove<->VK parity - LOUD gate, fails if artifacts absent (NOT in `test`)
+	scripts/test-consent-parity.sh
 
 contracts: ## compile Foundry contracts
 	cd contracts && forge build

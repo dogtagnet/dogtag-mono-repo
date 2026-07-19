@@ -37,10 +37,11 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
 
   # Pure-logic unit tests. This bundle deliberately has NO host application and NO dependency on
-  # DogTagFFI.xcframework: it compiles the handful of self-contained sources it covers (currently just
-  # QrPayload.swift, which imports only Foundation) straight into the test binary. That keeps
-  # `xcodebuild test` runnable on a plain checkout, where the xcframework is gitignored and absent
-  # until someone builds the Rust core. Adding a source here that pulls in FFI would break that.
+  # DogTagFFI.xcframework: it compiles the handful of self-contained sources it covers (currently
+  # QrPayload.swift and PublicSignalIndex.swift, both importing only Foundation, or nothing at all)
+  # straight into the test binary. That keeps `xcodebuild test` runnable on a plain checkout, where
+  # the xcframework is gitignored and absent until someone builds the Rust core. Adding a source here
+  # that pulls in FFI would break that.
   DogTagTests:
     type: bundle.unit-test
     platform: iOS

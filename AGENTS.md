@@ -9,18 +9,39 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cargo check --workspace` / `cargo build` — Rust workspace: `dogtag-standard-rs`, `dogtag-prover-rs`, `vet-api`, `admin-api`, `government-api`, `indexer-api`.
 - `cargo test -p indexer-api` — the oversight indexer (scope + store unit tests + `tests/query_api.rs` end-to-end over MemLogSource + MemStore). Hermetic, fast (no node/Mongo). See the "Oversight indexer (PR-4)" section.
 - `cargo test -p dogtag-standard-rs` — trust-core crypto + cross-language parity vectors.
-- `cargo test -p dogtag-standard-rs --features prover --test consent_prove_parity` — the repo's ONLY
-  empirical proof that the on-device consent prover agrees with the frozen consent VK. Two things make
-  it optional, and both are easy to mistake for a pass: it is `#![cfg(feature = "prover")]`, so without
-  `--features prover` it reports `running 0 tests`; and it self-skips when `circuits/build/consent.graph`
-  is absent (gitignored, never committed). The skip now prints a GitHub `::error::` annotation, and any
-  environment that is supposed to have fetched the artifacts must set **`DOGTAG_REQUIRE_ZK_ARTIFACTS=1`**,
-  which turns the skip into a hard failure. Set it wherever the artifacts are fetched; a missing artifact
-  there means the fetch regressed.
+- `make test-consent-parity` (wrapper: `scripts/test-consent-parity.sh`) - the LOUD entry point for the
+  repo's ONLY empirical proof that the on-device consent prover agrees with the frozen consent VK. Use
+  it instead of the bare cargo invocation, because that invocation can report green in TWO ways without
+  running the check, neither of them visible: the test is `#![cfg(feature = "prover")]`, so a plain
+  `cargo test -p dogtag-standard-rs` compiles it away and prints `running 0 tests`; and even with the
+  feature it self-skips when `circuits/build/consent.graph` is absent (gitignored, never committed, and
+  **nothing fetches it automatically** - the mobile workflows fetch `verification.graph` only; build it
+  locally from `circuits/consent.circom` with iden3's `build-circuit`). The wrapper closes both: it
+  always passes `--features prover`, and it checks the artifacts from the SHELL - where a `::error::`
+  line is actually parsed and a non-zero exit is a real failure - naming the missing artifact. An
+  annotation printed from inside the test could not work: libtest captures stdout for PASSING tests.
+  It is deliberately **not** in `make test` (like `test-consent` / `test-circuit`), since a normal
+  checkout has no `consent.graph` and the gate fails closed. The complementary in-test leg stays:
+  **`DOGTAG_REQUIRE_ZK_ARTIFACTS=1`** turns the skip into a panic - set it wherever artifacts are
+  expected, since libtest DOES print captured output for failing tests. Note no GitHub workflow runs
+  `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
+  follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
 - `cd contracts && forge test` - 71 tests incl. `ZkIntegration.t.sol` and `ConsentRegistry.t.sol` (both verify a real Groth16 proof on-chain - Level-A and Level-B respectively), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
+- `cd apps/android && gradle test` - the JVM unit suites (`RoaxRpcSelectorTest`, `QrPayloadTest`,
+  `PublicSignalIndexTest`, `ZkeyAssetTest`). **Exception to this section's "runs offline" framing:**
+  `QrPayloadTest` uses Robolectric, which resolves its `android-all-instrumented` runtime jars from
+  Maven on the FIRST run, so a cold Gradle cache needs network (warm cache is offline). The tradeoff
+  was taken deliberately: `QrPayload.parse` is built on the real `android.net.Uri` and QR content is
+  fully attacker-controlled, so a hand-rolled stand-in would test the stand-in, not the parser that
+  actually runs - the very trap that let a duplicate-query-key QR crash the iOS scanner.
+- **Known gap: neither mobile unit suite runs in CI.** The only two workflows are the
+  `workflow_dispatch`-only mobile e2e jobs, so `apps/android`'s JVM tests and the iOS `DogTagTests`
+  scheme are guarded by LOCAL runs only - including the QR-trap regression they were written for. Run
+  them by hand before shipping mobile changes. (Dispatch-only CI is a standing decision, not an
+  oversight; broadening it is captain-gated.)
 - `cargo test -p vet-api --test verify_onchain` — on-chain integration (self-spawns anvil). The ZK-path
   test (`zk_path_records_verified_onchain`, real Groth16 proof, ~270s) needs forge/cast/anvil on PATH AND
   the JS toolchain built first: `pnpm install` in `circuits/` plus `pnpm install && pnpm run build` in
@@ -183,8 +204,11 @@ The constants live in three mirrored files, each with a `level_a`/`levelA`/`Leve
 `level_b`/`levelB`/`LevelB` set: `crates/dogtag-standard-rs/src/public_signals.rs`,
 `apps/ios/DogTag/PublicSignalIndex.swift`,
 `apps/android/app/src/main/java/io/liberalize/dogtag/zk/PublicSignalIndex.kt`. Rust
-(`public_signals::tests`) and iOS (`PublicSignalIndexTests`) both pin Level-B against
-`VerificationRegistryConsent.sol:80-87`'s `P_*` constants.
+(`public_signals::tests`), iOS (`PublicSignalIndexTests`) and Android (`PublicSignalIndexTest`) each
+guard their own Level-B constants against accidental drift.
+The values were transcribed from `VerificationRegistryConsent.sol:81-87`'s `P_*` constants, which stay
+the authority - but every one of those tests asserts LITERALS and never reads the Solidity, so a
+contract-side change would not fail them; the two sides must be moved together by hand.
 
 - **Everything on the live serving path is `level_a`, deliberately.** Both apps bundle
   `verification_final.zkey` (pinned `dogtag-levela/1`; Android's `ZkeyAssetTest` asserts
@@ -774,8 +798,9 @@ easy to trust by mistake.)
 ### iOS unit tests (`apps/ios/DogTagTests`)
 
 There **is** now an XCTest target. It is deliberately **host-less and FFI-free**: it lists the
-self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift]` in
-`project.yml`) rather than using `@testable import DogTag`, because the app module links
+self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift,
+DogTag/PublicSignalIndex.swift]` in `project.yml` - keep this list in step with that file) rather than
+using `@testable import DogTag`, because the app module links
 `DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core. That
 keeps the suite runnable on a plain checkout:
 

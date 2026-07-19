@@ -6,9 +6,11 @@ import XCTest
 /// `crates/dogtag-standard-rs/src/public_signals.rs`.
 final class PublicSignalIndexTests: XCTestCase {
 
-    /// Level-B must equal `VerificationRegistryConsent.sol:80-87`'s `P_*` constants. If the circuit's
-    /// output order ever changes, contract and app have to move together or on-chain and off-chain
-    /// silently disagree about what they are comparing.
+    /// Guards the Level-B constants against accidental drift. The values were transcribed from
+    /// `VerificationRegistryConsent.sol:81-87`'s `P_*` constants, which remain the authority - but
+    /// this asserts literals and never reads the Solidity, so a CONTRACT-side change would not fail
+    /// it. If the circuit's output order ever changes, contract and app have to be moved together by
+    /// hand, or on-chain and off-chain silently disagree about what they are comparing.
     func testLevelBMatchesTheOnChainConstants() {
         XCTAssertEqual(PublicSignalIndex.levelB.dogTagId, 0, "P_DOGTAGID")
         XCTAssertEqual(PublicSignalIndex.levelB.purpose, 1, "P_PURPOSE")
