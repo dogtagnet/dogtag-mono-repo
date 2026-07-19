@@ -98,7 +98,9 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 #   ISSUER_REGISTRY_ADDR=...            # all stacks
 #   SBT_ADDR=...                        # admin (+ vet via demo wiring); PROFILE_DOCUMENT_STORE usually = SBT_ADDR
 #   FACTORY_ADDR=...                    # admin  (DogTagIssuerFactory — createIssuer/predictIssuer + Ownable owner)
-#   VERIFICATION_REGISTRY_ADDR=...      # vet, groomer, admin  (CURRENT VR, not a legacy generation; admin uses it as the M7 provenance routing key)
+#   VERIFICATION_REGISTRY_ADDR=...      # vet, groomer, admin  (CURRENT VR, not a legacy generation; admin uses it as the M7 provenance routing key;
+#                                       #   vet also publishes it in the resolve GETs' `unverifiedClaims` — keep it coherent with the protocol version
+#                                       #   the claims advertise, or validating apps fail closed with RegistryMismatch — impl §3.10d)
 #   CONSENT_KEY_REGISTRY_ADDR=...       # vet, groomer  (CURRENT CKR — meta-tx bindConsentKeyFor is the live path)
 #   VACCINATION_ISSUER_ADDR=...         # vet, groomer  (per-recordType clone; 0x0…0 for pure verifiers)
 # Leave VITE_DEMO_MODE UNSET (remote-up.sh rejects it).

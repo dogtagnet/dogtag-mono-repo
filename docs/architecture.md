@@ -422,7 +422,9 @@ PET ONBOARDING (vet "Register pet" — device supplies its address):
   vet API: allocate a numeric HANDLE (skip ids already minted under field_of_value(handle))
            persist ProfileIssueSession + a fresh 16-byte one-time BIND TOKEN (180s TTL)
            → {token, dogTagId(handle), sessionId, qr = <vetHost>/p/<token>}
-  device scans /p/<token> → GET /p/{token} → session meta (NON-consuming)
+  device scans /p/<token> → GET /p/{token} → session meta (NON-consuming) + unverifiedClaims
+           {protocolVersion,chainId,verificationRegistry,issuerClone,purpose:"DOG_PROFILE"} — the platform's
+           CONVENIENCE tier, validated against the dogtag discovery anchor before use (impl §3.10d)
   device: EIP-191 personal_sign "DogTag wallet registration: <lowercase(addr)>"
           POST /profiles/issue/bind {token, walletAddress, signature}
   vet API: recover the EIP-191 signer; require == walletAddress; consume the token ATOMICALLY
@@ -466,6 +468,10 @@ EXPORT (device → groomer; on-chain proof-of-verification — decoupled from im
                  → QR carries {host, one-time token, groomerAddr=relayer} — low-density
                    https://<host>/x/<token>?a=<relayer>  (token, NOT a JWT; one-time, 180s)
   mobile scans → GET https://<host>/x/<token> → session meta {relayer,purpose,recordType,challenge,mode}
+                   + unverifiedClaims{protocolVersion,chainId,verificationRegistry,issuerClone,purpose}
+                     — the platform's CONVENIENCE tier (claims, NOT authority): the phone resolves the
+                     dogtag-owned discovery anchor (ProtocolRegistry / signed manifest) and validates them
+                     before trusting any platform-supplied version/registry (impl §3.10d) — hard-stop on mismatch
           asserts groomerAddr(QR) == session relayer
           on-chain: isWhitelistedFor(VERIFY:purpose, groomerAddr)  (hard-stop if not a whitelisted groomer)
           DNS-verify the groomer (prod/remote): the host's domain must publish
