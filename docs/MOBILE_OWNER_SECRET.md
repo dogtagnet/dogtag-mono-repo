@@ -75,7 +75,7 @@ Every owner-control input is a pure function of the wallet seed, bound to `dogTa
 | input               | derivation                                                     |
 |---------------------|----------------------------------------------------------------|
 | owner-secret        | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)`, wide-reduced mod r |
-| consent-key (Ax,Ay) | `BLAKE-512("DogTag/consent-key/babyjubjub/v1" ‖ seed)` (pre-existing)       |
+| consent-key (Ax,Ay) | `BLAKE-512("DogTag/consent-key/babyjubjub/v2" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)[0..32]` → `prv2pub` |
 | reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId[32B BE] ‖ u64be(len(UTF8(keyPath))) ‖ UTF8(keyPath) ‖ seed)` |
 | owner-address       | the wallet address, itself seed-derived                        |
 

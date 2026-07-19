@@ -20,9 +20,21 @@ use num_bigint::BigUint;
 use crate::blake512::blake512;
 use crate::poseidon::poseidon;
 
-/// Domain separation tag for the BabyJubjub consent-key seed derivation. Distinct from the
+/// Domain separation tag for the **wallet-level** BabyJubjub consent key. Distinct from the
 /// secp256k1 wallet path (§6) so the two keys are independent even from the same root seed.
+///
+/// This one is deliberately NOT bound to a `dogTagId` - see
+/// [`derive_babyjub_consent_key_from_seed`] for why the Level-A path needs a per-wallet key.
 const CONSENT_KEY_DOMAIN: &[u8] = b"DogTag/consent-key/babyjubjub/v1";
+
+/// Domain separation tag for the **per-tag** BabyJubjub consent key - the one that feeds the
+/// `owner.consentKey` leaf and therefore `R`.
+///
+/// `v2` because the derivation changed shape: `v1` hashed the seed alone, `v2` binds `dogTagId`
+/// through the shared [`crate::kdf::kdf`] preimage. Bumping rather than silently redefining `v1`
+/// is the project convention - a domain IS its derivation, so a changed derivation is a new
+/// domain. Free to do here: no Level-B tag has been minted, so nothing needs migrating.
+const CONSENT_KEY_PER_TAG_DOMAIN: &[u8] = b"DogTag/consent-key/babyjubjub/v2";
 
 /// BabyJubjub curve constant `a` (168700).
 fn coeff_a() -> Fr {
@@ -243,10 +255,45 @@ fn prv2pub(prv: &[u8; 32]) -> Point {
     base8().mul_scalar_ct(&s_shr3) // secret scalar -> constant-time
 }
 
-/// Derive a deterministic BabyJubjub consent key from a hex seed.
+/// Derive the **per-tag** BabyJubjub consent key from the wallet seed, bound to `dog_tag_id`.
+///
+/// This is the key that feeds the `owner.consentKey` leaf (`Poseidon2(Ax, Ay)`) and therefore `R`.
+/// The 32-byte circomlibjs private key is `kdf(domain, dogTagId, [], seed)[0..32]` - the SAME
+/// preimage construction as the owner secret and the reserved salts (`crate::kdf`), so the whole
+/// owner-control core is bound to `(seed, dogTagId)` uniformly.
+///
+/// Binding to `dog_tag_id` means two tags of one wallet get DIFFERENT `(Ax, Ay)`, so the raw
+/// consent pubkey can never cross-link a wallet's tags - the same property the owner secret
+/// already had for nullifiers.
+///
+/// Only the preimage is per-tag: `digest[0..32] -> prv2pub` is unchanged, so this stays
+/// byte-compatible with circomlibjs and the frozen `consent.circom` VK is untouched (the circuit
+/// takes `Ax`/`Ay` as plain inputs and does not care how they were derived).
+pub fn derive_babyjub_consent_key_per_tag(seed: &[u8], dog_tag_id: Fr) -> BabyjubConsentKey {
+    let digest = crate::kdf::kdf(CONSENT_KEY_PER_TAG_DOMAIN, &dog_tag_id, &[], seed);
+    let mut prv = [0u8; 32];
+    prv.copy_from_slice(&digest[0..32]);
+    let a = prv2pub(&prv);
+    BabyjubConsentKey { prv, ax: a.x, ay: a.y }
+}
+
+/// Derive the **wallet-level** BabyJubjub consent key from a hex seed - one key per wallet, NOT
+/// per tag.
 ///
 /// The 32-byte circomlibjs private key is `blake512(domain || seed)[0..32]` (a distinct domain from
 /// the secp256k1 wallet path so the two keys never collide). Pass a 0x.. hex seed of any length.
+///
+/// # This is NOT the profile-tree key
+///
+/// The `owner.consentKey` leaf uses [`derive_babyjub_consent_key_per_tag`]. This wallet-level key
+/// serves the **Level-A** path only (`verification.circom`), where the consent key lives OUTSIDE
+/// the tree: the circuit emits `keyHash = Poseidon2(Ax, Ay)` as a public signal and
+/// `VerificationRegistry` checks it against `ConsentKeyRegistry.keyOf[subject]` - a
+/// `mapping(address => bytes32)`, i.e. per-WALLET by contract design. Making this one per-tag
+/// would force a `keyOf` rebind on every tag switch, changing on-chain behaviour for no benefit.
+///
+/// Level-B retires this path entirely (`VerificationRegistryConsent`: "the consent key moved INTO
+/// the tree, so `keyOf` is retired"), at which point this function goes with it.
 pub fn derive_babyjub_consent_key_from_seed(seed: &[u8]) -> BabyjubConsentKey {
     let mut buf = Vec::with_capacity(CONSENT_KEY_DOMAIN.len() + seed.len());
     buf.extend_from_slice(CONSENT_KEY_DOMAIN);
@@ -439,5 +486,57 @@ mod tests {
         // The domain-wrapped key differs from using the raw seed as the private key.
         let raw = consent_key_from_raw_prv(b"root-seed-material\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         assert_ne!(a.ax, raw.ax, "domain separation must change the key");
+    }
+
+    #[test]
+    fn per_tag_derivation_is_deterministic_and_bound_to_the_dog_tag_id() {
+        let seed = b"root-seed-material";
+        let a = derive_babyjub_consent_key_per_tag(seed, Fr::from(1u64));
+        let b = derive_babyjub_consent_key_per_tag(seed, Fr::from(1u64));
+        assert_eq!(a.prv, b.prv, "derivation must be deterministic");
+        assert_eq!((a.ax, a.ay), (b.ax, b.ay), "pubkey must be deterministic");
+
+        let other = derive_babyjub_consent_key_per_tag(seed, Fr::from(2u64));
+        assert_ne!(a.prv, other.prv, "a different dogTagId must give a different key");
+        assert_ne!(a.ax, other.ax, "a different dogTagId must give a different Ax");
+    }
+
+    /// The `v2` per-tag domain and the `v1` wallet-level domain must never collide, and the per-tag
+    /// key must be a genuinely different derivation - not the wallet key with extra steps.
+    #[test]
+    fn the_per_tag_key_is_domain_separated_from_the_wallet_level_key() {
+        let seed = b"root-seed-material";
+        let wallet = derive_babyjub_consent_key_from_seed(seed);
+        for id in [0u64, 1, 2, 424242] {
+            let per_tag = derive_babyjub_consent_key_per_tag(seed, Fr::from(id));
+            assert_ne!(
+                wallet.prv, per_tag.prv,
+                "v1 wallet-level and v2 per-tag domains must not collide (id={id})"
+            );
+        }
+    }
+
+    /// The per-tag key must be a valid BabyJubjub point in the prime-order subgroup - otherwise
+    /// `EdDSAPoseidonVerifier` in the frozen circuit would reject it.
+    #[test]
+    fn the_per_tag_public_point_is_a_valid_subgroup_element() {
+        let key = derive_babyjub_consent_key_per_tag(b"root-seed-material", Fr::from(424242u64));
+        let p = Point { x: key.ax, y: key.ay };
+        assert!(p.is_on_curve(), "Ax,Ay must be on the curve");
+        assert!(p.is_in_subgroup(), "Ax,Ay must be in the prime-order subgroup");
+    }
+
+    /// Signing with the per-tag key must verify under the per-tag pubkey - the end-to-end property
+    /// `consent.circom`'s `EdDSAPoseidonVerifier` relies on.
+    #[test]
+    fn a_per_tag_key_signs_and_verifies() {
+        let key = derive_babyjub_consent_key_per_tag(b"root-seed-material", Fr::from(424242u64));
+        let m = Fr::from(123456789u64);
+        let sig = sign_poseidon(&key.prv, &m);
+        assert_eq!(
+            verify_poseidon(&key.ax, &key.ay, &sig.r8x, &sig.r8y, &sig.s, &m),
+            Ok(true),
+            "per-tag signature must verify under the per-tag pubkey"
+        );
     }
 }

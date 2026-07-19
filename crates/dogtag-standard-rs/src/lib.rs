@@ -29,6 +29,7 @@ pub mod consent;
 // circomlibjs-compatible BLAKE-512 + BabyJubjub Edwards curve + signer over the existing Poseidon.
 // Does NOT modify poseidon/field/leaf/merkle/encode.
 pub mod blake512;
+mod kdf;
 pub mod eddsa;
 
 // Level-B M5 - the DEVICE-side per-tag profile tree (3 reserved owner-control leaves + attribute

@@ -1135,10 +1135,32 @@ seed - while additionally being *recoverable*, which a random secret is not:
 |---|---|
 | owner-secret | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)` → `from_be_bytes_mod_order` over all **64** bytes |
 | reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId[32B BE] ‖ u64be(len(UTF8(keyPath))) ‖ UTF8(keyPath) ‖ seed)[0..16]` |
-| consent-key | `eddsa::derive_babyjub_consent_key_from_seed` (pre-existing, already seed-derived) |
+| consent-key | `BLAKE-512("DogTag/consent-key/babyjubjub/v2" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)[0..32]` → `prv2pub` (`eddsa::derive_babyjub_consent_key_per_tag`) |
 
 Reduce the **full 64-byte** digest, never a 32-byte prefix: a bare 32-byte hash mod r is measurably
 biased. Binding to `dogTagId` is what keeps one wallet's two tags mutually unlinkable.
+
+All three share ONE preimage builder, `kdf::kdf` (`domain ‖ dogTagId[32B BE] ‖ u64be(len(extra)) ‖
+extra ‖ seed`). Keep it that way: the consent key spent its first life on a hand-rolled
+`domain ‖ seed` preimage in `eddsa.rs` and that is precisely how it stayed seed-only while its two
+siblings were already per-tag. A second preimage builder is the drift.
+
+**The consent key is per-tag as of 2026-07-19 (captain's decision), domain bumped `v1` → `v2`.**
+Free at the time: no Level-B tag had been minted, so no migration. It feeds the `owner.consentKey`
+leaf and therefore `R`, which is write-once - so this was a now-or-never change. Two tags of one
+wallet now get different `(Ax, Ay)`, closing the last cross-linking vector in the owner-control core
+(previously the raw pubkey was shared wallet-wide, harmless only for as long as it never left the
+device). Purely an off-circuit derivation change: `consent.circom` takes `Ax`/`Ay` as plain inputs,
+so the R1CS, the frozen VK and the ceremony were all untouched.
+
+**Do NOT confuse it with `derive_babyjub_consent_key_from_seed`, which survives on `v1` and is still
+wallet-level.** That one serves the **Level-A** path (`verification.circom`) ONLY, where the consent
+key lives OUTSIDE the tree: the circuit emits `keyHash = Poseidon2(Ax,Ay)` as a public signal and
+`VerificationRegistry` checks it against `ConsentKeyRegistry.keyOf[subject]`, a
+`mapping(address => bytes32)` - per-WALLET by contract design. Making that one per-tag would force a
+`keyOf` rebind on every tag switch, i.e. an on-chain behaviour change for no gain. Level-B retires
+the path entirely (`VerificationRegistryConsent`: "the consent key moved INTO the tree, so `keyOf` is
+retired"), and this function goes with it.
 
 **Salts had to be seed-derived too, and this is the non-obvious part.** A recoverable secret alone
 does NOT rebuild the tree: fresh random salts change every leaf hash and therefore `R`. Reserved-leaf
