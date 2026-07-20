@@ -521,6 +521,77 @@ contract ProtocolRegistryTest is Test {
         assertTrue(reg.getContractSet(bId).active, "contract set untouched by an artifact deprecate");
     }
 
+    // Deprecate is the EMERGENCY lever, so it must also neutralize anything already in flight: a swap
+    // proposed before the compromise was found, whose timelock has since elapsed, must not be executable
+    // afterwards to flip the set straight back to active with no fresh review window.
+    function test_deprecate_contract_set_cancels_an_in_flight_proposal() public {
+        _publishLevelB();
+
+        // A swap for the SAME id is staged and its timelock fully elapses...
+        vm.prank(PUBLISHER);
+        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+
+        // ...then the set is found compromised and retired.
+        vm.prank(PUBLISHER);
+        reg.deprecateContractSet(bId);
+
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("none pending"));
+        reg.executeContractSet(bId);
+
+        assertFalse(reg.getContractSet(bId).active, "the retired set stays retired");
+        assertEq(reg.contractSetEta(bId), 0, "the stale proposal's ETA is cleared");
+        // History is untouched — cancelling a PENDING proposal is not deleting the published record.
+        assertEq(reg.contractSetCount(), 1);
+        _assertEqContracts(reg.getContractSet(bId), ProtocolVersions.levelBContracts());
+    }
+
+    // The same halt on the artifact axis, where re-activation bites harder: deprecate leaves
+    // `activeArtifactSetOf` still pointing at the retired set, so flipping `active` back would instantly
+    // restore compromised artifacts as the live ones for every contract set bound to it.
+    function test_deprecate_artifact_set_cancels_an_in_flight_proposal() public {
+        _publishLevelB();
+
+        vm.prank(PUBLISHER);
+        reg.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+
+        vm.prank(PUBLISHER);
+        reg.deprecateArtifactSet(bArtId);
+
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("none pending"));
+        reg.executeArtifactSet(bArtId);
+
+        assertFalse(reg.getArtifactSet(bArtId).active, "the retired artifact set stays retired");
+        assertEq(reg.artifactSetEta(bArtId), 0, "the stale proposal's ETA is cleared");
+        assertEq(reg.activeArtifactSetOf(bId), bArtId, "the binding still points at it, hence the halt");
+        assertEq(reg.artifactSetCount(), 1);
+        _assertEqArtifacts(reg.getArtifactSet(bArtId), ProtocolVersions.levelBArtifacts());
+    }
+
+    // Re-publishing after a deprecate is still possible — it just costs a FRESH propose and the full
+    // timelock, which is the review window the cancellation exists to force.
+    function test_republish_after_deprecate_requires_a_fresh_timelock() public {
+        _publishLevelB();
+
+        vm.prank(PUBLISHER);
+        reg.deprecateContractSet(bId);
+
+        vm.prank(PUBLISHER);
+        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("timelock"));
+        reg.executeContractSet(bId);
+
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+        vm.prank(PUBLISHER);
+        reg.executeContractSet(bId);
+        assertTrue(reg.getContractSet(bId).active, "a fresh, fully-timelocked publish re-activates");
+    }
+
     function test_deprecate_unknown_reverts() public {
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("unknown contract set"));

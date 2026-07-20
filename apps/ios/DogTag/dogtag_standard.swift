@@ -1244,8 +1244,9 @@ public func FfiConverterTypeProofFfi_lower(_ value: ProofFfi) -> RustBuffer {
 
 /**
  * The dogtag-owned TRUST tier (§5.2) for one version, RESOLVED by the caller from
- * `ProtocolRegistry.getVersion` (root of truth) or the P3 signed-manifest fallback (both mirror the
- * same on-chain `Version`). These are the AUTHORITATIVE values a platform's [`ConvenienceClaims`] are
+ * `ProtocolRegistry.getContractSet` + `getActiveArtifactSet` (root of truth) or the P3 signed-manifest
+ * fallback (both mirror the same two on-chain axes). These are the AUTHORITATIVE values a platform's
+ * [`ConvenienceClaims`] are
  * checked against. Constructed from plain fields so the app can build it from an `eth_call` result or a
  * parsed/reconciled manifest, and the server can map it from `dogtag_prover::manifest` types — keeping
  * this crate free of any prover/manifest dependency.
@@ -1277,7 +1278,7 @@ public struct TrustedAnchor {
     public var artifactSetId: String
     /**
      * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
-     * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+     * the on-chain `ContractSet` struct itself has no chain-id member — the registry IS on a chain.)
      */
     public var chainId: UInt64
     /**
@@ -1294,12 +1295,30 @@ public struct TrustedAnchor {
      */
     public var minAppVersion: String
     /**
-     * Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
-     * CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
-     * so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
-     * `Version.active` when online — see `anchor_from_manifest` on the server side.
+     * The ON-CHAIN axis's lifecycle bit — `ContractSet.active`, as read from
+     * `ProtocolRegistry.getContractSet`. `deprecateContractSet` flips it false.
+     *
+     * It is an INDEPENDENT kill switch, and [`validate`] requires BOTH it and
+     * [`Self::artifact_set_active`] to be true. Populate the two SEPARATELY from the two on-chain
+     * records — never AND them into one field and never wire only one: R-5 splits the axes precisely so
+     * each can retire the other's counterpart without touching it, so collapsing them here would
+     * silently discard whichever lever you dropped. A false bit FAILS CLOSED (anti-downgrade, §8.4).
+     *
+     * The signed manifest carries no lifecycle bit, so a manifest-only (offline) resolution assumes
+     * `true` for both; the authoritative values are the two on-chain `active` members when online — see
+     * `anchor_from_manifest` / `anchor_from_reconciliation` on the server side.
      */
-    public var active: Bool
+    public var contractSetActive: Bool
+    /**
+     * The ARTIFACT axis's lifecycle bit — `ArtifactSet.active`, as read from
+     * `ProtocolRegistry.getActiveArtifactSet`. `deprecateArtifactSet` flips it false.
+     *
+     * The independent counterpart to [`Self::contract_set_active`]: BOTH must be true for [`validate`]
+     * to pass. This is the bit that lets dogtag retire a compromised proving-artifact set (a bad zkey)
+     * and stop every app WITHOUT moving a single trio address. See that field's note for why the two
+     * must be populated separately.
+     */
+    public var artifactSetActive: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1326,7 +1345,7 @@ public struct TrustedAnchor {
          */artifactSetId: String, 
         /**
          * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
-         * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+         * the on-chain `ContractSet` struct itself has no chain-id member — the registry IS on a chain.)
          */chainId: UInt64, 
         /**
          * The registry a proof is submitted to (trio leg). The anti-redirect anchor.
@@ -1339,11 +1358,28 @@ public struct TrustedAnchor {
          * Minimum app build (semver) allowed to use this version — the deprecation lever (§5.3 step 5).
          */minAppVersion: String, 
         /**
-         * Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
-         * CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
-         * so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
-         * `Version.active` when online — see `anchor_from_manifest` on the server side.
-         */active: Bool) {
+         * The ON-CHAIN axis's lifecycle bit — `ContractSet.active`, as read from
+         * `ProtocolRegistry.getContractSet`. `deprecateContractSet` flips it false.
+         *
+         * It is an INDEPENDENT kill switch, and [`validate`] requires BOTH it and
+         * [`Self::artifact_set_active`] to be true. Populate the two SEPARATELY from the two on-chain
+         * records — never AND them into one field and never wire only one: R-5 splits the axes precisely so
+         * each can retire the other's counterpart without touching it, so collapsing them here would
+         * silently discard whichever lever you dropped. A false bit FAILS CLOSED (anti-downgrade, §8.4).
+         *
+         * The signed manifest carries no lifecycle bit, so a manifest-only (offline) resolution assumes
+         * `true` for both; the authoritative values are the two on-chain `active` members when online — see
+         * `anchor_from_manifest` / `anchor_from_reconciliation` on the server side.
+         */contractSetActive: Bool, 
+        /**
+         * The ARTIFACT axis's lifecycle bit — `ArtifactSet.active`, as read from
+         * `ProtocolRegistry.getActiveArtifactSet`. `deprecateArtifactSet` flips it false.
+         *
+         * The independent counterpart to [`Self::contract_set_active`]: BOTH must be true for [`validate`]
+         * to pass. This is the bit that lets dogtag retire a compromised proving-artifact set (a bad zkey)
+         * and stop every app WITHOUT moving a single trio address. See that field's note for why the two
+         * must be populated separately.
+         */artifactSetActive: Bool) {
         self.version = version
         self.versionId = versionId
         self.artifactSet = artifactSet
@@ -1352,7 +1388,8 @@ public struct TrustedAnchor {
         self.verificationRegistry = verificationRegistry
         self.circuitId = circuitId
         self.minAppVersion = minAppVersion
-        self.active = active
+        self.contractSetActive = contractSetActive
+        self.artifactSetActive = artifactSetActive
     }
 }
 
@@ -1384,7 +1421,10 @@ extension TrustedAnchor: Equatable, Hashable {
         if lhs.minAppVersion != rhs.minAppVersion {
             return false
         }
-        if lhs.active != rhs.active {
+        if lhs.contractSetActive != rhs.contractSetActive {
+            return false
+        }
+        if lhs.artifactSetActive != rhs.artifactSetActive {
             return false
         }
         return true
@@ -1399,7 +1439,8 @@ extension TrustedAnchor: Equatable, Hashable {
         hasher.combine(verificationRegistry)
         hasher.combine(circuitId)
         hasher.combine(minAppVersion)
-        hasher.combine(active)
+        hasher.combine(contractSetActive)
+        hasher.combine(artifactSetActive)
     }
 }
 
@@ -1419,7 +1460,8 @@ public struct FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer {
                 verificationRegistry: FfiConverterString.read(from: &buf), 
                 circuitId: FfiConverterString.read(from: &buf), 
                 minAppVersion: FfiConverterString.read(from: &buf), 
-                active: FfiConverterBool.read(from: &buf)
+                contractSetActive: FfiConverterBool.read(from: &buf), 
+                artifactSetActive: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1432,7 +1474,8 @@ public struct FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer {
         FfiConverterString.write(value.verificationRegistry, into: &buf)
         FfiConverterString.write(value.circuitId, into: &buf)
         FfiConverterString.write(value.minAppVersion, into: &buf)
-        FfiConverterBool.write(value.active, into: &buf)
+        FfiConverterBool.write(value.contractSetActive, into: &buf)
+        FfiConverterBool.write(value.artifactSetActive, into: &buf)
     }
 }
 

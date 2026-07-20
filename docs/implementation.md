@@ -917,8 +917,10 @@ dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version,
   `dogtag-prover-rs`. It does string/int/semver compares only - no ZK, no chain I/O, no signature check.
   RESOLVING the anchor (the `getContractSet`+`getActiveArtifactSet` eth-calls, or the §3.10c manifest `verify` + `reconcile`) is the
   CALLER's job. The FFI export is `validateDiscovery` (committed Swift + Kotlin bindings regenerated).
-- **Fail-closed axes**, each aborting the flow: version-coherence, `active` (a deprecated version is refused
-  - the anti-downgrade lever §8.4), `chainId`, `verificationRegistry` (**the anti-redirect trip** - a lying
+- **Fail-closed axes**, each aborting the flow: version-coherence, the TWO independent lifecycle bits
+  `contract_set_active` and `artifact_set_active` (**both** required - deprecating EITHER axis refuses the
+  version, the anti-downgrade lever §8.4; the error names which one via `DeprecatedAxis`, rendered into the
+  message so it survives the FFI's flattening to a string), `chainId`, `verificationRegistry` (**the anti-redirect trip** - a lying
   platform cannot steer a proof onto an attacker registry), `purpose`, and `minAppVersion`. The two `0x`-hex
   axes (`versionId`, `verificationRegistry`) compare case-insensitively; `minAppVersion` compares
   NUMERICALLY (`1.10.0` > `1.9.0`), tolerating a `-rc1`/`+build` suffix and failing closed on a malformed core.
@@ -927,8 +929,12 @@ dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version,
   not per-version), and comparing the platform's claim against the platform's own session would be vacuous.
 - **Server-side trust-tier mapping** is `stacks/vet/api/src/discovery.rs` (`anchor_from_manifest` /
   `anchor_from_reconciliation`) - the only place linking both crates. `anchor_from_reconciliation` enforces
-  on-chain precedence (it returns the conflicts if the signed manifest disagrees) and sources `active` from
-  the reconciled ON-CHAIN record, so a chain-deprecated version fails closed as `DeprecatedVersion`.
+  on-chain precedence (it returns the conflicts if the signed manifest disagrees) and sources BOTH lifecycle
+  bits from the reconciled ON-CHAIN records, passing them through SEPARATELY (it does not pre-AND them -
+  `validate` owns that enforcement, and keeping them distinct is what lets the abort name the axis), so a
+  chain-deprecated version fails closed as `DeprecatedVersion`. A native app builds the same pair from
+  `getContractSet` + `getActiveArtifactSet` and MUST wire both: collapsing them into one field would
+  silently discard whichever kill switch was dropped.
 - **Cutover trap:** `convenience_claims` hardcodes the `LEVEL_A_VERSION` `protocolVersion` while
   `verificationRegistry` comes from `VERIFICATION_REGISTRY_ADDR`. Pointing that env at the Level-B registry
   WITHOUT bumping the version constant emits an internally incoherent claim pair and every validating client

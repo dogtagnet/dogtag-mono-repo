@@ -9,7 +9,9 @@
 //! (`dogtag_prover::manifest::build`) and the vet-api mapping seam (`vet_api::discovery`).
 
 use dogtag_prover::manifest::{self, version_id, OnchainArtifactSet, OnchainContractSet, SignedManifest};
-use dogtag_standard::discovery::{validate, ClientContext, ConvenienceClaims, DiscoveryError};
+use dogtag_standard::discovery::{
+    validate, ClientContext, ConvenienceClaims, DeprecatedAxis, DiscoveryError,
+};
 use ed25519_dalek::SigningKey;
 use vet_api::discovery::{anchor_from_manifest, anchor_from_reconciliation};
 
@@ -70,7 +72,7 @@ fn agreeing_artifacts(m: &manifest::Manifest) -> OnchainArtifactSet {
 #[test]
 fn manifest_trust_tier_validates_honest_claims() {
     let m = manifest::build(VERSION).expect("Level-B is a known version");
-    let anchor = anchor_from_manifest(&m, true);
+    let anchor = anchor_from_manifest(&m, true, true);
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
 
@@ -86,7 +88,7 @@ fn manifest_trust_tier_validates_honest_claims() {
 #[test]
 fn manifest_trust_tier_fails_closed_on_each_mismatch() {
     let m = manifest::build(VERSION).unwrap();
-    let anchor = anchor_from_manifest(&m, true);
+    let anchor = anchor_from_manifest(&m, true, true);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
 
     // Registry redirect.
@@ -121,7 +123,7 @@ fn manifest_trust_tier_enforces_min_app_version() {
     let m = manifest::build(VERSION).unwrap();
     // Level-B's floor is 1.4.0; an older build must be refused.
     assert_eq!(m.min_app_version, "1.4.0");
-    let anchor = anchor_from_manifest(&m, true);
+    let anchor = anchor_from_manifest(&m, true, true);
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: "1.3.0", expected_purpose: PURPOSE };
     assert!(matches!(
@@ -130,12 +132,13 @@ fn manifest_trust_tier_enforces_min_app_version() {
     ));
 }
 
-/// A DEPRECATED version (on-chain `active=false`) fails closed through the mapping even when the manifest
-/// itself carries no lifecycle bit — the anti-downgrade defense (§8.4).
+/// A DEPRECATED version (the on-chain contract set's `active=false`) fails closed through the mapping
+/// even when the manifest itself carries no lifecycle bit — the anti-downgrade defense (§8.4).
 #[test]
 fn deprecated_onchain_version_fails_closed() {
     let m = manifest::build(VERSION).unwrap();
-    let anchor = anchor_from_manifest(&m, false); // the online caller passes the on-chain active=false
+    // The online caller passes the on-chain bits; here the contract set is retired, the artifacts are not.
+    let anchor = anchor_from_manifest(&m, false, true);
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
     assert!(matches!(
@@ -206,7 +209,11 @@ fn onchain_deprecation_flows_through_reconciliation_and_fails_closed() {
     );
 
     let anchor = anchor_from_reconciliation(&recon).expect("an agreeing manifest still yields an anchor");
-    assert!(!anchor.active, "the anchor must inherit the on-chain lifecycle bit, not assume active");
+    assert!(
+        !anchor.contract_set_active,
+        "the anchor must inherit the on-chain lifecycle bit, not assume active"
+    );
+    assert!(anchor.artifact_set_active, "only the contract axis was deprecated on-chain");
 
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
@@ -225,7 +232,7 @@ fn onchain_deprecation_flows_through_reconciliation_and_fails_closed() {
 #[test]
 fn an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched() {
     let m = manifest::build(VERSION).unwrap();
-    let before = anchor_from_manifest(&m, true);
+    let before = anchor_from_manifest(&m, true, true);
 
     // The chain has rotated the binding: a new artifact set with new pins, a new host and a new floor.
     // The manifest served alongside it describes the SAME contract set.
@@ -235,7 +242,7 @@ fn an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched() {
     rotated.zkey_sha256 = "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface".to_string();
     rotated.artifact_base_url = "https://artifacts.dogtag.io/levelb2".to_string();
     rotated.min_app_version = "1.5.0".to_string();
-    let after = anchor_from_manifest(&rotated, true);
+    let after = anchor_from_manifest(&rotated, true, true);
 
     // The artifact axis moved...
     assert_ne!(after.artifact_set, before.artifact_set);
@@ -257,9 +264,11 @@ fn an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched() {
     assert_eq!(v.verification_registry, m.verification_registry, "no on-chain address moved");
 }
 
-/// The mirror: deprecating EITHER axis on-chain is enough to fail closed. The two `active` bits are
-/// combined with AND at the seam, so each axis stays an independent safety lever — dogtag can retire a
-/// compromised artifact set without touching the trio, and the app still refuses.
+/// The mirror: deprecating EITHER axis on-chain is enough to fail closed. The seam carries the two
+/// `active` bits SEPARATELY and the validator requires both, so each axis stays an independent safety
+/// lever — dogtag can retire a compromised artifact set without touching the trio (or the reverse), and
+/// the app still refuses. The refusal also NAMES the axis, so an operator reading the abort knows
+/// whether the trio moved or only the proving artifacts were pulled.
 #[test]
 fn deprecating_either_axis_fails_closed() {
     let key = test_key();
@@ -275,13 +284,27 @@ fn deprecating_either_axis_fails_closed() {
         manifest::reconcile(&signed, &key.verifying_key(), &agreeing_contracts(&m), &dead_artifacts).unwrap();
     assert!(recon.manifest_agrees(), "a lifecycle bit is not a field conflict");
     let anchor = anchor_from_reconciliation(&recon).unwrap();
-    assert!(!anchor.active, "a deprecated ARTIFACT set alone must deactivate the anchor");
+    assert!(!anchor.artifact_set_active, "the retired artifact axis must reach the anchor");
+    assert!(anchor.contract_set_active, "...without disturbing the live contract axis");
     assert!(matches!(
         validate(&claims, &anchor, &ctx),
-        Err(DiscoveryError::DeprecatedVersion { .. })
+        Err(DiscoveryError::DeprecatedVersion { axis: DeprecatedAxis::ArtifactSet, .. })
     ));
 
-    // Both live -> active, confirming the AND is not vacuously false.
+    // The symmetric case: only the CONTRACT set is deprecated; the artifacts are perfectly live.
+    let mut dead_contracts = agreeing_contracts(&m);
+    dead_contracts.active = false;
+    let recon_c =
+        manifest::reconcile(&signed, &key.verifying_key(), &dead_contracts, &agreeing_artifacts(&m)).unwrap();
+    let anchor_c = anchor_from_reconciliation(&recon_c).unwrap();
+    assert!(!anchor_c.contract_set_active, "the retired contract axis must reach the anchor");
+    assert!(anchor_c.artifact_set_active, "...without disturbing the live artifact axis");
+    assert!(matches!(
+        validate(&claims, &anchor_c, &ctx),
+        Err(DiscoveryError::DeprecatedVersion { axis: DeprecatedAxis::ContractSet, .. })
+    ));
+
+    // Both live -> validates, confirming neither check is vacuously failing.
     let recon_ok = manifest::reconcile(
         &signed,
         &key.verifying_key(),
@@ -289,5 +312,7 @@ fn deprecating_either_axis_fails_closed() {
         &agreeing_artifacts(&m),
     )
     .unwrap();
-    assert!(anchor_from_reconciliation(&recon_ok).unwrap().active);
+    let anchor_ok = anchor_from_reconciliation(&recon_ok).unwrap();
+    assert!(anchor_ok.contract_set_active && anchor_ok.artifact_set_active);
+    assert!(validate(&claims, &anchor_ok, &ctx).is_ok());
 }

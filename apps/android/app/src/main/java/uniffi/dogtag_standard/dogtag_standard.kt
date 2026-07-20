@@ -1642,8 +1642,9 @@ public object FfiConverterTypeProofFfi: FfiConverterRustBuffer<ProofFfi> {
 
 /**
  * The dogtag-owned TRUST tier (§5.2) for one version, RESOLVED by the caller from
- * `ProtocolRegistry.getVersion` (root of truth) or the P3 signed-manifest fallback (both mirror the
- * same on-chain `Version`). These are the AUTHORITATIVE values a platform's [`ConvenienceClaims`] are
+ * `ProtocolRegistry.getContractSet` + `getActiveArtifactSet` (root of truth) or the P3 signed-manifest
+ * fallback (both mirror the same two on-chain axes). These are the AUTHORITATIVE values a platform's
+ * [`ConvenienceClaims`] are
  * checked against. Constructed from plain fields so the app can build it from an `eth_call` result or a
  * parsed/reconciled manifest, and the server can map it from `dogtag_prover::manifest` types — keeping
  * this crate free of any prover/manifest dependency.
@@ -1675,7 +1676,7 @@ data class TrustedAnchor (
     var `artifactSetId`: kotlin.String, 
     /**
      * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
-     * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+     * the on-chain `ContractSet` struct itself has no chain-id member — the registry IS on a chain.)
      */
     var `chainId`: kotlin.ULong, 
     /**
@@ -1692,12 +1693,30 @@ data class TrustedAnchor (
      */
     var `minAppVersion`: kotlin.String, 
     /**
-     * Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
-     * CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
-     * so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
-     * `Version.active` when online — see `anchor_from_manifest` on the server side.
+     * The ON-CHAIN axis's lifecycle bit — `ContractSet.active`, as read from
+     * `ProtocolRegistry.getContractSet`. `deprecateContractSet` flips it false.
+     *
+     * It is an INDEPENDENT kill switch, and [`validate`] requires BOTH it and
+     * [`Self::artifact_set_active`] to be true. Populate the two SEPARATELY from the two on-chain
+     * records — never AND them into one field and never wire only one: R-5 splits the axes precisely so
+     * each can retire the other's counterpart without touching it, so collapsing them here would
+     * silently discard whichever lever you dropped. A false bit FAILS CLOSED (anti-downgrade, §8.4).
+     *
+     * The signed manifest carries no lifecycle bit, so a manifest-only (offline) resolution assumes
+     * `true` for both; the authoritative values are the two on-chain `active` members when online — see
+     * `anchor_from_manifest` / `anchor_from_reconciliation` on the server side.
      */
-    var `active`: kotlin.Boolean
+    var `contractSetActive`: kotlin.Boolean, 
+    /**
+     * The ARTIFACT axis's lifecycle bit — `ArtifactSet.active`, as read from
+     * `ProtocolRegistry.getActiveArtifactSet`. `deprecateArtifactSet` flips it false.
+     *
+     * The independent counterpart to [`Self::contract_set_active`]: BOTH must be true for [`validate`]
+     * to pass. This is the bit that lets dogtag retire a compromised proving-artifact set (a bad zkey)
+     * and stop every app WITHOUT moving a single trio address. See that field's note for why the two
+     * must be populated separately.
+     */
+    var `artifactSetActive`: kotlin.Boolean
 ) {
     
     companion object
@@ -1718,6 +1737,7 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -1730,7 +1750,8 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
             FfiConverterString.allocationSize(value.`verificationRegistry`) +
             FfiConverterString.allocationSize(value.`circuitId`) +
             FfiConverterString.allocationSize(value.`minAppVersion`) +
-            FfiConverterBoolean.allocationSize(value.`active`)
+            FfiConverterBoolean.allocationSize(value.`contractSetActive`) +
+            FfiConverterBoolean.allocationSize(value.`artifactSetActive`)
     )
 
     override fun write(value: TrustedAnchor, buf: ByteBuffer) {
@@ -1742,7 +1763,8 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
             FfiConverterString.write(value.`verificationRegistry`, buf)
             FfiConverterString.write(value.`circuitId`, buf)
             FfiConverterString.write(value.`minAppVersion`, buf)
-            FfiConverterBoolean.write(value.`active`, buf)
+            FfiConverterBoolean.write(value.`contractSetActive`, buf)
+            FfiConverterBoolean.write(value.`artifactSetActive`, buf)
     }
 }
 

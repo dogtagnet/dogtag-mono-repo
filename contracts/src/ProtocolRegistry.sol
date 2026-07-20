@@ -61,9 +61,11 @@ import {
 /// binding — is a `propose…` → (2-day timelock) → `execute…` flow that MIRRORS
 /// `VerificationRegistryConsent.proposeZkVerifier`/`executeZkVerifier` (§5.1): nothing can be published
 /// or SWAPPED instantly, so a compromised publisher key cannot repoint discovery in one transaction —
-/// governance has the timelock window to react. The `deprecate…` calls are NOT timelocked: they only
-/// set `active=false` (a safety lever you want to be able to pull immediately) and NEVER delete, so
-/// history stays pinned (§5.1 — "deprecate without deleting").
+/// governance has the timelock window to react. The `deprecate…` calls are NOT timelocked: they set
+/// `active=false` (a safety lever you want to be able to pull immediately) and NEVER delete the
+/// published record, so history stays pinned (§5.1 — "deprecate without deleting"). They DO cancel any
+/// in-flight proposal for that id, so re-publishing after a deprecate costs a fresh propose plus the
+/// full timelock and a stale proposal can never un-retire what was just retired.
 contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// @dev Two-step admin handover delay — mirrors `VerificationRegistryConsent` (2 days).
     uint48 public constant ADMIN_TRANSFER_DELAY = 2 days;
@@ -217,9 +219,19 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// @notice Deprecate a published contract set: flips `active=false`, NEVER deletes (history is
     /// pinned so an old record still self-routes and verifies; §7.3). Not timelocked. Reverts only on
     /// an unknown id, not on an already-deprecated one.
+    ///
+    /// It ALSO cancels any in-flight proposal for `id`, which is what makes deprecate a true EMERGENCY
+    /// HALT rather than a bit a stale proposal can flip straight back: without this, a swap proposed
+    /// before the compromise was found — and whose timelock has already elapsed — could be executed
+    /// afterwards and silently re-activate the retired set with no fresh review window. Re-publishing
+    /// after a deprecate therefore requires a fresh propose plus the full [`PUBLISH_TIMELOCK`], which is
+    /// the point. Deleting the PENDING proposal is not deleting history: the published record and its
+    /// place in [`contractSetList`] are untouched.
     function deprecateContractSet(bytes32 id) external onlyRole(PUBLISHER_ROLE) {
         require(contractSets[id].contractSetId != 0, "unknown contract set");
         contractSets[id].active = false;
+        delete _pendingContractSet[id];
+        delete contractSetEta[id];
         emit ContractSetDeprecated(id);
     }
 
@@ -266,9 +278,18 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     }
 
     /// @notice Deprecate a published artifact set: flips `active=false`, never deletes. Not timelocked.
+    ///
+    /// Like [`deprecateContractSet`] it ALSO cancels any in-flight proposal for `id`, so a stale
+    /// swap-proposal cannot un-retire the set without a fresh propose + full timelock. This matters more
+    /// on this axis: a deprecate leaves [`activeArtifactSetOf`] still pointing at the retired set, so a
+    /// re-activation would instantly restore compromised artifacts as the live ones for every contract
+    /// set bound to it. The published record and [`artifactSetList`] are untouched — only the pending
+    /// proposal is dropped.
     function deprecateArtifactSet(bytes32 id) external onlyRole(PUBLISHER_ROLE) {
         require(artifactSets[id].artifactSetId != 0, "unknown artifact set");
         artifactSets[id].active = false;
+        delete _pendingArtifactSet[id];
+        delete artifactSetEta[id];
         emit ArtifactSetDeprecated(id);
     }
 

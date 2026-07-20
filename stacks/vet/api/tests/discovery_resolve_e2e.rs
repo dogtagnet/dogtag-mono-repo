@@ -49,7 +49,7 @@ fn token_from_qr(qr: &str) -> String {
 /// (P3 signed manifest / on-chain record), NOT from the platform's claims.
 fn dogtag_anchor() -> TrustedAnchor {
     let m = dogtag_prover::manifest::build(VERSION).expect("Level-A is a known version");
-    anchor_from_manifest(&m, true)
+    anchor_from_manifest(&m, true, true)
 }
 
 /// Report one validation attempt exactly as the app experiences it (PASS + the artifact key it selects,
@@ -134,13 +134,14 @@ async fn verify_resolve_convenience_tier_is_validated_against_the_dogtag_anchor(
 
     println!("\n=== dogtag TRUST anchor (resolved independently: P3 manifest / ProtocolRegistry) ===");
     println!(
-        "  version={} chainId={} registry={} circuitId={} minAppVersion={} active={}",
+        "  version={} chainId={} registry={} circuitId={} minAppVersion={} contractSetActive={} artifactSetActive={}",
         anchor.version,
         anchor.chain_id,
         anchor.verification_registry,
         anchor.circuit_id,
         anchor.min_app_version,
-        anchor.active
+        anchor.contract_set_active,
+        anchor.artifact_set_active
     );
 
     println!("\n=== app TRUST gate: validate(claims, anchor, ctx) ===");
@@ -185,10 +186,21 @@ async fn verify_resolve_convenience_tier_is_validated_against_the_dogtag_anchor(
     // (5) DEPRECATED version (what `ProtocolRegistry.deprecateContractSet` produces on-chain): every claim
     //     is honest, yet the app still refuses — the anti-downgrade lever (§8.4).
     let mut deprecated = anchor.clone();
-    deprecated.active = false;
-    report("anchor deprecated (active=false)", &claims, &deprecated, "1.4.0", PURPOSE);
+    deprecated.contract_set_active = false;
+    report("contract set deprecated on-chain", &claims, &deprecated, "1.4.0", PURPOSE);
     assert!(matches!(
         validate(&claims, &deprecated, &ctx),
+        Err(DiscoveryError::DeprecatedVersion { .. })
+    ));
+
+    // (5b) The INDEPENDENT artifact-axis lever (R-5): the trio is perfectly live and every claim is
+    //      honest, but the bound proving-artifact set was retired — so the app still refuses. This is the
+    //      kill switch that would vanish if the two on-chain `active` bits were collapsed into one.
+    let mut artifacts_pulled = anchor.clone();
+    artifacts_pulled.artifact_set_active = false;
+    report("artifact set deprecated on-chain", &claims, &artifacts_pulled, "1.4.0", PURPOSE);
+    assert!(matches!(
+        validate(&claims, &artifacts_pulled, &ctx),
         Err(DiscoveryError::DeprecatedVersion { .. })
     ));
 

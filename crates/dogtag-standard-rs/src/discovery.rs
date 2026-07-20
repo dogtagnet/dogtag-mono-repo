@@ -105,11 +105,27 @@ pub struct TrustedAnchor {
     pub circuit_id: String,
     /// Minimum app build (semver) allowed to use this version — the deprecation lever (§5.3 step 5).
     pub min_app_version: String,
-    /// Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
-    /// CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
-    /// so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
-    /// `Version.active` when online — see `anchor_from_manifest` on the server side.
-    pub active: bool,
+    /// The ON-CHAIN axis's lifecycle bit — `ContractSet.active`, as read from
+    /// `ProtocolRegistry.getContractSet`. `deprecateContractSet` flips it false.
+    ///
+    /// It is an INDEPENDENT kill switch, and [`validate`] requires BOTH it and
+    /// [`Self::artifact_set_active`] to be true. Populate the two SEPARATELY from the two on-chain
+    /// records — never AND them into one field and never wire only one: R-5 splits the axes precisely so
+    /// each can retire the other's counterpart without touching it, so collapsing them here would
+    /// silently discard whichever lever you dropped. A false bit FAILS CLOSED (anti-downgrade, §8.4).
+    ///
+    /// The signed manifest carries no lifecycle bit, so a manifest-only (offline) resolution assumes
+    /// `true` for both; the authoritative values are the two on-chain `active` members when online — see
+    /// `anchor_from_manifest` / `anchor_from_reconciliation` on the server side.
+    pub contract_set_active: bool,
+    /// The ARTIFACT axis's lifecycle bit — `ArtifactSet.active`, as read from
+    /// `ProtocolRegistry.getActiveArtifactSet`. `deprecateArtifactSet` flips it false.
+    ///
+    /// The independent counterpart to [`Self::contract_set_active`]: BOTH must be true for [`validate`]
+    /// to pass. This is the bit that lets dogtag retire a compromised proving-artifact set (a bad zkey)
+    /// and stop every app WITHOUT moving a single trio address. See that field's note for why the two
+    /// must be populated separately.
+    pub artifact_set_active: bool,
 }
 
 /// Client-side context the validation needs beyond the anchor: this build's version and the app's
@@ -122,6 +138,27 @@ pub struct ClientContext<'a> {
     /// The purpose the app/user independently intends for this scan (§5.3 step 4). MUST be sourced
     /// independently of the platform's claim.
     pub expected_purpose: &'a str,
+}
+
+/// Which of the anchor's two independent axes (R-5) was found deprecated. Carried by
+/// [`DiscoveryError::DeprecatedVersion`] and rendered into its message, so a caller that only ever sees
+/// the flattened FFI error string can still tell which lever fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeprecatedAxis {
+    /// The on-chain `ContractSet` — `deprecateContractSet`. The protocol version itself is retired.
+    ContractSet,
+    /// The bound `ArtifactSet` — `deprecateArtifactSet`. The proving artifacts were pulled; the trio is
+    /// untouched, so a NEWER artifact set may already be published for the same version.
+    ArtifactSet,
+}
+
+impl std::fmt::Display for DeprecatedAxis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContractSet => f.write_str("on-chain contract set"),
+            Self::ArtifactSet => f.write_str("proving-artifact set"),
+        }
+    }
 }
 
 /// Every way [`validate`] can FAIL CLOSED. Each variant means "abort — never prove, never submit". Kept
@@ -149,9 +186,12 @@ pub enum DiscoveryError {
     /// The claimed purpose differs from the app's out-of-band expected purpose.
     #[error("claimed purpose {claimed:?} does not match the app's expected purpose {expected:?}")]
     PurposeMismatch { claimed: String, expected: String },
-    /// The anchor version is deprecated (`active=false`) — refused (anti-downgrade, §8.4).
-    #[error("version {version:?} is deprecated (inactive) at the anchor")]
-    DeprecatedVersion { version: String },
+    /// One of the anchor's two axes is deprecated (`active=false`) — refused (anti-downgrade, §8.4).
+    /// `axis` names WHICH lever fired, because the two are independent and the remedy differs: a
+    /// deprecated contract set means the whole protocol version is retired, while a deprecated artifact
+    /// set means only the proving artifacts were pulled and the trio is untouched.
+    #[error("the {axis} of version {version:?} is deprecated (inactive) at the anchor")]
+    DeprecatedVersion { version: String, axis: DeprecatedAxis },
     /// The app build is older than the version's `minAppVersion` — refuse and route to update/owner-web.
     #[error("app build {build:?} is older than minAppVersion {min:?} for this version")]
     AppTooOld { build: String, min: String },
@@ -184,8 +224,8 @@ pub struct ValidatedVersion {
 ///
 /// The checks, in order (order affects only which error surfaces first — every one is fail-closed):
 /// 1. version coherence (the anchor is the record for the claimed version),
-/// 1b. artifact-axis coherence (the anchor's `artifact_set` hashes to its `artifact_set_id`),
-/// 2. not deprecated (`active`),
+///    1b. artifact-axis coherence (the anchor's `artifact_set` hashes to its `artifact_set_id`),
+/// 2. neither axis deprecated — BOTH `contract_set_active` and `artifact_set_active` must hold,
 /// 3. chainId == anchor,
 /// 4. verificationRegistry == anchor (case-insensitive — checksum vs lowercase is not a real mismatch),
 /// 5. purpose == the app's out-of-band expected purpose (case-SENSITIVE — a purpose is a semantic
@@ -236,9 +276,21 @@ pub fn validate(
     }
 
     // (2) Anti-downgrade: a deprecated version is refused before anything else version-specific (§8.4).
-    if !anchor.active {
+    // The two axes are checked SEPARATELY rather than pre-combined by the caller, so each stays a
+    // standalone kill switch (R-5) and the error names which one fired. Deprecating EITHER is sufficient
+    // to refuse: dogtag can retire a compromised proving-artifact set without touching the trio (or vice
+    // versa) and the app still stops. Enforcing the pair HERE, rather than trusting a caller to AND them,
+    // is what stops a native implementer who wires only one bit from silently losing the other lever.
+    if !anchor.contract_set_active {
         return Err(DiscoveryError::DeprecatedVersion {
             version: anchor.version.clone(),
+            axis: DeprecatedAxis::ContractSet,
+        });
+    }
+    if !anchor.artifact_set_active {
+        return Err(DiscoveryError::DeprecatedVersion {
+            version: anchor.version.clone(),
+            axis: DeprecatedAxis::ArtifactSet,
         });
     }
 
@@ -385,7 +437,8 @@ mod tests {
             verification_registry: REGISTRY.to_string(),
             circuit_id: CIRCUIT.to_string(),
             min_app_version: "1.4.0".to_string(),
-            active: true,
+            contract_set_active: true,
+            artifact_set_active: true,
         }
     }
 
@@ -539,16 +592,54 @@ mod tests {
         );
     }
 
-    /// A DEPRECATED (inactive) anchor version FAILS CLOSED even when every claim matches — the
-    /// anti-downgrade lever (§8.4).
+    /// A DEPRECATED (inactive) anchor FAILS CLOSED even when every claim matches — the anti-downgrade
+    /// lever (§8.4). Both axes are exercised, because R-5 makes each an INDEPENDENT kill switch: the
+    /// validator must refuse when EITHER is retired, and must name which one so a native implementer
+    /// debugging the abort knows whether the trio or only the artifacts were pulled.
     #[test]
-    fn deprecated_version_fails_closed() {
-        let mut a = anchor();
-        a.active = false;
-        match validate(&claims(), &a, &ctx()) {
-            Err(DiscoveryError::DeprecatedVersion { version }) => assert_eq!(version, VERSION),
-            other => panic!("expected DeprecatedVersion, got {other:?}"),
+    fn deprecating_either_axis_fails_closed() {
+        // The on-chain axis alone — the whole protocol version is retired.
+        let mut only_contracts_dead = anchor();
+        only_contracts_dead.contract_set_active = false;
+        match validate(&claims(), &only_contracts_dead, &ctx()) {
+            Err(DiscoveryError::DeprecatedVersion { version, axis }) => {
+                assert_eq!(version, VERSION);
+                assert_eq!(axis, DeprecatedAxis::ContractSet);
+            }
+            other => panic!("expected DeprecatedVersion(ContractSet), got {other:?}"),
         }
+
+        // The artifact axis alone — the trio is perfectly live, but a compromised zkey still stops the
+        // app. This is the lever a single collapsed `active` bit would have silently discarded.
+        let mut only_artifacts_dead = anchor();
+        only_artifacts_dead.artifact_set_active = false;
+        match validate(&claims(), &only_artifacts_dead, &ctx()) {
+            Err(DiscoveryError::DeprecatedVersion { version, axis }) => {
+                assert_eq!(version, VERSION);
+                assert_eq!(axis, DeprecatedAxis::ArtifactSet);
+            }
+            other => panic!("expected DeprecatedVersion(ArtifactSet), got {other:?}"),
+        }
+
+        // Both live still validates, so neither check is vacuously failing.
+        assert!(validate(&claims(), &anchor(), &ctx()).is_ok());
+    }
+
+    /// The axis reaches a caller that only ever sees the FLATTENED error string: the FFI wrapper renders
+    /// `DiscoveryError` via `to_string()`, so a discriminator absent from the `Display` output would be
+    /// invisible to exactly the native implementer it exists to help.
+    #[test]
+    fn the_deprecated_axis_is_named_in_the_error_message() {
+        let mut a = anchor();
+        a.artifact_set_active = false;
+        let msg = validate(&claims(), &a, &ctx()).unwrap_err().to_string();
+        assert!(msg.contains("proving-artifact set"), "artifact axis must be named: {msg}");
+
+        let mut b = anchor();
+        b.contract_set_active = false;
+        let msg_b = validate(&claims(), &b, &ctx()).unwrap_err().to_string();
+        assert!(msg_b.contains("on-chain contract set"), "contract axis must be named: {msg_b}");
+        assert_ne!(msg, msg_b, "the two axes must not render identically");
     }
 
     /// A build older than `minAppVersion` FAILS CLOSED (refuse + route to update/owner-web, §5.3 step 5).
