@@ -25,12 +25,17 @@ pragma circom 2.1.9;
 // dogTagId <-> R is bound ON-CHAIN (profileRoot(dogTagId) == R), NOT in this circuit.
 //
 // RESERVED-LEAF SCHEMA — the three owner-control leaves are PINNED to fixed keyPath+typeTag
-// constants (below). This is LOAD-BEARING for soundness: if keyPath were a free input a prover
-// could point the owner-secret inclusion proof at ANY other in-tree leaf (e.g. a disclosable
-// attribute), set `ownerSecret` to that leaf's value, and mint a SECOND valid nullifier for the
-// same signed consent — breaking replay protection (D5). Pinning keyPath forces the unique real
-// leaf, so ownerSecret / (Ax,Ay) are collision-bound to the genuine owner leaves. M5 issuance
-// MUST build these three leaves with exactly these keyPath+typeTag values (see AGENTS.md).
+// constants (below). Pinning is LOAD-BEARING against keyPath SUBSTITUTION: if keyPath were a free
+// input a prover could point the owner-secret inclusion proof at ANY other in-tree leaf (e.g. a
+// disclosable attribute), set `ownerSecret` to that leaf's value, and mint a SECOND valid nullifier
+// for the same signed consent - breaking replay protection (D5).
+// Pinning does NOT defend against a DUPLICATE reserved triple. This template verifies three
+// INDEPENDENT leaf inclusions, and neither the circuit nor the tree construction enforces
+// per-keyPath uniqueness, so "ownerSecret / (Ax,Ay) are collision-bound to the genuine owner leaves"
+// holds only under a PRECONDITION on R: exactly one reserved triple exists in it. That precondition
+// is the normative P-e invariant - see docs/DELEGATION.md section 5.
+// M5 issuance MUST build these three leaves with exactly these keyPath+typeTag values, and exactly
+// one triple per tree (see AGENTS.md).
 //
 // CEREMONY: the real testnet-grade phase-2 ceremony (M3) is DONE. The committed production VK/zkey
 // (build/consent_verification_key.json, build/consent_final.zkey) + the Groth16VerifierConsent verifier

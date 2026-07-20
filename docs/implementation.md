@@ -1852,6 +1852,8 @@ Resolves `research/09-sbt-lifecycle.md` + audit-04/05/06 v2 items.
 **(a) DogTagSBT with granular roles + issuerOf + soft status + recover (replaces §11.1 burn-and-remint):**
 
 > **STALE for Level-B - do not port into the custodial stack.** The `DogTagSBT` below is the Level-A spec (still live until the M7 cutover). The Level-B custodial `DogTagSBTConsent` (M5) deliberately has NO `recover()` / `RECOVERY_ROLE` / `_recoveryRebind` / `_inRecovery` (D3): a keyed rebind names the new owner on-chain, which is exactly what owner-unlinkability removes, so the soulbound lock is absolute. Recovery is a **fresh custodial issuance under a new `dogTagId` + new `R`** (`ProfileTreeStore.reissue`), and unlike Level-A its referencing credentials do **not** survive - the owner re-obtains each fresh from its issuer under the new id (accept-the-break, 2026-07-16). See AGENTS.md "M6 app-side - recovery is re-issue" and architecture.md §13.6.
+>
+> **Do not confuse this with DELEGATION.** `recover()` and the Level-B re-issue both **replace** the principal. Delegation - an owner authorizing a **non-owner** (a caretaker at the groomer) for **scoped consent while staying the owner** - is a separate mechanism and must never be implemented as a partial owner rebind. It is decided and deferred: a **separate delegate circuit**, delegate authorized by an owner-signed message and therefore **never committed in `R`**, routed as its own protocol version; the owner consent circuit stays frozen. See [`DELEGATION.md`](./DELEGATION.md) (decided 2026-07-20).
 
 ```solidity
 // AccessControlDefaultAdminRules gives DEFAULT_ADMIN a two-step + 3-day timelocked hand-off (H-3, matches
