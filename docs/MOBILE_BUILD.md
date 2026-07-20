@@ -114,6 +114,14 @@ files that already exist in `jniLibs/`. So on a **fresh clone** you must build t
 here). A dev machine that already has the `.so` in its working tree will reuse them as-is — Gradle
 won't rebuild them.
 
+> **Running the JVM unit tests needs one more thing than building does.** Everything above is for
+> `assembleDebug`, which is unchanged. `./gradlew test` additionally needs a **host** `cargo` (plain,
+> not `cargo-ndk`): every Gradle `Test` task hard-`dependsOn` a
+> `cargo build -p dogtag-standard-rs --features prover --lib`, so the parity tests can call the real
+> Rust core over JNA — the `jniLibs/` `.so` are Android-ABI-only and can never load on a dev machine.
+> This doc otherwise covers building + installing only; the test suites and their sharp edges are
+> owned by AGENTS.md "Build & test".
+
 > `adb` is referenced throughout this doc as `~/Library/Android/sdk/platform-tools/adb`. If it is on
 > your `PATH` you may just type `adb`.
 
@@ -350,6 +358,16 @@ cd apps/android && ./gradlew :app:installDebug
 ~/Library/Android/sdk/platform-tools/adb shell pm clear io.liberalize.dogtag
 ```
 
+> **DESTRUCTIVE for Level-B tags — this is not just a prefs reset.** `pm clear` wipes the package's
+> whole internal storage, which includes `noBackupFilesDir` and therefore the owner-secret store
+> `dogtag-owner-secrets.json.enc` (see [MOBILE_OWNER_SECRET](./MOBILE_OWNER_SECRET.md)). The
+> owner-secret itself is seed-derivable, but each tag's **attribute values and salts are not** — they
+> exist nowhere else on the device, and without them `R` cannot be rebuilt, so every Level-B tag on
+> that phone becomes permanently unprovable. `profileRoot` is write-once on-chain, so there is no
+> repair; the remedy is a fresh issuance under a new `dogTagId` (D3), which Android does not yet
+> implement. Safe on a dev phone holding no Level-B tags. Before clearing one that does, re-obtain
+> each credential from its issuer so the attribute leaves can be restored.
+
 ---
 
 ## 7. Set `prover_api` in-app (32-bit Android ONLY)
@@ -422,4 +440,4 @@ contracts, ceremony, timelock) see
 | app reaches the **wrong chain** / old contracts after a deploy | apps not rebuilt — `roax.json`/RPC are **baked** | edit both `roax.json` (+ RPC constant), re-vendor zkey, rebuild + **reinstall** — §8 |
 | proofs never validate on a fresh checkout | `verification_final.zkey` not vendored (it's gitignored) | copy it into both bundles — §4 |
 | app talks to an unexpected vet/groomer host | the host comes **only** from the scanned QR; a stale/wrong QR was scanned | re-scan the correct `/p/` or `/x/` QR from the right portal — §2 |
-| stale wallet / stored prefs on Android | leftover app state | `adb shell pm clear io.liberalize.dogtag` — §6 |
+| stale wallet / stored prefs on Android | leftover app state | `adb shell pm clear io.liberalize.dogtag` — §6. **Also destroys the owner-secret store, stranding every Level-B tag on that phone**; read the warning in §6 first |

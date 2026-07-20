@@ -313,6 +313,15 @@ Swift never reimplements it.
   `jna.library.path` first, because the `jniLibs/` `.so` files are Android-ABI-only and gitignored.
 - `apps/android/app/src/test/java/io/liberalize/dogtag/profile/OwnerSecretRecordsTest.kt` - the
   write-once-root invariant and the seed-backup fingerprint binding.
+- `apps/android/app/src/test/java/io/liberalize/dogtag/profile/OwnerSecretCodecTest.kt` - the record
+  JSON round-trip. A mistyped field name or a mangled attribute type tag would encode fine and decode
+  into a DIFFERENT witness, which rebuilds a different `R` - unrecoverable, because `profileRoot` is
+  write-once. Needs Robolectric: on the unit-test classpath `org.json` is Android's throwing stub, so
+  this runs against the REAL parser the app ships with.
+- `apps/android/app/src/test/java/io/liberalize/dogtag/profile/OwnerSecretRecoveryJourneyTest.kt` -
+  the two halves as the owner meets them: build a tag on-device, lose the phone, and rebuild the SAME
+  `R` from the phrase plus this file. Its negative leg asserts the file ALONE does not rebuild the tag,
+  which is what stops "recovery works" from passing while the phrase is being ignored.
 - `contracts/test/CustodialIssuance.t.sol` -
   `test_device_built_root_is_what_the_contract_stores_as_profileRoot` mints a real device-built `R`
   and asserts `profileRoot(dogTagId) == R`.
@@ -342,12 +351,13 @@ Which branch applies is decided by whether the owner-secret can be regenerated:
   Seed + credential rebuild the identical `R`, so the SAME tag keeps working - `profileRoot` is
   write-once and is never moved.
   This is the round-trip in [Tests that hold this together](#tests-that-hold-this-together)
-  (`device_recovery_journey.rs`).
+  (`device_recovery_journey.rs`, and `OwnerSecretRecoveryJourneyTest.kt` for the Android leg).
 - **Re-issue (fresh tag).**
   The owner-secret is gone for good.
   There is no on-chain repair, so the remedy is a **fresh custodial issuance under a new `dogTagId`
   with a new `R`**: the issuer allocates a fresh id (a burned/abandoned id is retired forever), the
-  app builds a fresh tree (`ProfileTreeStore.reissue`), and the issuer seals the new root.
+  app builds a fresh tree (`ProfileTreeStore.reissue`, **iOS only** so far - see
+  [Platform parity](#platform-parity)), and the issuer seals the new root.
   The abandoned tag is simply left behind - there is no rebind.
   Any credentials another issuer anchored to the abandoned id are **not** carried over (that would
   forge attestation applicability); the owner re-obtains each fresh from its issuer under the new id.

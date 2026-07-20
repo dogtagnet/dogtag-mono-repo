@@ -125,6 +125,13 @@ class ProfileTreeParityTest {
         val f = fixture()
         val tree = buildFixtureTree()
 
+        // Echo both sides. The assertion below is what enforces parity, but a failure message only
+        // ever shows the mismatch - printing the agreeing roots is what lets a reviewer (or a CI log
+        // read months later) see WHICH root Android actually built, rather than trusting a green tick.
+        println("device-root parity | fixture R (contracts/test/device-profile-root.json) = ${f.field("R")}")
+        println("device-root parity | android R (ProfileTreeBuilder -> buildProfileTreeHex)  = ${tree.rootHex}")
+        println("device-root parity | dogTagId=${f.field("dogTagId")} owner=${f.field("_ownerAddress")}")
+
         assertEquals(
             "Android-built R must equal the shared device-root fixture byte-for-byte",
             f.field("R").lowercase(),
