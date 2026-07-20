@@ -627,3 +627,112 @@ async fn level_a_only_deployment_still_allocates_from_the_counter() {
         "with Level-B unconfigured the allocator must not consult it at all"
     );
 }
+
+/// A `dogTagId` sealed on the Level-B SBT AFTER its session started must be refused at bind time —
+/// and refused having written NOTHING to the chain.
+///
+/// The allocation check in `/profiles/issue/session/start` cannot cover this: it runs up to 180s
+/// earlier, and the SBT is shared across vet instances that each keep their own `next_dog_tag_id`
+/// counter, so a collision can open between start and bind. This test seats the collision in exactly
+/// that order (start first, so the id IS free when allocated; seal it second) — seeding it before
+/// `start_session` would instead exercise the allocator, which already skips sealed ids, and pass
+/// vacuously.
+///
+/// The load-bearing assertion is the LAST one. Refusing with a 409 is not enough on its own: the
+/// whole point of moving the check ahead of the spawn is that `issue(R)` — which globally and
+/// permanently consumes `R` via write-once `registerRoot` — must never have run. So the device root
+/// must still be unanchored afterwards, leaving it reusable in the fresh session the operator is
+/// told to start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_collision_opened_after_session_start_is_refused_before_anything_reaches_the_chain() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, _backend) = boot_custody(&app).await;
+
+    // 1. Start the session while the id is genuinely free — the allocator hands it out legitimately.
+    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
+    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+    assert!(
+        chain
+            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+            .await
+            .is_err(),
+        "precondition: the id must be free at session start, or this tests the allocator instead"
+    );
+
+    // 2. A CONCURRENT issuance (another vet instance) seals the same id before the device binds.
+    let other_root = device_root(field_from_uint(999_u64));
+    chain
+        .mint_custodial(0, SBT_CONSENT_ADDR, &onchain_id, &other_root)
+        .await
+        .expect("a concurrent instance seals the id");
+
+    // 3. The device binds its own root against the now-colliding id.
+    let root = device_root(canonical_field(&dog_tag_id));
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(serde_json::json!({ "token": token, "root": root })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "a sealed dogTagId must be refused with a specific conflict, not a generic mint error: {b}"
+    );
+    let msg = b["error"].as_str().unwrap_or_default().to_string();
+    assert!(
+        msg.contains(&dog_tag_id) && msg.contains("FRESH session"),
+        "the refusal must name the colliding dogTagId and say a fresh session is required: {msg}"
+    );
+
+    // The operator poll must surface that same specific reason, not a stalled `pending` row.
+    let (s, row) = call(
+        &app,
+        "GET",
+        &format!("/profiles/issue/session/{session_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(row["status"], "error", "the session row must be settled");
+    assert!(
+        row["txHash"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&dog_tag_id),
+        "the operator must see WHY it failed: {row}"
+    );
+
+    // THE LOAD-BEARING ASSERTION: `issue(R)` never ran, so the device's `R` was not burned. Assert
+    // against PROFILE_ISSUER_ADDR — the clone this route actually anchors to. Using any other clone
+    // (e.g. the VACCINATION `ISSUER`) reads as unanchored no matter what the handler did, which makes
+    // the assertion pass vacuously and stops it testing anything.
+    assert!(
+        !chain.is_valid(PROFILE_ISSUER_ADDR, &root).await.unwrap(),
+        "the refusal must precede issue(R) — a burned R can never be re-anchored (registerRoot is \
+         globally write-once), so the device would lose it to a check that fired too late"
+    );
+    assert!(
+        chain
+            .issued_at(PROFILE_ISSUER_ADDR, &root)
+            .await
+            .unwrap()
+            .is_zero(),
+        "no anchoring tx may have been sent for the device root"
+    );
+
+    // The pre-existing seal is untouched — the refusal wrote nothing at all.
+    assert_eq!(
+        chain
+            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+            .await
+            .unwrap(),
+        other_root.to_lowercase(),
+        "the refused bind must not have disturbed the concurrent issuance's seal"
+    );
+}

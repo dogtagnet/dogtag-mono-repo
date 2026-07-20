@@ -2064,6 +2064,10 @@ fn valid_root_hex(root: &str) -> bool {
 /// `dogTagId` forever. The contract prescribes this ordering itself
 /// (`DogTagSBTConsent.sol:139-143`: "Issue the root, then mint.").
 ///
+/// Because `issue(R)` is itself irreversible and GLOBAL (`registerRoot` is write-once), the seal on
+/// `dogTagId` is re-read here immediately before it — see the bind-time re-check below, which also
+/// records why the residual cross-instance race is a tracked follow-up rather than an oversight.
+///
 /// Responds immediately with `status: "minting"` and runs the chain writes in the background - ROAX
 /// blocks are ~12s apart, well past the phone's read timeout - exactly as the Level-A path does. The
 /// operator portal polls `GET /profiles/issue/session/{id}`.
@@ -2139,6 +2143,49 @@ async fn profile_issue_custodial_bind(
     session.root = Some(root.clone());
     session.protocol_version = Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string());
     st.store.update_profile_session(session.clone()).await;
+
+    // RE-CHECK the Level-B write-once seal HERE, synchronously, BEFORE the spawn — so it is causally
+    // before `issue(R)`, the first and GLOBALLY irreversible write (`registerRoot` is write-once, so a
+    // consumed `R` can never be re-anchored). `/profiles/issue/session/start` already refuses an id
+    // whose `profileRoot` is set, but that check runs up to 180s earlier: without this one a collision
+    // that opens in between burns `issue(R)` and only then reverts inside `mintCustodial`, destroying
+    // the operator's QR, the device-computed `R` and the gas, and reporting a generic mint error. With
+    // it, a detected collision refuses having written NOTHING to the chain.
+    //
+    // This NARROWS the window; it does not close it. Two vet instances share the SBT but each keeps
+    // its own `next_dog_tag_id` counter, so the read here and the write in the spawned task remain a
+    // TOCTOU. Eliminating it needs a shared-store id reservation, tracked as a follow-up; the
+    // contract's write-once mint stays the real backstop.
+    match st.chain.profile_root_of(&sbt_addr, &onchain_id).await {
+        // A real node returns 0x0..0 for an id that was never sealed; MemChain returns NotFound.
+        // Both mean free — only a non-zero root retires the id.
+        Ok(r) if !is_nonzero_word(&r) => {}
+        Err(crate::chain::ChainError::NotFound) => {}
+        Ok(_) => {
+            let msg = format!(
+                "dogTagId {} is already sealed on the Level-B SBT (profileRoot is write-once and \
+                 survives a burn, so this id is retired forever) — start a FRESH session",
+                session.dog_tag_id
+            );
+            session.status = "error".to_string();
+            session.tx_hash = Some(msg.clone());
+            st.store.update_profile_session(session).await;
+            return err(StatusCode::CONFLICT, &msg);
+        }
+        // Fail CLOSED on an inconclusive read: proceeding is what spends the irreversible write, and
+        // the token is already consumed, so the row must be settled or the operator poll hangs.
+        Err(e) => {
+            let msg = format!(
+                "could not confirm dogTagId {} is unsealed on the Level-B SBT: {e} — start a FRESH \
+                 session",
+                session.dog_tag_id
+            );
+            session.status = "error".to_string();
+            session.tx_hash = Some(msg.clone());
+            st.store.update_profile_session(session).await;
+            return err(StatusCode::SERVICE_UNAVAILABLE, &msg);
+        }
+    }
 
     let chain = st.chain.clone();
     let store = st.store.clone();
