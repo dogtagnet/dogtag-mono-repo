@@ -1698,23 +1698,48 @@ async fn profile_issue_session_start(
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
     }
-    // Allocate a dogTagId that is NOT already minted on the (shared) DogTagSBT. The local counter
-    // resets on restart and the SBT is shared across issuers, so a fresh counter can collide with an
-    // already-minted id — `DogTagSBT.mint` reverts on a duplicate token. Skip taken ids: owner_of
-    // returns Err(NotFound) for an unminted id (free) and Ok(_) for a minted one (taken).
+    // Allocate a dogTagId that is NOT already taken on EITHER SBT. The local counter resets on
+    // restart and the SBTs are shared across issuers, so a fresh counter can collide with an
+    // already-minted id. The two levels retire an id by different markers and BOTH must be consulted
+    // while they run side by side:
+    //   Level-A `DogTagSBT.mint`  -> writes an owner; `owner_of` is Err(NotFound) when free.
+    //   Level-B `mintCustodial`   -> writes NO owner the allocator can see (the holder is the neutral
+    //     custodian), and retires the id through the write-once `profileRoot[id]`, a marker that
+    //     SURVIVES a burn — so an id consumed by a Level-B issuance reads as free via `owner_of`.
+    // Getting this wrong is expensive on the Level-B path: `issue(R)` runs BEFORE the mint and
+    // `registerRoot` is globally write-once, so a collision burns both the operator's one-time QR and
+    // the device-computed `R`.
+    // None on a Level-A-only deployment (unset/zero), which skips the Level-B leg entirely.
+    let level_b = &st.cfg.sbt_consent_addr;
+    let level_b_sbt = valid_contract_addr(level_b).then(|| level_b.clone());
     let mut dog_tag_id = st.store.next_dog_tag_id().await.to_string();
     for _ in 0..256 {
-        // The SBT is minted under the field-hashed id, so the collision-check must query
-        // ownerOf(field_of_value(handle)), not the raw handle.
+        // Both SBTs key state by the field-hashed id, so the collision-check must query
+        // field_of_value(handle), not the raw handle.
         let onchain = match onchain_dog_tag_id(&dog_tag_id) {
             Ok(v) => v,
             Err(_) => break, // non-numeric handle can't collide via this path; proceed
         };
-        match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
-            Err(crate::chain::ChainError::NotFound) => break, // unminted -> free
-            Ok(_) => dog_tag_id = st.store.next_dog_tag_id().await.to_string(), // taken -> next
+        let taken = match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
+            Ok(_) => true,                                    // minted on Level-A -> taken
+            Err(crate::chain::ChainError::NotFound) => false, // unminted -> free so far
             Err(_) => break, // transient RPC error: proceed (a real dup would revert at mint)
+        };
+        let taken = taken
+            || match &level_b_sbt {
+                // A real node returns 0x0..0 for an id that was never sealed; MemChain returns
+                // NotFound. Both mean free — only a non-zero root retires the id.
+                Some(sbt) => match st.chain.profile_root_of(sbt, &onchain).await {
+                    Ok(r) => is_nonzero_word(&r),
+                    Err(crate::chain::ChainError::NotFound) => false,
+                    Err(_) => break,
+                },
+                None => false,
+            };
+        if !taken {
+            break;
         }
+        dog_tag_id = st.store.next_dog_tag_id().await.to_string();
     }
 
     let owner_identity = crate::store::OwnerIdentity {
@@ -2056,12 +2081,13 @@ async fn profile_issue_custodial_bind(
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
     }
-    // Fail closed on an unconfigured deployment BEFORE consuming the one-time token: a half-wired
-    // Level-B stack must not burn the operator's QR (and, worse, must never mint without a place to
-    // anchor the root).
+    // Fail closed on an unconfigured OR MISCONFIGURED deployment BEFORE consuming the one-time token:
+    // a half-wired Level-B stack must not burn the operator's QR (and, worse, must never mint without
+    // a place to anchor the root). Both addresses are shape-checked, not merely tested for non-zero —
+    // see `valid_contract_addr` for why a malformed value would otherwise reach the chain as 0x0..0.
     let sbt_addr = st.cfg.sbt_consent_addr.clone();
     let issuer_addr = st.cfg.profile_issuer_addr.clone();
-    if is_zero_addr(&sbt_addr) || is_zero_addr(&issuer_addr) {
+    if !valid_contract_addr(&sbt_addr) || !valid_contract_addr(&issuer_addr) {
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             "level-B custodial issuance not configured (SBT_CONSENT_ADDR / PROFILE_ISSUER_ADDR)",
@@ -2100,8 +2126,16 @@ async fn profile_issue_custodial_bind(
         }
     };
 
-    // Persist what is known before the chain writes. `wallet_address` stays None BY DESIGN - there is
-    // no owner to record, and writing one would defeat the whole path.
+    // Persist what is known before the chain writes. `wallet_address` stays None BY DESIGN - this path
+    // never learns an owner wallet, and writing one would defeat the whole point.
+    //
+    // Scope the owner-blindness claim precisely: it holds ON-CHAIN and ON THE WIRE. It does NOT hold
+    // in the vet's own store — the session row this handler updates still carries the `owner_identity`
+    // block (name, country of identification, identification number) collected earlier by the
+    // operator-gated `/profiles/issue/session/start`. Level-B builds no verifiable credential, so this
+    // flow never READS any of it; it is collected for a path that does not consume it. A Level-B
+    // session shape that stops collecting the unused owner identity is tracked as a separate
+    // follow-up (changing the session shape / operator portal contract is out of M-2 scope).
     session.root = Some(root.clone());
     session.protocol_version = Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string());
     st.store.update_profile_session(session.clone()).await;
@@ -2167,9 +2201,24 @@ async fn profile_issue_custodial_bind(
     }))
 }
 
-/// True for an unset/zero contract address.
-fn is_zero_addr(a: &str) -> bool {
-    a.trim_start_matches("0x").bytes().all(|b| b == b'0')
+/// True for a well-formed, non-zero contract address (`0x` + exactly 40 hex digits, not all zero).
+///
+/// The zero check alone is NOT enough, and the gap is expensive. `chain::parse_addr` coerces an
+/// unparseable address to `Address::ZERO` (`h.parse::<Address>().unwrap_or(Address::ZERO)`), so a
+/// typo'd `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` would pass a non-zero-string test, consume the
+/// one-time bind token, and dispatch both `issue(R)` and `mintCustodial` at the zero address — txs
+/// that SUCCEED against a codeless address, so the failure only surfaces at the read-back, after gas
+/// is spent and the operator's QR is burned. Shape-check at the edge, mirroring [`valid_root_hex`].
+fn valid_contract_addr(a: &str) -> bool {
+    a.len() == 42
+        && a.starts_with("0x")
+        && a[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        && a[2..].bytes().any(|b| b != b'0')
+}
+
+/// True for a 0x.. word that is not all zeros (an unset `profileRoot` reads back as 0x0..0).
+fn is_nonzero_word(w: &str) -> bool {
+    w.trim_start_matches("0x").bytes().any(|b| b != b'0')
 }
 
 /// GET /profiles/issue/session/{id} — operator-gated status poll so the portal can show whether the

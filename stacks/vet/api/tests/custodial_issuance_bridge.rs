@@ -490,3 +490,140 @@ async fn level_a_issuance_path_still_works_alongside() {
         "a Level-A issuance must not touch the Level-B SBT"
     );
 }
+
+/// FAIL-CLOSED: a MALFORMED (non-zero but unparseable) Level-B address is refused, and — like the
+/// unconfigured case — WITHOUT burning the operator's one-time token.
+///
+/// A bare non-zero test is not enough: `chain::parse_addr` coerces an unparseable address to
+/// `Address::ZERO`, so a typo'd `SBT_CONSENT_ADDR` would consume the token and dispatch BOTH
+/// `issue(R)` and `mintCustodial` at the zero address — txs that succeed against a codeless address,
+/// surfacing only at the read-back, after gas is spent and the QR is burned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_level_b_address_refuses_without_consuming_the_token() {
+    for bad in [
+        "0xnotanaddress",                              // non-zero, non-hex
+        "0x00000000000000000000000000000000000000d",   // 39 digits — one short
+        "0x00000000000000000000000000000000000000ddd", // 41 digits — one long
+        "00000000000000000000000000000000000000dd",    // no 0x prefix
+    ] {
+        let mem = MemChain::new();
+        let chain = Arc::new(mem.clone());
+        let mut state = mem_state(chain.clone());
+        let mut cfg = (*state.cfg).clone();
+        cfg.sbt_consent_addr = bad.to_string();
+        state.cfg = Arc::new(cfg);
+        let app = vet_api::router(state);
+        let (_admin, op, _backend) = boot_custody(&app).await;
+
+        let (token, dog_tag_id, _session_id) = start_session(&app, &op).await;
+        let root = device_root(canonical_field(&dog_tag_id));
+        let body = serde_json::json!({ "token": token, "root": root });
+
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/profiles/issue/custodial-bind",
+            None,
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "malformed SBT_CONSENT_ADDR {bad:?} must fail closed: {b}"
+        );
+
+        // The token survives, so the operator can retry once the deployment is wired correctly.
+        let (s, _b) = call(
+            &app,
+            "POST",
+            "/profiles/issue/custodial-bind",
+            None,
+            Some(body),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the refused request must not have consumed the one-time token ({bad:?})"
+        );
+
+        // Nothing reached the chain.
+        let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+        assert!(
+            chain
+                .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+                .await
+                .is_err(),
+            "a refused request must not have minted ({bad:?})"
+        );
+    }
+}
+
+/// A `dogTagId` already RETIRED by a Level-B custodial issuance must never be handed out again.
+///
+/// `mintCustodial` writes no owner the allocator can see (the holder is the neutral custodian) and
+/// retires the id through the write-once `profileRoot[id]`, a marker that survives a burn — so an
+/// allocator consulting only the Level-A `ownerOf` reads a Level-B-consumed id as FREE. That is
+/// expensive here specifically: `issue(R)` runs BEFORE the mint and `registerRoot` is globally
+/// write-once, so the collision would burn both the operator's QR and the device-computed `R`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_level_b_retired_dog_tag_id_is_not_reallocated() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, _backend) = boot_custody(&app).await;
+
+    // Retire the first two ids the counter would hand out, sealed on the LEVEL-B SBT only — exactly
+    // the state a prior custodial issuance leaves behind (no owner, non-zero profileRoot).
+    for handle in ["1", "2"] {
+        let onchain_id = vet_api::routes::onchain_dog_tag_id(handle).unwrap();
+        chain
+            .mint_custodial(
+                0,
+                SBT_CONSENT_ADDR,
+                &onchain_id,
+                &device_root(canonical_field(handle)),
+            )
+            .await
+            .expect("seed a Level-B retired id");
+        assert!(
+            chain.owner_of(SBT_CONSENT_ADDR, &onchain_id).await.is_err(),
+            "the custodial mint must leave the allocator NO owner to see — that is the whole trap"
+        );
+    }
+
+    let (_token, dog_tag_id, _session_id) = start_session(&app, &op).await;
+    assert!(
+        dog_tag_id != "1" && dog_tag_id != "2",
+        "an id retired by a Level-B custodial issuance must not be re-allocated, got {dog_tag_id}"
+    );
+    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+    assert!(
+        chain
+            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+            .await
+            .is_err(),
+        "the allocated id must be free on the Level-B SBT"
+    );
+}
+
+/// The Level-B leg of the allocation check is SKIPPED on a Level-A-only deployment (unset/zero
+/// `SBT_CONSENT_ADDR`), so the deployments that exist today keep allocating exactly as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn level_a_only_deployment_still_allocates_from_the_counter() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let mut state = mem_state(chain.clone());
+    let mut cfg = (*state.cfg).clone();
+    cfg.sbt_consent_addr = "0x0000000000000000000000000000000000000000".to_string();
+    state.cfg = Arc::new(cfg);
+    let app = vet_api::router(state);
+    let (_admin, op, _backend) = boot_custody(&app).await;
+
+    let (_token, dog_tag_id, _session_id) = start_session(&app, &op).await;
+    assert_eq!(
+        dog_tag_id, "1",
+        "with Level-B unconfigured the allocator must not consult it at all"
+    );
+}
