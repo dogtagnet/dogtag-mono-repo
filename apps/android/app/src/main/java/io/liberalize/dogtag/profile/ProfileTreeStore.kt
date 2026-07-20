@@ -73,6 +73,13 @@ class ProfileTreeStore(private val context: Context) {
          */
         const val DERIVATION_VERSION = "DogTag/owner-secret/v1"
 
+        /**
+         * Serialises read-modify-write across ALL instances, mirroring iOS's static `storeLock`.
+         * `ProfileTreeStore(context)` is constructed per call site, so locking on `this` would let
+         * two instances interleave a load/upsert/write and lose one tag's record.
+         */
+        private val storeLock = Any()
+
         private const val KEY_ALIAS = "dogtag_owner_secrets_key"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val GCM_TAG_BITS = 128
@@ -181,11 +188,10 @@ class ProfileTreeStore(private val context: Context) {
      * records, so [upsert] cannot rebuild an empty list over it and wipe every other tag's attribute
      * salts - which are not seed-derivable and therefore exist nowhere else.
      */
-    @Synchronized
-    fun load(): List<OwnerSecretRecord> {
+    fun load(): List<OwnerSecretRecord> = synchronized(storeLock) {
         val f = file
         if (!f.exists()) return emptyList()
-        return try {
+        try {
             OwnerSecretRecords.decode(String(decrypt(f.readBytes()), Charsets.UTF_8))
         } catch (e: Exception) {
             throw UnreadableStoreException(e)
@@ -197,8 +203,7 @@ class ProfileTreeStore(private val context: Context) {
 
     fun record(dogTagIdDec: String): OwnerSecretRecord? = all().firstOrNull { it.dogTagIdDec == dogTagIdDec }
 
-    @Synchronized
-    fun upsert(record: OwnerSecretRecord) {
+    fun upsert(record: OwnerSecretRecord) = synchronized(storeLock) {
         write(OwnerSecretRecords.upsert(load(), record))
     }
 
