@@ -28,7 +28,11 @@ decoded fields. The ZK proof-of-verification path is **live** (Groth16Verifier w
 VerificationRegistry); the proof is generated **on-device on 64-bit phones** (mopro `circom-prover` +
 `circom-witnesscalc` graph witness) and via a **backend prover-service** (`POST /prove-verification`)
 on **32-bit-only Android** that cannot prove locally, and the device stays **gasless** throughout
-(the consent-key bind is relayer-sponsored). Live contract addresses are in
+(the consent-key bind is relayer-sponsored). (That live path is **Level-A**, which discloses the owner
+as a public signal. Its owner-hidden **Level-B** twin - `POST /verify/consent/levelb`, which relays a
+`consent.circom` proof to `VerificationRegistryConsent` and reveals no owner at all - is additive and
+off by default (`VERIFICATION_REGISTRY_CONSENT_ADDR`); no shipped device posts to it yet. See
+`docs/implementation.md` §3.9.) Live contract addresses are in
 **[`contracts/deployments/roax.json`](contracts/deployments/roax.json)** — see the table below.
 
 **Two deployment modes.** A single `VITE_DEMO_MODE` flag (set = demo, **unset = production**) switches
@@ -55,7 +59,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 | **VerificationRegistry** (LIVE; Level-A; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
 | ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
-| VerificationRegistryConsent (M5 canonical Level-B registry; owner-blind; deployed + verified, **not live until M7**) | `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` |
+| VerificationRegistryConsent (M5 canonical Level-B registry; owner-blind; deployed + verified. vet-api's additive `POST /verify/consent/levelb` (M-3) **can** relay a consent proof to it, but that route is off unless `VERIFICATION_REGISTRY_CONSENT_ADDR` is set and no shipped device posts to it - **no live traffic until M7**) | `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` |
 | ~~VerificationRegistryConsent~~ `_M4_mutableRoot_legacy` (**DEPRECATED / DO NOT USE for Level-B**; bound to mutable Level-A SBT; never live; zero `Verified`) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
 | ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
 | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
@@ -102,7 +106,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
-| `contracts` | `DogTagSBT` (Level-A; **live**) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `DogTagSBTConsent` + `VerificationRegistryConsent` (canonical M5 Level-B pair; deployed + verified, **no live traffic until M7** — vet-api has an additive, off-by-default owner-hidden issuance route (M-2) that can mint through the SBT, but verification has not cut over) | ROAX |
+| `contracts` | `DogTagSBT` (Level-A; **live**) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `DogTagSBTConsent` + `VerificationRegistryConsent` (canonical M5 Level-B pair; deployed + verified, **no live traffic until M7** — vet-api has additive, off-by-default owner-hidden routes for both halves, issuance (M-2) through the SBT and verification (M-3) through the registry, but no shipped device posts to either and the live consumers have not cut over) | ROAX |
 | `circuits` | Groth16 Poseidon-Merkle + EdDSA-BabyJubjub consent circuit (N=24, depth 5) | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
 | `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |

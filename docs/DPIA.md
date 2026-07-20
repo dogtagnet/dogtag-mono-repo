@@ -53,16 +53,32 @@ The live verification subsystem remains the Level-A `VerificationRegistry`, whic
 assesses.
 The cutover is **M7**. Its M5 on-chain prerequisite is now deployed + verified: `DogTagSBTConsent`
 `0x96Cba458…` is paired with `VerificationRegistryConsent` `0xb9B313C1…` on ROAX. The pair is **NOT
-LIVE and NOT wired to any consumer**, so nothing below is in effect: issuance today still mints the SBT
+LIVE and wired to no SHIPPED consumer** (M-2/M-3 added off-by-default backend routes against each half
+- see the status update below), so nothing below is in effect: issuance today still mints the SBT
 to the owner's wallet exactly as §2 and §4 assess it. M7 must perform this DPIA refresh before cutover.
 
-**M-2 status update - an issuance route now exists, but nothing assessed here changes.** M-2 added
+**M-2 / M-3 status update - both Level-B routes now exist, but nothing assessed here changes.** M-2 added
 `POST /profiles/issue/custodial-bind` to the vet stack, the owner-hidden path that anchors a
-device-built `R` and seals it with `mintCustodial`. It does **not** move this assessment, for three
-independent reasons: it is **off by default** (unset `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` → 503),
-**no shipped device posts to it**, and it is **additive** — the Level-A `POST /profiles/issue/bind`
-still serves every live issuance and still mints to the owner's wallet. The trigger for the re-scoring
-below is Level-B carrying **real** issuance and verification traffic, not the route's existence.
+device-built `R` and seals it with `mintCustodial`; M-3 added its verification counterpart,
+`POST /verify/consent/levelb`, which relays an owner-hidden consent proof to
+`VerificationRegistryConsent`. Neither moves this assessment, for three independent reasons: each is
+**off by default** (unset `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` → 503; unset
+`VERIFICATION_REGISTRY_CONSENT_ADDR` → 503), **no shipped device posts to either**, and both are
+**additive** - the Level-A `POST /profiles/issue/bind` still serves every live issuance and still mints
+to the owner's wallet, and the Level-A `POST /verify/consent/submit` still serves every live
+verification. The trigger for the re-scoring below is Level-B carrying **real** issuance and
+verification traffic, not the routes' existence.
+
+One M-3 detail to CARRY INTO the M7 refresh, recorded here as fact rather than re-scored: when the
+Level-B route is wired, it writes a `VerifySession` audit row into the **same** operator trail as
+Level-A (`GET /verify/history`, `GET /verify/session/:id`). The row is owner-blind by construction -
+`VerifySession` has no `subject` field, and Level-B emits no public signal that could fill one - so it
+holds verifier operational metadata only: the `purpose`/`recordType` bytes32 words, the relayer address,
+the nullifier, a txHash, a status, and timestamps. No owner identifier. On an unwired stack the route
+503s before any row is written, so nothing is created at all.
+**Open for the M7 refresh / DPO:** whether these rows are already covered by the `verification_records`
+erasure scope of §4, or need to be named there explicitly. That is a compliance determination, not a
+documentation one, and it is deliberately not answered here.
 
 > **Scope the owner-blindness claim precisely - "owner-hidden" means hidden from DOWNSTREAM parties,
 > not from the issuing authority.** Level-B removes the owner from the chain, from the public signals,

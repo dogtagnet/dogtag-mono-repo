@@ -523,6 +523,26 @@ EXPORT (device → groomer; on-chain proof-of-verification — decoupled from im
             VerificationRegistry.recordVerification(consent, userSig)              // normal
             VerificationRegistry.recordVerificationZK(a,b,c, [dogTagId,purpose,relayer,subject,nullifier,keyHash,R])  // ZK
           → emits Verified(...); consumes the shared nullifier
+
+  LEVEL-B ALTERNATIVE (M-3) - owner-HIDDEN, ADDITIVE; the Level-A branch above is untouched and is
+  what every shipped phone still uses. Off by default: needs VERIFICATION_REGISTRY_CONSENT_ADDR, else 503.
+  device: prove consent against consent.circom (§4.3 Level-B) → POST /verify/consent/levelb {proof}
+            ← NO token, NO consent/sig object, NO bind leg: there is no subject and no
+              ConsentKeyRegistry under Level-B (D2 - the consent key moved INTO the tree), so there is
+              nothing to bind and no owner slot a caller could fill. The proof self-authenticates.
+  groomer backend: preflight the registry's own requires pre-gas (field range; relayer range on the FULL
+            element before narrowing; pub[relayer] == our custody signer; deadline > now+120s;
+            art9; VERIFY: whitelist - checked unconditionally, deliberately stricter than the
+            registry's toggleable restrictToWhitelistedRelayers so a mis-set flag cannot open the relay)
+          mint a VerifySession audit row (mode:"levelb") into the SAME operator trail as Level-A -
+            owner-blind by construction: the row has no subject field and Level-B has no signal for one
+          RESPOND IMMEDIATELY {status:"recording", level, protocolVersion, sessionId, registry, nullifier}
+          THEN async: VerificationRegistryConsent.recordVerificationZK(a,b,c,
+                        [dogTagId,purpose,relayer,nullifier,R,recordType,deadline])   // 4-arg, DIFFERENT
+                        // selector; recordType+deadline are pub[5]/pub[6], proof-bound, never invented
+                      → emits an owner-blind Verified(...) (no subject); row → "recorded"+txHash | "error"
+  NOTE the public-signal ORDER differs from Level-A: slot 3 is the nullifier and slot 4 is R (Level-A
+    has subject at 3, nullifier at 4). Index via public_signals::level_b, never a literal.
 ```
 
 > **Import and verification are DECOUPLED.** `/import/pull` (off-chain operational data) stays as-is. The new `/verify/*` is the on-chain attestation: NORMAL mode can compose both (the disclosed doc drives import + attestation); **ZK mode = verification with no data import at all** (the default for sensitive purposes).

@@ -118,6 +118,18 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 #                                       #   document store and issue is never called on it, so pointing
 #                                       #   this at the SBT REVERTS. Signer must be whitelisted for the
 #                                       #   clone's recordType)
+#
+# Level-B consent verification (POST /verify/consent/levelb) - OPTIONAL and INDEPENDENT of the pair
+# above (a stack may wire either, both, or neither). Unset -> only that route 503s; all Level-A
+# verification is unaffected.
+#   VERIFICATION_REGISTRY_CONSENT_ADDR=...  # vet, groomer  (Level-B VerificationRegistryConsent - the
+#                                       #   owner-hidden relay target. SEPARATE from
+#                                       #   VERIFICATION_REGISTRY_ADDR, which stays the Level-A registry;
+#                                       #   both run side by side through the migration and their
+#                                       #   recordVerificationZK calls take DIFFERENT selectors, so
+#                                       #   pointing either var at the other's registry encodes for the
+#                                       #   wrong one and reverts EMPTY. The relayer - custody account 0 -
+#                                       #   must be whitelisted for the purpose it submits)
 # Leave VITE_DEMO_MODE UNSET (remote-up.sh rejects it).
 ```
 

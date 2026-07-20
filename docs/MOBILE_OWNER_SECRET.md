@@ -40,6 +40,16 @@ The server treats `R` as opaque (it cannot recompute it - it has no seed), ancho
 and then seals it.
 No shipped app posts to it yet; the device call site is a follow-up.
 
+The verification counterpart landed as **`POST /verify/consent/levelb { proof }`** (M-3): the app proves
+consent against `consent.circom` using the owner-secret described here, and the vet relays that proof to
+`VerificationRegistryConsent`.
+It matters to this document because the owner-secret **is** the nullifier secret: what the route carries
+is a `nullifier` derived from it, never the secret itself, so the ["Handling rules"](#handling-rules)
+below hold on this path unchanged - including their one deliberate exception, the remote
+`POST /prove-consent` fallback, which is the only place `ownerSecret` legitimately leaves the device.
+Like the issuance route it is off by default (`VERIFICATION_REGISTRY_CONSENT_ADDR`, else 503) and no
+shipped app posts to it yet.
+
 ## What recovery actually needs: the seed AND the credential
 
 Rebuilding a tag on a replacement device needs two inputs, and **both are required**:

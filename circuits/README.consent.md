@@ -20,8 +20,9 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 > `recordVerificationZK` wiring is **M5 — now DEPLOYED + VERIFIED**: the canonical
 > `VerificationRegistryConsent` is `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`, paired with
 > `DogTagSBTConsent` `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc`. It remains additive and
-> **not live until M7**; no *verification* consumer was changed (M-2 later added an owner-hidden
-> *issuance* route against the paired SBT — see the M5 note below). See the
+> **not live until M7**; no *shipped* verification consumer was changed (M-2 later added an owner-hidden
+> *issuance* route against the paired SBT, and M-3 an owner-hidden *verification* route against this
+> registry - both off by default, and no shipped device posts to either; see the M5 note below). See the
 > "Build + test" and "M4 binding" notes below.
 
 ## What it proves
@@ -122,6 +123,22 @@ npm run gen-consent-fixture        # M4: real proofs vs the committed zkey -> co
 npm run build-consent              # ⚠ DEV/throwaway setup — OVERWRITES the committed M3 zkey/VK with a forgeable key; avoid
 ```
 
+> **`gen-consent-fixture` takes two env overrides (M-3), both defaulting to the original values** so a
+> bare run still targets the committed fixture:
+> `CONSENT_FIXTURE_RELAYER` (default `0x1111…1111`) and `CONSENT_FIXTURE_OUT` (default
+> `contracts/test/consent-fixture.json`). They exist because **`relayer` is bound into BOTH the EdDSA
+> message `M` and the nullifier**, so a proof can only ever be submitted by the address it names - the
+> committed fixture's `0x1111…1111` is fine for Foundry (it `prank`s) but unsubmittable by any key we
+> hold, making it useless for the Rust relayer E2E. Hence the second committed fixture
+> `contracts/test/consent-fixture-anvil.json`, the same witness rebound to anvil account 0. Changing a
+> public INPUT does **not** move the VK - same ceremony key, same verifier contract. `CONSENT_FIXTURE_OUT`
+> is what keeps a rebound variant from ever overwriting the fixture the Foundry suite pins.
+>
+> Both fixtures are **semantically, not byte-wise, reproducible**: Groth16 proving draws fresh
+> randomness per run, so re-running the generator reproduces every public value (`pub`, `R`, `nullifier`,
+> `recordType`, `deadline`, …) but emits different `a`/`b`/`c`. A diff in the proof elements is expected,
+> not artifact drift - do not regenerate a committed fixture merely to "check" it.
+
 Since M3, `build/consent.r1cs`, `build/consent_final.zkey`, `build/consent_verification_key.json` and
 `build/consent_js/consent.wasm` are **committed**, so `npm run test-consent` runs the full suite against
 the **real production key** (33/33 green: round-trip verify + R-parity + negatives + D5). It still
@@ -157,10 +174,15 @@ to the mutable Level-A SBT and is **deprecated / do not use for Level-B** (it wa
 device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) - has landed
 too, and **M-2 has since added the issuer end of that handoff**: vet-api's
 `POST /profiles/issue/custodial-bind` accepts a device-built `R` and mints owner-hidden via
-`issue(R)` + `mintCustodial`. That route is **additive and off by default** (it needs `SBT_CONSENT_ADDR`
-+ `PROFILE_ISSUER_ADDR`, else 503) and **no shipped device posts to it yet**, so live issuance still
-mints to the owner's wallet and the cutover is still **M7**. Details: AGENTS.md "M5 as-built" +
-"M5 app-side" + "Level-B custodial issuance bridge (M-2)"; `roax.json` `_m5_custodial_issuance`.
+`issue(R)` + `mintCustodial`. **M-3 then added the verification end**: `POST /verify/consent/levelb`
+carries a proof built against *this* circuit to `VerificationRegistryConsent` via the 4-arg
+`recordVerificationZK(a,b,c,pub[7])`, reading `recordType`/`deadline` out of `pub[5]`/`pub[6]` rather
+than inventing them. Both routes are **additive and off by default** (issuance needs `SBT_CONSENT_ADDR`
++ `PROFILE_ISSUER_ADDR`, verification needs `VERIFICATION_REGISTRY_CONSENT_ADDR` - else 503; the two
+are independent) and **no shipped device posts to either yet**, so live issuance still mints to the
+owner's wallet, live verification is still Level-A, and the cutover is still **M7**. Details:
+AGENTS.md "M5 as-built" + "M5 app-side" + "Level-B custodial issuance bridge (M-2)" + "Level-B unified
+submission path (M-3)"; `roax.json` `_m5_custodial_issuance`.
 
 `contracts/test/ConsentRegistry.t.sol` proves a REAL proof from the committed production zkey verifies
 through it, using the committed
