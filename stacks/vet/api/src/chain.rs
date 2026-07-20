@@ -1640,7 +1640,9 @@ mod tests {
         ];
         let c = ["0".to_string(), "0".to_string()];
         let pubs: [String; 7] = std::array::from_fn(|_| "0".to_string());
-        let level_a = selector(&record_verification_zk_calldata(&a, &b, &c, &pubs, "0x00", 0));
+        let level_a = selector(&record_verification_zk_calldata(
+            &a, &b, &c, &pubs, "0x00", 0,
+        ));
         let level_b = selector(&record_verification_zk_consent_calldata(&a, &b, &c, &pubs));
         assert_ne!(level_a, level_b, "Level-A and Level-B selectors collided");
         // And the Level-B call carries strictly less calldata: no recordType/deadline words, because

@@ -1006,7 +1006,12 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
     for (i, s) in pubs.iter().enumerate() {
         match pub_signal_u256(s) {
             Some(u) => pub_u[i] = u,
-            None => return err(StatusCode::BAD_REQUEST, &format!("pubSignals[{i}]: unparseable")),
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("pubSignals[{i}]: unparseable"),
+                )
+            }
         }
         // Contract gate: `require(pub[i] < SNARK_SCALAR_FIELD, "!field")`.
         if pub_u[i] >= r {

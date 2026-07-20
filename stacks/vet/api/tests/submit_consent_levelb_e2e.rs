@@ -187,8 +187,9 @@ struct Fixture {
 
 fn load_fixture() -> Fixture {
     let path = format!("{CONTRACTS_DIR}/test/consent-fixture-anvil.json");
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {path}: {e} (regenerate — see submit_consent_onchain.rs)"));
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("read {path}: {e} (regenerate — see submit_consent_onchain.rs)")
+    });
     let j: Value = serde_json::from_str(&raw).expect("fixture JSON");
     let s = |v: &Value| v.as_str().expect("fixture string").to_string();
     let pv = j["pub"].as_array().expect("pub: !array");
@@ -355,7 +356,10 @@ fn state_for(rpc: &str, st: &Stack) -> AppState {
 }
 
 fn hr(title: &str) {
-    println!("\n─── {title} {}", "─".repeat(64usize.saturating_sub(title.len())));
+    println!(
+        "\n─── {title} {}",
+        "─".repeat(64usize.saturating_sub(title.len()))
+    );
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -375,7 +379,10 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
 
     hr("1. deploy the Level-B stack + issue the tag (M-2)");
     let stack = deploy_and_issue(&rpc, &f);
-    println!("  VerificationRegistryConsent : {}", stack.verification_consent);
+    println!(
+        "  VerificationRegistryConsent : {}",
+        stack.verification_consent
+    );
     println!("  DogTagSBTConsent            : {}", stack.sbt);
     println!("  DogTagIssuer clone          : {}", stack.clone);
     println!("  custodian (D1, NOT the owner): {CUSTODIAN}");
@@ -437,7 +444,10 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "custody unlock: {b}");
-    println!("  POST /admin/unlock -> {}", serde_json::to_string(&b).unwrap());
+    println!(
+        "  POST /admin/unlock -> {}",
+        serde_json::to_string(&b).unwrap()
+    );
     let relayer = b["accounts"][0]["address"]
         .as_str()
         .expect("unlocked relayer")
@@ -474,7 +484,10 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     .await;
     assert_eq!(s, StatusCode::OK, "level-b submit: {ack}");
     println!("  {s}");
-    println!("  response : {}", serde_json::to_string_pretty(&ack).unwrap());
+    println!(
+        "  response : {}",
+        serde_json::to_string_pretty(&ack).unwrap()
+    );
     assert_eq!(ack["status"], "recording", "the ack is not terminal");
     let session_id = ack["sessionId"].as_str().expect("sessionId").to_string();
 
@@ -521,12 +534,7 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     );
 
     hr("6. the on-chain Verified log — OWNER-BLIND");
-    let receipt_logs = run(Command::new("cast").args([
-        "receipt",
-        tx_hash,
-        "--rpc-url",
-        &rpc,
-    ]));
+    let receipt_logs = run(Command::new("cast").args(["receipt", tx_hash, "--rpc-url", &rpc]));
     let status_line = receipt_logs
         .lines()
         .find(|l| l.starts_with("status"))
@@ -559,7 +567,11 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
         .skip_while(|l| !l.trim_start().starts_with("topics"))
         .filter_map(|l| l.trim().strip_prefix("0x").map(|h| format!("0x{h}")))
         .collect();
-    assert_eq!(topics.len(), 3, "expected topic0 + 2 indexed args:\n{decoded}");
+    assert_eq!(
+        topics.len(),
+        3,
+        "expected topic0 + 2 indexed args:\n{decoded}"
+    );
     let data = field("data");
     let word = |i: usize| format!("0x{}", &data.trim_start_matches("0x")[i * 64..(i + 1) * 64]);
     println!("  Level-B {LEVEL_B_SIG}");
