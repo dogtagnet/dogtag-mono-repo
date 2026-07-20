@@ -219,9 +219,11 @@ like every other field here - never transmit the old<->new link.
   be durable while the bytes it points at are not.
   The current store is then *parked* as `dogtag-owner-secrets.json.enc.bak` rather than deleted, the
   staging file is renamed into place, and only then is the backup dropped.
-  The `.bak` is the recoverable copy: any failure restores it, and the staging file is merely left in
-  place rather than deleted (nothing reads it back, but no failure path should delete a file it has
-  not already replaced).
+  The `.bak` is the recoverable copy: any failure restores it, and no failure path may delete it,
+  since it is a copy of a store that write did not create.
+  The staging file is the opposite case and is dropped on every path - that write created it, it
+  replaced nothing, and nothing ever reads it back, so keeping it would only accumulate whole
+  encrypted copies of the store in a directory nothing sweeps.
   A crash inside the window where only the backup exists is repaired by `load()`, which promotes the
   `.bak` before it will report an absent store - reporting "no records" there would let `upsert`
   rebuild an empty list over the only surviving copy.

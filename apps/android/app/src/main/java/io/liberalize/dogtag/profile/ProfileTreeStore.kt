@@ -240,8 +240,11 @@ class ProfileTreeStore(private val context: Context) {
      * bytes it points at are not); park the current store as [backupFile] rather than deleting it;
      * rename staging into place; and only then drop the backup. [backupFile] is the recoverable copy:
      * any failure restores it, and a crash inside the window where only it exists is repaired by
-     * [load]. The staging file is merely left in place rather than deleted on the failure path -
-     * nothing reads it back, but no failure path should delete a file it has not already replaced.
+     * [load]. No failure path may delete it - it is a copy of a store this call did not create, so
+     * dropping it could cost the only surviving one. The staging file is the opposite case and is
+     * dropped on every path: this call created it, it replaced nothing, and nothing ever reads it
+     * back, so leaving it behind would only accumulate whole encrypted copies of the store in a
+     * directory nothing sweeps.
      */
     private fun write(records: List<OwnerSecretRecord>) {
         val dir = context.noBackupFilesDir
@@ -268,10 +271,10 @@ class ProfileTreeStore(private val context: Context) {
         } finally {
             if (committed) {
                 bak.delete()
-                if (staging.exists()) staging.delete()
             } else if (parked && !dest.exists()) {
                 bak.renameTo(dest)
             }
+            if (staging.exists()) staging.delete()
         }
     }
 

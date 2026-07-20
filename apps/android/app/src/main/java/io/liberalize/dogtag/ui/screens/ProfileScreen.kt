@@ -79,9 +79,12 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
     // (materialising the master secret as an unzeroable String) for a flag nobody asked for. So it
     // starts `null` = undetermined and is only resolved from an already-authenticated path.
     //
-    // `null` renders the confirm action, exactly as `false` does. The invariant that matters is that
-    // whenever the gate would refuse, the remedy is reachable - and a cheap "some fingerprint exists"
-    // prefs read cannot stand in for the real check: a restored-prefs / new-Keystore-seed mismatch is
+    // `null` counts as UNCONFIRMED everywhere a decision is made, and renders the confirm action just
+    // as `false` does: the invariant that matters is that whenever the gate would refuse, the remedy
+    // is reachable. It gets its own wording, though, because undetermined is not the same claim as
+    // unconfirmed - most users landing here HAVE confirmed, and telling them issuance is blocked would
+    // state as fact something this screen has not checked. A cheap "some fingerprint exists" prefs
+    // read cannot stand in for the real check either: a restored-prefs / new-Keystore-seed mismatch is
     // precisely what the fingerprint exists to catch, and treating it as confirmed would hide the
     // action while the gate refused forever.
     var seedBackupConfirmed by remember { mutableStateOf<Boolean?>(null) }
@@ -243,12 +246,23 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
                         )
                     } else {
                         Text(
-                            "Dog tags cannot be issued to this wallet until you confirm your 24-word " +
-                                "recovery phrase is written down and stored offline. Confirm only if " +
-                                "you already have that copy — the words are not shown again here, and " +
-                                "this app cannot recover them for you. Without it, a lost or reset " +
-                                "phone permanently destroys every dog tag on this wallet: the tag's " +
-                                "root is written once on-chain and can never be moved.",
+                            if (seedBackupConfirmed == false) {
+                                "Dog tags cannot be issued to this wallet until you confirm your " +
+                                    "24-word recovery phrase is written down and stored offline. " +
+                                    "Confirm only if you already have that copy — the words are not " +
+                                    "shown again here, and this app cannot recover them for you. " +
+                                    "Without it, a lost or reset phone permanently destroys every dog " +
+                                    "tag on this wallet: the tag's root is written once on-chain and " +
+                                    "can never be moved."
+                            } else {
+                                "Unlock this wallet above to see whether your phrase backup is " +
+                                    "already on record, or just confirm here — as long as your " +
+                                    "24 words are already written down and stored offline. " +
+                                    "Confirming again when you already have is harmless. The words " +
+                                    "are not shown again here, and this app cannot recover them for " +
+                                    "you: without that copy, a lost or reset phone permanently " +
+                                    "destroys every dog tag on this wallet."
+                            },
                             fontSize = 11.sp, color = c.muted,
                         )
                         Spacer(Modifier.size(6.dp))
