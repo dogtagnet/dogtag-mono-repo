@@ -240,14 +240,32 @@ A verify session's `mode` (`store::VerifySession`) is `"normal" | "zk" | "levelb
 `if mode == "normal" { .. } else { <Level-A ZK> }` dispatch into the Level-A branch, so a typo like
 `"level-b"` silently produced a Level-A session.
 
-- `POST /verify/consent/submit` + `/v1/verify/consent` — Level-A. **Refuses a `levelb` session.**
+- `POST /verify/consent/submit` + `/v1/verify/consent` — Level-A. **Refuses a `levelb` session.** The
+  refusal reads the session's **STORED** `mode`, deliberately NOT the request body's `mode` override:
+  the override legitimately picks normal vs zk WITHIN a Level-A session, but testing it would let a
+  caller holding a `levelb` session's export token pass `"mode":"zk"` and reach the Level-A ZK branch
+  anyway. `mode_override` must never be able to change WHICH LEVEL is served.
 - `POST /verify/consent/levelb` — Level-B, operator-gated, entered cold (mints its own owner-blind
   audit row). `POST /v1/verify/consent/levelb` is the phone twin: same
   `require_operator_or_export_token` gate as the Level-A alias, same PEEK (`consume=false`) so a
   failed verification does not burn the owner's one-time token. **Refuses a non-`levelb` session**,
-  and binds the proof's `purpose`/`relayer` to the session — the export token is a capability to
-  spend the relayer's gas, so it must not fund an unrelated submission. A session-scoped call drives
-  the session's OWN row rather than minting a second one.
+  and binds the proof's `purpose`/`relayer`/`recordType` to the session — the export token is a
+  capability to spend the relayer's gas, so it must not fund an unrelated submission. A session-scoped
+  call drives the session's OWN row rather than minting a second one.
+  - **`recordType` is bound with the REDUCED keccak (`purpose_key`), not Level-A's raw `rt_key`.**
+    `pub[5]` is a circuit output and so always `< r`, while a raw keccak may EXCEED r — comparing
+    against `rt_key` would be a guard that can never fire, the same trap as the art9 constant. It is
+    bound at all because `recordType` is prover-asserted rather than consent-signed, so nothing else
+    pins it: unbound, the phone could prove a record type the operator's session never named, and the
+    audit row would record the requested one instead of the proved one.
+  - **The phone twin never consumes the token** (Level-A does). It is peeked and stays live until its
+    600s TTL; replay is blocked instead by the **session status guard** — the row is persisted as
+    `"recording"` before the broadcast is spawned, so a second submit against a settled session is
+    refused. Sound only because a session OUTLIVES its token (sessions are never deleted; the store
+    has no delete/GC path). Hence a named session that does not resolve **fails closed** rather than
+    falling through to the cold path — `MongoStore::get_session` maps driver errors to `None`, so
+    without that a DB blip would silently strip this route of every session-scoped guard, replay
+    protection included.
 
 Both refusals exist because the two routes read the SAME export token; without them a session's
 token would be accepted by both, and an owner-hidden proof read with Level-A indices is exactly E-1.

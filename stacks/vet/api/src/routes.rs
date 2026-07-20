@@ -1366,14 +1366,26 @@ async fn verify_consent_levelb_submit(
 ///
 ///   - Same dual gate (operator session OR one-time export token), same extractor.
 ///   - Same PEEK semantics: `consume=false`, so a FAILED verification does not burn the owner's
-///     one-time token and they can retry with the same QR. The token is consumed only when the
-///     on-chain record SUCCEEDS, in the detached broadcast task — and because Level-B's broadcast is
-///     likewise detached, that is the same place Level-A consumes it.
+///     one-time token and they can retry with the same QR.
 ///   - Same optional `sessionId`: the phone authenticates with a token that already maps to a
 ///     session, so it need not echo one; the operator portal still may.
 ///
+/// # Replay protection is the SESSION STATUS, not token consumption
+///
+/// Unlike Level-A, this path never consumes the token: it is peeked and stays valid until its 600s
+/// TTL even after a SUCCESSFUL submission. Replay is blocked instead by the session status guard —
+/// [`crate::verify::consent_submit_levelb`] persists the row as `"recording"` BEFORE spawning the
+/// broadcast, so a second submit against that now-settled session is refused. That substitution is
+/// only sound because a session OUTLIVES its token: sessions are never deleted (the store layer has
+/// no delete or GC path) while tokens expire at 600s.
+///
+/// It follows that the session MUST resolve whenever the caller authenticated with a token — if it
+/// does not, this route has no replay protection at all. So an unresolvable session fails CLOSED
+/// here rather than falling through to the cold path.
+///
 /// On top of that, `consent_submit_levelb` REFUSES a session whose `mode` is not `"levelb"` and binds
-/// the proof's `purpose`/`relayer` to the session — the token must not fund an unrelated submission.
+/// the proof's `purpose`/`relayer`/`recordType` to the session — the token must not fund an unrelated
+/// submission.
 async fn verify_consent_levelb_submit_v1(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -1390,18 +1402,43 @@ async fn verify_consent_levelb_submit_v1(
             None => String::new(),
         },
     };
-    if let Err(e) =
-        require_operator_or_export_token(&st, &headers, &session_id, body_token.as_deref(), false)
-            .await
+    let authed_by_export_token = match require_operator_or_export_token(
+        &st,
+        &headers,
+        &session_id,
+        body_token.as_deref(),
+        false,
+    )
+    .await
     {
-        return e;
-    }
+        Ok(v) => v,
+        Err(e) => return e,
+    };
     // An operator bearer satisfies the gate without naming a session; that is the cold path, and it
-    // mints its own row exactly as the operator-gated route does. Only a token-resolved session binds.
+    // mints its own row exactly as the operator-gated route does. Only a resolved session binds.
+    //
+    // A named session that does not load FAILS CLOSED. Falling through to `None` would silently
+    // demote the request to the cold path — skipping the mode refusal, the purpose/relayer/recordType
+    // binding AND the status replay guard — and `MongoStore::get_session` maps driver errors to
+    // `None` (`.ok().flatten()`), so a transient DB blip would otherwise disable every session-scoped
+    // guard on this route for that request, including its only replay protection.
     let session = if session_id.is_empty() {
         None
     } else {
-        st.store.get_session(&session_id).await
+        match st.store.get_session(&session_id).await {
+            Some(s) => Some(s),
+            // Token-authed: the gate already matched this token to this session id, so the row not
+            // loading is a BACKEND fault (a store read that failed), not a bad request.
+            None if authed_by_export_token => {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    "session could not be read; retry with the same token",
+                )
+            }
+            // Operator-authed with an explicit sessionId that does not exist: the operator named a
+            // session, so honour that rather than quietly minting an unrelated cold row.
+            None => return err(StatusCode::NOT_FOUND, "session not found"),
+        }
     };
     crate::verify::consent_submit_levelb(&st, &body, session).await
 }

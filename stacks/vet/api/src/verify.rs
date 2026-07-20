@@ -397,18 +397,24 @@ pub async fn consent_submit(
         Some(_) => return err(StatusCode::CONFLICT, "session not pending"),
         None => return err(StatusCode::NOT_FOUND, "session not found"),
     };
-    let mode = mode_override.unwrap_or_else(|| s.mode.clone());
     // A Level-B session must never be served by the Level-A path. Without this it would fall through
     // the `if mode == "normal" { .. } else { <Level-A ZK> }` dispatch below into the LEVEL-A branch,
     // which reads `pub[SUBJECT]`/`pub[KEY_HASH]`, drives `ConsentKeyRegistry` and encodes the 4-arg
     // Level-A selector — i.e. it would silently interpret an owner-hidden proof with Level-A indices.
     // `consent_submit_levelb` refuses the mirror case, so neither route can serve the other's mode.
-    if mode == "levelb" {
+    //
+    // Gated on the session's STORED mode, NEVER on `mode_override`: the override is the caller's
+    // request body, so testing it would let a phone holding a valid export token for a `levelb`
+    // session send `"mode":"zk"` and walk straight into the branch this refusal exists to close.
+    // `mode_override` keeps its legitimate job — choosing normal vs zk WITHIN a Level-A session —
+    // but it must never be able to change WHICH LEVEL is served.
+    if s.mode == "levelb" {
         return err(
             StatusCode::BAD_REQUEST,
             "level-b session: submit to /v1/verify/consent/levelb",
         );
     }
+    let mode = mode_override.unwrap_or_else(|| s.mode.clone());
 
     // relayer binding + deadline.
     let consent_relayer = consent
@@ -987,10 +993,13 @@ fn pub_signal_u256(s: &str) -> Option<alloy::primitives::U256> {
 /// TIGHTENINGS — the export token is a capability to spend the relayer's gas, so it must not fund a
 /// submission unrelated to the session it was minted for:
 ///
-///   - The proof is BOUND to the session: `pub[PURPOSE]` must equal `purpose_key(s.purpose)` and
-///     `pub[RELAYER]` must name the session's relayer. This mirrors the equivalent Level-A checks.
-///     Level-A also binds `dogTagId`/`credentialRoot`/`subject` against the consent body; Level-B has
-///     no consent body and no `subject`, so purpose and relayer are the two axes that exist.
+///   - The proof is BOUND to the session on all THREE axes: `pub[PURPOSE]` must equal
+///     `purpose_key(s.purpose)`, `pub[RELAYER]` must name the session's relayer, and
+///     `pub[RECORD_TYPE]` must equal `purpose_key(s.record_type)`. This mirrors the equivalent
+///     Level-A checks. Level-A also binds `dogTagId`/`credentialRoot`/`subject` against the consent
+///     body; Level-B has no consent body and no `subject`, so those three are the axes that exist.
+///     recordType matters most of the three: it is prover-asserted rather than consent-signed, so it
+///     is the one signal nothing else pins.
 ///   - The session's OWN row is driven to a terminal state instead of minting a second one. Minting
 ///     would double-count the verification in the operator's trail and hand the phone a `sessionId`
 ///     different from the one its QR named. The row keeps its human-readable `purpose`/`recordType`
@@ -1113,6 +1122,25 @@ pub async fn consent_submit_levelb(
                 "pubSignals.relayer != session relayer",
             );
         }
+        // recordType is PROVER-ASSERTED, not consent-signed, so nothing upstream pins it: without
+        // this the phone could prove a record type the operator's session never named, and the
+        // relayer would pay gas for it while the audit row below claimed the requested one. A
+        // session is OPERATOR-INITIATED — it names what is being verified, and the phone must prove
+        // exactly that. recordType is already public and not owner-identifying, so binding it costs
+        // no owner-hiding.
+        //
+        // REDUCED keccak (`purpose_key`), NOT the raw `rt_key` Level-A uses. Both sides must be the
+        // same representation: `pub[5]` is a circuit output and therefore always `< r`, while
+        // `rt_key`'s raw keccak may EXCEED r — comparing against it would be a guard that can never
+        // fire, the identical trap as the art9 constant below. Level-A's `rt_key` is right there
+        // because its `consent.recordType` is a raw keccak WORD, not a field-reduced signal.
+        let expected_record_type = purpose_key(&s.record_type);
+        if !pub_signal_eq(&pubs[PB::RECORD_TYPE], &expected_record_type) {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "pubSignals.recordType != purpose_key(session.recordType)",
+            );
+        }
     }
 
     // Contract gate: `require(block.timestamp <= pub[P_DEADLINE], "expired")`.
@@ -1186,7 +1214,8 @@ pub async fn consent_submit_levelb(
     // Session-scoped (phone): drive the operator's EXISTING row rather than minting a second one, so
     // the trail holds one row per verification and the phone polls the sessionId its QR named. The
     // row keeps its human-readable `purpose`/`recordType` labels — they are strictly more useful than
-    // the bytes32 words, and the binding check above already proved they reduce to `pub[1]`.
+    // the bytes32 words, and the binding checks above already proved they reduce to `pub[1]`/`pub[5]`
+    // respectively, so the label the trail records IS what was proved on-chain.
     // Cold (operator): mint, exactly as M-3 did — there are only words to store.
     let audit = match session {
         Some(mut s) => {

@@ -100,21 +100,32 @@ fn proof_body(pubs: &[String; 7], export_token: Option<&str>) -> Value {
 }
 
 async fn boot(chain: Arc<MemChain>) -> (axum::Router, String, String) {
-    let app = vet_api::router(state_with(
+    let (app, op, relayer, _st) = boot_with_state(chain).await;
+    (app, op, relayer)
+}
+
+/// `boot`, but keeping the `AppState` so a test can reach the STORE directly. Needed to construct
+/// states the HTTP surface alone cannot produce — notably an export token mapped to a session row
+/// that does not exist, which is what a `MongoStore` read failure looks like to the handler.
+async fn boot_with_state(
+    chain: Arc<MemChain>,
+) -> (axum::Router, String, String, vet_api::app::AppState) {
+    let st = state_with(
         chain.clone() as Arc<dyn ChainClient>,
         "memchain".to_string(),
         REGISTRY.to_string(),
         ISSUER.to_string(),
         "vet.example".to_string(),
         1,
-    ));
+    );
+    let app = vet_api::router(st.clone());
     let (_admin, op, relayer) = boot_custody(&app).await;
     chain.whitelist(
         REGISTRY,
         &verify_key_word(&purpose_field(PURPOSE)),
         &relayer,
     );
-    (app, op, relayer)
+    (app, op, relayer, st)
 }
 
 /// Start a session in `mode` and return `(sessionId, exportToken)`. The token is carried in the QR
@@ -366,6 +377,59 @@ async fn levelb_session_is_refused_on_the_levela_route() {
     );
 }
 
+/// The refusal above must read the session's STORED mode, never the request body's `mode` override.
+/// A caller holding a `levelb` session's credentials can otherwise pass `"mode":"zk"` and land in
+/// the Level-A ZK branch anyway — which reads `pub[SUBJECT]`/`pub[KEY_HASH]` and encodes the Level-A
+/// selector, i.e. the exact E-1 misinterpretation the refusal exists to close.
+///
+/// The sibling test omits `mode` entirely, which is precisely why this gap survived it. `mode` keeps
+/// its legitimate job (normal vs zk WITHIN a Level-A session); it just must not pick the LEVEL.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn levelb_session_is_refused_on_the_levela_route_even_with_a_mode_override() {
+    let chain = Arc::new(MemChain::new());
+    let (app, op, relayer) = boot(chain).await;
+    let (sid, _token) = start_session(&app, &op, "levelb").await;
+
+    for override_mode in ["zk", "normal"] {
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/verify/consent/submit",
+            Some(&op),
+            Some(json!({
+                "sessionId": sid,
+                "mode": override_mode,
+                "consent": {
+                    "dogTagId": "42",
+                    "recordType": "0x00",
+                    "purpose": "0x00",
+                    "credentialRoot": "0x11",
+                    "challenge": "0x00",
+                    "relayer": relayer,
+                    "subject": "0x00000000000000000000000000000000000000cc",
+                    "nonce": "1",
+                    "deadline": (now_secs() + 300)
+                },
+                "sig": "0x00",
+            })),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::BAD_REQUEST,
+            "mode override {override_mode:?} must not reach the Level-A branch: {b}"
+        );
+        assert!(
+            b["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("/v1/verify/consent/levelb"),
+            "the refusal must be the LEVEL-B routing error, not an incidental \
+             downstream failure inside the Level-A branch: {b}"
+        );
+    }
+}
+
 // ------------------------------------------------------------------------------------------------
 // The session binding — the export token is a GAS-SPEND capability, scoped to its session
 // ------------------------------------------------------------------------------------------------
@@ -393,6 +457,138 @@ async fn proof_purpose_must_match_the_session() {
     assert!(
         b["error"].as_str().unwrap_or_default().contains("purpose"),
         "{b}"
+    );
+}
+
+/// A proof asserting a record type the session never named is refused — the third binding axis.
+///
+/// `recordType` is PROVER-asserted, not consent-signed, so unlike purpose it is pinned by nothing
+/// upstream: the on-chain whitelist key derives from `purpose`, so the chain would happily record a
+/// verification of some other record type. Two costs, both real: the relayer pays gas for a proof
+/// the operator did not request, and the audit row — which keeps the SESSION's human-readable label
+/// — would then name a record type that was never proved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proof_record_type_must_match_the_session() {
+    let chain = Arc::new(MemChain::new());
+    let (app, op, relayer) = boot(chain).await;
+    // The session is started for VACCINATION (see `start_session`).
+    let (_sid, token) = start_session(&app, &op, "levelb").await;
+
+    let mut pubs = pubs_for(&relayer, PURPOSE);
+    pubs[PB::RECORD_TYPE] = purpose_field("EU_HEALTH_CERT");
+
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/verify/consent/levelb",
+        None,
+        Some(proof_body(&pubs, Some(&token))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+    assert!(
+        b["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("recordType"),
+        "{b}"
+    );
+}
+
+/// The binding must compare the REDUCED keccak, so the matching case has to actually PASS — a guard
+/// built on the raw `rt_key` word would reject every record type whose keccak exceeds r, and this
+/// test would catch that where the mismatch test above would not (it would "pass" vacuously).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn matching_record_type_passes_the_binding() {
+    let chain = Arc::new(MemChain::new());
+    let (app, op, relayer) = boot(chain).await;
+    let (sid, token) = start_session(&app, &op, "levelb").await;
+
+    let (s, ack) = call(
+        &app,
+        "POST",
+        "/v1/verify/consent/levelb",
+        None,
+        Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(&token))),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "a proof whose recordType matches the session must not be refused: {ack}"
+    );
+    let row = settle(&app, &op, &sid).await;
+    assert_eq!(row["status"], "recorded", "{row}");
+}
+
+/// The phone route FAILS CLOSED when a token-authed session cannot be read.
+///
+/// Falling through to `session = None` would silently demote the request to the COLD path, skipping
+/// the mode refusal, all three binding axes AND the status replay guard — and the cold path is the
+/// one with no replay protection at all, since this route never consumes the token. That is not
+/// hypothetical: `MongoStore::get_session` maps driver errors to `None` (`.ok().flatten()`), so a
+/// transient DB blip is indistinguishable here from "no such session".
+///
+/// The orphan token is minted through the store directly because the HTTP surface cannot produce
+/// this state — which is exactly why it went unnoticed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn token_authed_submit_fails_closed_when_the_session_cannot_be_read() {
+    let chain = Arc::new(MemChain::new());
+    let (app, _op, relayer, st) = boot_with_state(chain).await;
+
+    let token = "orphan-export-token";
+    st.store
+        .put_export_token(token, "session-that-does-not-exist", now_secs() + 600)
+        .await;
+
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/verify/consent/levelb",
+        None,
+        Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(token))),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_GATEWAY,
+        "an unreadable session must fail closed, never fall through to the cold mint: {b}"
+    );
+}
+
+/// The operator half of the same rule: naming a sessionId that does not exist is refused rather than
+/// quietly minting an unrelated cold row. Cold entry stays available — it is simply the caller
+/// OMITTING `sessionId` (the operator-gated `/verify/consent/levelb` route), not naming a bad one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operator_submit_naming_an_unknown_session_is_refused() {
+    let chain = Arc::new(MemChain::new());
+    let (app, op, relayer) = boot(chain).await;
+
+    let mut body = proof_body(&pubs_for(&relayer, PURPOSE), None);
+    body["sessionId"] = json!("no-such-session");
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/v1/verify/consent/levelb",
+        Some(&op),
+        Some(body),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{b}");
+
+    // The cold path is still reachable — by omitting sessionId entirely.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/consent/levelb",
+        Some(&op),
+        Some(proof_body(&pubs_for(&relayer, PURPOSE), None)),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the cold operator path must be intact: {b}"
     );
 }
 
