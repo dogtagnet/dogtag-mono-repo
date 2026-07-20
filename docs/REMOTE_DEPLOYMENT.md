@@ -170,6 +170,8 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `CONSENT_KEY_REGISTRY_ADDR` | vet, groomer | gasless `bindConsentKeyFor` (`0xA74DDe4a9b…`) | (roax.json, pre-filled) | current, **not** legacy |
 | `SBT_ADDR` | admin | DogTagSBT | (roax.json, pre-filled) | per chain |
 | `PROFILE_DOCUMENT_STORE` | admin | SBT mint target | `=SBT_ADDR` | usually `=SBT_ADDR` |
+| `SBT_CONSENT_ADDR` | vet, groomer | **Level-B** `DogTagSBTConsent` - the owner-blind `mintCustodial` target for `POST /profiles/issue/custodial-bind`. Distinct from `SBT_ADDR` (Level-A `DogTagSBT`), NOT an overload: both run side by side through the migration. The vet signer must hold `ISSUER_ROLE` on it | unset (Level-B not wired) | the deployed `DogTagSBTConsent` (`0x96Cba458…` on ROAX); leave unset to keep Level-B off |
+| `PROFILE_ISSUER_ADDR` | vet, groomer | **Level-B** `DogTagIssuer` clone that profile roots are anchored into via `issue(R)`, so `rootIssuer[R]` resolves and the tag is revocable. **NOT `PROFILE_DOCUMENT_STORE`** - that defaults to the SBT because under Level-A the SBT doubles as the DOG_PROFILE document store and `issue` is never called on it, so pointing this at the SBT **reverts**. The vet signer must be whitelisted for the clone's recordType | unset (Level-B not wired) | a real **factory-deployed** clone, never the SBT |
 | `FACTORY_ADDR` | admin | DogTagIssuerFactory — `createIssuer`/`predictIssuer` target + the Ownable owner whose key gates deploys | (roax.json, pre-filled) | per chain |
 | `VACCINATION_ISSUER_ADDR` | vet, groomer | per-recordType clone | `0x0…0` (set to the real clone for an issuer) | `0x0…0` for pure verifiers |
 | `ADMIN_SIGNER_INDEX` | admin | HD signer index | `0` | `0` |
@@ -190,6 +192,14 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `PROTOCOL_VERSION` | **prover only** | which version-keyed artifact set the real prover loads | unset (the current Level-A set, `dogtag-levela/1`) | leave **unset** - one version exists today; an unknown value is fail-closed at boot (FATAL + exit) |
 | `DOGTAG_MANIFEST_SIGNING_KEY` | vet | signed-manifest fallback (M7 §5.1): a 32-byte ed25519 seed (64 hex). When set, serves `GET /protocol/manifest?version=<v>`, the dogtag-signed discovery manifest an app verifies OFFLINE (a cache/fallback for the on-chain `ProtocolRegistry`; on conflict on-chain wins) | unset (route → 503) | optional; leave unset to disable. If enabled it is a **secret** (the ed25519 seed whose paired public key apps pin); NEVER commit a real value |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALENDAR_ID` | vet, groomer | Phase-7 calendar OAuth | unset / `primary` | optional |
+
+> **`SBT_CONSENT_ADDR` and `PROFILE_ISSUER_ADDR` are required together** - both are needed for
+> `POST /profiles/issue/custodial-bind` (Level-B custodial issuance).
+> If either is unset or malformed, that one route fails closed with **503** *before* it consumes the
+> one-time bind token, so a half-wired stack never burns an operator's QR code.
+> Everything else in the vet stack, including all Level-A issuance, is unaffected.
+> Worth knowing when diagnosing: a 503 on only that route means exactly this pair, and the addresses
+> are shape-checked, so a typo is refused rather than silently coerced to `0x0…0`.
 
 > **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`,
 > `CONSENT_KEY_REGISTRY_ADDR`, `BUSINESS_TYPE`, `CENTRAL_BASE_URL`, or `DEPLOYMENT_DOMAIN` — it is the

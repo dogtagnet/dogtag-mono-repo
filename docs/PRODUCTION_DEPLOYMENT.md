@@ -103,6 +103,21 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 #                                       #   the claims advertise, or validating apps fail closed with RegistryMismatch — impl §3.10d)
 #   CONSENT_KEY_REGISTRY_ADDR=...       # vet, groomer  (CURRENT CKR — meta-tx bindConsentKeyFor is the live path)
 #   VACCINATION_ISSUER_ADDR=...         # vet, groomer  (per-recordType clone; 0x0…0 for pure verifiers)
+#
+# Level-B custodial issuance (POST /profiles/issue/custodial-bind) - OPTIONAL, required as a PAIR.
+# Leave BOTH unset unless you are wiring Level-B; the route then fails closed with 503 and the rest
+# of the stack, including all Level-A issuance, runs normally.
+#   SBT_CONSENT_ADDR=...                # vet, groomer  (Level-B DogTagSBTConsent - the owner-blind
+#                                       #   mintCustodial target. SEPARATE from SBT_ADDR, which stays
+#                                       #   the Level-A DogTagSBT; both run side by side through the
+#                                       #   migration. The vet signer must hold ISSUER_ROLE on it)
+#   PROFILE_ISSUER_ADDR=...             # vet, groomer  (a real factory-deployed DogTagIssuer clone that
+#                                       #   Level-B roots are anchored into via issue(R), so rootIssuer[R]
+#                                       #   resolves. NOT PROFILE_DOCUMENT_STORE - that defaults to the SBT
+#                                       #   because under Level-A the SBT doubles as the DOG_PROFILE
+#                                       #   document store and issue is never called on it, so pointing
+#                                       #   this at the SBT REVERTS. Signer must be whitelisted for the
+#                                       #   clone's recordType)
 # Leave VITE_DEMO_MODE UNSET (remote-up.sh rejects it).
 ```
 
