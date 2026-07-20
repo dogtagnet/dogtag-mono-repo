@@ -39,6 +39,10 @@ sol! {
     #[sol(rpc)]
     contract IDogTagSBT {
         function mint(address to, uint256 id, bytes32 root) external;
+        // Level-B (M-2): owner-BLIND issuance. Note the absence of a recipient - the tag is minted to
+        // the contract's immutable `custodian`, so the owner's wallet is not even expressible in the
+        // calldata. Both selectors live side by side on purpose: the Level-A `mint` path stays.
+        function mintCustodial(uint256 id, bytes32 root) external;
         function ownerOf(uint256 id) external view returns (address);
         function profileRoot(uint256 id) external view returns (bytes32);
     }
@@ -237,6 +241,42 @@ pub trait ChainClient: Send + Sync {
         let calldata = mint_calldata(to, dog_tag_id, root);
         self.sign_and_send(account_index, sbt_addr, &calldata).await
     }
+    /// `DogTagIssuer.issue(R)` on `issuer_addr` FROM the signer at `account_index` (which must be
+    /// whitelisted for the clone's recordType). Anchors `R` so `rootIssuer[R]` resolves to this clone.
+    ///
+    /// This is HALF of a Level-B issuance. On its own it does not mint anything; paired with
+    /// [`ChainClient::mint_custodial`] it satisfies the second of the two independent on-chain
+    /// conditions a Level-B verify checks (`VerificationRegistryConsent.sol:188-192`).
+    async fn issue(
+        &self,
+        account_index: u32,
+        issuer_addr: &str,
+        root: &str,
+    ) -> Result<SentTx, ChainError> {
+        let calldata = issue_calldata(root);
+        self.sign_and_send(account_index, issuer_addr, &calldata)
+            .await
+    }
+    /// `DogTagSBTConsent.mintCustodial(dogTagId, R)` FROM the signer at `account_index` (must hold
+    /// ISSUER_ROLE on the Level-B SBT). Seals `R` as `profileRoot[dogTagId]`, write-once.
+    ///
+    /// **Call [`ChainClient::issue`] FIRST.** The mint is irreversible and the id is single-use
+    /// forever (`profileRoot[id] != 0` rejects any re-mint, even after a burn), so minting before the
+    /// root is anchored risks a permanently bricked tag that reverts `unknown root` on every verify -
+    /// the failure mode pinned by `contracts/test/CustodialIssuance.t.sol:367`. The contract states
+    /// the ordering itself (`DogTagSBTConsent.sol:139-143`): "Issue the root, then mint."
+    ///
+    /// There is deliberately no recipient parameter - see the `sol!` note on `mintCustodial`.
+    async fn mint_custodial(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        dog_tag_id: &str,
+        root: &str,
+    ) -> Result<SentTx, ChainError> {
+        let calldata = mint_custodial_calldata(dog_tag_id, root);
+        self.sign_and_send(account_index, sbt_addr, &calldata).await
+    }
     /// DogTagSBT.ownerOf(dogTagId) (lowercase 0x.. address; Err(NotFound) if unminted).
     async fn owner_of(&self, _sbt_addr: &str, _dog_tag_id: &str) -> Result<String, ChainError> {
         Err(ChainError::NotFound)
@@ -299,6 +339,21 @@ pub fn mint_calldata(to: &str, dog_tag_id: &str, root: &str) -> String {
     use alloy::sol_types::SolCall;
     let call = IDogTagSBT::mintCall {
         to: parse_addr(to),
+        id: parse_u256_dec_or_hex(dog_tag_id),
+        root: parse_b256(root),
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+/// ABI-encode `DogTagSBTConsent.mintCustodial(dogTagId, root)` - the Level-B owner-blind mint (M-2).
+///
+/// `dog_tag_id` MUST already be the CANONICAL field `field_of_value(Integer(handle))`, never the raw
+/// operator handle: the same field is the KDF binding input the device folded into `R`, so a raw
+/// handle here yields `R != profileRoot(id)` and every verify fails closed
+/// (`crates/dogtag-standard-rs/src/profile_tree.rs` fixture warning). Callers go through
+/// [`crate::routes::onchain_dog_tag_id`].
+pub fn mint_custodial_calldata(dog_tag_id: &str, root: &str) -> String {
+    use alloy::sol_types::SolCall;
+    let call = IDogTagSBT::mintCustodialCall {
         id: parse_u256_dec_or_hex(dog_tag_id),
         root: parse_b256(root),
     };
@@ -789,6 +844,36 @@ impl ChainClient for MemChain {
         let tx_hash = format!("0x{:064x}", g.nonce);
         Ok(SentTx { tx_hash })
     }
+    async fn mint_custodial(
+        &self,
+        account_index: u32,
+        sbt_addr: &str,
+        dog_tag_id: &str,
+        root: &str,
+    ) -> Result<SentTx, ChainError> {
+        // Emulate DogTagSBTConsent.mintCustodial(id, root). Two differences from `mint` above, both
+        // load-bearing for the Level-B tests:
+        //   * NO ownerOf write. The tag goes to the contract's custodian, which is not a per-tag value
+        //     and is deliberately not modelled here - nothing in the Level-B path may read an owner.
+        //   * Write-once is keyed on profileRoot, not ownerOf, mirroring `profileRoot[id] != 0` at
+        //     `DogTagSBTConsent.sol:150`. That mapping survives a burn, so an id is retired FOREVER.
+        let mut g = self.inner.lock().unwrap();
+        g.signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no issuer signer for index".into()))?;
+        if parse_b256(root) == B256::ZERO {
+            return Err(ChainError::Other("BadRoot: zero root".into()));
+        }
+        let key = (sbt_addr.to_lowercase(), normalize_id(dog_tag_id));
+        if g.sbt_roots.contains_key(&key) {
+            return Err(ChainError::Other("BadRoot: dogTagId already minted".into()));
+        }
+        g.sbt_roots.insert(key, root.to_lowercase());
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        Ok(SentTx { tx_hash })
+    }
     async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
         let g = self.inner.lock().unwrap();
         g.sbt_owners
@@ -1253,6 +1338,10 @@ mod tests {
             )),
             "1e458bee"
         );
+        // mintCustodial(uint256,bytes32) — the Level-B owner-blind mint. A DIFFERENT selector from
+        // mint(address,uint256,bytes32) above: the two paths can never be confused on the wire, and
+        // this one has no address word to carry an owner.
+        assert_eq!(selector(&mint_custodial_calldata("1", "0x00")), "de49152b");
         // bindConsentKey(bytes32,bytes) / bindConsentKeyFor(address,bytes32,bytes)
         assert_eq!(
             selector(&bind_consent_key_calldata("0x00", "0x")),

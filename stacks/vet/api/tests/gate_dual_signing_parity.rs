@@ -166,6 +166,8 @@ fn cfg_for_build() -> vet_api::app::Config {
         issuer_domain: "vet.example".to_string(),
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
+        profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),

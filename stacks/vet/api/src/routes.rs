@@ -1771,6 +1771,10 @@ async fn profile_issue_session_start(
             wallet_address: None,
             root: None,
             tx_hash: None,
+            // Unset at start: the session does not yet know WHICH path will redeem it. The device
+            // chooses by picking an endpoint - `/profiles/issue/bind` (Level-A) or
+            // `/profiles/issue/custodial-bind` (Level-B) - and that handler stamps the version.
+            protocol_version: None,
         })
         .await;
 
@@ -1898,6 +1902,9 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
     // lets the portal/device observe the bound wallet/root before the on-chain receipt arrives.
     session.wallet_address = Some(wallet.clone());
     session.root = Some(root.clone());
+    // Stamp the axis this tag is bound to. This path is and stays Level-A (M-2 adds the Level-B path
+    // beside it; it does not flip this one).
+    session.protocol_version = Some(dogtag_standard::wrap::LEVEL_A_VERSION.to_string());
     st.store.update_profile_session(session.clone()).await;
 
     // Mint the SBT to the device wallet ASYNC: ROAX blocks are ~12s apart so the on-chain receipt takes
@@ -1976,6 +1983,195 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
     }))
 }
 
+#[derive(Deserialize)]
+struct ProfileCustodialBindReq {
+    token: String,
+    /// The DEVICE-computed profile root `R` (0x + 64 hex). Opaque to the server.
+    root: String,
+}
+
+/// Shape-check a device-supplied `R`: `0x` + 64 hex, non-zero.
+///
+/// This is the ONLY validation the server can do on `R`. It cannot recompute it - `R` folds the
+/// owner's wallet-seed-derived secret, which the server has (and must have) no access to. The
+/// non-zero check mirrors `mintCustodial`'s own `root == 0 -> BadRoot` so an obviously-bad request
+/// fails at the edge instead of burning gas.
+fn valid_root_hex(root: &str) -> bool {
+    root.len() == 66
+        && root.starts_with("0x")
+        && root[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        && root[2..].bytes().any(|b| b != b'0')
+}
+
+/// POST /profiles/issue/custodial-bind — the **Level-B custodial issuance bridge** (M-2 / unifyplan
+/// §P-1, closing datamodel D-1). Device, token-authenticated. The Level-A owner-revealing
+/// `/profiles/issue/bind` above is untouched and still live; this is an ADDITIONAL path.
+///
+/// # What inverts versus Level-A
+///
+/// Level-A builds `R` on the SERVER (`wrap_vc` over a VC with the owner identity baked in) and mints
+/// it to the device wallet. Level-B cannot: `R` is a profile tree folded on the DEVICE from the
+/// owner's wallet seed (`apps/ios/DogTag/ProfileTreeStore.swift`), and the server has no seed. So the
+/// device posts `R` and the server only ANCHORS it. Nothing here builds a VC.
+///
+/// # Why there is no wallet and no signature
+///
+/// `mintCustodial(id, root)` takes no recipient - the tag goes to the contract's immutable custodian,
+/// so an owner wallet is not expressible in the calldata. Level-A's EIP-191 signature exists purely to
+/// prove control of the wallet being bound; with no wallet to bind it has nothing to attest, and
+/// accepting one anyway would hand the server exactly the owner link this milestone removes. The
+/// authorization is therefore the **one-time bind token** alone: it is minted only by the
+/// operator-gated `/profiles/issue/session/start`, is consumed atomically, and expires in 180s.
+/// Whoever redeems it defines ownership through the owner-secret sealed inside `R` - the same trust
+/// boundary Level-A actually had, minus the wallet disclosure.
+///
+/// # The two on-chain conditions (datamodel §3.5)
+///
+/// A Level-B verify checks `R` TWICE, against independent state
+/// (`VerificationRegistryConsent.sol:163` and `:188-192`):
+///   1. `R == profileRoot[dogTagId]`  — sealed by `mintCustodial`
+///   2. `rootIssuer[R] != 0 && isValid(R)` — anchored by `issue(R)` on a `DogTagIssuer` clone
+///
+/// Doing only the first yields a tag that reverts `unknown root` on EVERY verify
+/// (`contracts/test/CustodialIssuance.t.sol:367`), so this route does both, in that order, in one
+/// flow. **`issue(R)` goes first** because the mint is the irreversible half: `profileRoot[id]` is
+/// write-once and survives a burn, so a mint that lands before a failing `issue` retires the
+/// `dogTagId` forever. The contract prescribes this ordering itself
+/// (`DogTagSBTConsent.sol:139-143`: "Issue the root, then mint.").
+///
+/// Responds immediately with `status: "minting"` and runs the chain writes in the background - ROAX
+/// blocks are ~12s apart, well past the phone's read timeout - exactly as the Level-A path does. The
+/// operator portal polls `GET /profiles/issue/session/{id}`.
+async fn profile_issue_custodial_bind(
+    State(st): State<AppState>,
+    Json(body): Json<ProfileCustodialBindReq>,
+) -> Resp {
+    let root = body.root.trim().to_lowercase();
+    if !valid_root_hex(&root) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "root must be a non-zero 0x.. 32-byte profile root",
+        );
+    }
+    if !st.custody.is_unlocked() {
+        return err(StatusCode::CONFLICT, "not unlocked");
+    }
+    // Fail closed on an unconfigured deployment BEFORE consuming the one-time token: a half-wired
+    // Level-B stack must not burn the operator's QR (and, worse, must never mint without a place to
+    // anchor the root).
+    let sbt_addr = st.cfg.sbt_consent_addr.clone();
+    let issuer_addr = st.cfg.profile_issuer_addr.clone();
+    if is_zero_addr(&sbt_addr) || is_zero_addr(&issuer_addr) {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "level-B custodial issuance not configured (SBT_CONSENT_ADDR / PROFILE_ISSUER_ADDR)",
+        );
+    }
+    // consume the one-time token atomically (second call -> 410).
+    let session_id = match st.store.take_bind_token(&body.token).await {
+        Some(id) => id,
+        None => {
+            return err(
+                StatusCode::GONE,
+                "bind token missing, expired or already used",
+            )
+        }
+    };
+    let mut session = match st.store.get_profile_session(&session_id).await {
+        Some(s) if s.status == "pending" => s,
+        Some(_) => return err(StatusCode::CONFLICT, "session already bound"),
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+
+    // CANONICAL-FIELD DISCIPLINE (§P-1.3). The id sealed on-chain is `field_of_value(Integer(handle))`,
+    // never the raw operator handle: the device folded that SAME field into `R` as a KDF binding
+    // input, so minting under the raw handle produces `R != profileRoot(id)` and every verify fails
+    // closed. The fixtures take the raw-handle shortcut and the SDK warns against copying it
+    // (`profile_tree.rs` `device_root_fixture_witness`); the correct pattern is `consent_assemble.rs`,
+    // which computes the field ONCE and reuses it for the circuit input, the tree KDF and the mint id.
+    // Computed here so a bad handle fails synchronously, before the spawn.
+    let onchain_id = match onchain_dog_tag_id(&session.dog_tag_id) {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("dogTagId field-hash: {e}"),
+            )
+        }
+    };
+
+    // Persist what is known before the chain writes. `wallet_address` stays None BY DESIGN - there is
+    // no owner to record, and writing one would defeat the whole path.
+    session.root = Some(root.clone());
+    session.protocol_version = Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string());
+    st.store.update_profile_session(session.clone()).await;
+
+    let chain = st.chain.clone();
+    let store = st.store.clone();
+    let signer_index = st.cfg.vet_signer_index;
+    let bg_root = root.clone();
+    let bg_id = onchain_id.clone();
+    let mut bg_session = session.clone();
+    tokio::spawn(async move {
+        // (1) ANCHOR FIRST — issue(R) into the DogTagIssuer clone, so `rootIssuer[R]` resolves. If
+        // this fails nothing has been minted and the dogTagId is still free for a retry.
+        if let Err(e) = chain.issue(signer_index, &issuer_addr, &bg_root).await {
+            bg_session.status = "error".to_string();
+            bg_session.tx_hash = Some(format!("issue(R) error: {e}"));
+            store.update_profile_session(bg_session).await;
+            return;
+        }
+        // (2) THEN SEAL — mintCustodial(id, R). Irreversible past this point.
+        let sent = match chain
+            .mint_custodial(signer_index, &sbt_addr, &bg_id, &bg_root)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                bg_session.status = "error".to_string();
+                bg_session.tx_hash = Some(format!("mintCustodial error: {e}"));
+                store.update_profile_session(bg_session).await;
+                return;
+            }
+        };
+        // Read BOTH conditions back on-chain before calling the issuance good — a receipt is not
+        // proof. Deliberately NO `owner_of` comparison: the Level-A path checks `ownerOf == wallet`,
+        // but here the owner is the neutral custodian and comparing it to anything would reintroduce
+        // the linkage this path exists to remove.
+        let root_ok = matches!(
+            chain.profile_root_of(&sbt_addr, &bg_id).await,
+            Ok(r) if r.eq_ignore_ascii_case(&bg_root)
+        );
+        // `isValid(R)` on OUR clone is strictly stronger than `rootIssuer[R] != 0`: `issue` calls
+        // `rootIndex.registerRoot(R)`, which is globally write-once ("root taken"), so a successful
+        // issue on this clone proves `rootIssuer[R] == this clone`. isValid then adds not-revoked.
+        let anchored_ok = matches!(chain.is_valid(&issuer_addr, &bg_root).await, Ok(true));
+        if root_ok && anchored_ok {
+            bg_session.status = "bound".to_string();
+            bg_session.tx_hash = Some(sent.tx_hash);
+        } else {
+            bg_session.status = "error".to_string();
+            bg_session.tx_hash = Some(format!(
+                "on-chain verify failed (root_ok={root_ok} anchored_ok={anchored_ok})"
+            ));
+        }
+        store.update_profile_session(bg_session).await;
+    });
+
+    ok(json!({
+        "dogTagId": session.dog_tag_id,
+        "onchainDogTagId": onchain_id,
+        "root": root,
+        "protocolVersion": dogtag_standard::wrap::LEVEL_B_VERSION,
+        "status": "minting",
+    }))
+}
+
+/// True for an unset/zero contract address.
+fn is_zero_addr(a: &str) -> bool {
+    a.trim_start_matches("0x").bytes().all(|b| b == b'0')
+}
+
 /// GET /profiles/issue/session/{id} — operator-gated status poll so the portal can show whether the
 /// device has bound + surface the txHash/root/wallet. Returns the stored session row's status.
 async fn profile_issue_session_status(
@@ -1996,6 +2192,10 @@ async fn profile_issue_session_status(
         "walletAddress": s.wallet_address,
         "root": s.root,
         "txHash": s.tx_hash,
+        // Which path redeemed this session — Level-A (owner-revealing) or Level-B (owner-hidden).
+        // `walletAddress` is null for the latter BY DESIGN, so the portal needs this to tell an
+        // owner-hidden issuance apart from a Level-A one that failed before binding a wallet.
+        "protocolVersion": s.protocol_version,
     }))
 }
 
@@ -2520,6 +2720,11 @@ pub fn public_router(state: AppState) -> Router {
             get(profile_issue_session_status),
         )
         .route("/profiles/issue/bind", post(profile_issue_bind))
+        // Level-B (M-2) owner-hidden issuance, ALONGSIDE the Level-A route above - not replacing it.
+        .route(
+            "/profiles/issue/custodial-bind",
+            post(profile_issue_custodial_bind),
+        )
         // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
         .route("/p/:token", get(profile_bind_resolve))
         // discovery signed-manifest fallback (M7 §5.1 1B) — the dogtag-signed version manifest an app

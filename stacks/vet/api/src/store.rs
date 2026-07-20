@@ -202,6 +202,15 @@ pub struct ProfileIssueSession {
     /// set on bind: the mint txHash.
     #[serde(default)]
     pub tx_hash: Option<String>,
+    /// set on bind: which protocol the tag was issued under — [`dogtag_standard::wrap::LEVEL_A_VERSION`]
+    /// for the owner-revealing `mint(to,id,root)` path, [`dogtag_standard::wrap::LEVEL_B_VERSION`] for
+    /// the owner-hidden `mintCustodial` + `issue(R)` path.
+    ///
+    /// This is the on-chain `ContractSet` axis of the two-axis registry (R-5), never the artifact axis:
+    /// it names the deployed trio a tag is bound to, which a zkey rotation must not move. `None` on
+    /// rows written before M-2 (`#[serde(default)]`), which are Level-A by construction.
+    #[serde(default)]
+    pub protocol_version: Option<String>,
 }
 
 /// Persisted per-issuer settings (impl §3.8).

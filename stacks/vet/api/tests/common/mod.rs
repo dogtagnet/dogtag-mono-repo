@@ -26,6 +26,11 @@ pub const CENTRAL_HMAC_SECRET: &str = "central-shared-secret";
 pub const BUSINESS_ID: &str = "biz-test";
 /// The DogTagSBT mint target used by tests (DOG_PROFILE issuance).
 pub const SBT_ADDR: &str = "0x00000000000000000000000000000000000000cc";
+/// Level-B `DogTagSBTConsent` — a DISTINCT address from `SBT_ADDR`, so a test that mints custodially
+/// cannot accidentally pass by hitting the Level-A SBT`s state.
+pub const SBT_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000dd";
+/// The `DogTagIssuer` clone Level-B profile roots are anchored into via `issue(R)`.
+pub const PROFILE_ISSUER_ADDR: &str = "0x00000000000000000000000000000000000000ee";
 
 /// Build an AppState with the given chain client + issuer/registry addresses.
 pub fn state_with(
@@ -49,6 +54,8 @@ pub fn state_with(
         issuer_domain,
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
+        profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
@@ -126,6 +133,8 @@ pub fn state_with_verify_keys(
         issuer_domain,
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
+        profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
@@ -173,6 +182,8 @@ pub fn state_for_calendar(
         issuer_domain: "vet.example".to_string(),
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
+        profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),
@@ -215,6 +226,8 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         issuer_domain: "vet.example".to_string(),
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
+        profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
         operator_password: OPERATOR_PW.to_string(),
         admin_password: ADMIN_PW.to_string(),

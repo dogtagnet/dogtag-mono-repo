@@ -61,6 +61,18 @@ async fn main() {
             let sbt = env("SBT_ADDR", "0x0000000000000000000000000000000000000000");
             env("PROFILE_DOCUMENT_STORE", &sbt)
         },
+        // Level-B (M-2) custodial issuance. Both default to the zero address and BOTH must be set for
+        // POST /profiles/issue/custodial-bind to accept a request — an unconfigured deployment fails
+        // closed rather than half-issuing. Note PROFILE_ISSUER_ADDR must be a real DogTagIssuer clone,
+        // NOT the SBT (see the Config doc): `issue(R)` on the SBT would revert.
+        sbt_consent_addr: env(
+            "SBT_CONSENT_ADDR",
+            "0x0000000000000000000000000000000000000000",
+        ),
+        profile_issuer_addr: env(
+            "PROFILE_ISSUER_ADDR",
+            "0x0000000000000000000000000000000000000000",
+        ),
         vet_signer_index: 0,
         operator_password: env("OPERATOR_PASSWORD", "operator-dev-password"),
         admin_password: env("ADMIN_PASSWORD", "admin-dev-password"),

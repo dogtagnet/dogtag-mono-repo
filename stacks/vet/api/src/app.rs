@@ -35,6 +35,21 @@ pub struct Config {
     /// the documentStore the DOG_PROFILE VC anchors to (the DogTagSBT contract acts as the profile
     /// store; env `PROFILE_DOCUMENT_STORE`, conventionally == `sbt_addr`).
     pub profile_document_store: String,
+    /// `DogTagSBTConsent` address (env `SBT_CONSENT_ADDR`) — the Level-B, owner-blind mint target for
+    /// `mintCustodial(id, R)`. Deliberately a SEPARATE field from [`Config::sbt_addr`] rather than an
+    /// overload of it: the two registries run side by side through the migration (the same
+    /// dual-address pattern the indexer already uses for `DEFAULT_VREG`/`DEFAULT_VREG_CONSENT`), so
+    /// the Level-A path keeps minting while the Level-B path is wired. The vet signer must hold
+    /// ISSUER_ROLE here. Unset (zero address) → the custodial route fails closed as unconfigured.
+    pub sbt_consent_addr: String,
+    /// The `DogTagIssuer` CLONE that anchors Level-B profile roots (env `PROFILE_ISSUER_ADDR`) — the
+    /// `issue(R)` target that makes `rootIssuer[R]` resolve.
+    ///
+    /// This is NOT [`Config::profile_document_store`]. That field defaults to the SBT address because
+    /// under Level-A the SBT doubles as the DOG_PROFILE document store and `issue` is never called on
+    /// it; sending `issue(R)` there would revert. Level-B needs a real factory-deployed clone, and the
+    /// vet signer must be whitelisted for its recordType. Unset → the custodial route fails closed.
+    pub profile_issuer_addr: String,
     /// account index of the vet signer that mints the DOG_PROFILE SBT (holds ISSUER_ROLE). Index 0 is
     /// the unlocked custody signer used everywhere else in the vet stack.
     pub vet_signer_index: u32,
@@ -552,6 +567,8 @@ mod tests {
             issuer_domain: "vet.example".to_string(),
             sbt_addr: String::new(),
             profile_document_store: "0xprofilestore".to_string(),
+            sbt_consent_addr: "0xsbtconsent".to_string(),
+            profile_issuer_addr: "0xprofileissuer".to_string(),
             vet_signer_index: 0,
             operator_password: String::new(),
             admin_password: String::new(),

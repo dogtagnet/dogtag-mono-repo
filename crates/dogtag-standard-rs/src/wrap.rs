@@ -31,6 +31,21 @@ pub struct IssuerMeta {
 /// `protocol` block, distinct from the envelope schema `WrappedDoc.version` (`"dogtag/1.0"`).
 pub const LEVEL_A_VERSION: &str = "dogtag-levela/1";
 
+/// The Level-B protocol version string - the **on-chain `ContractSet` axis** of the two-axis
+/// `ProtocolRegistry` (R-5). Its keccak is the `contractSetId` that keys the trio + verifier +
+/// circuitId (`contracts/script/ProtocolVersions.sol:44`, `ProtocolRegistry.sol` §"ON-CHAIN axis").
+///
+/// This is the axis an *issuance* stamps, because minting binds a tag to deployed contracts - the
+/// SBT it is sealed into and the registry that will verify it. It is deliberately NOT the artifact
+/// axis (`dogtag-levelb-artifacts/1`, keyed by `artifactSetId` in a separate keyspace): a zkey
+/// rotation re-points `activeArtifactSetOf` and must NOT change what an already-minted tag claims.
+/// Resolve the two independently; never collapse them back into one version.
+///
+/// Adding this constant does **not** flip any Level-A producer. Level-A issuance keeps stamping
+/// [`LEVEL_A_VERSION`] (that cutover is a separate milestone); this is stamped only by the Level-B
+/// custodial issuance path, so an owner-hidden tag never claims to be a Level-A record.
+pub const LEVEL_B_VERSION: &str = "dogtag-levelb/1";
+
 /// M7 record-provenance block (§4.2): which protocol/contract a record was created on **and who
 /// issued it**, carried BESIDE `signature.merkleRoot` - NEVER inside `R` or the ZK proof.
 ///
