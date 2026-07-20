@@ -108,4 +108,56 @@ dependencies {
     // controlled, so its edge cases (duplicate query keys, malformed input) must be covered by a test
     // that exercises the REAL Uri parser rather than a hand-rolled stand-in. Still `./gradlew test`.
     testImplementation("org.robolectric:robolectric:4.12.2")
+
+    // The DESKTOP JNA jar, for JVM unit tests that call the Rust core over UniFFI
+    // (`ProfileTreeParityTest`). The `@aar` variant above ships `libjnidispatch.so` for Android ABIs
+    // only, so on a host JVM `Native.load` has no dispatcher to bind with; this jar carries the
+    // macOS/Linux `libjnidispatch` and is test-scope only, so the shipped APK is unchanged.
+    testImplementation("net.java.dev.jna:jna:5.14.0")
+}
+
+// ---- host-native Rust core, for the JVM parity test -------------------------------------------
+//
+// `apps/android/app/src/main/jniLibs/**/libdogtag_standard.so` is built by cargo-ndk for ANDROID
+// ABIs and is gitignored (docs/MOBILE_BUILD.md), so it can never be loaded by a test running on the
+// developer's own JVM. The cross-platform `R` parity test needs the REAL Rust implementation - a
+// stubbed one would assert Kotlin against Kotlin and prove nothing - so we build the same crate for
+// the HOST here and point JNA at it.
+//
+// Deliberately a hard dependency of `test`, not a soft skip or an `onlyIf`: this test is the only
+// thing standing between an Android wrapper bug and a tag whose `R` the circuit cannot prove, and a
+// self-skipping parity test reports green in exactly the situation it exists to catch. `cargo` is
+// already a documented prerequisite of the Android build. A COLD build is slow - `--features prover`
+// pulls the whole ark-groth16/ark-circom tree - which is exactly why the inputs/outputs below matter:
+// without them Gradle can never mark the task up to date and every `test` invocation re-shells to
+// cargo. Warm and unchanged, it is now a no-op.
+val workspaceRoot = rootDir.parentFile.parentFile
+val hostRustCoreDir = File(workspaceRoot, "target/debug")
+
+val buildHostRustCore by tasks.registering(Exec::class) {
+    group = "verification"
+    description = "Builds dogtag-standard-rs for the host so JVM unit tests can load it over JNA."
+    workingDir = workspaceRoot
+    inputs.dir(File(workspaceRoot, "crates/dogtag-standard-rs/src")).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(File(workspaceRoot, "crates/dogtag-standard-rs/build.rs"))
+    inputs.file(File(workspaceRoot, "crates/dogtag-standard-rs/Cargo.toml"))
+    inputs.file(File(workspaceRoot, "Cargo.lock"))
+    // The host artifact is `.dylib` on macOS and `.so` on Linux, so match on the stem rather than
+    // hardcoding either extension.
+    outputs.files(fileTree(hostRustCoreDir) { include("libdogtag_standard.*") })
+    // `--features prover` is REQUIRED, not an optimisation: the checked-in Kotlin bindings were
+    // generated from the prover-enabled crate, and UniFFI verifies EVERY exported function's
+    // checksum when the library is first loaded. A default-feature build omits `prove_consent`, so
+    // that load-time sweep dies with `UnsatisfiedLinkError: … checksum_func_prove_consent` before a
+    // single profile-tree call runs. Matches the iOS workflow's xcframework build.
+    commandLine("cargo", "build", "-p", "dogtag-standard-rs", "--features", "prover", "--lib")
+}
+
+tasks.withType<Test>().configureEach {
+    dependsOn(buildHostRustCore)
+    // Where `Native.load("dogtag_standard")` looks for lib{dogtag_standard}.{dylib,so}.
+    systemProperty("jna.library.path", hostRustCoreDir.absolutePath)
+    // Tests read shared cross-language fixtures from the repo. The unit-test working directory is
+    // the MODULE dir (`apps/android/app`), which is an AGP detail no test should encode as `../../..`.
+    systemProperty("dogtag.repoRoot", workspaceRoot.absolutePath)
 }

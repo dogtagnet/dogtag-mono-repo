@@ -31,7 +31,18 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
 - `cd apps/android && gradle test` - the JVM unit suites (`RoaxRpcSelectorTest`, `QrPayloadTest`,
-  `PublicSignalIndexTest`, `ZkeyAssetTest`). **Exception to this section's "runs offline" framing:**
+  `PublicSignalIndexTest`, `ZkeyAssetTest`, `ProfileTreeParityTest`, `OwnerSecretRecordsTest`,
+  `OwnerSecretCodecTest`, `OwnerSecretRecoveryJourneyTest`).
+  Needs `apps/android/local.properties` with `sdk.dir=…` (gitignored; the CI job writes it).
+  **`ProfileTreeParityTest` calls the REAL Rust core from the host JVM.**
+  That needs two things the rest of the module does not: the desktop `net.java.dev.jna:jna` jar, since the `@aar` variant ships `libjnidispatch` for Android ABIs only, and a HOST build of `dogtag-standard-rs`, since `jniLibs/`'s `.so` files are Android-ABI-only and gitignored and so can never load on a dev machine.
+  `app/build.gradle.kts` handles both: every `Test` task `dependsOn` a `cargo build … --lib` and gets `jna.library.path` + `dogtag.repoRoot` system properties.
+  Use `dogtag.repoRoot` to reach repo fixtures - the unit-test working directory is the MODULE dir `apps/android/app`, so tests must not hard-code `../..`.
+  That cargo build MUST pass `--features prover`: the checked-in Kotlin bindings were generated from the prover-enabled crate and UniFFI checksum-verifies EVERY exported function at library load, so a default-feature build dies with `UnsatisfiedLinkError: …checksum_func_prove_consent` before any test body runs.
+  The dependency is deliberately hard rather than a soft skip - a self-skipping parity test reports green in exactly the case it exists to catch.
+  Note `org.json` is Android's "not mocked" STUB on the unit-test classpath: pure-JVM tests must parse fixtures without it, and anything exercising the real codec needs Robolectric (`OwnerSecretCodecTest`, `OwnerSecretRecoveryJourneyTest`), which costs the network on a cold cache.
+  `OwnerSecretRecoveryJourneyTest` is the one suite that needs BOTH rungs at once - Robolectric for the real `org.json` codec and the host Rust core over JNA - because it joins them: it asserts the phrase plus the backup file rebuild the SAME `R` on a replacement device, and that the backup file ALONE does not.
+  **Exception to this section's "runs offline" framing:**
   `QrPayloadTest` uses Robolectric, which resolves its `android-all-instrumented` runtime jars from
   Maven on the FIRST run, so a cold Gradle cache needs network (warm cache is offline). The tradeoff
   was taken deliberately: `QrPayload.parse` is built on the real `android.net.Uri` and QR content is
@@ -1252,6 +1263,19 @@ one owner-privately until this landed: `crates/dogtag-standard-rs/src/profile_tr
 device-side per-tag tree builder, reached from the holder apps through the UniFFI core they already
 link. User/dev doc: **`docs/MOBILE_OWNER_SECRET.md`** (owns the local-file contract).
 
+**Android reached device-side parity in M-2b (`profile/ProfileTreeBuilder.kt` + `ProfileTreeStore.kt`).**
+Both holder apps are thin wrappers over the SAME compiled `buildProfileTreeHex`, so `R` is identical by construction, not by two ports agreeing - never re-implement the tree math in Swift or Kotlin.
+The single-owner-triple invariant - an `R` must hold exactly ONE `(owner.address, owner.consentKey, owner.secret)` triple, since `consent.circom` proves the reserved leaves by pinned keyPath and assumes each is unique - is enforced in `build_profile_tree`.
+Kotlin mirrors it only to FAIL FAST with a named error, and compares NFC strings where the SDK compares field elements, so it is a convenience mirror and not an equivalent guard; the Rust core stays the authority.
+`ProfileTreeParityTest` drift-guards the mirrored list against the Rust constants.
+
+**Trap - the device-root fixture's `dogTagId` is the RAW integer field.**
+`device_root_fixture_witness()` binds to `Fr::from(424242u64)`, *not* `dog_tag_id_field_hex("424242")`, which folds the ENCODED decimal and is a different value.
+The committed `contracts/test/device-profile-root.json` `R` corresponds to the raw-field id, so anything comparing against that fixture must pass the bare integer field.
+Reaching for the canonical helper because it "looks more correct" silently yields a root nothing ever built.
+Production paths (`buildAndPersist` on both platforms) DO use the canonical encoding, which is why the two entry points are split deliberately (`build` vs `buildForIdField`).
+Recovery must rebuild from the STORED canonical field rather than re-converting the decimal.
+
 **The owner-secret is seed-derived, not random (captain's requirement, 2026-07-15).** The spec's
 "a random secret" is satisfied by a KDF output - indistinguishable from random to anyone without the
 seed - while additionally being *recoverable*, which a random secret is not:
@@ -1473,13 +1497,25 @@ Level-A still serves all live issuance (`routes.rs:1957` still mints to the owne
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
-- **`ProfileTreeStore` has ZERO runtime coverage.** The `DogTagTests` target (see "iOS unit tests")
+- **The iOS `ProfileTreeStore` has ZERO runtime coverage.** The `DogTagTests` target (see "iOS unit tests")
   cannot reach it: that suite is deliberately FFI-free and `ProfileTreeStore` builds through the FFI,
   so it stays out of scope until the pure logic is extracted. Nothing calls it yet either - M-2 built
   the SERVER end of the bridge (`POST /profiles/issue/custodial-bind`), but the iOS call site that
   feeds it a built `R` is a deliberate follow-up - so the Codable round-trip, the
   atomic/`.completeFileProtection` write and `verifyRecoverable` have only been typechecked, never
   run. The first caller should exercise them.
+  The Android namesake is a SEPARATE coverage story - see the next bullet; do not read this one as
+  covering both.
+- **The Android `ProfileTreeStore`'s device-side half is uncovered too, though its pure logic is
+  not.** M-2b deliberately kept the parts worth pinning `Context`-free so `gradle test` could reach
+  them without an emulator: `OwnerSecretRecords` (codec + write-once upsert), `SeedBackup.fingerprint`
+  and the whole `ProfileTreeBuilder` are covered, and `OwnerSecretRecoveryJourneyTest` joins the codec
+  to the real Rust core over the full recover-on-a-new-phone path. What is NOT covered is everything
+  that needs a real device: the Keystore envelope and its `StrongBox → unlockedDeviceRequired → plain`
+  ladder, the `noBackupFilesDir` placement, and the `.bak`-parking write/`load()`-promote sequence.
+  Those need an instrumented test, not a JVM one. The ladder in particular degrades downward by
+  design and reports it only as a `Log.w` - discoverable in logcat, but invisible to the test suite -
+  so a regression that lands every device on the plain rung would not turn a single suite red.
 - **The `[u8; 20] -> Fr` owner-address packing is untested.** The parity test feeds an `Fr` straight
   to `hash_reserved_leaf`, bypassing `build_profile_tree`'s `field_from_scalar_bytes(&addr)`. It is
   the documented address-packing primitive and the device is the sole builder (no external encoder to

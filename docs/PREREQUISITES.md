@@ -44,7 +44,7 @@ verify them all at once. macOS uses [Homebrew](https://brew.sh); Linux examples 
 
 | Tool | macOS (Homebrew) | Linux (apt) | Needed by | Verify command |
 |---|---|---|---|---|
-| **Rust toolchain** (`cargo`, `rustc`) | `brew install rustup-init && rustup-init -y` (or `brew install rust`) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh -s -- -y` then `. "$HOME/.cargo/env"` | LOCAL; REMOTE/PROD *(only if you run a prover-service)*; MOBILE *(only to regenerate native libs)* | `cargo --version` → `cargo 1.8x` (repo needs **≥ 1.80**, see `Cargo.toml` `rust-version`) |
+| **Rust toolchain** (`cargo`, `rustc`) | `brew install rustup-init && rustup-init -y` (or `brew install rust`) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh -s -- -y` then `. "$HOME/.cargo/env"` | LOCAL; REMOTE/PROD *(only if you run a prover-service)*; MOBILE *(to regenerate the native libs, **and** to run `apps/android`'s JVM unit tests — every Gradle `Test` task hard-`dependsOn` a HOST `cargo build`, see the Android note below)* | `cargo --version` → `cargo 1.8x` (repo needs **≥ 1.80**, see `Cargo.toml` `rust-version`) |
 | **Node.js** | `brew install node` (need **≥ 22**) | `sudo apt-get install -y nodejs` (use [NodeSource](https://github.com/nodesource/distributions) for v22+; distro nodejs is usually too old) | LOCAL (vite portals); MOBILE *(only if rebuilding circuits)* | `node --version` → `v22.*` or newer (`package.json` engines `node >=22`) |
 | **pnpm** | `brew install pnpm` (or `corepack enable && corepack prepare pnpm@10.19.0 --activate`) | `corepack enable && corepack prepare pnpm@10.19.0 --activate` (corepack ships with Node ≥ 16.10) | LOCAL (workspace install + portals) | `pnpm --version` → `10.19.0` (root `package.json` `packageManager: pnpm@10.19.0`) |
 | **foundry** (`cast`, `forge`, `anvil`) | `curl -L https://foundry.paradigm.xyz \| bash` then restart shell and run `foundryup` | same — `curl -L https://foundry.paradigm.xyz \| bash` then `foundryup` | LOCAL (`cast balance`, chain prechecks); PROD (`forge`/`cast` for the timelock); contracts deploy | `cast --version` and `forge --version` both print a version line. `cast chain-id --rpc-url https://devrpc.roax.net` → `135` |
@@ -81,6 +81,16 @@ verify them all at once. macOS uses [Homebrew](https://brew.sh); Linux examples 
   machine already has them in the working tree, a rebuild isn't needed — but they are **not**
   "committed." Same for iOS: `DogTagFFI.xcframework` is gitignored and regenerated, but a normal app
   build does not regenerate it.
+- **A HOST `cargo` is needed to run `apps/android`'s JVM unit tests** — separate from `cargo-ndk`, and
+  separate from `assembleDebug`, which is unaffected. `app/build.gradle.kts` makes every Gradle `Test`
+  task `dependsOn` a `cargo build -p dogtag-standard-rs --features prover --lib` against the workspace
+  root, so `ProfileTreeParityTest` can call the REAL Rust core over JNA: the `jniLibs/` `.so` are
+  Android-ABI-only and can never load on a dev machine. The dependency is deliberately hard, not a
+  soft skip — a self-skipping parity test reports green in exactly the case it exists to catch — and
+  `--features prover` is mandatory, since UniFFI checksum-verifies every export at library load and a
+  default-feature build dies with `UnsatisfiedLinkError: …checksum_func_prove_consent`. `sdk.dir` in
+  `apps/android/local.properties` (§2.4) is required for `test` as well as for the build. Details:
+  AGENTS.md "Build & test".
 - **The cargo `prover` feature ≠ the docker `FEATURES=mongo` build-arg** — orthogonal. The prover
   service is `cargo build --release -p vet-api --features prover`; the persistent-store docker image
   is built `--build-arg FEATURES=mongo`. Do not confuse the two.
@@ -325,6 +335,9 @@ adb --version             # or ~/Library/Android/sdk/platform-tools/adb --versio
 # required for a fresh Android build (skip only if your working tree already has the .so):
 cargo ndk --version
 cmake --version
+# HOST cargo is separately required to run the JVM unit tests (`gradle test` hard-depends on a host
+# `cargo build --features prover`); not needed for assembleDebug:
+cargo --version
 # proving key+graph must exist before vendoring into the apps (§2.2):
 ls circuits/build/verification_final.zkey circuits/build/verification.graph
 ```
