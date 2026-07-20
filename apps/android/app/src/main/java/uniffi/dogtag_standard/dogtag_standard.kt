@@ -1023,7 +1023,7 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_dogtag_standard_checksum_func_consent_nullifier_hex() != 25451.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121.toShort()) {
+    if (lib.uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 25974.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 61221.toShort()) {
@@ -1642,8 +1642,9 @@ public object FfiConverterTypeProofFfi: FfiConverterRustBuffer<ProofFfi> {
 
 /**
  * The dogtag-owned TRUST tier (§5.2) for one version, RESOLVED by the caller from
- * `ProtocolRegistry.getVersion` (root of truth) or the P3 signed-manifest fallback (both mirror the
- * same on-chain `Version`). These are the AUTHORITATIVE values a platform's [`ConvenienceClaims`] are
+ * `ProtocolRegistry.getContractSet` + `getActiveArtifactSet` (root of truth) or the P3 signed-manifest
+ * fallback (both mirror the same two on-chain axes). These are the AUTHORITATIVE values a platform's
+ * [`ConvenienceClaims`] are
  * checked against. Constructed from plain fields so the app can build it from an `eth_call` result or a
  * parsed/reconciled manifest, and the server can map it from `dogtag_prover::manifest` types — keeping
  * this crate free of any prover/manifest dependency.
@@ -1654,13 +1655,28 @@ data class TrustedAnchor (
      */
     var `version`: kotlin.String, 
     /**
-     * keccak256(version) `0x`-hex — the on-chain map key; ties the claimed version STRING to the
-     * on-chain `versionId` so a caller cannot silently validate against the wrong record.
+     * keccak256(version) `0x`-hex — the on-chain `contractSetId`; ties the claimed version STRING to
+     * the on-chain key so a caller cannot silently validate against the wrong record.
      */
     var `versionId`: kotlin.String, 
     /**
+     * The ARTIFACT-AXIS identity the caller resolved for this version (e.g.
+     * `dogtag-levelb-artifacts/1`) — the artifact set `activeArtifactSetOf[versionId]` points at.
+     *
+     * It is a SECOND, independent axis (R-5): rotating the proving artifacts changes this and
+     * `min_app_version` while `version`/`version_id` and `verification_registry` stay put. Carrying it
+     * on the anchor is what lets a caller say WHICH artifact set it is about to fetch, rather than
+     * inferring it from the version.
+     */
+    var `artifactSet`: kotlin.String, 
+    /**
+     * keccak256(artifact_set) `0x`-hex — the on-chain `artifactSetId`. A DIFFERENT keyspace from
+     * `version_id`; [`validate`] checks their coherence independently.
+     */
+    var `artifactSetId`: kotlin.String, 
+    /**
      * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
-     * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+     * the on-chain `ContractSet` struct itself has no chain-id member — the registry IS on a chain.)
      */
     var `chainId`: kotlin.ULong, 
     /**
@@ -1677,12 +1693,30 @@ data class TrustedAnchor (
      */
     var `minAppVersion`: kotlin.String, 
     /**
-     * Whether the version is still active at the anchor. A deprecated (`active=false`) version FAILS
-     * CLOSED (the anti-downgrade defense, §8.4). The signed manifest does not carry this lifecycle bit,
-     * so a manifest-only (offline) resolution assumes `true` and the authoritative value is the on-chain
-     * `Version.active` when online — see `anchor_from_manifest` on the server side.
+     * The ON-CHAIN axis's lifecycle bit — `ContractSet.active`, as read from
+     * `ProtocolRegistry.getContractSet`. `deprecateContractSet` flips it false.
+     *
+     * It is an INDEPENDENT kill switch, and [`validate`] requires BOTH it and
+     * [`Self::artifact_set_active`] to be true. Populate the two SEPARATELY from the two on-chain
+     * records — never AND them into one field and never wire only one: R-5 splits the axes precisely so
+     * each can retire the other's counterpart without touching it, so collapsing them here would
+     * silently discard whichever lever you dropped. A false bit FAILS CLOSED (anti-downgrade, §8.4).
+     *
+     * The signed manifest carries no lifecycle bit, so a manifest-only (offline) resolution assumes
+     * `true` for both; the authoritative values are the two on-chain `active` members when online — see
+     * `anchor_from_manifest` / `anchor_from_reconciliation` on the server side.
      */
-    var `active`: kotlin.Boolean
+    var `contractSetActive`: kotlin.Boolean, 
+    /**
+     * The ARTIFACT axis's lifecycle bit — `ArtifactSet.active`, as read from
+     * `ProtocolRegistry.getActiveArtifactSet`. `deprecateArtifactSet` flips it false.
+     *
+     * The independent counterpart to [`Self::contract_set_active`]: BOTH must be true for [`validate`]
+     * to pass. This is the bit that lets dogtag retire a compromised proving-artifact set (a bad zkey)
+     * and stop every app WITHOUT moving a single trio address. See that field's note for why the two
+     * must be populated separately.
+     */
+    var `artifactSetActive`: kotlin.Boolean
 ) {
     
     companion object
@@ -1696,10 +1730,13 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
         return TrustedAnchor(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
         )
     }
@@ -1707,21 +1744,27 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
     override fun allocationSize(value: TrustedAnchor) = (
             FfiConverterString.allocationSize(value.`version`) +
             FfiConverterString.allocationSize(value.`versionId`) +
+            FfiConverterString.allocationSize(value.`artifactSet`) +
+            FfiConverterString.allocationSize(value.`artifactSetId`) +
             FfiConverterULong.allocationSize(value.`chainId`) +
             FfiConverterString.allocationSize(value.`verificationRegistry`) +
             FfiConverterString.allocationSize(value.`circuitId`) +
             FfiConverterString.allocationSize(value.`minAppVersion`) +
-            FfiConverterBoolean.allocationSize(value.`active`)
+            FfiConverterBoolean.allocationSize(value.`contractSetActive`) +
+            FfiConverterBoolean.allocationSize(value.`artifactSetActive`)
     )
 
     override fun write(value: TrustedAnchor, buf: ByteBuffer) {
             FfiConverterString.write(value.`version`, buf)
             FfiConverterString.write(value.`versionId`, buf)
+            FfiConverterString.write(value.`artifactSet`, buf)
+            FfiConverterString.write(value.`artifactSetId`, buf)
             FfiConverterULong.write(value.`chainId`, buf)
             FfiConverterString.write(value.`verificationRegistry`, buf)
             FfiConverterString.write(value.`circuitId`, buf)
             FfiConverterString.write(value.`minAppVersion`, buf)
-            FfiConverterBoolean.write(value.`active`, buf)
+            FfiConverterBoolean.write(value.`contractSetActive`, buf)
+            FfiConverterBoolean.write(value.`artifactSetActive`, buf)
     }
 }
 
@@ -1737,7 +1780,13 @@ data class ValidatedVersion (
     var `version`: kotlin.String, 
     var `circuitId`: kotlin.String, 
     var `chainId`: kotlin.ULong, 
-    var `verificationRegistry`: kotlin.String
+    var `verificationRegistry`: kotlin.String, 
+    /**
+     * The validated ARTIFACT-AXIS identity (R-5) — which proving-artifact set the caller may now
+     * fetch. Returned separately from `version` precisely because it moves separately: an artifact
+     * rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
+     */
+    var `artifactSet`: kotlin.String
 ) {
     
     companion object
@@ -1753,6 +1802,7 @@ public object FfiConverterTypeValidatedVersion: FfiConverterRustBuffer<Validated
             FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
         )
     }
 
@@ -1760,7 +1810,8 @@ public object FfiConverterTypeValidatedVersion: FfiConverterRustBuffer<Validated
             FfiConverterString.allocationSize(value.`version`) +
             FfiConverterString.allocationSize(value.`circuitId`) +
             FfiConverterULong.allocationSize(value.`chainId`) +
-            FfiConverterString.allocationSize(value.`verificationRegistry`)
+            FfiConverterString.allocationSize(value.`verificationRegistry`) +
+            FfiConverterString.allocationSize(value.`artifactSet`)
     )
 
     override fun write(value: ValidatedVersion, buf: ByteBuffer) {
@@ -1768,6 +1819,7 @@ public object FfiConverterTypeValidatedVersion: FfiConverterRustBuffer<Validated
             FfiConverterString.write(value.`circuitId`, buf)
             FfiConverterULong.write(value.`chainId`, buf)
             FfiConverterString.write(value.`verificationRegistry`, buf)
+            FfiConverterString.write(value.`artifactSet`, buf)
     }
 }
 
@@ -2011,9 +2063,19 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     
 
         /**
-         * Derive a deterministic BabyJubjub consent key from a hex seed (any length). The seed is wrapped
-         * in a distinct domain from the secp256k1 wallet path (§6) before BLAKE-512, so the two keys are
-         * independent. Returns the 32-byte private key + public point (Ax, Ay) + keyHash.
+         * Derive the **wallet-level** BabyJubjub consent key from a hex seed (any length) - one key per
+         * wallet, NOT per tag. The seed is wrapped in a distinct domain from the secp256k1 wallet path
+         * (§6) before BLAKE-512, so the two keys are independent. Returns the 32-byte private key +
+         * public point (Ax, Ay) + keyHash.
+         *
+         * # Callers: this is the Level-A key, not the profile-tree key
+         *
+         * Use this ONLY for the Level-A path (`verification.circom` + the per-wallet
+         * `ConsentKeyRegistry.keyOf` bind). The Level-B `owner.consentKey` leaf uses a **per-tag** key
+         * derived from `(seed, dogTagId)`; you get it from
+         * [`build_profile_tree_hex`]'s `consentPrvHex` (or implicitly via `prove_consent`, which derives
+         * it internally from the `dogTagId` it already receives). See
+         * [`crate::eddsa::derive_babyjub_consent_key_per_tag`].
          */
     @Throws(FfiException::class) fun `deriveBabyjubConsentKey`(`seedHex`: kotlin.String): BabyjubConsentKeyFfi {
             return FfiConverterTypeBabyjubConsentKeyFfi.lift(
