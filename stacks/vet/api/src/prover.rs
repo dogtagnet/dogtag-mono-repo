@@ -309,10 +309,24 @@ impl ConsentProver {
     /// per request: a missing/hash-mismatched artifact set, or a malformed input, errors THIS request.
     ///
     /// The device assembles the consent inputs locally (cheap field math that runs fine on 32-bit ARM)
-    /// and POSTs the assembled `circuit_input`; only the heavy Groth16 prove runs here. The wallet
-    /// SEED therefore never reaches this service — owner-unlinkability is preserved even for the
-    /// server-prove fallback (unlike Level-A, the consent witness cannot be assembled server-side
-    /// without the seed, so it is assembled on-device).
+    /// and POSTs the assembled `circuit_input`; only the heavy Groth16 prove runs here.
+    ///
+    /// TRUST BOUNDARY — state the threat model, because the answer differs per adversary:
+    /// - The wallet SEED never reaches this service. That is real and it is the limit of the claim:
+    ///   a compromised operator cannot derive the owner's other tags or forge future consents.
+    /// - Against a CHAIN OBSERVER or the RELAYER, owner-unlinkability holds: the public signals and
+    ///   the emitted event are owner-blind.
+    /// - Against THIS SERVICE'S OPERATOR it does NOT hold. The assembled `circuit_input` carries both
+    ///   `ownerSecret` and `ownerAddress` (`consent_assemble.rs:245-246`), so an operator that logs or
+    ///   retains request bodies can name the owner AND recompute the nullifier for every verification
+    ///   of any tag it proves for — i.e. link that tag's whole verification history to a wallet.
+    ///   `docs/MOBILE_OWNER_SECRET.md:125` marks `ownerSecret` "Never transmit"; this route is the one
+    ///   deliberate exception, kept as a fallback for devices that cannot prove on-device.
+    ///
+    /// On-device proving (the shipped, tested path — `consent_prove_parity.rs`) leaks none of this.
+    /// Callers should therefore treat this route as a capability downgrade to be used only when the
+    /// device genuinely cannot prove locally, and only against a prover the owner already trusts
+    /// (`routes.rs` marks the service `TRUSTED` by name).
     pub async fn prove(
         &self,
         circuit_input: serde_json::Value,
@@ -336,9 +350,10 @@ impl ConsentProver {
 mod tests {
     use super::*;
 
-    /// The stub echoes the four lean caller-supplied signals into pub_signals[0..4]
-    /// and R into pub_signals[6], zeroes the two circuit-output signals (nullifier,
-    /// keyHash) at [4]/[5], and returns an all-zero (a,b,c) proof.
+    /// LEVEL-A layout (`dogtag_standard::public_signals::level_a`): the stub echoes the four lean
+    /// caller-supplied signals into pub_signals[0..4] (dogTagId, purpose, relayer, subject) and R into
+    /// pub_signals[6], zeroes the two circuit-output signals (nullifier, keyHash) at [4]/[5], and
+    /// returns an all-zero (a,b,c) proof.
     #[tokio::test]
     async fn stub_prove_echoes_lean_signals_and_zeros_proof() {
         let input = ProveInput {

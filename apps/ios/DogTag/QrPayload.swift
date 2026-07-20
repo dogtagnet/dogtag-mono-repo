@@ -26,7 +26,13 @@ enum QrPayload {
         var origin = "\(scheme)://\(host)"
         if let port = comps.port { origin += ":\(port)" }
         let path = comps.path.hasSuffix("/") ? String(comps.path.dropLast()) : comps.path
-        let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        // QR content is FULLY attacker-controlled, so a duplicated query key (`?a=1&a=2`) must not be
+        // fatal. `Dictionary(uniqueKeysWithValues:)` documents distinct keys as a PRECONDITION and
+        // TRAPS when it is violated — and a Swift trap is uncatchable, so there is no iOS analogue of
+        // Android's `catch -> Unknown`. Keeping the FIRST occurrence also matches Android's
+        // `Uri.getQueryParameter`, so both platforms resolve a duplicated key identically.
+        let q = Dictionary((comps.queryItems ?? []).map { ($0.name, $0.value ?? "") },
+                           uniquingKeysWith: { first, _ in first })
         let segs = path.split(separator: "/").map(String.init)
 
         // SHORT one-time share token: `/r/<token>` (no query string). Preferred.

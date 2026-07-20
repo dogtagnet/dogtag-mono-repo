@@ -28,6 +28,7 @@ import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.ZkeyAsset
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
+import io.liberalize.dogtag.zk.PublicSignalIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -184,8 +185,9 @@ private fun runZkSelfTest(context: Context, onStatus: (String) -> Unit): ZkSelfT
         return ZkSelfTestResult(false, "public-signal mismatch at index $firstBad")
     }
     // 32-bit witness regression guard (wasm2c zeroed the last-computed output wires).
-    if (proof.pubSignals[4] == "0") return ZkSelfTestResult(false, "nullifier (pub[4]) is zero")
-    if (proof.pubSignals[5] == "0") return ZkSelfTestResult(false, "keyHash (pub[5]) is zero")
+    // LEVEL-A indices — the self-test proves with the bundled Level-A zkey.
+    if (proof.pubSignals[PublicSignalIndex.LevelA.NULLIFIER] == "0") return ZkSelfTestResult(false, "nullifier is zero")
+    if (proof.pubSignals[PublicSignalIndex.LevelA.KEY_HASH] == "0") return ZkSelfTestResult(false, "keyHash is zero")
 
     // 4. Consent-key bind: derive the keyHash and the EIP-712 bind digest (real native calls).
     onStatus("Deriving consent-key bind digest…")

@@ -145,8 +145,13 @@ private func runZkSelfTest(_ onStatus: @escaping (String) -> Void) -> ZkSelfTest
             return ZkSelfTestResult(pass: false, detail: "public-signal mismatch at index \(firstBad)")
         }
         // 32-bit witness regression guard (wasm2c zeroed the last-computed output wires).
-        if proof.pubSignals[4] == "0" { return ZkSelfTestResult(pass: false, detail: "nullifier (pub[4]) is zero") }
-        if proof.pubSignals[5] == "0" { return ZkSelfTestResult(pass: false, detail: "keyHash (pub[5]) is zero") }
+        // LEVEL-A indices — the self-test proves with the bundled Level-A zkey.
+        if proof.pubSignals[PublicSignalIndex.levelA.nullifier] == "0" {
+            return ZkSelfTestResult(pass: false, detail: "nullifier is zero")
+        }
+        if proof.pubSignals[PublicSignalIndex.levelA.keyHash] == "0" {
+            return ZkSelfTestResult(pass: false, detail: "keyHash is zero")
+        }
 
         // 4. Consent-key bind: derive the keyHash and the EIP-712 bind digest (real native calls).
         onStatus("Deriving consent-key bind digest…")

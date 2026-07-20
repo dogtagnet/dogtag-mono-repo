@@ -184,8 +184,18 @@ pub struct ConsentProveInputs {
 /// - `a` / `c` are G1 points `[x, y]`.
 /// - `b` is a G2 point with the snarkjs→Solidity coordinate swap already applied:
 ///   `b[0] = [bx_c1, bx_c0]`, `b[1] = [by_c1, by_c0]`.
-/// - `pub` is the public-signal vector in order
-///   `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]`.
+/// - `pub` is the public-signal vector. **Its ORDER depends on which circuit produced the proof, and
+///   this struct is reused for both**, so it cannot be stated here as a single ground truth:
+///   - Level-A (`verification.circom`): `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]`
+///   - Level-B (`consent.circom`):      `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`
+///
+///   The two agree on the first three signals and diverge from index 3 on, and the width is identical
+///   (7) either way — so a mix-up is invisible to the type system and produces a plausible-looking
+///   field element rather than an error. Read these through the named constants in
+///   `dogtag_standard::public_signals::{level_a, level_b}` rather than by literal index. (This crate
+///   cannot import them: it pins the ark 0.6 stack while `dogtag-standard-rs` pins 0.5, and the two
+///   coexist only because ark types never cross the boundary — see the note in `Cargo.toml`. Keep the
+///   two definitions in step by hand.)
 ///
 /// All values are base-10 decimal strings (`Groth16Verifier.verifyProof` takes
 /// `uint256`s; decimal is accepted).

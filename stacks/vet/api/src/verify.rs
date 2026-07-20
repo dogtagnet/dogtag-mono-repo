@@ -10,6 +10,10 @@ use dogtag_standard::verify::{
     Verdict, VerifyMode, VerifyOpts,
 };
 use dogtag_standard::wrap::WrappedDoc;
+// LEVEL-A public-signal indices. This module serves the Level-A circuit exclusively (it reads a
+// `subject` signal and binds a `ConsentKeyRegistry` key, neither of which Level-B has), so every
+// `pubs[..]` here is deliberately `level_a`. M-4 swaps this one import at cutover.
+use dogtag_standard::public_signals::level_a as P;
 
 use crate::app::AppState;
 use crate::store::VerifySession;
@@ -288,8 +292,12 @@ fn parse_client_proof(v: &Value) -> Result<ClientProof, String> {
         .get("pubSignals")
         .and_then(|x| x.as_array())
         .ok_or_else(|| "pubSignals: missing/!array".to_string())?;
-    if pv.len() != 7 {
-        return Err(format!("pubSignals: expected len 7, got {}", pv.len()));
+    if pv.len() != dogtag_standard::public_signals::NUM_PUBLIC {
+        return Err(format!(
+            "pubSignals: expected len {}, got {}",
+            dogtag_standard::public_signals::NUM_PUBLIC,
+            pv.len()
+        ));
     }
     let mut pub_signals: [String; 7] = Default::default();
     for (i, x) in pv.iter().enumerate() {
@@ -515,12 +523,19 @@ pub async fn consent_submit(
                 Err(e) => return err(StatusCode::BAD_REQUEST, &format!("bad proof: {e}")),
             };
             // pubSignals <-> session/consent binding (the on-chain requires are the real gate; this
-            // just stops the relayer paying gas for an unrelated/forged-context proof):
-            //   pub[0]=dogTagId, pub[1]=purpose, pub[2]=relayer (as address), pub[3]=subject,
-            //   pub[4]=nullifier, pub[5]=keyHash, pub[6]=credentialRoot.
-            let pub_relayer = match pub_signal_to_address(&pubs[2]) {
+            // just stops the relayer paying gas for an unrelated/forged-context proof).
+            //
+            // These are LEVEL-A indices, and deliberately so: this whole block is the Level-A path.
+            // It reads a `subject` signal and drives `ConsentKeyRegistry`, neither of which exists
+            // under Level-B, and it submits the 4-arg `recordVerificationZK`. The order is
+            // `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]` - see
+            // `dogtag_standard::public_signals` for the side-by-side with Level-B, which diverges from
+            // index 3 on. At the M-4 cutover this import becomes `level_b` and the accompanying
+            // ConsentKeyRegistry machinery goes away; until then, changing these to Level-B indices
+            // would silently misread every proof that actually ships.
+            let pub_relayer = match pub_signal_to_address(&pubs[P::RELAYER]) {
                 Some(a) => a,
-                None => return err(StatusCode::BAD_REQUEST, "pubSignals[2]: bad relayer"),
+                None => return err(StatusCode::BAD_REQUEST, "pubSignals[relayer]: bad relayer"),
             };
             if !pub_relayer.eq_ignore_ascii_case(&s.relayer) {
                 return err(
@@ -529,7 +544,7 @@ pub async fn consent_submit(
                 );
             }
             let expected_purpose = purpose_key(&s.purpose);
-            if !pub_signal_eq(&pubs[1], &expected_purpose) {
+            if !pub_signal_eq(&pubs[P::PURPOSE], &expected_purpose) {
                 return err(
                     StatusCode::BAD_REQUEST,
                     "pubSignals.purpose != purpose_key(session.purpose)",
@@ -539,13 +554,13 @@ pub async fn consent_submit(
                 .get("dogTagId")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if !pub_signal_eq(&pubs[0], dog) {
+            if !pub_signal_eq(&pubs[P::DOG_TAG_ID], dog) {
                 return err(
                     StatusCode::BAD_REQUEST,
                     "pubSignals.dogTagId != consent.dogTagId",
                 );
             }
-            if consent_root.is_empty() || !pub_signal_eq(&pubs[6], consent_root) {
+            if consent_root.is_empty() || !pub_signal_eq(&pubs[P::ROOT], consent_root) {
                 return err(
                     StatusCode::BAD_REQUEST,
                     "pubSignals.credentialRoot != consent.credentialRoot",
@@ -555,34 +570,34 @@ pub async fn consent_submit(
                 .get("subject")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if !pub_signal_eq(&pubs[3], subject) {
+            if !pub_signal_eq(&pubs[P::SUBJECT], subject) {
                 return err(
                     StatusCode::BAD_REQUEST,
                     "pubSignals.subject != consent.subject",
                 );
             }
-            if !pub_signal_is_nonzero(&pubs[4]) {
+            if !pub_signal_is_nonzero(&pubs[P::NULLIFIER]) {
                 return err(StatusCode::BAD_REQUEST, "pubSignals.nullifier is zero");
             }
-            if !pub_signal_is_nonzero(&pubs[5]) {
+            if !pub_signal_is_nonzero(&pubs[P::KEY_HASH]) {
                 return err(StatusCode::BAD_REQUEST, "pubSignals.keyHash is zero");
             }
             // CONSENT-KEY BIND (relayer-sponsored, gasless for the owner): recordVerificationZK only
-            // succeeds when keyOf(subject) == keyHash(pub[5]). Read the registry's current binding; if
-            // it already matches pub[5] we skip the bind. Otherwise, an optional `bind` block carrying
+            // succeeds when keyOf(subject) == the proof's keyHash signal. Read the registry's current binding; if
+            // it already matches we skip the bind. Otherwise, an optional `bind` block carrying
             // the owner's EIP-712 BindConsentKey signature authorizes a permissionless
             // bindConsentKeyFor broadcast (the relayer pays gas; the owner sig is just data). Without a
             // bind block AND not yet bound -> a clear 400 (no point paying gas for a doomed record tx).
             //
-            // pub[3] is the subject as a field element; bind.subject/keyHash must agree with the proof.
-            let subject_addr = match pub_signal_to_address(&pubs[3]) {
+            // The subject signal is the subject as a field element; bind.subject/keyHash must agree with the proof.
+            let subject_addr = match pub_signal_to_address(&pubs[P::SUBJECT]) {
                 Some(a) => a,
-                None => return err(StatusCode::BAD_REQUEST, "pubSignals[3]: bad subject"),
+                None => return err(StatusCode::BAD_REQUEST, "pubSignals[subject]: bad subject"),
             };
-            // pub[5] keyHash as a 0x.. 32-byte word for the on-chain keyOf comparison + bind calldata.
+            // keyHash as a 0x.. 32-byte word for the on-chain keyOf comparison + bind calldata.
             let key_hash_hex = {
                 use alloy::primitives::U256;
-                let t = pubs[5].trim();
+                let t = pubs[P::KEY_HASH].trim();
                 let u = if let Some(h) = t.strip_prefix("0x") {
                     U256::from_str_radix(h, 16)
                 } else {
@@ -590,7 +605,7 @@ pub async fn consent_submit(
                 };
                 match u {
                     Ok(v) => format!("0x{}", hex::encode(v.to_be_bytes::<32>())),
-                    Err(_) => return err(StatusCode::BAD_REQUEST, "pubSignals[5]: bad keyHash"),
+                    Err(_) => return err(StatusCode::BAD_REQUEST, "pubSignals[keyHash]: bad keyHash"),
                 }
             };
             let registry = st.cfg.consent_key_registry_addr.clone();
@@ -637,7 +652,7 @@ pub async fn consent_submit(
                 {
                     return err(
                         StatusCode::BAD_REQUEST,
-                        "bind.subject != consent.subject/pubSignals[3]",
+                        "bind.subject != consent.subject/pubSignals[subject]",
                     );
                 }
                 // bind.keyHash == pub[5].
@@ -672,13 +687,13 @@ pub async fn consent_submit(
                     None => {
                         return err(
                             StatusCode::BAD_REQUEST,
-                            "pubSignals[3]: bad subject address",
+                            "pubSignals[subject]: bad subject address",
                         )
                     }
                 };
                 let key_hash_bytes = match b32_to_bytes32(&key_hash_hex) {
                     Some(b) => b,
-                    None => return err(StatusCode::BAD_REQUEST, "pubSignals[5]: bad keyHash word"),
+                    None => return err(StatusCode::BAD_REQUEST, "pubSignals[keyHash]: bad keyHash word"),
                 };
                 let nonce_u256 = match st.chain.bind_nonce(&registry, &subject_addr).await {
                     Ok(n) => n,
@@ -734,7 +749,7 @@ pub async fn consent_submit(
             let bg_owner_sig = owner_sig_for_bind.clone();
             let bg_registry = registry.clone();
             let (bg_a, bg_b, bg_c, bg_pubs) = (a.clone(), b.clone(), c.clone(), pubs.clone());
-            let bg_nullifier = pubs[4].clone();
+            let bg_nullifier = pubs[P::NULLIFIER].clone();
             let bg_export_token = export_token.clone();
             let bg_record_type = s.record_type.clone();
             // On-chain `deadline` is a defense-in-depth freshness bound (the relayer supplies it; it is
@@ -882,7 +897,8 @@ pub async fn consent_submit(
         }
     }
 
-    // expose the consumed nullifier: from the client proof's pub[4] if present, else the explicit
+    // expose the consumed nullifier: from the client proof's Level-A nullifier signal if present,
+    // else the explicit
     // consent.nullifier signal (server-prove / NORMAL paths).
     let nullifier = session_nullifier.or_else(|| {
         consent

@@ -9,10 +9,39 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cargo check --workspace` / `cargo build` — Rust workspace: `dogtag-standard-rs`, `dogtag-prover-rs`, `vet-api`, `admin-api`, `government-api`, `indexer-api`.
 - `cargo test -p indexer-api` — the oversight indexer (scope + store unit tests + `tests/query_api.rs` end-to-end over MemLogSource + MemStore). Hermetic, fast (no node/Mongo). See the "Oversight indexer (PR-4)" section.
 - `cargo test -p dogtag-standard-rs` — trust-core crypto + cross-language parity vectors.
+- `make test-consent-parity` (wrapper: `scripts/test-consent-parity.sh`) - the LOUD entry point for the
+  repo's ONLY empirical proof that the on-device consent prover agrees with the frozen consent VK. Use
+  it instead of the bare cargo invocation, because that invocation can report green in TWO ways without
+  running the check, neither of them visible: the test is `#![cfg(feature = "prover")]`, so a plain
+  `cargo test -p dogtag-standard-rs` compiles it away and prints `running 0 tests`; and even with the
+  feature it self-skips when `circuits/build/consent.graph` is absent (gitignored, never committed, and
+  **nothing fetches it automatically** - the mobile workflows fetch `verification.graph` only; build it
+  locally from `circuits/consent.circom` with iden3's `build-circuit`). The wrapper closes both: it
+  always passes `--features prover`, and it checks the artifacts from the SHELL - where a `::error::`
+  line is actually parsed and a non-zero exit is a real failure - naming the missing artifact. An
+  annotation printed from inside the test could not work: libtest captures stdout for PASSING tests.
+  It is deliberately **not** in `make test` (like `test-consent` / `test-circuit`), since a normal
+  checkout has no `consent.graph` and the gate fails closed. The complementary in-test leg stays:
+  **`DOGTAG_REQUIRE_ZK_ARTIFACTS=1`** turns the skip into a panic - set it wherever artifacts are
+  expected, since libtest DOES print captured output for failing tests. Note no GitHub workflow runs
+  `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
+  follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
 - `cd contracts && forge test` - 71 tests incl. `ZkIntegration.t.sol` and `ConsentRegistry.t.sol` (both verify a real Groth16 proof on-chain - Level-A and Level-B respectively), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
+- `cd apps/android && gradle test` - the JVM unit suites (`RoaxRpcSelectorTest`, `QrPayloadTest`,
+  `PublicSignalIndexTest`, `ZkeyAssetTest`). **Exception to this section's "runs offline" framing:**
+  `QrPayloadTest` uses Robolectric, which resolves its `android-all-instrumented` runtime jars from
+  Maven on the FIRST run, so a cold Gradle cache needs network (warm cache is offline). The tradeoff
+  was taken deliberately: `QrPayload.parse` is built on the real `android.net.Uri` and QR content is
+  fully attacker-controlled, so a hand-rolled stand-in would test the stand-in, not the parser that
+  actually runs - the very trap that let a duplicate-query-key QR crash the iOS scanner.
+- **Known gap: neither mobile unit suite runs in CI.** The only two workflows are the
+  `workflow_dispatch`-only mobile e2e jobs, so `apps/android`'s JVM tests and the iOS `DogTagTests`
+  scheme are guarded by LOCAL runs only - including the QR-trap regression they were written for. Run
+  them by hand before shipping mobile changes. (Dispatch-only CI is a standing decision, not an
+  oversight; broadening it is captain-gated.)
 - `cargo test -p vet-api --test verify_onchain` — on-chain integration (self-spawns anvil). The ZK-path
   test (`zk_path_records_verified_onchain`, real Groth16 proof, ~270s) needs forge/cast/anvil on PATH AND
   the JS toolchain built first: `pnpm install` in `circuits/` plus `pnpm install && pnpm run build` in
@@ -24,7 +53,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `gen-vectors.mjs` rewrites `poseidon-vectors.json` deterministically, so running `make parity` leaves the tree clean (no spurious diff).
 - `rust-analyzer` in this worktree can't find the proc-macro server and emits false `E0308`/`tokio::test` errors; trust `cargo`, not the IDE diagnostics.
 - Pre-existing harmless warning: unused import `BigInteger` in `crates/dogtag-standard-rs/src/bin/field-hash.rs`.
-- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`); `apps/android/app/src/test/.../RoaxRpcSelectorTest.kt` pins it. **Android now derives ALL seven selectors** (`isValid`, `isWhitelistedFor`, `bindNonce`, `keyOf`, `consumed`, `profileRoot`, `ownerOf`) - `RoaxRpc.kt` holds no selector literals. **iOS `Net.swift` still hard-codes the six non-`isValid` selectors**: each was reconfirmed correct via `cast sig`, so this is latent drift risk rather than a live bug, and it stays open only because iOS has no unit-test target (so a change there is unverifiable locally - see the Maestro note). Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
+- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`); `apps/android/app/src/test/.../RoaxRpcSelectorTest.kt` pins it. **Android now derives ALL seven selectors** (`isValid`, `isWhitelistedFor`, `bindNonce`, `keyOf`, `consumed`, `profileRoot`, `ownerOf`) - `RoaxRpc.kt` holds no selector literals. **iOS `Net.swift` still hard-codes the six non-`isValid` selectors**: each was reconfirmed correct via `cast sig`, so this is latent drift risk rather than a live bug, and it stays open only because `Net.swift` is not yet covered by the iOS unit-test target (which exists now - see "iOS unit tests" - but is host-less/FFI-free, and `Net.swift` would need the selector helpers extracted into an FFI-free source before it can be pinned the way `RoaxRpcSelectorTest.kt` pins Android's). Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
 
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
@@ -154,6 +183,47 @@ The vet/groomer verifier product now has a direct, operator-facing **pasted cred
 - **Web (`stacks/vet/web`, `stacks/groomer/web`)**: the shared `@dogtag/ui` `CredentialVerifyPanel` is mounted on each Verify page above `VerifyFlow`. It accepts wrappedDoc JSON, optional issuer signer, and renders pass/fail plus integrity/on-chain/issued/revoked/whitelist pillars with issuer/root details. **As of `webverify-n3` the panel no longer calls `POST /verify/credential`** - see the next section.
 - **Tests/builds**: `stacks/vet/api/tests/flow_memchain.rs::full_issuance_share_revoke_flow` now proves issue -> direct verify valid -> revoke -> direct verify revoked over `MemChain`.
 
+### Public-signal indices: ALWAYS via the named constants, never a literal (e9 E-1)
+
+Both circuits emit a **7-element** public-signal vector and the two orders **disagree from index 3 on**:
+
+| index | Level-A (`verification.circom`) | Level-B (`consent.circom`) |
+|---|---|---|
+| 0-2 | dogTagId, purpose, relayer | dogTagId, purpose, relayer |
+| 3 | **subject** | **nullifier** |
+| 4 | **nullifier** | **R** |
+| 5 | keyHash | recordType |
+| 6 | R | deadline |
+
+Same width, same `[String; 7]` type, so a mix-up is invisible to every compiler and produces a
+plausible-looking field element instead of an error. The canonical failure: reading `pubSignals[4]` as
+the nullifier under Level-B actually yields `R`, so the phone polls `consumed(R)` - never set - and a
+verification that **succeeded on-chain** hangs until timeout.
+
+The constants live in three mirrored files, each with a `level_a`/`levelA`/`LevelA` and a
+`level_b`/`levelB`/`LevelB` set: `crates/dogtag-standard-rs/src/public_signals.rs`,
+`apps/ios/DogTag/PublicSignalIndex.swift`,
+`apps/android/app/src/main/java/io/liberalize/dogtag/zk/PublicSignalIndex.kt`. Rust
+(`public_signals::tests`), iOS (`PublicSignalIndexTests`) and Android (`PublicSignalIndexTest`) each
+guard their own Level-B constants against accidental drift.
+The values were transcribed from `VerificationRegistryConsent.sol:81-87`'s `P_*` constants, which stay
+the authority - but every one of those tests asserts LITERALS and never reads the Solidity, so a
+contract-side change would not fail them; the two sides must be moved together by hand.
+
+- **Everything on the live serving path is `level_a`, deliberately.** Both apps bundle
+  `verification_final.zkey` (pinned `dogtag-levela/1`; Android's `ZkeyAssetTest` asserts
+  `dogtag-levelb/1` FAILS to resolve) and call `proveVerification`; `verify.rs`/`chain.rs` read a
+  `subject` signal and drive `ConsentKeyRegistry`, neither of which exists under Level-B. **Do not
+  "fix" these to Level-B indices** - that is the M-4 cutover, and doing it early breaks the only live
+  end-to-end path rather than repairing it.
+- `level_b` is used only by the consent tests today. At M-4 each call site flips one import.
+- **Never add a third, level-neutral set.** It would have to pick one value and would then silently
+  contradict either the live off-chain code or the contract (whose `P_NULLIFIER = 3` is Level-B-valued).
+  Naming the level *is* the safety property.
+- `crates/dogtag-prover-rs` cannot import these (it pins ark 0.6 vs `dogtag-standard-rs`'s 0.5 and the
+  two coexist only because ark types never cross the boundary - see its `Cargo.toml`). Its
+  `Groth16Output` doc lists both orders and must be kept in step by hand.
+
 ### Web credential verify is permissionless direct-to-RPC (webverify-n3)
 Credential verification is permissionless + on-chain, so the web `CredentialVerifyPanel` reads the chain itself instead of the operator-gated `POST /verify/credential`. The server endpoint is retained (it may serve other callers) but the web panel no longer depends on it.
 - **Where**: `packages/ui/src/wallet/verifyCredential.ts` `verifyCredentialOnchain(...)` is a byte-for-byte TS port of the Rust `verify_credential` handler's classification. It runs `@dogtag/standard` `checkIntegrity` (pure offline recompute) then reads `DogTagIssuer.issuedAt/isValid/isRevoked` (and optional `IssuerRegistry.isWhitelistedFor`) via viem `eth_call` over the public ROAX RPC (`roax` chain def, chainId 135, `https://devrpc.roax.net`). All chain reads use the **claimed** root (`signature.merkleRoot`); the recomputed root only populates the `recomputedRoot` display field. Returns the identical `VerifyCredentialResp` shape, so the result renderer is unchanged.
@@ -205,8 +275,8 @@ It touches NO circuit/VK/ceremony (all frozen) and NO contract; it is a prover-p
 - **`nullifier` (`pub[3]`) and `R` (`pub[4]`) are circuit OUTPUTS** — the assembler recomputes them only for on-chain wiring / test assertions; it never feeds them in. `ownerAddress` is the **raw** reserved-leaf field (`field_from_scalar_bytes(addr)`), not `field_of_value`.
 - **FFI** (`prover_ffi::prove_consent`, `prover` feature): mirrors `prove_verification` and its **circom-witnesscalc GRAPH backend** (kept over rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM). Takes the owner seed + disclosed params + `zkey`/`graph` paths; `NUM_PUBLIC_CONSENT = 7`; returns `pub` in the FROZEN OUTPUT order `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. Param parsing is split into `parse_consent_ffi_inputs` (hermetically unit-tested).
 - **Backend** (`crates/dogtag-prover-rs`): `LEVEL_B_V1_DESCRIPTOR` in the version-keyed `REGISTRY`; `ConsentProveInputs` + `Prover::prove_consent_inputs` push the consent signal names (distinct from Level-A's `push_named_inputs`) and share the self-verify/format core with `prove`. The self-verify against the zkey's embedded VK IS a verify against the frozen consent VK (zkey sha256 `f83a111f…`, its exported VK json `27879dd7…`).
-- **Service** (`stacks/vet/api`): `POST /prove-consent` selects the version-keyed consent artifact via a **lazy per-request** `ConsentProver` (`prover.rs`): loaded on first request from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), **fail-closed per REQUEST not boot** (503 on missing/hash-mismatch) so a Level-A `/prove-verification` instance coexists without either blocking the other (M7 §3.5). The device assembles the `circuitInput` **on-device** (cheap field math; the seed never reaches the server, preserving owner-unlinkability) and POSTs it; only the heavy Groth16 prove runs server-side.
-- **The ground truth** is `stacks/vet/api/tests/consent_prove.rs` (`--features prover`): the REAL Rust assembler → `prove_consent_inputs` → verify vs frozen VK → assert the 7 signals in frozen order + `pub[0]==canonical dogTagId` + `pub[4]==R`. It runs against the committed `consent_final.zkey`/`consent.r1cs`/`consent.wasm` (~2 min real prove; self-skips if absent). `consent_prove_parity.rs` verifies the FFI GRAPH proof vs the frozen VK json (CI-only — the graph is not committed). `contracts/test/consent-fixture.json` is regenerated to bind the CANONICAL field (`gen-consent-fixture.mjs` no longer uses raw `424242n`); `forge test --match-contract ConsentRegistry` (16 tests) verifies it on-chain.
+- **Service** (`stacks/vet/api`): `POST /prove-consent` selects the version-keyed consent artifact via a **lazy per-request** `ConsentProver` (`prover.rs`): loaded on first request from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), **fail-closed per REQUEST not boot** (503 on missing/hash-mismatch) so a Level-A `/prove-verification` instance coexists without either blocking the other (M7 §3.5). The device assembles the `circuitInput` **on-device** (cheap field math) and POSTs it; only the heavy Groth16 prove runs server-side. **State the threat model when describing this route's privacy:** the wallet SEED never reaches the server (so the operator cannot reach the owner's other tags or forge future consents), and owner-unlinkability holds against a chain observer and against the relayer - but the POSTed `circuitInput` carries `ownerSecret` AND `ownerAddress` (`consent_assemble.rs:245-246`), so it does **NOT** hold against the prover operator, which can name the owner and link that tag's entire verification history. `docs/MOBILE_OWNER_SECRET.md` marks `ownerSecret` "Never transmit"; this route is the one deliberate exception, kept for devices that cannot prove locally. On-device proving leaks none of it. (The bare claim "preserves owner-unlinkability" was wrong here and in `prover.rs` - e9 E-2.)
+- **The ground truth** is `stacks/vet/api/tests/consent_prove.rs` (`--features prover`): the REAL Rust assembler → `prove_consent_inputs` → verify vs frozen VK → assert the 7 signals in frozen order + `pub[0]==canonical dogTagId` + `pub[4]==R`. It runs against the committed `consent_final.zkey`/`consent.r1cs`/`consent.wasm` (~2 min real prove; self-skips if absent). `consent_prove_parity.rs` verifies the FFI GRAPH proof vs the frozen VK json — run it through `make test-consent-parity`, never the bare cargo command, and note it is **operator-invoked, not CI-run**: no workflow fetches `consent.graph` (see the entry under "Build & test"). `contracts/test/consent-fixture.json` is regenerated to bind the CANONICAL field (`gen-consent-fixture.mjs` no longer uses raw `424242n`); `forge test --match-contract ConsentRegistry` (16 tests) verifies it on-chain.
 
 ## Record provenance block (M7 brick 2 / P2)
 
@@ -714,6 +784,34 @@ Add it **surgically** to `apps/ios/DogTag.xcodeproj/project.pbxproj` (four entri
 existing sibling: a `PBXBuildFile`, a `PBXFileReference`, a group child, and a Sources build-phase
 entry, using fresh 24-char hex IDs). Do NOT blindly `xcodegen generate` — regenerating the project
 silently strips the vendored prover resources (zkey / witness graph) from the pbxproj.
+
+If you genuinely need a regen (e.g. adding a target), the safe procedure is: `touch
+apps/ios/DogTag/verification_final.zkey apps/ios/DogTag/verification.graph` so xcodegen sees the
+paths, `xcodegen generate`, delete the placeholders, then confirm with
+`git diff --no-color apps/ios/DogTag.xcodeproj/project.pbxproj | grep '^-'` that **no** zkey/graph
+line was removed. Both files are gitignored, so the placeholders can never be committed. Expect a
+large but harmless diff: xcodegen re-randomises every object ID, so hand-written IDs churn while
+target membership is unchanged — diff membership, not IDs. (Piping `git diff` without `--no-color`
+into `grep '^-'` silently matches nothing because of the ANSI prefix; that false "clean" reading is
+easy to trust by mistake.)
+
+### iOS unit tests (`apps/ios/DogTagTests`)
+
+There **is** now an XCTest target. It is deliberately **host-less and FFI-free**: it lists the
+self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift,
+DogTag/PublicSignalIndex.swift]` in `project.yml` - keep this list in step with that file) rather than
+using `@testable import DogTag`, because the app module links
+`DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core. That
+keeps the suite runnable on a plain checkout:
+
+```
+cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
+  -destination 'id=<simulator-udid>'      # `-destination 'name=iPhone 16'` is ambiguous; use the UDID
+```
+
+Adding a source here that transitively imports the FFI will break that property — extract the pure
+logic instead. `QrPayloadTests.swift` mirrors `QrPayloadTest.kt` case-for-case; keep them in step, as
+their whole point is that the two platforms cannot silently diverge on what a QR means.
 
 ### Getting real Swift signal without the xcframework
 
@@ -1242,9 +1340,11 @@ an idempotent retry, while a different root for the same canonical `dogTagIdHex`
 the existing witness is changed. Explicit draft/sealed state, replacement, and issuance-handoff
 tracking remain deferred to M7.
 
-There is **no iOS unit-test target**, so the Swift side is covered by `swiftc -typecheck` (the recipe
-in "Getting real Swift signal without the xcframework") and every assertion worth making lives in the
-Rust tests instead. Adding the FFI export forced regenerating BOTH `apps/ios/DogTag/dogtag_standard.swift`
+The `DogTagTests` target (see "iOS unit tests") does not reach this code: it is host-less and FFI-free,
+while `ProfileTreeStore` builds through the FFI. So the Swift side here is still covered only by
+`swiftc -typecheck` (the recipe in "Getting real Swift signal without the xcframework") and every
+assertion worth making lives in the Rust tests instead.
+Adding the FFI export forced regenerating BOTH `apps/ios/DogTag/dogtag_standard.swift`
 and the Android `.kt` - a clean regen is **purely additive**; if you see removals, your local uniffi
 ≠ 0.28.x and you should stop rather than commit the churn. Canary it by regenerating BEFORE your
 change and diffing against the committed file: it should be byte-identical.
@@ -1297,9 +1397,11 @@ issuer-side re-issue endpoint lands with that cutover.
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
-- **`ProfileTreeStore` has ZERO runtime coverage.** No iOS test target exists and nothing calls it
-  until M7, so the Codable round-trip, the atomic/`.completeFileProtection` write and
-  `verifyRecoverable` have only been typechecked, never run. First M7 caller should exercise them.
+- **`ProfileTreeStore` has ZERO runtime coverage.** The `DogTagTests` target (see "iOS unit tests")
+  cannot reach it: that suite is deliberately FFI-free and `ProfileTreeStore` builds through the FFI,
+  so it stays out of scope until the pure logic is extracted. Nothing calls it until M7 either, so the
+  Codable round-trip, the atomic/`.completeFileProtection` write and `verifyRecoverable` have only
+  been typechecked, never run. First M7 caller should exercise them.
 - **The `[u8; 20] -> Fr` owner-address packing is untested.** The parity test feeds an `Fr` straight
   to `hash_reserved_leaf`, bypassing `build_profile_tree`'s `field_from_scalar_bytes(&addr)`. It is
   the documented address-packing primitive and the device is the sole builder (no external encoder to

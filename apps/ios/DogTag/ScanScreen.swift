@@ -454,10 +454,13 @@ struct ScanScreen: View {
                         bind = ConsentKeyBind(subject: wallet.ethAddress, keyHash: wallet.consent.keyHashHex, ownerSig: ownerSig)
                     }
 
-                    // The proof's nullifier = pubSignals[4] (a decimal field element). This is the
-                    // on-chain `VerificationRegistry.consumed(bytes32)` key — the canonical completion
-                    // signal we poll the CHAIN for below.
-                    let nullifier = proof.pubSignals.count > 4 ? proof.pubSignals[4] : ""
+                    // The proof's nullifier (a decimal field element). This is the on-chain
+                    // `VerificationRegistry.consumed(bytes32)` key — the canonical completion signal we
+                    // poll the CHAIN for below. LEVEL-A index: this screen proves with the bundled
+                    // Level-A zkey. Under Level-B that same slot is `R`, so a bare `pubSignals[4]`
+                    // here would poll a key that is never set and hang on a SUCCESSFUL verification.
+                    let nfIdx = PublicSignalIndex.levelA.nullifier
+                    let nullifier = proof.pubSignals.count > nfIdx ? proof.pubSignals[nfIdx] : ""
 
                     // PRE-SUBMIT REPLAY GUARD: if this nullifier is already consumed on-chain, the
                     // verification was recorded before — submitting again is a doomed replay the relayer

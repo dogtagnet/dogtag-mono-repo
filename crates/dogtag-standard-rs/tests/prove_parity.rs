@@ -36,6 +36,8 @@ use dogtag_standard::types::TypedScalar;
 use dogtag_standard::wrap::{
     flatten_data, parse_packed, scalar_from_packed, wrap_document, IssuerMeta, WrappedDoc,
 };
+// LEVEL-A indices: this is the verification-circuit parity test.
+use dogtag_standard::public_signals::level_a as P;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -515,15 +517,16 @@ fn on_device_proof_verifies_and_pub_matches() {
     assert_eq!(proof.pub_signals.len(), 7, "expected 7 public signals");
 
     // The 32-bit-ARM regression this fix targets: wasm2c zeroed the last-computed output wires.
-    // pub[4]=nullifier and pub[5]=keyHash are derived from the REAL (large Ax/Ay) consent key + a
-    // realistic nonce above, so they must be NON-ZERO with the graph calculator.
+    // LEVEL-A indices (this is the verification-circuit parity test): the nullifier and keyHash are
+    // derived from the REAL (large Ax/Ay) consent key + a realistic nonce above, so they must be
+    // NON-ZERO with the graph calculator.
     assert_ne!(
-        proof.pub_signals[4], "0",
-        "nullifier (pub[4]) must be non-zero"
+        proof.pub_signals[P::NULLIFIER], "0",
+        "nullifier must be non-zero"
     );
     assert_ne!(
-        proof.pub_signals[5], "0",
-        "keyHash (pub[5]) must be non-zero"
+        proof.pub_signals[P::KEY_HASH], "0",
+        "keyHash must be non-zero"
     );
 
     // 5. Recompute expected public signals independently.

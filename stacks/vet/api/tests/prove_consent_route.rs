@@ -20,6 +20,8 @@ use dogtag_standard::consent_assemble::{
 };
 use dogtag_standard::profile_tree::{AttributeLeaf, SALT_LEN};
 use dogtag_standard::types::TypedScalar;
+// LEVEL-B indices: these exercise the consent circuit.
+use dogtag_standard::public_signals::level_b as P;
 
 use vet_api::chain::MemChain;
 use vet_api::prover::{ConsentProver, ProverClient, StubProver};
@@ -175,6 +177,10 @@ async fn prove_consent_full_http_round_trip() {
     assert_eq!(a.len(), 2);
     assert_eq!(b.len(), 2);
     assert_eq!(c.len(), 2);
-    // pub[3] (nullifier) and pub[4] (R) are non-trivial circuit outputs.
-    assert_ne!(pubs[3].as_str().unwrap(), "0", "nullifier must be a real output");
+    // The nullifier and R are non-trivial circuit outputs.
+    assert_ne!(
+        pubs[P::NULLIFIER].as_str().unwrap(),
+        "0",
+        "nullifier must be a real output"
+    );
 }

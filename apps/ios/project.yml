@@ -35,3 +35,39 @@ targets:
         # The static lib has no embedded bitcode and is a plain archive; link directly.
         OTHER_LDFLAGS: -ObjC
         TARGETED_DEVICE_FAMILY: "1"
+
+  # Pure-logic unit tests. This bundle deliberately has NO host application and NO dependency on
+  # DogTagFFI.xcframework: it compiles the handful of self-contained sources it covers (currently
+  # QrPayload.swift and PublicSignalIndex.swift, both importing only Foundation, or nothing at all)
+  # straight into the test binary. That keeps `xcodebuild test` runnable on a plain checkout, where
+  # the xcframework is gitignored and absent until someone builds the Rust core. Adding a source here
+  # that pulls in FFI would break that.
+  DogTagTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: DogTagTests
+      - path: DogTag/QrPayload.swift
+      - path: DogTag/PublicSignalIndex.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.liberalize.dogtag.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+
+schemes:
+  DogTag:
+    build:
+      targets:
+        DogTag: all
+    run:
+      config: Debug
+  DogTagTests:
+    build:
+      targets:
+        DogTagTests: [test]
+    test:
+      config: Debug
+      targets:
+        - DogTagTests

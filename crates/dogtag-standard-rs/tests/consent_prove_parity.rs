@@ -13,8 +13,13 @@
 //!
 //! This is the success criterion for the on-device FFI: `prove_consent`'s proof verifies under the
 //! SAME VK the on-chain verifier uses, with matching public signals. It self-skips when the graph or
-//! zkey is absent (the graph is not committed — CI fetches it from DOGTAG_ARTIFACTS_URL), so it never
-//! reds an unbuilt checkout.
+//! zkey is absent, so it never reds an unbuilt checkout - `consent.graph` is gitignored, is not
+//! committed, and nothing fetches it automatically.
+//!
+//! Because that skip is invisible from inside libtest (stdout is captured for PASSING tests), the
+//! LOUD entry point is the shell wrapper `scripts/test-consent-parity.sh` (`make test-consent-parity`):
+//! it checks the artifacts before cargo runs, emits a `::error::` annotation naming the missing one,
+//! and exits non-zero. Prefer it over invoking this test directly.
 #![cfg(feature = "prover")]
 
 use std::path::PathBuf;
@@ -119,11 +124,40 @@ fn on_device_consent_proof_verifies_and_pub_matches() {
     let zkey = build_dir.join("consent_final.zkey");
     let graph = build_dir.join("consent.graph");
     if !zkey.exists() || !graph.exists() {
-        eprintln!(
-            "SKIP: consent zkey/graph absent ({} / {}) — the graph is not committed (CI fetches it)",
-            zkey.display(),
-            graph.display()
+        // This is the repo's ONLY empirical proof that the prover agrees with the frozen consent VK.
+        // Skipping it silently made that proof optional: the run reported green whether or not the
+        // one thing it exists to check had actually been checked.
+        //
+        // Two mechanisms make the skip visible, and only one of them can live here. Annotating from
+        // inside a PASSING libtest cannot work - libtest captures stdout unless the runner passes
+        // `--nocapture` - so the `::error::` annotation belongs to the shell wrapper
+        // (`scripts/test-consent-parity.sh`), which checks the artifacts before cargo even starts.
+        // What DOES work here is the hard-fail leg: `DOGTAG_REQUIRE_ZK_ARTIFACTS=1` turns the skip
+        // into a panic, and libtest prints captured output for FAILING tests. Any environment that is
+        // supposed to have the artifacts sets it - a missing artifact there means the fetch regressed.
+        //
+        // Local checkouts keep the plain skip (the graph is gitignored and not committed).
+        // Name the artifact that is ACTUALLY missing. The old wording listed both paths whichever one
+        // was absent, which reads as "neither was fetched" when usually only the graph is (the zkey is
+        // committed; the graph is the one that is never committed).
+        let missing: Vec<String> = [(&zkey, "consent_final.zkey"), (&graph, "consent.graph")]
+            .iter()
+            .filter(|(p, _)| !p.exists())
+            .map(|(p, name)| format!("{name} ({})", p.display()))
+            .collect();
+        let msg = format!(
+            "consent proving artifact(s) absent: {} - consent.graph is gitignored, is NOT committed, \
+             and nothing fetches it automatically; build it locally from circuits/consent.circom with \
+             iden3's build-circuit tool",
+            missing.join(", ")
         );
+        if std::env::var("DOGTAG_REQUIRE_ZK_ARTIFACTS").is_ok_and(|v| v == "1") {
+            panic!(
+                "DOGTAG_REQUIRE_ZK_ARTIFACTS=1 but {msg}. This environment is configured to REQUIRE \
+                 the prove<->VK parity check; refusing to report green without running it."
+            );
+        }
+        eprintln!("SKIP: {msg} - prove<->VK parity was NOT verified in this run");
         return;
     }
 

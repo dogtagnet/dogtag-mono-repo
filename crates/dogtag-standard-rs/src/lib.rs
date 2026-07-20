@@ -16,6 +16,9 @@ pub mod flatten;
 pub mod wrap;
 pub mod verify;
 pub mod schema;
+/// Public-signal index constants for both circuits. Read every `pub[n]` through these, never through
+/// a bare literal - the two orders differ from index 3 on and nothing else catches the mix-up.
+pub mod public_signals;
 
 pub use field::{bytes_to_field, to_hex32};
 pub use leaf::hash_leaf;

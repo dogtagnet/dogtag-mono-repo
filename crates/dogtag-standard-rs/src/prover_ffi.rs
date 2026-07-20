@@ -51,11 +51,13 @@ use crate::wrap::{scalar_from_packed, WrappedDoc};
 pub use crate::prover_assemble::EddsaSigInput;
 
 /// Number of public signals the Level-A verification circuit exposes.
-const NUM_PUBLIC: usize = 7;
+const NUM_PUBLIC: usize = crate::public_signals::NUM_PUBLIC;
 
 /// Number of public signals the Level-B consent circuit exposes
-/// (`[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`).
-const NUM_PUBLIC_CONSENT: usize = 7;
+/// (`[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`). Same WIDTH as Level-A -
+/// which is precisely why only the differing ORDER (`public_signals::level_a` vs `level_b`) can
+/// distinguish the two - but a distinct fact, so it keeps its own name.
+const NUM_PUBLIC_CONSENT: usize = crate::public_signals::NUM_PUBLIC;
 
 // ---------------------------------------------------------------------------------------------
 // Graph witness calculator (`circom-witnesscalc`).
