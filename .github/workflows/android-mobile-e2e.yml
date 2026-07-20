@@ -17,9 +17,12 @@
 #        arm64 emulator needs an Apple-Silicon host with the emulator's native hypervisor — which
 #        GitHub's hosted macOS-arm64 runners do not expose (no nested virtualization). A self-hosted
 #        Apple-Silicon Mac (or Linux arm64 with KVM) runs it fine — that is what we validated against.
-#     2. The proving artifacts. `verification_final.zkey` (~65 MB) and `verification.graph` (~3 MB)
-#        are gitignored (see apps/.gitignore) and NOT in a checkout. They must be provided to the
-#        runner (cache, artifact, release asset, or self-hosted working tree) — see the vendor step.
+#     2. The proving artifacts, for both the Level-A verification and Level-B consent circuits. The
+#        zkeys (`verification_final.zkey` ~65 MB, `consent_final.zkey` ~25 MB) are committed under
+#        `circuits/build/` (force-added past the build/ ignore). The witness graphs
+#        (`verification.graph` ~3 MB, `consent.graph`) are NOT committed — build them out-of-band with
+#        iden3's build-circuit (or serve them from `DOGTAG_ARTIFACTS_URL`). Either way the bundle
+#        copies under `apps/` are gitignored, so the vendor step re-copies all four each build.
 #
 #   On a runner that meets both, this workflow goes green exactly as the local run does.
 name: android-mobile-e2e
@@ -52,30 +55,37 @@ jobs:
           rustup target add aarch64-linux-android armv7-linux-androideabi
           cargo install cargo-ndk --version ^4 --locked || cargo install cargo-ndk --locked
 
-      # The witness graph is built from circuits/verification.circom by iden3's build-circuit (it is
-      # NOT in the published circom-witnesscalc crate). Skipped if already vendored (self-hosted).
+      # Each witness graph is built from its circom source by iden3's build-circuit (it is NOT in the
+      # published circom-witnesscalc crate). Skipped if already vendored (self-hosted). M-4 adds the
+      # Level-B consent pair (`consent_final.zkey` + `consent.graph`) alongside the Level-A pair, so
+      # the app can prove owner-hidden consent; both sets are bundled, Level-A stays the default.
       - name: Ensure proving artifacts (zkey + witness graph)
         env:
-          # Optional: a base URL / cache that holds the two gitignored blobs for this circuit commit.
+          # Optional: a base URL / cache that holds the gitignored blobs for this circuit commit.
           DOGTAG_ARTIFACTS_URL: ${{ secrets.DOGTAG_ARTIFACTS_URL }}
         run: |
           set -euo pipefail
-          zkey=circuits/build/verification_final.zkey
-          graph=circuits/build/verification.graph
-          if [ -s "$zkey" ] && [ -s "$graph" ]; then
-            echo "Proving artifacts already present (self-hosted working tree)."
-          elif [ -n "${DOGTAG_ARTIFACTS_URL:-}" ]; then
-            mkdir -p circuits/build
-            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification_final.zkey" -o "$zkey"
-            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification.graph"      -o "$graph"
-          else
-            echo "::error::Missing $zkey / $graph. They are gitignored; provide them on a self-hosted" \
-                 "runner's working tree or set the DOGTAG_ARTIFACTS_URL secret. See docs/MOBILE_BUILD.md §4."
-            exit 1
-          fi
-          # Vendor into the app bundle (gitignored copies, exactly like docs/MOBILE_BUILD.md §4).
-          cp "$zkey"  apps/android/app/src/main/assets/verification_final.zkey
-          cp "$graph" apps/android/app/src/main/assets/verification.graph
+          # Vendor one gitignored artifact into src/main/assets (uncompressed via noCompress). Level-A
+          # verification + Level-B consent; add a call to bundle another version.
+          ensure_artifact() {
+            local file="$1"
+            local src="circuits/build/$file"
+            if [ -s "$src" ]; then
+              echo "  $file present (self-hosted working tree)."
+            elif [ -n "${DOGTAG_ARTIFACTS_URL:-}" ]; then
+              mkdir -p circuits/build
+              curl -fsSL "$DOGTAG_ARTIFACTS_URL/$file" -o "$src"
+            else
+              echo "::error::Missing $src. It is gitignored; provide it on a self-hosted runner's" \
+                   "working tree or set the DOGTAG_ARTIFACTS_URL secret. See docs/MOBILE_BUILD.md §4."
+              exit 1
+            fi
+            cp "$src" "apps/android/app/src/main/assets/$file"
+          }
+          ensure_artifact verification_final.zkey
+          ensure_artifact verification.graph
+          ensure_artifact consent_final.zkey
+          ensure_artifact consent.graph
 
       - name: Build native prover libs (cargo-ndk → jniLibs)
         env:

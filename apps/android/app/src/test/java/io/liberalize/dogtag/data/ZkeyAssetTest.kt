@@ -45,14 +45,48 @@ class ZkeyAssetTest {
         assertEquals(ZkeyAsset.LEVEL_A_V1, ZkeyAsset.resolve("dogtag-levela/1"))
     }
 
-    /** An unknown version fails closed — it must NOT fall back to the current artifact set. */
+    /**
+     * An unknown version fails closed — it must NOT fall back to the current artifact set.
+     *
+     * The probe version is `dogtag-levelc/9`, a version this build genuinely does not know. It used
+     * to be `dogtag-levelb/1`, but M-4 REGISTERS Level-B (see [levelBDescriptorNamesTheBundledAssets]),
+     * so that key now resolves and would no longer exercise the fail-closed path. This mirrors the
+     * Rust `resolve_unknown_version_fails_closed`, which probes the same `dogtag-levelc/9` for the
+     * same reason.
+     */
     @Test
     fun resolveUnknownVersionFailsClosed() {
         val e = assertThrows(IllegalArgumentException::class.java) {
-            ZkeyAsset.resolve("dogtag-levelb/1")
+            ZkeyAsset.resolve("dogtag-levelc/9")
         }
         assertNotNull(e.message)
-        assertEquals(true, e.message!!.contains("dogtag-levelb/1"))
+        assertEquals(true, e.message!!.contains("dogtag-levelc/9"))
+    }
+
+    /**
+     * M-4: Level-B is REGISTERED and names the consent artifacts the mobile workflow vendors. If this
+     * drifts, the app materialises a file the APK does not ship and the owner-hidden proof dies at
+     * runtime. The version key and filenames must match the Rust `LEVEL_B_V1_DESCRIPTOR` and iOS
+     * `ZkeyAsset.levelBV1`.
+     */
+    @Test
+    fun levelBDescriptorNamesTheBundledAssets() {
+        val d = ZkeyAsset.resolve("dogtag-levelb/1")
+        assertEquals(ZkeyAsset.LEVEL_B_V1, d)
+        assertEquals("dogtag-levelb/1", d.version)
+        assertEquals("consent_final.zkey", d.zkeyAsset)
+        assertEquals("consent.graph", d.graphAsset)
+    }
+
+    /**
+     * Registering Level-B must NOT change the default: every current caller names no version and must
+     * still get Level-A. This is the load-bearing "available, not default" guard for the artifact
+     * resolver — the mirror of the same guard on the server's convenience tier.
+     */
+    @Test
+    fun registeringLevelBDoesNotChangeTheDefault() {
+        assertEquals(ZkeyAsset.LEVEL_A_V1, ZkeyAsset.current())
+        assertEquals(ZkeyAsset.LEVEL_A_V1, ZkeyAsset.resolve())
     }
 
     /** Every registered version is resolvable by its own key, and keys are unique. */

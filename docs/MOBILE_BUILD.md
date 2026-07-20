@@ -178,46 +178,69 @@ configured" or a connection error). Fix: set `prover_api` to a live prover-servi
 
 ## 4. Bundled assets (both apps)
 
-Both apps bundle their own copies of the proving artifacts and a trimmed address file. Two of these
-are committed; **two are absent from a fresh clone and must be vendored from `circuits/build/`** — the
-`verification_final.zkey` (gitignored) and the `verification.graph` (untracked / never committed).
+Both apps bundle their own copies of the proving artifacts and a trimmed address file. Since **M-4**
+each app bundles **two** artifact sets: the Level-A verification pair and the Level-B owner-hidden
+consent pair (`dogtag-levelb/1`). The zkeys are committed under `circuits/build/`; the witness graphs
+are never committed and must be built out-of-band, then all four are vendored into each bundle.
 
 | asset | iOS path | Android path | committed? |
 |---|---|---|---|
-| `verification_final.zkey` (~65 MB) | `apps/ios/DogTag/verification_final.zkey` | `apps/android/app/src/main/assets/verification_final.zkey` | **no — vendor from `circuits/build`** (gitignored) |
-| `verification.graph` (~3 MB) | `apps/ios/DogTag/verification.graph` | `apps/android/app/src/main/assets/verification.graph` | **no — vendor from `circuits/build`** (untracked, not committed) |
+| `verification_final.zkey` (~65 MB) | `apps/ios/DogTag/verification_final.zkey` | `apps/android/app/src/main/assets/verification_final.zkey` | zkey committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
+| `verification.graph` (~3 MB) | `apps/ios/DogTag/verification.graph` | `apps/android/app/src/main/assets/verification.graph` | **no — build out-of-band, then vendor** (untracked) |
+| `consent_final.zkey` (~25 MB) | `apps/ios/DogTag/consent_final.zkey` | `apps/android/app/src/main/assets/consent_final.zkey` | zkey committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
+| `consent.graph` | `apps/ios/DogTag/consent.graph` | `apps/android/app/src/main/assets/consent.graph` | **no — build out-of-band, then vendor** (untracked) |
 | `roax.json` (hand-maintained subset) | `apps/ios/DogTag/roax.json` | `apps/android/app/src/main/assets/roax.json` | yes |
 | `testvectors.json` | `apps/ios/DogTag/testvectors.json` | `apps/android/app/src/main/assets/testvectors.json` | yes |
 
-Both the `verification_final.zkey` and the `verification.graph` are 1:1 copies of the files under
-`circuits/build/`. The zkey is gitignored in `apps/.gitignore` (so the 65 MB blob is never
-double-committed) and the graph is simply never committed (untracked), which means **a fresh checkout
-has neither in either app and the apps will not prove correctly until you vendor both.** Copy them
-into both bundles:
+Each `*_final.zkey`/`*.graph` bundle copy is a 1:1 copy of the file under `circuits/build/`. The zkeys
+are committed there but their bundle copies are gitignored in `apps/.gitignore` (so the blobs are
+never double-committed); the graphs are never committed at all — see "Building the witness graphs"
+below. **A fresh checkout has none of the four bundle copies, and the apps will not prove until you
+vendor all four.** Copy them into both bundles:
 
 ```bash
-# Vendor the proving key into BOTH app bundles (gitignored; ~65 MB each).
+# Vendor the proving keys into BOTH app bundles (gitignored bundle copies).
 cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
 cp circuits/build/verification_final.zkey apps/android/app/src/main/assets/verification_final.zkey
-# Vendor the witness graph into BOTH app bundles (untracked; ~3 MB each).
+cp circuits/build/consent_final.zkey      apps/ios/DogTag/consent_final.zkey
+cp circuits/build/consent_final.zkey      apps/android/app/src/main/assets/consent_final.zkey
+# Vendor the witness graphs into BOTH app bundles (untracked; build them first, see below).
 cp circuits/build/verification.graph apps/ios/DogTag/verification.graph
 cp circuits/build/verification.graph apps/android/app/src/main/assets/verification.graph
+cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
+cp circuits/build/consent.graph      apps/android/app/src/main/assets/consent.graph
 ```
 
-**Verify.** All four files exist and are non-trivial in size.
+**Building the witness graphs.** Neither graph is committed and no in-repo script emits one: the
+`.graph` format is produced by iden3's `build-circuit` binary (NOT the `npm run build-circuit` dev
+setup, and NOT in the published `circom-witnesscalc` crate). Build each from its circom source the
+same way — for Level-B:
 
 ```bash
-ls -l apps/ios/DogTag/verification_final.zkey \
-      apps/android/app/src/main/assets/verification_final.zkey
-# → two lines, each ~65 MB (≈ 64571044 bytes for the v2-ceremony zkey, sha256 9e3636b9…d992)
-ls -l apps/ios/DogTag/verification.graph \
-      apps/android/app/src/main/assets/verification.graph
-# → two lines, each ~3 MB (≈ 2991853 bytes)
+# iden3 build-circuit (install per its README); consumes the circom + circomlib includes.
+build-circuit circuits/consent.circom circuits/build/consent.graph -l node_modules/circomlib/circuits -l circuits
 ```
 
-**STOP if** any path is missing or 0 bytes — `circuits/build/verification_final.zkey` or
-`circuits/build/verification.graph` is absent, or the copy failed. Ensure `circuits/build/` is
-populated (see [PREREQUISITES — circuits/build](./PREREQUISITES.md)), then re-run the copies.
+In CI the mobile workflows serve the graphs from `DOGTAG_ARTIFACTS_URL` instead; on a self-hosted
+runner they use the working-tree copy under `circuits/build/`.
+
+**Verify.** All eight bundle copies exist and are non-trivial in size.
+
+```bash
+ls -l apps/ios/DogTag/verification_final.zkey apps/ios/DogTag/consent_final.zkey \
+      apps/android/app/src/main/assets/verification_final.zkey \
+      apps/android/app/src/main/assets/consent_final.zkey
+# → verification zkey ~65 MB (≈ 64571044 bytes, sha256 9e3636b9…d992);
+#   consent zkey ~25 MB (≈ 24781468 bytes, sha256 f83a111f…c868)
+ls -l apps/ios/DogTag/verification.graph apps/ios/DogTag/consent.graph \
+      apps/android/app/src/main/assets/verification.graph \
+      apps/android/app/src/main/assets/consent.graph
+# → verification.graph ~3 MB (≈ 2991853 bytes); consent.graph a few MB
+```
+
+**STOP if** any path is missing or 0 bytes — a `circuits/build/*.zkey` or `*.graph` is absent, or the
+copy failed. Ensure `circuits/build/` is populated (see [PREREQUISITES — circuits/build](./PREREQUISITES.md)),
+build any missing graph as above, then re-run the copies.
 
 > `roax.json` is **hand-maintained** — there is no script that syncs it from
 > `contracts/deployments/roax.json`. If you swap chains/contracts you edit it by hand in **both** apps
