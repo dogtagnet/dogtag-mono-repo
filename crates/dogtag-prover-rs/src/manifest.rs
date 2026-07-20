@@ -19,8 +19,9 @@
 //! [`ArtifactDescriptor`] (crate [`artifact`]), so its `circuit_id`, `public_signal_layout`, and every
 //! artifact pin are the SAME values the crate already file-verifies against the committed artifacts
 //! (`*_descriptor_pins_match_the_real_artifacts`). The [`VersionDeployment`] only ADDS the trio/verifier
-//! addresses + `artifact_base_url` + `min_app_version` (the on-chain-address half, mirrored from
-//! `contracts/deployments/roax.json` and `ProtocolVersions.sol`).
+//! addresses (the on-chain-axis half, mirrored from `contracts/deployments/roax.json` and
+//! `ProtocolVersions.sol`), while the [`ArtifactRelease`] adds the artifact-axis half —
+//! `artifact_base_url` + `min_app_version`.
 //!
 //! # On-chain VK identity vs the manifest VK hash (§3.2)
 //!
@@ -156,8 +157,9 @@ pub fn build(version: &str) -> Option<Manifest> {
     Some(Manifest::from_descriptor(desc, deploy, release))
 }
 
-/// The manifest CONTENT for one version (§5.2 TRUST tier). Mirrors the on-chain `Version` PLUS the
-/// off-chain VK identity + artifact URLs. Serialized deterministically (struct field order) for signing.
+/// The manifest CONTENT for one version (§5.2 TRUST tier). Mirrors BOTH on-chain axes — the
+/// `ContractSet` and the `ArtifactSet` its binding points at — PLUS the off-chain VK identity + artifact
+/// URLs. Serialized deterministically (struct field order) for signing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: String,

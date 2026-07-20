@@ -182,7 +182,7 @@ async fn verify_resolve_convenience_tier_is_validated_against_the_dogtag_anchor(
         Err(DiscoveryError::PurposeMismatch { .. })
     ));
 
-    // (5) DEPRECATED version (what `ProtocolRegistry.deprecateVersion` produces on-chain): every claim
+    // (5) DEPRECATED version (what `ProtocolRegistry.deprecateContractSet` produces on-chain): every claim
     //     is honest, yet the app still refuses — the anti-downgrade lever (§8.4).
     let mut deprecated = anchor.clone();
     deprecated.active = false;

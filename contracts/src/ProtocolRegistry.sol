@@ -305,7 +305,8 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
 
     /// @notice Execute a previously-proposed binding once its timelock has elapsed. This is the write
     /// that makes an artifact rotation visible to resolvers — and it touches NO `ContractSet` field.
-    /// BOTH sides must be published AT THIS MOMENT, so the pointer can never be made to dangle.
+    /// BOTH sides must be published AND ACTIVE AT THIS MOMENT, so the pointer can never be made to
+    /// dangle and a set retired mid-window (deprecate is the compromise lever) cannot be bound.
     function executeArtifactBinding(bytes32 contractSetId) external onlyRole(PUBLISHER_ROLE) {
         uint256 eta = bindingEta[contractSetId];
         require(eta != 0, "none pending");
@@ -313,7 +314,9 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
 
         bytes32 artifactSetId = _pendingBinding[contractSetId];
         require(contractSets[contractSetId].contractSetId != 0, "unknown contract set");
+        require(contractSets[contractSetId].active, "inactive contract set");
         require(artifactSets[artifactSetId].artifactSetId != 0, "unknown artifact set");
+        require(artifactSets[artifactSetId].active, "inactive artifact set");
         activeArtifactSetOf[contractSetId] = artifactSetId;
 
         delete _pendingBinding[contractSetId];

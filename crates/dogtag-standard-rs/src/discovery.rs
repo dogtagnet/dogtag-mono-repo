@@ -5,9 +5,10 @@
 //! CLAIMS, never authority (arch §1.2 trust boundary: the platform backend is NOT trusted for the
 //! `{version, registry}` fields). Before the app acts on any platform-supplied version/registry it
 //! resolves the dogtag-owned TRUST tier — [`TrustedAnchor`] — from
-//! `ProtocolRegistry.getVersion(keccak256(version))` (the on-chain root of truth) or the P3
-//! signed-manifest fallback ([`crate`] has no manifest types; they live in the server-only prover crate
-//! `dogtag_prover::manifest`, which mirrors the same on-chain `Version`). [`validate`] then REQUIRES the
+//! `ProtocolRegistry.getContractSet(keccak256(version))` + `getActiveArtifactSet` (the on-chain root of
+//! truth) or the P3 signed-manifest fallback ([`crate`] has no manifest types; they live in the
+//! server-only prover crate `dogtag_prover::manifest`, which mirrors the same two on-chain axes).
+//! [`validate`] then REQUIRES the
 //! claims to MATCH the anchor and enforces `minAppVersion`, FAIL-CLOSED on every axis.
 //!
 //! # Why this is the load-bearing security step (§5.3 step 4-5)
@@ -29,8 +30,9 @@
 //!
 //! # `purpose` is checked against the app's OUT-OF-BAND intent, not a chain field
 //!
-//! The on-chain `Version` deliberately carries NO purpose (purpose is per-verification, not
-//! per-version), so [`validate`] compares the claimed purpose to [`ClientContext::expected_purpose`] —
+//! Neither on-chain axis — the `ContractSet` nor the `ArtifactSet` — carries a purpose (purpose is
+//! per-verification, not per-version), so [`validate`] compares the claimed purpose to
+//! [`ClientContext::expected_purpose`] —
 //! the purpose the app/user independently intends for this scan. That value MUST come from a source
 //! independent of the platform's claim; comparing a platform claim against the platform's own session
 //! would be vacuous. This is a consent-integrity check complementary to the registry/chain anti-redirect
@@ -69,8 +71,9 @@ pub struct ConvenienceClaims {
 }
 
 /// The dogtag-owned TRUST tier (§5.2) for one version, RESOLVED by the caller from
-/// `ProtocolRegistry.getVersion` (root of truth) or the P3 signed-manifest fallback (both mirror the
-/// same on-chain `Version`). These are the AUTHORITATIVE values a platform's [`ConvenienceClaims`] are
+/// `ProtocolRegistry.getContractSet` + `getActiveArtifactSet` (root of truth) or the P3 signed-manifest
+/// fallback (both mirror the same two on-chain axes). These are the AUTHORITATIVE values a platform's
+/// [`ConvenienceClaims`] are
 /// checked against. Constructed from plain fields so the app can build it from an `eth_call` result or a
 /// parsed/reconciled manifest, and the server can map it from `dogtag_prover::manifest` types — keeping
 /// this crate free of any prover/manifest dependency.
@@ -93,7 +96,7 @@ pub struct TrustedAnchor {
     /// `version_id`; [`validate`] checks their coherence independently.
     pub artifact_set_id: String,
     /// The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
-    /// the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
+    /// the on-chain `ContractSet` struct itself has no chain-id member — the registry IS on a chain.)
     pub chain_id: u64,
     /// The registry a proof is submitted to (trio leg). The anti-redirect anchor.
     pub verification_registry: String,
@@ -203,7 +206,7 @@ pub fn validate(
     // C: nothing bundled - it discovers the version), so there is deliberately no `expected_version` to
     // pin against; adding one would contradict the architecture. The version-DOWNGRADE defense is
     // therefore OPERATIONAL, enforced by two levers this function only executes:
-    //   - dogtag MUST `deprecateVersion` a superseded version in the `ProtocolRegistry` - once
+    //   - dogtag MUST `deprecateContractSet` a superseded version in the `ProtocolRegistry` - once
     //     `dogtag-levelb/1` is the standard, `dogtag-levela/1` MUST be marked `active=false`, which
     //     check (2) below then refuses;
     //   - `minAppVersion` (check 6), which floors out builds that predate a required change.

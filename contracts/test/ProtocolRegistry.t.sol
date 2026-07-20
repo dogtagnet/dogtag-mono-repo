@@ -252,6 +252,46 @@ contract ProtocolRegistryTest is Test {
         assertEq(reg.activeArtifactSetOf(bId), bArtId);
     }
 
+    /// Deprecate is the EMERGENCY lever: a set retired because it is COMPROMISED must not still be
+    /// reachable through a proposal staged before the retirement, or the window that exists to catch a
+    /// malicious repoint would let the repoint through anyway.
+    function test_binding_cannot_point_at_a_deprecated_artifact_set() public {
+        _publishContracts(ProtocolVersions.levelBContracts());
+        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+
+        vm.prank(PUBLISHER);
+        reg.proposeArtifactBinding(bId, bArtId); // staged while the set is still active
+        vm.prank(PUBLISHER);
+        reg.deprecateArtifactSet(bArtId);
+
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("inactive artifact set"));
+        reg.executeArtifactBinding(bId);
+
+        // The pointer was never set — the contract set stays unbound and fails closed on resolution.
+        assertEq(reg.activeArtifactSetOf(bId), bytes32(0), "no binding was written");
+    }
+
+    /// The symmetric case on the on-chain axis: each `active` bit is an independent kill switch, so
+    /// retiring the contract set must refuse a new binding just as retiring the artifact set does.
+    function test_binding_cannot_point_at_a_deprecated_contract_set() public {
+        _publishContracts(ProtocolVersions.levelBContracts());
+        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+
+        vm.prank(PUBLISHER);
+        reg.proposeArtifactBinding(bId, bArtId);
+        vm.prank(PUBLISHER);
+        reg.deprecateContractSet(bId);
+
+        vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("inactive contract set"));
+        reg.executeArtifactBinding(bId);
+
+        assertEq(reg.activeArtifactSetOf(bId), bytes32(0), "no binding was written");
+    }
+
     function test_binding_requires_publisher_role() public {
         _publishLevelB();
         _expectUnauthorized(OUTSIDER);

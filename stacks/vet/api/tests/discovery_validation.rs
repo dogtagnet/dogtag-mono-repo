@@ -184,7 +184,7 @@ fn reconciled_anchor_enforces_onchain_precedence() {
 }
 
 /// The anti-downgrade defense is WIRED, not merely documented: an on-chain record whose `active=false`
-/// (what `ProtocolRegistry.deprecateVersion` produces) flows through `reconcile` ->
+/// (what `ProtocolRegistry.deprecateContractSet` produces) flows through `reconcile` ->
 /// `anchor_from_reconciliation` -> a `TrustedAnchor` with `active=false`, and the validator then fails
 /// closed with `DeprecatedVersion` — even though the signed manifest itself carries no lifecycle bit and
 /// agrees on every field it DOES carry. This is what makes "deprecate `dogtag-levela/1` at the M7 cutover"

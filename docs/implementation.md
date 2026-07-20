@@ -923,7 +923,7 @@ dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version,
   axes (`versionId`, `verificationRegistry`) compare case-insensitively; `minAppVersion` compares
   NUMERICALLY (`1.10.0` > `1.9.0`), tolerating a `-rc1`/`+build` suffix and failing closed on a malformed core.
 - **`purpose` is checked against the app's OUT-OF-BAND intent** (`ClientContext::expected_purpose`), not a
-  chain field: the on-chain `Version` struct deliberately carries no purpose (purpose is per-verification,
+  chain field: neither on-chain axis (`ContractSet`/`ArtifactSet`) carries a purpose (purpose is per-verification,
   not per-version), and comparing the platform's claim against the platform's own session would be vacuous.
 - **Server-side trust-tier mapping** is `stacks/vet/api/src/discovery.rs` (`anchor_from_manifest` /
   `anchor_from_reconciliation`) - the only place linking both crates. `anchor_from_reconciliation` enforces

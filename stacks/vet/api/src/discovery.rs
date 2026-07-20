@@ -5,7 +5,8 @@
 //! keeps the standard crate — which the mobile app links — free of any dependency on the ark-heavy
 //! prover crate: the field-copy mapping lives HERE, in vet-api, which already links both.
 //!
-//! Why the manifest is the source of the READABLE trust fields: the on-chain `ProtocolRegistry.getVersion`
+//! Why the manifest is the source of the READABLE trust fields: the on-chain
+//! `ProtocolRegistry.getContractSet`
 //! returns `circuitId` as a keccak `bytes32` and carries no version STRING and no chain id, whereas the
 //! signed manifest mirrors the same version with the human-readable `version`/`circuit_id`/`chain_id`
 //! the validator needs (§3.2). The on-chain record is still the ROOT OF TRUTH — its precedence is
