@@ -69,8 +69,27 @@ Because that loss is silent and permanent, the app does not rely on the owner re
 Android `SeedBackupNotConfirmedException` / `SeedBackup.isConfirmed(context, seedHex)`
 (`wallet/Wallet.kt`) - so a tag cannot be created for an owner who has not affirmed they stored that
 wallet's phrase offline.
-The "I've saved it" action appears on the wallet-genesis phrase card on both platforms, and
-additionally on the iOS account export sheet (`ProfileScreen.swift` / `ui/screens/ProfileScreen.kt`).
+**The confirm action must be reachable whenever the gate would refuse** - otherwise the gate is not a
+prompt but a permanent lockout, since a tag can then never be created on that device again and there
+is no on-chain remedy.
+iOS reaches it from the wallet-genesis phrase card and again from the account export sheet
+(`ProfileScreen.swift`).
+Android instead has a STANDING "Recovery phrase backup" card on Profile
+(`ui/screens/ProfileScreen.kt`), shown for any existing wallet whose backup is not known-confirmed.
+It deliberately does NOT re-display the phrase and offers no reveal path: Android does not persist
+BIP-39 entropy, so the 24 words are unrecoverable after genesis by design, and the owner is asserting
+against their own written copy.
+Binding it to the genesis phrase card alone would have been the lockout: `mnemonic` is set at exactly
+one site (the `Wallet.create` success handler), so a user backgrounded before tapping could never
+return to it.
+
+Note the Android card treats *undetermined* as unconfirmed and shows the action.
+`isConfirmed` is bound to a fingerprint of the seed, so answering it means decrypting the seed under
+the biometric-gated Keystore key, which Profile deliberately does not do while composing; the flag is
+resolved only from an already-authenticated path (genesis, unlock, or the confirm tap itself).
+A cheap "some fingerprint exists in prefs" read must NOT stand in for it - a restored-prefs /
+new-Keystore-seed mismatch is exactly what the fingerprint exists to catch, and rendering that as
+confirmed would hide the action while the gate refused forever.
 
 It records an assertion, not proof: the app cannot verify a phrase was really written down, and a
 determined owner can tap through.
@@ -169,11 +188,20 @@ like every other field here - never transmit the old<->new link.
 - **Path:** `<noBackupFilesDir>/dogtag-owner-secrets.json.enc`.
 - **Written by:** `apps/android/app/src/main/java/io/liberalize/dogtag/profile/ProfileTreeStore.kt`.
 - **Protection:** AES-256-GCM under a hardware-backed Android Keystore key
-  (`dogtag_owner_secrets_key`, StrongBox when the device has a secure element), the same envelope
-  `Wallet`'s `SeedVault` uses for the seed.
-  On API 28+ the key is additionally `setUnlockedDeviceRequired(true)`, the direct analogue of iOS's
-  `.completeFileProtection`.
+  (`dogtag_owner_secrets_key`), the same envelope `Wallet`'s `SeedVault` uses for the seed.
   The file is therefore ciphertext on disk, unlike iOS's plaintext-JSON-under-file-protection.
+- **Unlocked-device gate, one capability per rung:** `ProfileTreeStore.ensureKey` generates the key
+  down a ladder - `StrongBox + setUnlockedDeviceRequired(true)` → `setUnlockedDeviceRequired(true)`
+  alone → plain - so a device only gives up what it actually cannot provide.
+  That matters because the two capabilities are independent and fail at very different rates:
+  `setIsStrongBoxBacked(true)` throws on every device without a secure element and on all emulators,
+  while `setUnlockedDeviceRequired(true)` is the direct analogue of iOS's `.completeFileProtection`
+  and is what this store's at-rest story rests on.
+  Dropping both together - as the first cut did - silently encrypted recovery secrets under a key
+  usable while the phone was locked, on every non-StrongBox device.
+  Both capabilities are API 28+, so on API 26-27 only the plain rung exists.
+  Reaching the plain rung is `Log.w`-reported rather than accepted in silence, so the weaker state is
+  discoverable.
 - **Not biometric-gated:** unlike the wallet seed's key, this one is not
   `setUserAuthenticationRequired`.
   `.completeFileProtection` gates on device lock, not on a fresh biometric per read, and this store
@@ -184,8 +212,21 @@ like every other field here - never transmit the old<->new link.
   device-to-device transfer both skip.
   The manifest sets `allowBackup="true"` for the rest of the app, so that flag is deliberately *not*
   what this relies on - `noBackupFilesDir` is excluded regardless of it.
-- **Writes:** staged to a sibling temp file and renamed, so an interrupted write cannot truncate a
-  store whose attribute salts exist nowhere else.
+- **Writes:** no window ever holds zero readable copies of a store whose attribute salts exist
+  nowhere else.
+  New contents go to a sibling temp file that is `fsync`ed (`FileOutputStream.getFD().sync()`) before
+  anything is moved - a bare `writeBytes` only reaches the page cache, so the rename could otherwise
+  be durable while the bytes it points at are not.
+  The current store is then *parked* as `dogtag-owner-secrets.json.enc.bak` rather than deleted, the
+  staging file is renamed into place, and only then is the backup dropped.
+  The `.bak` is the recoverable copy: any failure restores it, and the staging file is merely left in
+  place rather than deleted (nothing reads it back, but no failure path should delete a file it has
+  not already replaced).
+  A crash inside the window where only the backup exists is repaired by `load()`, which promotes the
+  `.bak` before it will report an absent store - reporting "no records" there would let `upsert`
+  rebuild an empty list over the only surviving copy.
+  This guarantees a recoverable copy always survives; it is not full power-loss atomicity, which
+  would additionally need a directory `fsync` the JVM does not expose.
 - **Format:** the same JSON array of records, encrypted.
   The three re-issue fields are **not** yet written on Android - `reissue` (D3) is iOS-only for now;
   see [Platform parity](#platform-parity).

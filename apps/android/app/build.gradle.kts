@@ -124,16 +124,27 @@ dependencies {
 // stubbed one would assert Kotlin against Kotlin and prove nothing - so we build the same crate for
 // the HOST here and point JNA at it.
 //
-// Deliberately a hard dependency of `test`, not a soft skip: this test is the only thing standing
-// between an Android wrapper bug and a tag whose `R` the circuit cannot prove, and a self-skipping
-// parity test reports green in exactly the situation it exists to catch. `cargo` is already a
-// documented prerequisite of the Android build, and the build is incremental (~4 s cold, no-op warm).
+// Deliberately a hard dependency of `test`, not a soft skip or an `onlyIf`: this test is the only
+// thing standing between an Android wrapper bug and a tag whose `R` the circuit cannot prove, and a
+// self-skipping parity test reports green in exactly the situation it exists to catch. `cargo` is
+// already a documented prerequisite of the Android build. A COLD build is slow - `--features prover`
+// pulls the whole ark-groth16/ark-circom tree - which is exactly why the inputs/outputs below matter:
+// without them Gradle can never mark the task up to date and every `test` invocation re-shells to
+// cargo. Warm and unchanged, it is now a no-op.
 val workspaceRoot = rootDir.parentFile.parentFile
+val hostRustCoreDir = File(workspaceRoot, "target/debug")
 
 val buildHostRustCore by tasks.registering(Exec::class) {
     group = "verification"
     description = "Builds dogtag-standard-rs for the host so JVM unit tests can load it over JNA."
     workingDir = workspaceRoot
+    inputs.dir(File(workspaceRoot, "crates/dogtag-standard-rs/src")).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(File(workspaceRoot, "crates/dogtag-standard-rs/build.rs"))
+    inputs.file(File(workspaceRoot, "crates/dogtag-standard-rs/Cargo.toml"))
+    inputs.file(File(workspaceRoot, "Cargo.lock"))
+    // The host artifact is `.dylib` on macOS and `.so` on Linux, so match on the stem rather than
+    // hardcoding either extension.
+    outputs.files(fileTree(hostRustCoreDir) { include("libdogtag_standard.*") })
     // `--features prover` is REQUIRED, not an optimisation: the checked-in Kotlin bindings were
     // generated from the prover-enabled crate, and UniFFI verifies EVERY exported function's
     // checksum when the library is first loaded. A default-feature build omits `prove_consent`, so
@@ -145,7 +156,7 @@ val buildHostRustCore by tasks.registering(Exec::class) {
 tasks.withType<Test>().configureEach {
     dependsOn(buildHostRustCore)
     // Where `Native.load("dogtag_standard")` looks for lib{dogtag_standard}.{dylib,so}.
-    systemProperty("jna.library.path", File(workspaceRoot, "target/debug").absolutePath)
+    systemProperty("jna.library.path", hostRustCoreDir.absolutePath)
     // Tests read shared cross-language fixtures from the repo. The unit-test working directory is
     // the MODULE dir (`apps/android/app`), which is an AGP detail no test should encode as `../../..`.
     systemProperty("dogtag.repoRoot", workspaceRoot.absolutePath)

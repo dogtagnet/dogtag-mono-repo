@@ -16,8 +16,11 @@ data class BackedUpAttribute(
  * loss. **Holds a recovery secret** ([ownerSecretHex]); see [ProfileTreeStore] and
  * `docs/MOBILE_OWNER_SECRET.md`.
  *
- * Field-for-field the same record iOS `ProfileTreeStore.OwnerSecretRecord` writes, so the two
- * platforms' local stores describe a tag identically.
+ * Carries every field iOS `ProfileTreeStore.OwnerSecretRecord` writes EXCEPT the three optional M6
+ * re-issue fields (`abandonedAt`, `replacedByDogTagIdDec`, `replacesDogTagIdDec`), which Android does
+ * not yet write because `reissue` (D3) is iOS-only - see the parity table in
+ * `docs/MOBILE_OWNER_SECRET.md`. [OwnerSecretRecords.decode] ignores unknown keys, so an iOS record
+ * re-encoded here would silently drop that abandoned↔fresh linkage.
  */
 data class OwnerSecretRecord(
     /** Canonical dogTagId field, the value the tree is bound to. */

@@ -4,8 +4,10 @@ import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Log
 import io.liberalize.dogtag.wallet.SeedBackup
 import java.io.File
+import java.io.FileOutputStream
 import java.security.KeyStore
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -36,8 +38,10 @@ import uniffi.dogtag_standard.ProfileTreeFfi
  *    the app, so relying on that flag would be wrong here; `noBackupFilesDir` is excluded regardless
  *    of it, which is the property we actually need.
  *  - **Encrypted at rest:** AES-256-GCM under a hardware-backed Android Keystore key, matching the
- *    envelope `Wallet`'s `SeedVault` already uses for the seed. On API 28+ the key additionally
- *    requires an UNLOCKED device, which is the direct analogue of `.completeFileProtection`.
+ *    envelope `Wallet`'s `SeedVault` already uses for the seed. The key is generated through the
+ *    tiered ladder in [ensureKey], whose top two tiers additionally require an UNLOCKED device -
+ *    the direct analogue of `.completeFileProtection`. That gate is only surrendered on the last
+ *    tier (API < 28, or a device that rejects it), which is logged rather than silently accepted.
  *
  * The key is deliberately NOT `setUserAuthenticationRequired`, unlike the wallet seed's: iOS's
  * `.completeFileProtection` gates on device lock, not on a fresh biometric per read, and this store
@@ -66,6 +70,11 @@ class ProfileTreeStore(private val context: Context) {
 
     companion object {
         const val FILE_NAME = "dogtag-owner-secrets.json.enc"
+
+        /** The outgoing store, parked by [write] and recovered by [load]. */
+        const val BACKUP_FILE_NAME = "$FILE_NAME.bak"
+
+        private const val TAG = "ProfileTreeStore"
 
         /**
          * Stamped into every record so a future KDF change is detectable rather than silently
@@ -110,6 +119,9 @@ class ProfileTreeStore(private val context: Context) {
     )
 
     private val file: File get() = File(context.noBackupFilesDir, FILE_NAME)
+
+    /** Where [write] parks the outgoing store so no window holds zero copies. */
+    private val backupFile: File get() = File(context.noBackupFilesDir, BACKUP_FILE_NAME)
 
     // ---- build ---------------------------------------------------------------------------------
 
@@ -190,7 +202,18 @@ class ProfileTreeStore(private val context: Context) {
      */
     fun load(): List<OwnerSecretRecord> = synchronized(storeLock) {
         val f = file
-        if (!f.exists()) return emptyList()
+        if (!f.exists()) {
+            // A write that died between parking the old store aside and committing the new one
+            // leaves the only copy in the backup. Reporting that as "no records" would let [upsert]
+            // rebuild an empty list over it, so recover it before deciding the store is absent.
+            val bak = backupFile
+            if (!bak.exists()) return emptyList()
+            if (!bak.renameTo(f)) {
+                throw UnreadableStoreException(
+                    IllegalStateException("could not restore ${bak.name} after an interrupted write"),
+                )
+            }
+        }
         try {
             OwnerSecretRecords.decode(String(decrypt(f.readBytes()), Charsets.UTF_8))
         } catch (e: Exception) {
@@ -208,29 +231,56 @@ class ProfileTreeStore(private val context: Context) {
     }
 
     /**
-     * Stage to a sibling then atomically rename, so an interrupted write cannot truncate a file whose
-     * attribute salts exist nowhere else.
+     * Replace the store without ever passing through a state that holds zero readable copies of it -
+     * the attribute salts in here exist nowhere else on the device, and `profileRoot` is write-once
+     * on-chain, so losing them strands every tag they belong to.
+     *
+     * The sequence is: write the new contents to a staging sibling and `fsync` it (a bare
+     * `writeBytes` only reaches the page cache, so a rename could otherwise be durable while the
+     * bytes it points at are not); park the current store as [backupFile] rather than deleting it;
+     * rename staging into place; and only then drop the backup. [backupFile] is the recoverable copy:
+     * any failure restores it, and a crash inside the window where only it exists is repaired by
+     * [load]. The staging file is merely left in place rather than deleted on the failure path -
+     * nothing reads it back, but no failure path should delete a file it has not already replaced.
      */
     private fun write(records: List<OwnerSecretRecord>) {
         val dir = context.noBackupFilesDir
+        val dest = file
+        val bak = backupFile
         val staging = File.createTempFile(".$FILE_NAME", ".tmp", dir)
+        var parked = false
+        var committed = false
         try {
-            staging.writeBytes(encrypt(OwnerSecretRecords.encode(records).toByteArray(Charsets.UTF_8)))
-            if (!staging.renameTo(file)) {
-                // renameTo does not overwrite on every filesystem; fall back to an explicit replace.
-                file.delete()
-                check(staging.renameTo(file)) { "could not commit $FILE_NAME" }
+            val bytes = encrypt(OwnerSecretRecords.encode(records).toByteArray(Charsets.UTF_8))
+            FileOutputStream(staging).use { out ->
+                out.write(bytes)
+                out.flush()
+                out.fd.sync()
             }
+            if (dest.exists()) {
+                bak.delete()
+                // Refuse rather than delete: an unparked destination is the only copy there is.
+                check(dest.renameTo(bak)) { "could not stage a backup of $FILE_NAME before replacing it" }
+                parked = true
+            }
+            check(staging.renameTo(dest)) { "could not commit $FILE_NAME" }
+            committed = true
         } finally {
-            if (staging.exists()) staging.delete()
+            if (committed) {
+                bak.delete()
+                if (staging.exists()) staging.delete()
+            } else if (parked && !dest.exists()) {
+                bak.renameTo(dest)
+            }
         }
     }
 
     // ---- Android Keystore AES-GCM envelope -----------------------------------------------------
 
-    private fun ensureKey() {
-        val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        if (ks.containsAlias(KEY_ALIAS)) return
+    /** One rung of [ensureKey]'s ladder: what it asks the Keystore for, and what to call it. */
+    private data class KeyTier(val label: String, val strongBox: Boolean, val unlockedRequired: Boolean)
+
+    private fun keySpec(tier: KeyTier): KeyGenParameterSpec {
         val builder = KeyGenParameterSpec.Builder(
             KEY_ALIAS,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
@@ -238,27 +288,58 @@ class ProfileTreeStore(private val context: Context) {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
-        // The `.completeFileProtection` analogue: usable only while the device is unlocked (API 28+).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            runCatching { builder.setUnlockedDeviceRequired(true) }
+            if (tier.unlockedRequired) builder.setUnlockedDeviceRequired(true)
+            if (tier.strongBox) builder.setIsStrongBoxBacked(true)
         }
-        runCatching { builder.setIsStrongBoxBacked(true) }
-        val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-        try {
-            kg.init(builder.build()); kg.generateKey()
-        } catch (e: Exception) {
-            // No StrongBox (emulators, older devices): fall back to a software-backed Keystore key so
-            // the flow still works. Still Keystore-held and still device-bound.
-            val fallback = KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+        return builder.build()
+    }
+
+    /**
+     * Generate the store key, surrendering ONE capability per rung so a device only loses what it
+     * actually cannot provide.
+     *
+     * StrongBox and the unlocked-device gate are independent: `setIsStrongBoxBacked(true)` throws
+     * `StrongBoxUnavailableException` on every device without a secure element and on all emulators,
+     * which is common, while `setUnlockedDeviceRequired(true)` is the `.completeFileProtection`
+     * analogue this store's whole at-rest story rests on. Collapsing both into a single catch-all
+     * fallback - as the first cut did - dropped the unlocked gate on every non-StrongBox device,
+     * encrypting recovery secrets under a key usable while the phone is locked. So the ladder is
+     * (StrongBox + unlocked) -> (unlocked) -> (plain), and reaching the plain rung is logged rather
+     * than accepted in silence.
+     */
+    private fun ensureKey() {
+        val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        if (ks.containsAlias(KEY_ALIAS)) return
+        val tiers = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            listOf(
+                KeyTier("StrongBox + unlocked-device-required", strongBox = true, unlockedRequired = true),
+                KeyTier("unlocked-device-required", strongBox = false, unlockedRequired = true),
+                KeyTier("software-backed, no unlocked-device gate", strongBox = false, unlockedRequired = false),
             )
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(256)
-                .build()
-            kg.init(fallback); kg.generateKey()
+        } else {
+            // Both capabilities are API 28+; on 26-27 the plain rung is the only one that exists.
+            listOf(KeyTier("software-backed, no unlocked-device gate (API < 28)", false, false))
         }
+        val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        var last: Exception? = null
+        for (tier in tiers) {
+            try {
+                kg.init(keySpec(tier)); kg.generateKey()
+            } catch (e: Exception) {
+                last = e
+                continue
+            }
+            if (!tier.unlockedRequired) {
+                Log.w(
+                    TAG,
+                    "$FILE_NAME key created as ${tier.label}: this device cannot enforce the " +
+                        "unlocked-device gate, so the store is decryptable while the screen is locked",
+                )
+            }
+            return
+        }
+        throw IllegalStateException("could not create the $FILE_NAME Keystore key", last)
     }
 
     private fun key(): SecretKey {

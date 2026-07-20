@@ -208,11 +208,16 @@ object SeedBackup {
         return prefs(context).getString(KEY, null) == expected
     }
 
-    /** Call when the user affirms they have stored the phrase offline (the "I've saved it" action). */
+    /**
+     * Call when the user affirms they have stored the phrase offline (the "I've saved it" action).
+     *
+     * Writes with `commit()`, not `apply()`: the returned boolean is what the UI flips to "confirmed"
+     * on, so it must mean "durably recorded". `apply()` returns before the flush, and a process kill
+     * in that window would leave a UI claiming the backup is on file over a gate that still refuses.
+     */
     fun confirm(context: Context, seedHex: String): Boolean {
         val value = fingerprint(seedHex) ?: return false
-        prefs(context).edit().putString(KEY, value).apply()
-        return true
+        return prefs(context).edit().putString(KEY, value).commit()
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
