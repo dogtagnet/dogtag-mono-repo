@@ -885,7 +885,7 @@ GET /protocol/manifest?version=dogtag-levelb/1        # stacks/vet/api/src/proto
   with on-chain and always returns the on-chain value as authoritative (the deprecation lever
   `min_app_version` and `circuit_id` included). The on-chain `active` lifecycle bit rides through
   `reconcile` into `authoritative` UNCOMPARED (the signed manifest carries no lifecycle state, so a
-  disagreement is impossible by construction) - that pass-through is what wires `deprecateVersion` into the
+  disagreement is impossible by construction) - that pass-through is what wires `deprecateContractSet`/`deprecateArtifactSet` into the
   §3.10d anti-downgrade check.
 
 ### 3.10d Discovery API + app anchor-validation (resolve GET convenience tier) - M7 P4
@@ -905,7 +905,8 @@ deployment's config. Full brick: AGENTS.md "Discovery API + app anchor-validatio
    #  /p/ (issuance) -> issuerClone = PROFILE_DOCUMENT_STORE;  purpose = "DOG_PROFILE" (no verify-purpose
    #                    exists for issuance, so the record type is the namespace the app already knows)
 
-# the app then RESOLVES the dogtag-owned anchor (§3.10c / on-chain ProtocolRegistry.getVersion) and gates:
+# the app then RESOLVES the dogtag-owned anchor (§3.10c / on-chain ProtocolRegistry.getContractSet +
+# getActiveArtifactSet - the two independent version axes, R-5) and gates:
 dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version, expected_purpose })
    -> Ok(ValidatedVersion{ version, circuit_id })   # feeds artifact selection (dogtag_prover::artifact::resolve)
    -> Err(..)                                       # ABORT — never prove against an unvalidated claim
@@ -914,7 +915,7 @@ dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version,
 - **The validator is PURE and lives in the STANDARD crate** (`crates/dogtag-standard-rs/src/discovery.rs`),
   not the prover crate, because the mobile app links `dogtag-standard-rs` over UniFFI but NOT the ark-heavy
   `dogtag-prover-rs`. It does string/int/semver compares only - no ZK, no chain I/O, no signature check.
-  RESOLVING the anchor (the `getVersion` eth-call, or the §3.10c manifest `verify` + `reconcile`) is the
+  RESOLVING the anchor (the `getContractSet`+`getActiveArtifactSet` eth-calls, or the §3.10c manifest `verify` + `reconcile`) is the
   CALLER's job. The FFI export is `validateDiscovery` (committed Swift + Kotlin bindings regenerated).
 - **Fail-closed axes**, each aborting the flow: version-coherence, `active` (a deprecated version is refused
   - the anti-downgrade lever §8.4), `chainId`, `verificationRegistry` (**the anti-redirect trip** - a lying
@@ -1380,7 +1381,7 @@ fn bindConsentKeyAuth():
 fn approveVerification(sessionJwt):
     claims = parseQrJwt(sessionJwt)                          # {relayer, purpose, recordType, challenge, mode}
     # M7 P4 (§3.10d): the resolve GET also returns `unverifiedClaims` — the platform's CONVENIENCE tier.
-    # Resolve the dogtag-owned anchor (ProtocolRegistry.getVersion / signed manifest) and gate on it
+    # Resolve the dogtag-owned anchor (ProtocolRegistry.getContractSet + getActiveArtifactSet / signed manifest) and gate on it
     # BEFORE proving; a failure ABORTS (never fall back to the platform's claim).
     v = validateDiscovery(unverifiedClaims, anchor,
                           {appVersion, expectedPurpose: <the app/user's OWN out-of-band intent for this scan>})

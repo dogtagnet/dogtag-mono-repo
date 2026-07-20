@@ -78,9 +78,20 @@ pub struct ConvenienceClaims {
 pub struct TrustedAnchor {
     /// The version string this record certifies (e.g. `dogtag-levelb/1`).
     pub version: String,
-    /// keccak256(version) `0x`-hex — the on-chain map key; ties the claimed version STRING to the
-    /// on-chain `versionId` so a caller cannot silently validate against the wrong record.
+    /// keccak256(version) `0x`-hex — the on-chain `contractSetId`; ties the claimed version STRING to
+    /// the on-chain key so a caller cannot silently validate against the wrong record.
     pub version_id: String,
+    /// The ARTIFACT-AXIS identity the caller resolved for this version (e.g.
+    /// `dogtag-levelb-artifacts/1`) — the artifact set `activeArtifactSetOf[versionId]` points at.
+    ///
+    /// It is a SECOND, independent axis (R-5): rotating the proving artifacts changes this and
+    /// `min_app_version` while `version`/`version_id` and `verification_registry` stay put. Carrying it
+    /// on the anchor is what lets a caller say WHICH artifact set it is about to fetch, rather than
+    /// inferring it from the version.
+    pub artifact_set: String,
+    /// keccak256(artifact_set) `0x`-hex — the on-chain `artifactSetId`. A DIFFERENT keyspace from
+    /// `version_id`; [`validate`] checks their coherence independently.
+    pub artifact_set_id: String,
     /// The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
     /// the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
     pub chain_id: u64,
@@ -119,6 +130,13 @@ pub enum DiscoveryError {
     /// or a swapped record). Ties by both the string and its keccak `versionId`.
     #[error("claimed version {claimed:?} does not match the resolved anchor version {anchor:?}")]
     VersionMismatch { claimed: String, anchor: String },
+    /// The anchor's artifact-axis halves disagree: `artifact_set_id != keccak256(artifact_set)`. The
+    /// artifact axis is dogtag-owned (a platform never claims it), so this is a CALLER-INTEGRITY guard —
+    /// the same guard check (1) applies to the contract axis, applied independently to the second axis
+    /// (R-5). A caller that stitched an anchor from a mismatched pair is refused rather than allowed to
+    /// fetch artifacts under the wrong identity.
+    #[error("anchor artifactSet {artifact_set:?} does not hash to its artifactSetId {artifact_set_id:?}")]
+    ArtifactSetIncoherent { artifact_set: String, artifact_set_id: String },
     /// The claimed chain id differs from the anchor — the platform cannot point the app at another chain.
     #[error("claimed chainId {claimed} does not match anchor chainId {anchor}")]
     ChainIdMismatch { claimed: u64, anchor: u64 },
@@ -150,6 +168,10 @@ pub struct ValidatedVersion {
     pub circuit_id: String,
     pub chain_id: u64,
     pub verification_registry: String,
+    /// The validated ARTIFACT-AXIS identity (R-5) — which proving-artifact set the caller may now
+    /// fetch. Returned separately from `version` precisely because it moves separately: an artifact
+    /// rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
+    pub artifact_set: String,
 }
 
 /// Validate a platform's [`ConvenienceClaims`] against the dogtag-owned [`TrustedAnchor`] and enforce
@@ -159,6 +181,7 @@ pub struct ValidatedVersion {
 ///
 /// The checks, in order (order affects only which error surfaces first — every one is fail-closed):
 /// 1. version coherence (the anchor is the record for the claimed version),
+/// 1b. artifact-axis coherence (the anchor's `artifact_set` hashes to its `artifact_set_id`),
 /// 2. not deprecated (`active`),
 /// 3. chainId == anchor,
 /// 4. verificationRegistry == anchor (case-insensitive — checksum vs lowercase is not a real mismatch),
@@ -193,6 +216,19 @@ pub fn validate(
         return Err(DiscoveryError::VersionMismatch {
             claimed: claims.protocol_version.clone(),
             anchor: anchor.version.clone(),
+        });
+    }
+
+    // (1b) The SAME coherence guard, applied independently to the ARTIFACT axis (R-5). The platform
+    // never claims an artifact set — that axis is dogtag-owned and reached through the on-chain binding —
+    // so there is nothing to compare it against except itself: the anchor's `artifact_set` string must
+    // hash to its `artifact_set_id`. A caller that stitched the two halves from different resolutions
+    // (e.g. read the id from chain but the name from a stale manifest) is refused here rather than
+    // allowed to fetch a zkey under an identity nobody attested.
+    if !version_id(&anchor.artifact_set).eq_ignore_ascii_case(&anchor.artifact_set_id) {
+        return Err(DiscoveryError::ArtifactSetIncoherent {
+            artifact_set: anchor.artifact_set.clone(),
+            artifact_set_id: anchor.artifact_set_id.clone(),
         });
     }
 
@@ -249,6 +285,7 @@ pub fn validate(
         circuit_id: anchor.circuit_id.clone(),
         chain_id: anchor.chain_id,
         verification_registry: anchor.verification_registry.clone(),
+        artifact_set: anchor.artifact_set.clone(),
     })
 }
 
@@ -333,11 +370,14 @@ mod tests {
     const REGISTRY: &str = "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87";
     const CIRCUIT: &str = "consent.circom/DogTagConsent(6)";
     const PURPOSE: &str = "GROOMING_INTAKE";
+    const ARTIFACTS: &str = "dogtag-levelb-artifacts/1";
 
     fn anchor() -> TrustedAnchor {
         TrustedAnchor {
             version: VERSION.to_string(),
             version_id: version_id(VERSION),
+            artifact_set: ARTIFACTS.to_string(),
+            artifact_set_id: version_id(ARTIFACTS),
             chain_id: 135,
             verification_registry: REGISTRY.to_string(),
             circuit_id: CIRCUIT.to_string(),
@@ -369,6 +409,54 @@ mod tests {
         assert_eq!(v.circuit_id, CIRCUIT);
         assert_eq!(v.chain_id, 135);
         assert_eq!(v.verification_registry, REGISTRY);
+        assert_eq!(v.artifact_set, ARTIFACTS, "the validated artifact axis is surfaced to the caller");
+    }
+
+    /// R-5 in the validator: an ARTIFACT rotation (new artifact set, raised app floor) validates on its
+    /// own, and every ON-CHAIN field the caller acts on is byte-identical to before the rotation. This is
+    /// what "the app is not forced to re-check the trio when a zkey rotates" means in code.
+    #[test]
+    fn an_artifact_rotation_does_not_disturb_the_onchain_axis() {
+        let before = validate(&claims(), &anchor(), &ctx()).expect("baseline validates");
+
+        let mut rotated = anchor();
+        rotated.artifact_set = "dogtag-levelb-artifacts/2".to_string();
+        rotated.artifact_set_id = version_id("dogtag-levelb-artifacts/2");
+        rotated.min_app_version = "1.5.0".to_string();
+
+        let newer = ClientContext { app_version: "1.5.0", expected_purpose: PURPOSE };
+        let after = validate(&claims(), &rotated, &newer).expect("the rotated artifact set validates");
+
+        assert_eq!(after.artifact_set, "dogtag-levelb-artifacts/2", "the artifact axis moved");
+        // ...and nothing on the on-chain axis did.
+        assert_eq!(after.version, before.version);
+        assert_eq!(after.circuit_id, before.circuit_id);
+        assert_eq!(after.chain_id, before.chain_id);
+        assert_eq!(after.verification_registry, before.verification_registry);
+    }
+
+    /// The artifact axis is checked for coherence independently of the contract axis: a stitched anchor
+    /// whose `artifact_set` and `artifact_set_id` came from different resolutions FAILS CLOSED, even
+    /// though every contract-axis field is perfectly valid.
+    #[test]
+    fn incoherent_artifact_axis_fails_closed() {
+        let mut a = anchor();
+        a.artifact_set_id = version_id("dogtag-levelb-artifacts/2"); // id says v2, name still says v1
+        match validate(&claims(), &a, &ctx()) {
+            Err(DiscoveryError::ArtifactSetIncoherent { artifact_set, .. }) => {
+                assert_eq!(artifact_set, ARTIFACTS);
+            }
+            other => panic!("expected ArtifactSetIncoherent, got {other:?}"),
+        }
+    }
+
+    /// The two axis ids live in different keyspaces — an anchor can never accidentally use the version
+    /// id as its artifact id.
+    #[test]
+    fn the_two_axis_ids_are_distinct() {
+        let a = anchor();
+        assert_ne!(a.version_id, a.artifact_set_id);
+        assert_ne!(a.version, a.artifact_set);
     }
 
     /// The registry address may differ only in CASE (checksum vs lowercase) and still validate — a

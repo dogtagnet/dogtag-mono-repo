@@ -1256,10 +1256,25 @@ public struct TrustedAnchor {
      */
     public var version: String
     /**
-     * keccak256(version) `0x`-hex — the on-chain map key; ties the claimed version STRING to the
-     * on-chain `versionId` so a caller cannot silently validate against the wrong record.
+     * keccak256(version) `0x`-hex — the on-chain `contractSetId`; ties the claimed version STRING to
+     * the on-chain key so a caller cannot silently validate against the wrong record.
      */
     public var versionId: String
+    /**
+     * The ARTIFACT-AXIS identity the caller resolved for this version (e.g.
+     * `dogtag-levelb-artifacts/1`) — the artifact set `activeArtifactSetOf[versionId]` points at.
+     *
+     * It is a SECOND, independent axis (R-5): rotating the proving artifacts changes this and
+     * `min_app_version` while `version`/`version_id` and `verification_registry` stay put. Carrying it
+     * on the anchor is what lets a caller say WHICH artifact set it is about to fetch, rather than
+     * inferring it from the version.
+     */
+    public var artifactSet: String
+    /**
+     * keccak256(artifact_set) `0x`-hex — the on-chain `artifactSetId`. A DIFFERENT keyspace from
+     * `version_id`; [`validate`] checks their coherence independently.
+     */
+    public var artifactSetId: String
     /**
      * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
      * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
@@ -1293,9 +1308,22 @@ public struct TrustedAnchor {
          * The version string this record certifies (e.g. `dogtag-levelb/1`).
          */version: String, 
         /**
-         * keccak256(version) `0x`-hex — the on-chain map key; ties the claimed version STRING to the
-         * on-chain `versionId` so a caller cannot silently validate against the wrong record.
+         * keccak256(version) `0x`-hex — the on-chain `contractSetId`; ties the claimed version STRING to
+         * the on-chain key so a caller cannot silently validate against the wrong record.
          */versionId: String, 
+        /**
+         * The ARTIFACT-AXIS identity the caller resolved for this version (e.g.
+         * `dogtag-levelb-artifacts/1`) — the artifact set `activeArtifactSetOf[versionId]` points at.
+         *
+         * It is a SECOND, independent axis (R-5): rotating the proving artifacts changes this and
+         * `min_app_version` while `version`/`version_id` and `verification_registry` stay put. Carrying it
+         * on the anchor is what lets a caller say WHICH artifact set it is about to fetch, rather than
+         * inferring it from the version.
+         */artifactSet: String, 
+        /**
+         * keccak256(artifact_set) `0x`-hex — the on-chain `artifactSetId`. A DIFFERENT keyspace from
+         * `version_id`; [`validate`] checks their coherence independently.
+         */artifactSetId: String, 
         /**
          * The chain the trio lives on. (Carried by the manifest / known by the app from its RPC endpoint;
          * the on-chain `Version` struct itself has no chain-id member — the registry IS on a chain.)
@@ -1318,6 +1346,8 @@ public struct TrustedAnchor {
          */active: Bool) {
         self.version = version
         self.versionId = versionId
+        self.artifactSet = artifactSet
+        self.artifactSetId = artifactSetId
         self.chainId = chainId
         self.verificationRegistry = verificationRegistry
         self.circuitId = circuitId
@@ -1334,6 +1364,12 @@ extension TrustedAnchor: Equatable, Hashable {
             return false
         }
         if lhs.versionId != rhs.versionId {
+            return false
+        }
+        if lhs.artifactSet != rhs.artifactSet {
+            return false
+        }
+        if lhs.artifactSetId != rhs.artifactSetId {
             return false
         }
         if lhs.chainId != rhs.chainId {
@@ -1357,6 +1393,8 @@ extension TrustedAnchor: Equatable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(version)
         hasher.combine(versionId)
+        hasher.combine(artifactSet)
+        hasher.combine(artifactSetId)
         hasher.combine(chainId)
         hasher.combine(verificationRegistry)
         hasher.combine(circuitId)
@@ -1375,6 +1413,8 @@ public struct FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer {
             try TrustedAnchor(
                 version: FfiConverterString.read(from: &buf), 
                 versionId: FfiConverterString.read(from: &buf), 
+                artifactSet: FfiConverterString.read(from: &buf), 
+                artifactSetId: FfiConverterString.read(from: &buf), 
                 chainId: FfiConverterUInt64.read(from: &buf), 
                 verificationRegistry: FfiConverterString.read(from: &buf), 
                 circuitId: FfiConverterString.read(from: &buf), 
@@ -1386,6 +1426,8 @@ public struct FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer {
     public static func write(_ value: TrustedAnchor, into buf: inout [UInt8]) {
         FfiConverterString.write(value.version, into: &buf)
         FfiConverterString.write(value.versionId, into: &buf)
+        FfiConverterString.write(value.artifactSet, into: &buf)
+        FfiConverterString.write(value.artifactSetId, into: &buf)
         FfiConverterUInt64.write(value.chainId, into: &buf)
         FfiConverterString.write(value.verificationRegistry, into: &buf)
         FfiConverterString.write(value.circuitId, into: &buf)
@@ -1421,14 +1463,26 @@ public struct ValidatedVersion {
     public var circuitId: String
     public var chainId: UInt64
     public var verificationRegistry: String
+    /**
+     * The validated ARTIFACT-AXIS identity (R-5) — which proving-artifact set the caller may now
+     * fetch. Returned separately from `version` precisely because it moves separately: an artifact
+     * rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
+     */
+    public var artifactSet: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(version: String, circuitId: String, chainId: UInt64, verificationRegistry: String) {
+    public init(version: String, circuitId: String, chainId: UInt64, verificationRegistry: String, 
+        /**
+         * The validated ARTIFACT-AXIS identity (R-5) — which proving-artifact set the caller may now
+         * fetch. Returned separately from `version` precisely because it moves separately: an artifact
+         * rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
+         */artifactSet: String) {
         self.version = version
         self.circuitId = circuitId
         self.chainId = chainId
         self.verificationRegistry = verificationRegistry
+        self.artifactSet = artifactSet
     }
 }
 
@@ -1448,6 +1502,9 @@ extension ValidatedVersion: Equatable, Hashable {
         if lhs.verificationRegistry != rhs.verificationRegistry {
             return false
         }
+        if lhs.artifactSet != rhs.artifactSet {
+            return false
+        }
         return true
     }
 
@@ -1456,6 +1513,7 @@ extension ValidatedVersion: Equatable, Hashable {
         hasher.combine(circuitId)
         hasher.combine(chainId)
         hasher.combine(verificationRegistry)
+        hasher.combine(artifactSet)
     }
 }
 
@@ -1470,7 +1528,8 @@ public struct FfiConverterTypeValidatedVersion: FfiConverterRustBuffer {
                 version: FfiConverterString.read(from: &buf), 
                 circuitId: FfiConverterString.read(from: &buf), 
                 chainId: FfiConverterUInt64.read(from: &buf), 
-                verificationRegistry: FfiConverterString.read(from: &buf)
+                verificationRegistry: FfiConverterString.read(from: &buf), 
+                artifactSet: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -1479,6 +1538,7 @@ public struct FfiConverterTypeValidatedVersion: FfiConverterRustBuffer {
         FfiConverterString.write(value.circuitId, into: &buf)
         FfiConverterUInt64.write(value.chainId, into: &buf)
         FfiConverterString.write(value.verificationRegistry, into: &buf)
+        FfiConverterString.write(value.artifactSet, into: &buf)
     }
 }
 
@@ -1721,9 +1781,19 @@ public func consentNullifierHex(dogTagIdHex: String, recordTypeHex: String, purp
 })
 }
 /**
- * Derive a deterministic BabyJubjub consent key from a hex seed (any length). The seed is wrapped
- * in a distinct domain from the secp256k1 wallet path (§6) before BLAKE-512, so the two keys are
- * independent. Returns the 32-byte private key + public point (Ax, Ay) + keyHash.
+ * Derive the **wallet-level** BabyJubjub consent key from a hex seed (any length) - one key per
+ * wallet, NOT per tag. The seed is wrapped in a distinct domain from the secp256k1 wallet path
+ * (§6) before BLAKE-512, so the two keys are independent. Returns the 32-byte private key +
+ * public point (Ax, Ay) + keyHash.
+ *
+ * # Callers: this is the Level-A key, not the profile-tree key
+ *
+ * Use this ONLY for the Level-A path (`verification.circom` + the per-wallet
+ * `ConsentKeyRegistry.keyOf` bind). The Level-B `owner.consentKey` leaf uses a **per-tag** key
+ * derived from `(seed, dogTagId)`; you get it from
+ * [`build_profile_tree_hex`]'s `consentPrvHex` (or implicitly via `prove_consent`, which derives
+ * it internally from the `dogTagId` it already receives). See
+ * [`crate::eddsa::derive_babyjub_consent_key_per_tag`].
  */
 public func deriveBabyjubConsentKey(seedHex: String)throws  -> BabyjubConsentKeyFfi {
     return try  FfiConverterTypeBabyjubConsentKeyFfi.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
@@ -2080,7 +2150,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_consent_nullifier_hex() != 25451) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 57121) {
+    if (uniffi_dogtag_standard_checksum_func_derive_babyjub_consent_key() != 25974) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_derive_owner_secret_hex() != 61221) {

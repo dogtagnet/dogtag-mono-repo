@@ -8,7 +8,7 @@
 //! "signed-manifest fallback path" the acceptance calls for, exercised through the REAL P3 builder
 //! (`dogtag_prover::manifest::build`) and the vet-api mapping seam (`vet_api::discovery`).
 
-use dogtag_prover::manifest::{self, version_id, OnchainVersion, SignedManifest};
+use dogtag_prover::manifest::{self, version_id, OnchainArtifactSet, OnchainContractSet, SignedManifest};
 use dogtag_standard::discovery::{validate, ClientContext, ConvenienceClaims, DiscoveryError};
 use ed25519_dalek::SigningKey;
 use vet_api::discovery::{anchor_from_manifest, anchor_from_reconciliation};
@@ -33,17 +33,28 @@ fn honest_claims(m: &manifest::Manifest) -> ConvenienceClaims {
     }
 }
 
-/// Build the on-chain record that AGREES with a manifest, so `reconcile` finds no conflict. Mirrors the
-/// P3 manifest test's `onchain_from`: on-chain `circuitId` is `keccak256(circuit-string)`, which the
-/// public `version_id` helper computes (it is keccak-hex of any string).
-fn agreeing_onchain(m: &manifest::Manifest) -> OnchainVersion {
-    OnchainVersion {
+/// Build the on-chain records that AGREE with a manifest, so `reconcile` finds no conflict. Mirrors the
+/// P3 manifest tests' `contracts_from`/`artifacts_from`: on-chain `circuitId` is
+/// `keccak256(circuit-string)`, which the public `version_id` helper computes (it is keccak-hex of any
+/// string).
+///
+/// There are TWO of these because the registry keys the on-chain contract set and the off-chain proving
+/// artifacts on two independent axes (R-5), and `reconcile` takes them separately.
+fn agreeing_contracts(m: &manifest::Manifest) -> OnchainContractSet {
+    OnchainContractSet {
         version_id: m.version_id.clone(),
         factory: m.factory.clone(),
         verification_registry: m.verification_registry.clone(),
         sbt: m.sbt.clone(),
         verifier: m.verifier.clone(),
         circuit_id: version_id(&m.circuit_id),
+        active: true,
+    }
+}
+
+fn agreeing_artifacts(m: &manifest::Manifest) -> OnchainArtifactSet {
+    OnchainArtifactSet {
+        artifact_set_id: m.artifact_set_id.clone(),
         zkey_sha256: m.zkey_sha256.clone(),
         witness_mobile_sha256: m.witness_mobile_sha256.clone(),
         witness_server_r1cs_sha256: m.witness_server_r1cs_sha256.clone(),
@@ -143,8 +154,13 @@ fn reconciled_anchor_enforces_onchain_precedence() {
     let signed: SignedManifest = manifest::sign(&m, &key);
 
     // Agreeing on-chain record -> reconcile clean -> anchor validates honest claims.
-    let onchain = agreeing_onchain(&m);
-    let recon = manifest::reconcile(&signed, &key.verifying_key(), &onchain).unwrap();
+    let recon = manifest::reconcile(
+        &signed,
+        &key.verifying_key(),
+        &agreeing_contracts(&m),
+        &agreeing_artifacts(&m),
+    )
+    .unwrap();
     let anchor = anchor_from_reconciliation(&recon).expect("agreeing manifest yields an anchor");
     let claims = honest_claims(&m);
     let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
@@ -152,9 +168,10 @@ fn reconciled_anchor_enforces_onchain_precedence() {
 
     // Disagreeing on-chain record (the chain's registry differs) -> reconcile reports a conflict ->
     // the mapping REFUSES to build an anchor (on-chain wins), so the validator is never even reached.
-    let mut liar = agreeing_onchain(&m);
+    let mut liar = agreeing_contracts(&m);
     liar.verification_registry = "0x1111111111111111111111111111111111111111".to_string();
-    let recon_bad = manifest::reconcile(&signed, &key.verifying_key(), &liar).unwrap();
+    let recon_bad =
+        manifest::reconcile(&signed, &key.verifying_key(), &liar, &agreeing_artifacts(&m)).unwrap();
     match anchor_from_reconciliation(&recon_bad) {
         Err(conflicts) => {
             assert!(
@@ -178,10 +195,11 @@ fn onchain_deprecation_flows_through_reconciliation_and_fails_closed() {
     let m = manifest::build(VERSION).unwrap();
     let signed: SignedManifest = manifest::sign(&m, &key);
 
-    let mut deprecated = agreeing_onchain(&m);
+    let mut deprecated = agreeing_contracts(&m);
     deprecated.active = false;
 
-    let recon = manifest::reconcile(&signed, &key.verifying_key(), &deprecated).unwrap();
+    let recon =
+        manifest::reconcile(&signed, &key.verifying_key(), &deprecated, &agreeing_artifacts(&m)).unwrap();
     assert!(
         recon.manifest_agrees(),
         "deprecation is a lifecycle bit the manifest does not attest, so it must NOT read as a conflict"
@@ -196,4 +214,80 @@ fn onchain_deprecation_flows_through_reconciliation_and_fails_closed() {
         matches!(validate(&claims, &anchor, &ctx), Err(DiscoveryError::DeprecatedVersion { .. })),
         "a chain-deprecated version must be refused even when every other axis is honest"
     );
+}
+
+/// R-5 at the SERVER SEAM: rotating the bound proving-artifact set changes only the artifact axis of the
+/// resolved anchor. The manifest still agrees on every contract-axis field, the anchor still validates
+/// the same honest claims, and the trio/verifier/circuit the caller acts on are byte-identical.
+///
+/// This is the end-to-end statement of "a proving-artifact rotation no longer forces an on-chain
+/// redeploy": nothing the app checks about the CHAIN moves when the zkey does.
+#[test]
+fn an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched() {
+    let m = manifest::build(VERSION).unwrap();
+    let before = anchor_from_manifest(&m, true);
+
+    // The chain has rotated the binding: a new artifact set with new pins, a new host and a new floor.
+    // The manifest served alongside it describes the SAME contract set.
+    let mut rotated = m.clone();
+    rotated.artifact_set = "dogtag-levelb-artifacts/2".to_string();
+    rotated.artifact_set_id = version_id("dogtag-levelb-artifacts/2");
+    rotated.zkey_sha256 = "0xfeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface".to_string();
+    rotated.artifact_base_url = "https://artifacts.dogtag.io/levelb2".to_string();
+    rotated.min_app_version = "1.5.0".to_string();
+    let after = anchor_from_manifest(&rotated, true);
+
+    // The artifact axis moved...
+    assert_ne!(after.artifact_set, before.artifact_set);
+    assert_ne!(after.artifact_set_id, before.artifact_set_id);
+    assert_ne!(after.min_app_version, before.min_app_version);
+
+    // ...and every on-chain-axis field the anchor carries did not.
+    assert_eq!(after.version, before.version);
+    assert_eq!(after.version_id, before.version_id);
+    assert_eq!(after.chain_id, before.chain_id);
+    assert_eq!(after.verification_registry, before.verification_registry);
+    assert_eq!(after.circuit_id, before.circuit_id);
+
+    // And the rotated anchor still validates the same honest platform claims (with a new-enough build).
+    let claims = honest_claims(&m);
+    let ctx = ClientContext { app_version: "1.5.0", expected_purpose: PURPOSE };
+    let v = validate(&claims, &after, &ctx).expect("the rotated artifact set still validates");
+    assert_eq!(v.artifact_set, "dogtag-levelb-artifacts/2");
+    assert_eq!(v.verification_registry, m.verification_registry, "no on-chain address moved");
+}
+
+/// The mirror: deprecating EITHER axis on-chain is enough to fail closed. The two `active` bits are
+/// combined with AND at the seam, so each axis stays an independent safety lever — dogtag can retire a
+/// compromised artifact set without touching the trio, and the app still refuses.
+#[test]
+fn deprecating_either_axis_fails_closed() {
+    let key = test_key();
+    let m = manifest::build(VERSION).unwrap();
+    let signed: SignedManifest = manifest::sign(&m, &key);
+    let claims = honest_claims(&m);
+    let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
+
+    // Only the ARTIFACT set is deprecated; the contract set is perfectly live.
+    let mut dead_artifacts = agreeing_artifacts(&m);
+    dead_artifacts.active = false;
+    let recon =
+        manifest::reconcile(&signed, &key.verifying_key(), &agreeing_contracts(&m), &dead_artifacts).unwrap();
+    assert!(recon.manifest_agrees(), "a lifecycle bit is not a field conflict");
+    let anchor = anchor_from_reconciliation(&recon).unwrap();
+    assert!(!anchor.active, "a deprecated ARTIFACT set alone must deactivate the anchor");
+    assert!(matches!(
+        validate(&claims, &anchor, &ctx),
+        Err(DiscoveryError::DeprecatedVersion { .. })
+    ));
+
+    // Both live -> active, confirming the AND is not vacuously false.
+    let recon_ok = manifest::reconcile(
+        &signed,
+        &key.verifying_key(),
+        &agreeing_contracts(&m),
+        &agreeing_artifacts(&m),
+    )
+    .unwrap();
+    assert!(anchor_from_reconciliation(&recon_ok).unwrap().active);
 }
