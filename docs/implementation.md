@@ -715,8 +715,12 @@ groomer never receives the witness or the raw record. Endpoint pseudocode is can
 
 ```
 # (1) groomer starts an EXPORT session -> low-density QR carrying {host, one-time token, groomerAddr}
-POST /verify/session/start { purpose, recordType, mode? }      # mode: "normal" | "zk" (default "zk" for sensitive)
+POST /verify/session/start { purpose, recordType, mode? }      # mode: "normal" | "zk" | "levelb" (default "zk" for sensitive)
    require operator session && account whitelistedFor(keccak256("VERIFY:"||purpose), relayer)
+   require mode in {"normal","zk","levelb"}                    # else 400 - an unknown mode once fell through to the
+                                                               #   Level-A ZK branch, so a "level-b" typo silently made a Level-A session
+   if mode=="levelb": require valid VERIFICATION_REGISTRY_CONSENT_ADDR   # else 503 - fail closed at START (same check
+                                                               #   consent_submit_levelb applies), before the owner scans/consents/proves
    relayer = activeSignerAddress()                             # groomer's funded wallet, bound into consent
    challenge = random(); sessionId = uuid()
    token = hex(16 random bytes)                                # one-time token (NOT a JWT) — reuse put/take_share_token
@@ -726,6 +730,10 @@ POST /verify/session/start { purpose, recordType, mode? }      # mode: "normal" 
 # (1b) phone resolves the export session WITHOUT consuming the token (consume on submit)
 GET /x/{token}
    s = verify_sessions[token]; require s.status=="pending"
+   # PER-SESSION mode-aware (M-4, app::convenience_claims_for_mode): a mode=="levelb" session advertises
+   #   LEVEL_B_VERSION + the Level-B registry; every OTHER mode (and /p/ issuance) stays LEVEL_A_VERSION +
+   #   the Level-A registry. The two fields move together - dogtag-levelb/1 beside the Level-A registry trips
+   #   RegistryMismatch. This makes Level-B AVAILABLE without making it the DEFAULT (the default flip is M-5).
    claims = { protocolVersion, chainId, verificationRegistry, issuerClone, purpose:s.purpose }   # §3.10d CONVENIENCE tier
    return { sessionId, relayer, purpose, recordType, challenge, mode,
             unverifiedClaims: claims }                          # phone: assert groomerAddr(QR)==relayer,
@@ -761,11 +769,21 @@ POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bi
    # -> on success the session flips to "recorded" + txHash + nullifier; the device can also poll
    #    consumed(nullifier) on-chain. (The NORMAL path + the test-oracle server-prove path stay SYNCHRONOUS.)
 
-# (2b) LEVEL-B ALTERNATIVE (M-3) - owner-HIDDEN verification. ADDITIVE: (2) above is untouched and is
-#      what every shipped phone still posts to. Entered COLD with a self-authenticating proof - no
-#      operator session, no export token, no `consent`/`sig`/`bind` object. Requires
-#      VERIFICATION_REGISTRY_CONSENT_ADDR (else 503, checked before custody or the chain is touched).
-POST /verify/consent/levelb { proof }                      # proof = {a,b,c,pubSignals[7]} vs consent.circom
+# (2b) LEVEL-B ALTERNATIVE - owner-HIDDEN verification. ADDITIVE: (2) above is untouched and is what
+#      every shipped phone still posts to. TWO routes, ONE handler (verify.rs::consent_submit_levelb):
+#        POST /verify/consent/levelb     (M-3) OPERATOR-gated, entered COLD (session=None): a fresh
+#                                        owner-blind audit row is minted, no session bound.
+#        POST /v1/verify/consent/levelb  (M-4) the OWNER'S PHONE alias - same require_operator_or_export_token
+#                                        gate + PEEK (consume=false) as the Level-A /v1/verify/consent, so a
+#                                        FAILED verify does NOT burn the owner's one-time token (retry same QR).
+#                                        A token resolves to a session; a resolved session is BOUND (below) and
+#                                        drives its OWN row. A named session that fails to load FAILS CLOSED
+#                                        (never demoted to the cold path, which would drop every session guard).
+#      Requires VERIFICATION_REGISTRY_CONSENT_ADDR (else 503, checked before custody or the chain is touched).
+#      MODE-GATED, uncrossable: consent_submit_levelb REFUSES a non-"levelb" session and the Level-A
+#      consent_submit REFUSES a "levelb" session - both routes read the SAME export token, and an owner-hidden
+#      proof read with Level-A indices is exactly E-1.
+POST /verify/consent/levelb { proof }  |  POST /v1/verify/consent/levelb { proof, sessionId?, exportToken? }   # proof = {a,b,c,pubSignals[7]} vs consent.circom
    # pub = [dogTagId, purpose, relayer, nullifier, R, recordType, deadline] - a DIFFERENT order from the
    #   Level-A vector above (slot 4 is the ROOT here, the NULLIFIER there). Always index via
    #   dogtag_standard::public_signals::level_b; a literal pub[4] keys the one-time check on R and makes
@@ -774,9 +792,16 @@ POST /verify/consent/levelb { proof }                      # proof = {a,b,c,pubS
    #   there is nothing to bind and no owner slot to fill. A `bind` object, if sent, is IGNORED.
    # recordType + deadline are READ OUT of pub[5]/pub[6] - proof-bound, never relayer-invented (Level-A
    #   invents a 1h deadline; here the relayer cannot widen the device's).
-   operator-gated: a GAS-SPEND gate only. The proof names its own submitter (relayer is bound into both
-     the EdDSA message M and the nullifier), so an operator cannot direct it anywhere the owner did not
-     already consent to; the gate exists so an open endpoint cannot drain the relayer on reverting proofs.
+   the gate (operator session OR one-time export token) is a GAS-SPEND gate only. The proof names its own
+     submitter (relayer is bound into both the EdDSA message M and the nullifier), so a caller cannot direct
+     it anywhere the owner did not already consent to; the gate exists so an open endpoint cannot drain the
+     relayer on reverting proofs.
+   session binding (phone path only, when a session resolved - cold operator calls skip it): before spending
+     gas, require pub[purpose]==purpose_key(s.purpose), pub[relayer]==s.relayer, and
+     pub[recordType]==purpose_key(s.record_type) - the REDUCED keccak (pub[5] is a circuit output, so < r;
+     the raw rt_key may exceed r, the art9 trap). recordType matters most: it is prover-asserted, so nothing
+     else pins it. The export token is a capability to spend the relayer's gas, so it must not fund a
+     submission unrelated to the session its QR named.
    preflight (mirrors the registry's requires; NOT the security boundary - the on-chain gates re-run):
      every pub[i] < r; pub[relayer] < 2^160 checked on the FULL element BEFORE narrowing (audit L1);
      pub[relayer] == custody active address; deadline > now + 120s (MIN_DEADLINE_MARGIN_SECS - a device
@@ -784,10 +809,15 @@ POST /verify/consent/levelb { proof }                      # proof = {a,b,c,pubS
      pub[recordType] != SERVICE_ATTESTATION_FIELD (art9); isWhitelistedFor(VERIFY:pub[purpose], relayer)
        - checked UNCONDITIONALLY, deliberately stricter than the registry's toggleable
        restrictToWhitelistedRelayers, so a mis-set on-chain flag can never turn this into an open relay.
-   mint a VerifySession audit row (mode:"levelb", status:"recording", empty challenge - replay
-     protection is the proof-bound nullifier, not an operator nonce; purpose/recordType stored as the
-     bytes32 WORDS they arrive as) into the SAME trail as Level-A (GET /verify/history), owner-blind by
-     construction: VerifySession has no subject field and Level-B has no signal that could fill one.
+   drive a VerifySession audit row to status:"recording" - COLD (operator): MINT a fresh one (purpose/recordType
+     stored as the bytes32 WORDS they arrive as - cold, only the words exist); SESSION-SCOPED (phone, M-4): drive
+     the session's EXISTING row (keeps its human-readable purpose/recordType labels, already proved to reduce to
+     pub[1]/pub[5]) rather than minting a second, so the trail holds ONE row per verification and the phone polls
+     the sessionId its QR named. mode:"levelb", empty challenge. Replay protection: the proof-bound nullifier
+     (consumed on-chain) for the cold path, and the SESSION STATUS GUARD for the phone path (the row leaves
+     "pending", so a second submit against the settled session is refused - the phone alias never consumes the
+     token; sound because a session OUTLIVES its 600s token). Into the SAME trail as Level-A (GET /verify/history),
+     owner-blind by construction: VerifySession has no subject field and Level-B has no signal that could fill one.
    RESPOND IMMEDIATELY { status:"recording", level:"level-b", protocolVersion:"dogtag-levelb/1",
                          sessionId, registry, nullifier }
    THEN async (detached - Axum cancels a handler's future on client disconnect, which would strand the
@@ -938,8 +968,11 @@ The client TRUST gate on top of §3.10c: the two NON-consuming resolve GETs (`GE
 /p/{token}` §3.11) now ALSO return a nested `unverifiedClaims` block - the CONVENIENCE tier (§5.2), the
 platform's own CLAIMS about which protocol version / chain / registry / issuer clone / purpose this flow
 belongs to. It is **additive**: every pre-existing top-level field is unchanged, so an older app that
-ignores the block keeps working. Built by `app::convenience_claims` (`stacks/vet/api/src/app.rs`) from this
-deployment's config. Full brick: AGENTS.md "Discovery API + app anchor-validation (M7 P4)".
+ignores the block keeps working. Built from this deployment's config: `/p/` issuance always advertises
+Level-A (`app::convenience_claims`), while `/x/` verify is PER-SESSION mode-aware since M-4
+(`app::convenience_claims_for_mode`) - a `mode=="levelb"` session advertises `LEVEL_B_VERSION` + the Level-B
+registry, every other mode stays Level-A (see §3.9 and AGENTS.md "`mode=\"levelb\"` is AVAILABLE, not
+DEFAULT"). Full brick: AGENTS.md "Discovery API + app anchor-validation (M7 P4)".
 
 ```
 # the block both resolve GETs add (wire key is `unverifiedClaims`, NOT `claims` — it is deliberately
@@ -2171,8 +2204,9 @@ setup at all** — a forged attestation is still constrained by the shared nulli
 
 **(g) EXPORT `/verify/*` endpoint pseudocode (canonical; §3.9 references this):**
 ```
-POST /verify/session/start { purpose, recordType, mode }    // groomer; mode default "zk" for sensitive
+POST /verify/session/start { purpose, recordType, mode }    // groomer; mode "normal"|"zk"|"levelb", default "zk"
    require operator session && whitelistedFor(keccak256("VERIFY:"||purpose), relayer=activeSigner())
+   require mode in {"normal","zk","levelb"}                  // else 400; levelb also requires VERIFICATION_REGISTRY_CONSENT_ADDR (else 503)
    token = hex(16 random bytes)                              // ONE-TIME TOKEN (not a JWT) — reuse put/take_share_token
    save verify_sessions{ sessionId, token, relayer, purpose, recordType, challenge:random(), mode, status:"pending" }
    return { qrUrl: DEPLOYMENT_URL+"/x/"+token+"?a="+relayer, sessionId }   // QR = {host, token, groomerAddr}
@@ -2197,11 +2231,14 @@ POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bi
    take_share_token(token)                                  // one-time: consume on submit
    s.status="recorded"; return { recorded:true, txHash, mode }   // emits Verified(...); consumes nullifier
 
-# LEVEL-B twin (M-3) - POST /verify/consent/levelb. NOT a mode flag on the above: the two carry
-# DIFFERENT public-signal orders and target DIFFERENT registries whose recordVerificationZK selectors
-# differ (4-arg 0xdd080593 vs Level-A's 6-arg 0x423a45b6), so a misrouted request encodes for the wrong
-# one and reverts EMPTY (`0x`). No token, no consent/sig, no bind, no subject/keyHash. Normative flow +
-# preflight: §3.9 step (2b); rationale: AGENTS.md "Level-B unified submission path (M-3)".
+# LEVEL-B twin - POST /verify/consent/levelb (M-3, operator-gated cold) + POST /v1/verify/consent/levelb
+# (M-4, the phone alias with the require_operator_or_export_token gate + per-session purpose/relayer/recordType
+# binding). NOT a mode flag on the above: the two carry DIFFERENT public-signal orders and target DIFFERENT
+# registries whose recordVerificationZK selectors differ (4-arg 0xdd080593 vs Level-A's 6-arg 0x423a45b6), so a
+# misrouted request encodes for the wrong one and reverts EMPTY (`0x`). No consent/sig, no bind, no
+# subject/keyHash. The two consent-submit routes are MODE-GATED and uncrossable (a "levelb" session is refused by
+# the Level-A submit and vice-versa). Normative flow + preflight: §3.9 step (2b); rationale: AGENTS.md
+# "Level-B unified submission path (M-3)" + "The two consent submit routes are mode-gated ... (M-4)".
 ```
 > **`/import/pull` (off-chain data) stays DECOUPLED from `/verify/*` (on-chain attestation).** NORMAL
 > mode can compose both; **ZK mode = verification with no data import at all** (privacy-maximal default).

@@ -524,18 +524,27 @@ EXPORT (device → groomer; on-chain proof-of-verification — decoupled from im
             VerificationRegistry.recordVerificationZK(a,b,c, [dogTagId,purpose,relayer,subject,nullifier,keyHash,R])  // ZK
           → emits Verified(...); consumes the shared nullifier
 
-  LEVEL-B ALTERNATIVE (M-3) - owner-HIDDEN, ADDITIVE; the Level-A branch above is untouched and is
+  LEVEL-B ALTERNATIVE (M-3/M-4) - owner-HIDDEN, ADDITIVE; the Level-A branch above is untouched and is
   what every shipped phone still uses. Off by default: needs VERIFICATION_REGISTRY_CONSENT_ADDR, else 503.
-  device: prove consent against consent.circom (§4.3 Level-B) → POST /verify/consent/levelb {proof}
-            ← NO token, NO consent/sig object, NO bind leg: there is no subject and no
+  Two routes, one handler: POST /verify/consent/levelb (M-3, operator-gated, cold - mints a fresh row) and
+  its M-4 phone alias POST /v1/verify/consent/levelb (require_operator_or_export_token gate + PEEK, so a
+  failed verify does not burn the token; a resolved session is BOUND on purpose/relayer/recordType and drives
+  its OWN row). Reachable by the phone now, but no shipped device posts to it yet. The two routes are
+  MODE-GATED and uncrossable, and a mode="levelb" session must be started for the /x/ resolve to advertise
+  the Level-B version+registry (per-session opt-in; NOT the default - that flip is M-5).
+  device: prove consent against consent.circom (§4.3 Level-B) → POST /v1/verify/consent/levelb {proof}
+            ← NO consent/sig object, NO bind leg: there is no subject and no
               ConsentKeyRegistry under Level-B (D2 - the consent key moved INTO the tree), so there is
               nothing to bind and no owner slot a caller could fill. The proof self-authenticates.
   groomer backend: preflight the registry's own requires pre-gas (field range; relayer range on the FULL
             element before narrowing; pub[relayer] == our custody signer; deadline > now+120s;
             art9; VERIFY: whitelist - checked unconditionally, deliberately stricter than the
             registry's toggleable restrictToWhitelistedRelayers so a mis-set flag cannot open the relay)
-          mint a VerifySession audit row (mode:"levelb") into the SAME operator trail as Level-A -
-            owner-blind by construction: the row has no subject field and Level-B has no signal for one
+          drive a VerifySession audit row to "recording" (mode:"levelb") - cold: mint a fresh one;
+            session-scoped phone: the session's EXISTING row (one row per verification; replay is then blocked
+            by the session status guard, since the phone alias never consumes the token) - into the SAME
+            operator trail as Level-A, owner-blind by construction: the row has no subject field and Level-B
+            has no signal for one
           RESPOND IMMEDIATELY {status:"recording", level, protocolVersion, sessionId, registry, nullifier}
           THEN async: VerificationRegistryConsent.recordVerificationZK(a,b,c,
                         [dogTagId,purpose,relayer,nullifier,R,recordType,deadline])   // 4-arg, DIFFERENT
