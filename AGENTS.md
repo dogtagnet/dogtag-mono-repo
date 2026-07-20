@@ -1466,10 +1466,13 @@ in `tx_hash`, mirroring Level-A. It stays **owner-blind by construction**: `Veri
 `subject` field and Level-B has no public signal that could fill one - never add one. The response
 echoes the new `sessionId`.
 
-`consumed` in the response is an `Option`, serializing to `null` on an RPC read failure - NOT
-`false`. The read-back only runs after a receipt with `status == true`, so the nullifier IS consumed
-on-chain and `false` could only ever be a lie; a client keying retry on it would re-submit into a
-`"replayed"` revert.
+**Two response surfaces, and neither carries a `consumed` field.** The ack returns
+`status` (always `"recording"`), `level`, `protocolVersion`, `sessionId`, `registry`, and
+`nullifier` - the last is safe to echo before the broadcast because it is `pub[3]`, already known,
+and it is what a caller keys its OWN `consumed` read against. The terminal result is the polled
+session row (`GET /verify/session/:id`): `status`, `mode`, `txHash`, `nullifier`. There is no
+server-side `consumed` read-back on either surface - see the terminal-state paragraph above for why
+one would be pure downside.
 
 New env var `VERIFICATION_REGISTRY_CONSENT_ADDR`, fail-closed when unset, separate from
 `VERIFICATION_REGISTRY_ADDR` - the two registries run side by side (same pattern as

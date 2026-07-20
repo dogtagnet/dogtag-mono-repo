@@ -932,8 +932,8 @@ fn pub_signal_u256(s: &str) -> Option<alloy::primitives::U256> {
     }
 }
 
-/// POST /verify/consent/levelb — submit an OWNER-HIDDEN Level-B consent proof to the
-/// `VerificationRegistryConsent` and return the on-chain result.
+/// POST /verify/consent/levelb — preflight an OWNER-HIDDEN Level-B consent proof for the
+/// `VerificationRegistryConsent`, then hand the broadcast to a detached task.
 ///
 /// The Level-B twin of [`consent_submit`], added ALONGSIDE it rather than replacing it: the Level-A
 /// route keeps serving the shipped phone consumers until the M-4 cutover. Three structural
