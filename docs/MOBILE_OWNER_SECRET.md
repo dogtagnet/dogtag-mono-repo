@@ -75,15 +75,16 @@ Every owner-control input is a pure function of the wallet seed, bound to `dogTa
 | input               | derivation                                                     |
 |---------------------|----------------------------------------------------------------|
 | owner-secret        | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)`, wide-reduced mod r |
-| consent-key (Ax,Ay) | `BLAKE-512("DogTag/consent-key/babyjubjub/v1" ‖ seed)` (pre-existing)       |
+| consent-key (Ax,Ay) | `BLAKE-512("DogTag/consent-key/babyjubjub/v2" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)[0..32]` → `prv2pub` |
 | reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId[32B BE] ‖ u64be(len(UTF8(keyPath))) ‖ UTF8(keyPath) ‖ seed)` |
 | owner-address       | the wallet address, itself seed-derived                        |
 
 Restoring the 24-word phrase restores the seed, which regenerates the owner-control core above -
 which, together with the credential's attribute leaves, rebuilds the identical tree and the
 identical `R`.
-Binding to `dogTagId` means one wallet's two tags get independent secrets, so their nullifiers stay
-mutually unlinkable.
+Binding to `dogTagId` means one wallet's two tags get independent secrets - independent owner-secrets
+*and* independent consent keys `(Ax, Ay)` - so their nullifiers stay mutually unlinkable and no
+owner-control value is shared across a wallet's tags.
 
 Deriving from the seed does not weaken unlinkability: the seed never leaves the device and BLAKE-512
 is one-way, so the secret stays exactly as opaque to an observer as a random one would be, while a

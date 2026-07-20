@@ -9,7 +9,16 @@ import Security
 /// Design:
 ///  - A BIP-39 mnemonic (24 words) → BIP-39 seed → secp256k1 private key (the user's on-chain
 ///    `userWallet`). The BabyJubjub *consent* key is derived in Rust from the same seed under a
-///    DISTINCT domain (so the two keys never collide), via the new EdDSA FFI `deriveBabyjubConsentKey`.
+///    DISTINCT domain (so the two keys never collide), via the EdDSA FFI `deriveBabyjubConsentKey`.
+///
+///    NOTE: `WalletIdentity.consent` is the **wallet-level** (per-wallet, `v1`) consent key, and it
+///    is used by the **Level-A** path ONLY - `ScanScreen`'s `proveVerification` plus the
+///    `ConsentKeyRegistry.bindConsentKey` gasless bind, where `keyOf` is a per-wallet
+///    `mapping(address => bytes32)`. It is NOT the key in the profile tree. The Level-B
+///    `owner.consentKey` leaf uses a **per-tag** (`v2`) key derived from `(seed, dogTagId)` entirely
+///    inside Rust - `buildProfileTreeHex` / `proveConsent` already take the `dogTagId`, so nothing
+///    on the Swift side hands that key around. Do not "unify" these two: making the Level-A key
+///    per-tag would force an on-chain `keyOf` rebind on every tag switch.
 ///  - The 64-byte BIP-39 seed is stored in the iOS Keychain with
 ///    `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`; reveal is gated behind a fresh LAContext
 ///    biometric/passcode authentication. (A Secure Enclave key can wrap the blob on real hardware;

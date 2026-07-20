@@ -200,7 +200,7 @@ The code path that generates a **consent** ZK proof against the frozen `consent.
 Before this brick `prove_consent` existed **nowhere** — only Level-A `prove_verification`.
 It touches NO circuit/VK/ceremony (all frozen) and NO contract; it is a prover-path build to the existing key.
 
-- **The assembler** (`crates/dogtag-standard-rs/src/consent_assemble.rs`, `assemble` feature): the consent analogue of `prover_assemble`. `assemble_consent(&ConsentWitness)` builds the per-tag tree (`build_profile_tree`), EdDSA-signs `M = Poseidon5(dogTagId, purpose, relayer, deadline, consentNonce)` with the seed-derived consent key, front-packs the three reserved-leaf inclusion paths into `siblings[6] + pathLen`, and emits the named inputs as `consent_input_map` (circom-prover / FFI) + `consent_circuit_input_value` (server JSON). Built from `consent.circom`, **NOT** the stale Level-A `consent.rs` (whose `M`/nullifier carry `subject`+`R` and would be rejected by the frozen VK).
+- **The assembler** (`crates/dogtag-standard-rs/src/consent_assemble.rs`, `assemble` feature): the consent analogue of `prover_assemble`. `assemble_consent(&ConsentWitness)` builds the per-tag tree (`build_profile_tree`), EdDSA-signs `M = Poseidon5(dogTagId, purpose, relayer, deadline, consentNonce)` with that tag's OWN per-tag consent key (derived from `(seed, dogTagId)` — see "M5 app-side" below), front-packs the three reserved-leaf inclusion paths into `siblings[6] + pathLen`, and emits the named inputs as `consent_input_map` (circom-prover / FFI) + `consent_circuit_input_value` (server JSON). Built from `consent.circom`, **NOT** the stale Level-A `consent.rs` (whose `M`/nullifier carry `subject`+`R` and would be rejected by the frozen VK).
 - **THE canonical `dogTagId` field (load-bearing, ZK cross-check §2).** `assemble_consent` computes `field_of_value(Integer(handle))` **once** and uses that identical field element for BOTH (a) the circuit `dogTagId` input and (b) the `build_profile_tree` KDF binding that yields `R`; the on-chain `mintCustodial(id, R)` MUST use the SAME field as `id` (`ConsentAssembledInputs::dog_tag_id_field`). A mismatch fails closed at `R != profileRoot(dogTagId)` — a maddening liveness bug, never a safety hole. **Do NOT copy the fixture/`DeviceRootFixtureWitness` raw-`424242n` shortcut into issuance** (`profile_tree.rs:279-287`); the round-trip test `canonical_field_is_used_across_circuit_input_kdf_and_mint_id` + the fail-closed `raw_handle_shortcut_breaks_the_r_binding_fail_closed` pin this.
 - **`nullifier` (`pub[3]`) and `R` (`pub[4]`) are circuit OUTPUTS** — the assembler recomputes them only for on-chain wiring / test assertions; it never feeds them in. `ownerAddress` is the **raw** reserved-leaf field (`field_from_scalar_bytes(addr)`), not `field_of_value`.
 - **FFI** (`prover_ffi::prove_consent`, `prover` feature): mirrors `prove_verification` and its **circom-witnesscalc GRAPH backend** (kept over rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM). Takes the owner seed + disclosed params + `zkey`/`graph` paths; `NUM_PUBLIC_CONSENT = 7`; returns `pub` in the FROZEN OUTPUT order `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. Param parsing is split into `parse_consent_ffi_inputs` (hermetically unit-tested).
@@ -1135,10 +1135,32 @@ seed - while additionally being *recoverable*, which a random secret is not:
 |---|---|
 | owner-secret | `BLAKE-512("DogTag/owner-secret/v1" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)` → `from_be_bytes_mod_order` over all **64** bytes |
 | reserved-leaf salts | `BLAKE-512("DogTag/reserved-leaf-salt/v1" ‖ dogTagId[32B BE] ‖ u64be(len(UTF8(keyPath))) ‖ UTF8(keyPath) ‖ seed)[0..16]` |
-| consent-key | `eddsa::derive_babyjub_consent_key_from_seed` (pre-existing, already seed-derived) |
+| consent-key | `BLAKE-512("DogTag/consent-key/babyjubjub/v2" ‖ dogTagId[32B BE] ‖ u64be(0) ‖ seed)[0..32]` → `prv2pub` (`eddsa::derive_babyjub_consent_key_per_tag`) |
 
 Reduce the **full 64-byte** digest, never a 32-byte prefix: a bare 32-byte hash mod r is measurably
 biased. Binding to `dogTagId` is what keeps one wallet's two tags mutually unlinkable.
+
+All three share ONE preimage builder, `kdf::kdf` (`domain ‖ dogTagId[32B BE] ‖ u64be(len(extra)) ‖
+extra ‖ seed`). Keep it that way: the consent key spent its first life on a hand-rolled
+`domain ‖ seed` preimage in `eddsa.rs` and that is precisely how it stayed seed-only while its two
+siblings were already per-tag. A second preimage builder is the drift.
+
+**The consent key is per-tag as of 2026-07-19 (captain's decision), domain bumped `v1` → `v2`.**
+Free at the time: no Level-B tag had been minted, so no migration. It feeds the `owner.consentKey`
+leaf and therefore `R`, which is write-once - so this was a now-or-never change. Two tags of one
+wallet now get different `(Ax, Ay)`, closing the last cross-linking vector in the owner-control core
+(previously the raw pubkey was shared wallet-wide, harmless only for as long as it never left the
+device). Purely an off-circuit derivation change: `consent.circom` takes `Ax`/`Ay` as plain inputs,
+so the R1CS, the frozen VK and the ceremony were all untouched.
+
+**Do NOT confuse it with `derive_babyjub_consent_key_from_seed`, which survives on `v1` and is still
+wallet-level.** That one serves the **Level-A** path (`verification.circom`) ONLY, where the consent
+key lives OUTSIDE the tree: the circuit emits `keyHash = Poseidon2(Ax,Ay)` as a public signal and
+`VerificationRegistry` checks it against `ConsentKeyRegistry.keyOf[subject]`, a
+`mapping(address => bytes32)` - per-WALLET by contract design. Making that one per-tag would force a
+`keyOf` rebind on every tag switch, i.e. an on-chain behaviour change for no gain. Level-B retires
+the path entirely (`VerificationRegistryConsent`: "the consent key moved INTO the tree, so `keyOf` is
+retired"), and this function goes with it.
 
 **Salts had to be seed-derived too, and this is the non-obvious part.** A recoverable secret alone
 does NOT rebuild the tree: fresh random salts change every leaf hash and therefore `R`. Reserved-leaf

@@ -17,8 +17,11 @@
 //! | input          | derivation                                                    |
 //! |----------------|---------------------------------------------------------------|
 //! | owner-secret   | [`derive_owner_secret`] - BLAKE-512 KDF, wide-reduced mod r    |
-//! | consent-key    | [`crate::eddsa::derive_babyjub_consent_key_from_seed`] (pre-existing) |
+//! | consent-key    | [`crate::eddsa::derive_babyjub_consent_key_per_tag`] - BLAKE-512 KDF -> `prv2pub` |
 //! | reserved salts | [`derive_reserved_salt`] - BLAKE-512 KDF, per keyPath          |
+//!
+//! All three share the single `crate::kdf::kdf` preimage builder, so the `(seed, dogTagId)`
+//! binding is uniform across the owner-control core rather than per-derivation folklore.
 //!
 //! Restoring the seed regenerates the identical owner-control core. Rebuilding the identical `R`
 //! additionally requires the original owner address plus every attribute value and salt; those are
@@ -32,11 +35,11 @@
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
 
-use crate::blake512::blake512;
 use crate::field::{field_from_scalar_bytes, field_from_uint};
+use crate::kdf::kdf;
 use crate::leaf::{field_of_keypath, hash_leaf};
 use crate::merkle::{build_merkle, MerkleTree};
-use crate::poseidon::{poseidon, to_be_bytes32, DS_LEAF};
+use crate::poseidon::{poseidon, DS_LEAF};
 use crate::types::{DogTagError, TypeTag, TypedScalar};
 
 /// Reserved owner-control leaf keyPaths. The circuit PINS `fieldOfKeyPath` of each of these
@@ -104,20 +107,6 @@ pub fn hash_reserved_leaf(key_path: &str, salt: &[u8], value: Fr) -> Result<Fr, 
     ]))
 }
 
-/// KDF preimage: `domain || dogTagId (32B BE) || len(extra) (8B BE) || extra || seed`.
-///
-/// The variable-length `seed` goes last and `extra` carries an explicit length prefix, so no two
-/// distinct `(extra, seed)` pairs can share a preimage.
-fn kdf(domain: &[u8], dog_tag_id: &Fr, extra: &[u8], seed: &[u8]) -> [u8; 64] {
-    let mut buf = Vec::with_capacity(domain.len() + 32 + 8 + extra.len() + seed.len());
-    buf.extend_from_slice(domain);
-    buf.extend_from_slice(&to_be_bytes32(dog_tag_id));
-    buf.extend_from_slice(&(extra.len() as u64).to_be_bytes());
-    buf.extend_from_slice(extra);
-    buf.extend_from_slice(seed);
-    blake512(&buf)
-}
-
 fn check_seed(seed: &[u8]) -> Result<(), DogTagError> {
     if seed.is_empty() {
         return Err(DogTagError::Other("seed must be non-empty".to_string()));
@@ -182,7 +171,8 @@ pub struct ProfileTree {
     pub tree: MerkleTree,
     /// The nullifier secret (circuit input `ownerSecret`). Never leaves the device.
     pub owner_secret: Fr,
-    /// BabyJubJub consent pubkey, seed-derived (circuit inputs `Ax` / `Ay`).
+    /// BabyJubJub consent pubkey, derived from `(seed, dogTagId)` so it is per-TAG, not per-wallet
+    /// (circuit inputs `Ax` / `Ay`).
     pub ax: Fr,
     pub ay: Fr,
     /// 32-byte BabyJubJub consent private key - signs the consent message `M`.
@@ -217,7 +207,7 @@ pub fn build_profile_tree(
     check_seed(seed)?;
 
     let owner_secret = derive_owner_secret(seed, dog_tag_id)?;
-    let consent = crate::eddsa::derive_babyjub_consent_key_from_seed(seed);
+    let consent = crate::eddsa::derive_babyjub_consent_key_per_tag(seed, dog_tag_id);
 
     let owner_salt = derive_reserved_salt(seed, dog_tag_id, KP_OWNER_ADDRESS)?;
     let key_salt = derive_reserved_salt(seed, dog_tag_id, KP_CONSENT_KEY)?;
@@ -324,6 +314,7 @@ pub fn device_root_fixture_witness() -> DeviceRootFixtureWitness {
 mod tests {
     use super::*;
     use crate::merkle::{merkle_proof, process_proof};
+    use crate::poseidon::to_be_bytes32;
     use crate::util::be_bytes_to_dec;
 
     const SEED: &[u8] = b"test wallet seed material - 64 bytes of BIP39 seed would go here";
@@ -411,6 +402,46 @@ mod tests {
         let a = derive_owner_secret(SEED, Fr::from(1u64)).unwrap();
         let b = derive_owner_secret(SEED, Fr::from(2u64)).unwrap();
         assert_ne!(a, b, "owner-secret must be bound to dogTagId");
+    }
+
+    /// The consent key's sibling of the test above: one wallet, two tags → independent BabyJubjub
+    /// keys, so the raw `(Ax, Ay)` can never cross-link a wallet's tags if it is ever exposed
+    /// off-chain. This is the invariant that was MISSING while the key was derived from the seed
+    /// alone; if someone re-points `build_profile_tree` at the wallet-level derivation, this fires.
+    #[test]
+    fn the_same_seed_yields_independent_consent_keys_per_tag() {
+        let a = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, Fr::from(1u64));
+        let b = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, Fr::from(2u64));
+        assert_ne!(a.prv, b.prv, "consent private key must be bound to dogTagId");
+        assert_ne!(a.ax, b.ax, "consent Ax must be bound to dogTagId");
+        assert_ne!(a.ay, b.ay, "consent Ay must be bound to dogTagId");
+
+        // ...and the binding must reach all the way to the committed leaf, not just the key.
+        let ta = build_profile_tree(SEED, Fr::from(1u64), &addr(), &attrs()).unwrap();
+        let tb = build_profile_tree(SEED, Fr::from(2u64), &addr(), &attrs()).unwrap();
+        assert_ne!(
+            ta.consent_key_leaf, tb.consent_key_leaf,
+            "owner.consentKey leaf must differ per tag"
+        );
+        assert_ne!(ta.root, tb.root, "R must differ per tag");
+    }
+
+    /// Drift guard: the tree MUST use the per-tag derivation. A regression to the wallet-level
+    /// key would still produce a valid-looking tree, so assert the leaf against the per-tag key
+    /// explicitly and assert it does NOT match the wallet-level one.
+    #[test]
+    fn the_consent_key_leaf_commits_the_per_tag_key_not_the_wallet_key() {
+        let id = tag_id();
+        let tree = build_profile_tree(SEED, id, &addr(), &attrs()).unwrap();
+
+        let per_tag = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, id);
+        assert_eq!(tree.consent_prv, per_tag.prv, "tree must use the per-tag consent key");
+
+        let wallet_level = crate::eddsa::derive_babyjub_consent_key_from_seed(SEED);
+        assert_ne!(
+            tree.consent_prv, wallet_level.prv,
+            "tree must NOT use the seed-only wallet-level consent key"
+        );
     }
 
     #[test]

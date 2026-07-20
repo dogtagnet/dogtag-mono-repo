@@ -147,14 +147,13 @@ fn a_lost_owner_secret_is_recovered_by_re_issuing_a_fresh_tag() {
         "owner-secret B must NOT equal the KDF over the OLD dogTagId"
     );
 
-    // The consent pubkey is seed-derived and NOT bound to dogTagId, so it is identical across a
-    // wallet's tags. That is deliberately harmless: it is never a public signal and never leaves the
-    // device (it is not in the `nullifier` preimage, nor in the verification's public inputs). Only
-    // the owner-secret - which IS per-tag - feeds the on-chain nullifier, so unlinkability holds
-    // regardless. Asserting equality here documents that the shared key is expected, not a leak.
-    assert_eq!(
+    // The consent key is ALSO bound to dogTagId, so the re-issued tag gets an independent consent
+    // pubkey too. The whole owner-control core (owner-secret, reserved salts, consent key) is now
+    // uniformly per-tag: there is no longer any wallet-level value shared across a wallet's tags
+    // that could cross-link the abandoned tag with the re-issued one if it ever escaped the device.
+    assert_ne!(
         reissued.ax_hex, old.ax_hex,
-        "consent pubkey is seed-only (device-local, never public) - equal across a wallet's tags"
+        "the re-issued tag must have an INDEPENDENT consent pubkey (bound to dogTagId)"
     );
 
     // --- Re-issue, case 2: even the phrase is gone, so the owner sets up a BRAND-NEW wallet. The
