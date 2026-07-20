@@ -64,16 +64,23 @@ independent reasons: it is **off by default** (unset `SBT_CONSENT_ADDR` / `PROFI
 still serves every live issuance and still mints to the owner's wallet. The trigger for the re-scoring
 below is Level-B carrying **real** issuance and verification traffic, not the route's existence.
 
-> **Scope the owner-blindness claim precisely — it is an ON-CHAIN and ON-THE-WIRE property, not a
-> store-side one.** Even on the Level-B route, the vet's own session row still carries the
-> `ownerIdentity` block (name, country of identification, identification number) collected earlier by
-> the operator-gated `POST /profiles/issue/session/start`. Level-B builds no verifiable credential, so
-> that flow never READS it — it is PII collected for a path that does not consume it, which is a
-> **data-minimisation (Art. 5(1)(c)) item to resolve before Level-B carries real traffic**, and is
-> tracked as a follow-up (a Level-B session shape that stops collecting it changes the operator-portal
-> contract, so it was out of M-2 scope). It is off-chain store data and therefore already inside the §3
-> encrypted store and the §4 erasure flow; the point is that it should not be collected at all on this
-> path.
+> **Scope the owner-blindness claim precisely - "owner-hidden" means hidden from DOWNSTREAM parties,
+> not from the issuing authority.** Level-B removes the owner from the chain, from the public signals,
+> from the `Verified` event, and from what a verifier or relayer ever sees. It does **not** - and is not
+> intended to - remove the owner from the issuing vet's own records: the session row still carries the
+> `ownerIdentity` block (name, country of identification, identification number) collected by the
+> operator-gated `POST /profiles/issue/session/start`. That collection is **deliberate and justified**:
+> the issuing authority legitimately holds the identity of the person it issues to (it is the basis on
+> which the credential is issued at all), exactly as it does on the Level-A path. Level-B narrows who
+> ELSE learns it, which is the privacy gain being claimed here - not a claim that the issuer forgets it.
+> The block is off-chain store data and therefore already inside the §3 encrypted store and the §4
+> erasure flow, which is where a data subject's rights over it are exercised.
+>
+> The Level-B handler builds no verifiable credential, so it does not currently read that block. That is
+> a property of the current implementation stage, not a signal that the data is surplus: owner identity
+> is **planned** to be committed into `R` as a hidden, selectively-disclosable Merkle leaf
+> (identity-as-leaf), putting it on a path further INTO the design. That leaf work is **planned, not
+> implemented** - when it lands, this section must be revisited to assess the leaf itself.
 
 When Level-B goes live, the living-document rule in the status block above fires and the following
 MUST be re-scored.

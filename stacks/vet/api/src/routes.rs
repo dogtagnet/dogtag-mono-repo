@@ -2133,13 +2133,15 @@ async fn profile_issue_custodial_bind(
     // Persist what is known before the chain writes. `wallet_address` stays None BY DESIGN - this path
     // never learns an owner wallet, and writing one would defeat the whole point.
     //
-    // Scope the owner-blindness claim precisely: it holds ON-CHAIN and ON THE WIRE. It does NOT hold
-    // in the vet's own store — the session row this handler updates still carries the `owner_identity`
-    // block (name, country of identification, identification number) collected earlier by the
-    // operator-gated `/profiles/issue/session/start`. Level-B builds no verifiable credential, so this
-    // flow never READS any of it; it is collected for a path that does not consume it. A Level-B
-    // session shape that stops collecting the unused owner identity is tracked as a separate
-    // follow-up (changing the session shape / operator portal contract is out of M-2 scope).
+    // Scope the owner-blindness claim precisely: "owner-hidden" means hidden from DOWNSTREAM parties
+    // - the chain, verifiers, relayers - NOT from the issuing authority. The session row this handler
+    // updates still carries the `owner_identity` block (name, country of identification,
+    // identification number) collected by the operator-gated `/profiles/issue/session/start`, and that
+    // is DELIBERATE: the vet legitimately holds the identity of the person it issues to, exactly as on
+    // the Level-A path. Level-B narrows who ELSE learns it; it does not ask the issuer to forget it.
+    // This handler builds no verifiable credential, so it does not read that block today - a property
+    // of the current stage, not surplus data: owner identity is PLANNED (not yet implemented) to be
+    // committed into `R` as a hidden, selectively-disclosable leaf. See docs/DPIA.md §2.1.
     session.root = Some(root.clone());
     session.protocol_version = Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string());
     st.store.update_profile_session(session.clone()).await;
