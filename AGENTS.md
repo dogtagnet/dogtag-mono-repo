@@ -1206,14 +1206,18 @@ Recorded so it is not re-derived or "simplified" back into a broken shape.
    re-implement 7B-2's `ownerOf` existence pre-flight**: under D1 the tag is custodial, so an `ownerOf` read
    says nothing about the owner and must not gate issuance. There was no code to delete - "dropping the
    gate" means not building it. Do not confuse it with the dup-collision `owner_of` loop
-   (`routes.rs:1588-1600`) or the post-mint read-back (`routes.rs:1812-1819`), which are unrelated and stay.
+   (`routes.rs:1723`, which M-2 extended to consult the Level-B `profileRoot` marker too) or the
+   post-mint read-back (`routes.rs:1978-1982`), which are unrelated and stay.
    `mintNext` was NOT re-implemented either: `DogTagSBTConsent` takes an issuer-supplied `id` like Level-A.
    Contract-assigned ids remain open and are orthogonal to owner-unlinkability.
-7. **The live register-pet flow still mints to the OWNER's wallet** (`routes.rs:1796-1804`,
-   `mint_wallet = wallet`) and asserts `ownerOf == wallet`. That is the linkability M5 removes, and it is
-   **still live** - the contract side landing does NOT change it. Reworking it is the app-side follow-up,
-   because the custodial route cannot run until the owner's app builds the tree and supplies `R` (the API
-   builds the tree today). Level-A issuance is unaffected and keeps working meanwhile.
+7. **The live register-pet flow still mints to the OWNER's wallet** (`routes.rs:1957`,
+   `mint_wallet = wallet`) and asserts `ownerOf == wallet` (`:1978`). That is the linkability M5 removes, and it is
+   **still live** - the contract side landing does NOT change it. **M-2 has since added the custodial
+   route BESIDE it** (`POST /profiles/issue/custodial-bind`, see "Level-B custodial issuance bridge"
+   below), so the server half no longer blocks: the route accepts a device-supplied `R` rather than
+   building the tree. What remains is the DEVICE call site (the iOS `ProfileTreeStore` -> POST wiring)
+   and the eventual cutover that retires this Level-A path. Level-A issuance is unaffected and keeps
+   working meanwhile.
 
 ### Build / test
 
@@ -1440,19 +1444,29 @@ attestation applicability (a vet/gov signature applying to an id it never signed
 cross-issuer trust model.
 The owner re-obtains each referencing credential fresh from its issuer under the new id, via normal
 issuance.
-**M6 ships the device/app re-issue flow + these semantics + docs/tests only - there is NO live
-issuer-side custodial re-issue endpoint.**
-The custodial path is not wired into vet-api until M7 (Level-A serves all issuance until then;
-`routes.rs:1796` still mints to the owner's wallet), and M7 reworks `mint -> mintCustodial`; the
-issuer-side re-issue endpoint lands with that cutover.
+**M6 ships the device/app re-issue flow + these semantics + docs/tests only - there is NO
+re-issue-AWARE issuer endpoint.**
+Read that precisely, because **M-2 has since wired a custodial issuance path into vet-api**
+(`POST /profiles/issue/custodial-bind` - see "Level-B custodial issuance bridge" above): the
+statement "the custodial path is not wired until M7" is no longer true.
+What M-2 provides is the MECHANICAL half a re-issue needs - an operator starts a fresh session (which
+allocates a fresh `dogTagId`) and the device posts the new `R` - so a re-issue can be performed today
+by simply issuing a new tag.
+What does NOT exist is any issuer-side notion OF a re-issue: nothing marks the abandoned tag, links
+old to new, or drives a re-issue-specific operator flow - and per the paragraph above that link must
+never reach an issuer record anyway, so the old<->new association stays device-local.
+Level-A still serves all live issuance (`routes.rs:1957` still mints to the owner's wallet); reworking
+`mint -> mintCustodial` for the register-pet flow is the later cutover, not M-2.
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
 - **`ProfileTreeStore` has ZERO runtime coverage.** The `DogTagTests` target (see "iOS unit tests")
   cannot reach it: that suite is deliberately FFI-free and `ProfileTreeStore` builds through the FFI,
-  so it stays out of scope until the pure logic is extracted. Nothing calls it until M7 either, so the
-  Codable round-trip, the atomic/`.completeFileProtection` write and `verifyRecoverable` have only
-  been typechecked, never run. First M7 caller should exercise them.
+  so it stays out of scope until the pure logic is extracted. Nothing calls it yet either - M-2 built
+  the SERVER end of the bridge (`POST /profiles/issue/custodial-bind`), but the iOS call site that
+  feeds it a built `R` is a deliberate follow-up - so the Codable round-trip, the
+  atomic/`.completeFileProtection` write and `verifyRecoverable` have only been typechecked, never
+  run. The first caller should exercise them.
 - **The `[u8; 20] -> Fr` owner-address packing is untested.** The parity test feeds an `Fr` straight
   to `hash_reserved_leaf`, bypassing `build_profile_tree`'s `field_from_scalar_bytes(&addr)`. It is
   the documented address-packing primitive and the device is the sole builder (no external encoder to

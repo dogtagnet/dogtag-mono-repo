@@ -20,7 +20,8 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 > `recordVerificationZK` wiring is **M5 — now DEPLOYED + VERIFIED**: the canonical
 > `VerificationRegistryConsent` is `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`, paired with
 > `DogTagSBTConsent` `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc`. It remains additive and
-> **not live until M7**; no consumer was changed. See the
+> **not live until M7**; no *verification* consumer was changed (M-2 later added an owner-hidden
+> *issuance* route against the paired SBT — see the M5 note below). See the
 > "Build + test" and "M4 binding" notes below.
 
 ## What it proves
@@ -147,8 +148,12 @@ to the mutable Level-A SBT and is **deprecated / do not use for Level-B** (it wa
 `DeployConsentRegistry.s.sol` is superseded. The pair remains **additive and not live**: the Level-A
 `VerificationRegistry` `0x4E2f0996…` still serves every consumer until the **M7** cutover. The M5 app side - the
 device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) - has landed
-too, but nothing calls it in production: issuance still mints to the owner's wallet, and the cutover is
-**M7**. Details: AGENTS.md "M5 as-built" + "M5 app-side"; `roax.json` `_m5_custodial_issuance`.
+too, and **M-2 has since added the issuer end of that handoff**: vet-api's
+`POST /profiles/issue/custodial-bind` accepts a device-built `R` and mints owner-hidden via
+`issue(R)` + `mintCustodial`. That route is **additive and off by default** (it needs `SBT_CONSENT_ADDR`
++ `PROFILE_ISSUER_ADDR`, else 503) and **no shipped device posts to it yet**, so live issuance still
+mints to the owner's wallet and the cutover is still **M7**. Details: AGENTS.md "M5 as-built" +
+"M5 app-side" + "Level-B custodial issuance bridge (M-2)"; `roax.json` `_m5_custodial_issuance`.
 
 `contracts/test/ConsentRegistry.t.sol` proves a REAL proof from the committed production zkey verifies
 through it, using the committed

@@ -30,6 +30,16 @@ and hands the issuer only `R`.
 The issuer seals it with `DogTagSBTConsent.mintCustodial(dogTagId, R)`, which takes no recipient
 argument, so the owner's wallet appears nowhere on-chain.
 
+The issuer-side route for that handoff is **`POST /profiles/issue/custodial-bind { token, root }`**
+on the vet stack (M-2), where `token` is the one-time 180s bind token from the operator's QR and
+`root` is `rootHex`.
+It carries **no wallet and no signature** by design: `mintCustodial` has no recipient, so there is
+nothing for a signature to attest, and sending a wallet anyway would hand the server exactly the link
+this whole design removes.
+The server treats `R` as opaque (it cannot recompute it - it has no seed), anchors it with `issue(R)`
+and then seals it.
+No shipped app posts to it yet; the device call site is a follow-up.
+
 ## What recovery actually needs: the seed AND the credential
 
 Rebuilding a tag on a replacement device needs two inputs, and **both are required**:
@@ -233,8 +243,11 @@ Which branch applies is decided by whether the owner-secret can be regenerated:
   The abandoned tag is simply left behind - there is no rebind.
   Any credentials another issuer anchored to the abandoned id are **not** carried over (that would
   forge attestation applicability); the owner re-obtains each fresh from its issuer under the new id.
-  The live issuer-side re-issue endpoint lands with the M7 custodial-issuance cutover - M6 is the
-  device/app flow and the recovery semantics.
+  M-2's `POST /profiles/issue/custodial-bind` supplies the MECHANICAL half of this - a fresh session
+  allocates a fresh `dogTagId` and the device posts the new `R`, so a re-issue is just an issuance of
+  a new tag - but there is no re-issue-AWARE issuer flow: nothing marks the abandoned tag or links
+  old to new, and that link must stay device-local anyway (see below).
+  M6 remains the device/app flow and the recovery semantics.
 
 The re-issued tag is **mutually unlinkable** from the abandoned one.
 The owner-secret is bound to `dogTagId` ([§1](#1-seed-derivation)), so even the same wallet's fresh

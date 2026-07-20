@@ -331,7 +331,7 @@ Profile-root updates are **not** a standalone role: `setProfileRoot` is gated by
 
 **Consensual rebind — signature-authorized re-bind, NOT burn-and-remint** (resolves the audit's Critical on the unspecified transfer scheme): `recover()` **preserves `tokenId` and `issuerOf`** (only the owner address changes), so referencing credentials survive. It is exempt from the soulbound lock and requires **TWO** EIP-712 signatures, both binding `{dogTagId, nonce, deadline, chainId:135, verifyingContract}`: the **current holder's** `RecoverConsent` (a distinct typehash, so a destination's acceptance can never double as the current owner's authorization — audit H1) **and** the **destination's** `Claim` acceptance. `RECOVERY_ROLE` can only **execute** a rebind the current holder has explicitly signed — it can no longer unilaterally confiscate a soulbound token. This intentionally means there is **NO on-chain rebind for a genuinely lost key** (a holder who can no longer sign): re-enabling that would reintroduce the H1 confiscation vector. The only admin action for such a token is `burn` (DEFAULT_ADMIN, GDPR-erasure), after which the issuer re-mints a fresh `tokenId` to the new wallet. ERC-6147 guard is an opt-in social-recovery layer, off by default.
 
-> **LEVEL-B (M5/M6) supersedes this recovery model.** The custodial `DogTagSBTConsent` has NO `recover()` / `RECOVERY_ROLE` (D3): a signature-authorized rebind names the new owner on-chain, which is exactly the linkage owner-unlinkability removes. Recovery is instead a **fresh custodial issuance under a new `dogTagId` + new `R`** (device flow: `ProfileTreeStore.reissue`; see AGENTS.md "M6 app-side - recovery is re-issue"). Unlike Level-A, referencing credentials do **not** survive the re-issue (accept-the-break, captain decision 2026-07-16): the owner re-obtains each fresh from its issuer under the new id, because re-anchoring a prior attestation to an id its issuer never signed would forge attestation applicability. The live issuer-side re-issue endpoint lands with the M7 custodial-issuance cutover.
+> **LEVEL-B (M5/M6) supersedes this recovery model.** The custodial `DogTagSBTConsent` has NO `recover()` / `RECOVERY_ROLE` (D3): a signature-authorized rebind names the new owner on-chain, which is exactly the linkage owner-unlinkability removes. Recovery is instead a **fresh custodial issuance under a new `dogTagId` + new `R`** (device flow: `ProfileTreeStore.reissue`; see AGENTS.md "M6 app-side - recovery is re-issue"). Unlike Level-A, referencing credentials do **not** survive the re-issue (accept-the-break, captain decision 2026-07-16): the owner re-obtains each fresh from its issuer under the new id, because re-anchoring a prior attestation to an id its issuer never signed would forge attestation applicability. M-2's `POST /profiles/issue/custodial-bind` supplies the MECHANICAL half — a fresh session allocates a fresh `dogTagId` and the device posts the new `R` — but there is no re-issue-AWARE issuer flow: nothing marks the abandoned tag or links old to new, and per D3 that link must stay device-local anyway.
 
 Key functions:
 ```solidity
@@ -368,9 +368,14 @@ Onboarding flow (off-chain → on-chain, also triggered on a signing-mode switch
 > link between a pet and its owner's address. Level-B removes that: under D1 the tag is minted to a
 > **neutral custodian**, and ownership is proven in-ZK instead (`DogTagSBTConsent.mintCustodial`, see
 > AGENTS.md "M5 as-built"). The canonical M5 pair is deployed + verified on ROAX (`DogTagSBTConsent`
-> `0x96Cba458…`, `VerificationRegistryConsent` `0xb9B313C1…`) but is **NOT live and NOT wired**: this
-> Level-A flow is what actually runs today, and the consumer cutover is M7. Read the below as as-built
-> Level-A, not as the target design.
+> `0x96Cba458…`, `VerificationRegistryConsent` `0xb9B313C1…`). **M-2 has since added the Level-B issuance
+> route to vet-api** — `POST /profiles/issue/custodial-bind`, where the DEVICE folds the profile root `R`
+> from its own wallet seed and the vet only anchors (`issue(R)`) + seals (`mintCustodial(dogTagId, R)`) it,
+> so no owner wallet is ever expressible in the calldata. That route is **ADDITIVE and off by default**
+> (it needs `SBT_CONSENT_ADDR` + `PROFILE_ISSUER_ADDR`, else 503) and **no shipped device posts to it
+> yet**, so this Level-A flow is still what actually runs today and the consumer cutover is M7. Read the
+> below as as-built Level-A, not as the target design; for the Level-B route see implementation §3.11
+> step (2b) and AGENTS.md "Level-B custodial issuance bridge (M-2)".
 
 **Vets issue dog tags (proper onboarding) — admin portal only approves + whitelists.** The admin/central portal does **NOT** register devices or mint dog tags: there is **no** `POST /v1/register`, **no** `GET/POST /v1/admin/owners`, **no** admin "Registered devices" / "Mint dog-tag" page, and the phone has **no** "Central API URL" setting — every host the device talks to comes from a scanned QR. The admin's only onboarding power is the apply→approve **whitelisting of vet/groomer signer addresses** (above). The dog tag is issued by the **vet**, mirroring import/export: the phone **creates a self-custodial wallet** (Profile → "Create embedded wallet" → 24-word seed → secp256k1 address, §6.4); the vet "Register pet (issue dog tag)" wizard (operator enters `ownerIdentity{countryOfIdentification, identification, name}` + pet fields, demo-prefilled) → `POST /profiles/issue/session/start` → returns a one-time token + QR `<vetHost>/p/<token>` (32-hex, 180s TTL) + the allocated `dogTagId`; the device scans `/p/<token>` and POSTs `<vetHost>/profiles/issue/bind { token, walletAddress, signature }` where `signature` is an **EIP-191** `personal_sign` over `"DogTag wallet registration: " + lowercase(walletAddress)` (proving the device owns the address). The vet backend recovers the signer (`== walletAddress`), builds the `DOG_PROFILE` VC (with the `ownerIdentity` 3 fields + `ownerAddress` = the device wallet), and **mints on-chain**: `DogTagSBT.mint(to=walletAddress, dogTagId, root)` — which sets `ownerOf[dogTagId]=device` **and** `profileRoot[dogTagId]=root` — responding `{ wrappedDoc, dogTagId, root, txHash }`. The device verifies against the SBT (`profileRoot==root && ownerOf==wallet`) + offline integrity and imports its dog tag — **gasless for the device** (the vet pays). This requires the vet signer to hold **`DogTagSBT.ISSUER_ROLE`**, granted once by the protocol admin (demo: `scripts/demo-bootstrap.sh` does `grantRole(keccak256("ISSUER"), vetSigner)`); **`ISSUER_ROLE` is a trust escalation** — a holder can mint any id to any address — so in production it is granted **only to accredited vets**. See implementation §3.11.
 
@@ -419,7 +424,10 @@ function predictIssuer(bytes32 salt) external view returns (address);
 PET ONBOARDING (vet "Register pet" — device supplies its address):
   vet operator → "Register pet" wizard (enters ownerIdentity{country,identification,name} + pet fields)
   vet web → vet API: POST /profiles/issue/session/start  (operator-session gated)
-  vet API: allocate a numeric HANDLE (skip ids already minted under field_of_value(handle))
+  vet API: allocate a numeric HANDLE (skip ids already TAKEN under field_of_value(handle) — on the
+           Level-A SBT that means ownerOf is set; on the Level-B SBT, whose mint writes no readable
+           owner, it means the write-once profileRoot is set. Both are consulted while the two run
+           side by side; the Level-B leg is skipped entirely when SBT_CONSENT_ADDR is unset)
            persist ProfileIssueSession + a fresh 16-byte one-time BIND TOKEN (180s TTL)
            → {token, dogTagId(handle), sessionId, qr = <vetHost>/p/<token>}
   device scans /p/<token> → GET /p/{token} → session meta (NON-consuming) + unverifiedClaims
@@ -438,6 +446,27 @@ PET ONBOARDING (vet "Register pet" — device supplies its address):
   ⇒ GASLESS for the device (the vet pays); requires DogTagSBT.ISSUER_ROLE on the vet signer
     (demo: scripts/demo-bootstrap.sh grantRole(keccak256("ISSUER"), vetSigner) — a trust escalation,
      production-granted only to accredited vets).
+
+  LEVEL-B ALTERNATIVE (M-2) — owner-HIDDEN, ADDITIVE; the Level-A branch above is untouched and is
+  what every live issuance still uses. Same session + same one-time token; the device picks the other
+  endpoint. Off by default: needs SBT_CONSENT_ADDR + PROFILE_ISSUER_ADDR, else 503.
+  device: build the profile tree LOCALLY from the wallet seed → root R (never sends the owner-secret)
+          POST /profiles/issue/custodial-bind {token, root}      ← NO walletAddress, NO signature:
+            mintCustodial has no recipient, so there is nothing for a signature to attest and sending
+            a wallet would restore the very link this path removes. The one-time token IS the authz.
+  vet API: shape-check R (opaque — the server has no seed and CANNOT recompute it); verify BOTH
+           addresses are configured BEFORE consuming the token (a half-wired stack must not burn the
+           QR); consume the token; re-check profileRoot(id) is unset (a sealed id is retired forever)
+           RESPOND IMMEDIATELY {dogTagId, onchainDogTagId, root, protocolVersion, status:"minting"}
+           THEN async: issue(R) on the DogTagIssuer clone FIRST (anchor — so rootIssuer[R] resolves),
+             THEN mintCustodial(field_of_value(handle), R) (seal — irreversible; write-once profileRoot
+             survives a burn, so a mint before a failing issue would retire the id forever)
+             read back profileRoot==R && isValid(R) → "bound"+txHash (else "error"). Deliberately NO
+             ownerOf comparison: the owner is the neutral custodian, and comparing it would reintroduce
+             the linkage.
+  operator portal polls GET /profiles/issue/session/{id}; walletAddress is NULL here BY DESIGN, so
+           protocolVersion ("dogtag-levelb/1" vs "dogtag-levela/1") is what distinguishes an
+           owner-hidden issuance from a Level-A one that failed before binding a wallet.
 
 ISSUE (vet issues a vaccination):
   vet frontend → vet API: POST /records {type:VACCINATION, fields, dogTagId}

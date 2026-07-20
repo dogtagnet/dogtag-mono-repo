@@ -54,7 +54,7 @@ The vet backend is the legal **record-custodian**: it holds full credential reco
 On-chain we anchor **only** the salted root `R` — all PII stays in the vet's Mongo, erasable per the DPIA.
 
 **API + web surface.**
-`vet-api` (Axum): issue → prepare/confirm, share, third-party verify, export-session (owner→verifier ZK consent), calendar sync, custody genesis/unlock; records management (`GET /records` operator-gated list, `PATCH /records/:id` off-chain metadata only — on-chain-derived fields rejected, `POST /records/:id/revoke` soft-invalidation) — each record bundles its immutable on-chain proof (tx hash, block number, issuer clone, explorer link).
+`vet-api` (Axum): issue → prepare/confirm, share, third-party verify, export-session (owner→verifier ZK consent), dog-tag issuance (`/profiles/issue/*` — the Level-A `bind` plus the additive, off-by-default Level-B owner-hidden `custodial-bind`, M-2), calendar sync, custody genesis/unlock; records management (`GET /records` operator-gated list, `PATCH /records/:id` off-chain metadata only — on-chain-derived fields rejected, `POST /records/:id/revoke` soft-invalidation) — each record bundles its immutable on-chain proof (tx hash, block number, issuer clone, explorer link).
 `vet-web` (React+Vite+`@dogtag/ui`): issue wizards (dog-tag + vaccination), records (DB-backed list + edit/expire/revoke), verify, settings.
 
 **Deployment.** `stacks/vet/docker-compose.yml`: `caddy` (TLS) + `web` (nginx) + `api` (`vet-api`, `--features mongo`) + `mongo` (internal). Host `41873`/`41874`.
