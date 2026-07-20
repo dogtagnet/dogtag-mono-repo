@@ -66,10 +66,10 @@ contract ProtocolRegistryTest is Test {
         _bind(bId, bArtId);
     }
 
-    function _assertEqContracts(ProtocolRegistry.ContractSet memory got, ProtocolRegistry.ContractSet memory want)
-        internal
-        pure
-    {
+    function _assertEqContracts(
+        ProtocolRegistry.ContractSet memory got,
+        ProtocolRegistry.ContractSet memory want
+    ) internal pure {
         assertEq(got.contractSetId, want.contractSetId, "contractSetId");
         assertEq(got.factory, want.factory, "factory");
         assertEq(got.verificationRegistry, want.verificationRegistry, "verificationRegistry");
@@ -78,10 +78,10 @@ contract ProtocolRegistryTest is Test {
         assertEq(got.circuitId, want.circuitId, "circuitId");
     }
 
-    function _assertEqArtifacts(ProtocolRegistry.ArtifactSet memory got, ProtocolRegistry.ArtifactSet memory want)
-        internal
-        pure
-    {
+    function _assertEqArtifacts(
+        ProtocolRegistry.ArtifactSet memory got,
+        ProtocolRegistry.ArtifactSet memory want
+    ) internal pure {
         assertEq(got.artifactSetId, want.artifactSetId, "artifactSetId");
         assertEq(got.zkeySha256, want.zkeySha256, "zkeySha256");
         assertEq(got.witnessMobileSha256, want.witnessMobileSha256, "witnessMobileSha256");
@@ -122,10 +122,10 @@ contract ProtocolRegistryTest is Test {
         assertEq(nowArt.minAppVersion, "2.0.0", "new app floor is live");
 
         // ...while the on-chain axis is EXACTLY what it was, publishedAt included: it was never written.
-        ProtocolRegistry.ContractSet memory After = reg.getContractSet(bId);
-        _assertEqContracts(After, before);
-        assertEq(After.publishedAt, before.publishedAt, "contract set was not re-published");
-        assertTrue(After.active, "contract set still active");
+        ProtocolRegistry.ContractSet memory afterRotation = reg.getContractSet(bId);
+        _assertEqContracts(afterRotation, before);
+        assertEq(afterRotation.publishedAt, before.publishedAt, "contract set was not re-published");
+        assertTrue(afterRotation.active, "contract set still active");
         assertEq(reg.contractSetCount(), 1, "no new contract set was created");
 
         // And the superseded artifact set is still pinned in history, readable by its own id.
@@ -156,9 +156,9 @@ contract ProtocolRegistryTest is Test {
         assertEq(nowContracts.sbt, address(0xBEEF));
 
         // ...and the artifact axis did not: same record, same publishedAt, same binding, no new set.
-        ProtocolRegistry.ArtifactSet memory After = reg.getArtifactSet(bArtId);
-        _assertEqArtifacts(After, before);
-        assertEq(After.publishedAt, before.publishedAt, "artifact set was not re-published");
+        ProtocolRegistry.ArtifactSet memory afterRotation = reg.getArtifactSet(bArtId);
+        _assertEqArtifacts(afterRotation, before);
+        assertEq(afterRotation.publishedAt, before.publishedAt, "artifact set was not re-published");
         assertEq(reg.activeArtifactSetOf(bId), bArtId, "binding survived the contract rotation");
         assertEq(reg.artifactSetCount(), 1, "no new artifact set was created");
     }
@@ -428,7 +428,9 @@ contract ProtocolRegistryTest is Test {
     /// caught, and the immediately-following pranked call is the one that must revert.
     function _expectUnauthorized(address who) internal {
         bytes32 role = reg.PUBLISHER_ROLE();
-        vm.expectRevert(abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, who, role));
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, who, role)
+        );
     }
 
     function test_propose_requires_publisher_role() public {
@@ -735,10 +737,14 @@ contract ProtocolRegistryTest is Test {
     function test_frozen_zkey_and_r1cs_pins_are_the_expected_constants() public pure {
         ProtocolRegistry.ArtifactSet memory a = ProtocolVersions.levelAArtifacts();
         assertEq(a.zkeySha256, 0x9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992);
-        assertEq(a.witnessServerR1csSha256, 0x8890e52860b5b43535143682892bd6fa87ffefab3084b4eb2186b91c99be6fe8);
+        assertEq(
+            a.witnessServerR1csSha256, 0x8890e52860b5b43535143682892bd6fa87ffefab3084b4eb2186b91c99be6fe8
+        );
 
         ProtocolRegistry.ArtifactSet memory b = ProtocolVersions.levelBArtifacts();
         assertEq(b.zkeySha256, 0xf83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868);
-        assertEq(b.witnessServerR1csSha256, 0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7);
+        assertEq(
+            b.witnessServerR1csSha256, 0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7
+        );
     }
 }

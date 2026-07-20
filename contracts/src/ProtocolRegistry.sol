@@ -165,7 +165,9 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// @param admin The dogtag governance multisig; receives `DEFAULT_ADMIN_ROLE` under the two-step
     /// ACDAR timelock. It alone can grant/revoke `PUBLISHER_ROLE`.
     /// @param publisher The initial `PUBLISHER_ROLE` holder (dogtag governance / the publishing key).
-    constructor(address admin, address publisher) AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin) {
+    constructor(address admin, address publisher)
+        AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin)
+    {
         require(admin != address(0) && publisher != address(0), "zero");
         _grantRole(PUBLISHER_ROLE, publisher);
     }

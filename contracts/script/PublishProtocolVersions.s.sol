@@ -86,7 +86,11 @@ contract PublishProtocolVersionsExecute is PublishBase {
         console2.log("Published artifact sets:", reg.artifactSetCount());
         console2.log("levela/1 active", reg.getContractSet(ProtocolVersions.levelAId()).active);
         console2.log("levelb/1 active", reg.getContractSet(ProtocolVersions.levelBId()).active);
-        console2.log("levela/1 minAppVersion", reg.getActiveArtifactSet(ProtocolVersions.levelAId()).minAppVersion);
-        console2.log("levelb/1 minAppVersion", reg.getActiveArtifactSet(ProtocolVersions.levelBId()).minAppVersion);
+        console2.log(
+            "levela/1 minAppVersion", reg.getActiveArtifactSet(ProtocolVersions.levelAId()).minAppVersion
+        );
+        console2.log(
+            "levelb/1 minAppVersion", reg.getActiveArtifactSet(ProtocolVersions.levelBId()).minAppVersion
+        );
     }
 }
