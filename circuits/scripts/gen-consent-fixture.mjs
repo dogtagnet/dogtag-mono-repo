@@ -101,9 +101,12 @@ async function buildInput(eddsa, {recordType}) {
   // committed fixture unsubmittable from any key we hold, which is fine for the Foundry tests (they
   // `prank`) but not for the Rust relayer E2E, which signs with a real anvil key. Hence the override:
   // point it at an anvil account to produce a fixture the backend can actually broadcast.
-  // Defaults to the original constant, so `node gen-consent-fixture.mjs` with no env reproduces the
-  // committed fixture byte-for-byte. Changing a PUBLIC INPUT does not move the VK — same ceremony
-  // key, same verifier contract.
+  // Defaults to the original constant, so `node gen-consent-fixture.mjs` with no env reproduces
+  // every PUBLIC value of the committed fixture (pub, R, nullifier, recordType, deadline) — but NOT
+  // the file byte-for-byte: Groth16 proving draws fresh randomness per run, so `a`/`b`/`c` differ on
+  // every invocation. A diff in the proof elements is expected, not artifact drift; do not
+  // regenerate a committed fixture merely to "check" it. Changing a PUBLIC INPUT does not move the
+  // VK — same ceremony key, same verifier contract.
   const relayer = BigInt(process.env.CONSENT_FIXTURE_RELAYER ?? "0x1111111111111111111111111111111111111111");
   const deadline = 1893456000n; // 2030-01-01
   const consentNonce = 99n;

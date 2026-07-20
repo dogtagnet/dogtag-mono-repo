@@ -108,6 +108,44 @@ async fn boot(chain: Arc<MemChain>) -> (axum::Router, String, String) {
     (app, op, relayer)
 }
 
+/// Submit a Level-B proof and poll the audit row to its TERMINAL state.
+///
+/// The handler acks `"recording"` and broadcasts from a detached `tokio::spawn` (Axum cancels a
+/// handler's future on client disconnect, so awaiting the receipt inline would strand the row). The
+/// ack therefore says nothing about whether the broadcast succeeded — every assertion about the
+/// outcome must come from the settled row, or it passes vacuously.
+async fn submit_and_settle(app: &axum::Router, op: &str, pubs: &[String; 7]) -> (Value, Value) {
+    let (s, ack) = call(
+        app,
+        "POST",
+        "/verify/consent/levelb",
+        Some(op),
+        Some(body_for(pubs)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "level-b ack: {ack}");
+    assert_eq!(ack["status"], "recording", "the ack is not terminal: {ack}");
+    let session_id = ack["sessionId"].as_str().expect("sessionId echoed");
+
+    for _ in 0..200 {
+        let (ss, row) = call(
+            app,
+            "GET",
+            &format!("/verify/session/{session_id}"),
+            Some(op),
+            None,
+        )
+        .await;
+        assert_eq!(ss, StatusCode::OK, "session lookup: {row}");
+        // "recording" is the only non-terminal state the detached task can leave behind.
+        if row["status"] != "recording" {
+            return (ack, row);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("level-b session {session_id} never left recording");
+}
+
 /// `keccak256(abi.encode("VERIFY:", purpose))` from a decimal purpose field element.
 fn verify_key_word(purpose_dec: &str) -> String {
     use alloy::primitives::{keccak256, U256};
@@ -140,47 +178,61 @@ async fn a_level_b_proof_records_and_consumes_the_pub3_nullifier() {
     let (app, op, relayer) = boot(chain.clone()).await;
     let pubs = pubs_for(&relayer, now_secs() + 3600);
 
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/verify/consent/levelb",
-        Some(&op),
-        Some(body_for(&pubs)),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "level-b submit: {b}");
-    assert_eq!(b["recorded"], true);
-    assert_eq!(b["level"], "level-b");
-    assert_eq!(b["protocolVersion"], "dogtag-levelb/1");
-    assert_eq!(b["consumed"], true, "the nullifier must read back consumed");
+    let (ack, row) = submit_and_settle(&app, &op, &pubs).await;
+    assert_eq!(ack["level"], "level-b");
+    assert_eq!(ack["protocolVersion"], "dogtag-levelb/1");
+    assert_eq!(
+        row["status"], "recorded",
+        "the broadcast must succeed: {row}"
+    );
+    assert!(row["txHash"].as_str().is_some(), "txHash recorded: {row}");
 
+    let word_of = |dec: &str| {
+        use alloy::primitives::U256;
+        let u = U256::from_str_radix(dec, 10).unwrap();
+        format!("0x{}", hex::encode(u.to_be_bytes::<32>()))
+    };
     // The nullifier is pub[3]'s value, NOT pub[4]'s.
-    let want_nf = {
-        use alloy::primitives::U256;
-        let u = U256::from_str_radix(&pubs[PB::NULLIFIER], 10).unwrap();
-        format!("0x{}", hex::encode(u.to_be_bytes::<32>()))
-    };
-    let got_nf = b["nullifier"].as_str().expect("nullifier").to_lowercase();
-    assert_eq!(got_nf, want_nf, "nullifier must come from pub[3]");
-    let root_as_nf = {
-        use alloy::primitives::U256;
-        let u = U256::from_str_radix(&pubs[PB::ROOT], 10).unwrap();
-        format!("0x{}", hex::encode(u.to_be_bytes::<32>()))
-    };
-    assert_ne!(
-        got_nf, root_as_nf,
-        "reading pub[4] as the nullifier is the E-1 bug"
+    let want_nf = word_of(&pubs[PB::NULLIFIER]);
+    let root_as_nf = word_of(&pubs[PB::ROOT]);
+    assert_eq!(
+        ack["nullifier"].as_str().expect("nullifier").to_lowercase(),
+        want_nf,
+        "nullifier must come from pub[3]"
+    );
+    assert_eq!(
+        row["nullifier"].as_str().expect("nullifier").to_lowercase(),
+        want_nf,
+        "the audit row's nullifier must come from pub[3]"
     );
 
-    // OWNER-BLIND: the response echoes the Level-B event, which has no `subject`. There must be no
-    // owner-shaped key anywhere in it.
-    let verified = &b["verified"];
-    assert!(verified.is_object(), "verified event echoed: {b}");
+    // The sharp end of the E-1 guard: assert against the CHAIN, not the echo. Consuming the wrong
+    // slot compiles, runs, and leaves a plausible field element consumed — the visible symptom is a
+    // SUCCESSFUL verification the app polls as forever-unconsumed.
     assert!(
-        verified.get("subject").is_none(),
-        "the Level-B response must never carry a subject"
+        chain.consumed(VREG_CONSENT_ADDR, &want_nf).await.unwrap(),
+        "pub[3] must be the consumed nullifier"
     );
-    assert_eq!(verified["deadline"], pubs[PB::DEADLINE].as_str());
+    assert!(
+        !chain
+            .consumed(VREG_CONSENT_ADDR, &root_as_nf)
+            .await
+            .unwrap(),
+        "consuming pub[4] (R) instead of pub[3] is the E-1 bug"
+    );
+
+    // OWNER-BLIND: neither the ack nor the audit row may carry an owner-shaped field. Level-B has no
+    // public signal that could fill one, and these are the two places it would leak back in.
+    for owner_key in ["subject", "owner", "ownerAddress", "wallet", "keyHash"] {
+        assert!(
+            ack.get(owner_key).is_none(),
+            "the level-b ack must never carry {owner_key}: {ack}"
+        );
+        assert!(
+            row.get(owner_key).is_none(),
+            "the level-b audit row must never carry {owner_key}: {row}"
+        );
+    }
 }
 
 /// Replaying the same consent is refused. `MemChain` mirrors the registry's
@@ -192,31 +244,24 @@ async fn replaying_a_consumed_nullifier_is_refused() {
     let (app, op, relayer) = boot(chain.clone()).await;
     let pubs = pubs_for(&relayer, now_secs() + 3600);
 
-    let (s, _) = call(
-        &app,
-        "POST",
-        "/verify/consent/levelb",
-        Some(&op),
-        Some(body_for(&pubs)),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    // Settle the FIRST submission before replaying, so which of the two consumes the nullifier is
+    // deterministic rather than a race between two detached tasks.
+    let (_, first) = submit_and_settle(&app, &op, &pubs).await;
+    assert_eq!(first["status"], "recorded", "the first submit: {first}");
 
-    let (s2, b2) = call(
-        &app,
-        "POST",
-        "/verify/consent/levelb",
-        Some(&op),
-        Some(body_for(&pubs)),
-    )
-    .await;
-    assert_ne!(s2, StatusCode::OK, "a replay must not succeed: {b2}");
+    // The replay clears the same preflight (which does not read `consumed`), so it is the BROADCAST
+    // that must refuse it — hence the verdict lives on the settled row, not the ack.
+    let (_, replay) = submit_and_settle(&app, &op, &pubs).await;
+    assert_eq!(
+        replay["status"], "error",
+        "a replay must not record: {replay}"
+    );
     assert!(
-        b2["error"]
+        replay["txHash"]
             .as_str()
             .unwrap_or_default()
             .contains("replayed"),
-        "the on-chain revert reason should surface, got {b2}"
+        "the on-chain revert reason should surface on the row, got {replay}"
     );
 }
 
@@ -455,10 +500,14 @@ async fn the_level_a_consent_route_is_still_mounted() {
 /// be 0 today. The two are unrelated roles, so the moment that config is wired to an env var every
 /// Level-B submit would preflight green here and then revert on-chain at `"not relayer"`.
 ///
-/// So this test sets `vet_signer_index` to an index that is NOT unlocked and asserts the submit
-/// still succeeds: it can only pass if the broadcast resolves its account independently of that
+/// So this test sets `vet_signer_index` to an index that is NOT unlocked and asserts the broadcast
+/// still RECORDS: it can only pass if the broadcast resolves its account independently of that
 /// field. `MemChain` makes the assertion sharp — it looks the index up in its registered signers and
 /// errors `"no signer for index"` on a miss, and genesis registers ONLY account 0.
+///
+/// The assertion must come from the SETTLED row, never the ack. The broadcast is detached, so the
+/// handler returns `200 recording` whether or not the signer resolves — asserting on the ack would
+/// make this guard pass vacuously and quietly retire it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_broadcast_uses_the_same_signer_the_preflight_validated() {
     let chain = Arc::new(MemChain::new());
@@ -478,23 +527,24 @@ async fn the_broadcast_uses_the_same_signer_the_preflight_validated() {
     );
 
     let pubs = pubs_for(&relayer, now_secs() + 3600);
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/verify/consent/levelb",
-        Some(&op),
-        Some(body_for(&pubs)),
-    )
-    .await;
+    let (_, row) = submit_and_settle(&app, &op, &pubs).await;
     assert_eq!(
-        s,
-        StatusCode::OK,
+        row["status"], "recorded",
         "the broadcast must not follow cfg.vet_signer_index — it must use the account whose address \
-         the preflight compared against pub[relayer]: {b}"
+         the preflight compared against pub[relayer]. An `error` row reading \"no signer for index\" \
+         is that regression: {row}"
     );
-    // And the tx really is attributed to the relayer named in the proof.
+
+    // And the trail attributes it to the relayer named in the proof.
+    let (_, hb) = call(&app, "GET", "/verify/history", Some(&op), None).await;
+    let logged = hb["verifications"]
+        .as_array()
+        .expect("verifications")
+        .iter()
+        .find(|r| r["mode"] == "levelb")
+        .unwrap_or_else(|| panic!("no level-b row in the trail: {hb}"));
     assert_eq!(
-        b["verified"]["relayer"]
+        logged["relayer"]
             .as_str()
             .unwrap_or_default()
             .to_lowercase(),
@@ -513,16 +563,11 @@ async fn a_recorded_level_b_verification_lands_in_the_audit_history() {
     let (app, op, relayer) = boot(chain.clone()).await;
     let pubs = pubs_for(&relayer, now_secs() + 3600);
 
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/verify/consent/levelb",
-        Some(&op),
-        Some(body_for(&pubs)),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "level-b submit: {b}");
-    let session_id = b["sessionId"].as_str().expect("sessionId echoed").to_string();
+    let (ack, settled) = submit_and_settle(&app, &op, &pubs).await;
+    let session_id = ack["sessionId"]
+        .as_str()
+        .expect("sessionId echoed")
+        .to_string();
 
     let (hs, hb) = call(&app, "GET", "/verify/history", Some(&op), None).await;
     assert_eq!(hs, StatusCode::OK, "history: {hb}");
@@ -534,9 +579,17 @@ async fn a_recorded_level_b_verification_lands_in_the_audit_history() {
 
     assert_eq!(row["status"], "recorded");
     assert_eq!(row["mode"], "levelb");
-    assert_eq!(row["txHash"], b["txHash"]);
-    assert_eq!(row["nullifier"], b["nullifier"]);
-    assert_eq!(row["relayer"].as_str().map(str::to_lowercase), Some(relayer.to_lowercase()));
+    // The terminal txHash reaches the trail from the DETACHED task, not from the handler's ack.
+    assert!(
+        row["txHash"].as_str().is_some(),
+        "txHash in the trail: {row}"
+    );
+    assert_eq!(row["txHash"], settled["txHash"]);
+    assert_eq!(row["nullifier"], ack["nullifier"]);
+    assert_eq!(
+        row["relayer"].as_str().map(str::to_lowercase),
+        Some(relayer.to_lowercase())
+    );
 
     // OWNER-BLIND: the row carries operational proof metadata only. Level-B has no `subject` public
     // signal, so no owner-shaped field may appear here — this is the property the whole path exists
@@ -570,27 +623,13 @@ async fn a_failed_level_b_broadcast_is_recorded_as_an_error_row() {
     let pubs = pubs_for(&relayer, now_secs() + 3600);
 
     // First submit succeeds and consumes the nullifier; the second reverts "replayed" on-chain,
-    // which is a failure that happens AFTER the preflight passes — exactly the case that must leave
-    // a row.
-    let (s1, _) = call(
-        &app,
-        "POST",
-        "/verify/consent/levelb",
-        Some(&op),
-        Some(body_for(&pubs)),
-    )
-    .await;
-    assert_eq!(s1, StatusCode::OK);
+    // which is a failure that happens AFTER the preflight passes and INSIDE the detached task —
+    // exactly the case that must still be driven to a terminal row rather than left at "recording".
+    let (_, first) = submit_and_settle(&app, &op, &pubs).await;
+    assert_eq!(first["status"], "recorded");
 
-    let (s2, _) = call(
-        &app,
-        "POST",
-        "/verify/consent/levelb",
-        Some(&op),
-        Some(body_for(&pubs)),
-    )
-    .await;
-    assert_ne!(s2, StatusCode::OK);
+    let (_, second) = submit_and_settle(&app, &op, &pubs).await;
+    assert_eq!(second["status"], "error");
 
     let (hs, hb) = call(&app, "GET", "/verify/history", Some(&op), None).await;
     assert_eq!(hs, StatusCode::OK, "history: {hb}");

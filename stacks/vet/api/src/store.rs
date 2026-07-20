@@ -106,7 +106,7 @@ pub struct VerifySession {
     pub relayer: String,
     pub purpose: String,
     pub record_type: String,
-    pub mode: String, // "normal" | "zk"
+    pub mode: String, // "normal" | "zk" | "levelb"
     pub challenge: String,
     pub status: String, // "pending" | "recording" | "recorded" | "error"
     pub tx_hash: Option<String>,

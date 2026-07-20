@@ -910,8 +910,16 @@ const BN254_R_DEC: &str =
 /// the relayer cannot widen it (see [`zk_record_deadline`], which exists precisely because Level-A's
 /// deadline is relayer-supplied). If the device picked a deadline that is about to pass, re-encoding
 /// cannot save the tx: it would mine after `block.timestamp` overtakes it and revert `"expired"`,
-/// burning gas. So we refuse early and tell the caller to get a fresher proof.
-const MIN_DEADLINE_MARGIN_SECS: u64 = 30;
+/// burning gas.
+///
+/// **This margin is what buys the broadcast its time budget.** The broadcast is detached into a
+/// background task (see [`consent_submit_levelb`]), so it starts moments after the handler returns
+/// and then AWAITS a receipt (~12-24s on ROAX), possibly across a retry. Since the relayer cannot
+/// widen the deadline to cover that window, the only honest lever is to refuse a proof whose window
+/// is already too narrow — a wide up-front margin is the substitute for widening the deadline.
+/// 120s comfortably covers a deferred-plus-retried broadcast; a device that trips it must re-prove
+/// with a further deadline, which is what the rejection tells the caller to do.
+const MIN_DEADLINE_MARGIN_SECS: u64 = 120;
 
 /// Parse a public signal as a `U256`, decimal or 0x-hex.
 fn pub_signal_u256(s: &str) -> Option<alloy::primitives::U256> {
@@ -938,11 +946,21 @@ fn pub_signal_u256(s: &str) -> Option<alloy::primitives::U256> {
 ///     owner link this whole path exists to remove.
 ///   - **`recordType` and `deadline` are read OUT of the proof, never invented.** They are `pub[5]`
 ///     and `pub[6]`, cryptographically bound. The relayer supplies neither.
-///   - **Synchronous broadcast, not the Level-A spawn-and-poll.** Level-A responds `"recording"` and
-///     broadcasts from a background task ~24-48s later, which is safe there because the relayer
-///     invents a generous 1h deadline. Here the deadline is the device's and cannot be widened, so
-///     deferring the broadcast is exactly what would make it revert `"expired"`. We check the margin
-///     up front and broadcast inline.
+///   - **Detached broadcast behind a WIDE deadline margin.** Like Level-A this responds
+///     `"recording"` + a `sessionId` and broadcasts from a `tokio::spawn`; the consumer polls
+///     `GET /verify/session/{id}` for the terminal `recorded`/`error` + txHash. Detaching is not
+///     optional: Axum CANCELS a handler's future when the client disconnects, so awaiting a ~12-24s
+///     receipt inline means any client timeout or proxy cutoff strands the audit row at `"recording"`
+///     while the tx still mines and spends gas — and the retry then reverts `"replayed"`, so a
+///     verification that SUCCEEDED reads in the trail as a failure.
+///
+///     What Level-B cannot copy from Level-A is [`zk_record_deadline`]: Level-A's relayer INVENTS a
+///     generous 1h deadline to cover the deferred broadcast, whereas Level-B's is `pub[6]`,
+///     proof-bound and device-chosen. So the margin does that job instead —
+///     [`MIN_DEADLINE_MARGIN_SECS`] is wide enough to cover a deferred-plus-retried broadcast, and a
+///     proof whose window is narrower is refused up front with an instruction to re-prove. Refusing
+///     early is the substitute for widening; it is why deferring no longer risks an `"expired"`
+///     revert.
 ///
 /// Every `pub[n]` read below goes through `level_b::*`. Hand-indexing is what E-1 was: Level-A's
 /// NULLIFIER slot (4) is Level-B's ROOT, so a literal `pub[4]` here would key the one-time check on
@@ -1107,77 +1125,65 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
     // the hole the trail exists to close.
     st.store.put_session(audit.clone()).await;
 
-    // ---- broadcast ----
-    // Broadcast from the SAME signer the preflight validated `pub[relayer]` against. Both resolve
-    // through `custody::ACTIVE_SIGNER_INDEX`, so they cannot drift; reading the address from
-    // `active_address()` while sending from `cfg.vet_signer_index` (the DOG_PROFILE SBT-minting
-    // signer, which merely happens to be 0 today) would revert on-chain at `"not relayer"`.
-    let sent = match st
-        .chain
-        .record_verification_zk_consent(
-            crate::custody::ACTIVE_SIGNER_INDEX,
-            &registry,
-            &a,
-            &b,
-            &c,
-            &pubs,
-        )
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            // The on-chain revert string is the useful diagnostic ("R !profileRoot", "replayed",
-            // "unknown root", "bad proof", ...), so surface it rather than flattening to 502.
-            let reason = format!("recordVerificationZK (level-b): {e}");
-            let mut failed = audit;
-            failed.status = "error".to_string();
-            // `tx_hash` carries the failure reason on an `error` row (there is no hash to record) —
-            // the slot Level-A uses for the same purpose.
-            failed.tx_hash = Some(reason.clone());
-            failed.updated_at = crate::auth::now();
-            st.store.update_session(failed).await;
-            return err(StatusCode::BAD_GATEWAY, &reason);
+    // ---- DETACHED BROADCAST ----
+    // Awaiting the receipt (~12-24s on ROAX) inline would put it inside the handler's future, which
+    // Axum CANCELS the moment the client disconnects — stranding this row at `"recording"` while the
+    // tx mines anyway. Mirror Level-A `consent_submit` and the M-2 `profile_issue_custodial_bind`:
+    // clone what the task needs out of `AppState` so the future is `Send + 'static`, respond
+    // immediately, and let the task drive the row to a TERMINAL state on every path. The wide
+    // `MIN_DEADLINE_MARGIN_SECS` checked above is what makes deferring safe here.
+    let chain = st.chain.clone();
+    let store = st.store.clone();
+    let bg_registry = registry.clone();
+    let (bg_a, bg_b, bg_c, bg_pubs) = (a.clone(), b.clone(), c.clone(), pubs.clone());
+    let mut bg_session = audit;
+
+    tokio::spawn(async move {
+        // Broadcast from the SAME signer the preflight validated `pub[relayer]` against. Both resolve
+        // through `custody::ACTIVE_SIGNER_INDEX`, so they cannot drift; reading the address from
+        // `active_address()` while sending from `cfg.vet_signer_index` (the DOG_PROFILE SBT-minting
+        // signer, which merely happens to be 0 today) would revert on-chain at `"not relayer"`.
+        match chain
+            .record_verification_zk_consent(
+                crate::custody::ACTIVE_SIGNER_INDEX,
+                &bg_registry,
+                &bg_a,
+                &bg_b,
+                &bg_c,
+                &bg_pubs,
+            )
+            .await
+        {
+            Ok(sent) => {
+                bg_session.status = "recorded".to_string();
+                bg_session.tx_hash = Some(sent.tx_hash);
+            }
+            Err(e) => {
+                // The on-chain revert string is the useful diagnostic ("R !profileRoot", "replayed",
+                // "unknown root", "bad proof", ...), so record it verbatim. `tx_hash` carries the
+                // reason on an `error` row (there is no hash) — the slot Level-A uses likewise.
+                bg_session.status = "error".to_string();
+                bg_session.tx_hash = Some(format!("recordVerificationZK (level-b): {e}"));
+            }
         }
-    };
-
-    // ---- read back, in Level-B shapes ----
-    // The owner-blind `Verified` (different topic0 from Level-A) plus the one-time `consumed` check,
-    // keyed on pub[3]. This is the consumer read-back the app polls.
-    let ev = st
-        .chain
-        .get_consent_verified_event(&sent.tx_hash, &registry)
-        .await
-        .ok();
-    // Tri-state: a read failure is `null` (unknown), never `false`. This line is only reached after a
-    // receipt with `status == true`, so the nullifier IS consumed on-chain and a `false` here could
-    // only ever be wrong — and a client keying retry on it would re-submit into a `"replayed"` revert.
-    let consumed = st.chain.consumed(&registry, &nullifier).await.ok();
-
-    let mut recorded = audit;
-    recorded.status = "recorded".to_string();
-    recorded.tx_hash = Some(sent.tx_hash.clone());
-    recorded.updated_at = crate::auth::now();
-    st.store.update_session(recorded).await;
+        // BOTH arms fall through to here: the row is never left at `"recording"`.
+        bg_session.updated_at = crate::auth::now();
+        store.update_session(bg_session).await;
+    });
 
     ok(json!({
-        "recorded": true,
+        // Not `recorded` — the broadcast is still in flight. The consumer polls
+        // GET /verify/session/{sessionId} for the terminal `recorded`/`error` + txHash, exactly as
+        // it does for a Level-A ZK submit.
+        "status": "recording",
         "level": "level-b",
         "protocolVersion": dogtag_standard::wrap::LEVEL_B_VERSION,
         // The minted audit row, so the operator can pull this verification back out of the trail.
         "sessionId": session_id,
-        "txHash": sent.tx_hash,
         "registry": registry,
+        // Known before the broadcast (it is `pub[3]`), so it is safe to echo now — and it is what a
+        // caller needs to key its own `consumed` read against.
         "nullifier": nullifier,
-        "consumed": consumed,
-        // Echo the owner-blind event. There is no `subject` key here and there must never be one.
-        "verified": ev.map(|e| json!({
-            "dogTagId": e.dog_tag_id.to_string(),
-            "relayer": e.relayer,
-            "purpose": e.purpose,
-            "nullifier": e.nullifier,
-            "deadline": e.deadline.to_string(),
-            "ts": e.ts.to_string(),
-        })),
     }))
 }
 

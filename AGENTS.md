@@ -1421,11 +1421,32 @@ an index that is never unlocked and asserting the submit still succeeds (`MemCha
 `"no signer for index"` on a miss, and genesis registers ONLY account 0). Leave the M-2 issuance path
 alone - it uses `vet_signer_index` legitimately, for minting.
 
-**The broadcast is SYNCHRONOUS, deliberately unlike Level-A's spawn-and-poll.** Level-A responds
-`"recording"` and broadcasts ~24-48s later, which is safe there only because the relayer invents a
-generous 1h `deadline`. Under Level-B `deadline` is `pub[6]` - proof-bound and device-chosen - so the
-relayer cannot widen it and deferring the broadcast is exactly what would make it revert `"expired"`.
-The preflight refuses a deadline inside a 30s margin rather than broadcasting a doomed tx.
+**The broadcast is DETACHED behind a WIDE deadline margin - and the margin is what makes detaching
+safe.** Like Level-A, the route acks `"recording"` + a `sessionId` and broadcasts from a
+`tokio::spawn`; the consumer polls `GET /verify/session/:id` for the terminal `recorded`/`error` +
+txHash. Detaching is not stylistic: Axum CANCELS a handler's future when the client disconnects, so
+awaiting the ~12-24s receipt inline lets any client timeout or proxy cutoff strand the audit row at
+`"recording"` while the tx still mines and spends gas - and the retry then reverts `"replayed"`, so a
+verification that SUCCEEDED reads in the trail as a failure, gutting the very trail the row exists
+for.
+
+What Level-B cannot copy is `zk_record_deadline`: Level-A's relayer INVENTS a generous 1h `deadline`
+to cover its deferred broadcast, whereas Level-B's is `pub[6]` - proof-bound and device-chosen - so
+the relayer cannot widen it. **The preflight margin does that job instead.**
+`MIN_DEADLINE_MARGIN_SECS` is therefore 120s, not 30s: wide enough to cover a deferred-plus-retried
+broadcast window. Refusing a too-near deadline up front (with an instruction to re-prove with a
+further one) is the substitute for widening it, and is why deferring no longer risks an `"expired"`
+revert. Do NOT narrow the margin back toward the broadcast latency - that reintroduces the doomed-tx
+case the synchronous design originally existed to avoid.
+
+The detached task drives the row to a TERMINAL state on BOTH arms (`Ok` -> `recorded` + txHash,
+`Err` -> `error` + the on-chain revert reason in `tx_hash`); it must never be possible to leave a row
+at `"recording"`. It deliberately does NOT gate `recorded` on a `consumed` read-back: the task only
+reaches that point after a receipt with `status == true`, so the nullifier IS consumed and a `false`
+read could only ever be wrong. Consequently the ack no longer carries `txHash`/`consumed`/`verified`
+- those moved to the polled session row, and the route tests must assert on the SETTLED row, never
+the ack, or they pass vacuously (this is exactly how the signer-coupling guard would silently
+retire).
 
 The preflight mirrors the registry's requires (field range, `addr range` on the FULL element before
 narrowing, deadline, art9, relayer, whitelist) but is **not** the security boundary - the on-chain
