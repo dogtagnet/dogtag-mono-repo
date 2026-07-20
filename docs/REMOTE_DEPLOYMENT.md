@@ -172,6 +172,7 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `PROFILE_DOCUMENT_STORE` | admin | SBT mint target | `=SBT_ADDR` | usually `=SBT_ADDR` |
 | `SBT_CONSENT_ADDR` | vet, groomer | **Level-B** `DogTagSBTConsent` - the owner-blind `mintCustodial` target for `POST /profiles/issue/custodial-bind`. Distinct from `SBT_ADDR` (Level-A `DogTagSBT`), NOT an overload: both run side by side through the migration. The vet signer must hold `ISSUER_ROLE` on it | unset (Level-B not wired) | the deployed `DogTagSBTConsent` (`0x96Cba458…` on ROAX); leave unset to keep Level-B off |
 | `PROFILE_ISSUER_ADDR` | vet, groomer | **Level-B** `DogTagIssuer` clone that profile roots are anchored into via `issue(R)`, so `rootIssuer[R]` resolves and the tag is revocable. **NOT `PROFILE_DOCUMENT_STORE`** - that defaults to the SBT because under Level-A the SBT doubles as the DOG_PROFILE document store and `issue` is never called on it, so pointing this at the SBT **reverts**. The vet signer must be whitelisted for the clone's recordType | unset (Level-B not wired) | a real **factory-deployed** clone, never the SBT |
+| `VERIFICATION_REGISTRY_CONSENT_ADDR` | vet, groomer | **Level-B** `VerificationRegistryConsent` - the owner-hidden relay target for `POST /verify/consent/levelb`. Distinct from `VERIFICATION_REGISTRY_ADDR` (Level-A), NOT an overload: both run side by side through the migration and their `recordVerificationZK` calls take **different selectors**, so pointing either var at the other's registry encodes for the wrong one and reverts empty. The relayer (custody account 0) must be whitelisted for the purpose it submits | unset (Level-B verify not wired) | the deployed `VerificationRegistryConsent` (`0xb9B313C1…` on ROAX); leave unset to keep Level-B verify off |
 | `FACTORY_ADDR` | admin | DogTagIssuerFactory — `createIssuer`/`predictIssuer` target + the Ownable owner whose key gates deploys | (roax.json, pre-filled) | per chain |
 | `VACCINATION_ISSUER_ADDR` | vet, groomer | per-recordType clone | `0x0…0` (set to the real clone for an issuer) | `0x0…0` for pure verifiers |
 | `ADMIN_SIGNER_INDEX` | admin | HD signer index | `0` | `0` |
@@ -200,6 +201,13 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 > Everything else in the vet stack, including all Level-A issuance, is unaffected.
 > Worth knowing when diagnosing: a 503 on only that route means exactly this pair, and the addresses
 > are shape-checked, so a typo is refused rather than silently coerced to `0x0…0`.
+
+> **`VERIFICATION_REGISTRY_CONSENT_ADDR` is INDEPENDENT of that pair** - it wires the Level-B *verify*
+> path (`POST /verify/consent/levelb`), not issuance, so a stack may set either, both, or neither.
+> Unset or malformed → only that one route fails closed with **503**, checked *before* custody or the
+> chain is touched; all Level-A verification and the whole Level-A trail are unaffected.
+> Same shape-check discipline: a typo is refused, never coerced to `0x0…0` (a tx to a codeless address
+> would otherwise SUCCEED and the mistake would only surface after the gas was spent).
 
 > **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`,
 > `CONSENT_KEY_REGISTRY_ADDR`, `BUSINESS_TYPE`, `CENTRAL_BASE_URL`, or `DEPLOYMENT_DOMAIN` — it is the

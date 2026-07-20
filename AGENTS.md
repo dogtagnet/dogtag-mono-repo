@@ -1400,6 +1400,132 @@ already-minted tag claims. Level-A producers keep stamping `LEVEL_A_VERSION`.
 Coverage: `stacks/vet/api/tests/custodial_issuance_bridge.rs` (real device-built `R`, both on-chain
 conditions, raw-handle and skip-issue fail-closed cases, Level-A non-regression).
 
+### Level-B unified submission path (M-3) - `POST /verify/consent/levelb`
+
+The other half of M-2: the network layer that carries an owner-hidden consent proof to the chain.
+Before it, a device could prove consent but nothing could submit that proof.
+
+**The `sol!` interface is NEW, never an edit of the Level-A one** ([e9] R-2). `chain.rs` now carries
+both `IVerificationRegistry` (Level-A, frozen) and `IVerificationRegistryConsent` (Level-B) side by
+side. Editing the Level-A one in place would yield a hybrid matching neither deployed contract, since
+Level-B deletes `subject` and retires `ConsentKeyRegistry`. Three concrete differences:
+
+- **`recordVerificationZK` is 4-arg, a DIFFERENT SELECTOR** (`dd080593` vs Level-A's `423a45b6`).
+  `recordType`/`deadline` moved out of relayer calldata into `pub[5]`/`pub[6]`, so they are bound to
+  the proof. Both selectors are pinned in `chain.rs`'s test module, plus an explicit
+  `assert_ne!` - the two calls share the same `(a,b,c,pub)` prefix, so a mix-up is invisible at the
+  type level and surfaces on-chain only as an empty `0x` revert.
+- **`Verified` drops `subject`** (gains `deadline`), hence a different topic0. Decoders are
+  address-gated AND shape-gated; `ConsentVerifiedEvent` is a separate type from `VerifiedEvent`
+  rather than one with an `Option<subject>`, so there is no owner slot for a caller to fill.
+- **No `ConsentKeyRegistry` leg at all** - no bind, no `keyOf`.
+
+**Route every `pub[n]` through `dogtag_standard::public_signals::level_b`.** Level-A's NULLIFIER slot
+(4) is Level-B's ROOT: keying the one-time check on `pub[4]` makes a SUCCESSFUL verification read as
+forever-unconsumed (the E-1 bug). `MemChain` has separate Level-A/Level-B submit paths for the same
+reason.
+
+**The relayer trust model is settled by the contract, not by config.** `relayer` is bound into both
+the EdDSA consent message `M` and the nullifier, and the registry requires
+`address(uint160(pub[2])) == msg.sender` - so the owner consents to ONE submitter and no other
+address can carry that proof. The HTTP route's operator gate is therefore only a GAS-SPEND gate
+(an open endpoint would let anyone burn the relayer's balance on reverting proofs); it confers no
+authority over the submission itself.
+
+**The preflight and the broadcast MUST resolve the same signer, and do so through
+`custody::ACTIVE_SIGNER_INDEX` - never `Config::vet_signer_index`.** `pub[relayer]` is validated
+against `custody.active_address()` (account 0) while `vet_signer_index` names the DOG_PROFILE
+SBT-MINTING signer, an unrelated role that merely happens to be 0 today because `main.rs` hardcodes
+the field. Broadcasting from the config field would preflight green against account 0 and then revert
+on-chain at `"not relayer"` the moment that field is wired to an env var - a failure that appears only
+in a specific deployment, never in tests that leave it 0. `active_address()` now reads the same
+constant, so the two are one source by construction.
+`the_broadcast_uses_the_same_signer_the_preflight_validated` pins it by setting `vet_signer_index` to
+an index that is never unlocked and asserting the submit still succeeds (`MemChain` errors
+`"no signer for index"` on a miss, and genesis registers ONLY account 0). Leave the M-2 issuance path
+alone - it uses `vet_signer_index` legitimately, for minting.
+
+**The broadcast is DETACHED behind a WIDE deadline margin - and the margin is what makes detaching
+safe.** Like Level-A, the route acks `"recording"` + a `sessionId` and broadcasts from a
+`tokio::spawn`; the consumer polls `GET /verify/session/:id` for the terminal `recorded`/`error` +
+txHash. Detaching is not stylistic: Axum CANCELS a handler's future when the client disconnects, so
+awaiting the ~12-24s receipt inline lets any client timeout or proxy cutoff strand the audit row at
+`"recording"` while the tx still mines and spends gas - and the retry then reverts `"replayed"`, so a
+verification that SUCCEEDED reads in the trail as a failure, gutting the very trail the row exists
+for.
+
+What Level-B cannot copy is `zk_record_deadline`: Level-A's relayer INVENTS a generous 1h `deadline`
+to cover its deferred broadcast, whereas Level-B's is `pub[6]` - proof-bound and device-chosen - so
+the relayer cannot widen it. **The preflight margin does that job instead.**
+`MIN_DEADLINE_MARGIN_SECS` is therefore 120s, not 30s: wide enough to cover a deferred-plus-retried
+broadcast window. Refusing a too-near deadline up front (with an instruction to re-prove with a
+further one) is the substitute for widening it, and is why deferring no longer risks an `"expired"`
+revert. Do NOT narrow the margin back toward the broadcast latency - that reintroduces the doomed-tx
+case the synchronous design originally existed to avoid.
+
+The detached task drives the row to a TERMINAL state on BOTH arms (`Ok` -> `recorded` + txHash,
+`Err` -> `error` + the on-chain revert reason in `tx_hash`); it must never be possible to leave a row
+at `"recording"`. It deliberately does NOT gate `recorded` on a `consumed` read-back: the task only
+reaches that point after a receipt with `status == true`, so the nullifier IS consumed and a `false`
+read could only ever be wrong. Consequently the ack no longer carries `txHash`/`consumed`/`verified`
+- those moved to the polled session row, and the route tests must assert on the SETTLED row, never
+the ack, or they pass vacuously (this is exactly how the signer-coupling guard would silently
+retire).
+
+The preflight mirrors the registry's requires (field range, `addr range` on the FULL element before
+narrowing, deadline, art9, relayer, whitelist) but is **not** the security boundary - the on-chain
+gates are, and they run again regardless. Its only job is to avoid paying gas for a tx that cannot
+mine.
+
+**Level-B writes a `VerifySession` audit row, into the SAME operator trail as Level-A**
+(`GET /verify/history`, `GET /verify/session/:id`) - otherwise the M-4 cutover would silently drop
+every owner-hidden verification out of the verifier's operational record. Unlike Level-A there is no
+operator-started session to update (this route is entered cold with a self-authenticating proof), so
+the row is MINTED here with `mode: "levelb"`, an empty `challenge` (replay protection is the
+proof-bound nullifier, not an operator nonce), and `purpose`/`recordType` stored as the bytes32 WORDS
+they arrive as - the labels they reduce from are one-way, so there is no honest way to recover them.
+The row is written as `recording` BEFORE the broadcast and updated to `recorded`/`error` after, so a
+submission that spends gas is auditable even if the process dies mid-tx; a revert stashes its reason
+in `tx_hash`, mirroring Level-A. It stays **owner-blind by construction**: `VerifySession` has no
+`subject` field and Level-B has no public signal that could fill one - never add one. The response
+echoes the new `sessionId`.
+
+**Two response surfaces, and neither carries a `consumed` field.** The ack returns
+`status` (always `"recording"`), `level`, `protocolVersion`, `sessionId`, `registry`, and
+`nullifier` - the last is safe to echo before the broadcast because it is `pub[3]`, already known,
+and it is what a caller keys its OWN `consumed` read against. The terminal result is the polled
+session row (`GET /verify/session/:id`): `status`, `mode`, `txHash`, `nullifier`. There is no
+server-side `consumed` read-back on either surface - see the terminal-state paragraph above for why
+one would be pure downside.
+
+New env var `VERIFICATION_REGISTRY_CONSENT_ADDR`, fail-closed when unset, separate from
+`VERIFICATION_REGISTRY_ADDR` - the two registries run side by side (same pattern as
+`SBT_CONSENT_ADDR`, and the indexer's `DEFAULT_VREG`/`DEFAULT_VREG_CONSENT`). The addresses are NOT
+interchangeable: pointing either path at the other's registry encodes the wrong selector.
+
+**Test fixtures: `relayer` is bound INTO the proof, so a fixture can only ever be submitted by the
+address it names.** The committed `contracts/test/consent-fixture.json` names `0x1111…1111`, which no
+key we hold can broadcast - fine for Foundry (it `prank`s), useless for a Rust relayer E2E. Hence
+`contracts/test/consent-fixture-anvil.json`, the same witness rebound to anvil account 0.
+`gen-consent-fixture.mjs` takes `CONSENT_FIXTURE_RELAYER` / `CONSENT_FIXTURE_OUT` overrides, both
+defaulting to the original values. Changing a PUBLIC INPUT does not move the VK - same ceremony key,
+same verifier.
+
+Note the fixtures are **semantically, not byte-wise, reproducible**: Groth16 proving draws fresh
+randomness per run, so re-running the generator reproduces every public value (`pub`, `R`,
+`nullifier`, `recordType`, `deadline`, ...) but emits different `a`/`b`/`c`. Do not treat a diff in
+the proof elements as drift, and do not regenerate a committed fixture just to "check" it - the
+regenerated file will always differ.
+
+Coverage, split by what each harness can actually prove:
+- `stacks/vet/api/tests/submit_consent_onchain.rs` - real ceremony-key proof through the new
+  interface against the real registry + real verifier on anvil (all 12 gates), fail-closed on
+  mismatched root and consumed nullifier, and a test that the Level-A encoder CANNOT drive the
+  Level-B registry. Skips without Foundry.
+- `stacks/vet/api/tests/submit_consent_levelb_route.rs` - the handler preflight against `MemChain`.
+  Bad-root cannot live here: `MemChain` only checks `consumed`, so a mismatched root would wrongly
+  succeed.
+
 ### iOS wiring
 
 `apps/ios/DogTag/ProfileTreeStore.swift` builds via FFI and persists `Documents/dogtag-owner-secrets.json`.

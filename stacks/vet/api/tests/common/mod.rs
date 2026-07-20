@@ -31,6 +31,12 @@ pub const SBT_ADDR: &str = "0x00000000000000000000000000000000000000cc";
 pub const SBT_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000dd";
 /// The `DogTagIssuer` clone Level-B profile roots are anchored into via `issue(R)`.
 pub const PROFILE_ISSUER_ADDR: &str = "0x00000000000000000000000000000000000000ee";
+/// Level-B `VerificationRegistryConsent` — the owner-hidden submit target. A DISTINCT address from
+/// the Level-A registry for the same reason `SBT_CONSENT_ADDR` is distinct from `SBT_ADDR`: a test
+/// that submits a Level-B proof cannot accidentally pass by landing in Level-A registry state (the
+/// `consumed` maps are keyed per-registry, so a shared address would let a Level-A nullifier mask a
+/// Level-B replay).
+pub const VREG_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000ff";
 
 /// Build an AppState with the given chain client + issuer/registry addresses.
 pub fn state_with(
@@ -54,6 +60,7 @@ pub fn state_with(
         issuer_domain,
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
         profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
@@ -133,6 +140,7 @@ pub fn state_with_verify_keys(
         issuer_domain,
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
         profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
@@ -182,6 +190,7 @@ pub fn state_for_calendar(
         issuer_domain: "vet.example".to_string(),
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
         profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,
@@ -226,6 +235,7 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         issuer_domain: "vet.example".to_string(),
         sbt_addr: SBT_ADDR.to_string(),
         profile_document_store: SBT_ADDR.to_string(),
+        verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
         profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
         vet_signer_index: 0,

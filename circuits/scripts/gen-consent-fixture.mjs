@@ -96,7 +96,18 @@ async function buildInput(eddsa, {recordType}) {
   const dogTagIdHandle = "424242";
   const dogTagId = fieldOfValue({tag: 3 /* TypeTag.Integer */, value: dogTagIdHandle});
   const purpose = labelField("GROOMING_INTAKE");
-  const relayer = 0x1111111111111111111111111111111111111111n;
+  // `relayer` is bound into BOTH the EdDSA message `M` and the nullifier, so a proof can only ever be
+  // submitted by the address named here — the owner consents to one specific relayer. That makes the
+  // committed fixture unsubmittable from any key we hold, which is fine for the Foundry tests (they
+  // `prank`) but not for the Rust relayer E2E, which signs with a real anvil key. Hence the override:
+  // point it at an anvil account to produce a fixture the backend can actually broadcast.
+  // Defaults to the original constant, so `node gen-consent-fixture.mjs` with no env reproduces
+  // every PUBLIC value of the committed fixture (pub, R, nullifier, recordType, deadline) — but NOT
+  // the file byte-for-byte: Groth16 proving draws fresh randomness per run, so `a`/`b`/`c` differ on
+  // every invocation. A diff in the proof elements is expected, not artifact drift; do not
+  // regenerate a committed fixture merely to "check" it. Changing a PUBLIC INPUT does not move the
+  // VK — same ceremony key, same verifier contract.
+  const relayer = BigInt(process.env.CONSENT_FIXTURE_RELAYER ?? "0x1111111111111111111111111111111111111111");
   const deadline = 1893456000n; // 2030-01-01
   const consentNonce = 99n;
 
@@ -233,7 +244,11 @@ async function main() {
     art9: {a: pArt9.a, b: pArt9.b, c: pArt9.c, pub: pArt9.pub},
   };
 
-  const out = resolve(ROOT, "..", "contracts", "test", "consent-fixture.json");
+  // Output path override, so generating a relayer-bound variant can NEVER overwrite the committed
+  // fixture the Foundry suite pins.
+  const out = process.env.CONSENT_FIXTURE_OUT
+    ? resolve(process.env.CONSENT_FIXTURE_OUT)
+    : resolve(ROOT, "..", "contracts", "test", "consent-fixture.json");
   writeFileSync(out, JSON.stringify(fixture, null, 2) + "\n");
   console.log("wrote", out);
   console.log("  pub =", p.pub.map((x) => BigInt(x).toString()).join(", "));

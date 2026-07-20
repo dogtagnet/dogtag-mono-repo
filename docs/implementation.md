@@ -354,11 +354,13 @@ Level-B M5 adds the device-side `profile_tree` module - `build_profile_tree` and
 surfaced as `buildProfileTreeHex` / `deriveOwnerSecretHex`. The owner's app builds the per-tag Merkle
 tree locally and hands the issuer **only** the root `R`; the owner-secret (the nullifier's secret leaf)
 is derived from the wallet seed and must never be transmitted, or a server could recompute every
-nullifier and link it back to the owner. The ISSUER end of that handoff now exists - M-2 added
+nullifier and link it back to the owner. Both SERVER ends of that handoff now exist - M-2 added
 `POST /profiles/issue/custodial-bind` (§3.11), which accepts the device-built `R` as an opaque value
-and anchors + seals it - but nothing calls `build_profile_tree` in production yet: the device call
-site that builds `R` and POSTs it is a deliberate follow-up, and the Level-A -> Level-B cutover for
-the live register-pet flow is later still. See `docs/MOBILE_OWNER_SECRET.md`.
+and anchors + seals it, and M-3 added `POST /verify/consent/levelb` (§3.9), which relays a consent
+proof made against that same `R` to `VerificationRegistryConsent` - but nothing calls
+`build_profile_tree` in production yet: the device call sites that build `R` and prove against it are
+a deliberate follow-up, and the Level-A -> Level-B cutover for the live register-pet and verify flows
+is later still. See `docs/MOBILE_OWNER_SECRET.md`.
 
 M7 P4 adds the `discovery` module - `validate`, surfaced as **`validateDiscovery`** - the pure client
 TRUST gate that checks a platform's `unverifiedClaims` (the resolve-GET convenience tier) against the
@@ -758,6 +760,41 @@ POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bi
    return { status:"recording", sessionId }                     # phone/portal poll GET /verify/session/{id}
    # -> on success the session flips to "recorded" + txHash + nullifier; the device can also poll
    #    consumed(nullifier) on-chain. (The NORMAL path + the test-oracle server-prove path stay SYNCHRONOUS.)
+
+# (2b) LEVEL-B ALTERNATIVE (M-3) - owner-HIDDEN verification. ADDITIVE: (2) above is untouched and is
+#      what every shipped phone still posts to. Entered COLD with a self-authenticating proof - no
+#      operator session, no export token, no `consent`/`sig`/`bind` object. Requires
+#      VERIFICATION_REGISTRY_CONSENT_ADDR (else 503, checked before custody or the chain is touched).
+POST /verify/consent/levelb { proof }                      # proof = {a,b,c,pubSignals[7]} vs consent.circom
+   # pub = [dogTagId, purpose, relayer, nullifier, R, recordType, deadline] - a DIFFERENT order from the
+   #   Level-A vector above (slot 4 is the ROOT here, the NULLIFIER there). Always index via
+   #   dogtag_standard::public_signals::level_b; a literal pub[4] keys the one-time check on R and makes
+   #   a SUCCESSFUL verification read as forever-unconsumed.
+   # NO subject, NO keyHash, NO ConsentKeyRegistry leg (D2 - the consent key moved into the tree), so
+   #   there is nothing to bind and no owner slot to fill. A `bind` object, if sent, is IGNORED.
+   # recordType + deadline are READ OUT of pub[5]/pub[6] - proof-bound, never relayer-invented (Level-A
+   #   invents a 1h deadline; here the relayer cannot widen the device's).
+   operator-gated: a GAS-SPEND gate only. The proof names its own submitter (relayer is bound into both
+     the EdDSA message M and the nullifier), so an operator cannot direct it anywhere the owner did not
+     already consent to; the gate exists so an open endpoint cannot drain the relayer on reverting proofs.
+   preflight (mirrors the registry's requires; NOT the security boundary - the on-chain gates re-run):
+     every pub[i] < r; pub[relayer] < 2^160 checked on the FULL element BEFORE narrowing (audit L1);
+     pub[relayer] == custody active address; deadline > now + 120s (MIN_DEADLINE_MARGIN_SECS - a device
+       inside that window must RE-PROVE with a further deadline; the relayer has no way to widen it);
+     pub[recordType] != SERVICE_ATTESTATION_FIELD (art9); isWhitelistedFor(VERIFY:pub[purpose], relayer)
+       - checked UNCONDITIONALLY, deliberately stricter than the registry's toggleable
+       restrictToWhitelistedRelayers, so a mis-set on-chain flag can never turn this into an open relay.
+   mint a VerifySession audit row (mode:"levelb", status:"recording", empty challenge - replay
+     protection is the proof-bound nullifier, not an operator nonce; purpose/recordType stored as the
+     bytes32 WORDS they arrive as) into the SAME trail as Level-A (GET /verify/history), owner-blind by
+     construction: VerifySession has no subject field and Level-B has no signal that could fill one.
+   RESPOND IMMEDIATELY { status:"recording", level:"level-b", protocolVersion:"dogtag-levelb/1",
+                         sessionId, registry, nullifier }
+   THEN async (detached - Axum cancels a handler's future on client disconnect, which would strand the
+     row at "recording" while the tx mines anyway): recordVerificationZK(a,b,c,pub) - the 4-arg Level-B
+     selector against VerificationRegistryConsent, broadcast from custody::ACTIVE_SIGNER_INDEX (the SAME
+     signer the preflight validated, never cfg.vet_signer_index) → row to "recorded"+txHash, or "error"
+     with the on-chain revert reason in tx_hash. BOTH arms terminal; never left at "recording".
 ```
 
 ### 3.10 Prover integration (`dogtag-prover-rs`) — TEST ORACLE; CHANGESPEC §0/§3; research 10
@@ -2159,6 +2196,12 @@ POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bi
    { txHash } = submitViaPrepareConfirm(prepared)           // §11.6 hardened prepare/confirm; relayer pays PLASMA
    take_share_token(token)                                  // one-time: consume on submit
    s.status="recorded"; return { recorded:true, txHash, mode }   // emits Verified(...); consumes nullifier
+
+# LEVEL-B twin (M-3) - POST /verify/consent/levelb. NOT a mode flag on the above: the two carry
+# DIFFERENT public-signal orders and target DIFFERENT registries whose recordVerificationZK selectors
+# differ (4-arg 0xdd080593 vs Level-A's 6-arg 0x423a45b6), so a misrouted request encodes for the wrong
+# one and reverts EMPTY (`0x`). No token, no consent/sig, no bind, no subject/keyHash. Normative flow +
+# preflight: §3.9 step (2b); rationale: AGENTS.md "Level-B unified submission path (M-3)".
 ```
 > **`/import/pull` (off-chain data) stays DECOUPLED from `/verify/*` (on-chain attestation).** NORMAL
 > mode can compose both; **ZK mode = verification with no data import at all** (privacy-maximal default).

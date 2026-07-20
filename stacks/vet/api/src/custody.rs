@@ -200,6 +200,17 @@ fn open_owner_only(path: &str) -> Result<std::fs::File, CustodyError> {
         .map_err(|e| CustodyError::Other(format!("seal open: {e}")))
 }
 
+/// The account index of the ACTIVE signer — the one [`Custody::active_address`] reports and the one
+/// every relayer-sponsored broadcast must be sent from.
+///
+/// Anything that shows an address to a caller, or has an address checked against `msg.sender`
+/// on-chain, must resolve BOTH the address and the broadcasting index through this constant. Reading
+/// the address from `active_address()` while broadcasting from a separately-configured index (e.g.
+/// `Config::vet_signer_index`, which names the DOG_PROFILE SBT-MINTING signer) lets the two drift the
+/// moment that config stops being 0: the send preflights green against this account and then reverts
+/// on-chain against the other.
+pub const ACTIVE_SIGNER_INDEX: u32 = 0;
+
 /// The unlocked custody: the seed phrase held in a SecretBox-like Zeroizing string + cached signers.
 #[derive(Clone, Default)]
 pub struct Custody {
@@ -270,7 +281,7 @@ impl Custody {
 
     /// The address of the active signer (account 0 by default).
     pub fn active_address(&self) -> Result<String, CustodyError> {
-        let s = self.signer(0)?;
+        let s = self.signer(ACTIVE_SIGNER_INDEX)?;
         Ok(format!("{:#x}", s.address()))
     }
 

@@ -58,26 +58,7 @@ pub fn purpose_key(label: &str) -> String {
 /// The previous impl hashed the literal string "VERIFY:<label>", which NEVER matched the on-chain key,
 /// so the relayer whitelist preflight (and the on-chain `!verify-wl` require) could never pass.
 pub fn verify_key(label: &str) -> String {
-    use alloy::primitives::keccak256;
-    let purpose_hex = purpose_key(label);
-    let purpose = hex::decode(purpose_hex.trim_start_matches("0x")).unwrap_or_default();
-    // abi.encode(string "VERIFY:", bytes32 purpose)
-    let mut buf = Vec::with_capacity(160);
-    // [0] offset to the string data = 0x40 (after the two head words).
-    let mut off = [0u8; 32];
-    off[31] = 0x40;
-    buf.extend_from_slice(&off);
-    // [1] the bytes32 purpose word.
-    buf.extend_from_slice(&purpose);
-    // [2] string length = 7 ("VERIFY:").
-    let mut len = [0u8; 32];
-    len[31] = 7;
-    buf.extend_from_slice(&len);
-    // [3] string bytes, right-padded to 32.
-    let mut data = [0u8; 32];
-    data[..7].copy_from_slice(b"VERIFY:");
-    buf.extend_from_slice(&data);
-    format!("0x{}", hex::encode(keccak256(&buf).as_slice()))
+    verify_key_from_purpose_word(&purpose_key(label))
 }
 
 /// Parse the consent JSON (as posted to /verify/consent/submit) into the registry's `ConsentInput`.
@@ -915,6 +896,342 @@ pub async fn consent_submit(
     ok(json!({ "recorded": true, "txHash": tx_hash, "mode": mode }))
 }
 
+// --------------------------------------------------------------------------------------------
+// LEVEL-B: /verify/consent/levelb orchestration (M-3)
+// --------------------------------------------------------------------------------------------
+
+/// BN254 r — the scalar field every public signal must be reduced into.
+const BN254_R_DEC: &str =
+    "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+
+/// The smallest `deadline` margin we will broadcast against, in seconds.
+///
+/// Level-B's `deadline` is `pub[6]` — a PROOF-BOUND signal chosen by the device — so unlike Level-A
+/// the relayer cannot widen it (see [`zk_record_deadline`], which exists precisely because Level-A's
+/// deadline is relayer-supplied). If the device picked a deadline that is about to pass, re-encoding
+/// cannot save the tx: it would mine after `block.timestamp` overtakes it and revert `"expired"`,
+/// burning gas.
+///
+/// **This margin is what buys the broadcast its time budget.** The broadcast is detached into a
+/// background task (see [`consent_submit_levelb`]), so it starts moments after the handler returns
+/// and then AWAITS a receipt (~12-24s on ROAX), possibly across a retry. Since the relayer cannot
+/// widen the deadline to cover that window, the only honest lever is to refuse a proof whose window
+/// is already too narrow — a wide up-front margin is the substitute for widening the deadline.
+/// 120s comfortably covers a deferred-plus-retried broadcast; a device that trips it must re-prove
+/// with a further deadline, which is what the rejection tells the caller to do.
+const MIN_DEADLINE_MARGIN_SECS: u64 = 120;
+
+/// Parse a public signal as a `U256`, decimal or 0x-hex.
+fn pub_signal_u256(s: &str) -> Option<alloy::primitives::U256> {
+    use alloy::primitives::U256;
+    let t = s.trim();
+    if let Some(h) = t.strip_prefix("0x") {
+        U256::from_str_radix(h, 16).ok()
+    } else {
+        U256::from_str_radix(t, 10).ok()
+    }
+}
+
+/// POST /verify/consent/levelb — preflight an OWNER-HIDDEN Level-B consent proof for the
+/// `VerificationRegistryConsent`, then hand the broadcast to a detached task.
+///
+/// The Level-B twin of [`consent_submit`], added ALONGSIDE it rather than replacing it: the Level-A
+/// route keeps serving the shipped phone consumers until the M-4 cutover. Three structural
+/// differences, all forced by the owner-hidden model:
+///
+///   - **No `subject`, no `bind` leg.** Level-A pairs every submit with a `ConsentKeyRegistry`
+///     `bindConsentKeyFor` broadcast and checks `pub[SUBJECT]`/`pub[KEY_HASH]`. Level-B has neither
+///     signal and no registry (D2), so there is nothing to bind and nothing to compare. A caller that
+///     sends a `bind` object gets it ignored, not honored — accepting one would hand the server the
+///     owner link this whole path exists to remove.
+///   - **`recordType` and `deadline` are read OUT of the proof, never invented.** They are `pub[5]`
+///     and `pub[6]`, cryptographically bound. The relayer supplies neither.
+///   - **Detached broadcast behind a WIDE deadline margin.** Like Level-A this responds
+///     `"recording"` + a `sessionId` and broadcasts from a `tokio::spawn`; the consumer polls
+///     `GET /verify/session/{id}` for the terminal `recorded`/`error` + txHash. Detaching is not
+///     optional: Axum CANCELS a handler's future when the client disconnects, so awaiting a ~12-24s
+///     receipt inline means any client timeout or proxy cutoff strands the audit row at `"recording"`
+///     while the tx still mines and spends gas — and the retry then reverts `"replayed"`, so a
+///     verification that SUCCEEDED reads in the trail as a failure.
+///
+///     What Level-B cannot copy from Level-A is [`zk_record_deadline`]: Level-A's relayer INVENTS a
+///     generous 1h deadline to cover the deferred broadcast, whereas Level-B's is `pub[6]`,
+///     proof-bound and device-chosen. So the margin does that job instead —
+///     [`MIN_DEADLINE_MARGIN_SECS`] is wide enough to cover a deferred-plus-retried broadcast, and a
+///     proof whose window is narrower is refused up front with an instruction to re-prove. Refusing
+///     early is the substitute for widening; it is why deferring no longer risks an `"expired"`
+///     revert.
+///
+/// Every `pub[n]` read below goes through `level_b::*`. Hand-indexing is what E-1 was: Level-A's
+/// NULLIFIER slot (4) is Level-B's ROOT, so a literal `pub[4]` here would key the one-time check on
+/// the root and report a SUCCESSFUL verification as forever-unconsumed.
+pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
+    use alloy::primitives::U256;
+    use dogtag_standard::public_signals::level_b as PB;
+
+    // Fail closed when the Level-B registry is unconfigured, BEFORE touching custody or the chain.
+    // Mirrors the M-2 bridge: an unwired half-stack must refuse, not dispatch at the zero address
+    // (`chain::parse_addr` coerces garbage to `Address::ZERO`, and a tx to a codeless address
+    // SUCCEEDS — so the failure would only surface at read-back, after gas is spent).
+    let registry = st.cfg.verification_registry_consent_addr.clone();
+    if !valid_contract_addr(&registry) {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "level-b verification registry not configured",
+        );
+    }
+    if !st.custody.is_unlocked() {
+        return err(StatusCode::CONFLICT, "not unlocked");
+    }
+    let relayer = match st.custody.active_address() {
+        Ok(a) => a,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    };
+
+    let proof_v = match body.get("proof") {
+        Some(p) => p,
+        None => return err(StatusCode::BAD_REQUEST, "proof: missing"),
+    };
+    let (a, b, c, pubs) = match parse_client_proof(proof_v) {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &format!("proof: {e}")),
+    };
+
+    // ---- pre-gas preflight ----
+    // These mirror the registry's own requires. They are NOT the security boundary — the on-chain
+    // gates are, and they run again regardless (§3.3.1: the trust root is `verifyProof` on-chain).
+    // Their only job is to stop the relayer paying gas for a tx that cannot possibly mine.
+    let r = U256::from_str_radix(BN254_R_DEC, 10).expect("BN254 r parses");
+    let mut pub_u = [U256::ZERO; dogtag_standard::public_signals::NUM_PUBLIC];
+    for (i, s) in pubs.iter().enumerate() {
+        match pub_signal_u256(s) {
+            Some(u) => pub_u[i] = u,
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("pubSignals[{i}]: unparseable"),
+                )
+            }
+        }
+        // Contract gate: `require(pub[i] < SNARK_SCALAR_FIELD, "!field")`.
+        if pub_u[i] >= r {
+            return err(StatusCode::BAD_REQUEST, &format!("pubSignals[{i}]: !field"));
+        }
+    }
+
+    // Contract gate: `require(pub[P_RELAYER] < TWO_POW_160, "addr range")`. Checked on the FULL field
+    // element BEFORE narrowing, because `pub_signal_to_address` truncates to the low 20 bytes — so a
+    // signal of the form `relayer + k·2^160` would pass an address comparison while reverting
+    // on-chain. This is audit L1: the truncation must be bit-identical to what the proof witnessed.
+    if pub_u[PB::RELAYER] >= U256::from(1u8) << 160 {
+        return err(StatusCode::BAD_REQUEST, "pubSignals[relayer]: addr range");
+    }
+    let pub_relayer = match pub_signal_to_address(&pubs[PB::RELAYER]) {
+        Some(x) => x,
+        None => return err(StatusCode::BAD_REQUEST, "pubSignals[relayer]: bad relayer"),
+    };
+    // Contract gate: `require(address(uint160(pub[P_RELAYER])) == msg.sender, "not relayer")`. The
+    // owner consented to ONE submitter: `relayer` is bound into both the EdDSA message and the
+    // nullifier, so no other address can carry this proof. If it does not name us, we cannot submit
+    // it for them.
+    if !pub_relayer.eq_ignore_ascii_case(&relayer) {
+        return err(
+            StatusCode::FORBIDDEN,
+            "pubSignals[relayer] does not name this relayer",
+        );
+    }
+
+    // Contract gate: `require(block.timestamp <= pub[P_DEADLINE], "expired")`.
+    let now = crate::auth::now();
+    let deadline = pub_u[PB::DEADLINE];
+    if deadline <= U256::from(now.saturating_add(MIN_DEADLINE_MARGIN_SECS)) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "pubSignals[deadline]: expired or too close to expiry — re-prove with a fresher deadline",
+        );
+    }
+
+    // Contract gate: `require(pub[P_RECORDTYPE] != SERVICE_ATTESTATION_FIELD, "art9")` (§11.9(h)).
+    // The contract's constant is the REDUCED keccak (the raw keccak exceeds r and could never match a
+    // field-bounded signal), which is exactly what `purpose_key` produces.
+    let art9 = pub_signal_u256(&purpose_key("SERVICE_ATTESTATION"))
+        .expect("art9 SERVICE_ATTESTATION constant parses");
+    if pub_u[PB::RECORD_TYPE] == art9 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "pubSignals[recordType]: SERVICE_ATTESTATION is not verifiable on-chain (art9)",
+        );
+    }
+
+    // Contract gate: `isWhitelistedFor(_verifyKey(purpose), msg.sender)`. A read, so it costs no gas
+    // to check and saves a `!verify-wl` revert.
+    //
+    // INTENTIONALLY STRICTER THAN THE CONTRACT: the registry only enforces this when
+    // `restrictToWhitelistedRelayers` is true (default true, admin-toggleable), while we check it
+    // unconditionally. The divergence is deliberate and fail-closed — if an admin ever disables the
+    // on-chain restriction, this refuses a submission the chain would have accepted, rather than the
+    // reverse. Do not "fix" it by reading the flag: that would make the relayer's willingness to
+    // spend gas depend on a mutable on-chain toggle, and a mis-set flag would turn this backend into
+    // an open relay. A relayer that genuinely needs to submit for an unlisted purpose should be
+    // whitelisted for it.
+    let purpose_word = format!("0x{}", hex::encode(pub_u[PB::PURPOSE].to_be_bytes::<32>()));
+    let vkey = verify_key_from_purpose_word(&purpose_word);
+    match st
+        .chain
+        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &vkey, &relayer)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return err(
+                StatusCode::FORBIDDEN,
+                "relayer not whitelisted for this purpose",
+            )
+        }
+        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("verify-wl: {e}")),
+    }
+
+    // ---- audit row ----
+    // Level-B verifications land in the SAME operator audit trail as Level-A (GET /verify/history,
+    // GET /verify/session/:id) — the trail is the verifier's operational record, and losing every
+    // Level-B verification from it at the M-4 cutover would silently gut it.
+    //
+    // Unlike Level-A there is no operator-started session to update: this route is entered cold with
+    // a self-authenticating proof, so the row is MINTED here. It stays owner-blind by construction —
+    // `VerifySession` has no `subject` field, and Level-B has no public signal that could fill one.
+    // `purpose`/`recordType` are stored as the bytes32 words they arrive as (`pub[1]`/`pub[5]`);
+    // the labels they reduce from are one-way, so there is no honest way to recover them here.
+    let nullifier = format!(
+        "0x{}",
+        hex::encode(pub_u[PB::NULLIFIER].to_be_bytes::<32>())
+    );
+    let record_type_word = format!(
+        "0x{}",
+        hex::encode(pub_u[PB::RECORD_TYPE].to_be_bytes::<32>())
+    );
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let audit = VerifySession {
+        session_id: session_id.clone(),
+        relayer: relayer.clone(),
+        purpose: purpose_word.clone(),
+        record_type: record_type_word,
+        mode: "levelb".to_string(),
+        // No challenge: Level-A's is the operator's anti-replay nonce for a session the owner scans
+        // into. Here replay protection is the proof-bound nullifier, consumed on-chain.
+        challenge: String::new(),
+        status: "recording".to_string(),
+        tx_hash: None,
+        nullifier: Some(nullifier.clone()),
+        created_at: now,
+        updated_at: now,
+    };
+    // Persisted BEFORE the broadcast so an in-flight submission is auditable even if this process
+    // dies mid-tx — the gas is spent either way, and a spent-but-unrecorded verification is exactly
+    // the hole the trail exists to close.
+    st.store.put_session(audit.clone()).await;
+
+    // ---- DETACHED BROADCAST ----
+    // Awaiting the receipt (~12-24s on ROAX) inline would put it inside the handler's future, which
+    // Axum CANCELS the moment the client disconnects — stranding this row at `"recording"` while the
+    // tx mines anyway. Mirror Level-A `consent_submit` and the M-2 `profile_issue_custodial_bind`:
+    // clone what the task needs out of `AppState` so the future is `Send + 'static`, respond
+    // immediately, and let the task drive the row to a TERMINAL state on every path. The wide
+    // `MIN_DEADLINE_MARGIN_SECS` checked above is what makes deferring safe here.
+    let chain = st.chain.clone();
+    let store = st.store.clone();
+    let bg_registry = registry.clone();
+    let (bg_a, bg_b, bg_c, bg_pubs) = (a.clone(), b.clone(), c.clone(), pubs.clone());
+    let mut bg_session = audit;
+
+    tokio::spawn(async move {
+        // Broadcast from the SAME signer the preflight validated `pub[relayer]` against. Both resolve
+        // through `custody::ACTIVE_SIGNER_INDEX`, so they cannot drift; reading the address from
+        // `active_address()` while sending from `cfg.vet_signer_index` (the DOG_PROFILE SBT-minting
+        // signer, which merely happens to be 0 today) would revert on-chain at `"not relayer"`.
+        match chain
+            .record_verification_zk_consent(
+                crate::custody::ACTIVE_SIGNER_INDEX,
+                &bg_registry,
+                &bg_a,
+                &bg_b,
+                &bg_c,
+                &bg_pubs,
+            )
+            .await
+        {
+            Ok(sent) => {
+                bg_session.status = "recorded".to_string();
+                bg_session.tx_hash = Some(sent.tx_hash);
+            }
+            Err(e) => {
+                // The on-chain revert string is the useful diagnostic ("R !profileRoot", "replayed",
+                // "unknown root", "bad proof", ...), so record it verbatim. `tx_hash` carries the
+                // reason on an `error` row (there is no hash) — the slot Level-A uses likewise.
+                bg_session.status = "error".to_string();
+                bg_session.tx_hash = Some(format!("recordVerificationZK (level-b): {e}"));
+            }
+        }
+        // BOTH arms fall through to here: the row is never left at `"recording"`.
+        bg_session.updated_at = crate::auth::now();
+        store.update_session(bg_session).await;
+    });
+
+    ok(json!({
+        // Not `recorded` — the broadcast is still in flight. The consumer polls
+        // GET /verify/session/{sessionId} for the terminal `recorded`/`error` + txHash, exactly as
+        // it does for a Level-A ZK submit.
+        "status": "recording",
+        "level": "level-b",
+        "protocolVersion": dogtag_standard::wrap::LEVEL_B_VERSION,
+        // The minted audit row, so the operator can pull this verification back out of the trail.
+        "sessionId": session_id,
+        "registry": registry,
+        // Known before the broadcast (it is `pub[3]`), so it is safe to echo now — and it is what a
+        // caller needs to key its own `consumed` read against.
+        "nullifier": nullifier,
+    }))
+}
+
+/// `keccak256(abi.encode("VERIFY:", purpose))` from an ALREADY-REDUCED bytes32 purpose word — the
+/// SINGLE implementation of this preimage, shared by both levels.
+///
+/// [`verify_key`] takes a purpose *label* and reduces it through `purpose_key` first. Level-B never
+/// sees the label: the purpose arrives as `pub[1]`, already a field element, so re-reducing it would
+/// hash the hex string instead of the word and produce a key that never matches on-chain.
+///
+/// The two callers must never grow separate copies of the encoding. A one-byte drift in either would
+/// reject every submission as `!verify-wl`, and this file's history records the encoding being got
+/// wrong once already (see [`verify_key`]'s note on the old literal-string hash).
+fn verify_key_from_purpose_word(purpose_word: &str) -> String {
+    use alloy::primitives::keccak256;
+    // abi.encode(string "VERIFY:", bytes32 purpose) = head[offset=0x40] ++ purpose ++ len(7) ++ str.
+    let purpose = hex::decode(purpose_word.trim_start_matches("0x")).unwrap_or_default();
+    let mut buf = Vec::with_capacity(160);
+    let mut off = [0u8; 32];
+    off[31] = 0x40;
+    buf.extend_from_slice(&off);
+    let mut word = [0u8; 32];
+    word[32 - purpose.len().min(32)..].copy_from_slice(&purpose[..purpose.len().min(32)]);
+    buf.extend_from_slice(&word);
+    let mut len = [0u8; 32];
+    len[31] = 7;
+    buf.extend_from_slice(&len);
+    let mut s = [0u8; 32];
+    s[..7].copy_from_slice(b"VERIFY:");
+    buf.extend_from_slice(&s);
+    format!("0x{}", hex::encode(keccak256(&buf).0))
+}
+
+/// Shape-check a contract address at the edge. Duplicated from the routes-layer check on purpose:
+/// this path must refuse an unconfigured/typo'd registry BEFORE spending gas, and `parse_addr`
+/// coerces garbage to the zero address rather than erroring.
+fn valid_contract_addr(a: &str) -> bool {
+    a.len() == 42
+        && a.starts_with("0x")
+        && a[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        && a[2..].bytes().any(|b| b != b'0')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1023,6 +1340,49 @@ mod tests {
             verify_key("boarding_intake"),
             "0x9f894293e0cbaa46eca3cc026ad45e5012c10c4d3217ede0488ca0d2b5eaf764"
         );
+    }
+
+    /// The Level-B whitelist preflight reaches `keccak256(abi.encode("VERIFY:", purpose))` from an
+    /// ALREADY-REDUCED purpose WORD (Level-B gets `purpose` as `pub[1]`, never as a label), while
+    /// [`verify_key`] reaches it from a label. Both MUST land on the same key.
+    ///
+    /// The entry points now share ONE preimage implementation, so the label path is by construction
+    /// `verify_key_from_purpose_word(purpose_key(label))` — the loop below is a regression guard on
+    /// that composition, not on two hand-rolled copies. The ANCHORED CONSTANT is what still guards
+    /// the encoding itself: a drift in the single remaining preimage would otherwise be invisible
+    /// here, and it would reject EVERY submission as "relayer not whitelisted" — which reads like a
+    /// deployment/whitelist problem, not an encoding bug. The repo has already paid for this once:
+    /// the previous `verify_key` hashed the literal string "VERIFY:<label>" and could never match the
+    /// on-chain key.
+    #[test]
+    fn levelb_verify_key_from_word_matches_the_label_path() {
+        for label in ["boarding_intake", "GROOMING_INTAKE", "VACCINATION", ""] {
+            assert_eq!(
+                verify_key_from_purpose_word(&purpose_key(label)),
+                verify_key(label),
+                "verify_key parity broke for {label:?}"
+            );
+        }
+        // The load-bearing assertion: the shared preimage still produces the on-chain key.
+        assert_eq!(
+            verify_key_from_purpose_word(&purpose_key("boarding_intake")),
+            "0x9f894293e0cbaa46eca3cc026ad45e5012c10c4d3217ede0488ca0d2b5eaf764"
+        );
+    }
+
+    /// The art9 guard compares against the REDUCED keccak, matching the contract's
+    /// `SERVICE_ATTESTATION_FIELD`. The raw keccak exceeds BN254 r, so comparing against it could
+    /// never match a field-bounded `recordType` signal and would make the guard dead code.
+    #[test]
+    fn art9_constant_is_the_reduced_keccak_the_contract_uses() {
+        let want = "10025591956217394737855806998434905929145386518960477508456501950324730293568";
+        let got = pub_signal_u256(&purpose_key("SERVICE_ATTESTATION")).unwrap();
+        assert_eq!(got.to_string(), want);
+        // The raw keccak is a DIFFERENT, larger value — the reduction is load-bearing.
+        let raw = alloy::primitives::U256::from_be_bytes::<32>(
+            alloy::primitives::keccak256(b"SERVICE_ATTESTATION").0,
+        );
+        assert_ne!(raw, got);
     }
 
     /// `pub_signal_to_address` keeps the low 20 bytes of a field-element pubSignal (decimal or 0x-hex),

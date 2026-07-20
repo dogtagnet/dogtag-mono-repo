@@ -25,7 +25,7 @@
 > | **ConsentKeyRegistry** (current; gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 > | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 > | **VerificationRegistry** (current/LIVE; Level-A; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
-> | VerificationRegistryConsent (M5 canonical Level-B registry; deployed + verified, **not live until M7**) | `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` |
+> | VerificationRegistryConsent (M5 canonical Level-B registry; deployed + verified. vet-api's additive, off-by-default `POST /verify/consent/levelb` (M-3, needs `VERIFICATION_REGISTRY_CONSENT_ADDR`) can relay a consent proof to it; **no live traffic until M7**) | `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` |
 > | ~~VerificationRegistryConsent~~ `_M4_mutableRoot_legacy` (**DEPRECATED / DO NOT USE for Level-B**; never live; zero `Verified`) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
 > | ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
 > | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
