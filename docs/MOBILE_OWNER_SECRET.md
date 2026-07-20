@@ -5,8 +5,8 @@
 Level-A tags predate this and are unaffected.
 
 > **This document describes a file that holds a RECOVERY SECRET.**
-> `Documents/dogtag-owner-secrets.json` contains the owner-secret for every Level-B tag on the
-> device.
+> `Documents/dogtag-owner-secrets.json` (iOS) / `<noBackupFilesDir>/dogtag-owner-secrets.json.enc`
+> (Android) contains the owner-secret for every Level-B tag on the device.
 > Anyone who reads it can generate that tag's proofs.
 > It is never uploaded, never logged, and never leaves the device: it is excluded from device
 > backups and encrypted at rest, so it is a **device-local store, not a cross-device backup**.
@@ -64,17 +64,20 @@ reaches a replacement device.
 
 Because that loss is silent and permanent, the app does not rely on the owner reading the warning:
 **owner-secret creation is gated on an explicit confirmation.**
-`ProfileTreeStore.buildAndPersist` throws `StoreError.seedBackupNotConfirmed` unless
-`SeedBackup.isConfirmed(forSeedHex:)` (`Wallet.swift`), so a tag cannot be created for an owner who
-has not affirmed they stored that wallet's phrase offline.
-The shared "I've saved it" action appears on both the wallet-genesis phrase card and the account
-export sheet (`ProfileScreen.swift`).
+`ProfileTreeStore.buildAndPersist` throws unless `SeedBackup.isConfirmed` - on iOS
+`StoreError.seedBackupNotConfirmed` / `SeedBackup.isConfirmed(forSeedHex:)` (`Wallet.swift`), on
+Android `SeedBackupNotConfirmedException` / `SeedBackup.isConfirmed(context, seedHex)`
+(`wallet/Wallet.kt`) - so a tag cannot be created for an owner who has not affirmed they stored that
+wallet's phrase offline.
+The "I've saved it" action appears on the wallet-genesis phrase card on both platforms, and
+additionally on the iOS account export sheet (`ProfileScreen.swift` / `ui/screens/ProfileScreen.kt`).
 
 It records an assertion, not proof: the app cannot verify a phrase was really written down, and a
 determined owner can tap through.
 The gate closes the *silent* failure (a tag minted against a phrase the owner never saw), not the
 dishonest one.
-`SeedBackup` stores a domain-separated SHA-256 fingerprint of the confirmed seed in `UserDefaults`.
+`SeedBackup` stores a domain-separated SHA-256 fingerprint of the confirmed seed - `UserDefaults` on
+iOS, `SharedPreferences` on Android, under the same `DogTag/seed-backup-fingerprint/v1` domain.
 The fingerprint is not a secret, and binding the assertion to it prevents a migrated preference
 from confirming a new `…ThisDeviceOnly` Keychain seed. Absence or mismatch re-prompts.
 
@@ -113,6 +116,10 @@ The local file records them too, but only as a device-local convenience: it is e
 backups, so it is never the thing that carries them across devices.
 
 ## The file
+
+Both platforms implement the same contract - device-local, encrypted at rest, excluded from device
+backups - with their own OS mechanisms. The iOS ceremony below is not portable, so the Android store
+mirrors the guarantees rather than the API; see [The Android file](#the-android-file).
 
 - **Path:** `<App Container>/Documents/dogtag-owner-secrets.json` (iOS).
 - **Written by:** `apps/ios/DogTag/ProfileTreeStore.swift`.
@@ -157,6 +164,54 @@ by `ProfileTreeStore.reissue` and are all optional, so a record written before M
 They link an abandoned tag to the fresh tag that replaced it (decision D3), and they stay device-local
 like every other field here - never transmit the old<->new link.
 
+### The Android file
+
+- **Path:** `<noBackupFilesDir>/dogtag-owner-secrets.json.enc`.
+- **Written by:** `apps/android/app/src/main/java/io/liberalize/dogtag/profile/ProfileTreeStore.kt`.
+- **Protection:** AES-256-GCM under a hardware-backed Android Keystore key
+  (`dogtag_owner_secrets_key`, StrongBox when the device has a secure element), the same envelope
+  `Wallet`'s `SeedVault` uses for the seed.
+  On API 28+ the key is additionally `setUnlockedDeviceRequired(true)`, the direct analogue of iOS's
+  `.completeFileProtection`.
+  The file is therefore ciphertext on disk, unlike iOS's plaintext-JSON-under-file-protection.
+- **Not biometric-gated:** unlike the wallet seed's key, this one is not
+  `setUserAuthenticationRequired`.
+  `.completeFileProtection` gates on device lock, not on a fresh biometric per read, and this store
+  is read on paths (listing a tag, rebuilding a proof) where prompting per access would be a UX
+  divergence from iOS rather than parity with it.
+  The seed itself keeps its stronger, auth-gated key.
+- **Device-local:** written under `Context.getNoBackupFilesDir()`, which Android auto-backup and
+  device-to-device transfer both skip.
+  The manifest sets `allowBackup="true"` for the rest of the app, so that flag is deliberately *not*
+  what this relies on - `noBackupFilesDir` is excluded regardless of it.
+- **Writes:** staged to a sibling temp file and renamed, so an interrupted write cannot truncate a
+  store whose attribute salts exist nowhere else.
+- **Format:** the same JSON array of records, encrypted.
+  The three re-issue fields are **not** yet written on Android - `reissue` (D3) is iOS-only for now;
+  see [Platform parity](#platform-parity).
+
+## Platform parity
+
+Android reached parity with iOS's device-side tree build in M-2b.
+Both platforms call the SAME compiled Rust core over UniFFI (`buildProfileTreeHex`), so `R` is
+byte-for-byte identical for identical inputs by construction rather than by two implementations
+agreeing - `apps/android/.../ProfileTreeParityTest.kt` pins that against the shared
+`contracts/test/device-profile-root.json` fixture.
+
+| capability | iOS | Android |
+|---|---|---|
+| device-side tree build + `R` | yes | yes (`ProfileTreeBuilder`) |
+| seed-derived owner-secret, persisted | yes | yes (`ProfileTreeStore`) |
+| single-owner-triple guard | in the Rust core | Rust core + a fail-fast Kotlin mirror |
+| write-once-root conflict check | yes | yes (`OwnerSecretRecords.upsert`) |
+| seed-backup gate | yes | yes (`SeedBackup`) |
+| recovery round-trip (`verifyRecoverable`) | yes | yes |
+| **re-issue (D3, `reissue`)** | yes | **not yet** |
+
+The remaining gap is the re-issue affordance: an Android owner whose owner-secret is permanently lost
+has the same on-chain remedy (a fresh custodial issuance under a new `dogTagId`), but the app does not
+yet record the abandoned↔fresh bookkeeping that `ProfileTreeStore.reissue` writes on iOS.
+
 ## Handling rules
 
 - **Never** transmit, log, or include the file in a bug report or analytics payload.
@@ -184,10 +239,13 @@ like every other field here - never transmit the old<->new link.
 | tree + KDF (source of truth) | `crates/dogtag-standard-rs/src/profile_tree.rs` |
 | FFI surface | `crates/dogtag-standard-rs/src/ffi.rs` (`buildProfileTreeHex`, `deriveOwnerSecretHex`) |
 | iOS store + device-local file | `apps/ios/DogTag/ProfileTreeStore.swift` |
+| Android tree builder + triple guard | `apps/android/app/src/main/java/io/liberalize/dogtag/profile/ProfileTreeBuilder.kt` |
+| Android store + device-local file | `apps/android/app/src/main/java/io/liberalize/dogtag/profile/ProfileTreeStore.kt` |
+| Android record codec + write-once upsert | `apps/android/app/src/main/java/io/liberalize/dogtag/profile/OwnerSecretRecord.kt` |
 | re-issue affordance (D3) | `apps/ios/DogTag/ProfileTreeStore.swift` (`ProfileTreeStore.reissue`) |
-| seed accessor | `apps/ios/DogTag/Wallet.swift` (`Wallet.seedHex()`) |
-| seed-backup gate | `apps/ios/DogTag/Wallet.swift` (`SeedBackup`), enforced in `ProfileTreeStore.buildAndPersist` |
-| confirmation UI | `apps/ios/DogTag/ProfileScreen.swift` (the "I've saved it" action) |
+| seed accessor | `apps/ios/DogTag/Wallet.swift` (`Wallet.seedHex()`) / `wallet/Wallet.kt` (`Wallet.seedHex(context)`) |
+| seed-backup gate | `Wallet.swift` / `wallet/Wallet.kt` (`SeedBackup`), enforced in `ProfileTreeStore.buildAndPersist` |
+| confirmation UI | `apps/ios/DogTag/ProfileScreen.swift` / `ui/screens/ProfileScreen.kt` (the "I've saved it" action) |
 
 The math is in Rust so the Poseidon parameter set and the reserved-leaf encoding stay pinned in one
 place across Rust / TS / circom.
@@ -205,6 +263,13 @@ Swift never reimplements it.
 - `crates/dogtag-standard-rs/tests/device_reissue_journey.rs` - the RE-ISSUE branch (D3): a lost
   owner-secret is recovered by re-issuing a fresh tag under a NEW `dogTagId`, with an independent
   owner-secret and `R` that keep it mutually unlinkable from the abandoned one.
+- `apps/android/app/src/test/java/io/liberalize/dogtag/profile/ProfileTreeParityTest.kt` - the Android
+  leg: asserts the Kotlin builder reproduces the shared `device-profile-root.json` `R` byte-for-byte
+  over the real Rust core, plus the seed round-trip, per-tag independence, and the single-owner-triple
+  guard. Pure JVM; `app/build.gradle.kts` builds `dogtag-standard-rs` for the HOST and puts it on
+  `jna.library.path` first, because the `jniLibs/` `.so` files are Android-ABI-only and gitignored.
+- `apps/android/app/src/test/java/io/liberalize/dogtag/profile/OwnerSecretRecordsTest.kt` - the
+  write-once-root invariant and the seed-backup fingerprint binding.
 - `contracts/test/CustodialIssuance.t.sol` -
   `test_device_built_root_is_what_the_contract_stores_as_profileRoot` mints a real device-built `R`
   and asserts `profileRoot(dogTagId) == R`.

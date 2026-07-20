@@ -50,6 +50,7 @@ import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
 import io.liberalize.dogtag.ui.ThemeId
 import io.liberalize.dogtag.wallet.Biometric
+import io.liberalize.dogtag.wallet.SeedBackup
 import io.liberalize.dogtag.wallet.Wallet
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -68,6 +69,18 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
     var consentKeyHash by remember { mutableStateOf<String?>(null) }
     var mnemonic by remember { mutableStateOf<String?>(null) }
     var walletMsg by remember { mutableStateOf("") }
+    // Whether the user has affirmed they stored this wallet's phrase offline. Gates owner-secret
+    // creation (`ProfileTreeStore.buildAndPersist`), so it is surfaced right under the phrase.
+    // `seedHex` decrypts under the biometric-gated Keystore key, which THROWS when the user has not
+    // authenticated recently. Reading it while composing must therefore never be allowed to
+    // propagate: an un-authenticated visit to Profile would crash the screen. Failing to `false`
+    // just re-shows the confirmation, which is the safe direction anyway.
+    var seedBackupConfirmed by remember {
+        mutableStateOf(
+            runCatching { Wallet.seedHex(context)?.let { SeedBackup.isConfirmed(context, it) } }
+                .getOrNull() ?: false,
+        )
+    }
 
     val localStore = remember { LocalStore.get(context) }
     val pets by localStore.pets.collectAsStateWithLifecycle()
@@ -177,6 +190,38 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surfaceVariant).padding(12.dp)) {
                     Text("Recovery phrase (24 words)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.danger)
                     Text(it, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = c.onBackground)
+                    Spacer(Modifier.size(10.dp))
+                    // The gate on owner-secret creation. This store is excluded from device backups,
+                    // so the phrase is the ONLY way to regenerate a tag's owner-secret on a
+                    // replacement phone - a tag issued to an owner who never saved it is one lost
+                    // device away from being permanently unprovable, and `profileRoot` is write-once
+                    // so there is no on-chain repair. Mirrors iOS's "I've saved it" action.
+                    if (seedBackupConfirmed) {
+                        Text(
+                            "✓ You confirmed this phrase is backed up.",
+                            fontSize = 11.sp, color = c.muted,
+                        )
+                    } else {
+                        Text(
+                            "Write these 24 words down and store them offline. Without them a lost " +
+                                "phone permanently destroys every dog tag on it — there is no reset.",
+                            fontSize = 11.sp, color = c.muted,
+                        )
+                        Spacer(Modifier.size(6.dp))
+                        Button(
+                            onClick = {
+                                // Same Keystore caveat as above; the phrase is on screen so the
+                                // user has just authenticated, but a failure must not crash.
+                                val seedHex = runCatching { Wallet.seedHex(context) }.getOrNull()
+                                seedBackupConfirmed =
+                                    seedHex != null && SeedBackup.confirm(context, seedHex)
+                                if (!seedBackupConfirmed) {
+                                    walletMsg = "Could not confirm the backup — unlock the device and retry."
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = c.danger),
+                        ) { Text("I've saved my recovery phrase") }
+                    }
                 }
             }
             if (walletMsg.isNotBlank()) Text(walletMsg, fontSize = 12.sp, color = c.muted)

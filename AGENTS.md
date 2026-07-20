@@ -31,7 +31,23 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
 - `cd apps/android && gradle test` - the JVM unit suites (`RoaxRpcSelectorTest`, `QrPayloadTest`,
-  `PublicSignalIndexTest`, `ZkeyAssetTest`). **Exception to this section's "runs offline" framing:**
+  `PublicSignalIndexTest`, `ZkeyAssetTest`, `ProfileTreeParityTest`, `OwnerSecretRecordsTest`).
+  Needs `apps/android/local.properties` with `sdk.dir=…` (gitignored; the CI job writes it).
+  **`ProfileTreeParityTest` calls the REAL Rust core from the host JVM**, which needs two things the
+  rest of the module does not: the desktop `net.java.dev.jna:jna` jar (the `@aar` variant ships
+  `libjnidispatch` for Android ABIs only) and a HOST build of `dogtag-standard-rs` - `jniLibs/`'s
+  `.so` files are Android-ABI-only and gitignored, so they can never load on a dev machine.
+  `app/build.gradle.kts` handles both: every `Test` task `dependsOn` a `cargo build … --lib` and gets
+  `jna.library.path` + `dogtag.repoRoot` system properties (the unit-test working directory is the
+  MODULE dir `apps/android/app`, so tests must not hard-code `../..`).
+  That cargo build MUST pass `--features prover`: the checked-in Kotlin bindings were generated from
+  the prover-enabled crate and UniFFI checksum-verifies EVERY exported function at library load, so a
+  default-feature build dies with `UnsatisfiedLinkError: …checksum_func_prove_consent` before any
+  test body runs. The dependency is deliberately hard rather than a soft skip - a self-skipping
+  parity test reports green in exactly the case it exists to catch.
+  Note `org.json` is Android's "not mocked" STUB on the unit-test classpath, so pure-JVM tests must
+  parse fixtures without it (or pull in Robolectric, which costs the network on a cold cache).
+  **Exception to this section's "runs offline" framing:**
   `QrPayloadTest` uses Robolectric, which resolves its `android-all-instrumented` runtime jars from
   Maven on the FIRST run, so a cold Gradle cache needs network (warm cache is offline). The tradeoff
   was taken deliberately: `QrPayload.parse` is built on the real `android.net.Uri` and QR content is
@@ -1251,6 +1267,24 @@ The other half of M5. The contract side (above) can seal a `profileRoot`, but no
 one owner-privately until this landed: `crates/dogtag-standard-rs/src/profile_tree.rs` is the
 device-side per-tag tree builder, reached from the holder apps through the UniFFI core they already
 link. User/dev doc: **`docs/MOBILE_OWNER_SECRET.md`** (owns the local-file contract).
+
+**Android reached device-side parity in M-2b (`profile/ProfileTreeBuilder.kt` + `ProfileTreeStore.kt`).**
+Both holder apps are thin wrappers over the SAME compiled `buildProfileTreeHex`, so `R` is identical
+by construction, not by two ports agreeing - never re-implement the tree math in Swift or Kotlin.
+The single-owner-triple invariant (an `R` must hold exactly ONE `(owner.address, owner.consentKey,
+owner.secret)` triple, since `consent.circom` proves the reserved leaves by pinned keyPath and assumes
+each is unique) is enforced in `build_profile_tree`; Kotlin mirrors it only to fail fast with a named
+error, and `ProfileTreeParityTest` drift-guards the mirrored list against the Rust constants.
+
+**Trap - the device-root fixture's `dogTagId` is the RAW integer field.**
+`device_root_fixture_witness()` binds to `Fr::from(424242u64)`, *not* `dog_tag_id_field_hex("424242")`
+(which folds the ENCODED decimal and is a different value). The committed
+`contracts/test/device-profile-root.json` `R` corresponds to the raw-field id, so anything comparing
+against that fixture must pass the bare integer field - reaching for the canonical helper because it
+"looks more correct" silently yields a root nothing ever built. Production paths (`buildAndPersist`
+on both platforms) DO use the canonical encoding; the two entry points are split deliberately
+(`build` vs `buildForIdField`), and recovery must use the stored canonical field rather than
+re-converting.
 
 **The owner-secret is seed-derived, not random (captain's requirement, 2026-07-15).** The spec's
 "a random secret" is satisfied by a KDF output - indistinguishable from random to anyone without the

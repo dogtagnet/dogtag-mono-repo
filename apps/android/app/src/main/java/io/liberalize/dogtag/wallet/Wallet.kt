@@ -99,6 +99,20 @@ object Wallet {
         return identityFromSeed(seed, mnemonic = "")
     }
 
+    /**
+     * The stored 64-byte BIP-39 seed as `0x…` hex, for the Rust FFI's seed-derived material
+     * (`deriveBabyjubConsentKey`, `deriveOwnerSecretHex`, `buildProfileTreeHex`). Mirrors iOS
+     * `Wallet.seedHex()`.
+     *
+     * The seed is the master secret for every tag on this device: it regenerates every owner-secret
+     * and every consent key. Keep it in memory only as long as the FFI call needs it - never log it,
+     * never persist it outside the Keystore envelope, and never transmit it.
+     */
+    fun seedHex(context: Context): String? {
+        val blob = SeedVault(context).load() ?: return null
+        return "0x" + decrypt(blob).joinToString("") { "%02x".format(it) }
+    }
+
     private fun identityFromSeed(seed: ByteArray, mnemonic: String): WalletIdentity {
         val priv = Bip39.seedToSecp256k1Priv(seed)             // 32-byte secp256k1 scalar
         val ethAddress = Secp256k1.addressFromPriv(priv)
@@ -165,6 +179,57 @@ object Wallet {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, keystoreKey(), GCMParameterSpec(GCM_TAG_BITS, iv))
         return cipher.doFinal(ct)
+    }
+}
+
+/**
+ * Records that the user has affirmed they stored their 24-word recovery phrase offline. The Android
+ * counterpart of iOS `SeedBackup`, and the gate on `ProfileTreeStore.buildAndPersist`.
+ *
+ * The owner-secret store is excluded from device backups, so the phrase is the ONLY thing that can
+ * regenerate a tag's owner-secret on a replacement phone. A tag minted for an owner who never saw
+ * their phrase is therefore one lost device away from being permanently unprovable, with no on-chain
+ * remedy (`profileRoot` is write-once). Gating creation on an explicit confirmation closes that
+ * SILENT failure.
+ *
+ * It records a user ASSERTION, not proof - the app cannot verify a phrase was really written down,
+ * and a determined owner can tap through. The assertion is bound to a one-way fingerprint of the
+ * seed so a restored preferences backup cannot confirm a DIFFERENT, newly-created wallet whose
+ * Keystore-held seed did not migrate. The fingerprint is not a secret, so plain prefs are the right
+ * home. A missing or mismatched fingerprint re-prompts, which fails safe.
+ */
+object SeedBackup {
+    private const val PREFS = "dogtag_seed_backup"
+    private const val KEY = "seed_backup_fingerprint_v1"
+    private const val DOMAIN = "DogTag/seed-backup-fingerprint/v1"
+
+    fun isConfirmed(context: Context, seedHex: String): Boolean {
+        val expected = fingerprint(seedHex) ?: return false
+        return prefs(context).getString(KEY, null) == expected
+    }
+
+    /** Call when the user affirms they have stored the phrase offline (the "I've saved it" action). */
+    fun confirm(context: Context, seedHex: String): Boolean {
+        val value = fingerprint(seedHex) ?: return false
+        prefs(context).edit().putString(KEY, value).apply()
+        return true
+    }
+
+    private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** Domain-separated SHA-256 over the seed BYTES. Returns null for malformed hex. */
+    internal fun fingerprint(seedHex: String): String? {
+        val hex = seedHex.removePrefix("0x").removePrefix("0X")
+        if (hex.isEmpty() || hex.length % 2 != 0) return null
+        val seed = ByteArray(hex.length / 2)
+        for (i in seed.indices) {
+            val b = hex.substring(i * 2, i * 2 + 2).toIntOrNull(16) ?: return null
+            seed[i] = b.toByte()
+        }
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(DOMAIN.toByteArray(Charsets.UTF_8))
+        md.update(seed)
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 }
 
