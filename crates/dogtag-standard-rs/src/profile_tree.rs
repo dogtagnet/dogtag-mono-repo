@@ -196,8 +196,11 @@ pub struct ProfileTree {
 ///
 /// An attribute whose keyPath resolves to one of the reserved owner-control keyPaths
 /// ([`RESERVED_KEY_PATH_FIELDS`]) is **rejected**: `TypeTag::Bytes` IS [`RESERVED_TYPE_TAG`], so such
-/// an attribute would build a second leaf the circuit accepts as a reserved leaf, defeating the
-/// keyPath pinning that makes the real one unique (`consent.circom` header; D5).
+/// an attribute would build a second leaf the circuit accepts as a reserved leaf. The circuit pins
+/// keyPath against SUBSTITUTION but does not enforce per-keyPath uniqueness, so this guard is what
+/// keeps the "exactly one reserved triple per `R`" precondition true on THIS code path
+/// (`consent.circom` header; D5). P-e requires ANY future issuance entry point to preserve it too -
+/// see `docs/DELEGATION.md` section 5.
 pub fn build_profile_tree(
     seed: &[u8],
     dog_tag_id: Fr,
