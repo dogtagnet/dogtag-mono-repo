@@ -861,7 +861,8 @@ POST /prove-consent { circuitInput, version? }        # stacks/vet/api/src/route
 ### 3.10c Signed-manifest discovery API (`GET /protocol/manifest`) - M7 P3
 
 The OFFLINE fallback for the on-chain `ProtocolRegistry` discovery anchor (§5.1 lock B): dogtag serves the
-SAME version content (trio + verifier + artifact fetch-pins) as a **dogtag-key-signed JSON** an app can
+SAME version content - BOTH axes (R-5): the contract set's trio + verifier and the bound artifact set's
+fetch-pins, each carrying its own identity (`version_id` / `artifact_set_id`) - as a **dogtag-key-signed JSON** an app can
 verify with a pinned dogtag key (no RPC, no server liveness). It is a CACHE/FALLBACK, never a second
 authority - on any conflict the on-chain record wins (`dogtag_prover::manifest::reconcile`). A NEW route
 that does **not** touch the resolve GET (`/p/`, `/x/`); that resolve-GET extension landed in P4 (§3.10d). Unlike §3.10a/b
@@ -874,17 +875,20 @@ GET /protocol/manifest?version=dogtag-levelb/1        # stacks/vet/api/src/proto
    key = env DOGTAG_MANIFEST_SIGNING_KEY              # 32-byte ed25519 seed, 64 hex chars
       #   UNSET -> 503 (feature disabled, fail-closed); SET-but-malformed -> 503 (logged, secret NOT logged)
    content = manifest::build(version)                 # unknown version -> None -> 404
-      #   DRY from the file-verified dogtag-prover-rs artifact descriptor + the version's deployment
+      #   DRY from the file-verified dogtag-prover-rs artifact descriptor + the version's on-chain axis
+      #   (VersionDeployment) + its bound artifact axis (ArtifactRelease == the activeArtifactSetOf mirror)
    return SignedManifest { content, alg:"ed25519", signature, public_key }   # 200; app verifies vs a PINNED key
 ```
 
 - **ed25519, offline-verifiable, on-chain-wins.** The content + signature + offline `verify`/`reconcile`
   helpers live in `crates/dogtag-prover-rs/src/manifest.rs`; this route (`protocol.rs`) is only the HTTP
   surface + key loading. `verify` checks against the app's PINNED dogtag key, not the envelope's advertised
-  `public_key`, so a wrong-signer or tampered manifest fails; `reconcile` reports every field that disagrees
-  with on-chain and always returns the on-chain value as authoritative (the deprecation lever
-  `min_app_version` and `circuit_id` included). The on-chain `active` lifecycle bit rides through
-  `reconcile` into `authoritative` UNCOMPARED (the signed manifest carries no lifecycle state, so a
+  `public_key`, so a wrong-signer or tampered manifest fails; `reconcile` takes the two on-chain axes as
+  SEPARATE params (`&OnchainContractSet`, `&OnchainArtifactSet` - they are read separately on-chain, R-5),
+  reports every field that disagrees with on-chain and always returns the on-chain value as authoritative
+  (the deprecation lever `min_app_version` and `circuit_id` included). The TWO on-chain `active` lifecycle
+  bits - one per axis - ride through `reconcile` into `Reconciliation::contract_set`/`::artifact_set`
+  UNCOMPARED (the signed manifest carries no lifecycle state, so a
   disagreement is impossible by construction) - that pass-through is what wires `deprecateContractSet`/`deprecateArtifactSet` into the
   §3.10d anti-downgrade check.
 
@@ -908,7 +912,9 @@ deployment's config. Full brick: AGENTS.md "Discovery API + app anchor-validatio
 # the app then RESOLVES the dogtag-owned anchor (§3.10c / on-chain ProtocolRegistry.getContractSet +
 # getActiveArtifactSet - the two independent version axes, R-5) and gates:
 dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version, expected_purpose })
-   -> Ok(ValidatedVersion{ version, circuit_id })   # feeds artifact selection (dogtag_prover::artifact::resolve)
+   -> Ok(ValidatedVersion{ version, circuit_id,     # feeds artifact selection (dogtag_prover::artifact::resolve)
+                           artifact_set })          # the validated ARTIFACT axis (R-5) - returned separately
+                                                    # because it rotates independently of `version`
    -> Err(..)                                       # ABORT — never prove against an unvalidated claim
 ```
 
@@ -917,12 +923,15 @@ dogtag_standard::discovery::validate(claims, anchor, ClientContext{ app_version,
   `dogtag-prover-rs`. It does string/int/semver compares only - no ZK, no chain I/O, no signature check.
   RESOLVING the anchor (the `getContractSet`+`getActiveArtifactSet` eth-calls, or the §3.10c manifest `verify` + `reconcile`) is the
   CALLER's job. The FFI export is `validateDiscovery` (committed Swift + Kotlin bindings regenerated).
-- **Fail-closed axes**, each aborting the flow: version-coherence, the TWO independent lifecycle bits
+- **Fail-closed checks**, each aborting the flow: version-coherence, artifact-axis coherence
+  (`ArtifactSetIncoherent` - the anchor's `artifact_set` must hash to its `artifact_set_id`; the platform
+  never claims the artifact axis, so this is the same caller-integrity guard applied independently to the
+  second axis), the TWO independent lifecycle bits
   `contract_set_active` and `artifact_set_active` (**both** required - deprecating EITHER axis refuses the
   version, the anti-downgrade lever §8.4; the error names which one via `DeprecatedAxis`, rendered into the
   message so it survives the FFI's flattening to a string), `chainId`, `verificationRegistry` (**the anti-redirect trip** - a lying
   platform cannot steer a proof onto an attacker registry), `purpose`, and `minAppVersion`. The two `0x`-hex
-  axes (`versionId`, `verificationRegistry`) compare case-insensitively; `minAppVersion` compares
+  FIELDS (`versionId`, `verificationRegistry`) compare case-insensitively; `minAppVersion` compares
   NUMERICALLY (`1.10.0` > `1.9.0`), tolerating a `-rc1`/`+build` suffix and failing closed on a malformed core.
 - **`purpose` is checked against the app's OUT-OF-BAND intent** (`ClientContext::expected_purpose`), not a
   chain field: neither on-chain axis (`ContractSet`/`ArtifactSet`) carries a purpose (purpose is per-verification,
