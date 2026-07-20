@@ -19,7 +19,7 @@
 > |---|---|
 > | IssuerRegistry | `0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c` |
 > | DogTagSBT (Level-A; live; **do not use for new Level-B credentials**) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
-> | DogTagSBTConsent (M5 canonical Level-B SBT; deployed + verified, **not live until M7**) | `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` |
+> | DogTagSBTConsent (M5 canonical Level-B SBT; deployed + verified. vet-api's additive, off-by-default `POST /profiles/issue/custodial-bind` (M-2, needs `SBT_CONSENT_ADDR`+`PROFILE_ISSUER_ADDR`) can mint through it; **no live traffic until M7**) | `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` |
 > | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
 > | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
 > | **ConsentKeyRegistry** (current; gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |

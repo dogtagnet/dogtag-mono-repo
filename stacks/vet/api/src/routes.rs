@@ -1698,23 +1698,48 @@ async fn profile_issue_session_start(
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
     }
-    // Allocate a dogTagId that is NOT already minted on the (shared) DogTagSBT. The local counter
-    // resets on restart and the SBT is shared across issuers, so a fresh counter can collide with an
-    // already-minted id — `DogTagSBT.mint` reverts on a duplicate token. Skip taken ids: owner_of
-    // returns Err(NotFound) for an unminted id (free) and Ok(_) for a minted one (taken).
+    // Allocate a dogTagId that is NOT already taken on EITHER SBT. The local counter resets on
+    // restart and the SBTs are shared across issuers, so a fresh counter can collide with an
+    // already-minted id. The two levels retire an id by different markers and BOTH must be consulted
+    // while they run side by side:
+    //   Level-A `DogTagSBT.mint`  -> writes an owner; `owner_of` is Err(NotFound) when free.
+    //   Level-B `mintCustodial`   -> writes NO owner the allocator can see (the holder is the neutral
+    //     custodian), and retires the id through the write-once `profileRoot[id]`, a marker that
+    //     SURVIVES a burn — so an id consumed by a Level-B issuance reads as free via `owner_of`.
+    // Getting this wrong is expensive on the Level-B path: `issue(R)` runs BEFORE the mint and
+    // `registerRoot` is globally write-once, so a collision burns both the operator's one-time QR and
+    // the device-computed `R`.
+    // None on a Level-A-only deployment (unset/zero), which skips the Level-B leg entirely.
+    let level_b = &st.cfg.sbt_consent_addr;
+    let level_b_sbt = valid_contract_addr(level_b).then(|| level_b.clone());
     let mut dog_tag_id = st.store.next_dog_tag_id().await.to_string();
     for _ in 0..256 {
-        // The SBT is minted under the field-hashed id, so the collision-check must query
-        // ownerOf(field_of_value(handle)), not the raw handle.
+        // Both SBTs key state by the field-hashed id, so the collision-check must query
+        // field_of_value(handle), not the raw handle.
         let onchain = match onchain_dog_tag_id(&dog_tag_id) {
             Ok(v) => v,
             Err(_) => break, // non-numeric handle can't collide via this path; proceed
         };
-        match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
-            Err(crate::chain::ChainError::NotFound) => break, // unminted -> free
-            Ok(_) => dog_tag_id = st.store.next_dog_tag_id().await.to_string(), // taken -> next
+        let taken = match st.chain.owner_of(&st.cfg.sbt_addr, &onchain).await {
+            Ok(_) => true,                                    // minted on Level-A -> taken
+            Err(crate::chain::ChainError::NotFound) => false, // unminted -> free so far
             Err(_) => break, // transient RPC error: proceed (a real dup would revert at mint)
+        };
+        let taken = taken
+            || match &level_b_sbt {
+                // A real node returns 0x0..0 for an id that was never sealed; MemChain returns
+                // NotFound. Both mean free — only a non-zero root retires the id.
+                Some(sbt) => match st.chain.profile_root_of(sbt, &onchain).await {
+                    Ok(r) => is_nonzero_word(&r),
+                    Err(crate::chain::ChainError::NotFound) => false,
+                    Err(_) => break,
+                },
+                None => false,
+            };
+        if !taken {
+            break;
         }
+        dog_tag_id = st.store.next_dog_tag_id().await.to_string();
     }
 
     let owner_identity = crate::store::OwnerIdentity {
@@ -1771,6 +1796,10 @@ async fn profile_issue_session_start(
             wallet_address: None,
             root: None,
             tx_hash: None,
+            // Unset at start: the session does not yet know WHICH path will redeem it. The device
+            // chooses by picking an endpoint - `/profiles/issue/bind` (Level-A) or
+            // `/profiles/issue/custodial-bind` (Level-B) - and that handler stamps the version.
+            protocol_version: None,
         })
         .await;
 
@@ -1898,6 +1927,9 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
     // lets the portal/device observe the bound wallet/root before the on-chain receipt arrives.
     session.wallet_address = Some(wallet.clone());
     session.root = Some(root.clone());
+    // Stamp the axis this tag is bound to. This path is and stays Level-A (M-2 adds the Level-B path
+    // beside it; it does not flip this one).
+    session.protocol_version = Some(dogtag_standard::wrap::LEVEL_A_VERSION.to_string());
     st.store.update_profile_session(session.clone()).await;
 
     // Mint the SBT to the device wallet ASYNC: ROAX blocks are ~12s apart so the on-chain receipt takes
@@ -1976,6 +2008,268 @@ async fn profile_issue_bind(State(st): State<AppState>, Json(body): Json<Profile
     }))
 }
 
+#[derive(Deserialize)]
+struct ProfileCustodialBindReq {
+    token: String,
+    /// The DEVICE-computed profile root `R` (0x + 64 hex). Opaque to the server.
+    root: String,
+}
+
+/// Shape-check a device-supplied `R`: `0x` + 64 hex, non-zero.
+///
+/// This is the ONLY validation the server can do on `R`. It cannot recompute it - `R` folds the
+/// owner's wallet-seed-derived secret, which the server has (and must have) no access to. The
+/// non-zero check mirrors `mintCustodial`'s own `root == 0 -> BadRoot` so an obviously-bad request
+/// fails at the edge instead of burning gas.
+fn valid_root_hex(root: &str) -> bool {
+    root.len() == 66
+        && root.starts_with("0x")
+        && root[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        && root[2..].bytes().any(|b| b != b'0')
+}
+
+/// POST /profiles/issue/custodial-bind — the **Level-B custodial issuance bridge** (M-2 / unifyplan
+/// §P-1, closing datamodel D-1). Device, token-authenticated. The Level-A owner-revealing
+/// `/profiles/issue/bind` above is untouched and still live; this is an ADDITIONAL path.
+///
+/// # What inverts versus Level-A
+///
+/// Level-A builds `R` on the SERVER (`wrap_vc` over a VC with the owner identity baked in) and mints
+/// it to the device wallet. Level-B cannot: `R` is a profile tree folded on the DEVICE from the
+/// owner's wallet seed (`apps/ios/DogTag/ProfileTreeStore.swift`), and the server has no seed. So the
+/// device posts `R` and the server only ANCHORS it. Nothing here builds a VC.
+///
+/// # Why there is no wallet and no signature
+///
+/// `mintCustodial(id, root)` takes no recipient - the tag goes to the contract's immutable custodian,
+/// so an owner wallet is not expressible in the calldata. Level-A's EIP-191 signature exists purely to
+/// prove control of the wallet being bound; with no wallet to bind it has nothing to attest, and
+/// accepting one anyway would hand the server exactly the owner link this milestone removes. The
+/// authorization is therefore the **one-time bind token** alone: it is minted only by the
+/// operator-gated `/profiles/issue/session/start`, is consumed atomically, and expires in 180s.
+/// Whoever redeems it defines ownership through the owner-secret sealed inside `R` - the same trust
+/// boundary Level-A actually had, minus the wallet disclosure.
+///
+/// # The two on-chain conditions (datamodel §3.5)
+///
+/// A Level-B verify checks `R` TWICE, against independent state
+/// (`VerificationRegistryConsent.sol:163` and `:188-192`):
+///   1. `R == profileRoot[dogTagId]`  — sealed by `mintCustodial`
+///   2. `rootIssuer[R] != 0 && isValid(R)` — anchored by `issue(R)` on a `DogTagIssuer` clone
+///
+/// Doing only the first yields a tag that reverts `unknown root` on EVERY verify
+/// (`contracts/test/CustodialIssuance.t.sol:367`), so this route does both, in that order, in one
+/// flow. **`issue(R)` goes first** because the mint is the irreversible half: `profileRoot[id]` is
+/// write-once and survives a burn, so a mint that lands before a failing `issue` retires the
+/// `dogTagId` forever. The contract prescribes this ordering itself
+/// (`DogTagSBTConsent.sol:139-143`: "Issue the root, then mint.").
+///
+/// Because `issue(R)` is itself irreversible and GLOBAL (`registerRoot` is write-once), the seal on
+/// `dogTagId` is re-read here immediately before it — see the bind-time re-check below, which also
+/// records why the residual cross-instance race is a tracked follow-up rather than an oversight.
+///
+/// Responds immediately with `status: "minting"` and runs the chain writes in the background - ROAX
+/// blocks are ~12s apart, well past the phone's read timeout - exactly as the Level-A path does. The
+/// operator portal polls `GET /profiles/issue/session/{id}`.
+async fn profile_issue_custodial_bind(
+    State(st): State<AppState>,
+    Json(body): Json<ProfileCustodialBindReq>,
+) -> Resp {
+    let root = body.root.trim().to_lowercase();
+    if !valid_root_hex(&root) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "root must be a non-zero 0x.. 32-byte profile root",
+        );
+    }
+    if !st.custody.is_unlocked() {
+        return err(StatusCode::CONFLICT, "not unlocked");
+    }
+    // Fail closed on an unconfigured OR MISCONFIGURED deployment BEFORE consuming the one-time token:
+    // a half-wired Level-B stack must not burn the operator's QR (and, worse, must never mint without
+    // a place to anchor the root). Both addresses are shape-checked, not merely tested for non-zero —
+    // see `valid_contract_addr` for why a malformed value would otherwise reach the chain as 0x0..0.
+    let sbt_addr = st.cfg.sbt_consent_addr.clone();
+    let issuer_addr = st.cfg.profile_issuer_addr.clone();
+    if !valid_contract_addr(&sbt_addr) || !valid_contract_addr(&issuer_addr) {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "level-B custodial issuance not configured (SBT_CONSENT_ADDR / PROFILE_ISSUER_ADDR)",
+        );
+    }
+    // consume the one-time token atomically (second call -> 410).
+    let session_id = match st.store.take_bind_token(&body.token).await {
+        Some(id) => id,
+        None => {
+            return err(
+                StatusCode::GONE,
+                "bind token missing, expired or already used",
+            )
+        }
+    };
+    let mut session = match st.store.get_profile_session(&session_id).await {
+        Some(s) if s.status == "pending" => s,
+        Some(_) => return err(StatusCode::CONFLICT, "session already bound"),
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+
+    // CANONICAL-FIELD DISCIPLINE (§P-1.3). The id sealed on-chain is `field_of_value(Integer(handle))`,
+    // never the raw operator handle: the device folded that SAME field into `R` as a KDF binding
+    // input, so minting under the raw handle produces `R != profileRoot(id)` and every verify fails
+    // closed. The fixtures take the raw-handle shortcut and the SDK warns against copying it
+    // (`profile_tree.rs` `device_root_fixture_witness`); the correct pattern is `consent_assemble.rs`,
+    // which computes the field ONCE and reuses it for the circuit input, the tree KDF and the mint id.
+    // Computed here so a bad handle fails synchronously, before the spawn.
+    let onchain_id = match onchain_dog_tag_id(&session.dog_tag_id) {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("dogTagId field-hash: {e}"),
+            )
+        }
+    };
+
+    // Persist what is known before the chain writes. `wallet_address` stays None BY DESIGN - this path
+    // never learns an owner wallet, and writing one would defeat the whole point.
+    //
+    // Scope the owner-blindness claim precisely: "owner-hidden" means hidden from DOWNSTREAM parties
+    // - the chain, verifiers, relayers - NOT from the issuing authority. The session row this handler
+    // updates still carries the `owner_identity` block (name, country of identification,
+    // identification number) collected by the operator-gated `/profiles/issue/session/start`, and that
+    // is DELIBERATE: the vet legitimately holds the identity of the person it issues to, exactly as on
+    // the Level-A path. Level-B narrows who ELSE learns it; it does not ask the issuer to forget it.
+    // This handler builds no verifiable credential, so it does not read that block today - a property
+    // of the current stage, not surplus data: owner identity is PLANNED (not yet implemented) to be
+    // committed into `R` as a hidden, selectively-disclosable leaf. See docs/DPIA.md §2.1.
+    session.root = Some(root.clone());
+    session.protocol_version = Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string());
+    st.store.update_profile_session(session.clone()).await;
+
+    // RE-CHECK the Level-B write-once seal HERE, synchronously, BEFORE the spawn — so it is causally
+    // before `issue(R)`, the first and GLOBALLY irreversible write (`registerRoot` is write-once, so a
+    // consumed `R` can never be re-anchored). `/profiles/issue/session/start` already refuses an id
+    // whose `profileRoot` is set, but that check runs up to 180s earlier: without this one a collision
+    // that opens in between burns `issue(R)` and only then reverts inside `mintCustodial`, destroying
+    // the operator's QR, the device-computed `R` and the gas, and reporting a generic mint error. With
+    // it, a detected collision refuses having written NOTHING to the chain.
+    //
+    // This NARROWS the window; it does not close it. Two vet instances share the SBT but each keeps
+    // its own `next_dog_tag_id` counter, so the read here and the write in the spawned task remain a
+    // TOCTOU. Eliminating it needs a shared-store id reservation, tracked as a follow-up; the
+    // contract's write-once mint stays the real backstop.
+    match st.chain.profile_root_of(&sbt_addr, &onchain_id).await {
+        // A real node returns 0x0..0 for an id that was never sealed; MemChain returns NotFound.
+        // Both mean free — only a non-zero root retires the id.
+        Ok(r) if !is_nonzero_word(&r) => {}
+        Err(crate::chain::ChainError::NotFound) => {}
+        Ok(_) => {
+            let msg = format!(
+                "dogTagId {} is already sealed on the Level-B SBT (profileRoot is write-once and \
+                 survives a burn, so this id is retired forever) — start a FRESH session",
+                session.dog_tag_id
+            );
+            session.status = "error".to_string();
+            session.tx_hash = Some(msg.clone());
+            st.store.update_profile_session(session).await;
+            return err(StatusCode::CONFLICT, &msg);
+        }
+        // Fail CLOSED on an inconclusive read: proceeding is what spends the irreversible write, and
+        // the token is already consumed, so the row must be settled or the operator poll hangs.
+        Err(e) => {
+            let msg = format!(
+                "could not confirm dogTagId {} is unsealed on the Level-B SBT: {e} — start a FRESH \
+                 session",
+                session.dog_tag_id
+            );
+            session.status = "error".to_string();
+            session.tx_hash = Some(msg.clone());
+            st.store.update_profile_session(session).await;
+            return err(StatusCode::SERVICE_UNAVAILABLE, &msg);
+        }
+    }
+
+    let chain = st.chain.clone();
+    let store = st.store.clone();
+    let signer_index = st.cfg.vet_signer_index;
+    let bg_root = root.clone();
+    let bg_id = onchain_id.clone();
+    let mut bg_session = session.clone();
+    tokio::spawn(async move {
+        // (1) ANCHOR FIRST — issue(R) into the DogTagIssuer clone, so `rootIssuer[R]` resolves. If
+        // this fails nothing has been minted and the dogTagId is still free for a retry.
+        if let Err(e) = chain.issue(signer_index, &issuer_addr, &bg_root).await {
+            bg_session.status = "error".to_string();
+            bg_session.tx_hash = Some(format!("issue(R) error: {e}"));
+            store.update_profile_session(bg_session).await;
+            return;
+        }
+        // (2) THEN SEAL — mintCustodial(id, R). Irreversible past this point.
+        let sent = match chain
+            .mint_custodial(signer_index, &sbt_addr, &bg_id, &bg_root)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                bg_session.status = "error".to_string();
+                bg_session.tx_hash = Some(format!("mintCustodial error: {e}"));
+                store.update_profile_session(bg_session).await;
+                return;
+            }
+        };
+        // Read BOTH conditions back on-chain before calling the issuance good — a receipt is not
+        // proof. Deliberately NO `owner_of` comparison: the Level-A path checks `ownerOf == wallet`,
+        // but here the owner is the neutral custodian and comparing it to anything would reintroduce
+        // the linkage this path exists to remove.
+        let root_ok = matches!(
+            chain.profile_root_of(&sbt_addr, &bg_id).await,
+            Ok(r) if r.eq_ignore_ascii_case(&bg_root)
+        );
+        // `isValid(R)` on OUR clone is strictly stronger than `rootIssuer[R] != 0`: `issue` calls
+        // `rootIndex.registerRoot(R)`, which is globally write-once ("root taken"), so a successful
+        // issue on this clone proves `rootIssuer[R] == this clone`. isValid then adds not-revoked.
+        let anchored_ok = matches!(chain.is_valid(&issuer_addr, &bg_root).await, Ok(true));
+        if root_ok && anchored_ok {
+            bg_session.status = "bound".to_string();
+            bg_session.tx_hash = Some(sent.tx_hash);
+        } else {
+            bg_session.status = "error".to_string();
+            bg_session.tx_hash = Some(format!(
+                "on-chain verify failed (root_ok={root_ok} anchored_ok={anchored_ok})"
+            ));
+        }
+        store.update_profile_session(bg_session).await;
+    });
+
+    ok(json!({
+        "dogTagId": session.dog_tag_id,
+        "onchainDogTagId": onchain_id,
+        "root": root,
+        "protocolVersion": dogtag_standard::wrap::LEVEL_B_VERSION,
+        "status": "minting",
+    }))
+}
+
+/// True for a well-formed, non-zero contract address (`0x` + exactly 40 hex digits, not all zero).
+///
+/// The zero check alone is NOT enough, and the gap is expensive. `chain::parse_addr` coerces an
+/// unparseable address to `Address::ZERO` (`h.parse::<Address>().unwrap_or(Address::ZERO)`), so a
+/// typo'd `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` would pass a non-zero-string test, consume the
+/// one-time bind token, and dispatch both `issue(R)` and `mintCustodial` at the zero address — txs
+/// that SUCCEED against a codeless address, so the failure only surfaces at the read-back, after gas
+/// is spent and the operator's QR is burned. Shape-check at the edge, mirroring [`valid_root_hex`].
+fn valid_contract_addr(a: &str) -> bool {
+    a.len() == 42
+        && a.starts_with("0x")
+        && a[2..].bytes().all(|b| b.is_ascii_hexdigit())
+        && a[2..].bytes().any(|b| b != b'0')
+}
+
+/// True for a 0x.. word that is not all zeros (an unset `profileRoot` reads back as 0x0..0).
+fn is_nonzero_word(w: &str) -> bool {
+    w.trim_start_matches("0x").bytes().any(|b| b != b'0')
+}
+
 /// GET /profiles/issue/session/{id} — operator-gated status poll so the portal can show whether the
 /// device has bound + surface the txHash/root/wallet. Returns the stored session row's status.
 async fn profile_issue_session_status(
@@ -1996,6 +2290,10 @@ async fn profile_issue_session_status(
         "walletAddress": s.wallet_address,
         "root": s.root,
         "txHash": s.tx_hash,
+        // Which path redeemed this session — Level-A (owner-revealing) or Level-B (owner-hidden).
+        // `walletAddress` is null for the latter BY DESIGN, so the portal needs this to tell an
+        // owner-hidden issuance apart from a Level-A one that failed before binding a wallet.
+        "protocolVersion": s.protocol_version,
     }))
 }
 
@@ -2520,6 +2818,11 @@ pub fn public_router(state: AppState) -> Router {
             get(profile_issue_session_status),
         )
         .route("/profiles/issue/bind", post(profile_issue_bind))
+        // Level-B (M-2) owner-hidden issuance, ALONGSIDE the Level-A route above - not replacing it.
+        .route(
+            "/profiles/issue/custodial-bind",
+            post(profile_issue_custodial_bind),
+        )
         // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
         .route("/p/:token", get(profile_bind_resolve))
         // discovery signed-manifest fallback (M7 §5.1 1B) — the dogtag-signed version manifest an app

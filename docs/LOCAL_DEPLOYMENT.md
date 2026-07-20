@@ -386,6 +386,7 @@ you only ever override these via environment variables on the `demo-up.sh` / boo
 | `CIRCUITS_BUILD_DIR` | dir holding `verification_final.zkey` + `verification.graph`; makes the prover load the real **ArkProver** (else StubProver, not chain-valid) | `circuits/build` (set on the prover by `demo-up.sh`) |
 | `VERIFY_PURPOSES` | `demo-bootstrap.sh` — override the `VERIFY:<purpose>` set whitelisted for a groomer | the built-in `grooming_intake boarding_intake daycare_access` |
 | `OWNER_WALLET` | `demo-bootstrap.sh` — also fund this owner wallet with PLASMA | unset |
+| `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` | Level-B owner-hidden issuance (`POST /profiles/issue/custodial-bind`). **Deliberately left UNSET by `demo-up.sh`** — that is the correct demo config, not an omission: unset makes the route fail closed with a clean 503 while every Level-A path keeps working. Do **not** seed placeholder addresses; a junk value would point the session-start id allocator's chain reads at a non-existent contract on the shared Level-A path. Wiring it for real needs a deployed `DogTagSBTConsent` **and** a real factory-deployed `DogTagIssuer` clone (never the SBT — `issue(R)` there reverts) | unset (Level-B off in LOCAL) |
 
 ---
 

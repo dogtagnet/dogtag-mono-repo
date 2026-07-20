@@ -354,8 +354,11 @@ Level-B M5 adds the device-side `profile_tree` module - `build_profile_tree` and
 surfaced as `buildProfileTreeHex` / `deriveOwnerSecretHex`. The owner's app builds the per-tag Merkle
 tree locally and hands the issuer **only** the root `R`; the owner-secret (the nullifier's secret leaf)
 is derived from the wallet seed and must never be transmitted, or a server could recompute every
-nullifier and link it back to the owner. Nothing calls it in production yet - the issuance cutover is
-M7. See `docs/MOBILE_OWNER_SECRET.md`.
+nullifier and link it back to the owner. The ISSUER end of that handoff now exists - M-2 added
+`POST /profiles/issue/custodial-bind` (§3.11), which accepts the device-built `R` as an opaque value
+and anchors + seals it - but nothing calls `build_profile_tree` in production yet: the device call
+site that builds `R` and POSTs it is a deliberate follow-up, and the Level-A -> Level-B cutover for
+the live register-pet flow is later still. See `docs/MOBILE_OWNER_SECRET.md`.
 
 M7 P4 adds the `discovery` module - `validate`, surfaced as **`validateDiscovery`** - the pure client
 TRUST gate that checks a platform's `unverifiedClaims` (the resolve-GET convenience tier) against the
@@ -1021,10 +1024,12 @@ GET  /v1/appointments?updatedSince=  // catch-up pull
 > the owner's wallet, which makes `ownerOf(dogTagId)` a permanent public pet↔owner link. Level-B mints to
 > a **neutral custodian** instead (`DogTagSBTConsent.mintCustodial`, no `to` parameter) and proves
 > ownership in-ZK. The canonical M5 pair is deployed + verified on ROAX (`DogTagSBTConsent`
-> `0x96Cba458…`, `VerificationRegistryConsent` `0xb9B313C1…`) but is **NOT live and NOT wired**, and the
-> app-side rework (the owner's device builds the Merkle tree and supplies `R`) remains a tracked follow-up,
-> so what is described below is what actually runs today. Cutover is M7. See architecture §4.3 and AGENTS.md
-> "M5 as-built".
+> `0x96Cba458…`, `VerificationRegistryConsent` `0xb9B313C1…`). **M-2 has since wired a Level-B issuance
+> route into vet-api** — `POST /profiles/issue/custodial-bind` (step 2b below) — but it is **ADDITIVE and
+> off by default**: it needs `SBT_CONSENT_ADDR` + `PROFILE_ISSUER_ADDR` set (else 503), no shipped device
+> posts to it yet, and the Level-A flow described below is what still runs for every live issuance. The
+> remaining work is the device call site and then the cutover that retires this path. See architecture
+> §4.3 and AGENTS.md "M5 as-built" + "Level-B custodial issuance bridge (M-2)".
 
 **Vets issue dog tags**, mirroring import/export: a session + a one-time QR. The device creates its
 self-custodial wallet on-device (§6.4), the vet operator enters the `ownerIdentity` + pet fields, and
@@ -1038,6 +1043,11 @@ POST /profiles/issue/session/start { ownerIdentity, ...petFields }   # operator 
    require operator session && whitelistedFor(keccak256("DOG_PROFILE"), vetSigner)
    require hasRole(DogTagSBT.ISSUER_ROLE, vetSigner)         # else the §3 mint below would revert
    dogTagId = allocate(); sessionId = uuid()
+   // allocate() skips ids already taken on EITHER SBT — the counter resets on restart and the SBTs are
+   //   shared across issuers. The two levels retire an id by DIFFERENT markers, so both are consulted:
+   //   Level-A ownerOf(id) is set by mint(); Level-B writes no readable owner and retires the id via the
+   //   write-once profileRoot[id] (a marker that SURVIVES a burn). The Level-B leg is skipped entirely
+   //   when SBT_CONSENT_ADDR is unset (a Level-A-only deployment).
    token = hex(16 random bytes)                              # 32 hex chars — one-time, NOT a JWT (reuse share-token store)
    save issue_sessions{ sessionId, token, dogTagId, ownerIdentity, petFields, status:"pending", exp: now+180s }
    return { qrUrl: DEPLOYMENT_URL+"/p/"+token, sessionId, dogTagId }   # frontend renders QR (§5)
@@ -1078,10 +1088,51 @@ POST /profiles/issue/bind { token, walletAddress, signature }   # token-authenti
    // FIELD-HASHED onchainId, §1.4a) until the mint lands; then offline-integrity-verifies + imports its dog tag.
    // After the mint, ownerOf(field_of_value(dogTagId)) == walletAddress, so the later ZK export passes ownerOf(pub[0]).
 
+# (2b) LEVEL-B ALTERNATIVE (M-2) — owner-HIDDEN issuance. ADDITIVE: (2) above is untouched and still
+#      the live path. The device redeems the SAME one-time token from the SAME session, choosing this
+#      endpoint instead. Requires SBT_CONSENT_ADDR + PROFILE_ISSUER_ADDR (else 503).
+POST /profiles/issue/custodial-bind { token, root }        # token-authenticated; NO wallet, NO signature
+   // NO signature BY DESIGN: mintCustodial takes no recipient (the tag goes to the contract's immutable
+   //   custodian), so there is no wallet to prove control of, and accepting one would hand the server the
+   //   very owner link this path removes. The one-time 180s token IS the authorization.
+   // `root` is the DEVICE-built profile root R (§1 profile_tree), folded from the owner's wallet seed.
+   //   The server CANNOT recompute it (it has no seed) and builds NO VC — R is opaque, only shape-checked
+   //   as a non-zero 0x + 64 hex word.
+   require valid_root_hex(root) && unlocked
+   require SBT_CONSENT_ADDR && PROFILE_ISSUER_ADDR well-formed   # BEFORE consuming the token, so a
+                                                                 #   half-wired stack never burns the QR
+   session_id = take_bind_token(token)                      # CONSUME atomically (2nd call -> 410)
+   s = profile_sessions[session_id]; require s.status=="pending"
+   onchainId = onchain_dog_tag_id(s.dogTagId)               # = field_of_value(Integer(handle)) — the SAME field
+                                                            #   the device folded into R as a KDF binding input;
+                                                            #   a raw handle here yields R != profileRoot(id)
+   require profileRoot(onchainId) is unset                  # re-checked HERE, causally before the irreversible
+                                                            #   issue(R); a sealed id is retired FOREVER -> 409.
+                                                            #   An INCONCLUSIVE read fails closed -> 503 (proceeding
+                                                            #   is what spends the irreversible write). Narrows but
+                                                            #   does not close the cross-instance TOCTOU; the
+                                                            #   contract's write-once mint is the real backstop.
+   s.root = root; s.protocolVersion = "dogtag-levelb/1"; save s   # walletAddress stays NULL by design
+   # RESPOND IMMEDIATELY, mint in the BACKGROUND — same ~12-24s block-time reason as (2):
+   spawn:
+       DogTagIssuer(PROFILE_ISSUER_ADDR).issue(root)         # (a) ANCHOR FIRST, so rootIssuer[R] resolves
+                                                             #     — if this fails nothing is minted and the id is
+                                                             #     still free; ordering is prescribed by the contract
+       sent = DogTagSBTConsent.mintCustodial(onchainId, root)  # (b) THEN SEAL — irreversible past this point
+       # VERIFY BOTH on-chain conditions a Level-B verify checks. NOTE: deliberately NO ownerOf comparison —
+       #   the owner is the neutral custodian and comparing it would reintroduce the linkage.
+       ok = profileRoot(onchainId)==root && DogTagIssuer.isValid(root)
+       s.status = ok ? "bound" : "error"; s.txHash = sent.txHash; save s
+   return { dogTagId, onchainDogTagId, root, protocolVersion:"dogtag-levelb/1", status:"minting" }
+
 # (3) portal polls the session for the mint result
 GET /profiles/issue/session/{id}                            # operator-session gated
    s = profile_sessions[id]
-   return { status, dogTagId, walletAddress?, root?, txHash? }   # status: pending -> bound (or error)
+   return { status, dogTagId, walletAddress?, root?, txHash?, protocolVersion? }   # status: pending -> bound (or error)
+   // protocolVersion names WHICH path redeemed the session — "dogtag-levela/1" (owner-revealing) or
+   //   "dogtag-levelb/1" (owner-hidden). walletAddress is null for Level-B BY DESIGN, so the portal needs
+   //   this to tell an owner-hidden issuance apart from a Level-A one that failed before binding a wallet.
+   //   Null on rows written before M-2, which are Level-A by construction.
 ```
 
 **`ownerIdentity` + `ownerAddress` on the `DOG_PROFILE` `credentialSubject`.** The vet-entered identity

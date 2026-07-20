@@ -58,6 +58,14 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
+# LEVEL-B custodial issuance (POST /profiles/issue/custodial-bind) is deliberately NOT wired in the
+# demo, so SBT_CONSENT_ADDR and PROFILE_ISSUER_ADDR are left UNSET below. That is the CORRECT demo
+# config, not an omission: unset means the session-start dogTagId allocator skips its Level-B
+# profileRoot leg entirely, and the custodial route fails closed with a clean 503 while every
+# Level-A path keeps working. Do NOT seed placeholder/example addresses here - a junk value would
+# point that allocator's chain reads at a non-existent contract on the shared Level-A demo path.
+# Wiring Level-B for real needs a deployed DogTagSBTConsent (SBT_CONSENT_ADDR) plus a real
+# factory-deployed DogTagIssuer clone (PROFILE_ISSUER_ADDR - never the SBT; issue(R) there reverts).
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR CONSENT_KEY_REGISTRY_ADDR=$CKR \
   SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$SBT \

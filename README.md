@@ -18,7 +18,10 @@ from a scanned QR). To get a dog tag: the phone creates a self-custodial wallet,
 pet" wizard (operator enters an `ownerIdentity` + pet fields) starts a session and shows a QR
 `/p/<token>`, the device scans it and sends its **signed wallet address**, and the **vet mints the
 `DogTagSBT` on-chain** (`mint(walletAddress, dogTagId, root)`) and returns the credential, which the
-device verifies against the SBT and imports. This requires the vet signer to hold
+device verifies against the SBT and imports. (That is the **Level-A** flow, which is what runs today.
+An additive, off-by-default **Level-B** route — `POST /profiles/issue/custodial-bind` — instead takes a
+root the *device* computed and mints it to a neutral custodian, so no owner wallet is ever expressible
+in the calldata; see `docs/implementation.md` §3.11.) This requires the vet signer to hold
 `DogTagSBT.ISSUER_ROLE` (granted by the protocol admin — a trust escalation, so prod grants it only to
 accredited vets). Then: the vet issues a vaccination → QR → scan → import → verify on-chain → view
 decoded fields. The ZK proof-of-verification path is **live** (Groth16Verifier wired into the
@@ -45,7 +48,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 |---|---|
 | IssuerRegistry | `0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c` |
 | DogTagSBT (Level-A; **live**; mutable root; **do not use for new Level-B credentials**) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
-| DogTagSBTConsent (M5 canonical Level-B SBT; write-once root; deployed + verified, **not live until M7**) | `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` |
+| DogTagSBTConsent (M5 canonical Level-B SBT; write-once root; deployed + verified. vet-api's additive `POST /profiles/issue/custodial-bind` (M-2) **can** mint through it, but that route is off unless `SBT_CONSENT_ADDR`+`PROFILE_ISSUER_ADDR` are set and no shipped device posts to it — **no live traffic until M7**) | `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` |
 | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
 | DogTagIssuerImpl (clone impl) | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
 | ConsentKeyRegistry (gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
@@ -99,7 +102,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
-| `contracts` | `DogTagSBT` (Level-A; **live**) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `DogTagSBTConsent` + `VerificationRegistryConsent` (canonical M5 Level-B pair; deployed + verified, **not live until M7**) | ROAX |
+| `contracts` | `DogTagSBT` (Level-A; **live**) · `IssuerRegistry` · `DogTagIssuer` (clones) + factory · `VerificationRegistry` (Level-A; **live**) · `ConsentKeyRegistry` · `DogTagSBTConsent` + `VerificationRegistryConsent` (canonical M5 Level-B pair; deployed + verified, **no live traffic until M7** — vet-api has an additive, off-by-default owner-hidden issuance route (M-2) that can mint through the SBT, but verification has not cut over) | ROAX |
 | `circuits` | Groth16 Poseidon-Merkle + EdDSA-BabyJubjub consent circuit (N=24, depth 5) | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
 | `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |

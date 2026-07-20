@@ -32,7 +32,7 @@ person:
 | On-chain artefact | What it is | Why it is in scope | Mitigation |
 |---|---|---|---|
 | **Salted commitment** (Merkle root `R`) | `issue(R)` anchors a salted-Merkle root; per-field random **16-byte salts are off-chain**. | A salted hash of personal data is **still personal data** (Recital 26); an *unsalted* hash of a low-entropy 15-digit microchip is brute-forceable. | Per-field salting (the privacy mechanism, not just anti-forgery); salts are off-chain, encrypted, **shreddable**. |
-| **wallet ↔ SBT link** (`ownerOf(dogTagId)==wallet`) | the soulbound token binds a pet's `dogTagId` to the owner's wallet address. | An EVM address is **pseudonymous personal data**; a live `ownerOf` link associates a pet with a controllable wallet. | **Fresh per-pet derived address** (§5) — breaks cross-pet enumeration; **SBT burn** on erasure drops the live link. |
+| **wallet ↔ SBT link** (`ownerOf(dogTagId)==wallet`) | the soulbound token binds a pet's `dogTagId` to the owner's wallet address. **Level-A only** — a tag issued via the Level-B custodial route (§2.1) is minted to a neutral custodian, so `ownerOf` carries no owner meaning and this row does not apply to it. Every live tag today is Level-A. | An EVM address is **pseudonymous personal data**; a live `ownerOf` link associates a pet with a controllable wallet. | **Fresh per-pet derived address** (§5) — breaks cross-pet enumeration; **SBT burn** on erasure drops the live link. Level-B removes the link entirely (§2.1). |
 | **verification-event linkage** | `Verified(dogTagId, relayer, subject, purpose, nullifier, ts)` — which pet was presented to which business, when. | `subject`+`dogTagId`+`relayer`+`ts` is **behavioural pseudonymous personal data** (who verified whom). | **ZK-default for sensitive purposes** (no `recordType`/`credentialRoot` on chain); **fresh per-pet `subject`** bounds linkage to one pet; off-chain consent copies are deletable. |
 
 **`dogTagId` is non-personal by construction.** It is a random/sequential identifier allocated at
@@ -56,6 +56,32 @@ The cutover is **M7**. Its M5 on-chain prerequisite is now deployed + verified: 
 LIVE and NOT wired to any consumer**, so nothing below is in effect: issuance today still mints the SBT
 to the owner's wallet exactly as §2 and §4 assess it. M7 must perform this DPIA refresh before cutover.
 
+**M-2 status update - an issuance route now exists, but nothing assessed here changes.** M-2 added
+`POST /profiles/issue/custodial-bind` to the vet stack, the owner-hidden path that anchors a
+device-built `R` and seals it with `mintCustodial`. It does **not** move this assessment, for three
+independent reasons: it is **off by default** (unset `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` → 503),
+**no shipped device posts to it**, and it is **additive** — the Level-A `POST /profiles/issue/bind`
+still serves every live issuance and still mints to the owner's wallet. The trigger for the re-scoring
+below is Level-B carrying **real** issuance and verification traffic, not the route's existence.
+
+> **Scope the owner-blindness claim precisely - "owner-hidden" means hidden from DOWNSTREAM parties,
+> not from the issuing authority.** Level-B removes the owner from the chain, from the public signals,
+> from the `Verified` event, and from what a verifier or relayer ever sees. It does **not** - and is not
+> intended to - remove the owner from the issuing vet's own records: the session row still carries the
+> `ownerIdentity` block (name, country of identification, identification number) collected by the
+> operator-gated `POST /profiles/issue/session/start`. That collection is **deliberate and justified**:
+> the issuing authority legitimately holds the identity of the person it issues to (it is the basis on
+> which the credential is issued at all), exactly as it does on the Level-A path. Level-B narrows who
+> ELSE learns it, which is the privacy gain being claimed here - not a claim that the issuer forgets it.
+> The block is off-chain store data and therefore already inside the §3 encrypted store and the §4
+> erasure flow, which is where a data subject's rights over it are exercised.
+>
+> The Level-B handler builds no verifiable credential, so it does not currently read that block. That is
+> a property of the current implementation stage, not a signal that the data is surplus: owner identity
+> is **planned** to be committed into `R` as a hidden, selectively-disclosable Merkle leaf
+> (identity-as-leaf), putting it on a path further INTO the design. That leaf work is **planned, not
+> implemented** - when it lands, this section must be revisited to assess the leaf itself.
+
 When Level-B goes live, the living-document rule in the status block above fires and the following
 MUST be re-scored.
 This is a forward-looking notice only; none of it is in effect today.
@@ -69,9 +95,13 @@ This is a forward-looking notice only; none of it is in effect today.
 2. **wallet ↔ SBT link** (§2) - under Level-B decision D1 the tag would be minted to a **neutral
    custodian**, so `ownerOf` would carry no owner meaning and the pet/wallet association changes
    character.
-   That lands with M5 custodial issuance: `DogTagSBTConsent.mintCustodial(id, root)` takes no `to`
+   That lands with custodial issuance: `DogTagSBTConsent.mintCustodial(id, root)` takes no `to`
    parameter at all, so the owner's wallet is not expressible in the calldata and never reaches
    contract storage or an event.
+   The contract side is M5; the issuer route that drives it is M-2's
+   `POST /profiles/issue/custodial-bind`, which correspondingly accepts **no wallet and no signature**
+   (there is no recipient for a signature to attest, and accepting one would restore the very link
+   being removed) — see the M-2 status note above for why this is not yet in effect.
 3. **erasure flow** (§4, step 4 "burn the SBT") - the Level-B registry reads `ownerOf` for token
    **existence** only and never for owner identity, so an erasure burn would fail verification closed
    **only** by virtue of that existence gate.
