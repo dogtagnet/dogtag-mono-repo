@@ -92,6 +92,13 @@ input, a prover could point the owner-secret inclusion proof at any other in-tre
 breaking replay protection (D5). Pinning forces the unique real leaf. `test-consent.mjs` test (e)
 exercises exactly this substitution and asserts it fails.
 
+**What pinning does NOT do:** it does not bound the *number* of reserved triples in a tree. "The unique
+real leaf" is true only because `build_profile_tree` builds exactly one
+`(owner.address, owner.consentKey, owner.secret)` triple - an assumption about the tree, not a circuit
+constraint. Keeping it that way is normative (**P-e**): see
+[`../docs/DELEGATION.md`](../docs/DELEGATION.md) §5, which binds every future issuance entry point, and
+§3.2, which is why delegation ships as a separate circuit rather than a second triple in `R`.
+
 ## `recordType` is prover-asserted (not consent-signed)
 
 `recordType` (`pub[5]`) is **not** in `M` and **not** in the nullifier, so the owner's EdDSA consent

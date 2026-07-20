@@ -955,6 +955,9 @@ input, a prover could point the owner-secret inclusion proof at *any other in-tr
 disclosable attribute), set `ownerSecret` to that leaf's value, and mint a **second valid nullifier
 for one signed consent** — breaking D5 replay protection. Pinning forces the unique real leaf.
 `test-consent.mjs` test (e) exercises exactly this substitution and asserts it fails.
+**That "unique real leaf" holds only because exactly ONE reserved triple is ever built into a tree** -
+it is an assumption about the tree, not a constraint the circuit enforces. See the NORMATIVE P-e
+invariant under "Delegation - separate circuit" above, which binds every future issuance entry point.
 
 ### Consent message & nullifier (the exact preimages)
 
