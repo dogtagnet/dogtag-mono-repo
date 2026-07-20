@@ -2871,10 +2871,11 @@ pub fn public_router(state: AppState) -> Router {
         .route("/v1/verify/credential", post(verify_credential))
         // alias so the owner's phone can POST consent+proof directly to the groomer host.
         .route("/v1/verify/consent", post(verify_consent_submit))
-        .route(
-            "/v1/verify/consent/levelb",
-            post(verify_consent_levelb_submit),
-        )
+        // NOTE: there is deliberately NO `/v1/verify/consent/levelb` twin yet. The Level-A alias
+        // above exists because it takes a DIFFERENT gate (`require_operator_or_export_token`), which
+        // is what lets the phone POST directly. Level-B has no phone path until M-4, so a twin would
+        // be the operator-gated route under a second name — advertising a capability it lacks. M-4
+        // adds it together with the export-token gate that gives it a reason to exist.
         // calendar sync (Phase 7, §3.6)
         .route("/calendar/google/connect", get(google_connect))
         .route("/calendar/google/callback", get(google_callback))

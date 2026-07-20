@@ -1408,6 +1408,19 @@ address can carry that proof. The HTTP route's operator gate is therefore only a
 (an open endpoint would let anyone burn the relayer's balance on reverting proofs); it confers no
 authority over the submission itself.
 
+**The preflight and the broadcast MUST resolve the same signer, and do so through
+`custody::ACTIVE_SIGNER_INDEX` - never `Config::vet_signer_index`.** `pub[relayer]` is validated
+against `custody.active_address()` (account 0) while `vet_signer_index` names the DOG_PROFILE
+SBT-MINTING signer, an unrelated role that merely happens to be 0 today because `main.rs` hardcodes
+the field. Broadcasting from the config field would preflight green against account 0 and then revert
+on-chain at `"not relayer"` the moment that field is wired to an env var - a failure that appears only
+in a specific deployment, never in tests that leave it 0. `active_address()` now reads the same
+constant, so the two are one source by construction.
+`the_broadcast_uses_the_same_signer_the_preflight_validated` pins it by setting `vet_signer_index` to
+an index that is never unlocked and asserting the submit still succeeds (`MemChain` errors
+`"no signer for index"` on a miss, and genesis registers ONLY account 0). Leave the M-2 issuance path
+alone - it uses `vet_signer_index` legitimately, for minting.
+
 **The broadcast is SYNCHRONOUS, deliberately unlike Level-A's spawn-and-poll.** Level-A responds
 `"recording"` and broadcasts ~24-48s later, which is safe there only because the relayer invents a
 generous 1h `deadline`. Under Level-B `deadline` is `pub[6]` - proof-bound and device-chosen - so the
@@ -1418,6 +1431,24 @@ The preflight mirrors the registry's requires (field range, `addr range` on the 
 narrowing, deadline, art9, relayer, whitelist) but is **not** the security boundary - the on-chain
 gates are, and they run again regardless. Its only job is to avoid paying gas for a tx that cannot
 mine.
+
+**Level-B writes a `VerifySession` audit row, into the SAME operator trail as Level-A**
+(`GET /verify/history`, `GET /verify/session/:id`) - otherwise the M-4 cutover would silently drop
+every owner-hidden verification out of the verifier's operational record. Unlike Level-A there is no
+operator-started session to update (this route is entered cold with a self-authenticating proof), so
+the row is MINTED here with `mode: "levelb"`, an empty `challenge` (replay protection is the
+proof-bound nullifier, not an operator nonce), and `purpose`/`recordType` stored as the bytes32 WORDS
+they arrive as - the labels they reduce from are one-way, so there is no honest way to recover them.
+The row is written as `recording` BEFORE the broadcast and updated to `recorded`/`error` after, so a
+submission that spends gas is auditable even if the process dies mid-tx; a revert stashes its reason
+in `tx_hash`, mirroring Level-A. It stays **owner-blind by construction**: `VerifySession` has no
+`subject` field and Level-B has no public signal that could fill one - never add one. The response
+echoes the new `sessionId`.
+
+`consumed` in the response is an `Option`, serializing to `null` on an RPC read failure - NOT
+`false`. The read-back only runs after a receipt with `status == true`, so the nullifier IS consumed
+on-chain and `false` could only ever be a lie; a client keying retry on it would re-submit into a
+`"replayed"` revert.
 
 New env var `VERIFICATION_REGISTRY_CONSENT_ADDR`, fail-closed when unset, separate from
 `VERIFICATION_REGISTRY_ADDR` - the two registries run side by side (same pattern as

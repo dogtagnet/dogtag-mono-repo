@@ -58,26 +58,7 @@ pub fn purpose_key(label: &str) -> String {
 /// The previous impl hashed the literal string "VERIFY:<label>", which NEVER matched the on-chain key,
 /// so the relayer whitelist preflight (and the on-chain `!verify-wl` require) could never pass.
 pub fn verify_key(label: &str) -> String {
-    use alloy::primitives::keccak256;
-    let purpose_hex = purpose_key(label);
-    let purpose = hex::decode(purpose_hex.trim_start_matches("0x")).unwrap_or_default();
-    // abi.encode(string "VERIFY:", bytes32 purpose)
-    let mut buf = Vec::with_capacity(160);
-    // [0] offset to the string data = 0x40 (after the two head words).
-    let mut off = [0u8; 32];
-    off[31] = 0x40;
-    buf.extend_from_slice(&off);
-    // [1] the bytes32 purpose word.
-    buf.extend_from_slice(&purpose);
-    // [2] string length = 7 ("VERIFY:").
-    let mut len = [0u8; 32];
-    len[31] = 7;
-    buf.extend_from_slice(&len);
-    // [3] string bytes, right-padded to 32.
-    let mut data = [0u8; 32];
-    data[..7].copy_from_slice(b"VERIFY:");
-    buf.extend_from_slice(&data);
-    format!("0x{}", hex::encode(keccak256(&buf).as_slice()))
+    verify_key_from_purpose_word(&purpose_key(label))
 }
 
 /// Parse the consent JSON (as posted to /verify/consent/submit) into the registry's `ConsentInput`.
@@ -1050,7 +1031,8 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
     // Contract gate: `require(pub[P_RECORDTYPE] != SERVICE_ATTESTATION_FIELD, "art9")` (§11.9(h)).
     // The contract's constant is the REDUCED keccak (the raw keccak exceeds r and could never match a
     // field-bounded signal), which is exactly what `purpose_key` produces.
-    let art9 = pub_signal_u256(&purpose_key("SERVICE_ATTESTATION")).unwrap_or(U256::ZERO);
+    let art9 = pub_signal_u256(&purpose_key("SERVICE_ATTESTATION"))
+        .expect("art9 SERVICE_ATTESTATION constant parses");
     if pub_u[PB::RECORD_TYPE] == art9 {
         return err(
             StatusCode::BAD_REQUEST,
@@ -1086,21 +1068,75 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("verify-wl: {e}")),
     }
 
+    // ---- audit row ----
+    // Level-B verifications land in the SAME operator audit trail as Level-A (GET /verify/history,
+    // GET /verify/session/:id) — the trail is the verifier's operational record, and losing every
+    // Level-B verification from it at the M-4 cutover would silently gut it.
+    //
+    // Unlike Level-A there is no operator-started session to update: this route is entered cold with
+    // a self-authenticating proof, so the row is MINTED here. It stays owner-blind by construction —
+    // `VerifySession` has no `subject` field, and Level-B has no public signal that could fill one.
+    // `purpose`/`recordType` are stored as the bytes32 words they arrive as (`pub[1]`/`pub[5]`);
+    // the labels they reduce from are one-way, so there is no honest way to recover them here.
+    let nullifier = format!(
+        "0x{}",
+        hex::encode(pub_u[PB::NULLIFIER].to_be_bytes::<32>())
+    );
+    let record_type_word = format!(
+        "0x{}",
+        hex::encode(pub_u[PB::RECORD_TYPE].to_be_bytes::<32>())
+    );
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let audit = VerifySession {
+        session_id: session_id.clone(),
+        relayer: relayer.clone(),
+        purpose: purpose_word.clone(),
+        record_type: record_type_word,
+        mode: "levelb".to_string(),
+        // No challenge: Level-A's is the operator's anti-replay nonce for a session the owner scans
+        // into. Here replay protection is the proof-bound nullifier, consumed on-chain.
+        challenge: String::new(),
+        status: "recording".to_string(),
+        tx_hash: None,
+        nullifier: Some(nullifier.clone()),
+        created_at: now,
+        updated_at: now,
+    };
+    // Persisted BEFORE the broadcast so an in-flight submission is auditable even if this process
+    // dies mid-tx — the gas is spent either way, and a spent-but-unrecorded verification is exactly
+    // the hole the trail exists to close.
+    st.store.put_session(audit.clone()).await;
+
     // ---- broadcast ----
-    let signer_index = st.cfg.vet_signer_index;
+    // Broadcast from the SAME signer the preflight validated `pub[relayer]` against. Both resolve
+    // through `custody::ACTIVE_SIGNER_INDEX`, so they cannot drift; reading the address from
+    // `active_address()` while sending from `cfg.vet_signer_index` (the DOG_PROFILE SBT-minting
+    // signer, which merely happens to be 0 today) would revert on-chain at `"not relayer"`.
     let sent = match st
         .chain
-        .record_verification_zk_consent(signer_index, &registry, &a, &b, &c, &pubs)
+        .record_verification_zk_consent(
+            crate::custody::ACTIVE_SIGNER_INDEX,
+            &registry,
+            &a,
+            &b,
+            &c,
+            &pubs,
+        )
         .await
     {
         Ok(s) => s,
         Err(e) => {
             // The on-chain revert string is the useful diagnostic ("R !profileRoot", "replayed",
             // "unknown root", "bad proof", ...), so surface it rather than flattening to 502.
-            return err(
-                StatusCode::BAD_GATEWAY,
-                &format!("recordVerificationZK (level-b): {e}"),
-            );
+            let reason = format!("recordVerificationZK (level-b): {e}");
+            let mut failed = audit;
+            failed.status = "error".to_string();
+            // `tx_hash` carries the failure reason on an `error` row (there is no hash to record) —
+            // the slot Level-A uses for the same purpose.
+            failed.tx_hash = Some(reason.clone());
+            failed.updated_at = crate::auth::now();
+            st.store.update_session(failed).await;
+            return err(StatusCode::BAD_GATEWAY, &reason);
         }
     };
 
@@ -1112,20 +1148,23 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
         .get_consent_verified_event(&sent.tx_hash, &registry)
         .await
         .ok();
-    let nullifier = format!(
-        "0x{}",
-        hex::encode(pub_u[PB::NULLIFIER].to_be_bytes::<32>())
-    );
-    let consumed = st
-        .chain
-        .consumed(&registry, &nullifier)
-        .await
-        .unwrap_or(false);
+    // Tri-state: a read failure is `null` (unknown), never `false`. This line is only reached after a
+    // receipt with `status == true`, so the nullifier IS consumed on-chain and a `false` here could
+    // only ever be wrong — and a client keying retry on it would re-submit into a `"replayed"` revert.
+    let consumed = st.chain.consumed(&registry, &nullifier).await.ok();
+
+    let mut recorded = audit;
+    recorded.status = "recorded".to_string();
+    recorded.tx_hash = Some(sent.tx_hash.clone());
+    recorded.updated_at = crate::auth::now();
+    st.store.update_session(recorded).await;
 
     ok(json!({
         "recorded": true,
         "level": "level-b",
         "protocolVersion": dogtag_standard::wrap::LEVEL_B_VERSION,
+        // The minted audit row, so the operator can pull this verification back out of the trail.
+        "sessionId": session_id,
         "txHash": sent.tx_hash,
         "registry": registry,
         "nullifier": nullifier,
@@ -1142,13 +1181,19 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
     }))
 }
 
-/// `keccak256(abi.encode("VERIFY:", purpose))` from an ALREADY-REDUCED bytes32 purpose word.
+/// `keccak256(abi.encode("VERIFY:", purpose))` from an ALREADY-REDUCED bytes32 purpose word — the
+/// SINGLE implementation of this preimage, shared by both levels.
 ///
-/// [`verify_key`] takes a purpose *label* and reduces it first. Level-B never sees the label: the
-/// purpose arrives as `pub[1]`, already a field element, so re-reducing it through `purpose_key`
-/// would hash the hex string instead of the word and produce a key that never matches on-chain.
+/// [`verify_key`] takes a purpose *label* and reduces it through `purpose_key` first. Level-B never
+/// sees the label: the purpose arrives as `pub[1]`, already a field element, so re-reducing it would
+/// hash the hex string instead of the word and produce a key that never matches on-chain.
+///
+/// The two callers must never grow separate copies of the encoding. A one-byte drift in either would
+/// reject every submission as `!verify-wl`, and this file's history records the encoding being got
+/// wrong once already (see [`verify_key`]'s note on the old literal-string hash).
 fn verify_key_from_purpose_word(purpose_word: &str) -> String {
     use alloy::primitives::keccak256;
+    // abi.encode(string "VERIFY:", bytes32 purpose) = head[offset=0x40] ++ purpose ++ len(7) ++ str.
     let purpose = hex::decode(purpose_word.trim_start_matches("0x")).unwrap_or_default();
     let mut buf = Vec::with_capacity(160);
     let mut off = [0u8; 32];
@@ -1286,15 +1331,18 @@ mod tests {
         );
     }
 
-    /// The Level-B whitelist preflight rebuilds `keccak256(abi.encode("VERIFY:", purpose))` from an
-    /// ALREADY-REDUCED purpose WORD (Level-B gets `purpose` as `pub[1]`, never as a label), so it
-    /// hand-rolls the same ABI preimage [`verify_key`] builds from a label. The two MUST agree.
+    /// The Level-B whitelist preflight reaches `keccak256(abi.encode("VERIFY:", purpose))` from an
+    /// ALREADY-REDUCED purpose WORD (Level-B gets `purpose` as `pub[1]`, never as a label), while
+    /// [`verify_key`] reaches it from a label. Both MUST land on the same key.
     ///
-    /// This is the highest-consequence test in the Level-B path: the preimage is assembled by hand,
-    /// and if it drifts by one byte the preflight rejects EVERY submission as "relayer not
-    /// whitelisted" — which reads like a deployment/whitelist problem, not an encoding bug. The repo
-    /// has already paid for this once: the previous `verify_key` hashed the literal string
-    /// "VERIFY:<label>" and could never match the on-chain key.
+    /// The entry points now share ONE preimage implementation, so the label path is by construction
+    /// `verify_key_from_purpose_word(purpose_key(label))` — the loop below is a regression guard on
+    /// that composition, not on two hand-rolled copies. The ANCHORED CONSTANT is what still guards
+    /// the encoding itself: a drift in the single remaining preimage would otherwise be invisible
+    /// here, and it would reject EVERY submission as "relayer not whitelisted" — which reads like a
+    /// deployment/whitelist problem, not an encoding bug. The repo has already paid for this once:
+    /// the previous `verify_key` hashed the literal string "VERIFY:<label>" and could never match the
+    /// on-chain key.
     #[test]
     fn levelb_verify_key_from_word_matches_the_label_path() {
         for label in ["boarding_intake", "GROOMING_INTAKE", "VACCINATION", ""] {
@@ -1304,7 +1352,7 @@ mod tests {
                 "verify_key parity broke for {label:?}"
             );
         }
-        // And it agrees with the anchored constant, so a drift in BOTH paths still trips.
+        // The load-bearing assertion: the shared preimage still produces the on-chain key.
         assert_eq!(
             verify_key_from_purpose_word(&purpose_key("boarding_intake")),
             "0x9f894293e0cbaa46eca3cc026ad45e5012c10c4d3217ede0488ca0d2b5eaf764"

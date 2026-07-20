@@ -446,3 +446,168 @@ async fn the_level_a_consent_route_is_still_mounted() {
     .await;
     assert_ne!(s, StatusCode::NOT_FOUND, "Level-A route must stay mounted");
 }
+
+/// The relayer the preflight VALIDATES and the signer the broadcast SENDS FROM must be the same
+/// account, coupled by construction rather than by coincidence.
+///
+/// `pub[relayer]` is checked against `custody.active_address()` — account 0 — while the broadcast
+/// once read `Config::vet_signer_index`, the DOG_PROFILE SBT-MINTING signer, which merely happens to
+/// be 0 today. The two are unrelated roles, so the moment that config is wired to an env var every
+/// Level-B submit would preflight green here and then revert on-chain at `"not relayer"`.
+///
+/// So this test sets `vet_signer_index` to an index that is NOT unlocked and asserts the submit
+/// still succeeds: it can only pass if the broadcast resolves its account independently of that
+/// field. `MemChain` makes the assertion sharp — it looks the index up in its registered signers and
+/// errors `"no signer for index"` on a miss, and genesis registers ONLY account 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_broadcast_uses_the_same_signer_the_preflight_validated() {
+    let chain = Arc::new(MemChain::new());
+    let mut st = mem_state(chain.clone() as Arc<dyn ChainClient>);
+    // A signer index that is deliberately NEVER unlocked, standing in for a future
+    // `VET_SIGNER_INDEX=<n>` deployment.
+    let mut cfg = (*st.cfg).clone();
+    cfg.vet_signer_index = 7;
+    st.cfg = Arc::new(cfg);
+
+    let app = vet_api::router(st);
+    let (_admin, op, relayer) = boot_custody(&app).await;
+    chain.whitelist(
+        REGISTRY,
+        &verify_key_word(&purpose_field("GROOMING_INTAKE")),
+        &relayer,
+    );
+
+    let pubs = pubs_for(&relayer, now_secs() + 3600);
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/consent/levelb",
+        Some(&op),
+        Some(body_for(&pubs)),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the broadcast must not follow cfg.vet_signer_index — it must use the account whose address \
+         the preflight compared against pub[relayer]: {b}"
+    );
+    // And the tx really is attributed to the relayer named in the proof.
+    assert_eq!(
+        b["verified"]["relayer"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase(),
+        relayer.to_lowercase()
+    );
+}
+
+/// A Level-B verification lands in the operator audit trail (`GET /verify/history`), owner-blind.
+///
+/// The trail is the verifier's operational record. Level-A writes a `VerifySession` row on every
+/// outcome; a Level-B path that wrote none would silently drop every owner-hidden verification out of
+/// the trail at the M-4 cutover.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recorded_level_b_verification_lands_in_the_audit_history() {
+    let chain = Arc::new(MemChain::new());
+    let (app, op, relayer) = boot(chain.clone()).await;
+    let pubs = pubs_for(&relayer, now_secs() + 3600);
+
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/consent/levelb",
+        Some(&op),
+        Some(body_for(&pubs)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "level-b submit: {b}");
+    let session_id = b["sessionId"].as_str().expect("sessionId echoed").to_string();
+
+    let (hs, hb) = call(&app, "GET", "/verify/history", Some(&op), None).await;
+    assert_eq!(hs, StatusCode::OK, "history: {hb}");
+    let rows = hb["verifications"].as_array().expect("verifications");
+    let row = rows
+        .iter()
+        .find(|r| r["sessionId"] == session_id.as_str())
+        .unwrap_or_else(|| panic!("the level-b verification is missing from the trail: {hb}"));
+
+    assert_eq!(row["status"], "recorded");
+    assert_eq!(row["mode"], "levelb");
+    assert_eq!(row["txHash"], b["txHash"]);
+    assert_eq!(row["nullifier"], b["nullifier"]);
+    assert_eq!(row["relayer"].as_str().map(str::to_lowercase), Some(relayer.to_lowercase()));
+
+    // OWNER-BLIND: the row carries operational proof metadata only. Level-B has no `subject` public
+    // signal, so no owner-shaped field may appear here — this is the property the whole path exists
+    // for, and an audit row is exactly where it would leak back in.
+    for owner_key in ["subject", "owner", "ownerAddress", "wallet", "keyHash"] {
+        assert!(
+            row.get(owner_key).is_none(),
+            "the level-b audit row must never carry {owner_key}: {row}"
+        );
+    }
+
+    // And it is individually addressable, like a Level-A session.
+    let (ss, sb) = call(
+        &app,
+        "GET",
+        &format!("/verify/session/{session_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(ss, StatusCode::OK, "session lookup: {sb}");
+    assert_eq!(sb["status"], "recorded");
+}
+
+/// A FAILED broadcast is auditable too — the gas is spent either way, so a submit that reverts must
+/// stay visible in the trail rather than vanishing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_level_b_broadcast_is_recorded_as_an_error_row() {
+    let chain = Arc::new(MemChain::new());
+    let (app, op, relayer) = boot(chain.clone()).await;
+    let pubs = pubs_for(&relayer, now_secs() + 3600);
+
+    // First submit succeeds and consumes the nullifier; the second reverts "replayed" on-chain,
+    // which is a failure that happens AFTER the preflight passes — exactly the case that must leave
+    // a row.
+    let (s1, _) = call(
+        &app,
+        "POST",
+        "/verify/consent/levelb",
+        Some(&op),
+        Some(body_for(&pubs)),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK);
+
+    let (s2, _) = call(
+        &app,
+        "POST",
+        "/verify/consent/levelb",
+        Some(&op),
+        Some(body_for(&pubs)),
+    )
+    .await;
+    assert_ne!(s2, StatusCode::OK);
+
+    let (hs, hb) = call(&app, "GET", "/verify/history", Some(&op), None).await;
+    assert_eq!(hs, StatusCode::OK, "history: {hb}");
+    let rows = hb["verifications"].as_array().expect("verifications");
+    let errored: Vec<&Value> = rows.iter().filter(|r| r["status"] == "error").collect();
+    assert_eq!(
+        errored.len(),
+        1,
+        "the reverted submit must leave exactly one error row: {hb}"
+    );
+    assert_eq!(errored[0]["mode"], "levelb");
+    assert!(
+        errored[0]["txHash"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("replayed"),
+        "the revert reason should be retained for the operator: {}",
+        errored[0]
+    );
+}
