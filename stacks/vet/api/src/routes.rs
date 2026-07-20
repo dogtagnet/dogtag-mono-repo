@@ -1299,6 +1299,28 @@ struct ConsentSubmitReq {
     export_token: Option<String>,
 }
 
+/// POST /verify/consent/levelb — the LEVEL-B, owner-hidden submit path (M-3).
+///
+/// Added ALONGSIDE [`verify_consent_submit`] (Level-A), which stays untouched and keeps serving the
+/// shipped phone consumers until the M-4 cutover.
+///
+/// Operator-gated, matching the Level-A precedent: the on-chain gates decide whether a proof is
+/// VALID, but the relayer pays gas to find out, so an ungated endpoint would be a free way to drain
+/// the relayer's balance on proofs that revert. Note this is only a spend gate — it grants no
+/// authority over the submission itself. The proof names its own submitter (`pub[2]`, bound into both
+/// the consent message and the nullifier), so an operator cannot direct a proof anywhere the owner
+/// did not already consent to.
+async fn verify_consent_levelb_submit(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Resp {
+    if let Err(e) = require_operator(&st, &headers).await {
+        return e;
+    }
+    crate::verify::consent_submit_levelb(&st, &body).await
+}
+
 async fn verify_consent_submit(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -2842,9 +2864,17 @@ pub fn public_router(state: AppState) -> Router {
         .route("/verify/session/:id", get(verify_session_status))
         .route("/verify/history", get(verify_history))
         .route("/verify/consent/submit", post(verify_consent_submit))
+        // Level-B (M-3), owner-hidden. A SEPARATE route from the Level-A one above, not a mode flag
+        // on it: the two carry different public-signal orders and target different registries, so a
+        // request routed to the wrong one would encode for the wrong selector and revert empty.
+        .route("/verify/consent/levelb", post(verify_consent_levelb_submit))
         .route("/v1/verify/credential", post(verify_credential))
         // alias so the owner's phone can POST consent+proof directly to the groomer host.
         .route("/v1/verify/consent", post(verify_consent_submit))
+        .route(
+            "/v1/verify/consent/levelb",
+            post(verify_consent_levelb_submit),
+        )
         // calendar sync (Phase 7, §3.6)
         .route("/calendar/google/connect", get(google_connect))
         .route("/calendar/google/callback", get(google_callback))

@@ -22,8 +22,20 @@ pub struct Config {
     pub rpc_url: String,
     pub issuer_registry_addr: String,
     pub verification_registry_addr: String,
+    /// `VerificationRegistryConsent` address (env `VERIFICATION_REGISTRY_CONSENT_ADDR`) — the Level-B,
+    /// owner-hidden submit target for the 4-arg `recordVerificationZK(a,b,c,pub)`.
+    ///
+    /// Deliberately a SEPARATE field from [`Config::verification_registry_addr`] rather than an
+    /// overload of it, the same reasoning as [`Config::sbt_consent_addr`]: the two registries run side
+    /// by side through the migration (mirroring the indexer's `DEFAULT_VREG`/`DEFAULT_VREG_CONSENT`
+    /// pair), so the Level-A path keeps serving while the Level-B path is wired. The addresses are NOT
+    /// interchangeable — the two `recordVerificationZK` selectors differ, so pointing either path at
+    /// the other's registry reverts empty. Unset (zero address) → the Level-B submit route fails
+    /// closed as unconfigured.
+    pub verification_registry_consent_addr: String,
     /// ConsentKeyRegistry address (env `CONSENT_KEY_REGISTRY_ADDR`) — the relayer-sponsored
     /// `bindConsentKeyFor` target and the `keyOf`/`bindNonce` read surface for the ZK consent path.
+    /// LEVEL-A ONLY: Level-B retires the registry entirely (D2, the consent key moved into the tree).
     pub consent_key_registry_addr: String,
     /// recordType (string) -> issuer clone address (documentStore).
     pub issuer_addrs: std::collections::HashMap<String, String>,
@@ -561,6 +573,7 @@ mod tests {
             rpc_url: String::new(),
             issuer_registry_addr: String::new(),
             verification_registry_addr: String::new(),
+            verification_registry_consent_addr: String::new(),
             consent_key_registry_addr: String::new(),
             issuer_addrs: std::collections::HashMap::new(),
             issuer_name: "Test Vet".to_string(),

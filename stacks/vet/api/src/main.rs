@@ -47,6 +47,12 @@ async fn main() {
             "VERIFICATION_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
+        // Level-B submit target. Separate from VERIFICATION_REGISTRY_ADDR, not an overload: both run
+        // side by side through the migration and their `recordVerificationZK` selectors differ.
+        verification_registry_consent_addr: env(
+            "VERIFICATION_REGISTRY_CONSENT_ADDR",
+            "0x0000000000000000000000000000000000000000",
+        ),
         consent_key_registry_addr: env(
             "CONSENT_KEY_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",

@@ -1376,6 +1376,77 @@ already-minted tag claims. Level-A producers keep stamping `LEVEL_A_VERSION`.
 Coverage: `stacks/vet/api/tests/custodial_issuance_bridge.rs` (real device-built `R`, both on-chain
 conditions, raw-handle and skip-issue fail-closed cases, Level-A non-regression).
 
+### Level-B unified submission path (M-3) - `POST /verify/consent/levelb`
+
+The other half of M-2: the network layer that carries an owner-hidden consent proof to the chain.
+Before it, a device could prove consent but nothing could submit that proof.
+
+**The `sol!` interface is NEW, never an edit of the Level-A one** ([e9] R-2). `chain.rs` now carries
+both `IVerificationRegistry` (Level-A, frozen) and `IVerificationRegistryConsent` (Level-B) side by
+side. Editing the Level-A one in place would yield a hybrid matching neither deployed contract, since
+Level-B deletes `subject` and retires `ConsentKeyRegistry`. Three concrete differences:
+
+- **`recordVerificationZK` is 4-arg, a DIFFERENT SELECTOR** (`dd080593` vs Level-A's `423a45b6`).
+  `recordType`/`deadline` moved out of relayer calldata into `pub[5]`/`pub[6]`, so they are bound to
+  the proof. Both selectors are pinned in `chain.rs`'s test module, plus an explicit
+  `assert_ne!` - the two calls share the same `(a,b,c,pub)` prefix, so a mix-up is invisible at the
+  type level and surfaces on-chain only as an empty `0x` revert.
+- **`Verified` drops `subject`** (gains `deadline`), hence a different topic0. Decoders are
+  address-gated AND shape-gated; `ConsentVerifiedEvent` is a separate type from `VerifiedEvent`
+  rather than one with an `Option<subject>`, so there is no owner slot for a caller to fill.
+- **No `ConsentKeyRegistry` leg at all** - no bind, no `keyOf`.
+
+**Route every `pub[n]` through `dogtag_standard::public_signals::level_b`.** Level-A's NULLIFIER slot
+(4) is Level-B's ROOT: keying the one-time check on `pub[4]` makes a SUCCESSFUL verification read as
+forever-unconsumed (the E-1 bug). `MemChain` has separate Level-A/Level-B submit paths for the same
+reason.
+
+**The relayer trust model is settled by the contract, not by config.** `relayer` is bound into both
+the EdDSA consent message `M` and the nullifier, and the registry requires
+`address(uint160(pub[2])) == msg.sender` - so the owner consents to ONE submitter and no other
+address can carry that proof. The HTTP route's operator gate is therefore only a GAS-SPEND gate
+(an open endpoint would let anyone burn the relayer's balance on reverting proofs); it confers no
+authority over the submission itself.
+
+**The broadcast is SYNCHRONOUS, deliberately unlike Level-A's spawn-and-poll.** Level-A responds
+`"recording"` and broadcasts ~24-48s later, which is safe there only because the relayer invents a
+generous 1h `deadline`. Under Level-B `deadline` is `pub[6]` - proof-bound and device-chosen - so the
+relayer cannot widen it and deferring the broadcast is exactly what would make it revert `"expired"`.
+The preflight refuses a deadline inside a 30s margin rather than broadcasting a doomed tx.
+
+The preflight mirrors the registry's requires (field range, `addr range` on the FULL element before
+narrowing, deadline, art9, relayer, whitelist) but is **not** the security boundary - the on-chain
+gates are, and they run again regardless. Its only job is to avoid paying gas for a tx that cannot
+mine.
+
+New env var `VERIFICATION_REGISTRY_CONSENT_ADDR`, fail-closed when unset, separate from
+`VERIFICATION_REGISTRY_ADDR` - the two registries run side by side (same pattern as
+`SBT_CONSENT_ADDR`, and the indexer's `DEFAULT_VREG`/`DEFAULT_VREG_CONSENT`). The addresses are NOT
+interchangeable: pointing either path at the other's registry encodes the wrong selector.
+
+**Test fixtures: `relayer` is bound INTO the proof, so a fixture can only ever be submitted by the
+address it names.** The committed `contracts/test/consent-fixture.json` names `0x1111…1111`, which no
+key we hold can broadcast - fine for Foundry (it `prank`s), useless for a Rust relayer E2E. Hence
+`contracts/test/consent-fixture-anvil.json`, the same witness rebound to anvil account 0.
+`gen-consent-fixture.mjs` takes `CONSENT_FIXTURE_RELAYER` / `CONSENT_FIXTURE_OUT` overrides, both
+defaulting to the original values. Changing a PUBLIC INPUT does not move the VK - same ceremony key,
+same verifier.
+
+Note the fixtures are **semantically, not byte-wise, reproducible**: Groth16 proving draws fresh
+randomness per run, so re-running the generator reproduces every public value (`pub`, `R`,
+`nullifier`, `recordType`, `deadline`, ...) but emits different `a`/`b`/`c`. Do not treat a diff in
+the proof elements as drift, and do not regenerate a committed fixture just to "check" it - the
+regenerated file will always differ.
+
+Coverage, split by what each harness can actually prove:
+- `stacks/vet/api/tests/submit_consent_onchain.rs` - real ceremony-key proof through the new
+  interface against the real registry + real verifier on anvil (all 12 gates), fail-closed on
+  mismatched root and consumed nullifier, and a test that the Level-A encoder CANNOT drive the
+  Level-B registry. Skips without Foundry.
+- `stacks/vet/api/tests/submit_consent_levelb_route.rs` - the handler preflight against `MemChain`.
+  Bad-root cannot live here: `MemChain` only checks `consumed`, so a mismatched root would wrongly
+  succeed.
+
 ### iOS wiring
 
 `apps/ios/DogTag/ProfileTreeStore.swift` builds via FFI and persists `Documents/dogtag-owner-secrets.json`.

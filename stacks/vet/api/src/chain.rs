@@ -12,10 +12,15 @@ use alloy::sol;
 use alloy::sol_types::SolEvent;
 use async_trait::async_trait;
 
-// LEVEL-A public-signal indices. The `recordVerificationZK` surface here is the 4-arg Level-A one
-// (it carries `subject` and a ConsentKeyRegistry-bound `keyHash`); M-4 introduces a separate Level-B
-// interface rather than editing this one, so these stay `level_a`.
+// LEVEL-A public-signal indices. The `recordVerificationZK` surface here is the 6-arg Level-A one
+// (it carries `subject` and a ConsentKeyRegistry-bound `keyHash`, and takes `recordType`/`deadline` as
+// unbound calldata); M-3 added the separate Level-B interface below rather than editing this one, so
+// these stay `level_a`.
 use dogtag_standard::public_signals::level_a as P;
+// LEVEL-B public-signal indices, for the owner-hidden consent surface only. The orders diverge from
+// index 3 on, so the two imports must never be used interchangeably: Level-A's NULLIFIER slot (4) is
+// Level-B's ROOT. See `dogtag_standard::public_signals`.
+use dogtag_standard::public_signals::level_b as PB;
 
 pub const ROAX_CHAIN_ID: u64 = 135;
 
@@ -82,6 +87,44 @@ sol! {
         function consumed(bytes32 nf) external view returns (bool);
     }
 
+    /// Level-B (`contracts/src/VerificationRegistryConsent.sol`) — the OWNER-HIDDEN submit surface.
+    ///
+    /// DELIBERATELY SEPARATE from [`IVerificationRegistry`] above, not an edit of it ([e9] R-2): that
+    /// interface carries `subject` and is paired with a `ConsentKeyRegistry`, both of which the
+    /// owner-hidden model deletes. Editing it in place would yield a Level-A/B hybrid that matches
+    /// neither deployed contract. The two run side by side through the migration, the same pattern
+    /// M-2 used for `mint` / `mintCustodial`.
+    ///
+    /// Three differences, all forced by the owner-blind model:
+    ///   - `recordVerificationZK` is 4-ARG. `recordType` and `deadline` moved out of relayer-supplied
+    ///     calldata and into `pub[5]`/`pub[6]`, so they are cryptographically bound to the proof. This
+    ///     is a DIFFERENT SELECTOR from the Level-A 6-arg call — pinned in the tests below, because
+    ///     selector drift against a deployed registry is what produced the historical `0x` empty
+    ///     revert.
+    ///   - `Verified` drops `subject` (and gains `deadline`), so it has a DIFFERENT topic0 than the
+    ///     Level-A event of the same name. The two never collide on one address: this shape only ever
+    ///     comes from a Level-B registry, and the decode below is address-gated regardless.
+    ///   - no `ConsentKeyRegistry` leg at all (D2: the consent key moved into the tree).
+    #[sol(rpc)]
+    contract IVerificationRegistryConsent {
+        event Verified(
+            uint256 indexed dogTagId,
+            address indexed relayer,
+            bytes32 purpose,
+            bytes32 nullifier,
+            uint256 deadline,
+            uint256 ts
+        );
+
+        function recordVerificationZK(
+            uint256[2] a,
+            uint256[2][2] b,
+            uint256[2] c,
+            uint256[7] pub
+        ) external;
+        function consumed(bytes32 nf) external view returns (bool);
+    }
+
     #[sol(rpc)]
     contract IConsentKeyRegistry {
         function bindConsentKey(bytes32 babyJubPubKeyHash, bytes ecdsaSig) external;
@@ -99,6 +142,23 @@ pub struct VerifiedEvent {
     pub subject: String,
     pub purpose: String,
     pub nullifier: String,
+    pub ts: U256,
+}
+
+/// A Level-B `Verified` event read off a `VerificationRegistryConsent` receipt.
+///
+/// OWNER-BLIND: there is no `subject` field, and one must never be added — the absence IS the
+/// property. `deadline` takes its place so a consumer can still bound the consent window. Kept a
+/// SEPARATE type from [`VerifiedEvent`] rather than making `subject` an `Option`: an optional field
+/// invites a caller to unwrap-or-default it back into an owner slot, and the whole point of Level-B
+/// is that no such slot exists.
+#[derive(Clone, Debug)]
+pub struct ConsentVerifiedEvent {
+    pub dog_tag_id: U256,
+    pub relayer: String,
+    pub purpose: String,
+    pub nullifier: String,
+    pub deadline: U256,
     pub ts: U256,
 }
 
@@ -197,6 +257,26 @@ pub trait ChainClient: Send + Sync {
         record_type: &str,
         deadline: u64,
     ) -> Result<SentTx, ChainError>;
+    /// Broadcast the LEVEL-B 4-arg `recordVerificationZK(a,b,c,pub)` to a
+    /// `VerificationRegistryConsent` at `registry_addr`, FROM the backend signer at `account_index`.
+    ///
+    /// Separate from [`ChainClient::record_verification_zk`] rather than an overload of it: the arg
+    /// lists differ (no `recordType`/`deadline` — both are `pub[5]`/`pub[6]` here) and so does the
+    /// selector, so one method cannot serve both without silently encoding for the wrong registry.
+    ///
+    /// The relayer must be the broadcaster: the contract requires
+    /// `address(uint160(pub[level_b::RELAYER])) == msg.sender`, and `relayer` is bound into both the
+    /// signed consent message and the nullifier — so the owner consents to ONE submitter and no other
+    /// address can carry this proof.
+    async fn record_verification_zk_consent(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError>;
     /// Read the `Verified(dogTagId,relayer,subject,purpose,nullifier,ts)` event emitted by
     /// `registry_addr` in the given tx's receipt. Err(NotFound) if absent/unmined.
     async fn get_verified_event(
@@ -204,6 +284,16 @@ pub trait ChainClient: Send + Sync {
         tx_hash: &str,
         registry_addr: &str,
     ) -> Result<VerifiedEvent, ChainError>;
+    /// Read the LEVEL-B owner-blind `Verified(dogTagId,relayer,purpose,nullifier,deadline,ts)` event
+    /// emitted by `registry_addr` in the given tx's receipt. Err(NotFound) if absent/unmined.
+    ///
+    /// Decodes a DIFFERENT topic0 than [`ChainClient::get_verified_event`] (no `subject`), so pointing
+    /// this at a Level-A registry yields NotFound rather than a mis-decoded owner field.
+    async fn get_consent_verified_event(
+        &self,
+        tx_hash: &str,
+        registry_addr: &str,
+    ) -> Result<ConsentVerifiedEvent, ChainError>;
     /// VerificationRegistry.consumed(nullifier).
     async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError>;
     /// ConsentKeyRegistry.keyOf(wallet) — the bound babyJubPubKeyHash (0x0..0 if unbound). Hex string.
@@ -449,6 +539,38 @@ pub fn record_verification_zk_calldata(
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
+/// ABI-encode the LEVEL-B `recordVerificationZK(a,b,c,pub)` — FOUR args, from decimal-or-hex string
+/// proof components.
+///
+/// No `recordType`/`deadline` parameters, and that is the point: under Level-B both are public
+/// signals (`pub[5]`/`pub[6]`) bound to the proof, so the relayer cannot choose or widen them. A
+/// relayer that wants a longer freshness window cannot get one by re-encoding — it has to ask the
+/// device for a fresh proof. Contrast [`record_verification_zk_calldata`], the Level-A 6-arg encoder,
+/// where both are relayer-supplied defense-in-depth guards.
+pub fn record_verification_zk_consent_calldata(
+    a: &[String; 2],
+    b: &[[String; 2]; 2],
+    c: &[String; 2],
+    pub_signals: &[String; 7],
+) -> String {
+    use alloy::sol_types::SolCall;
+    let g = |s: &str| parse_u256_dec_or_hex(s);
+    let a_arr = [g(&a[0]), g(&a[1])];
+    let b_arr = [[g(&b[0][0]), g(&b[0][1])], [g(&b[1][0]), g(&b[1][1])]];
+    let c_arr = [g(&c[0]), g(&c[1])];
+    let mut pub_arr: [U256; 7] = [U256::ZERO; 7];
+    for (slot, s) in pub_arr.iter_mut().zip(pub_signals.iter()) {
+        *slot = g(s);
+    }
+    let call = IVerificationRegistryConsent::recordVerificationZKCall {
+        a: a_arr,
+        b: b_arr,
+        c: c_arr,
+        r#pub: pub_arr,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
+}
+
 /// ABI-encode bindConsentKey(babyJubPubKeyHash, ecdsaSig).
 pub fn bind_consent_key_calldata(key_hash: &str, ecdsa_sig: &str) -> String {
     use alloy::sol_types::SolCall;
@@ -497,6 +619,10 @@ struct MemChainInner {
     consumed: HashMap<(String, String), bool>,
     /// txHash -> Verified event emitted by a recordVerification(ZK).
     verified: HashMap<String, VerifiedEvent>,
+    /// txHash -> LEVEL-B owner-blind Verified event emitted by the consent registry. A separate map
+    /// from `verified`, mirroring the two distinct on-chain topic0s: a Level-B tx must not be
+    /// readable as a Level-A event (which would invent a `subject`), or vice versa.
+    consent_verified: HashMap<String, ConsentVerifiedEvent>,
     /// (consent_key_registry_addr, wallet) -> bound babyJubPubKeyHash (keyOf).
     consent_keys: HashMap<(String, String), String>,
     /// (consent_key_registry_addr, wallet) -> bindNonce (incremented on each successful bind).
@@ -759,6 +885,60 @@ impl ChainClient for MemChain {
         g.verified.insert(tx_hash.clone(), ev);
         Ok(SentTx { tx_hash })
     }
+    async fn record_verification_zk_consent(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        _a: &[String; 2],
+        _b: &[[String; 2]; 2],
+        _c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError> {
+        // LEVEL-B indices via `PB`. The nullifier is pub[3], NOT pub[4] — pub[4] is `R` here, and
+        // reading it as the nullifier is precisely the E-1 bug: the one-time check would key on the
+        // root, so a SUCCESSFUL verification would look unconsumed forever.
+        let nf = format!(
+            "0x{}",
+            hex::encode(parse_b256_dec_or_hex(&pub_signals[PB::NULLIFIER]))
+        );
+        let mut g = self.inner.lock().unwrap();
+        let _from = g
+            .signers
+            .get(&account_index)
+            .cloned()
+            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
+        let reg = registry_addr.to_lowercase();
+        // Mirrors the contract's `require(!consumed[nf], "replayed")`.
+        if g.consumed
+            .get(&(reg.clone(), nf.clone()))
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err(ChainError::Other("replayed".into()));
+        }
+        g.consumed.insert((reg.clone(), nf.clone()), true);
+        g.clock += 12;
+        let ts = U256::from(g.clock);
+        g.nonce += 1;
+        let tx_hash = format!("0x{:064x}", g.nonce);
+        // OWNER-BLIND: no `subject` is derived, because no public signal carries one.
+        let ev = ConsentVerifiedEvent {
+            dog_tag_id: parse_u256_dec_or_hex(&pub_signals[PB::DOG_TAG_ID]),
+            relayer: format!(
+                "0x{:040x}",
+                parse_u256_dec_or_hex(&pub_signals[PB::RELAYER])
+            ),
+            purpose: format!(
+                "0x{}",
+                hex::encode(parse_b256_dec_or_hex(&pub_signals[PB::PURPOSE]))
+            ),
+            nullifier: nf,
+            deadline: parse_u256_dec_or_hex(&pub_signals[PB::DEADLINE]),
+            ts,
+        };
+        g.consent_verified.insert(tx_hash.clone(), ev);
+        Ok(SentTx { tx_hash })
+    }
     async fn get_verified_event(
         &self,
         tx_hash: &str,
@@ -766,6 +946,17 @@ impl ChainClient for MemChain {
     ) -> Result<VerifiedEvent, ChainError> {
         let g = self.inner.lock().unwrap();
         g.verified.get(tx_hash).cloned().ok_or(ChainError::NotFound)
+    }
+    async fn get_consent_verified_event(
+        &self,
+        tx_hash: &str,
+        _registry_addr: &str,
+    ) -> Result<ConsentVerifiedEvent, ChainError> {
+        let g = self.inner.lock().unwrap();
+        g.consent_verified
+            .get(tx_hash)
+            .cloned()
+            .ok_or(ChainError::NotFound)
     }
     async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
@@ -1182,6 +1373,59 @@ impl ChainClient for AlloyChain {
         self.sign_and_send(account_index, registry_addr, &calldata)
             .await
     }
+    async fn record_verification_zk_consent(
+        &self,
+        account_index: u32,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError> {
+        let calldata = record_verification_zk_consent_calldata(a, b, c, pub_signals);
+        self.sign_and_send(account_index, registry_addr, &calldata)
+            .await
+    }
+    async fn get_consent_verified_event(
+        &self,
+        tx_hash: &str,
+        registry_addr: &str,
+    ) -> Result<ConsentVerifiedEvent, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
+        use alloy::sol_types::SolEvent;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let hash: B256 = parse_b256(tx_hash);
+        let receipt = provider
+            .get_transaction_receipt(hash)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?
+            .ok_or(ChainError::NotFound)?;
+        if !receipt.status() {
+            return Err(ChainError::Other("tx reverted".into()));
+        }
+        let reg = parse_addr(registry_addr);
+        for log in receipt.inner.logs() {
+            // Address-gate first, then decode the LEVEL-B topic0. A Level-A `Verified` from another
+            // address cannot satisfy both, so this never mis-decodes across shapes.
+            if log.address() != reg {
+                continue;
+            }
+            if let Ok(ev) = IVerificationRegistryConsent::Verified::decode_log(log.as_ref(), true) {
+                return Ok(ConsentVerifiedEvent {
+                    dog_tag_id: ev.dogTagId,
+                    relayer: format!("{:#x}", ev.relayer),
+                    purpose: format!("0x{}", hex::encode(ev.purpose.as_slice())),
+                    nullifier: format!("0x{}", hex::encode(ev.nullifier.as_slice())),
+                    deadline: ev.deadline,
+                    ts: ev.ts,
+                });
+            }
+        }
+        Err(ChainError::NotFound)
+    }
     async fn get_verified_event(
         &self,
         tx_hash: &str,
@@ -1374,6 +1618,37 @@ mod tests {
         assert_eq!(
             selector(&record_verification_zk_calldata(&a, &b, &c, &pubs, "0x00", 0)),
             "423a45b6"
+        );
+        // LEVEL-B recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7]) — 4-arg.
+        assert_eq!(
+            selector(&record_verification_zk_consent_calldata(&a, &b, &c, &pubs)),
+            "dd080593"
+        );
+    }
+
+    /// The two `recordVerificationZK` encoders MUST NOT share a selector. They target different
+    /// deployed registries with different arities, so a collision (or a copy-paste that pointed the
+    /// Level-B encoder at the Level-A call struct) would send a Level-B proof to a Level-A registry
+    /// as a malformed call — the historical `0x` empty-revert failure mode, which is silent at the
+    /// type level because both take the same `(a, b, c, pub)` prefix.
+    #[test]
+    fn the_two_record_verification_zk_selectors_are_distinct() {
+        let a = ["0".to_string(), "0".to_string()];
+        let b = [
+            ["0".to_string(), "0".to_string()],
+            ["0".to_string(), "0".to_string()],
+        ];
+        let c = ["0".to_string(), "0".to_string()];
+        let pubs: [String; 7] = std::array::from_fn(|_| "0".to_string());
+        let level_a = selector(&record_verification_zk_calldata(&a, &b, &c, &pubs, "0x00", 0));
+        let level_b = selector(&record_verification_zk_consent_calldata(&a, &b, &c, &pubs));
+        assert_ne!(level_a, level_b, "Level-A and Level-B selectors collided");
+        // And the Level-B call carries strictly less calldata: no recordType/deadline words, because
+        // both are public signals bound to the proof rather than relayer-supplied.
+        assert!(
+            record_verification_zk_consent_calldata(&a, &b, &c, &pubs).len()
+                < record_verification_zk_calldata(&a, &b, &c, &pubs, "0x00", 0).len(),
+            "Level-B calldata should not carry the two extra relayer-supplied words"
         );
     }
 
