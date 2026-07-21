@@ -68,6 +68,22 @@ object CentralApi {
      * (non-consuming) before proving so it can assert the groomer address, run the whitelist + DNS
      * checks, and build the consent. The token is consumed only on submit.
      */
+    /**
+     * The platform-OWNED, UNVERIFIED discovery claims from the resolve GET's `unverifiedClaims` block
+     * (M7 §5.2). NONE of these is authority — under a `mode == "levelb"` session they are validated
+     * against the dogtag `ProtocolRegistry` anchor via `validateDiscovery` before the app acts. Null
+     * when the server omits the block (every pre-M-4 / non-levelb response); the Level-A path never
+     * reads them. Deliberately NOT named `ConvenienceClaims` — that is the FFI record
+     * `validateDiscovery` consumes; this is the raw parse the caller maps into it.
+     */
+    data class UnverifiedClaims(
+        val protocolVersion: String,
+        val chainId: Long,
+        val verificationRegistry: String,
+        val issuerClone: String,
+        val purpose: String,
+    )
+
     data class ExportSession(
         val sessionId: String,
         val relayer: String,
@@ -75,6 +91,8 @@ object CentralApi {
         val recordType: String,
         val challenge: String,
         val mode: String,
+        /** The `unverifiedClaims` block, present only when the server emits it (M-4 levelb sessions). */
+        val claims: UnverifiedClaims? = null,
     )
 
     /** GET <host>/x/<token> → export-session metadata (non-consuming). Null on failure. */
@@ -84,6 +102,16 @@ object CentralApi {
             val resp = Http.getJson("$host/x/$token")
             if (!resp.ok) return null
             val o = JSONObject(resp.body)
+            // The convenience tier is additive: absent on every non-levelb / pre-M-4 response.
+            val claims = o.optJSONObject("unverifiedClaims")?.let { uc ->
+                UnverifiedClaims(
+                    protocolVersion = uc.optString("protocolVersion", ""),
+                    chainId = uc.optLong("chainId", 0L),
+                    verificationRegistry = uc.optString("verificationRegistry", ""),
+                    issuerClone = uc.optString("issuerClone", ""),
+                    purpose = uc.optString("purpose", ""),
+                )
+            }
             ExportSession(
                 sessionId = o.optString("sessionId", o.optString("session_id", "")),
                 relayer = o.optString("relayer", ""),
@@ -91,6 +119,7 @@ object CentralApi {
                 recordType = o.optString("recordType", o.optString("record_type", "")),
                 challenge = o.optString("challenge", ""),
                 mode = o.optString("mode", "zk"),
+                claims = claims,
             )
         } catch (e: Exception) {
             null

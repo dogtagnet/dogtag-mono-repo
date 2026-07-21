@@ -383,6 +383,18 @@ struct ScanScreen: View {
                 return
             }
 
+            // -------- LEVEL-B owner-hidden path (M-4 PR3): validate the discovery anchor, fail closed --------
+            // Gated on the STORED `mode`, EXPLICITLY — NOT `isZk`, which is true for any non-normal/ecdsa
+            // mode and would drop a `levelb` session into the Level-A prover below. Every ProtocolRegistry
+            // eth_call and the `validateDiscovery` call live inside this branch, so a non-levelb session
+            // makes ZERO registry calls and the Level-A path is byte-for-byte untouched (the acceptance bar).
+            if AnchorResolver.isLevelB(mode: sess.mode) {
+                working = true
+                let roax = RoaxConfig.load()
+                Task { await runLevelBAnchorGate(sess: sess, roax: roax) }
+                return
+            }
+
             // -------- ZERO-KNOWLEDGE on-device path --------
             guard let wallet = wallet else { status = "Create your wallet first (Profile)."; return }
             working = true
@@ -540,6 +552,79 @@ struct ScanScreen: View {
                     await MainActor.run { working = false; status = "ZK verify failed: \(error)" }
                 }
             }
+        }
+    }
+
+    /// M-4 PR3 — the owner-hidden (`mode == "levelb"`) discovery-anchor gate.
+    ///
+    /// Resolves the dogtag `ProtocolRegistry` anchor for `dogtag-levelb/1` and validates the
+    /// platform's claims against it via the shipped `validateDiscovery` binding, FAIL-CLOSED on every
+    /// axis. It is the anti-redirect gate ONLY — it does NOT prove or submit; the owner-hidden prover
+    /// and the Level-B submit land in PR4. On success PR3 stops with a "validated" status rather than
+    /// falling through to the Level-A prover.
+    ///
+    /// It is SAFE to ship ahead of the ProtocolRegistry deploy + the app-version bump (PR4): until the
+    /// registry is published the eth_calls return nil and this fails closed, and until this build
+    /// clears the published `minAppVersion` `validateDiscovery` throws `AppTooOld` — either way the
+    /// Level-A default path, which never enters this method, is untouched.
+    @MainActor
+    private func runLevelBAnchorGate(sess: CentralApi.ExportSession, roax: RoaxConfig) async {
+        status = "Validating owner-hidden discovery anchor…"
+        guard let claims = sess.claims else {
+            working = false
+            status = "Owner-hidden session is missing its discovery claims — refusing."
+            return
+        }
+        // Resolve BOTH on-chain axes. Either nil — registry unconfigured/undeployed, version
+        // unpublished, or no artifact binding — fails closed. This is exactly what lets PR3 ship
+        // before the registry deploy without any risk to the Level-A path.
+        let version = AnchorResolver.levelBVersion
+        async let csTask = RoaxRpc.getContractSet(
+            rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
+        async let asTask = RoaxRpc.getActiveArtifactSet(
+            rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
+        guard let cs = await csTask, let arti = await asTask else {
+            working = false
+            status = "Owner-hidden verification is not available yet (discovery anchor unpublished)."
+            return
+        }
+        // Build the FFI `TrustedAnchor`. `contractSetActive`/`artifactSetActive` come from the two
+        // records SEPARATELY (never AND-ed) — `validateDiscovery` requires both true independently.
+        let anchor = TrustedAnchor(
+            version: version,
+            versionId: cs.contractSetId,
+            artifactSet: AnchorResolver.levelBArtifactSet,
+            artifactSetId: arti.artifactSetId,
+            chainId: UInt64(roax.chainId),
+            verificationRegistry: cs.verificationRegistry,
+            circuitId: AnchorResolver.levelBCircuitId,
+            minAppVersion: arti.minAppVersion,
+            contractSetActive: cs.active,
+            artifactSetActive: arti.active)
+        let ffiClaims = ConvenienceClaims(
+            protocolVersion: claims.protocolVersion,
+            chainId: claims.chainId,
+            verificationRegistry: claims.verificationRegistry,
+            issuerClone: claims.issuerClone,
+            purpose: claims.purpose)
+        // `appVersion`: this build's marketing version (dotted semver). `expectedPurpose`: the
+        // session's purpose (D1 ruling (i)). The app has no purpose independent of the scanned QR
+        // today, so `validateDiscovery`'s purpose check (§5.3 step 4) is INTENTIONALLY WEAK here —
+        // claim vs the same session it came from. That is not a regression: it matches the Level-A
+        // path's existing posture, and the load-bearing anti-redirect weight sits in the
+        // registry/chainId/version/versionId/both-active/minAppVersion checks, which all still fire.
+        // An independent app-side purpose is queued as follow-up hardening.
+        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
+        do {
+            _ = try validateDiscovery(
+                claims: ffiClaims, anchor: anchor, appVersion: appVersion, expectedPurpose: sess.purpose)
+            // PR3 stops here: the anchor is validated and Level-B is authorized. The owner-hidden
+            // prover + Level-B submit are PR4; do NOT fall through to the Level-A prover.
+            working = false
+            status = "Owner-hidden discovery anchor validated — on-device proving lands in a later build."
+        } catch {
+            working = false
+            status = "Owner-hidden verification refused: \(error)"
         }
     }
 

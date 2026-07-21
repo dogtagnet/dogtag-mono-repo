@@ -174,6 +174,41 @@ enum RoaxRpc {
         }
     }
 
+    private static let getContractSetSelector = functionSelector("getContractSet(bytes32)")
+    private static let getActiveArtifactSetSelector = functionSelector("getActiveArtifactSet(bytes32)")
+
+    /// keccak256 of a version string as a 32-byte word — the `ProtocolRegistry` map key
+    /// (`contractSetId`) for that version. `AnchorResolver.levelBVersion` → the Level-B query key.
+    static func versionId(_ version: String) -> String {
+        Keccak256.digest(Data(version.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// `ProtocolRegistry.getContractSet(versionId)` → the on-chain contract-set record (M-4 PR3).
+    /// Returns nil when the registry is unconfigured/unreachable OR the version is unpublished (the
+    /// getter reverts "unknown contract set"), so the Level-B branch FAILS CLOSED and never touches
+    /// the Level-A path. `protocolRegistry` empty (not yet deployed) is a nil, by design.
+    static func getContractSet(rpcUrl: String, protocolRegistry: String, version: String) async -> AnchorResolver.ContractSetRecord? {
+        guard !protocolRegistry.isEmpty else { return nil }
+        let data = getContractSetSelector + versionId(version)
+        switch await ethCall(rpcUrl: rpcUrl, to: protocolRegistry, data: data) {
+        case let .success(hex): return AnchorResolver.decodeContractSet(hex)
+        case .failure: return nil
+        }
+    }
+
+    /// `ProtocolRegistry.getActiveArtifactSet(versionId)` → the artifact-set record currently bound to
+    /// the version (M-4 PR3). Follows `activeArtifactSetOf` on-chain and reverts if unbound, so a nil
+    /// here (unconfigured registry, unpublished version, or no binding) fails the Level-B branch
+    /// closed. Decodes only `artifactSetId`/`minAppVersion`/`active` — see `AnchorResolver`.
+    static func getActiveArtifactSet(rpcUrl: String, protocolRegistry: String, version: String) async -> AnchorResolver.ArtifactSetRecord? {
+        guard !protocolRegistry.isEmpty else { return nil }
+        let data = getActiveArtifactSetSelector + versionId(version)
+        switch await ethCall(rpcUrl: rpcUrl, to: protocolRegistry, data: data) {
+        case let .success(hex): return AnchorResolver.decodeArtifactSet(hex)
+        case .failure: return nil
+        }
+    }
+
     private enum CallResult { case success(String); case failure(String) }
 
     private static func ethCall(rpcUrl: String, to: String, data: String) async -> CallResult {
@@ -279,6 +314,20 @@ enum CentralApi {
             walletAddress: (o["walletAddress"] as? String) ?? walletAddress)
     }
 
+    /// The platform-OWNED, UNVERIFIED discovery claims from the resolve GET's `unverifiedClaims` block
+    /// (M7 §5.2). NONE of these is authority — under a `mode == "levelb"` session they are validated
+    /// against the dogtag `ProtocolRegistry` anchor via `validateDiscovery` before the app acts. Empty
+    /// when the server omits the block (every pre-M-4 / non-levelb response), which is fine: the
+    /// Level-A path never reads them. Deliberately NOT named `ConvenienceClaims` — that is the FFI
+    /// record `validateDiscovery` consumes; this is the raw parse the caller maps into it.
+    struct UnverifiedClaims {
+        let protocolVersion: String
+        let chainId: UInt64
+        let verificationRegistry: String
+        let issuerClone: String
+        let purpose: String
+    }
+
     /// The export-session metadata resolved (non-consuming) from the QR's one-time token before proving.
     struct ExportSession {
         let sessionId: String
@@ -287,6 +336,8 @@ enum CentralApi {
         let recordType: String
         let challenge: String
         let mode: String
+        /// The `unverifiedClaims` block, present only when the server emits it (M-4 levelb sessions).
+        let claims: UnverifiedClaims?
 
         /// Whether this session presents via the zero-knowledge path. The ECDSA (EIP-712) modes
         /// ("normal"/"ecdsa") have no leaf-count limit; anything else is the ZK circuit path, which
@@ -303,13 +354,28 @@ enum CentralApi {
         let resp = await Http.getJSON("\(host)/x/\(token)")
         guard resp.ok, let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
+        // The convenience tier is additive: absent on every non-levelb / pre-M-4 response.
+        var claims: UnverifiedClaims?
+        if let uc = o["unverifiedClaims"] as? [String: Any] {
+            let chain: UInt64
+            if let n = uc["chainId"] as? NSNumber { chain = n.uint64Value }
+            else if let s = uc["chainId"] as? String { chain = UInt64(s) ?? 0 }
+            else { chain = 0 }
+            claims = UnverifiedClaims(
+                protocolVersion: (uc["protocolVersion"] as? String) ?? "",
+                chainId: chain,
+                verificationRegistry: (uc["verificationRegistry"] as? String) ?? "",
+                issuerClone: (uc["issuerClone"] as? String) ?? "",
+                purpose: (uc["purpose"] as? String) ?? "")
+        }
         return ExportSession(
             sessionId: (o["sessionId"] as? String) ?? (o["session_id"] as? String) ?? "",
             relayer: (o["relayer"] as? String) ?? "",
             purpose: (o["purpose"] as? String) ?? "",
             recordType: (o["recordType"] as? String) ?? (o["record_type"] as? String) ?? "",
             challenge: (o["challenge"] as? String) ?? "",
-            mode: (o["mode"] as? String) ?? "zk")
+            mode: (o["mode"] as? String) ?? "zk",
+            claims: claims)
     }
 
     /// ZK path: POST the proof bundle directly to the GROOMER host (scanned QR origin), NOT central.

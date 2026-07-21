@@ -295,13 +295,19 @@ struct RoaxConfig {
     let consentKeyRegistry: String
     let issuerRegistry: String
     let poseidon6: String
+    /// `ProtocolRegistry` — the discovery TRUST ANCHOR the Level-B (`mode == "levelb"`) path reads to
+    /// validate a platform's claims (M-4 PR3). Empty until the registry is deployed on ROAX: an empty
+    /// address makes `RoaxRpc.getContractSet` return nil, so the Level-B branch fails closed while the
+    /// Level-A default path — which never reads this field — is untouched.
+    let protocolRegistry: String
 
     static func load() -> RoaxConfig {
         guard let url = Bundle.main.url(forResource: "roax", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return RoaxConfig(chainId: 135, dogTagSbt: "", verificationRegistry: "",
-                              consentKeyRegistry: "", issuerRegistry: "", poseidon6: "")
+                              consentKeyRegistry: "", issuerRegistry: "", poseidon6: "",
+                              protocolRegistry: "")
         }
         return RoaxConfig(
             chainId: (o["chainId"] as? Int) ?? 135,
@@ -309,7 +315,8 @@ struct RoaxConfig {
             verificationRegistry: (o["VerificationRegistry"] as? String) ?? "",
             consentKeyRegistry: (o["ConsentKeyRegistry"] as? String) ?? "",
             issuerRegistry: (o["IssuerRegistry"] as? String) ?? "",
-            poseidon6: (o["Poseidon6"] as? String) ?? ""
+            poseidon6: (o["Poseidon6"] as? String) ?? "",
+            protocolRegistry: (o["ProtocolRegistry"] as? String) ?? ""
         )
     }
 }
