@@ -17,8 +17,8 @@ import {ProtocolVersions} from "./ProtocolVersions.sol";
 /// records plus both bindings in one transaction batch, so this is still a TWO-phase rollout.
 ///
 /// Publishing mirrors `proposeZkVerifier`/`executeZkVerifier`:
-///   1. `PublishProtocolVersionsPropose` — stages both levels (sets + bindings). Starts the 2-day
-///      `PUBLISH_TIMELOCK` on all of them at once.
+///   1. `PublishProtocolVersionsPropose` — stages both levels (sets + bindings). Starts the registry's
+///      immutable `PUBLISH_TIMELOCK` on all of them at once.
 ///   2. `PublishProtocolVersionsExecute` — run AFTER the timelock elapses. Executes the sets FIRST,
 ///      then the bindings (`executeArtifactBinding` requires both sides to already be published).
 /// Both are `PUBLISHER_ROLE`-gated (broadcast with the publisher key) and read the deployed registry
@@ -35,14 +35,15 @@ abstract contract PublishBase is Script {
     }
 }
 
-/// @notice Phase 1 — propose both levels on both axes, plus their bindings (starts the 2-day timelock).
+/// @notice Phase 1 — propose both levels on both axes, plus their bindings (starts the timelock).
 ///   forge script .../PublishProtocolVersions.s.sol:PublishProtocolVersionsPropose \
 ///     --rpc-url $ROAX_RPC --broadcast --legacy --private-key $PUBLISHER_KEY
 contract PublishProtocolVersionsPropose is PublishBase {
     function run() external {
         ProtocolRegistry reg = _registry();
-        console2.log("--- Phase 1: PROPOSE contract sets + artifact sets + bindings (2-day timelock) ---");
+        console2.log("--- Phase 1: PROPOSE contract sets + artifact sets + bindings ---");
         console2.log("ProtocolRegistry", address(reg));
+        console2.log("Publish timelock (seconds)", reg.PUBLISH_TIMELOCK());
 
         vm.startBroadcast();
         reg.proposeContractSet(ProtocolVersions.levelAContracts());
