@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use dogtag_standard::discovery::ConvenienceClaims;
 use dogtag_standard::schema::{validate_schema, DOGTAG_CONTEXT_URI};
-use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION};
+use dogtag_standard::wrap::{
+    wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION, LEVEL_B_VERSION,
+};
 use serde_json::{json, Value};
 
 use crate::auth::JwtKeys;
@@ -155,10 +157,45 @@ pub fn convenience_claims(
     issuer_clone: &str,
     purpose: &str,
 ) -> ConvenienceClaims {
+    convenience_claims_for_mode(cfg, chain_id, issuer_clone, purpose, "zk")
+}
+
+/// [`convenience_claims`] for a session whose `mode` is known — the M-4 per-session Level-B opt-in.
+///
+/// # This is NOT the version-stamp flip (P-3 / M-5)
+///
+/// The DEFAULT is unchanged and stays [`LEVEL_A_VERSION`] + the Level-A registry: every existing
+/// caller, every `zk`/`normal` session, and every flow with no session at all keeps advertising
+/// Level-A exactly as before. ONLY a session explicitly started with `mode="levelb"` advertises
+/// Level-B. That is what makes Level-B AVAILABLE without making it the DEFAULT — flipping the
+/// default is M-5, and it is deliberately not done here.
+///
+/// The two fields move TOGETHER and must never be split: an app that resolves the dogtag anchor for
+/// `protocol_version` and then compares it against a `verification_registry` from the other level
+/// fails closed with `RegistryMismatch`. Advertising `dogtag-levelb/1` beside the Level-A registry
+/// address would therefore make every validating app refuse the session.
+pub fn convenience_claims_for_mode(
+    cfg: &Config,
+    chain_id: u64,
+    issuer_clone: &str,
+    purpose: &str,
+    mode: &str,
+) -> ConvenienceClaims {
+    let (protocol_version, verification_registry) = if mode == "levelb" {
+        (
+            LEVEL_B_VERSION.to_string(),
+            cfg.verification_registry_consent_addr.clone(),
+        )
+    } else {
+        (
+            LEVEL_A_VERSION.to_string(),
+            cfg.verification_registry_addr.clone(),
+        )
+    };
     ConvenienceClaims {
-        protocol_version: LEVEL_A_VERSION.to_string(),
+        protocol_version,
         chain_id,
-        verification_registry: cfg.verification_registry_addr.clone(),
+        verification_registry,
         issuer_clone: issuer_clone.to_string(),
         purpose: purpose.to_string(),
     }

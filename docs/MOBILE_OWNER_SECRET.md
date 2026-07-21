@@ -43,6 +43,9 @@ No shipped app posts to it yet; the device call site is a follow-up.
 The verification counterpart landed as **`POST /verify/consent/levelb { proof }`** (M-3): the app proves
 consent against `consent.circom` using the owner-secret described here, and the vet relays that proof to
 `VerificationRegistryConsent`.
+M-4 made that path phone-REACHABLE by adding the alias **`POST /v1/verify/consent/levelb`**, gated by the
+owner's one-time export token (mirroring the Level-A `/v1/verify/consent` gate, PEEK semantics) rather than
+an operator session, plus a per-session `mode="levelb"` opt-in; no app code changed, so nothing here shifts.
 It matters to this document because the owner-secret **is** the nullifier secret: what the route carries
 is a `nullifier` derived from it, never the secret itself, so the ["Handling rules"](#handling-rules)
 below hold on this path unchanged - including their one deliberate exception, the remote

@@ -227,7 +227,57 @@ contract-side change would not fail them; the two sides must be moved together b
   `subject` signal and drive `ConsentKeyRegistry`, neither of which exists under Level-B. **Do not
   "fix" these to Level-B indices** - that is the M-4 cutover, and doing it early breaks the only live
   end-to-end path rather than repairing it.
-- `level_b` is used only by the consent tests today. At M-4 each call site flips one import.
+- `level_b` is used by the consent tests and by the Level-B submit path (`consent_submit_levelb`).
+  M-4 does NOT flip the Level-A call sites: it adds a version-aware SECOND path beside them, because
+  Level-A issuance stays the default until M-6 and a Level-B-only app would strand every new Level-A
+  owner (their first verification still needs the `ConsentKeyRegistry` bind, whose owner EIP-712 sig
+  is built from `bindNonce`). The `keyOf`/`bindNonce`/bind-flow deletion is **M-8**, not M-4.
+
+### The two consent submit routes are mode-gated and must never be crossed (M-4)
+
+A verify session's `mode` (`store::VerifySession`) is `"normal" | "zk" | "levelb"`, validated at
+`POST /verify/session/start` — an unrecognised mode is a 400, because it previously fell through the
+`if mode == "normal" { .. } else { <Level-A ZK> }` dispatch into the Level-A branch, so a typo like
+`"level-b"` silently produced a Level-A session.
+
+- `POST /verify/consent/submit` + `/v1/verify/consent` — Level-A. **Refuses a `levelb` session.** The
+  refusal reads the session's **STORED** `mode`, deliberately NOT the request body's `mode` override:
+  the override legitimately picks normal vs zk WITHIN a Level-A session, but testing it would let a
+  caller holding a `levelb` session's export token pass `"mode":"zk"` and reach the Level-A ZK branch
+  anyway. `mode_override` must never be able to change WHICH LEVEL is served.
+- `POST /verify/consent/levelb` — Level-B, operator-gated, entered cold (mints its own owner-blind
+  audit row). `POST /v1/verify/consent/levelb` is the phone twin: same
+  `require_operator_or_export_token` gate as the Level-A alias, same PEEK (`consume=false`) so a
+  failed verification does not burn the owner's one-time token. **Refuses a non-`levelb` session**,
+  and binds the proof's `purpose`/`relayer`/`recordType` to the session — the export token is a
+  capability to spend the relayer's gas, so it must not fund an unrelated submission. A session-scoped
+  call drives the session's OWN row rather than minting a second one.
+  - **`recordType` is bound with the REDUCED keccak (`purpose_key`), not Level-A's raw `rt_key`.**
+    `pub[5]` is a circuit output and so always `< r`, while a raw keccak may EXCEED r — comparing
+    against `rt_key` would be a guard that can never fire, the same trap as the art9 constant. It is
+    bound at all because `recordType` is prover-asserted rather than consent-signed, so nothing else
+    pins it: unbound, the phone could prove a record type the operator's session never named, and the
+    audit row would record the requested one instead of the proved one.
+  - **The phone twin never consumes the token** (Level-A does). It is peeked and stays live until its
+    600s TTL; replay is blocked instead by the **session status guard** — the row is persisted as
+    `"recording"` before the broadcast is spawned, so a second submit against a settled session is
+    refused. Sound only because a session OUTLIVES its token (sessions are never deleted; the store
+    has no delete/GC path). Hence a named session that does not resolve **fails closed** rather than
+    falling through to the cold path — `MongoStore::get_session` maps driver errors to `None`, so
+    without that a DB blip would silently strip this route of every session-scoped guard, replay
+    protection included.
+
+Both refusals exist because the two routes read the SAME export token; without them a session's
+token would be accepted by both, and an owner-hidden proof read with Level-A indices is exactly E-1.
+
+### `mode="levelb"` is AVAILABLE, not DEFAULT (M-4 vs M-5)
+
+`app::convenience_claims_for_mode` stamps `dogtag-levelb/1` + the Level-B registry **only** for a
+session explicitly started with `mode="levelb"`. Every other mode, and every flow with no session,
+still advertises `LEVEL_A_VERSION` + the Level-A registry. Flipping the DEFAULT is the P-3 version
+stamp flip (M-5) and is deliberately not done in M-4. The two fields move together: advertising
+`dogtag-levelb/1` beside the Level-A registry address makes every validating app fail closed with
+`RegistryMismatch`.
 - **Never add a third, level-neutral set.** It would have to pick one value and would then silently
   contradict either the live off-chain code or the contract (whose `P_NULLIFIER = 3` is Level-B-valued).
   Naming the level *is* the safety property.

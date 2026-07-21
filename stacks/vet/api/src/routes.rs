@@ -1201,6 +1201,29 @@ async fn export_session_start(
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("verify-wl: {e}")),
     }
     let mode = body.mode.clone().unwrap_or_else(|| "zk".to_string());
+    // Validate against the known vocabulary (`store::VerifySession::mode`) rather than storing
+    // whatever arrives. An unrecognised mode previously fell through the `if mode == "normal"`
+    // dispatch into the LEVEL-A ZK branch, so a typo ("level-b", "levelB") would silently produce a
+    // Level-A session that advertises Level-A claims — the failure would surface only as a confusing
+    // on-chain revert. Fail closed on the name instead.
+    if !matches!(mode.as_str(), "normal" | "zk" | "levelb") {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "mode must be one of: normal, zk, levelb",
+        );
+    }
+    // A `levelb` session is a promise the phone will be told to submit to the Level-B registry. If
+    // that registry is unconfigured the submit would 503 AFTER the owner has scanned, consented and
+    // spent tens of seconds proving on-device. Refuse at session start instead — same fail-closed
+    // posture `consent_submit_levelb` applies, just moved to the first point it is knowable.
+    if mode == "levelb"
+        && !crate::verify::valid_contract_addr(&st.cfg.verification_registry_consent_addr)
+    {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "level-b verification registry not configured",
+        );
+    }
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut challenge = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge);
@@ -1253,8 +1276,16 @@ async fn export_session_resolve(State(st): State<AppState>, Path(token): Path<St
             // type; the purpose is the session's verify purpose. The app validates these against the
             // dogtag ProtocolRegistry / signed-manifest anchor before trusting them.
             let issuer_clone = st.cfg.issuer_addr_for(&s.record_type).unwrap_or_default();
-            let claims =
-                app::convenience_claims(&st.cfg, st.chain.chain_id(), &issuer_clone, &s.purpose);
+            // M-4: a `levelb` session advertises the Level-B version + registry; every other mode is
+            // unchanged (Level-A). This is the per-session opt-in that makes Level-B AVAILABLE
+            // without making it the DEFAULT — the default flip is M-5.
+            let claims = app::convenience_claims_for_mode(
+                &st.cfg,
+                st.chain.chain_id(),
+                &issuer_clone,
+                &s.purpose,
+                &s.mode,
+            );
             ok(json!({
                 "sessionId": s.session_id,
                 "relayer": s.relayer,
@@ -1318,7 +1349,98 @@ async fn verify_consent_levelb_submit(
     if let Err(e) = require_operator(&st, &headers).await {
         return e;
     }
-    crate::verify::consent_submit_levelb(&st, &body).await
+    // Cold operator call: no session to bind to, so a fresh owner-blind audit row is minted.
+    crate::verify::consent_submit_levelb(&st, &body, None).await
+}
+
+/// POST /v1/verify/consent/levelb — the OWNER'S PHONE alias for the Level-B submit path (M-4).
+///
+/// The Level-B twin of the `/v1/verify/consent` alias, and it exists for the same single reason: a
+/// DIFFERENT gate. [`verify_consent_levelb_submit`] requires an operator session, which the phone
+/// does not have; this one accepts the owner's one-time export token
+/// ([`require_operator_or_export_token`]) and is therefore the route the phone can actually reach.
+/// Until M-4 there was no phone Level-B path at all, so a twin would have advertised a capability it
+/// lacked — that is why M-3 deliberately left it out.
+///
+/// # The gate is MIRRORED from Level-A, never loosened
+///
+///   - Same dual gate (operator session OR one-time export token), same extractor.
+///   - Same PEEK semantics: `consume=false`, so a FAILED verification does not burn the owner's
+///     one-time token and they can retry with the same QR.
+///   - Same optional `sessionId`: the phone authenticates with a token that already maps to a
+///     session, so it need not echo one; the operator portal still may.
+///
+/// # Replay protection is the SESSION STATUS, not token consumption
+///
+/// Unlike Level-A, this path never consumes the token: it is peeked and stays valid until its 600s
+/// TTL even after a SUCCESSFUL submission. Replay is blocked instead by the session status guard —
+/// [`crate::verify::consent_submit_levelb`] persists the row as `"recording"` BEFORE spawning the
+/// broadcast, so a second submit against that now-settled session is refused. That substitution is
+/// only sound because a session OUTLIVES its token: sessions are never deleted (the store layer has
+/// no delete or GC path) while tokens expire at 600s.
+///
+/// It follows that the session MUST resolve whenever the caller authenticated with a token — if it
+/// does not, this route has no replay protection at all. So an unresolvable session fails CLOSED
+/// here rather than falling through to the cold path.
+///
+/// On top of that, `consent_submit_levelb` REFUSES a session whose `mode` is not `"levelb"` and binds
+/// the proof's `purpose`/`relayer`/`recordType` to the session — the token must not fund an unrelated
+/// submission.
+async fn verify_consent_levelb_submit_v1(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Resp {
+    let body_token = body
+        .get("exportToken")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let session_id = match body.get("sessionId").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => match body_token.as_deref() {
+            Some(t) => st.store.peek_export_token(t).await.unwrap_or_default(),
+            None => String::new(),
+        },
+    };
+    let authed_by_export_token = match require_operator_or_export_token(
+        &st,
+        &headers,
+        &session_id,
+        body_token.as_deref(),
+        false,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    // An operator bearer satisfies the gate without naming a session; that is the cold path, and it
+    // mints its own row exactly as the operator-gated route does. Only a resolved session binds.
+    //
+    // A named session that does not load FAILS CLOSED. Falling through to `None` would silently
+    // demote the request to the cold path — skipping the mode refusal, the purpose/relayer/recordType
+    // binding AND the status replay guard — and `MongoStore::get_session` maps driver errors to
+    // `None` (`.ok().flatten()`), so a transient DB blip would otherwise disable every session-scoped
+    // guard on this route for that request, including its only replay protection.
+    let session = if session_id.is_empty() {
+        None
+    } else {
+        match st.store.get_session(&session_id).await {
+            Some(s) => Some(s),
+            // Token-authed: the gate already matched this token to this session id, so the row not
+            // loading is a BACKEND fault (a store read that failed), not a bad request.
+            None if authed_by_export_token => {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    "session could not be read; retry with the same token",
+                )
+            }
+            // Operator-authed with an explicit sessionId that does not exist: the operator named a
+            // session, so honour that rather than quietly minting an unrelated cold row.
+            None => return err(StatusCode::NOT_FOUND, "session not found"),
+        }
+    };
+    crate::verify::consent_submit_levelb(&st, &body, session).await
 }
 
 async fn verify_consent_submit(
@@ -2871,11 +2993,14 @@ pub fn public_router(state: AppState) -> Router {
         .route("/v1/verify/credential", post(verify_credential))
         // alias so the owner's phone can POST consent+proof directly to the groomer host.
         .route("/v1/verify/consent", post(verify_consent_submit))
-        // NOTE: there is deliberately NO `/v1/verify/consent/levelb` twin yet. The Level-A alias
-        // above exists because it takes a DIFFERENT gate (`require_operator_or_export_token`), which
-        // is what lets the phone POST directly. Level-B has no phone path until M-4, so a twin would
-        // be the operator-gated route under a second name — advertising a capability it lacks. M-4
-        // adds it together with the export-token gate that gives it a reason to exist.
+        // M-4: the Level-B twin of the alias above, and it exists for the same reason — a DIFFERENT
+        // gate (`require_operator_or_export_token`), which is what lets the phone POST directly.
+        // M-3 deliberately omitted it because Level-B had no phone path; M-4 adds the path, so the
+        // twin now has the reason to exist that it lacked. The gate is mirrored, not loosened.
+        .route(
+            "/v1/verify/consent/levelb",
+            post(verify_consent_levelb_submit_v1),
+        )
         // calendar sync (Phase 7, §3.6)
         .route("/calendar/google/connect", get(google_connect))
         .route("/calendar/google/callback", get(google_callback))

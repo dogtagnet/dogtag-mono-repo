@@ -397,6 +397,23 @@ pub async fn consent_submit(
         Some(_) => return err(StatusCode::CONFLICT, "session not pending"),
         None => return err(StatusCode::NOT_FOUND, "session not found"),
     };
+    // A Level-B session must never be served by the Level-A path. Without this it would fall through
+    // the `if mode == "normal" { .. } else { <Level-A ZK> }` dispatch below into the LEVEL-A branch,
+    // which reads `pub[SUBJECT]`/`pub[KEY_HASH]`, drives `ConsentKeyRegistry` and encodes the 4-arg
+    // Level-A selector — i.e. it would silently interpret an owner-hidden proof with Level-A indices.
+    // `consent_submit_levelb` refuses the mirror case, so neither route can serve the other's mode.
+    //
+    // Gated on the session's STORED mode, NEVER on `mode_override`: the override is the caller's
+    // request body, so testing it would let a phone holding a valid export token for a `levelb`
+    // session send `"mode":"zk"` and walk straight into the branch this refusal exists to close.
+    // `mode_override` keeps its legitimate job — choosing normal vs zk WITHIN a Level-A session —
+    // but it must never be able to change WHICH LEVEL is served.
+    if s.mode == "levelb" {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "level-b session: submit to /v1/verify/consent/levelb",
+        );
+    }
     let mode = mode_override.unwrap_or_else(|| s.mode.clone());
 
     // relayer binding + deadline.
@@ -965,9 +982,53 @@ fn pub_signal_u256(s: &str) -> Option<alloy::primitives::U256> {
 /// Every `pub[n]` read below goes through `level_b::*`. Hand-indexing is what E-1 was: Level-A's
 /// NULLIFIER slot (4) is Level-B's ROOT, so a literal `pub[4]` here would key the one-time check on
 /// the root and report a SUCCESSFUL verification as forever-unconsumed.
-pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
+///
+/// # `session`: cold operator call vs session-scoped phone call (M-4)
+///
+/// `None` is the ORIGINAL M-3 behaviour and stays exactly as it was: the operator-gated route is
+/// entered cold with a self-authenticating proof, so a fresh owner-blind audit row is MINTED here.
+///
+/// `Some(s)` is the M-4 phone path (`POST /v1/verify/consent/levelb`), where the owner's one-time
+/// export token already resolved to an operator-started session. Two things change, and both are
+/// TIGHTENINGS — the export token is a capability to spend the relayer's gas, so it must not fund a
+/// submission unrelated to the session it was minted for:
+///
+///   - The proof is BOUND to the session on all THREE axes: `pub[PURPOSE]` must equal
+///     `purpose_key(s.purpose)`, `pub[RELAYER]` must name the session's relayer, and
+///     `pub[RECORD_TYPE]` must equal `purpose_key(s.record_type)`. This mirrors the equivalent
+///     Level-A checks. Level-A also binds `dogTagId`/`credentialRoot`/`subject` against the consent
+///     body; Level-B has no consent body and no `subject`, so those three are the axes that exist.
+///     recordType matters most of the three: it is prover-asserted rather than consent-signed, so it
+///     is the one signal nothing else pins.
+///   - The session's OWN row is driven to a terminal state instead of minting a second one. Minting
+///     would double-count the verification in the operator's trail and hand the phone a `sessionId`
+///     different from the one its QR named. The row keeps its human-readable `purpose`/`recordType`
+///     LABELS (the minted-cold row stores the bytes32 words, because cold it has only the words).
+///
+/// A `Some(s)` whose `mode` is not `"levelb"` is REFUSED. Level-A's [`consent_submit`] refuses the
+/// mirror case, so the two routes cannot be crossed in either direction.
+pub async fn consent_submit_levelb(
+    st: &AppState,
+    body: &Value,
+    session: Option<VerifySession>,
+) -> Resp {
     use alloy::primitives::U256;
     use dogtag_standard::public_signals::level_b as PB;
+
+    // A session-scoped call must name a Level-B session. Refusing here (rather than trusting the
+    // route) is what makes the mode a real gate: `/v1/verify/consent/levelb` and the Level-A submit
+    // read the SAME export token, so without this a `zk` session's token would be accepted by both.
+    if let Some(s) = session.as_ref() {
+        if s.mode != "levelb" {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "session is not a level-b session (start it with mode=\"levelb\")",
+            );
+        }
+        if s.status != "pending" {
+            return err(StatusCode::CONFLICT, "session not pending");
+        }
+    }
 
     // Fail closed when the Level-B registry is unconfigured, BEFORE touching custody or the chain.
     // Mirrors the M-2 bridge: an unwired half-stack must refuse, not dispatch at the zero address
@@ -1041,6 +1102,47 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
         );
     }
 
+    // ---- session binding (M-4 phone path only) ----
+    // NOT a contract gate — the chain neither knows nor cares about our sessions. This is the
+    // SPEND gate: an export token authorizes the relayer to pay gas for THE verification its QR
+    // named, and nothing else. Cold operator calls (`session == None`) skip it, exactly as in M-3.
+    if let Some(s) = session.as_ref() {
+        let expected_purpose = purpose_key(&s.purpose);
+        if !pub_signal_eq(&pubs[PB::PURPOSE], &expected_purpose) {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "pubSignals.purpose != purpose_key(session.purpose)",
+            );
+        }
+        // `pub_relayer` was narrowed above under the same `addr range` guard the contract applies,
+        // so comparing it here cannot be fooled by a `relayer + k·2^160` signal.
+        if !pub_relayer.eq_ignore_ascii_case(&s.relayer) {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "pubSignals.relayer != session relayer",
+            );
+        }
+        // recordType is PROVER-ASSERTED, not consent-signed, so nothing upstream pins it: without
+        // this the phone could prove a record type the operator's session never named, and the
+        // relayer would pay gas for it while the audit row below claimed the requested one. A
+        // session is OPERATOR-INITIATED — it names what is being verified, and the phone must prove
+        // exactly that. recordType is already public and not owner-identifying, so binding it costs
+        // no owner-hiding.
+        //
+        // REDUCED keccak (`purpose_key`), NOT the raw `rt_key` Level-A uses. Both sides must be the
+        // same representation: `pub[5]` is a circuit output and therefore always `< r`, while
+        // `rt_key`'s raw keccak may EXCEED r — comparing against it would be a guard that can never
+        // fire, the identical trap as the art9 constant below. Level-A's `rt_key` is right there
+        // because its `consent.recordType` is a raw keccak WORD, not a field-reduced signal.
+        let expected_record_type = purpose_key(&s.record_type);
+        if !pub_signal_eq(&pubs[PB::RECORD_TYPE], &expected_record_type) {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "pubSignals.recordType != purpose_key(session.recordType)",
+            );
+        }
+    }
+
     // Contract gate: `require(block.timestamp <= pub[P_DEADLINE], "expired")`.
     let now = crate::auth::now();
     let deadline = pub_u[PB::DEADLINE];
@@ -1109,22 +1211,37 @@ pub async fn consent_submit_levelb(st: &AppState, body: &Value) -> Resp {
         "0x{}",
         hex::encode(pub_u[PB::RECORD_TYPE].to_be_bytes::<32>())
     );
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let audit = VerifySession {
-        session_id: session_id.clone(),
-        relayer: relayer.clone(),
-        purpose: purpose_word.clone(),
-        record_type: record_type_word,
-        mode: "levelb".to_string(),
-        // No challenge: Level-A's is the operator's anti-replay nonce for a session the owner scans
-        // into. Here replay protection is the proof-bound nullifier, consumed on-chain.
-        challenge: String::new(),
-        status: "recording".to_string(),
-        tx_hash: None,
-        nullifier: Some(nullifier.clone()),
-        created_at: now,
-        updated_at: now,
+    // Session-scoped (phone): drive the operator's EXISTING row rather than minting a second one, so
+    // the trail holds one row per verification and the phone polls the sessionId its QR named. The
+    // row keeps its human-readable `purpose`/`recordType` labels — they are strictly more useful than
+    // the bytes32 words, and the binding checks above already proved they reduce to `pub[1]`/`pub[5]`
+    // respectively, so the label the trail records IS what was proved on-chain.
+    // Cold (operator): mint, exactly as M-3 did — there are only words to store.
+    let audit = match session {
+        Some(mut s) => {
+            s.status = "recording".to_string();
+            s.nullifier = Some(nullifier.clone());
+            s.tx_hash = None;
+            s.updated_at = now;
+            s
+        }
+        None => VerifySession {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            relayer: relayer.clone(),
+            purpose: purpose_word.clone(),
+            record_type: record_type_word,
+            mode: "levelb".to_string(),
+            // No challenge: Level-A's is the operator's anti-replay nonce for a session the owner
+            // scans into. Here replay protection is the proof-bound nullifier, consumed on-chain.
+            challenge: String::new(),
+            status: "recording".to_string(),
+            tx_hash: None,
+            nullifier: Some(nullifier.clone()),
+            created_at: now,
+            updated_at: now,
+        },
     };
+    let session_id = audit.session_id.clone();
     // Persisted BEFORE the broadcast so an in-flight submission is auditable even if this process
     // dies mid-tx — the gas is spent either way, and a spent-but-unrecorded verification is exactly
     // the hole the trail exists to close.
@@ -1225,7 +1342,12 @@ fn verify_key_from_purpose_word(purpose_word: &str) -> String {
 /// Shape-check a contract address at the edge. Duplicated from the routes-layer check on purpose:
 /// this path must refuse an unconfigured/typo'd registry BEFORE spending gas, and `parse_addr`
 /// coerces garbage to the zero address rather than erroring.
-fn valid_contract_addr(a: &str) -> bool {
+///
+/// `pub(crate)` since M-4: `export_session_start` applies the SAME check when opening a `levelb`
+/// session, so the refusal lands before the owner proves rather than after. Sharing the one
+/// implementation is what keeps the two checks from drifting into disagreeing about what a
+/// configured registry looks like.
+pub(crate) fn valid_contract_addr(a: &str) -> bool {
     a.len() == 42
         && a.starts_with("0x")
         && a[2..].bytes().all(|b| b.is_ascii_hexdigit())
