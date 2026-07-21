@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
-import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
+import {ProtocolRegistry, DEFAULT_PUBLISH_TIMELOCK_SECONDS} from "../src/ProtocolRegistry.sol";
 
 /// @notice M7 P3: deploy the dogtag-governed `ProtocolRegistry` — the on-chain discovery TRUST ANCHOR
 /// (§5.1, lock B). ADDITIVE: it references the existing trio/verifier addresses but deploys and changes
@@ -24,7 +24,7 @@ import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
 ///   forge script contracts/script/DeployProtocolRegistry.s.sol:DeployProtocolRegistry \
 ///     --rpc-url $ROAX_RPC --broadcast --legacy --private-key $GOV_KEY
 contract DeployProtocolRegistry is Script {
-    uint256 public constant MAINNET_PUBLISH_TIMELOCK = 2 days;
+    uint256 public constant MAINNET_PUBLISH_TIMELOCK = DEFAULT_PUBLISH_TIMELOCK_SECONDS;
 
     address public protocolRegistry; // NEW
 

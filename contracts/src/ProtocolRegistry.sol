@@ -5,6 +5,11 @@ import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
+// Safe production propose→execute delay, single-sourced so the deploy script's mainnet guard and env
+// default cannot drift from the contract's documented default. Exposed on-chain as
+// `ProtocolRegistry.DEFAULT_PUBLISH_TIMELOCK`.
+uint256 constant DEFAULT_PUBLISH_TIMELOCK_SECONDS = 2 days;
+
 /// @title ProtocolRegistry — the dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B).
 /// @notice A small, read-mostly, dogtag-governed contract that records what dogtag has certified for a
 /// protocol version. It is the on-chain ROOT OF TRUTH an app validates a platform's version CLAIM
@@ -76,8 +81,9 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// governance.
     bytes32 public constant PUBLISHER_ROLE = keccak256("PUBLISHER");
 
-    /// @dev Safe production default, mirroring `VerificationRegistryConsent.ZK_TIMELOCK` (§5.1).
-    uint256 public constant DEFAULT_PUBLISH_TIMELOCK = 2 days;
+    /// @dev Safe production default, mirroring `VerificationRegistryConsent.ZK_TIMELOCK` (§5.1). Derived
+    /// from the file-level constant so the deploy script can single-source the same value.
+    uint256 public constant DEFAULT_PUBLISH_TIMELOCK = DEFAULT_PUBLISH_TIMELOCK_SECONDS;
 
     /// @notice The immutable propose→execute delay selected when this registry is deployed.
     uint256 public immutable PUBLISH_TIMELOCK;
