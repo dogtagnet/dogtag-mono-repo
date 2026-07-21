@@ -1707,13 +1707,14 @@ Level-A still serves all live issuance (`routes.rs:1957` still mints to the owne
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
-- **The iOS `ProfileTreeStore` has ZERO runtime coverage.** The `DogTagTests` target (see "iOS unit tests")
+- **The iOS `ProfileTreeStore` has ZERO automated-test coverage.** The `DogTagTests` target (see "iOS unit tests")
   cannot reach it: that suite is deliberately FFI-free and `ProfileTreeStore` builds through the FFI,
-  so it stays out of scope until the pure logic is extracted. Nothing calls it yet either - M-2 built
-  the SERVER end of the bridge (`POST /profiles/issue/custodial-bind`), but the iOS call site that
-  feeds it a built `R` is a deliberate follow-up - so the Codable round-trip, the
+  so it stays out of scope until the pure logic is extracted. The M-4 PR4 present flow (`runLevelBFlow`)
+  now calls `ProfileTreeStore.load()` in production, but the WRITE side is still uncalled - M-2 built
+  the SERVER end of the issuance bridge (`POST /profiles/issue/custodial-bind`), yet the iOS call site
+  that feeds it a built `R` is a deliberate follow-up - so the Codable-encode round-trip, the
   atomic/`.completeFileProtection` write and `verifyRecoverable` have only been typechecked, never
-  run. The first caller should exercise them.
+  run. The first writer should exercise them.
   The Android namesake is a SEPARATE coverage story - see the next bullet; do not read this one as
   covering both.
 - **The Android `ProfileTreeStore`'s device-side half is uncovered too, though its pure logic is
