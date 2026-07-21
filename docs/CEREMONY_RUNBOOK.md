@@ -1,5 +1,13 @@
 # DogTag — Production Trusted-Setup Ceremony Runbook
 
+> **RETIRED / HISTORICAL - not runnable.**
+> This runbook drives the Level-A `verification.circom` ceremony, whose circuit and ceremony scripts
+> (`circuits/scripts/ceremony.sh`, `circuits/scripts/setup.sh`) and the `npm run compile-circuit` /
+> `npm run build-circuit` package scripts were removed when the owner-revealing layer was retired. Every
+> command below no longer resolves; it is kept only as provenance for the already-deployed Level-A
+> verifier. The live owner-hidden consent ceremony is `circuits/scripts/ceremony-consent.sh` (transcript
+> `docs/CEREMONY_TRANSCRIPT.consent.md`).
+
 > **Status: go-live blocker (audit Finding H3).**
 > The key currently securing the on-chain ZK path was produced by a **single-operator testnet self-run** (`docs/CEREMONY_TRANSCRIPT.md`): one party performed every contribution and the beacon, so that party could hold the toxic waste and **forge ZK attestations**.
 > This runbook is the procedure that replaces it with a real **≥3-independent-contributor** ceremony.

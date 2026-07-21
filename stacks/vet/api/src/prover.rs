@@ -22,8 +22,8 @@ pub use dogtag_prover::{
 
 /// Inputs the verify backend hands the prover (impl §3.10).
 ///
-/// `circuit_input_json` carries the FULL circuit-input object (all 19 named circom signals, as
-/// produced by `circuits/scripts/gen-zk-fixture.mjs` / `tests/gen_input.mjs`). The real [`ArkProver`]
+/// `circuit_input_json` carries the FULL circuit-input object (all 19 named circom signals; see
+/// `dogtag-prover-rs::push_named_inputs`). The real [`ArkProver`]
 /// requires it to derive a genuine proof; the [`StubProver`] ignores it and echoes the lean fields.
 #[derive(Clone, Debug, Default)]
 pub struct ProveInput {

@@ -232,8 +232,8 @@ mod tests {
         }
     }
 
-    /// Reference impl mirroring stacks/vet/api/tests/verify_onchain.rs::sign_bind_key digest
-    /// construction (byte-exact), to assert `bind_consent_key_digest` produces the same bytes.
+    /// Reference impl of the EIP-712 `BindConsentKey` digest (byte-exact) that the on-chain
+    /// `ConsentKeyRegistry.bindConsentKeyFor` verifies, to assert `bind_consent_key_digest` matches.
     fn ref_bind_digest(
         consent_keys: [u8; 20],
         key_hash: &[u8; 32],
@@ -286,7 +286,7 @@ mod tests {
         let chain_id = 135u64;
         let got = bind_consent_key_digest(registry, &key_hash, &wallet, &nonce, chain_id);
         let want = ref_bind_digest(registry, &key_hash, &wallet, &nonce, chain_id);
-        assert_eq!(got, want, "bind digest must match the verify_onchain sign_bind_key construction");
+        assert_eq!(got, want, "bind digest must match the on-chain BindConsentKey (ConsentKeyRegistry) construction");
     }
 
     #[test]

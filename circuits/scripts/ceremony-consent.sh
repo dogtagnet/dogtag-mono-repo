@@ -6,8 +6,8 @@
 # beacon. Because one party performs the only contribution, that party could in principle retain the
 # toxic waste and forge consent attestations. This is ACCEPTABLE FOR ROAX TESTNET ONLY — it is the
 # captain-approved M3 scope (level-b-spec.md "M3", data/dogtag-zkverify-z2). The mainnet ceremony
-# (>=3 genuinely independent external contributors, pre-announced beacon) stays DEFERRED and is what
-# circuits/scripts/ceremony.sh is written for. See docs/CEREMONY_TRANSCRIPT.consent.md.
+# (>=3 genuinely independent external contributors, pre-announced beacon) stays DEFERRED and is a
+# future re-run of THIS script with those contributors. See docs/CEREMONY_TRANSCRIPT.consent.md.
 #
 # This is a REAL ceremony, NOT the dev throwaway (scripts/setup-consent.sh). The two things that make
 # it real rather than forgeable-by-construction:
@@ -88,8 +88,8 @@ echo "==> [6/8] verify final zkey against r1cs + ptau (MUST print 'ZKey Ok!')"
 echo "==> [7/8] export verification key + Groth16VerifierConsent.sol"
 "$SNARKJS" zkey export verificationkey "$BUILD/consent_final.zkey" "$BUILD/consent_verification_key.json"
 "$SNARKJS" zkey export solidityverifier "$BUILD/consent_final.zkey" "$BUILD/consent_verifier.sol.tmp"
-# snarkjs names the contract `Groth16Verifier`; rename so it does NOT collide with the LIVE v2 verifier
-# contract of the same name (circuits/Groth16Verifier.sol / contracts/src/Groth16Verifier.sol).
+# snarkjs names the contract `Groth16Verifier`; rename so it does NOT collide with the same-named
+# retired Level-A `Groth16Verifier` (its source was removed with the owner-revealing layer).
 sed 's/contract Groth16Verifier {/contract Groth16VerifierConsent {/' \
   "$BUILD/consent_verifier.sol.tmp" > "$ROOT/Groth16Verifier.consent.sol"
 rm -f "$BUILD/consent_verifier.sol.tmp"

@@ -229,7 +229,7 @@ session + QR, mirroring import/export. The device just needs a self-custodial wa
 
 `scripts/e2e-zk.sh` drives the entire backend-relay ZK path against the live new contracts: it boots
 an isolated groomer backend, genesises + funds a relayer, generates a **real** Groth16 proof
-(`scripts/zk/gen_input.mjs` → `prove-stdin`), sets the preconditions via the deployer key, gaslessly
+(`circuits/scripts/gen-consent-fixture.mjs`), sets the preconditions via the deployer key, gaslessly
 binds the consent key, POSTs the proof to `/v1/verify/consent`, and asserts the on-chain `Verified`
 state + the owner's zero balance. Re-runnable (fresh dogTagId/nonce each run).
 

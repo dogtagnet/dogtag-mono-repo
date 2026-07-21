@@ -169,7 +169,7 @@ verifier `0x272be146…`. Both runtimes and constructor wiring match the compile
 registry's `sbt` is immutable, this deployment supersedes M4's `0x53F988Ae…`, which is permanently bound
 to the mutable Level-A SBT and is **deprecated / do not use for Level-B** (it was never live and has zero
 `Verified` events). `contracts/script/DeployCustodialIssuance.s.sol` deploys the canonical pair; the M4
-`DeployConsentRegistry.s.sol` is superseded. The pair remains **additive and not live**: the Level-A
+`DeployConsentRegistry.s.sol` (now removed) is superseded. The pair remains **additive and not live**: the Level-A
 `VerificationRegistry` `0x4E2f0996…` still serves every consumer until the **M7** cutover. The M5 app side - the
 device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) - has landed
 too, and **M-2 has since added the issuer end of that handoff**: vet-api's

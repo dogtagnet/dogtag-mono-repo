@@ -232,6 +232,14 @@ or vice versa) produces "unknown root" / signature-verification failures that lo
 
 ## 3. ZK trusted setup (BLOCKING) — ceremony + verifier timelock
 
+> **RETIRED / HISTORICAL - not runnable.**
+> This section covers the Level-A `verification.circom` ceremony + verifier deploy, whose circuit,
+> ceremony scripts (`scripts/ceremony.sh`, `scripts/setup.sh`), `npm run compile-circuit` /
+> `npm run build-circuit`, and the `Groth16Verifier`/`VerificationRegistry` contract sources were removed
+> when the owner-revealing layer was retired. The commands below no longer resolve and are kept only as
+> provenance for the already-deployed Level-A verifier. The live owner-hidden consent ceremony is
+> `circuits/scripts/ceremony-consent.sh` (transcript `docs/CEREMONY_TRANSCRIPT.consent.md`).
+
 > This doc OWNS the ceremony/timelock runbook (the step-by-step ceremony itself is in
 > [CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md) — the expanded captain-fill-in runbook, with
 > [CEREMONY.md](./CEREMONY.md) as the concise version; the on-chain wiring procedure is here).
@@ -434,8 +442,8 @@ cargo build --release -p vet-api --features prover --target-dir target/prover
 #
 # The prover ENFORCES a pinned zkey sha256 (audit M4): its hardcoded default is the TESTNET hash, so a
 # production ceremony zkey would be REJECTED at load (hash mismatch -> FATAL) unless you tell it the new
-# hash. Set EXPECTED_ZKEY_SHA256 to your §3 ceremony zkey's sha256 (the value scripts/ceremony.sh finalize
-# printed; also re-vendored into the apps in §2.4). This is a pure config swap, not a code change.
+# hash. Set EXPECTED_ZKEY_SHA256 to your §3 ceremony zkey's sha256 (the value your §3 ceremony recorded;
+# also re-vendored into the apps in §2.4). This is a pure config swap, not a code change.
 #
 # WHICH artifact set it loads is version-keyed (PROTOCOL_VERSION). Leave it UNSET: one version exists
 # today ("dogtag-levela/1" = the Level-A set), and unset means exactly that. A version this build cannot

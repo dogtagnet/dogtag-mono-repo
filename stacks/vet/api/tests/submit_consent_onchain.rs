@@ -24,7 +24,7 @@
 //!   CONSENT_FIXTURE_OUT=contracts/test/consent-fixture-anvil.json \
 //!   node circuits/scripts/gen-consent-fixture.mjs
 //!
-//! Requires forge/cast/anvil. SKIPS gracefully if Foundry is absent (mirrors `verify_onchain.rs`).
+//! Requires forge/cast/anvil. SKIPS gracefully if Foundry is absent.
 //! No node/snarkjs/zkey needed at test time — the proof is committed, so this gives signal wherever
 //! Foundry is present.
 
@@ -45,7 +45,7 @@ const ACC0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 const CUSTODIAN: &str = "0x00000000000000000000000000000000c0ffee00";
 
 // ------------------------------------------------------------------------------------------------
-// anvil / forge harness (mirrors verify_onchain.rs)
+// anvil / forge harness
 // ------------------------------------------------------------------------------------------------
 
 struct Anvil {

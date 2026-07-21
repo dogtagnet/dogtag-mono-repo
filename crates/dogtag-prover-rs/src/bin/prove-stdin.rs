@@ -1,5 +1,5 @@
-//! e2e helper: read a circuit-input JSON object from stdin (the `input` object emitted
-//! by scripts/zk/gen_input.mjs), load the prover from CIRCUITS_BUILD_DIR (default
+//! e2e helper: read a circuit-input JSON object from stdin (the Level-A prover `input`
+//! object), load the prover from CIRCUITS_BUILD_DIR (default
 //! ../../circuits/build), generate a REAL Groth16 proof, and print the
 //! `{a,b,c,pub}` Solidity-calldata output as JSON on stdout.
 //!
