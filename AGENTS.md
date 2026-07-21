@@ -84,7 +84,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service. Its artifacts are **version-keyed** (`src/artifact.rs`) — see "Version-keyed proving artifacts".
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `IssuerRegistry`, `DogTagIssuer` clones + factory, and the **canonical owner-hidden stack**: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`, deployed + bytecode/wiring verified on ROAX (chainId 135; addresses in `contracts/deployments/roax.json`). This is the one live/forward model. Older Level-A deployments remain only for historical on-chain reads; never route app/server/web/config/docs to them. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable legacy SBT; see "M5 as-built" below.
+- `contracts` — `IssuerRegistry`, `DogTagIssuer` clones + factory, and the **owner-hidden target stack**: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`, deployed + bytecode/wiring verified on ROAX (chainId 135; addresses in `contracts/deployments/roax.json`). Today Level-A still serves live consumers and the owner-hidden device issuance call site is pending. Going forward, retire Level-A and converge every app/server/web/config/docs path on this owner-hidden stack; do not add new legacy consumers. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable legacy SBT; see "M5 as-built" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -1428,9 +1428,9 @@ So a device-built tree is provable *because its primitives are the circuit's*, n
 root was proven. Proving a seed-derived root end-to-end needs the prover (M7); do not upgrade this
 claim without generating a proof over `R_demo`.
 
-**The owner-hidden server-side bridge is the sole live issuance path.** The older wallet-mint route
-described in the dated M-2 rollout notes is historical migration code, not a parallel path or fallback
-to preserve.
+**The owner-hidden server-side bridge is the required issuance end-state.** Today the Level-A
+wallet-mint route remains live and the owner-hidden device call site is pending. New work must target
+the owner-hidden bridge and retire the wallet-mint route, never extend it as a parallel path or fallback.
 
 ### Level-B custodial issuance bridge (M-2) - `POST /profiles/issue/custodial-bind`
 
@@ -1720,8 +1720,9 @@ by simply issuing a new tag.
 What does NOT exist is any issuer-side notion OF a re-issue: nothing marks the abandoned tag, links
 old to new, or drives a re-issue-specific operator flow - and per the paragraph above that link must
 never reach an issuer record anyway, so the old<->new association stays device-local.
-The owner-hidden custodial route is the sole live issuance path. Any owner-wallet mint route is
-superseded migration code, not a default or fallback.
+The owner-hidden custodial route is the required end-state. Until its device call site is wired, the
+Level-A wallet-mint route remains live; new work must retire it rather than preserve it as a default,
+opt-in, or fallback.
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
