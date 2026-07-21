@@ -34,7 +34,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
   always passes `--features prover`, and it checks the artifacts from the SHELL - where a `::error::`
   line is actually parsed and a non-zero exit is a real failure - naming the missing artifact. An
   annotation printed from inside the test could not work: libtest captures stdout for PASSING tests.
-  It is deliberately **not** in `make test` (like `test-consent` / `test-circuit`), since a normal
+  It is deliberately **not** in `make test` (like `test-consent`), since a normal
   checkout has no `consent.graph` and the gate fails closed. The complementary in-test leg stays:
   **`DOGTAG_REQUIRE_ZK_ARTIFACTS=1`** turns the skip into a panic - set it wherever artifacts are
   expected, since libtest DOES print captured output for failing tests. Note no GitHub workflow runs
@@ -76,14 +76,9 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
   scheme are guarded by LOCAL runs only - including the QR-trap regression they were written for. Run
   them by hand before shipping mobile changes. (Dispatch-only CI is a standing decision, not an
   oversight; broadening it is captain-gated.)
-- `cargo test -p vet-api --test verify_onchain` — on-chain integration (self-spawns anvil). The ZK-path
-  test (`zk_path_records_verified_onchain`, real Groth16 proof, ~270s) needs forge/cast/anvil on PATH AND
-  the JS toolchain built first: `pnpm install` in `circuits/` plus `pnpm install && pnpm run build` in
-  `packages/dogtag-standard-ts/` (`crates/dogtag-prover-rs/tests/gen_input.mjs` imports its `dist/`). It
-  does NOT skip gracefully when those are missing.
 
 ### Sharp edges learned
-- **The parity gate is `circuits/scripts/gen-vectors.mjs`.** It is the source of truth: it computes the circom witness (reference-of-record) and cross-checks `poseidon-lite` (TS) and `circomlibjs`, then writes `circuits/poseidon-vectors.json` which Rust (`sdk_parity.rs`/`poseidon_parity.rs`) and Solidity (`PoseidonParity.t.sol`) assert. The "4-language" gate is the union of `make parity` + `test-rs` + `test-contracts`. (`circuits/scripts/check-ts.mjs` was referenced by `package.json` but never existed; it was removed — `gen-vectors.mjs` already covers TS↔circom.)
+- **The parity gate is `circuits/scripts/gen-vectors.mjs`.** It is the source of truth: it computes the circom witness (reference-of-record) and cross-checks `poseidon-lite` (TS) and `circomlibjs`, then writes `circuits/poseidon-vectors.json` which Rust (`sdk_parity.rs`/`poseidon_parity.rs`) asserts. The parity gate is now the union of `make parity` + `test-rs` (the Solidity `PoseidonParity.t.sol` leg was retired with the owner-revealing layer; the owner-hidden `VerificationRegistryConsent` computes no on-chain Poseidon). (`circuits/scripts/check-ts.mjs` was referenced by `package.json` but never existed; it was removed — `gen-vectors.mjs` already covers TS↔circom.)
 - `gen-vectors.mjs` rewrites `poseidon-vectors.json` deterministically, so running `make parity` leaves the tree clean (no spurious diff).
 - `rust-analyzer` in this worktree can't find the proc-macro server and emits false `E0308`/`tokio::test` errors; trust `cargo`, not the IDE diagnostics.
 - Pre-existing harmless warning: unused import `BigInteger` in `crates/dogtag-standard-rs/src/bin/field-hash.rs`.
@@ -1127,7 +1122,7 @@ Since M3, the **production** consent artifacts are **committed** (force-added pa
 `contracts/src/Groth16VerifierConsent.sol`. The **intermediate/DEV** artifacts stay **gitignored** and
 must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/*.ptau`), and
 `Groth16Verifier.consent.dev.sol` (`*.dev.sol`). `test-consent` now runs against the committed prod key
-(33/33 green) and is a standalone heavy gate (like `test-circuit`), intentionally **not** in `make test`.
+(33/33 green) and is a standalone heavy gate, intentionally **not** in `make test`.
 
 ---
 
