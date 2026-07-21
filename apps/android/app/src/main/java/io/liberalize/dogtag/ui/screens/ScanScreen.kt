@@ -55,6 +55,8 @@ import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.RecordImporter
 import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.ZkeyAsset
+import io.liberalize.dogtag.BuildConfig
+import io.liberalize.dogtag.net.AnchorResolver
 import io.liberalize.dogtag.net.CentralApi
 import io.liberalize.dogtag.net.RoaxRpc
 import io.liberalize.dogtag.qr.QrPayload
@@ -67,10 +69,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.dogtag_standard.ConvenienceClaims
 import uniffi.dogtag_standard.EddsaSigInput
+import uniffi.dogtag_standard.TrustedAnchor
 import uniffi.dogtag_standard.bindConsentKeyDigestHex
 import uniffi.dogtag_standard.proveVerification
 import uniffi.dogtag_standard.signConsentEddsa
+import uniffi.dogtag_standard.validateDiscovery
 import uniffi.dogtag_standard.verifyWhitelistKeyHex
 
 /**
@@ -502,9 +507,24 @@ private fun ExportPanel(
                         return@prompt
                     }
 
-                    // -------- ZERO-KNOWLEDGE on-device path --------
                     busy = true
                     scope.launch {
+                        // -------- LEVEL-B owner-hidden path (M-4 PR3): validate the discovery anchor, fail closed --------
+                        // Gated on the STORED `mode`, EXPLICITLY — NOT `isZk`, which is true for any
+                        // non-normal/ecdsa mode and would drop a `levelb` session into the Level-A prover
+                        // below. Every ProtocolRegistry eth_call and the `validateDiscovery` call live inside
+                        // this branch, so a non-levelb session makes ZERO registry calls and the Level-A path
+                        // is byte-for-byte untouched (the acceptance bar).
+                        if (AnchorResolver.isLevelB(sess.mode)) {
+                            runLevelBAnchorGate(
+                                context, sess,
+                                onStatus = onStatus,
+                                onDone = { errMsg -> busy = false; if (errMsg != null) err = errMsg },
+                            )
+                            return@launch
+                        }
+
+                        // -------- ZERO-KNOWLEDGE on-device path --------
                         try {
                             val roax = RoaxConfig.load(context)
 
@@ -725,6 +745,87 @@ private fun ExportPanel(
     if (!busy && status.isNotBlank()) {
         val good = status.startsWith("Verified on-chain")
         Text(status, fontSize = 12.sp, color = if (good) c.success else c.muted)
+    }
+}
+
+/**
+ * M-4 PR3 — the owner-hidden (`mode == "levelb"`) discovery-anchor gate.
+ *
+ * Resolves the dogtag `ProtocolRegistry` anchor for `dogtag-levelb/1` and validates the platform's
+ * claims against it via the shipped `validateDiscovery` binding, FAIL-CLOSED on every axis. It is the
+ * anti-redirect gate ONLY — it does NOT prove or submit; the owner-hidden prover and the Level-B
+ * submit land in PR4. On success PR3 stops with a "validated" status rather than proving.
+ *
+ * SAFE to ship ahead of the ProtocolRegistry deploy + the app-version bump (PR4): until the registry
+ * is published the eth_calls return null and this fails closed, and until this build clears the
+ * published `minAppVersion` `validateDiscovery` throws `AppTooOld` — either way the Level-A default
+ * path, which never enters this function, is untouched. `onDone(null)` = validated; `onDone(msg)` =
+ * refused (the caller clears `busy` and surfaces `msg`).
+ */
+private suspend fun runLevelBAnchorGate(
+    context: android.content.Context,
+    sess: CentralApi.ExportSession,
+    onStatus: (String) -> Unit,
+    onDone: (String?) -> Unit,
+) {
+    onStatus("Validating owner-hidden discovery anchor…")
+    val claims = sess.claims
+    if (claims == null) {
+        onDone("Owner-hidden session is missing its discovery claims — refusing.")
+        return
+    }
+    val roax = RoaxConfig.load(context)
+    val version = AnchorResolver.LEVEL_B_VERSION
+    // Resolve BOTH on-chain axes. Either null — registry unconfigured/undeployed, version unpublished,
+    // or no artifact binding — fails closed. This is exactly what lets PR3 ship before the registry
+    // deploy without any risk to the Level-A path.
+    val cs = withContext(Dispatchers.IO) {
+        RoaxRpc.getContractSet(AppConfig.ROAX_RPC, roax.protocolRegistry, version)
+    }
+    val arti = withContext(Dispatchers.IO) {
+        RoaxRpc.getActiveArtifactSet(AppConfig.ROAX_RPC, roax.protocolRegistry, version)
+    }
+    if (cs == null || arti == null) {
+        onDone("Owner-hidden verification is not available yet (discovery anchor unpublished).")
+        return
+    }
+    // Build the FFI `TrustedAnchor`. `contractSetActive`/`artifactSetActive` come from the two records
+    // SEPARATELY (never AND-ed) — `validateDiscovery` requires both true independently.
+    val anchor = TrustedAnchor(
+        version = version,
+        versionId = cs.contractSetId,
+        artifactSet = AnchorResolver.LEVEL_B_ARTIFACT_SET,
+        artifactSetId = arti.artifactSetId,
+        chainId = roax.chainId.toULong(),
+        verificationRegistry = cs.verificationRegistry,
+        circuitId = AnchorResolver.LEVEL_B_CIRCUIT_ID,
+        minAppVersion = arti.minAppVersion,
+        contractSetActive = cs.active,
+        artifactSetActive = arti.active,
+    )
+    val ffiClaims = ConvenienceClaims(
+        protocolVersion = claims.protocolVersion,
+        chainId = claims.chainId.toULong(),
+        verificationRegistry = claims.verificationRegistry,
+        issuerClone = claims.issuerClone,
+        purpose = claims.purpose,
+    )
+    // `appVersion`: this build's versionName (dotted semver core). `expectedPurpose`: the session's
+    // purpose (D1 ruling (i)). The app has no purpose independent of the scanned QR today, so
+    // `validateDiscovery`'s purpose check (§5.3 step 4) is INTENTIONALLY WEAK here — claim vs the same
+    // session it came from. Not a regression: it matches the Level-A path's existing posture, and the
+    // load-bearing anti-redirect weight sits in the registry/chainId/version/versionId/both-active/
+    // minAppVersion checks, which all still fire. An independent app-side purpose is queued follow-up.
+    try {
+        withContext(Dispatchers.IO) {
+            validateDiscovery(ffiClaims, anchor, BuildConfig.VERSION_NAME, sess.purpose)
+        }
+        // PR3 stops here: the anchor is validated and Level-B is authorized. The owner-hidden prover +
+        // Level-B submit are PR4; do NOT fall through to the Level-A prover.
+        onStatus("Owner-hidden discovery anchor validated — on-device proving lands in a later build.")
+        onDone(null)
+    } catch (e: Exception) {
+        onDone("Owner-hidden verification refused: ${e.message}")
     }
 }
 

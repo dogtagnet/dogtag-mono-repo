@@ -15,6 +15,11 @@ data class RoaxConfig(
     val consentKeyRegistry: String,
     val issuerRegistry: String,
     val poseidon6: String,
+    /** `ProtocolRegistry` — the discovery TRUST ANCHOR the Level-B (`mode == "levelb"`) path reads to
+     * validate a platform's claims (M-4 PR3). Blank until the registry is deployed on ROAX: a blank
+     * address makes `RoaxRpc.getContractSet` return null, so the Level-B branch fails closed while the
+     * Level-A default path — which never reads this field — is untouched. */
+    val protocolRegistry: String,
 ) {
     companion object {
         fun load(context: Context): RoaxConfig {
@@ -27,6 +32,7 @@ data class RoaxConfig(
                 consentKeyRegistry = o.optString("ConsentKeyRegistry"),
                 issuerRegistry = o.optString("IssuerRegistry"),
                 poseidon6 = o.optString("Poseidon6"),
+                protocolRegistry = o.optString("ProtocolRegistry"),
             )
         }
     }

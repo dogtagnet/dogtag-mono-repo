@@ -181,6 +181,44 @@ object RoaxRpc {
         }
     }
 
+    private val GET_CONTRACT_SET_SELECTOR = functionSelector("getContractSet(bytes32)")
+    private val GET_ACTIVE_ARTIFACT_SET_SELECTOR = functionSelector("getActiveArtifactSet(bytes32)")
+
+    /** keccak256 of a version string as a 32-byte word — the `ProtocolRegistry` map key
+     * (`contractSetId`) for that version. `AnchorResolver.LEVEL_B_VERSION` → the Level-B query key. */
+    fun versionId(version: String): String =
+        Keccak256.digest(version.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+    /**
+     * `ProtocolRegistry.getContractSet(versionId)` → the on-chain contract-set record (M-4 PR3).
+     * Null when the registry is unconfigured/unreachable OR the version is unpublished (the getter
+     * reverts "unknown contract set"), so the Level-B branch FAILS CLOSED and never touches the
+     * Level-A path. `protocolRegistry` blank (not yet deployed) is a null, by design.
+     */
+    suspend fun getContractSet(rpcUrl: String, protocolRegistry: String, version: String): AnchorResolver.ContractSetRecord? {
+        if (protocolRegistry.isBlank()) return null
+        val data = GET_CONTRACT_SET_SELECTOR + versionId(version)
+        return when (val r = ethCall(rpcUrl, protocolRegistry, data)) {
+            is CallResult.Ok -> AnchorResolver.decodeContractSet(r.hex)
+            is CallResult.Err -> null
+        }
+    }
+
+    /**
+     * `ProtocolRegistry.getActiveArtifactSet(versionId)` → the artifact-set record currently bound to
+     * the version (M-4 PR3). Follows `activeArtifactSetOf` on-chain and reverts if unbound, so a null
+     * here (unconfigured registry, unpublished version, or no binding) fails the Level-B branch
+     * closed. Decodes only `artifactSetId`/`minAppVersion`/`active` — see `AnchorResolver`.
+     */
+    suspend fun getActiveArtifactSet(rpcUrl: String, protocolRegistry: String, version: String): AnchorResolver.ArtifactSetRecord? {
+        if (protocolRegistry.isBlank()) return null
+        val data = GET_ACTIVE_ARTIFACT_SET_SELECTOR + versionId(version)
+        return when (val r = ethCall(rpcUrl, protocolRegistry, data)) {
+            is CallResult.Ok -> AnchorResolver.decodeArtifactSet(r.hex)
+            is CallResult.Err -> null
+        }
+    }
+
     private sealed class CallResult {
         data class Ok(val hex: String) : CallResult()
         data class Err(val reason: String) : CallResult()
