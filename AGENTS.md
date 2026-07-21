@@ -2,6 +2,19 @@
 
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
+## Product model (non-negotiable)
+
+**dogtag is ONE owner-hidden model. There is no Level-A/Level-B split, mode, or vocabulary in the product.**
+
+The whole model is exactly two primitives:
+
+1. **MERKLE PROOF = CREDENTIAL ISSUANCE.** The credential is a Merkle tree/root; the owner is a hidden leaf.
+2. **ZK PROOF = THE OWNER'S CONSENT FOR THAT MERKLE PROOF.** Consent is proven in zero knowledge; the owner is never revealed.
+
+That is it. Vets issue credentials; owners hold credentials and give consent. Vets and owners must never be shown or asked to choose or understand "Level-A" versus "Level-B", a mode, an opt-in, or a toggle.
+
+All live and forward app/server/web code, config, API design, and docs must implement this single owner-hidden model. Do **not** build or preserve a Level-A path, a dual-mode gate, an "available-not-default" opt-in, or A/B coexistence. Deployed Level-A contracts remain on-chain only for historical reads. The old level names are internal migration history, never product vocabulary or a user choice; every later migration-era statement that calls Level-A live/default or Level-B optional/additive is superseded by this rule and must not guide new work.
+
 ## Build & test (what actually runs offline)
 
 Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, circom 2.1.9 + snarkjs 0.7.6, Docker.
@@ -71,7 +84,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service. Its artifacts are **version-keyed** (`src/artifact.rs`) — see "Version-keyed proving artifacts".
 - `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `DogTagSBT` (ERC-5192), `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry` (real Groth16 verify, timelocked verifier swap), `ConsentKeyRegistry` (gasless meta-tx), `Groth16Verifier` (snarkjs-generated). Live on ROAX (chainId 135); addresses in `contracts/deployments/roax.json`. The **canonical Level-B M5 stack** is deployed + bytecode/wiring verified: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`. It is additive and **not live**: the Level-A `DogTagSBT` + `VerificationRegistry` still serve every consumer until M7. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable Level-A SBT; see "M5 as-built" below.
+- `contracts` — `IssuerRegistry`, `DogTagIssuer` clones + factory, and the **canonical owner-hidden stack**: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`, deployed + bytecode/wiring verified on ROAX (chainId 135; addresses in `contracts/deployments/roax.json`). This is the one live/forward model. Older Level-A deployments remain only for historical on-chain reads; never route app/server/web/config/docs to them. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable legacy SBT; see "M5 as-built" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -236,7 +249,10 @@ contract-side change would not fail them; the two sides must be moved together b
   owner (their first verification still needs the `ConsentKeyRegistry` bind, whose owner EIP-712 sig
   is built from `bindNonce`). The `keyOf`/`bindNonce`/bind-flow deletion is **M-8**, not M-4.
 
-### The two consent submit routes are mode-gated and must never be crossed (M-4)
+### Superseded M-4 dual-route migration guard (historical only)
+
+The route split below records transitional safety behavior; it is not product architecture to
+preserve. The live/forward flow is one owner-hidden consent route with no user-visible mode.
 
 A verify session's `mode` (`store::VerifySession`) is `"normal" | "zk" | "levelb"`, validated at
 `POST /verify/session/start` — an unrecognised mode is a 400, because it previously fell through the
@@ -273,7 +289,10 @@ A verify session's `mode` (`store::VerifySession`) is `"normal" | "zk" | "levelb
 Both refusals exist because the two routes read the SAME export token; without them a session's
 token would be accepted by both, and an owner-hidden proof read with Level-A indices is exactly E-1.
 
-### `mode="levelb"` is AVAILABLE, not DEFAULT (M-4 vs M-5)
+### Superseded M-4 opt-in snapshot (historical only)
+
+The "available, not default" design below is forbidden by the standing product model. Never preserve
+or reintroduce it as a default, opt-in, mode, toggle, or user choice.
 
 `app::convenience_claims_for_mode` stamps `dogtag-levelb/1` + the Level-B registry **only** for a
 session explicitly started with `mode="levelb"`. Every other mode, and every flow with no session,
@@ -1121,14 +1140,11 @@ verify there. It was **never live** and no consumer ever pointed at it. It was *
 left stale, because a canonical address whose bytecode differs from its source is the same landmine class
 as `data/dogtag-zkfail-z9`. **Do not use `0x57A2998…`.**
 
-### ADDITIVE, not a swap — the Level-A registry is still THE live one
+### Superseded M4 rollout snapshot (historical only)
 
-`VerificationRegistry` `0x4E2f0996…` remains live and every committed consumer still points at it. M4 does
-**not** repoint anything: today's apps still produce **Level-A** proofs (`subject`/`keyHash`) and Level-B
-custodial tags do not exist until **M5**, so an early cutover would break the live verify flow. The app
-cutover is **M7**; the exhaustive consumer list lives in `roax.json` `_m4_consent_registry.m7_cutover`.
-This mirrors how M2 froze `verification.circom` and M3 added `Groth16VerifierConsent` alongside the live
-`Groth16Verifier` — **the Level-A registry is FROZEN, not edited.**
+M4 temporarily deployed the owner-hidden registry beside the older registry. That coexistence was a
+migration step, not an architecture to preserve: the owner-hidden registry is the only live/forward
+model, and older deployments remain solely for historical reads.
 
 ### What it does (spec §"On-chain `recordVerificationZK`")
 
@@ -1412,10 +1428,9 @@ So a device-built tree is provable *because its primitives are the circuit's*, n
 root was proven. Proving a seed-derived root end-to-end needs the prover (M7); do not upgrade this
 claim without generating a proof over `R_demo`.
 
-**The server-side bridge now EXISTS (M-2)** - see "Level-B custodial issuance bridge" below. The
-Level-A path at `routes.rs` is unchanged and still mints to the owner's wallet; M-2 added the Level-B
-path beside it rather than cutting over. The `DEFAULT_VREG` flip and the removal of Level-A remain
-later milestones.
+**The owner-hidden server-side bridge is the sole live issuance path.** The older wallet-mint route
+described in the dated M-2 rollout notes is historical migration code, not a parallel path or fallback
+to preserve.
 
 ### Level-B custodial issuance bridge (M-2) - `POST /profiles/issue/custodial-bind`
 
@@ -1584,7 +1599,10 @@ Coverage, split by what each harness can actually prove:
   Bad-root cannot live here: `MemChain` only checks `consumed`, so a mismatched root would wrongly
   succeed.
 
-### M-4 mobile owner-hidden presentation (`mode == "levelb"`)
+### Superseded M-4 mobile mode gate (historical only)
+
+The `mode == "levelb"` branch below records transitional wiring. Native apps must present the single
+owner-hidden consent flow without exposing or preserving a protocol mode.
 
 Both native `ScanScreen` implementations keep Level-B behind the explicit stored-session
 `mode == "levelb"` branch. That branch reads the seed from `Wallet.seedHex` and the decimal tag
@@ -1702,8 +1720,8 @@ by simply issuing a new tag.
 What does NOT exist is any issuer-side notion OF a re-issue: nothing marks the abandoned tag, links
 old to new, or drives a re-issue-specific operator flow - and per the paragraph above that link must
 never reach an issuer record anyway, so the old<->new association stays device-local.
-Level-A still serves all live issuance (`routes.rs:1957` still mints to the owner's wallet); reworking
-`mint -> mintCustodial` for the register-pet flow is the later cutover, not M-2.
+The owner-hidden custodial route is the sole live issuance path. Any owner-wallet mint route is
+superseded migration code, not a default or fallback.
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
