@@ -184,9 +184,16 @@ The zkey is **gitignored in the apps**, so it must be vendored into each app **e
 [MOBILE_BUILD.md](./MOBILE_BUILD.md)). If `circuits/build/` is empty, regenerate it with
 `pnpm --filter @dogtag/circuits build-circuit` (runs `circuits/scripts/setup.sh`; uses `snarkjs`).
 
-> **Note:** on a fresh clone `circuits/build/` may lack `verification_final.zkey`/`verification.graph`.
-> Regenerating them downloads the ptau and runs the setup/ceremony — **several minutes** — so it's worth
-> running the Verify below first to confirm whether you actually need to rebuild.
+> **M-4 (Level-B):** each app now *also* bundles the owner-hidden consent pair `consent_final.zkey` +
+> `consent.graph` (version `dogtag-levelb/1`). The consent zkey is **committed** under `circuits/build/`
+> (so it is present on a fresh clone); `consent.graph` is built out-of-band with iden3's `build-circuit`,
+> like `verification.graph`. Level-A stays the default, so the apps still build and prove without the
+> consent pair — see [MOBILE_BUILD.md §4](./MOBILE_BUILD.md).
+
+> **Note:** on a fresh clone the committed zkeys (`verification_final.zkey`, `consent_final.zkey`) are
+> already present; only the `.graph` files are **not** committed — build `verification.graph` /
+> `consent.graph` out-of-band with iden3's `build-circuit` (see [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)).
+> Run the Verify below first to confirm what you actually have.
 
 **Verify both artifacts exist:**
 
@@ -199,10 +206,12 @@ ls -la circuits/build/verification_final.zkey circuits/build/verification.graph
 **STOP if** either is missing:
 - **Symptom:** `ls: … No such file or directory`.
 - **Likely cause:** the circuit hasn't been built / the artifacts weren't checked out.
-- **Fix:** build them (`pnpm --filter @dogtag/circuits build-circuit`) or obtain them from the
-  ceremony output. Without these, a prover-service started **without** `CIRCUITS_BUILD_DIR` silently loads
-  the **StubProver** (proofs are NOT chain-valid); one started **with** `CIRCUITS_BUILD_DIR` pointing at the
-  empty dir is **fail-closed** and **exits on boot**. Either way the apps cannot prove on-device.
+- **Fix:** the two `*_final.zkey` are committed, so a missing zkey means a broken checkout; the `.graph`
+  files are never committed — build them out-of-band with iden3's `build-circuit` (see
+  [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)). Without these, a prover-service started **without**
+  `CIRCUITS_BUILD_DIR` silently loads the **StubProver** (proofs are NOT chain-valid); one started
+  **with** `CIRCUITS_BUILD_DIR` pointing at the empty dir is **fail-closed** and **exits on boot**.
+  Either way the apps cannot prove on-device.
 
 ### 2.3 REMOTE / PROD — `stacks/<x>/.env`
 

@@ -82,8 +82,9 @@ test -f circuits/build/verification_final.zkey && test -f circuits/build/verific
   install it via **[PREREQUISITES.md](./PREREQUISITES.md)** and confirm network access, then re-run.
 - *the balance is `0`* → the deployer EOA is unfunded → fund it with PLASMA before continuing (bootstrap
   and central whitelists will fail otherwise). See [PREREQUISITES.md](./PREREQUISITES.md).
-- *`circuits/build` files are missing* → the `verification_final.zkey` is **gitignored** and must be
-  vendored → populate `circuits/build/` before boot, or the prover will serve non-valid stub proofs.
+- *`circuits/build` files are missing* → the committed `verification_final.zkey` should be present after
+  checkout, while `verification.graph` is **not** committed and must be built/vendored → populate
+  `circuits/build/` before boot, or the prover will serve non-valid stub proofs.
 
 ---
 

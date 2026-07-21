@@ -56,8 +56,27 @@ object ZkeyAsset {
         graphAsset = "verification.graph",
     )
 
-    /** Every version this build can prove. A consent version joins it with the consent path (M7 P1). */
-    val REGISTRY: List<ArtifactDescriptor> = listOf(LEVEL_A_V1)
+    /**
+     * The Level-B owner-hidden consent artifact set (M-4). Its zkey (`consent_final.zkey`, ~24.8 MB)
+     * and witness graph (`consent.graph`) are the frozen M3 consent-ceremony outputs, bundled the same
+     * way the Level-A pair is: vendored into `src/main/assets` by the mobile workflow's "Ensure
+     * proving artifacts" step (uncompressed via `noCompress`), materialised into `filesDir` on first
+     * use. The version key is the SAME protocol constant as the Rust
+     * `dogtag_prover::artifact::LEVEL_B_V1` and iOS `ZkeyAsset.levelBV1` — three declarations of one
+     * string the server refuses if it does not recognise.
+     *
+     * Registering it does NOT make Level-B the default: [current] stays Level-A, so a caller that
+     * names no version is unaffected. A Level-B proof is produced only when a caller resolves this
+     * version explicitly (the version-aware selector, a later M-4 PR).
+     */
+    val LEVEL_B_V1 = ArtifactDescriptor(
+        version = "dogtag-levelb/1",
+        zkeyAsset = "consent_final.zkey",
+        graphAsset = "consent.graph",
+    )
+
+    /** Every version this build can prove. Level-B joins Level-A here (M-4); [current] is unchanged. */
+    val REGISTRY: List<ArtifactDescriptor> = listOf(LEVEL_A_V1, LEVEL_B_V1)
 
     /** The version a caller gets when it names none. */
     fun current(): ArtifactDescriptor = LEVEL_A_V1

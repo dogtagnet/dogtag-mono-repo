@@ -38,8 +38,9 @@ targets:
 
   # Pure-logic unit tests. This bundle deliberately has NO host application and NO dependency on
   # DogTagFFI.xcframework: it compiles the handful of self-contained sources it covers (currently
-  # QrPayload.swift and PublicSignalIndex.swift, both importing only Foundation, or nothing at all)
-  # straight into the test binary. That keeps `xcodebuild test` runnable on a plain checkout, where
+  # QrPayload.swift, PublicSignalIndex.swift, and ZkeyAsset.swift, all importing only Foundation, or
+  # nothing at all) straight into the test binary. That keeps `xcodebuild test` runnable on a plain
+  # checkout, where
   # the xcframework is gitignored and absent until someone builds the Rust core. Adding a source here
   # that pulls in FFI would break that.
   DogTagTests:
@@ -49,6 +50,9 @@ targets:
       - path: DogTagTests
       - path: DogTag/QrPayload.swift
       - path: DogTag/PublicSignalIndex.swift
+      # ZkeyAsset's descriptor/registry/resolve are pure (Foundation only); only ensure()/ensureGraph()
+      # touch Bundle.main, and the tests never call those. Safe to compile into the host-less bundle.
+      - path: DogTag/ZkeyAsset.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.liberalize.dogtag.tests

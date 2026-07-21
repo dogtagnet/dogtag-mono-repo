@@ -16,9 +16,12 @@
 #     2. An *arm64* iOS Simulator slice of the prover. DogTagFFI.xcframework here is built for
 #        `aarch64-apple-ios-sim` only; an Apple-Silicon host runs that slice natively. (Add an
 #        `aarch64-apple-ios` device slice + signing if you target a physical device.)
-#     3. The proving artifacts. `verification_final.zkey` (~65 MB) and `verification.graph` (~3 MB)
-#        are gitignored (see apps/.gitignore) and NOT in a checkout. They must be provided to the
-#        runner (cache, artifact, release asset, or self-hosted working tree) — see the vendor step.
+#     3. The proving artifacts, for both the Level-A verification and Level-B consent circuits. The
+#        zkeys (`verification_final.zkey` ~65 MB, `consent_final.zkey` ~25 MB) are committed under
+#        `circuits/build/` (force-added past the build/ ignore). The witness graphs
+#        (`verification.graph` ~3 MB, `consent.graph`) are NOT committed — build them out-of-band with
+#        iden3's build-circuit (or serve them from `DOGTAG_ARTIFACTS_URL`). Either way the bundle
+#        copies under `apps/` are gitignored, so the vendor step re-copies all four each build.
 #
 #   On a runner that meets all three, this workflow goes green exactly as the local run does.
 name: ios-mobile-e2e
@@ -53,30 +56,38 @@ jobs:
           brew install xcodegen || true
           curl -Ls "https://get.maestro.mobile.dev" | bash
 
-      # The witness graph is built from circuits/verification.circom by iden3's build-circuit (it is
-      # NOT in the published circom-witnesscalc crate). Skipped if already vendored (self-hosted).
+      # Each witness graph is built from its circom source by iden3's build-circuit (it is NOT in the
+      # published circom-witnesscalc crate). Skipped if already vendored (self-hosted). M-4 adds the
+      # Level-B consent pair (`consent_final.zkey` + `consent.graph`) alongside the Level-A pair, so
+      # the app can prove owner-hidden consent; both sets are bundled, Level-A stays the default.
       - name: Ensure proving artifacts (zkey + witness graph)
         env:
-          # Optional: a base URL / cache that holds the two gitignored blobs for this circuit commit.
+          # Optional: a base URL / cache that holds the gitignored blobs for this circuit commit.
           DOGTAG_ARTIFACTS_URL: ${{ secrets.DOGTAG_ARTIFACTS_URL }}
         run: |
           set -euo pipefail
-          zkey=circuits/build/verification_final.zkey
-          graph=circuits/build/verification.graph
-          if [ -s "$zkey" ] && [ -s "$graph" ]; then
-            echo "Proving artifacts already present (self-hosted working tree)."
-          elif [ -n "${DOGTAG_ARTIFACTS_URL:-}" ]; then
-            mkdir -p circuits/build
-            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification_final.zkey" -o "$zkey"
-            curl -fsSL "$DOGTAG_ARTIFACTS_URL/verification.graph"      -o "$graph"
-          else
-            echo "::error::Missing $zkey / $graph. They are gitignored; provide them on a self-hosted" \
-                 "runner's working tree or set the DOGTAG_ARTIFACTS_URL secret. See docs/MOBILE_BUILD.md §4."
-            exit 1
-          fi
-          # Vendor into the app bundle (gitignored copies, exactly like docs/MOBILE_BUILD.md §4).
-          cp "$zkey"  apps/ios/DogTag/verification_final.zkey
-          cp "$graph" apps/ios/DogTag/verification.graph
+          # (bundle basename, circuits/build source stem) for every artifact set the app bundles.
+          # Level-A verification + Level-B consent; add a row to bundle another version.
+          ensure_artifact() {
+            local file="$1"
+            local src="circuits/build/$file"
+            if [ -s "$src" ]; then
+              echo "  $file present (self-hosted working tree)."
+            elif [ -n "${DOGTAG_ARTIFACTS_URL:-}" ]; then
+              mkdir -p circuits/build
+              curl -fsSL "$DOGTAG_ARTIFACTS_URL/$file" -o "$src"
+            else
+              echo "::error::Missing $src. It is gitignored; provide it on a self-hosted runner's" \
+                   "working tree or set the DOGTAG_ARTIFACTS_URL secret. See docs/MOBILE_BUILD.md §4."
+              exit 1
+            fi
+            # Vendor into the app bundle (gitignored copy, exactly like docs/MOBILE_BUILD.md §4).
+            cp "$src" "apps/ios/DogTag/$file"
+          }
+          ensure_artifact verification_final.zkey
+          ensure_artifact verification.graph
+          ensure_artifact consent_final.zkey
+          ensure_artifact consent.graph
 
       - name: Build the on-device prover xcframework (cargo → UniFFI → DogTagFFI.xcframework)
         run: |
