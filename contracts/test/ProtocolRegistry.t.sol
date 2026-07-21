@@ -26,7 +26,7 @@ contract ProtocolRegistryTest is Test {
     bytes32 internal bArtId;
 
     function setUp() public {
-        reg = new ProtocolRegistry(ADMIN, PUBLISHER);
+        reg = new ProtocolRegistry(ADMIN, PUBLISHER, 2 days);
         aId = ProtocolVersions.levelAId();
         bId = ProtocolVersions.levelBId();
         aArtId = ProtocolVersions.levelAArtifactsId();
@@ -357,6 +357,54 @@ contract ProtocolRegistryTest is Test {
     }
 
     // --- timelock enforcement --------------------------------------------------------------------
+
+    function test_default_publish_timelock_enforces_two_days_end_to_end() public {
+        assertEq(reg.PUBLISH_TIMELOCK(), reg.DEFAULT_PUBLISH_TIMELOCK(), "safe default selected");
+        assertEq(reg.PUBLISH_TIMELOCK(), 2 days, "production delay");
+
+        uint256 proposedAt = block.timestamp;
+        vm.startPrank(PUBLISHER);
+        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        reg.proposeArtifactBinding(bId, bArtId);
+        vm.stopPrank();
+
+        vm.warp(proposedAt + 2 days - 1);
+        vm.prank(PUBLISHER);
+        vm.expectRevert(bytes("timelock"));
+        reg.executeContractSet(bId);
+
+        vm.warp(proposedAt + 2 days);
+        vm.startPrank(PUBLISHER);
+        reg.executeContractSet(bId);
+        reg.executeArtifactSet(bArtId);
+        reg.executeArtifactBinding(bId);
+        vm.stopPrank();
+
+        assertTrue(reg.getContractSet(bId).active, "contract set published");
+        assertTrue(reg.getActiveArtifactSet(bId).active, "artifact set bound and published");
+    }
+
+    function test_zero_publish_timelock_executes_immediately_end_to_end() public {
+        ProtocolRegistry fastRegistry = new ProtocolRegistry(ADMIN, PUBLISHER, 0);
+        vm.warp(100);
+
+        vm.startPrank(PUBLISHER);
+        fastRegistry.proposeContractSet(ProtocolVersions.levelBContracts());
+        fastRegistry.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        fastRegistry.proposeArtifactBinding(bId, bArtId);
+        assertEq(fastRegistry.contractSetEta(bId), block.timestamp, "contract ETA is immediate");
+        assertEq(fastRegistry.artifactSetEta(bArtId), block.timestamp, "artifact ETA is immediate");
+        assertEq(fastRegistry.bindingEta(bId), block.timestamp, "binding ETA is immediate");
+
+        fastRegistry.executeContractSet(bId);
+        fastRegistry.executeArtifactSet(bArtId);
+        fastRegistry.executeArtifactBinding(bId);
+        vm.stopPrank();
+
+        assertTrue(fastRegistry.getContractSet(bId).active, "contract set published immediately");
+        assertTrue(fastRegistry.getActiveArtifactSet(bId).active, "binding published immediately");
+    }
 
     function test_execute_contract_set_before_timelock_reverts() public {
         vm.prank(PUBLISHER);

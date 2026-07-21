@@ -5,6 +5,11 @@ import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
+// Safe production propose→execute delay, single-sourced so the deploy script's mainnet guard and env
+// default cannot drift from the contract's documented default. Exposed on-chain as
+// `ProtocolRegistry.DEFAULT_PUBLISH_TIMELOCK`.
+uint256 constant DEFAULT_PUBLISH_TIMELOCK_SECONDS = 2 days;
+
 /// @title ProtocolRegistry — the dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B).
 /// @notice A small, read-mostly, dogtag-governed contract that records what dogtag has certified for a
 /// protocol version. It is the on-chain ROOT OF TRUTH an app validates a platform's version CLAIM
@@ -58,10 +63,12 @@ import {
 /// # Governance: timelocked publish, immediate deprecate
 ///
 /// Every WRITE that a consumer could be steered by — publishing either kind of set, and re-pointing a
-/// binding — is a `propose…` → (2-day timelock) → `execute…` flow that MIRRORS
+/// binding — is a `propose…` → (deploy-time timelock) → `execute…` flow that MIRRORS
 /// `VerificationRegistryConsent.proposeZkVerifier`/`executeZkVerifier` (§5.1): nothing can be published
 /// or SWAPPED instantly, so a compromised publisher key cannot repoint discovery in one transaction —
-/// governance has the timelock window to react. The `deprecate…` calls are NOT timelocked: they set
+/// governance has the configured timelock window to react. Production deployments use the 2-day
+/// [`DEFAULT_PUBLISH_TIMELOCK`]; testnets may deliberately use a shorter delay. The `deprecate…` calls
+/// are NOT timelocked: they set
 /// `active=false` (a safety lever you want to be able to pull immediately) and NEVER delete the
 /// published record, so history stays pinned (§5.1 — "deprecate without deleting"). They DO cancel any
 /// in-flight proposal for that id, so re-publishing after a deprecate costs a fresh propose plus the
@@ -74,9 +81,12 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// governance.
     bytes32 public constant PUBLISHER_ROLE = keccak256("PUBLISHER");
 
-    /// @dev The propose→execute delay. MIRRORS `VerificationRegistryConsent.ZK_TIMELOCK` (2 days): the
-    /// established registry timelock this contract is told to reuse, not a new one (§5.1).
-    uint256 public constant PUBLISH_TIMELOCK = 2 days;
+    /// @dev Safe production default, mirroring `VerificationRegistryConsent.ZK_TIMELOCK` (§5.1). Derived
+    /// from the file-level constant so the deploy script can single-source the same value.
+    uint256 public constant DEFAULT_PUBLISH_TIMELOCK = DEFAULT_PUBLISH_TIMELOCK_SECONDS;
+
+    /// @notice The immutable propose→execute delay selected when this registry is deployed.
+    uint256 public immutable PUBLISH_TIMELOCK;
 
     // ---------------------------------------------------------------------------------------------
     // Axis 1 — the ON-CHAIN contract set
@@ -165,10 +175,13 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     /// @param admin The dogtag governance multisig; receives `DEFAULT_ADMIN_ROLE` under the two-step
     /// ACDAR timelock. It alone can grant/revoke `PUBLISHER_ROLE`.
     /// @param publisher The initial `PUBLISHER_ROLE` holder (dogtag governance / the publishing key).
-    constructor(address admin, address publisher)
+    /// @param publishTimelock The immutable delay applied to every publish proposal. Production uses
+    /// [`DEFAULT_PUBLISH_TIMELOCK`]; a zero/short value is reserved for explicitly opted-in testnets.
+    constructor(address admin, address publisher, uint256 publishTimelock)
         AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin)
     {
         require(admin != address(0) && publisher != address(0), "zero");
+        PUBLISH_TIMELOCK = publishTimelock;
         _grantRole(PUBLISHER_ROLE, publisher);
     }
 

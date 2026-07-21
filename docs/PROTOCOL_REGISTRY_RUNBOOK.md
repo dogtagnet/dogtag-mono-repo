@@ -17,23 +17,24 @@ There is no alternative source: the signed-manifest fallback is not usable becau
 fetches `/protocol/manifest`.
 On-chain resolution is therefore the only anchor path.
 
-Publication is a **two-phase, timelocked** operation, so it cannot be completed in one sitting.
+Publication is a **two-phase, timelocked** operation. Mainnet keeps the full 2-day governance window;
+the ROAX testnet deploy uses the explicit zero-delay path so propose and execute can run immediately
+for iteration (still as two separate transactions).
 
-### The timelock is FIXED at 2 days, not configurable
+### The timelock is immutable and selected at deploy time
 
-Checked as part of M-4, because a shortened testnet timelock would remove the wall-clock gate:
+`ProtocolRegistry` stores `PUBLISH_TIMELOCK` as an immutable constructor value. The deploy script
+provides the safe environment policy around that value:
 
-- `PUBLISH_TIMELOCK` is `uint256 public constant = 2 days` (`contracts/src/ProtocolRegistry.sol`).
-- The constructor takes only `(admin, publisher)` — no timelock parameter.
-- `DeployProtocolRegistry.s.sol` exposes only the `ADMIN` and `PUBLISHER` env vars.
+- `PUBLISH_TIMELOCK_SECS` defaults to `172800` (2 days).
+- Without `TESTNET_DEPLOY=true`, the script **requires exactly 2 days** and refuses zero, short, or
+  otherwise non-default values. This is the loud mainnet guard; never set `TESTNET_DEPLOY` for a
+  mainnet deployment.
+- With `TESTNET_DEPLOY=true`, a testnet may deliberately choose a shorter value. The ROAX deployment
+  uses `PUBLISH_TIMELOCK_SECS=0` for immediate execution.
 
-So there is **no deploy-time knob**. Shortening it for ROAX would mean editing a governance-critical
-contract to add an immutable constructor parameter, which would also make testnet diverge from
-production governance semantics. The recommendation is **not** to do that, and to schedule the 2-day
-wait instead.
-
-Note this does **not** block local development or CI: an Anvil-based e2e can advance chain time
-directly. The 2-day wait applies only to the real ROAX publication.
+The selected value cannot be changed after deployment. The admin-transfer timelock remains a separate
+fixed 2-day governance control and is not affected by these variables.
 
 ## Prerequisites
 
@@ -44,7 +45,10 @@ directly. The 2-day wait applies only to the real ROAX publication.
 
 ## Step 1 — deploy the registry
 
+ROAX testnet (fast path):
+
 ```sh
+TESTNET_DEPLOY=true PUBLISH_TIMELOCK_SECS=0 \
 forge script contracts/script/DeployProtocolRegistry.s.sol:DeployProtocolRegistry \
   --rpc-url $ROAX_RPC --broadcast --legacy --private-key $GOV_KEY
 ```
@@ -52,14 +56,24 @@ forge script contracts/script/DeployProtocolRegistry.s.sol:DeployProtocolRegistr
 `admin` and `publisher` both default to the governance authority; override with the `ADMIN` /
 `PUBLISHER` env vars if they must differ.
 
-Then record the deployed address in `contracts/deployments/roax.json` under `ProtocolRegistry`, and
-export it for the next steps:
+Mainnet (safe default; do not set either timelock env var):
+
+```sh
+forge script contracts/script/DeployProtocolRegistry.s.sol:DeployProtocolRegistry \
+  --rpc-url $MAINNET_RPC --broadcast --legacy --private-key $GOV_KEY
+```
+
+The script prints the selected delay and whether testnet mode was enabled. On mainnet, verify the
+output says `172800 seconds` and `false` before recording the address.
+
+For the ROAX deployment, record the deployed address in `contracts/deployments/roax.json` under
+`ProtocolRegistry`, and export it for the next steps:
 
 ```sh
 export PROTOCOL_REGISTRY=<deployed address>
 ```
 
-## Step 2 — propose (starts the 2-day timelock)
+## Step 2 — propose (starts the configured timelock)
 
 ```sh
 forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersionsPropose \
@@ -68,10 +82,11 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
 
 This stages **six** records in one batch — both contract sets, both artifact sets, and both bindings.
 Their timelocks run **concurrently**, so this is still a two-phase rollout, not six sequential waits.
+On the ROAX zero-delay deployment, every ETA equals the proposal block timestamp.
 
 The script prints each ETA. Record them; Phase 2 is invalid before the latest one elapses.
 
-## Step 3 — execute (after the timelock elapses)
+## Step 3 — execute (once the printed ETAs are reached)
 
 ```sh
 forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersionsExecute \
@@ -79,7 +94,8 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
 ```
 
 Sets are executed before bindings, because `executeArtifactBinding` requires both sides to already be
-published. The script echoes back `active` and `minAppVersion` for both levels — check them.
+published. With the ROAX zero-delay deploy, run this immediately after Step 2 confirms. Mainnet must
+wait the full 2 days. The script echoes back `active` and `minAppVersion` for both levels — check them.
 
 ## Verification
 
@@ -104,7 +120,8 @@ Four places must agree, or the app fails closed with `AppTooOld`:
 
 The last two are mirrors of each other and are what gets published here; the first two are the build
 being gated. M-4 PR4 locks all four values to **`1.4.0`**. Step 2 must publish that exact floor;
-re-publishing a corrected `minAppVersion` costs a fresh propose plus the full 2-day timelock.
+re-publishing a corrected `minAppVersion` costs a fresh propose plus the registry's immutable
+timelock (2 days on mainnet; immediate on the ROAX fast-path deployment).
 
 ## Rotating artifacts later
 
