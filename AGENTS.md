@@ -13,7 +13,7 @@ The whole model is exactly two primitives:
 
 That is it. Vets issue credentials; owners hold credentials and give consent. Vets and owners must never be shown or asked to choose or understand "Level-A" versus "Level-B", a mode, an opt-in, or a toggle.
 
-All live and forward app/server/web code, config, API design, and docs must implement this single owner-hidden model. Do **not** build or preserve a Level-A path, a dual-mode gate, an "available-not-default" opt-in, or A/B coexistence. Deployed Level-A contracts remain on-chain only for historical reads. The old level names are internal migration history, never product vocabulary or a user choice; every later migration-era statement that calls Level-A live/default or Level-B optional/additive is superseded by this rule and must not guide new work.
+All live and forward app/server/web code, config, API design, and docs must implement this single owner-hidden model. Do **not** build or preserve a Level-A path, a dual-mode gate, an "available-not-default" opt-in, or A/B coexistence. Level-A wallet-mint still serves live traffic today and the owner-hidden device issuance call site is pending; that transition state does not license new work - the target is to retire Level-A rather than extend it, and once the cutover completes deployed Level-A contracts remain on-chain only for historical reads. The old level names are internal migration history, never product vocabulary or a user choice; later migration-era statements may accurately describe today's transition state, but every one that calls Level-A live/default or Level-B optional/additive is superseded by this rule for new work and can neither guide nor justify new A/B product design.
 
 ## Build & test (what actually runs offline)
 
@@ -1144,7 +1144,8 @@ as `data/dogtag-zkfail-z9`. **Do not use `0x57A2998…`.**
 
 M4 temporarily deployed the owner-hidden registry beside the older registry. That coexistence was a
 migration step, not an architecture to preserve: the owner-hidden registry is the only live/forward
-model, and older deployments remain solely for historical reads.
+model. The older Level-A registry it deployed beside still serves live traffic today until the
+owner-hidden cutover completes, after which it remains solely for historical reads.
 
 ### What it does (spec §"On-chain `recordVerificationZK`")
 
