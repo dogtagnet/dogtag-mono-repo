@@ -48,7 +48,8 @@ point of this doc — most "it's talking to the wrong thing" bugs are a confusio
 - **SCANNED QR** — the vet host (issue a dog tag) and the groomer host (export/verify) come **only**
   from the QR the operator's portal renders. The app has no UI field for either host. See §2.
 - **BAKED** — contract addresses (`roax.json`), the chain RPC constant, and the proving artifacts
-  (`verification_final.zkey`, `verification.graph`) are compiled/bundled into the app. To change any
+  (the Level-A `verification_final.zkey`/`verification.graph` and, since M-4, the Level-B
+  `consent_final.zkey`/`consent.graph`) are compiled/bundled into the app. To change any
   of them you **edit + rebuild + reinstall** (§8).
 - **MANUAL** — `prover_api` is the **only** setting a user ever types in-app, and **only** on a
   32-bit-only Android device (§3, §7).
@@ -275,10 +276,11 @@ generated `DogTag.xcodeproj`. Source-of-truth facts from `project.yml`:
 > [`AGENTS.md` → Building the mobile (iOS) holder app](../AGENTS.md); the Simulator-only variant (and the
 > on-device ZK self-test it powers) is in [`AGENTS.md` → Mobile end-to-end testing (iOS)](../AGENTS.md).
 
-**Step 1 — vendor the zkey** (if you have not already, §4):
+**Step 1 — vendor the proving artifacts** (all four — if you have not already, §4):
 
 ```bash
 cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
+# ...plus verification.graph and the Level-B consent_final.zkey + consent.graph — see §4 for all four.
 ```
 
 **Step 2 — generate the project:**
@@ -336,10 +338,11 @@ Source-of-truth facts from `apps/android/app/build.gradle.kts`: `applicationId i
 grep '^sdk.dir=' apps/android/local.properties || echo "sdk.dir=<SDK_DIR>" > apps/android/local.properties
 ```
 
-**Step 2 — vendor the zkey** (if not already, §4):
+**Step 2 — vendor the proving artifacts** (all four — if not already, §4):
 
 ```bash
 cp circuits/build/verification_final.zkey apps/android/app/src/main/assets/verification_final.zkey
+# ...plus verification.graph and the Level-B consent_final.zkey + consent.graph — see §4 for all four.
 ```
 
 **Step 3 — connect the phone and confirm adb sees it.** Enable **Developer options → USB debugging**

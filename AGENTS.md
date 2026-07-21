@@ -15,8 +15,9 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
   running the check, neither of them visible: the test is `#![cfg(feature = "prover")]`, so a plain
   `cargo test -p dogtag-standard-rs` compiles it away and prints `running 0 tests`; and even with the
   feature it self-skips when `circuits/build/consent.graph` is absent (gitignored, never committed, and
-  **nothing fetches it automatically** - the mobile workflows fetch `verification.graph` only; build it
-  locally from `circuits/consent.circom` with iden3's `build-circuit`). The wrapper closes both: it
+  **nothing fetches it automatically for a local run** - the mobile workflows (M-4) now vendor
+  `consent.graph` too, but only from `DOGTAG_ARTIFACTS_URL` / a self-hosted working tree and they never
+  run this parity test; build it locally from `circuits/consent.circom` with iden3's `build-circuit`). The wrapper closes both: it
   always passes `--features prover`, and it checks the artifacts from the SHELL - where a `::error::`
   line is actually parsed and a non-zero exit is a real failure - naming the missing artifact. An
   annotation printed from inside the test could not work: libtest captures stdout for PASSING tests.
@@ -221,12 +222,14 @@ The values were transcribed from `VerificationRegistryConsent.sol:81-87`'s `P_*`
 the authority - but every one of those tests asserts LITERALS and never reads the Solidity, so a
 contract-side change would not fail them; the two sides must be moved together by hand.
 
-- **Everything on the live serving path is `level_a`, deliberately.** Both apps bundle
-  `verification_final.zkey` (pinned `dogtag-levela/1`; Android's `ZkeyAssetTest` asserts
-  `dogtag-levelb/1` FAILS to resolve) and call `proveVerification`; `verify.rs`/`chain.rs` read a
-  `subject` signal and drive `ConsentKeyRegistry`, neither of which exists under Level-B. **Do not
-  "fix" these to Level-B indices** - that is the M-4 cutover, and doing it early breaks the only live
-  end-to-end path rather than repairing it.
+- **Everything on the live serving path is `level_a`, deliberately.** Both apps now bundle BOTH
+  `verification_final.zkey` (Level-A, pinned `dogtag-levela/1`) and `consent_final.zkey` (Level-B,
+  `dogtag-levelb/1`, added M-4), but `current()` / the default stays Level-A - the Android
+  `ZkeyAssetTest` asserts `dogtag-levelb/1` RESOLVES yet does NOT change the default (its fail-closed
+  probe moved to `dogtag-levelc/9`). The live path calls `proveVerification`; `verify.rs`/`chain.rs`
+  read a `subject` signal and drive `ConsentKeyRegistry`, neither of which exists under Level-B. **Do
+  not "fix" these to Level-B indices** - that is the M-4 cutover, and doing it early breaks the only
+  live end-to-end path rather than repairing it.
 - `level_b` is used by the consent tests and by the Level-B submit path (`consent_submit_levelb`).
   M-4 does NOT flip the Level-A call sites: it adds a version-aware SECOND path beside them, because
   Level-A issuance stays the default until M-6 and a Level-B-only app would strand every new Level-A
@@ -321,8 +324,8 @@ This is the structure M7's fully-dynamic proving (lock C) plugs fetch into; the 
 - **Loader shape**: `Prover::load_versioned(build_dir, descriptor)` is the real path; `Prover::load` = it against `artifact::current()`, and `load_with_expected_zkey` still overrides just the hash. All compose from one `load_inner`, so every entry point shares the fail-closed check.
   `load_inner` also **width-guards** the descriptor before any file I/O: this build formats a fixed `NUM_PUBLIC`-wide `pub` vector and feeds fixed `N`-wide leaf arrays, so a version whose `num_public` differs, or that declares a fixed leaf width (`max_leaves: Some(_)`) ≠ `N`, is refused at load rather than surfacing as a truncated `pub` or an obscure witness failure. A `max_leaves: None` version (consent's depth-6 inclusion paths, fed by `ConsentProveInputs`) is **exempt**. Unreachable by today's registered versions (Level-A matches `N`; the Level-B consent entry is exempt), so it is pinned directly by `load_rejects_a_version_whose_width_this_build_cannot_handle` - it exists for the multi-version state M7 builds toward.
 - **Service** (`stacks/vet/api`): `PROTOCOL_VERSION` env names the version to serve (unset ⇒ current Level-A). The prover is still **eagerly loaded at boot and still `exit(1)`s** on failure — deliberately NOT the lazy per-request map M7 §3.5 sketches, which belongs with the fetch. `POST /prove-verification` takes an **optional** `version`; absent ⇒ the loaded one (the pre-M7 body has no such field), unknown ⇒ 400.
-- **Mobile** (`apps/android/.../data/ZkeyAsset.kt`, `apps/ios/DogTag/ZkeyAsset.swift`): the same version-keyed resolver over the SAME bundled assets — Android still copies from APK assets into `filesDir` (size-matched), iOS still resolves from `Bundle.main`. Both default to the Level-A descriptor, so all existing call sites (`ensure(context)` / `ensureGraph()`) are untouched. Bundled artifacts carry no hash: their integrity is the package signature's, not a runtime check.
-- **The version key `"dogtag-levela/1"` is declared three times** (Rust `artifact::LEVEL_A_V1`, Kotlin `ZkeyAsset.LEVEL_A_V1`, Swift `ZkeyAsset.levelAV1`) — one protocol constant, three languages, no shared source. A typo is a runtime rejection, not a compile error; `ZkeyAssetTest.levelAVersionKeyMatchesTheProtocolConstant` pins the Kotlin side.
+- **Mobile** (`apps/android/.../data/ZkeyAsset.kt`, `apps/ios/DogTag/ZkeyAsset.swift`): the same version-keyed resolver over the SAME bundled assets — Android still copies from APK assets into `filesDir` (size-matched), iOS still resolves from `Bundle.main`. Since **M-4** both registries also carry the Level-B `dogtag-levelb/1` consent set (`consent_final.zkey` + `consent.graph`, bundled the same way), but `current()` still returns the Level-A descriptor, so all existing call sites (`ensure(context)` / `ensureGraph()`) are untouched — a Level-B artifact is resolved only when a caller names that version explicitly (a later M-4 PR). Bundled artifacts carry no hash: their integrity is the package signature's, not a runtime check.
+- **The version key `"dogtag-levela/1"` is declared three times** (Rust `artifact::LEVEL_A_V1`, Kotlin `ZkeyAsset.LEVEL_A_V1`, Swift `ZkeyAsset.levelAV1`) — one protocol constant, three languages, no shared source; since **M-4** `"dogtag-levelb/1"` is likewise declared three times (Rust `artifact::LEVEL_B_V1`, Kotlin `ZkeyAsset.LEVEL_B_V1`, Swift `ZkeyAsset.levelBV1`). A typo is a runtime rejection, not a compile error; `ZkeyAssetTest.levelAVersionKeyMatchesTheProtocolConstant` pins the Kotlin side.
 - **NOT here (deliberately)**: no network fetch. The consent code path DID land (M7 P0 — see "Level-B consent proving path"), so the consent descriptor is now a real `REGISTRY` entry built from `circuits/consent.circom` with its own zkey + VK pins. The remaining gap is the fetch: every descriptor still resolves to a locally-present artifact.
 
 ## Level-B consent proving path (M7 P0)
@@ -880,7 +883,8 @@ easy to trust by mistake.)
 
 There **is** now an XCTest target. It is deliberately **host-less and FFI-free**: it lists the
 self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift,
-DogTag/PublicSignalIndex.swift]` in `project.yml` - keep this list in step with that file) rather than
+DogTag/PublicSignalIndex.swift, DogTag/ZkeyAsset.swift]` in `project.yml` - keep this list in step with
+that file) rather than
 using `@testable import DogTag`, because the app module links
 `DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core. That
 keeps the suite runnable on a plain checkout:
@@ -893,6 +897,10 @@ cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
 Adding a source here that transitively imports the FFI will break that property — extract the pure
 logic instead. `QrPayloadTests.swift` mirrors `QrPayloadTest.kt` case-for-case; keep them in step, as
 their whole point is that the two platforms cannot silently diverge on what a QR means.
+`ZkeyAssetTests.swift` (M-4) likewise mirrors the Android `ZkeyAssetTest.kt` (and the Rust
+`artifact.rs` tests), pinning the version-keyed resolver's contract (Level-A default, `dogtag-levelb/1`
+resolves, unknown fails closed); its covered source `DogTag/ZkeyAsset.swift` is pure — only
+`ensure`/`ensureGraph` touch `Bundle.main`, and the tests never call them, so it stays FFI-free.
 
 ### Getting real Swift signal without the xcframework
 
