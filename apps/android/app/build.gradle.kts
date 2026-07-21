@@ -15,8 +15,8 @@ android {
         applicationId = "io.liberalize.dogtag"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1-phase6"
+        versionCode = 4
+        versionName = "1.4.0"
         // The connected Xiaomi (Redmi 23129RN51X) is a 32-bit armeabi-v7a device; arm64 is also
         // built for newer devices. Both .so variants are bundled in jniLibs.
         ndk {

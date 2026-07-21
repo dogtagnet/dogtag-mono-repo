@@ -45,7 +45,9 @@ consent against `consent.circom` using the owner-secret described here, and the 
 `VerificationRegistryConsent`.
 M-4 made that path phone-REACHABLE by adding the alias **`POST /v1/verify/consent/levelb`**, gated by the
 owner's one-time export token (mirroring the Level-A `/v1/verify/consent` gate, PEEK semantics) rather than
-an operator session, plus a per-session `mode="levelb"` opt-in; no app code changed, so nothing here shifts.
+an operator session, plus a per-session `mode="levelb"` opt-in.
+M-4 PR4 then added the mobile present call site that posts to it (`ScanScreen`'s `mode == "levelb"` branch),
+inert until the `ProtocolRegistry` is published - so nothing about the owner-secret handling here shifts.
 It matters to this document because the owner-secret **is** the nullifier secret: what the route carries
 is a `nullifier` derived from it, never the secret itself, so the ["Handling rules"](#handling-rules)
 below hold on this path unchanged - including their one deliberate exception, the remote

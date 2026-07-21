@@ -383,7 +383,7 @@ struct ScanScreen: View {
                 return
             }
 
-            // -------- LEVEL-B owner-hidden path (M-4 PR3): validate the discovery anchor, fail closed --------
+            // -------- LEVEL-B owner-hidden path: validate, prove, submit, and read back --------
             // Gated on the STORED `mode`, EXPLICITLY — NOT `isZk`, which is true for any non-normal/ecdsa
             // mode and would drop a `levelb` session into the Level-A prover below. Every ProtocolRegistry
             // eth_call and the `validateDiscovery` call live inside this branch, so a non-levelb session
@@ -391,7 +391,11 @@ struct ScanScreen: View {
             if AnchorResolver.isLevelB(mode: sess.mode) {
                 working = true
                 let roax = RoaxConfig.load()
-                Task { await runLevelBAnchorGate(sess: sess, roax: roax) }
+                Task {
+                    await runLevelBFlow(
+                        sess: sess, roax: roax, credential: sel, req: req,
+                        host: host, token: token, groomerAddr: groomerAddr)
+                }
                 return
             }
 
@@ -555,20 +559,22 @@ struct ScanScreen: View {
         }
     }
 
-    /// M-4 PR3 — the owner-hidden (`mode == "levelb"`) discovery-anchor gate.
+    /// M-4 PR4 — the owner-hidden (`mode == "levelb"`) consent flow.
     ///
-    /// Resolves the dogtag `ProtocolRegistry` anchor for `dogtag-levelb/1` and validates the
-    /// platform's claims against it via the shipped `validateDiscovery` binding, FAIL-CLOSED on every
-    /// axis. It is the anti-redirect gate ONLY — it does NOT prove or submit; the owner-hidden prover
-    /// and the Level-B submit land in PR4. On success PR3 stops with a "validated" status rather than
-    /// falling through to the Level-A prover.
-    ///
-    /// It is SAFE to ship ahead of the ProtocolRegistry deploy + the app-version bump (PR4): until the
-    /// registry is published the eth_calls return nil and this fails closed, and until this build
-    /// clears the published `minAppVersion` `validateDiscovery` throws `AppTooOld` — either way the
-    /// Level-A default path, which never enters this method, is untouched.
+    /// The explicit branch preserves the Level-A path below verbatim. It resolves and validates the
+    /// on-chain anchor, rebuilds the profile witness from the M-2b store, calls `proveConsent` with the
+    /// bundled Level-B artifact, submits to the Level-B phone route, then polls the detached broadcast
+    /// through the same session-status + `consumed(nullifier)` seams as Level-A.
     @MainActor
-    private func runLevelBAnchorGate(sess: CentralApi.ExportSession, roax: RoaxConfig) async {
+    private func runLevelBFlow(
+        sess: CentralApi.ExportSession,
+        roax: RoaxConfig,
+        credential: Credential,
+        req: VerificationRequest,
+        host: String,
+        token: String,
+        groomerAddr: String
+    ) async {
         status = "Validating owner-hidden discovery anchor…"
         guard let claims = sess.claims else {
             working = false
@@ -576,8 +582,7 @@ struct ScanScreen: View {
             return
         }
         // Resolve BOTH on-chain axes. Either nil — registry unconfigured/undeployed, version
-        // unpublished, or no artifact binding — fails closed. This is exactly what lets PR3 ship
-        // before the registry deploy without any risk to the Level-A path.
+        // unpublished, or no artifact binding — fails closed without entering Level-A.
         let version = AnchorResolver.levelBVersion
         async let csTask = RoaxRpc.getContractSet(
             rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
@@ -618,10 +623,177 @@ struct ScanScreen: View {
         do {
             _ = try validateDiscovery(
                 claims: ffiClaims, anchor: anchor, appVersion: appVersion, expectedPurpose: sess.purpose)
-            // PR3 stops here: the anchor is validated and Level-B is authorized. The owner-hidden
-            // prover + Level-B submit are PR4; do NOT fall through to the Level-A prover.
-            working = false
-            status = "Owner-hidden discovery anchor validated — on-device proving lands in a later build."
+
+            // Match the Level-A pre-proof authorization posture, but keep every read inside the
+            // Level-B branch. The server and contract repeat the whitelist check before spending gas.
+            status = "Checking groomer authorization…"
+            let verifyKey = verifyWhitelistKeyHex(purposeLabel: sess.purpose)
+            let wl = await RoaxRpc.isWhitelistedFor(
+                rpcUrl: AppConfig.roaxRpc, issuerRegistry: roax.issuerRegistry,
+                key: verifyKey, signer: sess.relayer)
+            guard case .valid = wl else {
+                working = false
+                status = "This groomer is not authorized (not whitelisted)."
+                return
+            }
+            if !DnsVerify.isLocalHost(host) {
+                status = "Verifying groomer DNS…"
+                guard await DnsVerify.verifyGroomer(host: host, groomerAddr: groomerAddr) else {
+                    working = false
+                    status = "Groomer DNS not verified — refusing to present."
+                    return
+                }
+            }
+
+            // M-2b accessors confirmed at kickoff: Wallet.seedHex() supplies the seed, while the
+            // per-tag ProfileTreeStore record supplies the decimal handle, owner address and salted
+            // attributes. The stored ownerSecretHex is deliberately NOT handed across this seam;
+            // proveConsent derives and checks the complete witness internally from the seed.
+            guard let seedHex = Wallet.seedHex() else {
+                working = false
+                status = "Wallet seed unavailable — authenticate and try again."
+                return
+            }
+            // Use the throwing accessor here: an encrypted store that exists but cannot be read is
+            // not equivalent to "no secret", and the prover must fail closed rather than hide it.
+            guard let owner = try ProfileTreeStore.load().first(where: {
+                $0.dogTagIdDec == credential.dogTagId
+            }),
+                  owner.abandonedAt == nil else {
+                working = false
+                status = "No active owner-hidden secret exists for this dog tag."
+                return
+            }
+            guard owner.derivationVersion == ProfileTreeStore.derivationVersion else {
+                working = false
+                status = "This owner-hidden secret uses an unsupported derivation version."
+                return
+            }
+            let attributes = owner.attributes.map { a -> [String: Any] in
+                ["keyPath": a.keyPath, "salt": a.saltHex, "tag": Int(a.tag), "value": a.value]
+            }
+            let attributesData = try JSONSerialization.data(withJSONObject: attributes)
+            guard let attributesJson = String(data: attributesData, encoding: .utf8) else {
+                throw NSError(domain: "DogTag.LevelB", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "could not encode profile attributes"])
+            }
+            let consentNonce = "0x" + Keccak256.digest(Data(UUID().uuidString.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            // The route requires >120s at preflight because its on-chain broadcast is detached and
+            // retried. Ten minutes leaves ample room for proving plus deferred settlement.
+            let deadlineDec = String(UInt64(Date().timeIntervalSince1970) + 600)
+
+            guard let descriptor = ZkeyAsset.resolve(version: AnchorResolver.levelBVersion),
+                  let zkeyPath = ZkeyAsset.ensure(descriptor: descriptor),
+                  let graphPath = ZkeyAsset.ensureGraph(descriptor: descriptor) else {
+                working = false
+                status = "Owner-hidden proving artifact missing from bundle."
+                return
+            }
+            status = "Generating owner-hidden proof…"
+            // Groth16 proving is synchronous and runs seconds-to-minutes on-device. This function is
+            // @MainActor, so the FFI MUST run off the main actor or it freezes the UI (and the
+            // ForgeWait animation) and risks a watchdog kill — mirroring the Level-A path's
+            // non-MainActor Task. Use Task.detached (a plain Task would re-inherit MainActor here);
+            // capture only Sendable String locals and transfer the ProofFfi back before resuming.
+            let dogTagIdHandle = owner.dogTagIdDec
+            let ownerAddressHex = owner.ownerAddress
+            let purposeHex = req.purpose
+            let relayerHex = req.relayer
+            let recordTypeHex = req.recordType
+            let proof = try await Task.detached(priority: .userInitiated) {
+                try proveConsent(
+                    seedHex: seedHex,
+                    dogTagIdHandle: dogTagIdHandle,
+                    ownerAddressHex: ownerAddressHex,
+                    attributesJson: attributesJson,
+                    purposeHex: purposeHex,
+                    relayerHex: relayerHex,
+                    recordTypeHex: recordTypeHex,
+                    consentNonceHex: consentNonce,
+                    deadlineDec: deadlineDec,
+                    zkeyPath: zkeyPath,
+                    graphPath: graphPath)
+            }.value
+
+            // Level-B's nullifier is index 3. Index 4 is R; polling it is the classic successful-
+            // submit hang because VerificationRegistryConsent never marks R as consumed.
+            let nfIdx = PublicSignalIndex.levelB.nullifier
+            guard proof.pubSignals.count > nfIdx else {
+                throw NSError(domain: "DogTag.LevelB", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "proof omitted the Level-B nullifier"])
+            }
+            let nullifier = proof.pubSignals[nfIdx]
+            let verificationRegistry = cs.verificationRegistry
+            if await RoaxRpc.consumed(
+                rpcUrl: AppConfig.roaxRpc, verificationRegistry: verificationRegistry,
+                nullifier: nullifier) {
+                working = false
+                status = "This verification was already recorded."
+                return
+            }
+
+            let proofObject: [String: Any] = [
+                "a": proof.a, "b": proof.b, "c": proof.c, "pubSignals": proof.pubSignals,
+            ]
+            let payload: [String: Any] = ["exportToken": token, "proof": proofObject]
+            let payloadData = try JSONSerialization.data(withJSONObject: payload)
+            guard let payloadJson = String(data: payloadData, encoding: .utf8) else {
+                throw NSError(domain: "DogTag.LevelB", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "could not encode Level-B proof"])
+            }
+
+            status = "Submitting owner-hidden proof to groomer…"
+            let response = await CentralApi.postVerifyConsentLevelBToHost(
+                host: host, payloadJson: payloadJson)
+            if (400..<500).contains(response.code),
+               let data = response.body.data(using: .utf8),
+               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let reject = object["error"] as? String, !reject.isEmpty {
+                working = false
+                status = "Submit rejected (\(reject))."
+                return
+            }
+
+            // Detached-broadcast read-back: the session reports terminal errors while the Level-B
+            // registry's consumed(nullifier) bit is the canonical success signal. Same cadence and
+            // timeout as the existing Level-A primitive; there is no synchronous 120s HTTP request.
+            status = "Recording your owner-hidden verification on-chain…"
+            var done = false
+            var failedMsg: String? = nil
+            for _ in 0..<40 {
+                if await RoaxRpc.consumed(
+                    rpcUrl: AppConfig.roaxRpc, verificationRegistry: verificationRegistry,
+                    nullifier: nullifier) {
+                    done = true
+                    break
+                }
+                if let session = await CentralApi.verifySessionStatus(
+                    host: host, sessionId: sess.sessionId, token: token),
+                   session.status == "error" {
+                    failedMsg = session.txHash?.isEmpty == false ? session.txHash! : "recording failed"
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+            if let failedMsg {
+                working = false
+                status = "Verification failed: \(failedMsg)"
+                return
+            }
+            if done {
+                let tx = await CentralApi.verifySessionStatus(
+                    host: host, sessionId: sess.sessionId, token: token)?.txHash
+                working = false
+                if let tx, !tx.isEmpty {
+                    status = "Verified on-chain — owner hidden. tx \(String(tx.prefix(14)))…"
+                } else {
+                    status = "Verified on-chain — owner hidden."
+                }
+            } else {
+                working = false
+                status = "Submitted; awaiting confirmation."
+            }
         } catch {
             working = false
             status = "Owner-hidden verification refused: \(error)"

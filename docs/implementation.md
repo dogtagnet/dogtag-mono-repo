@@ -357,10 +357,12 @@ is derived from the wallet seed and must never be transmitted, or a server could
 nullifier and link it back to the owner. Both SERVER ends of that handoff now exist - M-2 added
 `POST /profiles/issue/custodial-bind` (§3.11), which accepts the device-built `R` as an opaque value
 and anchors + seals it, and M-3 added `POST /verify/consent/levelb` (§3.9), which relays a consent
-proof made against that same `R` to `VerificationRegistryConsent` - but nothing calls
-`build_profile_tree` in production yet: the device call sites that build `R` and prove against it are
-a deliberate follow-up, and the Level-A -> Level-B cutover for the live register-pet and verify flows
-is later still. See `docs/MOBILE_OWNER_SECRET.md`.
+proof made against that same `R` to `VerificationRegistryConsent`. M-4 PR4 wired the device-facing
+VERIFY call site - `ScanScreen`'s `mode == "levelb"` branch posts to `/v1/verify/consent/levelb` via
+`proveConsent` - though it stays inert until the `ProtocolRegistry` is published. But nothing calls
+`build_profile_tree` in production yet, so the ISSUANCE call site that builds `R` for
+`custodial-bind` remains a deliberate follow-up, and the Level-A -> Level-B cutover for the live
+register-pet and verify flows is later still. See `docs/MOBILE_OWNER_SECRET.md`.
 
 M7 P4 adds the `discovery` module - `validate`, surfaced as **`validateDiscovery`** - the pure client
 TRUST gate that checks a platform's `unverifiedClaims` (the resolve-GET convenience tier) against the

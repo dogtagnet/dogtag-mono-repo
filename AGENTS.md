@@ -1584,6 +1584,32 @@ Coverage, split by what each harness can actually prove:
   Bad-root cannot live here: `MemChain` only checks `consumed`, so a mismatched root would wrongly
   succeed.
 
+### M-4 mobile owner-hidden presentation (`mode == "levelb"`)
+
+Both native `ScanScreen` implementations keep Level-B behind the explicit stored-session
+`mode == "levelb"` branch. That branch reads the seed from `Wallet.seedHex` and the decimal tag
+handle, owner address, and salted attributes from the throwing `ProfileTreeStore.load` accessor;
+an unreadable owner-secret store must fail closed. It passes those values directly to
+`proveConsent` (the stored `ownerSecretHex` never crosses the caller seam), with the attributes'
+stored `saltHex` encoded as the FFI JSON field `salt`. Level-B artifacts are always resolved by
+version (`dogtag-levelb/1`), and the device creates a fresh 32-byte consent nonce plus a 10-minute
+deadline. The latter deliberately exceeds the server's 120-second preflight floor so the detached,
+retried broadcast still has room to settle.
+
+Submit the proof to `/v1/verify/consent/levelb`, then reuse the Level-A-shaped detached-broadcast
+poll primitive: query the validated Level-B `verificationRegistry` for
+`consumed(pubSignals[PublicSignalIndex.levelB.nullifier])` while polling the same export session for
+a terminal error. The Level-B nullifier is index **3**; index 4 is the public profile root `R`, and
+polling it produces the classic successful-submit hang. This branch has no EdDSA signing or consent
+key bind step. The Level-A `proveVerification` / bind / `/v1/verify/consent` path remains separate.
+
+The first native release carrying this path is semver **1.4.0** (build/versionCode 4). Keep both app
+versions, `ProtocolVersions.sol`, `dogtag-prover-rs`'s manifest mirror, and the registry runbook at
+that exact floor. Publishing or activating the registry entry remains a captain-gated operation;
+the feature is intentionally inert until deployment. `DiscoveryError` still crosses UniFFI as a
+string, so update-routing currently uses the generic validation failure and a typed error surface is
+a follow-up.
+
 ### iOS wiring
 
 `apps/ios/DogTag/ProfileTreeStore.swift` builds via FFI and persists `Documents/dogtag-owner-secrets.json`.
@@ -1681,13 +1707,14 @@ Level-A still serves all live issuance (`routes.rs:1957` still mints to the owne
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
-- **The iOS `ProfileTreeStore` has ZERO runtime coverage.** The `DogTagTests` target (see "iOS unit tests")
+- **The iOS `ProfileTreeStore` has ZERO automated-test coverage.** The `DogTagTests` target (see "iOS unit tests")
   cannot reach it: that suite is deliberately FFI-free and `ProfileTreeStore` builds through the FFI,
-  so it stays out of scope until the pure logic is extracted. Nothing calls it yet either - M-2 built
-  the SERVER end of the bridge (`POST /profiles/issue/custodial-bind`), but the iOS call site that
-  feeds it a built `R` is a deliberate follow-up - so the Codable round-trip, the
+  so it stays out of scope until the pure logic is extracted. The M-4 PR4 present flow (`runLevelBFlow`)
+  now calls `ProfileTreeStore.load()` in production, but the WRITE side is still uncalled - M-2 built
+  the SERVER end of the issuance bridge (`POST /profiles/issue/custodial-bind`), yet the iOS call site
+  that feeds it a built `R` is a deliberate follow-up - so the Codable-encode round-trip, the
   atomic/`.completeFileProtection` write and `verifyRecoverable` have only been typechecked, never
-  run. The first caller should exercise them.
+  run. The first writer should exercise them.
   The Android namesake is a SEPARATE coverage story - see the next bullet; do not read this one as
   covering both.
 - **The Android `ProfileTreeStore`'s device-side half is uncovered too, though its pure logic is
