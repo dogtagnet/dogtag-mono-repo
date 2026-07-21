@@ -227,11 +227,13 @@ session + QR, mirroring import/export. The device just needs a self-custodial wa
 
 ## Automated proof (no phone needed)
 
-`scripts/e2e-zk.sh` drives the entire backend-relay ZK path against the live new contracts: it boots
-an isolated groomer backend, genesises + funds a relayer, generates a **real** Groth16 proof
-(`circuits/scripts/gen-consent-fixture.mjs`), sets the preconditions via the deployer key, gaslessly
-binds the consent key, POSTs the proof to `/v1/verify/consent`, and asserts the on-chain `Verified`
-state + the owner's zero balance. Re-runnable (fresh dogTagId/nonce each run).
+`scripts/e2e-zk.sh` drives the entire backend-relay ZK path against the owner-hidden contracts: it boots
+an isolated groomer backend, genesises + funds a relayer, generates a **real** consent Groth16 proof
+(`circuits/scripts/gen-consent-fixture.mjs`), sets the preconditions via the deployer key (issue the root
++ custodial mint), POSTs the proof to the owner-hidden `/verify/consent/levelb` endpoint (against the
+`VerificationRegistryConsent` named by `VERIFICATION_REGISTRY_CONSENT_ADDR`; there is **no consent-key
+bind step** — the consent key lives inside the tree), and asserts the on-chain `Verified` state + the
+owner's zero balance. Re-runnable (fresh dogTagId/nonce each run).
 
 ## Notes
 - ZK vs NORMAL: this runbook is the **ZK** path (no data on chain, groomer never sees the record).

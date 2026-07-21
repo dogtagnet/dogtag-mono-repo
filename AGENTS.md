@@ -408,7 +408,7 @@ The dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B): a small read-most
 - **Resolvers read the axis they belong to.** `getContractSet(id)` is for anything checking trio addresses / verifier / circuitId; `getArtifactSet(id)` and `getActiveArtifactSet(contractSetId)` (which follows the binding) are for anything fetching a zkey or enforcing `minAppVersion`; `resolve(contractSetId)` returns both halves in one call. All fail closed on an unknown id, and artifact resolution fails closed with `no artifact binding` when a contract set has no artifacts bound yet (a valid intermediate rollout state).
 - **Pins are single-sourced from `crates/dogtag-prover-rs/src/artifact.rs`** (the descriptors, file-verified against `circuits/build/*` by the crate's `level_{a,b}_descriptor_pins_match_the_real_artifacts` tests, which stream-hash even the 24-64 MB zkeys). `contracts/script/ProtocolVersions.sol` reuses the SAME hex (the DRY source both the publish script AND `ProtocolRegistry.t.sol` import). The Solidity test can only re-hash the ~4 MB `.wasm` in-EVM (`vm.readFileBinary` MemoryOOGs at the 11-30 MB r1cs / 24-64 MB zkey), so the big-file pins are verified by the Rust tests - that split is intentional, not a gap. `foundry.toml` gained a `../circuits/build` read permission for the wasm hash.
 - **Signed-manifest fallback (1B)** = `crates/dogtag-prover-rs/src/manifest.rs`: an **ed25519** dogtag-key-signed JSON of the SAME version content (§5.2 TRUST tier), built DRY from the artifact descriptor + `VersionDeployment` (the on-chain axis: trio addresses) + `ArtifactRelease` (the artifact axis: artifact-set name, base URL, `minAppVersion`; `artifact_release_for(version)` is the off-chain mirror of `activeArtifactSetOf`). The manifest carries BOTH axis identities (`version_id` and `artifact_set_id`). It is a CACHE/FALLBACK, never a second authority: `reconcile(signed, pinned_pubkey, &OnchainContractSet, &OnchainArtifactSet)` takes the two axes SEPARATELY (they are read separately on-chain, and a caller must be able to reconcile against a freshly-rotated artifact set without re-reading the contract set), verifies the sig, then returns the ALWAYS-on-chain authoritative fields of both + any `FieldConflict`s - **on conflict, on-chain wins**. `verify()` checks against the PINNED pubkey (not the envelope's advertised key), so a wrong-signer/tampered manifest fails. Real anchor is a compile-pinned `DOGTAG_MANIFEST_PUBKEY` (`None` until go-live). Served by vet-api `GET /protocol/manifest?version=…` (`stacks/vet/api/src/protocol.rs`; `version` is a query param because it contains `/`; key from env `DOGTAG_MANIFEST_SIGNING_KEY`, unset ⇒ 503; a NEW route that does NOT touch the resolve GET).
-- **Publish scripts** (`DeployProtocolRegistry.s.sol` + `PublishProtocolVersions.s.sol`): deploy is admin/publisher = governance `0x8E27E117…`; `PUBLISH_TIMELOCK_SECS` defaults to 2 days and `TESTNET_DEPLOY=true` is the mandatory loud opt-in for any non-default delay. Publish is TWO phases (`…Propose`, then `…Execute` at/after the printed ETAs), reading the registry address from `PROTOCOL_REGISTRY`. `ProtocolVersions.sol` now authors each level as THREE values - `levelBContracts()`, `levelBArtifacts()`, and the binding - so the FIRST publication uses the two-axis scheme from the start (there is nothing to migrate). Both `dogtag-levela/1` + `dogtag-levelb/1` publish with the confirmed roax.json trio addresses + the frozen pins. The registry is NOT yet on-chain (no address in `deployments/roax.json` yet - deploy + record it at go-live).
+- **Publish scripts** (`DeployProtocolRegistry.s.sol` + `PublishProtocolVersions.s.sol`): deploy is admin/publisher = governance `0x8E27E117…`; `PUBLISH_TIMELOCK_SECS` defaults to 2 days and `TESTNET_DEPLOY=true` is the mandatory loud opt-in for any non-default delay. Publish is TWO phases (`…Propose`, then `…Execute` at/after the printed ETAs), reading the registry address from `PROTOCOL_REGISTRY`. `ProtocolVersions.sol` now authors the single owner-hidden `dogtag-levelb/1` version as THREE values - `levelBContracts()`, `levelBArtifacts()`, and the binding - so the FIRST publication uses the two-axis scheme from the start (there is nothing to migrate). Only `dogtag-levelb/1` publishes (the retired owner-revealing `dogtag-levela/1` is no longer authored here), with the confirmed roax.json trio addresses + the frozen pins. The registry is NOT yet on-chain (no address in `deployments/roax.json` yet - deploy + record it at go-live).
 
 ## Discovery API + app anchor-validation (M7 P4)
 
@@ -518,8 +518,10 @@ maestro test apps/android/maestro/zk_e2e.yaml
 - **Witness graph is not in the repo and not built by the published crate.**
   `circuits/build/verification.graph` (`wtns.graph.001` format, consumed by `circom_witnesscalc::
   calc_witness`) is gitignored AND the published `circom-witnesscalc` 0.2.1 crate ships no
-  `build-circuit` binary (only `calc-witness`/`cvm-compile`). It is built from
-  `circuits/verification.circom` by iden3's `build-circuit` tool. Validate any graph against the
+  `build-circuit` binary (only `calc-witness`/`cvm-compile`). It was built from the now-retired
+  `circuits/verification.circom` (that owner-revealing source has been removed) by iden3's `build-circuit`
+  tool, so a fresh graph can no longer be generated from source — use a retained/vendored copy (below).
+  Validate any graph against the
   zkey with `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
   **Consequence:** a fresh clone/worktree FAILS `prove_parity` with `missing witness graph:
   circuits/build/verification.graph` until you vendor one — that failure is environmental, not a
@@ -695,7 +697,7 @@ cp circuits/build/verification.graph      apps/ios/DogTag/verification.graph
 ```
 
 **The `verification.graph` is not produced by a plain checkout.**
-`circuits/build/verification.graph` is itself gitignored and is built from `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); if it is missing, build it before this copy - a 26-byte `stub-graph-for-build-only` placeholder will NOT prove.
+`circuits/build/verification.graph` is itself gitignored and was built from the now-retired `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); that owner-revealing source has been removed, so a fresh graph can no longer be generated - vendor a retained copy before this step (a 26-byte `stub-graph-for-build-only` placeholder will NOT prove).
 Validate the vendored pair on the host: `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
 
 ### 3. Regenerate the Xcode project + set the signing team
@@ -830,7 +832,7 @@ An already-installed app keeps proving against its **baked** key until you do, s
   `credentialSubject`. Extract by keyPath suffix.
 
 ### ZK export leaf limit
-- The on-device ZK circuit (`circuits/verification.circom` `DogTagVerification(24, 5)`,
+- The on-device ZK circuit (the retired Level-A `DogTagVerification(24, 5)`,
   `crates/dogtag-prover-rs` `pub const N = 24`) proves at most 24 Merkle leaves; more aborts with
   `too many leaves: <n> > N=24`. `ZkCircuit.maxLeaves` (Models.swift) is the display-layer mirror —
   keep it in sync if the circuit width changes.
@@ -977,9 +979,10 @@ Tests: `circuits/scripts/test-consent.mjs`. Dev setup: `circuits/scripts/setup-c
 
 `DogTagConsent` proves in zero-knowledge that a **hidden** pet owner consented to a **disclosed**
 relayer for a **disclosed** purpose, revealing nothing about the owner. It supersedes the Level-A
-`verification.circom` (which exposed `subject` + `keyHash`). **`verification.circom` is frozen — do
-not edit it** (it has a pinned dev zkey and its own test); the shared `NodeHash`/`LessThanField`
-templates were *copied* into `lib/merkle_inclusion.circom`, not refactored out of it.
+`verification.circom` (which exposed `subject` + `keyHash`). **That owner-revealing circuit source has
+since been retired/removed** (its build products + ceremony transcript remain as historical provenance);
+the shared `NodeHash`/`LessThanField` templates were *copied* into `lib/merkle_inclusion.circom`, not
+refactored out of the then-frozen circuit.
 
 ### Public-signal vector (ORDER IS LOAD-BEARING for M4 calldata)
 
