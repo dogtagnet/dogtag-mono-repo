@@ -973,8 +973,8 @@ belongs to. It is **additive**: every pre-existing top-level field is unchanged,
 ignores the block keeps working. Built from this deployment's config: `/p/` issuance always advertises
 Level-A (`app::convenience_claims`), while `/x/` verify is PER-SESSION mode-aware since M-4
 (`app::convenience_claims_for_mode`) - a `mode=="levelb"` session advertises `LEVEL_B_VERSION` + the Level-B
-registry, every other mode stays Level-A (see §3.9 and AGENTS.md "`mode=\"levelb\"` is AVAILABLE, not
-DEFAULT"). Full brick: AGENTS.md "Discovery API + app anchor-validation (M7 P4)".
+registry, every other mode stays Level-A (see §3.9 and AGENTS.md "Superseded M-4 opt-in snapshot
+(historical only)"). Full brick: AGENTS.md "Discovery API + app anchor-validation (M7 P4)".
 
 ```
 # the block both resolve GETs add (wire key is `unverifiedClaims`, NOT `claims` — it is deliberately
@@ -2240,7 +2240,7 @@ POST /verify/consent/submit { token, consent, sig, mode, proof?, pubSignals?, bi
 # misrouted request encodes for the wrong one and reverts EMPTY (`0x`). No consent/sig, no bind, no
 # subject/keyHash. The two consent-submit routes are MODE-GATED and uncrossable (a "levelb" session is refused by
 # the Level-A submit and vice-versa). Normative flow + preflight: §3.9 step (2b); rationale: AGENTS.md
-# "Level-B unified submission path (M-3)" + "The two consent submit routes are mode-gated ... (M-4)".
+# "Level-B unified submission path (M-3)" + "Superseded M-4 dual-route migration guard (historical only)".
 ```
 > **`/import/pull` (off-chain data) stays DECOUPLED from `/verify/*` (on-chain attestation).** NORMAL
 > mode can compose both; **ZK mode = verification with no data import at all** (privacy-maximal default).
