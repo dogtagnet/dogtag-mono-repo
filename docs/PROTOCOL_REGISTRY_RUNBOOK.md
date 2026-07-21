@@ -59,6 +59,13 @@ export it for the next steps:
 export PROTOCOL_REGISTRY=<deployed address>
 ```
 
+The two mobile bundles also carry their OWN `ProtocolRegistry` field, blank today
+(`apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json`). The phones read no
+backend env, so the deployed address must be hand-filled into BOTH and the apps rebuilt/reinstalled
+(the same mobile step as any address change - `docs/PRODUCTION_DEPLOYMENT.md` §2.4 /
+`docs/MOBILE_BUILD.md`) or the app-side anchor validation (M-4 PR3) resolves a blank registry to null
+and Level-B stays fail-closed. This rides with the PR4 app rebuild + version bump.
+
 ## Step 2 — propose (starts the 2-day timelock)
 
 ```sh
