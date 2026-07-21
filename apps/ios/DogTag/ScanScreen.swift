@@ -691,18 +691,30 @@ struct ScanScreen: View {
                 return
             }
             status = "Generating owner-hidden proof…"
-            let proof = try proveConsent(
-                seedHex: seedHex,
-                dogTagIdHandle: owner.dogTagIdDec,
-                ownerAddressHex: owner.ownerAddress,
-                attributesJson: attributesJson,
-                purposeHex: req.purpose,
-                relayerHex: req.relayer,
-                recordTypeHex: req.recordType,
-                consentNonceHex: consentNonce,
-                deadlineDec: deadlineDec,
-                zkeyPath: zkeyPath,
-                graphPath: graphPath)
+            // Groth16 proving is synchronous and runs seconds-to-minutes on-device. This function is
+            // @MainActor, so the FFI MUST run off the main actor or it freezes the UI (and the
+            // ForgeWait animation) and risks a watchdog kill — mirroring the Level-A path's
+            // non-MainActor Task. Use Task.detached (a plain Task would re-inherit MainActor here);
+            // capture only Sendable String locals and transfer the ProofFfi back before resuming.
+            let dogTagIdHandle = owner.dogTagIdDec
+            let ownerAddressHex = owner.ownerAddress
+            let purposeHex = req.purpose
+            let relayerHex = req.relayer
+            let recordTypeHex = req.recordType
+            let proof = try await Task.detached(priority: .userInitiated) {
+                try proveConsent(
+                    seedHex: seedHex,
+                    dogTagIdHandle: dogTagIdHandle,
+                    ownerAddressHex: ownerAddressHex,
+                    attributesJson: attributesJson,
+                    purposeHex: purposeHex,
+                    relayerHex: relayerHex,
+                    recordTypeHex: recordTypeHex,
+                    consentNonceHex: consentNonce,
+                    deadlineDec: deadlineDec,
+                    zkeyPath: zkeyPath,
+                    graphPath: graphPath)
+            }.value
 
             // Level-B's nullifier is index 3. Index 4 is R; polling it is the classic successful-
             // submit hang because VerificationRegistryConsent never marks R as consumed.
