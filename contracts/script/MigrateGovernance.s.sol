@@ -17,8 +17,8 @@ abstract contract MigrateGovernanceBase is Script {
         string memory json = vm.readFile("deployments/roax.json");
         t = GovernanceMigration.Targets({
             issuerRegistry: vm.parseJsonAddress(json, ".IssuerRegistry"),
-            verificationRegistry: vm.parseJsonAddress(json, ".VerificationRegistry"),
-            sbt: vm.parseJsonAddress(json, ".DogTagSBT"),
+            verificationRegistry: vm.parseJsonAddress(json, ".VerificationRegistryConsent"),
+            sbt: vm.parseJsonAddress(json, ".DogTagSBTConsent"),
             factory: vm.parseJsonAddress(json, ".DogTagIssuerFactory")
         });
         multisig = vm.envAddress("MULTISIG");
@@ -27,11 +27,11 @@ abstract contract MigrateGovernanceBase is Script {
     function _report(GovernanceMigration.Targets memory t, address multisig) internal view {
         console2.log("MULTISIG (target admin)", multisig);
         console2.log("IssuerRegistry         ", t.issuerRegistry);
-        console2.log("VerificationRegistry   ", t.verificationRegistry);
+        console2.log("VerificationRegistryConsent", t.verificationRegistry);
         console2.log(
-            "DogTagSBT              ",
+            "DogTagSBTConsent       ",
             t.sbt,
-            GovernanceMigration.supportsTwoStep(t.sbt) ? "(two-step)" : "(legacy/atomic)"
+            GovernanceMigration.supportsTwoStep(t.sbt) ? "(two-step)" : "(atomic)"
         );
         console2.log("DogTagIssuerFactory    ", t.factory);
     }
@@ -61,8 +61,7 @@ contract MigrateGovernanceBegin is MigrateGovernanceBase {
 
 /// @notice Phase 2: executed BY (or through) the multisig AFTER the timelocks elapse. Accepts admin /
 /// ownership everywhere and strips the EOA's governance roles (DEFAULT_ADMIN / WHITELIST_ADMIN / factory
-/// ownership). The EOA's legacy Level-A ISSUER_ROLE and record-type whitelists are NOT touched here and
-/// must be retired separately — after this runs the deployer key still cannot govern, but can still mint.
+/// ownership). Issuance roles and record-type whitelists are outside this generic governance hand-off.
 /// @dev When the multisig is a Safe (a contract, not an EOA key), do NOT broadcast this script: instead
 /// submit each `accept`/`revoke` call from the Safe (the begin-phase log + GovernanceMigration.accept list
 /// are the call set). Broadcasting works only when MULTISIG is a key you control (anvil / a 1-of-1 / an
@@ -80,7 +79,6 @@ contract MigrateGovernanceAccept is MigrateGovernanceBase {
         vm.stopBroadcast();
 
         console2.log("Hand-off complete. Verify: defaultAdmin()==MULTISIG and OLD_ADMIN has no");
-        console2.log("governance roles. It may still hold legacy Level-A ISSUER_ROLE + whitelists,");
-        console2.log("which this migration does not touch - retire those separately.");
+        console2.log("governance roles. Review issuance roles and whitelists separately.");
     }
 }

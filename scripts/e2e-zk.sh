@@ -1,318 +1,232 @@
 #!/usr/bin/env bash
-# DogTag testnet (ROAX chainId 135) BACKEND-RELAY *ZK* end-to-end test (LIVE, reproducible).
+# DogTag ROAX owner-hidden consent end-to-end test (LIVE, gasless owner).
 #
-# Proves, against the LIVE new ROAX deployment, the gasless groomer ZK verification path:
-#   (a) the RELAYER gaslessly binds the OWNER's consent key via ConsentKeyRegistry.bindConsentKeyFor
-#       (the owner only ECDSA-signs an EIP-712 BindConsentKey off-chain; the relayer broadcasts), and
-#   (b) a REAL Groth16 proof is recorded on-chain via VerificationRegistry.recordVerificationZK
-#       THROUGH the backend RELAY endpoint (POST /v1/verify/consent) — the owner pays ZERO gas.
+# The harness generates a REAL Groth16 proof from circuits/consent.circom, establishes the tag/root
+# preconditions on a freshly deployed owner-hidden stack, and submits the proof through the verifier
+# backend. Contract addresses are intentionally env-only: a redeploy must repoint this harness instead
+# of silently falling back to the retired deployment.
 #
-# The proof ORACLE is the host ark-circom Groth16 prover (crates/dogtag-prover-rs, bin `prove-stdin`),
-# fed a circuit input bound to THIS run's relayer/subject/purpose/dogTagId by scripts/zk/gen_input.mjs.
-# That same {a,b,c,pubSignals} is what an on-device phone prover would emit; here the script stands in
-# for the phone. The proof is verified on-chain by the new Groth16Verifier (checked once up front).
+# Required address env (directly or via contracts/.env):
+#   ISSUER_REGISTRY_ADDR (or ISSUER_REGISTRY)
+#   VERIFICATION_REGISTRY_CONSENT_ADDR
+#   SBT_CONSENT_ADDR
+#   PROFILE_ISSUER_ADDR
+# Required signer env: GOVERNANCE_PRIVATE_KEY (or DEPLOYER_PRIVATE_KEY).
 #
-# The script is fully self-contained + reproducible:
-#   - boots its OWN isolated groomer backend (custom port, in-mem store) wired to the LIVE contracts,
-#   - genesis'es a fresh relayer signer over the admin HTTP API (no manual wizard),
-#   - establishes all on-chain preconditions with the deployer key (contracts/.env),
-#   - drives the relay endpoint with the proof + bind block, and asserts the on-chain Verified state.
-#
-#   scripts/e2e-zk.sh
-#
-# Requires: curl, jq, cast (foundry), node, python3, cargo. Uses contracts/.env (DEPLOYER_PRIVATE_KEY).
+# Requires: curl, jq, cast, node, pnpm, cargo, python3.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+if [ -f "$ROOT/contracts/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/contracts/.env"
+  set +a
+fi
+
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
-CHAIN_ID=135
+CHAIN_ID="${CHAIN_ID:-135}"
+IR="${ISSUER_REGISTRY_ADDR:-${ISSUER_REGISTRY:-}}"
+VR="${VERIFICATION_REGISTRY_CONSENT_ADDR:-}"
+SBT="${SBT_CONSENT_ADDR:-}"
+PROFILE_ISSUER="${PROFILE_ISSUER_ADDR:-}"
+PK="${GOVERNANCE_PRIVATE_KEY:-${DEPLOYER_PRIVATE_KEY:-}}"
+
+: "${IR:?set ISSUER_REGISTRY_ADDR (fresh shared deployment)}"
+: "${VR:?set VERIFICATION_REGISTRY_CONSENT_ADDR (fresh owner-hidden registry)}"
+: "${SBT:?set SBT_CONSENT_ADDR (fresh owner-hidden SBT)}"
+: "${PROFILE_ISSUER:?set PROFILE_ISSUER_ADDR (fresh DogTagIssuer clone)}"
+: "${PK:?set GOVERNANCE_PRIVATE_KEY or DEPLOYER_PRIVATE_KEY for the fresh deployment admin}"
+
+ADMIN_ADDR="$(cast wallet address --private-key "$PK")"
 export MONOREPO_ROOT="$ROOT"
 export CIRCUITS_BUILD_DIR="$ROOT/circuits/build"
 
-# LIVE ROAX addresses (contracts/deployments/roax.json).
-IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c          # IssuerRegistry
-VR=0x4E2f0996e1CB4E24F1053346f3da2186906835E8          # VerificationRegistry (ZK-wired)
-SBT=0x1FB8986573Ac36d532cF7d5a5352202B094D4233          # DogTagSBT
-CKR=0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671          # ConsentKeyRegistry (gasless bindConsentKeyFor)
-VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53   # VACCINATION issuer clone
-ZKV=0xEEFCfAF026931b7325472A88fd14Ee780Da13559          # Groth16Verifier (v2, live since 2026-07-02 cutover)
-
-set -a; source "$ROOT/contracts/.env"; set +a   # DEPLOYER_PRIVATE_KEY / DEPLOYER_ADDRESS
-# Governance Phase-2 (executed on-chain 2026-07-05, block 123835) moved the governance/admin authority
-# (WHITELIST_ADMIN / DEFAULT_ADMIN / factory owner) off the old deployer EOA 0x119F… onto governance
-# signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2. The old EOA is NOT role-free, though - it still
-# holds the legacy Level-A SBT ISSUER_ROLE + record-type whitelists, so never reuse it as a neutral key.
-# This harness establishes every on-chain precondition (whitelistFor / grantRole / issue / mint) as ONE
-# key, so point the deployer vars it uses at the captain-managed signer-1 key (GOVERNANCE_PRIVATE_KEY /
-# GOVERNANCE_ADDRESS in contracts/.env); the old EOA's admin txs would revert.
-DEPLOYER_PRIVATE_KEY="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - Phase-2 removed the governance/admin authority from the old deployer EOA 0x119F…, which still holds legacy Level-A ISSUER_ROLE + record-type whitelists and is NOT a neutral key}"
-DEPLOYER_ADDRESS="${GOVERNANCE_ADDRESS:?set GOVERNANCE_ADDRESS (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env}"
-PK="$DEPLOYER_PRIVATE_KEY"
-
-R=21888242871839275222246405745257275088548364400416034343698204186575808495617  # BN254 r
-
-# Isolated backend instance for this run.
 PORT="${E2E_PORT:-43777}"
 GROOMER="http://127.0.0.1:$PORT"
-OP_PW=operator
-ADMIN_PW=admin
-BIND_PW="bind-passphrase-e2e"
-
-# Run-unique values so the test is re-runnable (fresh dogTagId -> fresh Merkle root R; fresh nonce ->
-# fresh nullifier, so consumed[nf] is never replayed). SUBJECT = vm.addr(1) (privkey 0x1) — a key we
-# control as the "owner"; it NEVER needs gas, it only ECDSA-signs the bind off-chain.
-SUBJECT_PK=0x0000000000000000000000000000000000000000000000000000000000000001
-SUBJECT=$(cast wallet address --private-key "$SUBJECT_PK" | tr 'A-F' 'a-f')
-PURPOSE_LABEL="${PURPOSE_LABEL:-boarding_intake}"
-RECORD_TYPE=VACCINATION
-NOW=$(date +%s)
-DOG_TAG_ID="${DOG_TAG_ID:-$(( (NOW % 9000000) + 800000 ))}"
-CONSENT_NONCE="${CONSENT_NONCE:-$NOW}"
-# purpose field element = keccak256(label) mod r (circuit/registry convention).
-PURPOSE_DEC=$(python3 -c "print(int('$(cast keccak "$PURPOSE_LABEL")',16) % $R)")
-PURPOSE_B32=$(cast to-uint256 "$PURPOSE_DEC")
+OP_PW="operator"
+ADMIN_PW="admin"
+UNLOCK_PW=consent-e2e-passphrase
 
 green(){ printf '\033[32mPASS\033[0m %s\n' "$1"; }
-fail(){ printf '\033[31mFAIL\033[0m %s\n' "$1"; cleanup; exit 1; }
+fail(){ printf '\033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
 step(){ printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 hex32(){ python3 -c "print('0x%064x' % int('$1'))"; }
-addr_of(){ python3 -c "print('0x%040x' % int('$1'))"; }   # field element -> 0x address
+addr_of(){ python3 -c "print('0x%040x' % int('$1'))"; }
+lower(){ tr '[:upper:]' '[:lower:]'; }
 
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dogtag-consent-e2e.XXXXXX")"
+FIXTURE="$TMP_DIR/consent-fixture.json"
 SRV_PID=""
-LOG="$ROOT/.demo/e2e-zk-groomer.log"
-cleanup(){ [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" >/dev/null 2>&1 || true; }
+LOG="$ROOT/.demo/e2e-consent-groomer.log"
+cleanup(){
+  [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" >/dev/null 2>&1 || true
+  rm -r -- "$TMP_DIR" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
-echo "subject(owner)=$SUBJECT  dogTagId=$DOG_TAG_ID  purpose=$PURPOSE_LABEL($PURPOSE_DEC)  nonce=$CONSENT_NONCE"
+for entry in "IssuerRegistry:$IR" "VerificationRegistryConsent:$VR" "DogTagSBTConsent:$SBT" "ProfileIssuer:$PROFILE_ISSUER"; do
+  name="${entry%%:*}"
+  address="${entry#*:}"
+  [ "$(cast code "$address" --rpc-url "$RPC")" != 0x ] || fail "$name has no code at $address"
+done
+[ "$(cast call "$VR" 'issuerRegistry()(address)' --rpc-url "$RPC" | lower)" = "$(printf %s "$IR" | lower)" ] \
+  || fail "owner-hidden registry is wired to a different IssuerRegistry"
+[ "$(cast call "$VR" 'sbt()(address)' --rpc-url "$RPC" | lower)" = "$(printf %s "$SBT" | lower)" ] \
+  || fail "owner-hidden registry is wired to a different SBT"
+ZKV="$(cast call "$VR" 'zkVerifier()(address)' --rpc-url "$RPC")"
+[ "$(cast code "$ZKV" --rpc-url "$RPC")" != 0x ] || fail "registry verifier has no code at $ZKV"
 
-# --------------------------------------------------------------------------------------------------
-step "0. Build prover bin + vet-api, boot an isolated groomer backend wired to the LIVE contracts"
-cargo build -q --release -p dogtag-prover-rs --bin prove-stdin
+step "0. Build the consent fixture dependencies and isolated verifier backend"
+pnpm --filter @dogtag/standard build >/dev/null
 cargo build -q --release -p vet-api
 mkdir -p "$ROOT/.demo"
-ADMIN_PASSWORD=$ADMIN_PW OPERATOR_PASSWORD=$OP_PW CENTRAL_HMAC_SECRET=dev-central-hmac-secret \
-  ROAX_RPC=$RPC CHAIN_ID=$CHAIN_ID ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  CONSENT_KEY_REGISTRY_ADDR=$CKR VACCINATION_ISSUER_ADDR=$VACC_CLONE \
-  ISSUER_NAME="E2E Groomer" ISSUER_DOMAIN=groomer.e2e BUSINESS_ID=biz-e2e BUSINESS_TYPE=groomer \
-  CONFIRMATIONS=1 PORT=$PORT DEPLOYMENT_URL=$GROOMER CIRCUITS_BUILD_DIR=$CIRCUITS_BUILD_DIR \
+DEMO_MODE=1 ADMIN_PASSWORD=$ADMIN_PW OPERATOR_PASSWORD=$OP_PW \
+  CENTRAL_HMAC_SECRET=dev-central-hmac-secret ROAX_RPC=$RPC CHAIN_ID=$CHAIN_ID \
+  ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
+  VERIFICATION_REGISTRY_CONSENT_ADDR=$VR SBT_ADDR=$SBT SBT_CONSENT_ADDR=$SBT \
+  PROFILE_DOCUMENT_STORE=$PROFILE_ISSUER PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  ISSUER_NAME="Consent E2E Groomer" ISSUER_DOMAIN=groomer.e2e BUSINESS_ID=biz-e2e \
+  BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=$PORT DEPLOYMENT_URL=$GROOMER \
   "$ROOT/target/release/vet-api" >"$LOG" 2>&1 &
 SRV_PID=$!
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   curl -fsS "$GROOMER/health" >/dev/null 2>&1 && break
   sleep 0.5
 done
-curl -fsS "$GROOMER/health" >/dev/null 2>&1 || fail "groomer backend failed to start (see $LOG)"
-green "isolated groomer up on $GROOMER (pid $SRV_PID)"
+curl -fsS "$GROOMER/health" >/dev/null 2>&1 || fail "backend failed to start (see $LOG)"
+green "isolated verifier backend is up on $GROOMER"
 
-# --------------------------------------------------------------------------------------------------
-step "1. Genesis a fresh RELAYER signer over the admin HTTP API (no manual wizard)"
-ATOK=$(curl -fsS -X POST "$GROOMER/admin/login" -H 'content-type: application/json' -d "{\"password\":\"$ADMIN_PW\"}" | jq -r .token)
-[ -n "$ATOK" ] && [ "$ATOK" != null ] || fail "admin login"
-GEN=$(curl -fsS -X POST "$GROOMER/admin/genesis/start" -H "authorization: Bearer $ATOK")
-# Re-type the challenge words back, in challenge-index order, to confirm genesis.
-WORDS_JSON=$(echo "$GEN" | jq -c '[.challengeIndices[] as $i | .words[$i]]')
-CONFIRM=$(curl -fsS -X POST "$GROOMER/admin/genesis/confirm" -H "authorization: Bearer $ATOK" \
-  -H 'content-type: application/json' -d "{\"words\":$WORDS_JSON,\"passphrase\":\"$BIND_PW\"}")
-RELAYER=$(echo "$CONFIRM" | jq -r .address | tr 'A-F' 'a-f')
-[ -n "$RELAYER" ] && [ "$RELAYER" != null ] || fail "genesis confirm: $CONFIRM"
-UNLOCK=$(curl -fsS -X POST "$GROOMER/admin/unlock" -H "authorization: Bearer $ATOK" \
-  -H 'content-type: application/json' -d "{\"passphrase\":\"$BIND_PW\"}")
-[ "$(echo "$UNLOCK" | jq -r .unlocked)" = true ] || fail "unlock: $UNLOCK"
-green "relayer (backend signer 0) = $RELAYER"
+step "1. Create and unlock a fresh gas-paying relayer"
+ATOK="$(curl -fsS -X POST "$GROOMER/admin/login" -H 'content-type: application/json' \
+  -d "{\"password\":\"$ADMIN_PW\"}" | jq -r .token)"
+GEN="$(curl -fsS -X POST "$GROOMER/admin/genesis/start" -H "authorization: Bearer $ATOK")"
+WORDS_JSON="$(printf %s "$GEN" | jq -c '[.challengeIndices[] as $i | .words[$i]]')"
+CONFIRM="$(curl -fsS -X POST "$GROOMER/admin/genesis/confirm" \
+  -H "authorization: Bearer $ATOK" -H 'content-type: application/json' \
+  -d "{\"words\":$WORDS_JSON,\"passphrase\":\"$UNLOCK_PW\"}")"
+RELAYER="$(printf %s "$CONFIRM" | jq -r .address | lower)"
+[ -n "$RELAYER" ] && [ "$RELAYER" != null ] || fail "relayer genesis failed: $CONFIRM"
+UNLOCK="$(curl -fsS -X POST "$GROOMER/admin/unlock" -H "authorization: Bearer $ATOK" \
+  -H 'content-type: application/json' -d "{\"passphrase\":\"$UNLOCK_PW\"}")"
+[ "$(printf %s "$UNLOCK" | jq -r .unlocked)" = true ] || fail "relayer unlock failed: $UNLOCK"
+green "fresh relayer = $RELAYER"
 
-# --------------------------------------------------------------------------------------------------
-step "2. PROOF ORACLE: generate a REAL Groth16 proof bound to (relayer, subject, purpose, dogTagId)"
-ZK_RELAYER=$RELAYER ZK_SUBJECT=$SUBJECT ZK_PURPOSE=$PURPOSE_DEC ZK_DOGTAGID=$DOG_TAG_ID ZK_NONCE=$CONSENT_NONCE \
-  node "$ROOT/scripts/zk/gen_input.mjs" > /tmp/e2e_geninput.json
-echo "  proving (host ark-circom Groth16 — slow)…"
-jq -c '.input' /tmp/e2e_geninput.json | "$ROOT/target/release/prove-stdin" > /tmp/e2e_proof.json
-PUB_A=$(jq -c '.a' /tmp/e2e_proof.json); PUB_B=$(jq -c '.b' /tmp/e2e_proof.json)
-PUB_C=$(jq -c '.c' /tmp/e2e_proof.json); PUB=$(jq -c '.pub' /tmp/e2e_proof.json)
-P_DOGTAG=$(jq -r '.pub[0]' /tmp/e2e_proof.json)
-P_RELAYER=$(addr_of "$(jq -r '.pub[2]' /tmp/e2e_proof.json)")
-P_SUBJECT=$(addr_of "$(jq -r '.pub[3]' /tmp/e2e_proof.json)")
-NULLIFIER=$(hex32 "$(jq -r '.pub[4]' /tmp/e2e_proof.json)")
-KEY_HASH=$(hex32 "$(jq -r '.pub[5]' /tmp/e2e_proof.json)")
-ROOT_HEX=$(hex32 "$(jq -r '.pub[6]' /tmp/e2e_proof.json)")
-[ "$P_DOGTAG" = "$DOG_TAG_ID" ] || fail "proof dogTagId $P_DOGTAG != $DOG_TAG_ID"
-[ "$P_RELAYER" = "$RELAYER" ] || fail "proof relayer $P_RELAYER != $RELAYER"
-[ "$P_SUBJECT" = "$SUBJECT" ] || fail "proof subject $P_SUBJECT != $SUBJECT"
-echo "  pub: dogTagId=$P_DOGTAG keyHash=$KEY_HASH nullifier=$NULLIFIER R=$ROOT_HEX"
-# Sanity: the LIVE Groth16Verifier must accept this proof before we spend any gas.
-A0=$(jq -r '.a[0]' /tmp/e2e_proof.json); A1=$(jq -r '.a[1]' /tmp/e2e_proof.json)
-B00=$(jq -r '.b[0][0]' /tmp/e2e_proof.json); B01=$(jq -r '.b[0][1]' /tmp/e2e_proof.json)
-B10=$(jq -r '.b[1][0]' /tmp/e2e_proof.json); B11=$(jq -r '.b[1][1]' /tmp/e2e_proof.json)
-C0=$(jq -r '.c[0]' /tmp/e2e_proof.json); C1=$(jq -r '.c[1]' /tmp/e2e_proof.json)
-PJOIN=$(jq -r '.pub | join(",")' /tmp/e2e_proof.json)
+step "2. Generate and independently verify a real consent.circom proof"
+CONSENT_FIXTURE_RELAYER="$RELAYER" CONSENT_FIXTURE_OUT="$FIXTURE" \
+  node "$ROOT/circuits/scripts/gen-consent-fixture.mjs" >"$TMP_DIR/generator.log"
+
+PUB_A="$(jq -c '.a' "$FIXTURE")"
+PUB_B="$(jq -c '.b' "$FIXTURE")"
+PUB_C="$(jq -c '.c' "$FIXTURE")"
+PUB="$(jq -c '.pub' "$FIXTURE")"
+[ "$(jq '.pub | length' "$FIXTURE")" = 7 ] || fail "consent proof must expose exactly seven signals"
+DOG_TAG_ID="$(jq -r '.pub[0]' "$FIXTURE")"
+PURPOSE_WORD="$(hex32 "$(jq -r '.pub[1]' "$FIXTURE")")"
+P_RELAYER="$(addr_of "$(jq -r '.pub[2]' "$FIXTURE")" | lower)"
+NULLIFIER="$(hex32 "$(jq -r '.pub[3]' "$FIXTURE")")"
+ROOT_HEX="$(hex32 "$(jq -r '.pub[4]' "$FIXTURE")")"
+RECORD_TYPE_WORD="$(hex32 "$(jq -r '.pub[5]' "$FIXTURE")")"
+DEADLINE="$(jq -r '.pub[6]' "$FIXTURE")"
+HIDDEN_OWNER="$(jq -r '._ownerAddress' "$FIXTURE" | lower)"
+[ "$P_RELAYER" = "$RELAYER" ] || fail "proof relayer $P_RELAYER != backend relayer $RELAYER"
+
+A0="$(jq -r '.a[0]' "$FIXTURE")"; A1="$(jq -r '.a[1]' "$FIXTURE")"
+B00="$(jq -r '.b[0][0]' "$FIXTURE")"; B01="$(jq -r '.b[0][1]' "$FIXTURE")"
+B10="$(jq -r '.b[1][0]' "$FIXTURE")"; B11="$(jq -r '.b[1][1]' "$FIXTURE")"
+C0="$(jq -r '.c[0]' "$FIXTURE")"; C1="$(jq -r '.c[1]' "$FIXTURE")"
+PJOIN="$(jq -r '.pub | join(",")' "$FIXTURE")"
 [ "$(cast call "$ZKV" 'verifyProof(uint256[2],uint256[2][2],uint256[2],uint256[7])(bool)' \
     "[$A0,$A1]" "[[$B00,$B01],[$B10,$B11]]" "[$C0,$C1]" "[$PJOIN]" --rpc-url "$RPC")" = true ] \
-  || fail "live Groth16Verifier rejected the generated proof"
-green "real Groth16 proof generated + accepted by the LIVE Groth16Verifier on-chain"
+  || fail "committed ceremony verifier rejected the generated consent proof"
+green "real consent proof accepted by verifier $ZKV (no owner public signal)"
 
-# --------------------------------------------------------------------------------------------------
-step "3. Preconditions (deployer): anchor root R on the VACCINATION clone -> isValid(R)==true"
-RT_KEY=$(cast keccak "$RECORD_TYPE")
-# The clone's issue(R) is onlyWhitelisted(recordType); whitelist the deployer for VACCINATION first.
-if [ "$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$RT_KEY" "$DEPLOYER_ADDRESS" --rpc-url "$RPC")" != true ]; then
-  cast send "$IR" 'whitelistFor(bytes32,address)' "$RT_KEY" "$DEPLOYER_ADDRESS" --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
+step "3. Anchor the proof root and mint the owner-hidden tag"
+ANCHOR_RT="$(cast call "$PROFILE_ISSUER" 'recordType()(bytes32)' --rpc-url "$RPC")"
+if [ "$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$ANCHOR_RT" "$ADMIN_ADDR" --rpc-url "$RPC")" != true ]; then
+  cast send "$IR" 'whitelistFor(bytes32,address)' "$ANCHOR_RT" "$ADMIN_ADDR" \
+    --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
 fi
-if [ "$(cast call "$VACC_CLONE" 'isValid(bytes32)(bool)' "$ROOT_HEX" --rpc-url "$RPC")" != true ]; then
-  cast send "$VACC_CLONE" 'issue(bytes32)' "$ROOT_HEX" --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null \
-    || fail "clone.issue(R) reverted (R already taken by another clone? use a fresh DOG_TAG_ID)"
+if [ "$(cast call "$PROFILE_ISSUER" 'isValid(bytes32)(bool)' "$ROOT_HEX" --rpc-url "$RPC")" != true ]; then
+  cast send "$PROFILE_ISSUER" 'issue(bytes32)' "$ROOT_HEX" --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null \
+    || fail "profile issuer could not anchor R (use a fresh deployment if this root was revoked)"
 fi
-[ "$(cast call "$VACC_CLONE" 'isValid(bytes32)(bool)' "$ROOT_HEX" --rpc-url "$RPC")" = true ] || fail "isValid(R) != true"
-green "credentialRoot R anchored on the clone (isValid(R)==true)"
 
-# --------------------------------------------------------------------------------------------------
-step "4. Preconditions (deployer): mint dogTagId SBT to the subject (ownerOf(dogTagId)==subject)"
-ISSUER_ROLE=$(cast call "$SBT" 'ISSUER_ROLE()(bytes32)' --rpc-url "$RPC")
-if [ "$(cast call "$SBT" 'hasRole(bytes32,address)(bool)' "$ISSUER_ROLE" "$DEPLOYER_ADDRESS" --rpc-url "$RPC")" != true ]; then
-  cast send "$SBT" 'grantRole(bytes32,address)' "$ISSUER_ROLE" "$DEPLOYER_ADDRESS" --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null 2>&1 || true
+ISSUER_ROLE="$(cast call "$SBT" 'ISSUER_ROLE()(bytes32)' --rpc-url "$RPC")"
+if [ "$(cast call "$SBT" 'hasRole(bytes32,address)(bool)' "$ISSUER_ROLE" "$ADMIN_ADDR" --rpc-url "$RPC")" != true ]; then
+  cast send "$SBT" 'grantRole(bytes32,address)' "$ISSUER_ROLE" "$ADMIN_ADDR" \
+    --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
 fi
-CUR_OWNER=$(cast call "$SBT" 'ownerOf(uint256)(address)' "$DOG_TAG_ID" --rpc-url "$RPC" 2>/dev/null | tr 'A-F' 'a-f' || echo none)
-if [ "$CUR_OWNER" != "$SUBJECT" ]; then
-  cast send "$SBT" 'mint(address,uint256,bytes32)' "$SUBJECT" "$DOG_TAG_ID" "$ROOT_HEX" --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null \
-    || fail "mint SBT to subject (dogTagId $DOG_TAG_ID taken — pick a fresh DOG_TAG_ID)"
+ONCHAIN_ROOT="$(cast call "$SBT" 'profileRoot(uint256)(bytes32)' "$DOG_TAG_ID" --rpc-url "$RPC")"
+ZERO_WORD="0x$(printf '%064d' 0)"
+if [ "$(printf %s "$ONCHAIN_ROOT" | lower)" = "$ZERO_WORD" ]; then
+  cast send "$SBT" 'mintCustodial(uint256,bytes32)' "$DOG_TAG_ID" "$ROOT_HEX" \
+    --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
+elif [ "$(printf %s "$ONCHAIN_ROOT" | lower)" != "$(printf %s "$ROOT_HEX" | lower)" ]; then
+  fail "dogTagId is already sealed to a different root"
 fi
-[ "$(cast call "$SBT" 'ownerOf(uint256)(address)' "$DOG_TAG_ID" --rpc-url "$RPC" | tr 'A-F' 'a-f')" = "$SUBJECT" ] \
-  || fail "ownerOf(dogTagId) != subject"
-green "subject owns dogTagId $DOG_TAG_ID"
+[ "$(cast call "$SBT" 'profileRoot(uint256)(bytes32)' "$DOG_TAG_ID" --rpc-url "$RPC" | lower)" = "$(printf %s "$ROOT_HEX" | lower)" ] \
+  || fail "profileRoot(dogTagId) != proof R"
+CUSTODIAN="$(cast call "$SBT" 'custodian()(address)' --rpc-url "$RPC" | lower)"
+TAG_HOLDER="$(cast call "$SBT" 'ownerOf(uint256)(address)' "$DOG_TAG_ID" --rpc-url "$RPC" | lower)"
+[ "$TAG_HOLDER" = "$CUSTODIAN" ] || fail "tag was not minted to the neutral custodian"
+[ "$TAG_HOLDER" != "$HIDDEN_OWNER" ] || fail "hidden owner leaked into ERC-721 ownership"
+green "R anchored and dogTagId $DOG_TAG_ID sealed to neutral custodian $CUSTODIAN"
 
-# --------------------------------------------------------------------------------------------------
-step "5. Preconditions (deployer): whitelist relayer for VERIFY:purpose + fund relayer (NOT subject)"
-VERIFY_KEY=$(cast keccak "$(cast abi-encode 'f(string,bytes32)' 'VERIFY:' "$PURPOSE_B32")")
+step "4. Whitelist and fund the proof-bound relayer"
+VERIFY_KEY="$(cast keccak "$(cast abi-encode 'f(string,bytes32)' 'VERIFY:' "$PURPOSE_WORD")")"
 if [ "$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$VERIFY_KEY" "$RELAYER" --rpc-url "$RPC")" != true ]; then
-  cast send "$IR" 'whitelistFor(bytes32,address)' "$VERIFY_KEY" "$RELAYER" --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
+  cast send "$IR" 'whitelistFor(bytes32,address)' "$VERIFY_KEY" "$RELAYER" \
+    --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
 fi
-[ "$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$VERIFY_KEY" "$RELAYER" --rpc-url "$RPC")" = true ] \
-  || fail "relayer not whitelisted for VERIFY:$PURPOSE_LABEL"
-cast send "$RELAYER" --value 0.3ether --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
-# Record the subject's gas balance BEFORE the bind to later prove it never paid (must be 0 throughout).
-SUBJECT_BAL_BEFORE=$(cast balance "$SUBJECT" --rpc-url "$RPC")
-green "relayer whitelisted + funded ($(cast from-wei "$(cast balance "$RELAYER" --rpc-url "$RPC")") PLASMA); subject bal=$SUBJECT_BAL_BEFORE"
+cast send "$RELAYER" --value 0.1ether --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
+green "relayer is whitelisted for proof purpose $PURPOSE_WORD and funded"
 
-# --------------------------------------------------------------------------------------------------
-step "6. Owner (subject) signs the EIP-712 BindConsentKey OFF-CHAIN (no gas) authorizing the bind"
-# Digest = keccak256(0x1901 || domainSep(CKR, chainId) || structHash) over
-#   BindConsentKey(bytes32 babyJubPubKeyHash, address wallet, uint256 nonce), wallet=subject.
-BIND_NONCE=$(cast call "$CKR" 'bindNonce(address)(uint256)' "$SUBJECT" --rpc-url "$RPC")
-BIND_TYPEHASH=$(cast keccak "BindConsentKey(bytes32 babyJubPubKeyHash,address wallet,uint256 nonce)")
-STRUCT_HASH=$(cast keccak "$(cast abi-encode 'f(bytes32,bytes32,address,uint256)' "$BIND_TYPEHASH" "$KEY_HASH" "$SUBJECT" "$BIND_NONCE")")
-DOM_TYPEHASH=$(cast keccak "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
-DOMAIN_SEP=$(cast keccak "$(cast abi-encode 'f(bytes32,bytes32,bytes32,uint256,address)' "$DOM_TYPEHASH" "$(cast keccak DogTag)" "$(cast keccak 1)" $CHAIN_ID "$CKR")")
-BIND_DIGEST=$(cast keccak "0x1901${DOMAIN_SEP#0x}${STRUCT_HASH#0x}")
-OWNER_SIG=$(cast wallet sign --private-key "$SUBJECT_PK" --no-hash "$BIND_DIGEST")
-green "owner off-chain bind sig produced (nonce=$BIND_NONCE) — owner spent NO gas"
+step "5. Submit through the owner-hidden backend relay"
+OTOK="$(curl -fsS -X POST "$GROOMER/login" -H 'content-type: application/json' \
+  -d "{\"password\":\"$OP_PW\"}" | jq -r .token)"
+PROOF="$(jq -nc --argjson a "$PUB_A" --argjson b "$PUB_B" --argjson c "$PUB_C" --argjson pubSignals "$PUB" \
+  '{a:$a,b:$b,c:$c,pubSignals:$pubSignals}')"
+ACK="$(curl -sS --max-time 180 -X POST "$GROOMER/verify/consent/levelb" \
+  -H "authorization: Bearer $OTOK" -H 'content-type: application/json' \
+  -d "$(jq -nc --argjson proof "$PROOF" '{proof:$proof}')")"
+[ "$(printf %s "$ACK" | jq -r .status 2>/dev/null || true)" = recording ] || fail "submit failed: $ACK"
+SID="$(printf %s "$ACK" | jq -r .sessionId)"
 
-# --------------------------------------------------------------------------------------------------
-step "7. Operator login + start EXPORT session (mode=zk) on the relayer backend -> sessionId + one-time export token QR"
-OTOK=$(curl -fsS -X POST "$GROOMER/login" -H 'content-type: application/json' -d "{\"password\":\"$OP_PW\"}" | jq -r .token)
-[ -n "$OTOK" ] && [ "$OTOK" != null ] || fail "operator login"
-SS=$(curl -fsS --max-time 60 -X POST "$GROOMER/verify/session/start" -H "authorization: Bearer $OTOK" \
-  -H 'content-type: application/json' -d "{\"purpose\":\"$PURPOSE_LABEL\",\"recordType\":\"$RECORD_TYPE\",\"mode\":\"zk\"}")
-SID=$(echo "$SS" | jq -r .sessionId)
-[ -n "$SID" ] && [ "$SID" != null ] || fail "session/start: $SS"
-# EXPORT QR is a low-density one-time token: <host>/x/<token>?a=<relayerAddr> (no JWT). Parse the
-# token (path tail before `?`) — symmetric with the import `/r/<token>` flow.
-QR=$(echo "$SS" | jq -r .qrUrl)
-echo "$QR" | grep -q "/x/" || fail "export QR must be /x/<token>?a=<relayer>: $QR"
-EXPORT_TOKEN=$(echo "$QR" | sed -E 's#.*/x/([0-9a-fA-F]+).*#\1#')
-[ "${#EXPORT_TOKEN}" = 32 ] || fail "export token must be 32 hex chars: '$EXPORT_TOKEN' (qr=$QR)"
-green "export session started: $SID (export token len ${#EXPORT_TOKEN})"
-
-# (phone step) GET /x/<token> resolves the session metadata WITHOUT consuming the token.
-META=$(curl -fsS --max-time 30 "$GROOMER/x/$EXPORT_TOKEN")
-[ "$(echo "$META" | jq -r .sessionId)" = "$SID" ] || fail "GET /x/<token> sessionId mismatch: $META"
-[ "$(echo "$META" | jq -r .mode)" = zk ] || fail "GET /x/<token> mode != zk: $META"
-CHALLENGE=$(echo "$META" | jq -r .challenge)
-[ -n "$CHALLENGE" ] && [ "$CHALLENGE" != null ] || fail "GET /x/<token> missing challenge: $META"
-green "GET /x/<token> resolved: relayer=$(echo "$META" | jq -r .relayer) purpose=$(echo "$META" | jq -r .purpose)"
-
-# --------------------------------------------------------------------------------------------------
-step "8. RELAY: POST proof + gasless bind block to /v1/verify/consent (one-time export-token auth)"
-DEADLINE=$(( NOW + 3600 ))
-# The consent block the relayer cross-checks against the proof's public signals + the session.
-CONSENT=$(jq -nc \
-  --arg dogTagId "$DOG_TAG_ID" --arg recordType "$RT_KEY" --arg purpose "$PURPOSE_B32" \
-  --arg credentialRoot "$ROOT_HEX" --arg challenge "$CHALLENGE" --arg relayer "$RELAYER" \
-  --arg subject "$SUBJECT" --arg nonce "$CONSENT_NONCE" --argjson deadline "$DEADLINE" \
-  '{dogTagId:$dogTagId,recordType:$recordType,purpose:$purpose,credentialRoot:$credentialRoot,challenge:$challenge,relayer:$relayer,subject:$subject,nonce:$nonce,deadline:$deadline}')
-BIND=$(jq -nc --arg subject "$SUBJECT" --arg keyHash "$KEY_HASH" --arg ownerSig "$OWNER_SIG" \
-  '{subject:$subject,keyHash:$keyHash,ownerSig:$ownerSig}')
-PROOF=$(jq -nc --argjson a "$PUB_A" --argjson b "$PUB_B" --argjson c "$PUB_C" --argjson pubSignals "$PUB" \
-  '{a:$a,b:$b,c:$c,pubSignals:$pubSignals}')
-BODY=$(jq -nc --arg sessionId "$SID" --arg exportToken "$EXPORT_TOKEN" \
-  --argjson consent "$CONSENT" --argjson proof "$PROOF" --argjson bind "$BIND" \
-  '{sessionId:$sessionId,exportToken:$exportToken,consent:$consent,sig:"0x",mode:"zk",proof:$proof,bind:$bind}')
-RELAY=$(curl -sS --max-time 180 -X POST "$GROOMER/v1/verify/consent" \
-  -H "authorization: Bearer $EXPORT_TOKEN" -H 'content-type: application/json' -d "$BODY")
-# The consent POST is now ASYNC: it returns 200 {status:"recording", sessionId} immediately and
-# records on-chain in a background task. We must POLL the session status to completion.
-RSTATUS=$(echo "$RELAY" | jq -r .status 2>/dev/null || echo null)
-if [ "$RSTATUS" != recording ]; then
-  printf 'relay response: %s\n--- last 30 backend log lines ---\n%s\n' "$RELAY" "$(tail -30 "$LOG")"
-  fail "consent POST did not return status=recording (got: $RSTATUS)"
-fi
-green "consent accepted (async): status=recording sid=$SID — polling for on-chain record…"
-# Poll the session via the OPERATOR bearer token — the one-time export token is consumed on a
-# successful record, so it can't be used to read status here. ~40 tries × 3s = 120s budget.
-VTX=null
-for i in $(seq 1 40); do
-  PS=$(curl -fsS --max-time 30 "$GROOMER/verify/session/$SID" -H "authorization: Bearer $OTOK" 2>/dev/null || echo '{}')
-  PSTATUS=$(echo "$PS" | jq -r .status 2>/dev/null || echo null)
-  case "$PSTATUS" in
-    recorded)
-      VTX=$(echo "$PS" | jq -r .txHash)
-      [ -n "$VTX" ] && [ "$VTX" != null ] || fail "session recorded but missing txHash: $PS"
-      break ;;
-    error)
-      printf 'session: %s\n--- last 30 backend log lines ---\n%s\n' "$PS" "$(tail -30 "$LOG")"
-      fail "session went to error while recording" ;;
+VTX=""
+LAST_STATUS='{}'
+for _ in $(seq 1 40); do
+  LAST_STATUS="$(curl -fsS --max-time 30 "$GROOMER/verify/session/$SID" \
+    -H "authorization: Bearer $OTOK" 2>/dev/null || printf '{}')"
+  case "$(printf %s "$LAST_STATUS" | jq -r .status 2>/dev/null || true)" in
+    recorded) VTX="$(printf %s "$LAST_STATUS" | jq -r .txHash)"; break ;;
+    error) fail "on-chain record failed: $LAST_STATUS" ;;
     *) sleep 3 ;;
   esac
 done
-if [ "$VTX" = null ] || [ -z "$VTX" ]; then
-  printf 'last session: %s\n--- last 30 backend log lines ---\n%s\n' "$PS" "$(tail -30 "$LOG")"
-  fail "timed out waiting for session to reach status=recorded (120s)"
-fi
-green "relay recorded on-chain: recordVerificationZK txHash=$VTX"
+[ -n "$VTX" ] && [ "$VTX" != null ] || fail "timed out waiting for record: $LAST_STATUS"
+green "owner-hidden verification recorded in $VTX"
 
-# --------------------------------------------------------------------------------------------------
-step "9. Assert on-chain + gasless invariants on the LIVE new contracts"
-# (a) the relayer's bind landed: keyOf(subject) == keyHash.
-[ "$(cast call "$CKR" 'keyOf(address)(bytes32)' "$SUBJECT" --rpc-url "$RPC" | tr 'A-F' 'a-f')" = "$(echo "$KEY_HASH" | tr 'A-F' 'a-f')" ] \
-  || fail "keyOf(subject) != keyHash after relayer bind"
-green "(a) gasless bindConsentKeyFor: keyOf(subject)==keyHash"
-# (b) the nullifier was consumed -> the Verified record landed on the new VR.
+step "6. Assert nullifier consumption, owner-hidden event shape, and no owner bytes"
 [ "$(cast call "$VR" 'consumed(bytes32)(bool)' "$NULLIFIER" --rpc-url "$RPC")" = true ] \
-  || fail "consumed(nullifier) != true (record didn't land)"
-green "(b) recordVerificationZK: consumed(nullifier)==true on the new VR"
-# (b') the Verified event fired in the record tx.
-VRLOW=$(echo "$VR" | tr 'A-F' 'a-f')
-VLOG=$(cast receipt "$VTX" --rpc-url "$RPC" --json | jq -r '.logs[] | select((.address|ascii_downcase)=="'"$VRLOW"'") | .topics[0]' | head -1)
-VTOPIC=$(cast keccak "Verified(uint256,address,address,bytes32,bytes32,uint256)")
-[ "$(echo "$VLOG" | tr 'A-F' 'a-f')" = "$(echo "$VTOPIC" | tr 'A-F' 'a-f')" ] \
-  || fail "Verified event topic not found in record tx logs"
-green "(b') Verified event emitted by the new VR in tx $VTX"
-# (c) the OWNER paid ZERO gas — its balance is unchanged (and still 0).
-SUBJECT_BAL_AFTER=$(cast balance "$SUBJECT" --rpc-url "$RPC")
-[ "$SUBJECT_BAL_AFTER" = "$SUBJECT_BAL_BEFORE" ] || fail "subject balance changed ($SUBJECT_BAL_BEFORE -> $SUBJECT_BAL_AFTER) — owner paid gas!"
-[ "$SUBJECT_BAL_AFTER" = "0" ] || fail "subject balance is not zero ($SUBJECT_BAL_AFTER) — not a clean gasless owner"
-green "(c) owner gasless: subject PLASMA balance == 0 (unchanged); relayer paid all gas"
+  || fail "consumed(nullifier) != true"
+RECEIPT="$(cast receipt "$VTX" --rpc-url "$RPC" --json)"
+VR_LOWER="$(printf %s "$VR" | lower)"
+EVENT_TOPIC="$(printf %s "$RECEIPT" | jq -r --arg address "$VR_LOWER" \
+  'first(.logs[] | select((.address | ascii_downcase) == $address) | .topics[0]) // ""')"
+EXPECTED_TOPIC="$(cast keccak 'Verified(uint256,address,bytes32,bytes32,uint256,uint256)')"
+[ "$(printf %s "$EVENT_TOPIC" | lower)" = "$(printf %s "$EXPECTED_TOPIC" | lower)" ] \
+  || fail "owner-hidden Verified event topic not found"
+CHAIN_MATERIAL="$(cast tx "$VTX" --rpc-url "$RPC" --json; printf %s "$RECEIPT")"
+if printf %s "$CHAIN_MATERIAL" | lower | grep -Fq "${HIDDEN_OWNER#0x}"; then
+  fail "hidden owner bytes appeared in verification calldata or logs"
+fi
+green "nullifier consumed; Verified has no owner field; hidden owner bytes are absent"
 
-# (d) session status reflects recorded + txHash via the dual-gated status endpoint.
-# The one-time export token was CONSUMED on submit, so poll status via the operator session (the
-# portal path). The phone polls with `?token=` BEFORE submitting; post-submit it relies on its own
-# success response. Here we assert via the operator gate.
-STAT=$(curl -fsS "$GROOMER/verify/session/$SID" -H "authorization: Bearer $OTOK")
-[ "$(echo "$STAT" | jq -r .status)" = recorded ] || fail "session status != recorded: $STAT"
-[ "$(echo "$STAT" | jq -r .txHash)" = "$VTX" ] || fail "session txHash mismatch: $STAT"
-green "(d) GET /verify/session/$SID -> recorded, txHash=$VTX"
-
-printf '\n\033[1;32mE2E ZK GASLESS RELAY PASSED on LIVE ROAX (chainId %s)\033[0m\n' "$CHAIN_ID"
-printf '  oracle:        host ark-circom Groth16 (dogtag-prover-rs prove-stdin)\n'
-printf '  bind:          gasless bindConsentKeyFor by relayer %s (keyOf(subject)==keyHash)\n' "$RELAYER"
-printf '  record tx:     %s  (recordVerificationZK; consumed(nullifier)==true; Verified event)\n' "$VTX"
-printf '  owner gas:     subject %s balance == 0 (paid nothing)\n' "$SUBJECT"
-printf '  session:       %s -> recorded\n' "$SID"
+printf '\n\033[1;32mOWNER-HIDDEN CONSENT E2E PASSED on chainId %s\033[0m\n' "$CHAIN_ID"
+printf '  registry:       %s\n' "$VR"
+printf '  proof signals:  dogTagId, purpose, relayer, nullifier, R, recordType, deadline\n'
+printf '  recordType:     %s  deadline=%s\n' "$RECORD_TYPE_WORD" "$DEADLINE"
+printf '  record tx:      %s\n' "$VTX"

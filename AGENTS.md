@@ -41,8 +41,17 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
   `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 71 tests incl. `ZkIntegration.t.sol` and `ConsentRegistry.t.sol` (both verify a real Groth16 proof on-chain - Level-A and Level-B respectively), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
-- `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
+- `cd contracts && forge test` - 83 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+  and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
+  exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
+  version on both registry axes; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
+  subject-bearing `Verified` ABI. Use `forge test`, **not** bare `forge build`: a bare full build tries
+  to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
+  aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project
+  error. `forge test` only compiles the real dependency closure and is green.
+- `cd circuits && pnpm test-consent` — generates real `DogTagConsent` Groth16 proofs across multiple
+  tree sizes, asserts the frozen seven-signal order and SDK root parity, and runs the negative tests.
+  Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`.
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
 - `cd apps/android && gradle test` - the JVM unit suites (`RoaxRpcSelectorTest`, `QrPayloadTest`,
   `PublicSignalIndexTest`, `ZkeyAssetTest`, `ProfileTreeParityTest`, `OwnerSecretRecordsTest`,
@@ -83,8 +92,20 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service. Its artifacts are **version-keyed** (`src/artifact.rs`) — see "Version-keyed proving artifacts".
-- `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `IssuerRegistry`, `DogTagIssuer` clones + factory; the still-live legacy contracts `DogTagSBT` (ERC-5192; legacy, being retired to the owner-hidden stack), `VerificationRegistry` (real Groth16 verify, timelocked verifier swap; legacy, being retired to the owner-hidden stack), `ConsentKeyRegistry` (gasless meta-tx; legacy, being retired to the owner-hidden stack), and `Groth16Verifier` (snarkjs-generated; legacy, being retired to the owner-hidden stack); and the **owner-hidden target stack**: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`, deployed + bytecode/wiring verified on ROAX (chainId 135; addresses in `contracts/deployments/roax.json`). Today Level-A still serves live consumers and the owner-hidden device issuance call site is pending. Going forward, retire Level-A and converge every app/server/web/config/docs path on this owner-hidden stack; do not add new legacy consumers. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable legacy SBT; see "M5 as-built" below.
+- `circuits` — the active source is Groth16 `DogTagConsent(6)`: reserved-owner-leaf Merkle membership,
+  EdDSA consent, proof-bound relayer/purpose, and a hidden-owner nullifier. Its seven public signals are
+  `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. `verification.circom` and its
+  fixture generators are retired; its retained build products and ceremony transcript remain
+  historical provenance and are not inputs to new builds. The consent VK/zkey remain active and frozen.
+- `contracts` — live source consists of the shared `IssuerRegistry`, `DogTagIssuer` implementation +
+  factory/root index, `ProtocolRegistry`, and `IERC5192`, plus `Groth16VerifierConsent`,
+  `DogTagSBTConsent` (write-once `profileRoot`, neutral custodial sink), and
+  `VerificationRegistryConsent`. `Deploy.s.sol` deploys only the shared base;
+  `DeployCustodialIssuance.s.sol` explicitly deploys the frozen-ceremony verifier before the SBT and
+  registry and repoints only the canonical ledger keys. The retired owner-revealing contract sources
+  and deploy scripts are gone; their already-deployed addresses remain solely in the deployment ledger
+  for historical reads. Protocol publication keeps the exact compatibility key `dogtag-levelb/1` and
+  publishes one contract set plus one independently rotatable artifact set and their binding.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -734,11 +755,12 @@ An already-installed app keeps proving against its **baked** key until you do, s
 
 ## Contract sharp edges
 
-- `VerificationRegistry.recordVerificationZK(a, b, c, pub[7], bytes32 recordType, uint256 deadline)` —
-  the trailing `recordType`/`deadline` are defense-in-depth guards supplied by the relayer (NOT bound to
-  the proof; audit L2). Address-typed public signals `pub[2]` (relayer) and `pub[3]` (subject) are
-  range-checked `< 2^160` so `uint160(..)` truncation can't alias a victim address (audit L1). The Rust
-  relay ABI (`stacks/vet/api/src/chain.rs`) must stay in sync with this signature.
+- `VerificationRegistryConsent.recordVerificationZK(a, b, c, pub[7])` uses the frozen signal order
+  `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`; `recordType` and `deadline` are
+  proof-bound signals, not trailing calldata. `pub[2]` is range-checked below `2^160`, `pub[4]` must
+  equal the tag's write-once `profileRoot`, and `ownerOf` is called only as a token-existence gate—its
+  neutral-custodian return value must never be compared as owner identity. Every relay ABI must stay in
+  sync with this four-argument signature.
 
 ## Governance authority (Phase-2 executed) - tooling signer
 

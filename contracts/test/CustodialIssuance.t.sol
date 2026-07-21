@@ -12,10 +12,9 @@ import {Groth16VerifierConsent} from "../src/Groth16VerifierConsent.sol";
 
 /// @notice M5 acceptance: custodial issuance produces owner-unlinkable tags that M4 actually verifies.
 ///
-/// This suite exercises the PRODUCTION Level-B pairing - `VerificationRegistryConsent` pointing at the
-/// `DogTagSBTConsent` custodial SBT - which is what the M5 redeploy establishes. (`ConsentRegistry.t.sol`
-/// deliberately still pairs the registry with the Level-A `DogTagSBT`; that remains valid coverage and
-/// usefully proves the registry is SBT-agnostic, since it reads only `profileRoot` + `ownerOf`.)
+/// This suite exercises the production owner-hidden pairing: `VerificationRegistryConsent` pointing at
+/// the custodial `DogTagSBTConsent`. `ConsentRegistry.t.sol` independently keeps the full real-proof
+/// registry guard coverage against the same pairing.
 ///
 /// The load-bearing property, per spec §"Issuance": **the owner's wallet never appears on-chain - not as
 /// `to`, not as `msg.sender`.** `test_owner_wallet_absent_from_issuance_state_and_calldata` is the guard:
@@ -150,14 +149,14 @@ contract CustodialIssuanceTest is Test {
                 abi.encodeWithSignature("mint(address,uint256,bytes32)", ownerAddress, dogTagId, root),
                 ownerAddress
             ),
-            "must detect the owner in a Level-A style mint calldata"
+            "must detect the owner in recipient-bearing mint calldata"
         );
         assertFalse(_contains(abi.encode(custodian), ownerAddress), "must not false-positive on custodian");
     }
 
     function test_mint_goes_to_the_custodian_never_the_owner() public {
         _issueCustodial();
-        assertEq(sbt.ownerOf(dogTagId), custodian, "Level-B tags are held by the neutral custodian");
+        assertEq(sbt.ownerOf(dogTagId), custodian, "tags are held by the neutral custodian");
         assertTrue(sbt.ownerOf(dogTagId) != ownerAddress, "the owner must never hold the tag");
         assertEq(sbt.profileRoot(dogTagId), root, "profileRoot(dogTagId) == R");
         assertEq(uint8(sbt.status(dogTagId)), uint8(DogTagSBTConsent.Status.Active));
@@ -258,7 +257,7 @@ contract CustodialIssuanceTest is Test {
     /// @notice The owner's wallet is not even expressible in the mint: `mintCustodial` takes no `to`. A
     /// future change re-adding one would fail to compile against this test rather than quietly ship.
     function test_mint_has_no_recipient_parameter() public view {
-        // Selector is (uint256,bytes32) - no address. Level-A's was mint(address,uint256,bytes32).
+        // Selector is (uint256,bytes32) - no recipient address.
         assertEq(
             DogTagSBTConsent.mintCustodial.selector,
             bytes4(keccak256("mintCustodial(uint256,bytes32)")),
@@ -280,11 +279,11 @@ contract CustodialIssuanceTest is Test {
                     "setProfileRoot(uint256,bytes32)", dogTagId, keccak256("attacker root")
                 )
             );
-        assertFalse(ok, "setProfileRoot must not exist on the Level-B SBT");
+        assertFalse(ok, "setProfileRoot must not exist on the owner-hidden SBT");
         assertEq(sbt.profileRoot(dogTagId), root, "root is write-once");
     }
 
-    /// @notice AUTHORITY_ROLE was one of the hijack's two vectors on Level-A. Here the role still governs
+    /// @notice AUTHORITY_ROLE was one of the mutable-root hijack's two vectors. Here it still governs
     /// status/lifecycle but has NO power over the root - there is nothing to overwrite.
     function test_authority_role_cannot_touch_the_root() public {
         _issueCustodial();
@@ -373,7 +372,7 @@ contract CustodialIssuanceTest is Test {
         vr.recordVerificationZK(a, b, c, pub);
     }
 
-    /// @notice Revocation still works under Level-B: revoke the root, the tag stops verifying.
+    /// @notice Revocation still works: revoke the root and the tag stops verifying.
     function test_revoked_root_stops_verifying() public {
         _issueCustodial();
         vm.prank(vetSigner);
@@ -393,8 +392,8 @@ contract CustodialIssuanceTest is Test {
         sbt.transferFrom(custodian, address(0xD00D), dogTagId);
     }
 
-    /// @notice D3/M8: Level-A's `recover(...)` named the new owner ON-CHAIN, which is exactly what Level-B
-    /// removes. Recovery is a fresh custodial issuance, so the function must not exist here.
+    /// @notice D3/M8: the retired `recover(...)` named the new owner ON-CHAIN. Recovery is a fresh
+    /// custodial issuance, so the function must not exist here.
     function test_no_recover_surface() public {
         _issueCustodial();
         (bool ok,) = address(sbt)
@@ -409,7 +408,7 @@ contract CustodialIssuanceTest is Test {
                     bytes("")
                 )
             );
-        assertFalse(ok, "recover must not exist on the Level-B SBT");
+        assertFalse(ok, "recover must not exist on the owner-hidden SBT");
     }
 
     /// @notice Erasure still fails closed (the registry's `ownerOf` existence gate), and `profileRoot`

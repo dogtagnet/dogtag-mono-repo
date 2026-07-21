@@ -5,24 +5,29 @@ import {Script, console2} from "forge-std/Script.sol";
 import {ProtocolRegistry} from "../src/ProtocolRegistry.sol";
 import {ProtocolVersions} from "./ProtocolVersions.sol";
 
-/// @notice M7 P3: publish `dogtag-levela/1` + `dogtag-levelb/1` to the `ProtocolRegistry` (§5, §7.1 P8).
+/// @notice Publishes the single owner-hidden `dogtag-levelb/1` version to the `ProtocolRegistry`.
 /// The record DATA is in `ProtocolVersions` — the single source of truth this and the registry test
 /// share.
 ///
-/// # Two axes (R-5), so each level publishes THREE things
+/// # Two axes, so the version publishes THREE things
 ///
-/// A level is a [`ProtocolRegistry.ContractSet`] (trio + verifier + circuitId), a
+/// The version is a [`ProtocolRegistry.ContractSet`] (trio + verifier + circuitId), a
 /// [`ProtocolRegistry.ArtifactSet`] (pins + base URL + minAppVersion), and the BINDING between them.
-/// All three writes are timelocked, but their timelocks run CONCURRENTLY: phase 1 proposes all six
-/// records plus both bindings in one transaction batch, so this is still a TWO-phase rollout.
+/// All three writes are timelocked, but their timelocks run CONCURRENTLY: phase 1 proposes both sets
+/// plus their binding in one transaction batch, so this is still a TWO-phase rollout.
 ///
 /// Publishing mirrors `proposeZkVerifier`/`executeZkVerifier`:
-///   1. `PublishProtocolVersionsPropose` — stages both levels (sets + bindings). Starts the registry's
-///      immutable `PUBLISH_TIMELOCK` on all of them at once.
+///   1. `PublishProtocolVersionsPropose` — stages both sets plus the binding. Starts the registry's
+///      immutable `PUBLISH_TIMELOCK` on all three at once.
 ///   2. `PublishProtocolVersionsExecute` — run AFTER the timelock elapses. Executes the sets FIRST,
 ///      then the bindings (`executeArtifactBinding` requires both sides to already be published).
 /// Both are `PUBLISHER_ROLE`-gated (broadcast with the publisher key) and read the deployed registry
 /// address from the `PROTOCOL_REGISTRY` env var.
+///
+/// The freshly deployed addresses are mandatory `ROOT_INDEX`, `VERIFICATION_REGISTRY_CONSENT_ADDR`,
+/// `SBT_CONSENT_ADDR`, and `CONSENT_VERIFIER` env vars. Artifact publication is likewise explicit via
+/// `CONSENT_ZKEY_SHA256`, `CONSENT_WITNESS_MOBILE_SHA256`, `CONSENT_R1CS_SHA256`,
+/// `CONSENT_WASM_SHA256`, and `DOGTAG_ARTIFACTS_URL`; there are no stale-network fallbacks.
 ///
 /// # Rotating artifacts later
 ///
@@ -33,38 +38,53 @@ abstract contract PublishBase is Script {
     function _registry() internal view returns (ProtocolRegistry) {
         return ProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY"));
     }
+
+    function _contractSet() internal view returns (ProtocolRegistry.ContractSet memory) {
+        return ProtocolVersions.levelBContracts(
+            vm.envAddress("ROOT_INDEX"),
+            vm.envAddress("VERIFICATION_REGISTRY_CONSENT_ADDR"),
+            vm.envAddress("SBT_CONSENT_ADDR"),
+            vm.envAddress("CONSENT_VERIFIER")
+        );
+    }
+
+    function _artifactSet() internal view returns (ProtocolRegistry.ArtifactSet memory) {
+        return ProtocolVersions.levelBArtifacts(
+            vm.envBytes32("CONSENT_ZKEY_SHA256"),
+            vm.envBytes32("CONSENT_WITNESS_MOBILE_SHA256"),
+            vm.envBytes32("CONSENT_R1CS_SHA256"),
+            vm.envBytes32("CONSENT_WASM_SHA256"),
+            vm.envString("DOGTAG_ARTIFACTS_URL")
+        );
+    }
 }
 
-/// @notice Phase 1 — propose both levels on both axes, plus their bindings (starts the timelock).
+/// @notice Phase 1 — propose the version on both axes, plus its binding (starts the timelock).
 ///   forge script .../PublishProtocolVersions.s.sol:PublishProtocolVersionsPropose \
 ///     --rpc-url $ROAX_RPC --broadcast --legacy --private-key $PUBLISHER_KEY
 contract PublishProtocolVersionsPropose is PublishBase {
     function run() external {
         ProtocolRegistry reg = _registry();
+        ProtocolRegistry.ContractSet memory contractSet = _contractSet();
+        ProtocolRegistry.ArtifactSet memory artifactSet = _artifactSet();
         console2.log("--- Phase 1: PROPOSE contract sets + artifact sets + bindings ---");
         console2.log("ProtocolRegistry", address(reg));
         console2.log("Publish timelock (seconds)", reg.PUBLISH_TIMELOCK());
 
         vm.startBroadcast();
-        reg.proposeContractSet(ProtocolVersions.levelAContracts());
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
-        reg.proposeArtifactSet(ProtocolVersions.levelAArtifacts());
-        reg.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
-        reg.proposeArtifactBinding(ProtocolVersions.levelAId(), ProtocolVersions.levelAArtifactsId());
-        reg.proposeArtifactBinding(ProtocolVersions.levelBId(), ProtocolVersions.levelBArtifactsId());
+        reg.proposeContractSet(contractSet);
+        reg.proposeArtifactSet(artifactSet);
+        reg.proposeArtifactBinding(contractSet.contractSetId, artifactSet.artifactSetId);
         vm.stopBroadcast();
 
-        console2.log("levela/1 contract-set ETA (unix)", reg.contractSetEta(ProtocolVersions.levelAId()));
-        console2.log("levelb/1 contract-set ETA (unix)", reg.contractSetEta(ProtocolVersions.levelBId()));
-        console2.log("levela artifacts ETA (unix)", reg.artifactSetEta(ProtocolVersions.levelAArtifactsId()));
-        console2.log("levelb artifacts ETA (unix)", reg.artifactSetEta(ProtocolVersions.levelBArtifactsId()));
-        console2.log("levela binding ETA (unix)", reg.bindingEta(ProtocolVersions.levelAId()));
-        console2.log("levelb binding ETA (unix)", reg.bindingEta(ProtocolVersions.levelBId()));
+        console2.log("dogtag-levelb/1 contract-set ETA (unix)", reg.contractSetEta(contractSet.contractSetId));
+        console2.log("artifact-set ETA (unix)", reg.artifactSetEta(artifactSet.artifactSetId));
+        console2.log("binding ETA (unix)", reg.bindingEta(contractSet.contractSetId));
         console2.log("Next: after the timelock, run PublishProtocolVersionsExecute.");
     }
 }
 
-/// @notice Phase 2 — execute both levels (only valid AFTER the timelock). Sets first, then bindings:
+/// @notice Phase 2 — execute the version (only valid AFTER the timelock). Sets first, then binding:
 /// `executeArtifactBinding` requires both sides to be published already.
 ///   forge script .../PublishProtocolVersions.s.sol:PublishProtocolVersionsExecute \
 ///     --rpc-url $ROAX_RPC --broadcast --legacy --private-key $PUBLISHER_KEY
@@ -75,23 +95,17 @@ contract PublishProtocolVersionsExecute is PublishBase {
         console2.log("ProtocolRegistry", address(reg));
 
         vm.startBroadcast();
-        reg.executeContractSet(ProtocolVersions.levelAId());
         reg.executeContractSet(ProtocolVersions.levelBId());
-        reg.executeArtifactSet(ProtocolVersions.levelAArtifactsId());
         reg.executeArtifactSet(ProtocolVersions.levelBArtifactsId());
-        reg.executeArtifactBinding(ProtocolVersions.levelAId());
         reg.executeArtifactBinding(ProtocolVersions.levelBId());
         vm.stopBroadcast();
 
         console2.log("Published contract sets:", reg.contractSetCount());
         console2.log("Published artifact sets:", reg.artifactSetCount());
-        console2.log("levela/1 active", reg.getContractSet(ProtocolVersions.levelAId()).active);
-        console2.log("levelb/1 active", reg.getContractSet(ProtocolVersions.levelBId()).active);
+        console2.log("dogtag-levelb/1 active", reg.getContractSet(ProtocolVersions.levelBId()).active);
         console2.log(
-            "levela/1 minAppVersion", reg.getActiveArtifactSet(ProtocolVersions.levelAId()).minAppVersion
-        );
-        console2.log(
-            "levelb/1 minAppVersion", reg.getActiveArtifactSet(ProtocolVersions.levelBId()).minAppVersion
+            "dogtag-levelb/1 minAppVersion",
+            reg.getActiveArtifactSet(ProtocolVersions.levelBId()).minAppVersion
         );
     }
 }

@@ -3,7 +3,7 @@
 // PRODUCTION M3 ceremony key, plus the on-chain state values the test must establish to make
 // VerificationRegistryConsent.recordVerificationZK succeed.
 //
-// Mirrors gen-zk-fixture.mjs (the Level-A equivalent) but for the Level-B owner-blind circuit:
+// Owner-hidden public-signal shape (there is no owner identity or external consent-key binding):
 //   pub = [dogTagId, purpose, relayer, nullifier, R, recordType, deadline]  -- no subject, no keyHash.
 //
 // Emits TWO proofs:
@@ -84,7 +84,7 @@ function padPath(proof) {
   return {siblings, pathLen: String(pathLen)};
 }
 
-/** Build one honest Level-B witness: 3 reserved owner leaves + attribute leaves -> root R. */
+/** Build one honest owner-hidden witness: 3 reserved owner leaves + attribute leaves -> root R. */
 async function buildInput(eddsa, {recordType}) {
   const F = eddsa.babyJub.F;
 
@@ -211,7 +211,7 @@ async function main() {
   const pArt9 = prove(art9_.input);
   const m = main_.meta;
 
-  // The circuit emits pub in the M4 order; assert that here so a circuit/README drift trips the
+  // The circuit emits pub in the frozen order; assert that here so a circuit/README drift trips the
   // generator rather than silently producing a fixture the registry mis-indexes.
   const expect = [m.dogTagId, m.purpose, m.relayer, m.nullifier, m.R, m.recordType, m.deadline];
   expect.forEach((want, i) => {

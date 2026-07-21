@@ -6,7 +6,7 @@ import {stdJson} from "forge-std/StdJson.sol";
 import {IssuerRegistry} from "../src/IssuerRegistry.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
 import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
-import {DogTagSBT} from "../src/DogTagSBT.sol";
+import {DogTagSBTConsent} from "../src/DogTagSBTConsent.sol";
 import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.sol";
 import {Groth16VerifierConsent} from "../src/Groth16VerifierConsent.sol";
 
@@ -21,13 +21,13 @@ contract ConsentRegistryTest is Test {
 
     IssuerRegistry registry;
     DogTagIssuerFactory factory;
-    DogTagSBT sbt;
+    DogTagSBTConsent sbt;
     VerificationRegistryConsent vr;
     Groth16VerifierConsent verifier;
 
     address admin = address(0xA11CE);
     address vetSigner = address(0xBEEF);
-    /// @dev D1: the Level-B tag is minted to a NEUTRAL CUSTODIAN, never the owner. Every test here
+    /// @dev The tag is minted to a NEUTRAL CUSTODIAN, never the owner. Every test here
     /// runs against a tag whose `ownerOf` is this address — so if the registry ever reintroduced an
     /// `ownerOf == subject` check, the whole suite would fail rather than silently pass.
     address custodian = address(0xC0FFEE);
@@ -72,7 +72,7 @@ contract ConsentRegistryTest is Test {
         registry = new IssuerRegistry(admin);
         DogTagIssuer impl = new DogTagIssuer();
         factory = new DogTagIssuerFactory(address(impl), address(registry), admin);
-        sbt = new DogTagSBT(admin);
+        sbt = new DogTagSBTConsent(admin, custodian);
         verifier = new Groth16VerifierConsent();
         vr = new VerificationRegistryConsent(
             address(registry), address(sbt), address(verifier), address(factory), admin
@@ -87,13 +87,13 @@ contract ConsentRegistryTest is Test {
         vm.prank(vetSigner);
         vacc.issue(root);
 
-        // Mint the tag to the CUSTODIAN with profileRoot = R (the Level-B anchor).
+        // Mint the tag to the CUSTODIAN with profileRoot = R (the owner-hidden anchor).
         // Read the role BEFORE pranking: vm.prank only survives to the next CALL, and
         // `sbt.ISSUER_ROLE()` would otherwise consume it.
         bytes32 issuerRole = sbt.ISSUER_ROLE();
         vm.prank(admin);
         sbt.grantRole(issuerRole, address(this));
-        sbt.mint(custodian, dogTagId, root);
+        sbt.mintCustodial(dogTagId, root);
 
         vm.prank(admin);
         registry.whitelistFor(keccak256(abi.encode("VERIFY:", purpose)), relayer);
@@ -132,17 +132,17 @@ contract ConsentRegistryTest is Test {
     }
 
     /// @notice D1: `ownerOf(dogTagId)` is the custodian, NOT the owner — and verification passes anyway.
-    /// This is the property the whole Level-B redesign exists for. The registry DOES call `ownerOf` (an
+    /// This is the property the owner-hidden design exists for. The registry DOES call `ownerOf` (an
     /// existence gate, value discarded - see `test_burned_tag_cannot_verify`), but never COMPARES it: a
     /// reintroduced `ownerOf == subject` check would fail this test rather than silently pass.
     function test_owner_identity_is_never_read_from_chain() public {
-        assertEq(sbt.ownerOf(dogTagId), custodian, "Level-B tags are custodial");
+        assertEq(sbt.ownerOf(dogTagId), custodian, "tags are custodial");
         assertTrue(sbt.ownerOf(dogTagId) != ownerAddress, "custodian must not be the owner");
         vm.prank(relayer);
         vr.recordVerificationZK(a, b, c, pub); // would revert if any ownerOf==subject/keyOf check survived
     }
 
-    /// @notice GDPR-erasure must stop verification. `DogTagSBT.burn` clears the ownerOf<->wallet link but
+    /// @notice GDPR-erasure must stop verification. `DogTagSBTConsent.burn` clears the token holder but
     /// NOT `profileRoot[id]`, so the `R == profileRoot` binding still passes for an erased tag - the
     /// registry's `ownerOf` existence gate is the only thing that fails it closed. Without that gate an
     /// erased tag keeps emitting `Verified` until someone separately calls `revoke(R)`.
@@ -186,20 +186,17 @@ contract ConsentRegistryTest is Test {
         }
     }
 
-    // ---- the Level-B binding: R == profileRoot(dogTagId) ----
+    // ---- the owner-hidden binding: R == profileRoot(dogTagId) ----
 
     /// @notice The circuit does NOT bind dogTagId <-> R, so this on-chain check is the ONLY thing
     /// stopping a prover from folding a tree they fully control and consenting as someone else's tag.
     function test_R_must_equal_profileRoot() public {
-        bytes32 authorityRole = sbt.AUTHORITY_ROLE();
-        vm.prank(admin);
-        sbt.grantRole(authorityRole, admin);
-        vm.prank(admin);
-        sbt.setProfileRoot(dogTagId, keccak256("some other root"));
+        uint256[7] memory wrongRoot = pub;
+        wrongRoot[4] = (uint256(root) + 1) % SNARK_SCALAR_FIELD;
 
         vm.prank(relayer);
         vm.expectRevert("R !profileRoot");
-        vr.recordVerificationZK(a, b, c, pub);
+        vr.recordVerificationZK(a, b, c, wrongRoot);
     }
 
     /// @notice An unminted tag has profileRoot == 0, which must not be satisfiable by any proof.
@@ -275,7 +272,7 @@ contract ConsentRegistryTest is Test {
     // ---- Art. 9 ----
 
     /// @notice The Art.9 guard must fire on a REAL proof whose recordType is SERVICE_ATTESTATION.
-    /// Level-A compared the RAW `keccak256("SERVICE_ATTESTATION")`; as a public SIGNAL the value is
+    /// A retired verifier compared the RAW `keccak256("SERVICE_ATTESTATION")`; as a public SIGNAL the value is
     /// reduced mod r, and the raw keccak EXCEEDS r — so the raw constant could never match and the
     /// guard would be dead code. This test fails if that regression is reintroduced.
     function test_art9_service_attestation_rejected_on_real_proof() public {

@@ -2,201 +2,117 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {AccessControlEnumerable} from "@openzeppelin/contracts/access/extensions/AccessControlEnumerable.sol";
 import {IssuerRegistry} from "../src/IssuerRegistry.sol";
 import {DogTagIssuer} from "../src/DogTagIssuer.sol";
 import {DogTagIssuerFactory} from "../src/DogTagIssuerFactory.sol";
-import {DogTagSBT} from "../src/DogTagSBT.sol";
-import {ConsentKeyRegistry} from "../src/ConsentKeyRegistry.sol";
-import {VerificationRegistry} from "../src/VerificationRegistry.sol";
+import {DogTagSBTConsent} from "../src/DogTagSBTConsent.sol";
+import {VerificationRegistryConsent} from "../src/VerificationRegistryConsent.sol";
 import {GovernanceMigration} from "../script/GovernanceMigration.sol";
 
-/// @dev Stand-in for the CURRENTLY-LIVE DogTagSBT, which predates the two-step upgrade and is still plain
-/// `AccessControlEnumerable` (no on-chain retrofit without a state-orphaning redeploy). Exercises the
-/// migration's legacy atomic grant->revoke hand-over branch.
-contract LegacySbtMock is AccessControlEnumerable {
-    constructor(address admin) {
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-    }
-
-    /// @notice admin-gated action (mirrors the live SBT's `burn`) used to prove the EOA loses power.
-    function adminAction() external view onlyRole(DEFAULT_ADMIN_ROLE) {}
-}
-
-/// @notice Proves the H-3 governance hand-off: after the two-phase migration the multisig holds
-/// admin/ownership of every governed contract and the deployer EOA can no longer GOVERN — including the
-/// timelock actually gating Phase 2 and the legacy-SBT atomic hand-over.
-/// @dev Scope: this proves the loss of GOVERNANCE authority only. The migration does not revoke a
-/// pre-existing Level-A ISSUER_ROLE or record-type whitelist, so nothing here says the decommissioned
-/// EOA cannot still mint/issue on a live Level-A deployment - it can (2026-07-16 audit). See the SCOPE
-/// note in GovernanceMigration.sol.
+/// @notice Proves the two-phase governance hand-off for the single owner-hidden contract set.
 contract GovernanceMigrationTest is Test {
     using GovernanceMigration for GovernanceMigration.Targets;
 
-    bytes32 constant DEFAULT_ADMIN_ROLE = 0x00;
-    bytes32 constant WHITELIST_ADMIN = keccak256("WHITELIST_ADMIN");
-    bytes32 constant ISSUER_ROLE = keccak256("ISSUER");
-    bytes32 constant VACCINATION = keccak256("VACCINATION");
+    bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
+    bytes32 internal constant WHITELIST_ADMIN = keccak256("WHITELIST_ADMIN");
+    bytes32 internal constant ISSUER_ROLE = keccak256("ISSUER");
+    bytes32 internal constant VACCINATION = keccak256("VACCINATION");
 
-    address eoa = address(0x119F8c7F); // the deployer EOA being decommissioned
-    address multisig = address(0x5AFE); // the protocol multisig taking over
+    address internal constant EOA = address(0x119F8c7F);
+    address internal constant MULTISIG = address(0x5AFE);
+    address internal constant CUSTODIAN = address(0xC0570D1A);
+    address internal constant VERIFIER = address(0xC1AC017);
 
-    IssuerRegistry registry;
-    VerificationRegistry verification;
-    DogTagIssuerFactory factory;
-    ConsentKeyRegistry consentKeys;
+    IssuerRegistry internal registry;
+    VerificationRegistryConsent internal verification;
+    DogTagSBTConsent internal sbt;
+    DogTagIssuerFactory internal factory;
 
-    function _deployCommon() internal {
-        vm.startPrank(eoa);
-        registry = new IssuerRegistry(eoa);
+    function setUp() public {
+        vm.startPrank(EOA);
+        registry = new IssuerRegistry(EOA);
         DogTagIssuer impl = new DogTagIssuer();
-        factory = new DogTagIssuerFactory(address(impl), address(registry), eoa);
-        consentKeys = new ConsentKeyRegistry();
+        factory = new DogTagIssuerFactory(address(impl), address(registry), EOA);
+        sbt = new DogTagSBTConsent(EOA, CUSTODIAN);
+        verification =
+            new VerificationRegistryConsent(address(registry), address(sbt), VERIFIER, address(factory), EOA);
         vm.stopPrank();
     }
 
-    /// VerificationRegistry only needs non-zero wiring for this admin-surface test; it is never invoked.
-    function _deployVerification(address sbt) internal {
-        vm.prank(eoa);
-        verification = new VerificationRegistry(
-            address(registry),
-            sbt,
-            address(0),
-            address(consentKeys),
-            address(factory),
-            address(consentKeys),
-            eoa
-        );
-    }
-
-    function _targets(address sbt) internal view returns (GovernanceMigration.Targets memory) {
+    function _targets() internal view returns (GovernanceMigration.Targets memory) {
         return GovernanceMigration.Targets({
             issuerRegistry: address(registry),
             verificationRegistry: address(verification),
-            sbt: sbt,
+            sbt: address(sbt),
             factory: address(factory)
         });
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // Full set with the UPGRADED two-step DogTagSBT (the shape a fresh `Deploy.s.sol` now produces).
-    // -------------------------------------------------------------------------------------------------
-    function test_migration_two_step_full_set() public {
-        _deployCommon();
-        vm.prank(eoa);
-        DogTagSBT sbt = new DogTagSBT(eoa);
-        _deployVerification(address(sbt));
-        GovernanceMigration.Targets memory t = _targets(address(sbt));
+    function test_migration_hands_the_owner_hidden_set_to_multisig() public {
+        GovernanceMigration.Targets memory targets = _targets();
 
-        // sanity: EOA starts as admin/owner everywhere.
-        assertEq(registry.defaultAdmin(), eoa);
-        assertEq(verification.defaultAdmin(), eoa);
-        assertEq(sbt.defaultAdmin(), eoa);
-        assertEq(factory.owner(), eoa);
+        assertEq(registry.defaultAdmin(), EOA);
+        assertEq(verification.defaultAdmin(), EOA);
+        assertEq(sbt.defaultAdmin(), EOA);
+        assertEq(factory.owner(), EOA);
         assertTrue(GovernanceMigration.supportsTwoStep(address(sbt)));
 
-        // ---- Phase 1: begin (EOA) ----
-        vm.startPrank(eoa);
-        t.begin(multisig);
+        vm.startPrank(EOA);
+        targets.begin(MULTISIG);
         vm.stopPrank();
 
-        // Mid-flight: transfers are PENDING; EOA is still admin; multisig pre-holds WHITELIST_ADMIN.
-        (address pendIR,) = registry.pendingDefaultAdmin();
-        assertEq(pendIR, multisig);
-        assertEq(registry.defaultAdmin(), eoa, "EOA still admin during timelock");
-        assertTrue(registry.hasRole(WHITELIST_ADMIN, multisig));
-        assertEq(factory.pendingOwner(), multisig);
+        (address pendingRegistry,) = registry.pendingDefaultAdmin();
+        (address pendingVerification,) = verification.pendingDefaultAdmin();
+        (address pendingSbt,) = sbt.pendingDefaultAdmin();
+        assertEq(pendingRegistry, MULTISIG);
+        assertEq(pendingVerification, MULTISIG);
+        assertEq(pendingSbt, MULTISIG);
+        assertEq(factory.pendingOwner(), MULTISIG);
+        assertTrue(registry.hasRole(WHITELIST_ADMIN, MULTISIG));
 
-        // The timelock is REAL: the multisig cannot accept IssuerRegistry before it elapses.
-        vm.prank(multisig);
+        vm.prank(MULTISIG);
         vm.expectRevert();
         registry.acceptDefaultAdminTransfer();
 
-        // ---- warp past the longest delay (3 days) ----
         vm.warp(block.timestamp + 3 days + 1);
-
-        // ---- Phase 2: accept (multisig) ----
-        vm.startPrank(multisig);
-        t.accept(eoa);
+        vm.startPrank(MULTISIG);
+        targets.accept(EOA);
         vm.stopPrank();
 
-        _assertMultisigInControl(sbt);
+        _assertMultisigInControl();
     }
 
-    // -------------------------------------------------------------------------------------------------
-    // LEGACY live DogTagSBT (plain AccessControlEnumerable) — atomic grant->revoke hand-over branch.
-    // -------------------------------------------------------------------------------------------------
-    function test_migration_legacy_sbt_atomic_handover() public {
-        _deployCommon();
-        vm.prank(eoa);
-        LegacySbtMock legacy = new LegacySbtMock(eoa);
-        _deployVerification(address(legacy));
-        GovernanceMigration.Targets memory t = _targets(address(legacy));
+    function _assertMultisigInControl() internal {
+        assertEq(registry.defaultAdmin(), MULTISIG, "IssuerRegistry admin");
+        assertEq(verification.defaultAdmin(), MULTISIG, "VerificationRegistryConsent admin");
+        assertEq(sbt.defaultAdmin(), MULTISIG, "DogTagSBTConsent admin");
+        assertEq(factory.owner(), MULTISIG, "factory owner");
 
-        assertFalse(GovernanceMigration.supportsTwoStep(address(legacy)), "legacy is not two-step");
+        assertFalse(registry.hasRole(DEFAULT_ADMIN_ROLE, EOA), "EOA !registry admin");
+        assertFalse(registry.hasRole(WHITELIST_ADMIN, EOA), "EOA !whitelist admin");
+        assertFalse(verification.hasRole(DEFAULT_ADMIN_ROLE, EOA), "EOA !verification admin");
+        assertFalse(sbt.hasRole(DEFAULT_ADMIN_ROLE, EOA), "EOA !SBT admin");
 
-        vm.startPrank(eoa);
-        t.begin(multisig);
-        vm.stopPrank();
-
-        // Legacy hand-over has no timelock: multisig is granted admin immediately, EOA still admin too.
-        assertTrue(legacy.hasRole(DEFAULT_ADMIN_ROLE, multisig));
-        assertTrue(legacy.hasRole(DEFAULT_ADMIN_ROLE, eoa));
-
-        // The ACDAR contracts still need their delay before accept.
-        vm.warp(block.timestamp + 3 days + 1);
-
-        vm.startPrank(multisig);
-        t.accept(eoa);
-        vm.stopPrank();
-
-        // Legacy SBT: EOA stripped, multisig in sole control.
-        assertFalse(legacy.hasRole(DEFAULT_ADMIN_ROLE, eoa), "EOA admin revoked on legacy SBT");
-        assertTrue(legacy.hasRole(DEFAULT_ADMIN_ROLE, multisig));
-        vm.prank(eoa);
+        vm.startPrank(EOA);
         vm.expectRevert();
-        legacy.adminAction();
-        vm.prank(multisig);
-        legacy.adminAction(); // multisig can
-
-        // The ACDAR contracts + factory are also fully handed off.
-        assertEq(registry.defaultAdmin(), multisig);
-        assertEq(verification.defaultAdmin(), multisig);
-        assertEq(factory.owner(), multisig);
-    }
-
-    function _assertMultisigInControl(DogTagSBT sbt) internal {
-        // ---- multisig holds admin/ownership everywhere ----
-        assertEq(registry.defaultAdmin(), multisig, "IssuerRegistry admin");
-        assertEq(verification.defaultAdmin(), multisig, "VerificationRegistry admin");
-        assertEq(sbt.defaultAdmin(), multisig, "DogTagSBT admin");
-        assertEq(factory.owner(), multisig, "Factory owner");
-
-        // ---- the old EOA holds NO governance roles ----
-        assertFalse(registry.hasRole(DEFAULT_ADMIN_ROLE, eoa), "EOA !IR admin");
-        assertFalse(registry.hasRole(WHITELIST_ADMIN, eoa), "EOA !whitelist admin");
-        assertFalse(verification.hasRole(DEFAULT_ADMIN_ROLE, eoa), "EOA !VR admin");
-        assertFalse(sbt.hasRole(DEFAULT_ADMIN_ROLE, eoa), "EOA !SBT admin");
-
-        // ---- the old EOA can no longer perform GOVERNANCE writes (legacy issuance is out of scope) ----
-        vm.startPrank(eoa);
-        vm.expectRevert();
-        registry.whitelistFor(VACCINATION, eoa);
+        registry.whitelistFor(VACCINATION, EOA);
         vm.expectRevert();
         verification.setRelayerRestriction(false);
         vm.expectRevert();
-        sbt.grantRole(ISSUER_ROLE, eoa);
+        sbt.grantRole(ISSUER_ROLE, EOA);
         vm.expectRevert();
-        factory.createIssuer("x", VACCINATION, eoa);
+        factory.createIssuer("x", VACCINATION, EOA);
         vm.stopPrank();
 
-        // ---- the multisig CAN act ----
-        vm.startPrank(multisig);
-        registry.whitelistFor(VACCINATION, eoa); // multisig has WHITELIST_ADMIN
+        vm.startPrank(MULTISIG);
+        registry.whitelistFor(VACCINATION, EOA);
         verification.setRelayerRestriction(false);
-        sbt.grantRole(ISSUER_ROLE, eoa);
-        factory.createIssuer("Seaport Vacc", VACCINATION, eoa);
+        sbt.grantRole(ISSUER_ROLE, EOA);
+        factory.createIssuer("Seaport Vacc", VACCINATION, EOA);
         vm.stopPrank();
-        assertTrue(registry.isWhitelistedFor(VACCINATION, eoa));
+
+        assertTrue(registry.isWhitelistedFor(VACCINATION, EOA));
+        assertTrue(sbt.hasRole(ISSUER_ROLE, EOA));
+        assertFalse(verification.restrictToWhitelistedRelayers());
     }
 }
