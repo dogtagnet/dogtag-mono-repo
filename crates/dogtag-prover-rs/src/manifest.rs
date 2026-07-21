@@ -125,7 +125,7 @@ pub const LEVEL_A_ARTIFACT_RELEASE: ArtifactRelease = ArtifactRelease {
 pub const LEVEL_B_ARTIFACT_RELEASE: ArtifactRelease = ArtifactRelease {
     artifact_set: "dogtag-levelb-artifacts/1",
     artifact_base_url: "https://artifacts.dogtag.io/levelb1",
-    min_app_version: "1.4.0",
+    min_app_version: "1.4.0", // M-4 PR4 app release floor (iOS + Android)
 };
 
 /// The on-chain contract-set record for a known version key, or `None` for an unrecognized one

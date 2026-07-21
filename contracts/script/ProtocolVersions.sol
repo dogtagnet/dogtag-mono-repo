@@ -117,7 +117,7 @@ library ProtocolVersions {
             witnessServerR1csSha256: 0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7,
             witnessServerWasmSha256: 0x482debcff5a4325c008dd00e4476bba011d0a706da955e3129d114f996a913e6,
             artifactBaseUrl: "https://artifacts.dogtag.io/levelb1",
-            minAppVersion: "1.4.0",
+            minAppVersion: "1.4.0", // M-4 PR4 app release floor (iOS + Android)
             publishedAt: 0, // stamped by executeArtifactSet
             active: false // set true by executeArtifactSet
         });

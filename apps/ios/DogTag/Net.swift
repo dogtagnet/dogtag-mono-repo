@@ -388,6 +388,14 @@ enum CentralApi {
         await Http.postJSON("\(host)/v1/verify/consent", body: payloadJson, timeout: 20)
     }
 
+    /// Level-B twin of ``postVerifyConsentToHost``. The owner-hidden route accepts the one-time
+    /// export token plus the client-generated consent proof and acknowledges immediately with
+    /// `status="recording"`; completion is read back through ``verifySessionStatus`` and the
+    /// Level-B registry's `consumed(nullifier)` seam.
+    static func postVerifyConsentLevelBToHost(host: String, payloadJson: String) async -> Http.Response {
+        await Http.postJSON("\(host)/v1/verify/consent/levelb", body: payloadJson, timeout: 20)
+    }
+
     struct SessionStatus { let status: String; let txHash: String? }
 
     /// Poll GET <host>/verify/session/{id}?token=<token> → {status, txHash}.

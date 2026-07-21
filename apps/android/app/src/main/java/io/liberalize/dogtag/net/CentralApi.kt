@@ -138,6 +138,14 @@ object CentralApi {
         Http.postJson("$host/v1/verify/consent", payloadJson, readTimeoutMs = 20000)
 
     /**
+     * Level-B twin of [postVerifyConsentToHost]. The owner-hidden route acknowledges the detached
+     * broadcast immediately; the caller reuses [verifySessionStatus] plus the Level-B registry's
+     * `consumed(nullifier)` read-back loop.
+     */
+    suspend fun postVerifyConsentLevelBToHost(host: String, payloadJson: String): Http.Response =
+        Http.postJson("$host/v1/verify/consent/levelb", payloadJson, readTimeoutMs = 20000)
+
+    /**
      * 32-bit-device fallback: ask the TRUSTED PROVER SERVICE to generate the Groth16 proof.
      *
      * A 32-bit-only Android phone cannot run the on-device circom-prover, so instead of

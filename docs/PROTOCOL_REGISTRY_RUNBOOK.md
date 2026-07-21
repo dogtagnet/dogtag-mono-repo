@@ -103,11 +103,8 @@ Four places must agree, or the app fails closed with `AppTooOld`:
 | `crates/dogtag-prover-rs/src/manifest.rs` | `LEVEL_B_ARTIFACT_RELEASE.min_app_version` |
 
 The last two are mirrors of each other and are what gets published here; the first two are the build
-being gated. The app version is chosen in M-4 PR4 — **do not run Step 2 until it is locked**, since
+being gated. M-4 PR4 locks all four values to **`1.4.0`**. Step 2 must publish that exact floor;
 re-publishing a corrected `minAppVersion` costs a fresh propose plus the full 2-day timelock.
-
-Today's published floor is `1.4.0` while both apps build as `0.1`, so every app would currently fail
-closed. PR4 resolves this.
 
 ## Rotating artifacts later
 

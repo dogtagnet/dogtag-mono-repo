@@ -59,6 +59,7 @@ import io.liberalize.dogtag.BuildConfig
 import io.liberalize.dogtag.net.AnchorResolver
 import io.liberalize.dogtag.net.CentralApi
 import io.liberalize.dogtag.net.RoaxRpc
+import io.liberalize.dogtag.profile.ProfileTreeStore
 import io.liberalize.dogtag.qr.QrPayload
 import io.liberalize.dogtag.qr.QrScannerView
 import io.liberalize.dogtag.ui.DogTagTheme
@@ -73,10 +74,12 @@ import uniffi.dogtag_standard.ConvenienceClaims
 import uniffi.dogtag_standard.EddsaSigInput
 import uniffi.dogtag_standard.TrustedAnchor
 import uniffi.dogtag_standard.bindConsentKeyDigestHex
+import uniffi.dogtag_standard.proveConsent
 import uniffi.dogtag_standard.proveVerification
 import uniffi.dogtag_standard.signConsentEddsa
 import uniffi.dogtag_standard.validateDiscovery
 import uniffi.dogtag_standard.verifyWhitelistKeyHex
+import java.security.SecureRandom
 
 /**
  * The single scan entry point for the user app. The owner ONLY scans — there is no QR display here.
@@ -509,17 +512,29 @@ private fun ExportPanel(
 
                     busy = true
                     scope.launch {
-                        // -------- LEVEL-B owner-hidden path (M-4 PR3): validate the discovery anchor, fail closed --------
+                        // -------- LEVEL-B owner-hidden path: validate, prove, submit, and read back --------
                         // Gated on the STORED `mode`, EXPLICITLY — NOT `isZk`, which is true for any
                         // non-normal/ecdsa mode and would drop a `levelb` session into the Level-A prover
                         // below. Every ProtocolRegistry eth_call and the `validateDiscovery` call live inside
                         // this branch, so a non-levelb session makes ZERO registry calls and the Level-A path
                         // is byte-for-byte untouched (the acceptance bar).
                         if (AnchorResolver.isLevelB(sess.mode)) {
-                            runLevelBAnchorGate(
-                                context, sess,
+                            runLevelBFlow(
+                                context = context,
+                                sess = sess,
+                                credential = sel,
+                                req = req,
+                                host = qr.host,
+                                token = qr.token,
+                                groomerAddr = qr.groomerAddr,
                                 onStatus = onStatus,
-                                onDone = { errMsg -> busy = false; if (errMsg != null) err = errMsg },
+                                onDone = { errMsg ->
+                                    busy = false
+                                    if (errMsg != null) {
+                                        err = errMsg
+                                        onStatus(errMsg)
+                                    }
+                                },
                             )
                             return@launch
                         }
@@ -749,22 +764,21 @@ private fun ExportPanel(
 }
 
 /**
- * M-4 PR3 — the owner-hidden (`mode == "levelb"`) discovery-anchor gate.
+ * M-4 PR4 — the complete owner-hidden (`mode == "levelb"`) consent flow.
  *
- * Resolves the dogtag `ProtocolRegistry` anchor for `dogtag-levelb/1` and validates the platform's
- * claims against it via the shipped `validateDiscovery` binding, FAIL-CLOSED on every axis. It is the
- * anti-redirect gate ONLY — it does NOT prove or submit; the owner-hidden prover and the Level-B
- * submit land in PR4. On success PR3 stops with a "validated" status rather than proving.
- *
- * SAFE to ship ahead of the ProtocolRegistry deploy + the app-version bump (PR4): until the registry
- * is published the eth_calls return null and this fails closed, and until this build clears the
- * published `minAppVersion` `validateDiscovery` throws `AppTooOld` — either way the Level-A default
- * path, which never enters this function, is untouched. `onDone(null)` = validated; `onDone(msg)` =
- * refused (the caller clears `busy` and surfaces `msg`).
+ * The explicit caller branch preserves the Level-A block verbatim. Here we validate the on-chain
+ * anchor, rebuild the profile witness from the M-2b store, call `proveConsent` with the version-keyed
+ * bundled artifact, submit to the Level-B phone route, then read back the detached broadcast through
+ * the same session-status + `consumed(nullifier)` seams as Level-A.
  */
-private suspend fun runLevelBAnchorGate(
+private suspend fun runLevelBFlow(
     context: android.content.Context,
     sess: CentralApi.ExportSession,
+    credential: Credential,
+    req: VerificationRequest,
+    host: String,
+    token: String,
+    groomerAddr: String,
     onStatus: (String) -> Unit,
     onDone: (String?) -> Unit,
 ) {
@@ -777,8 +791,7 @@ private suspend fun runLevelBAnchorGate(
     val roax = RoaxConfig.load(context)
     val version = AnchorResolver.LEVEL_B_VERSION
     // Resolve BOTH on-chain axes. Either null — registry unconfigured/undeployed, version unpublished,
-    // or no artifact binding — fails closed. This is exactly what lets PR3 ship before the registry
-    // deploy without any risk to the Level-A path.
+    // or no artifact binding — fails closed without entering Level-A.
     val cs = withContext(Dispatchers.IO) {
         RoaxRpc.getContractSet(AppConfig.ROAX_RPC, roax.protocolRegistry, version)
     }
@@ -820,9 +833,162 @@ private suspend fun runLevelBAnchorGate(
         withContext(Dispatchers.IO) {
             validateDiscovery(ffiClaims, anchor, BuildConfig.VERSION_NAME, sess.purpose)
         }
-        // PR3 stops here: the anchor is validated and Level-B is authorized. The owner-hidden prover +
-        // Level-B submit are PR4; do NOT fall through to the Level-A prover.
-        onStatus("Owner-hidden discovery anchor validated — on-device proving lands in a later build.")
+
+        // Match the Level-A pre-proof authorization posture, entirely inside the Level-B branch.
+        onStatus("Checking groomer authorization…")
+        val verifyKey = verifyWhitelistKeyHex(sess.purpose)
+        val wl = withContext(Dispatchers.IO) {
+            RoaxRpc.isWhitelistedFor(
+                AppConfig.ROAX_RPC, roax.issuerRegistry, verifyKey, sess.relayer,
+            )
+        }
+        if (wl !is RoaxRpc.Result.Valid) {
+            onDone("This groomer is not authorized (not whitelisted).")
+            return
+        }
+        if (!io.liberalize.dogtag.net.DnsVerify.isLocalHost(host)) {
+            onStatus("Verifying groomer DNS…")
+            val dnsOk = withContext(Dispatchers.IO) {
+                io.liberalize.dogtag.net.DnsVerify.verifyGroomer(host, groomerAddr)
+            }
+            if (!dnsOk) {
+                onDone("Groomer DNS not verified — refusing to present.")
+                return
+            }
+        }
+
+        // M-2b accessors confirmed at kickoff: Wallet.seedHex(context) supplies the seed, while the
+        // per-tag ProfileTreeStore record supplies the decimal handle, owner address and salted
+        // attributes. ownerSecretHex never crosses this seam; proveConsent derives it internally.
+        val seedHex = runCatching { Wallet.seedHex(context) }.getOrNull()
+        if (seedHex == null) {
+            onDone("Wallet seed unavailable — authenticate and try again.")
+            return
+        }
+        // Use the throwing accessor: an encrypted store that exists but cannot be read is not the
+        // same as "no secret", and owner-hidden proving must fail closed in that case.
+        val owner = ProfileTreeStore(context).load()
+            .firstOrNull { it.dogTagIdDec == credential.dogTagId }
+        if (owner == null) {
+            onDone("No owner-hidden secret exists for this dog tag.")
+            return
+        }
+        if (owner.derivationVersion != ProfileTreeStore.DERIVATION_VERSION) {
+            onDone("This owner-hidden secret uses an unsupported derivation version.")
+            return
+        }
+        val attributesJson = org.json.JSONArray().apply {
+            owner.attributes.forEach { attribute ->
+                put(org.json.JSONObject().apply {
+                    put("keyPath", attribute.keyPath)
+                    put("salt", attribute.saltHex)
+                    put("tag", attribute.tag.toInt())
+                    put("value", attribute.value)
+                })
+            }
+        }.toString()
+        val nonceBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val consentNonce = "0x" + nonceBytes.joinToString("") { "%02x".format(it) }
+        // The server requires >120s at preflight because broadcast is detached and retried. Ten
+        // minutes leaves ample room for proving plus deferred settlement.
+        val deadlineDec = ((System.currentTimeMillis() / 1000) + 600).toString()
+        val descriptor = ZkeyAsset.resolve(AnchorResolver.LEVEL_B_VERSION)
+        val zkeyPath = withContext(Dispatchers.IO) { ZkeyAsset.ensure(context, descriptor) }
+        val graphPath = withContext(Dispatchers.IO) { ZkeyAsset.ensureGraph(context, descriptor) }
+
+        onStatus("Generating owner-hidden proof…")
+        val proof = withContext(Dispatchers.Default) {
+            proveConsent(
+                seedHex = seedHex,
+                dogTagIdHandle = owner.dogTagIdDec,
+                ownerAddressHex = owner.ownerAddress,
+                attributesJson = attributesJson,
+                purposeHex = req.purpose,
+                relayerHex = req.relayer,
+                recordTypeHex = req.recordType,
+                consentNonceHex = consentNonce,
+                deadlineDec = deadlineDec,
+                zkeyPath = zkeyPath,
+                graphPath = graphPath,
+            )
+        }
+
+        // Level-B nullifier index is 3. Index 4 is R; polling it hangs after a successful submit.
+        val nullifier = proof.pubSignals
+            .getOrNull(PublicSignalIndex.LevelB.NULLIFIER).orEmpty()
+        if (nullifier.isBlank()) {
+            onDone("Owner-hidden proof omitted its nullifier.")
+            return
+        }
+        val verificationRegistry = cs.verificationRegistry
+        val alreadyRecorded = withContext(Dispatchers.IO) {
+            RoaxRpc.consumed(AppConfig.ROAX_RPC, verificationRegistry, nullifier)
+        }
+        if (alreadyRecorded) {
+            onDone("This verification was already recorded.")
+            return
+        }
+
+        val payloadJson = org.json.JSONObject().apply {
+            put("exportToken", token)
+            put("proof", org.json.JSONObject().apply {
+                put("a", org.json.JSONArray(proof.a))
+                put("b", org.json.JSONArray(proof.b.map { org.json.JSONArray(it) }))
+                put("c", org.json.JSONArray(proof.c))
+                put("pubSignals", org.json.JSONArray(proof.pubSignals))
+            })
+        }.toString()
+        onStatus("Submitting owner-hidden proof to groomer…")
+        val response = withContext(Dispatchers.IO) {
+            runCatching { CentralApi.postVerifyConsentLevelBToHost(host, payloadJson) }.getOrNull()
+        }
+        if (response != null && response.code in 400..499) {
+            val reject = runCatching {
+                org.json.JSONObject(response.body).optString("error", "")
+            }.getOrNull().orEmpty()
+            if (reject.isNotBlank()) {
+                onDone("Submit rejected ($reject).")
+                return
+            }
+        }
+
+        // Detached-broadcast read-back: session status surfaces terminal errors while consumed(nf)
+        // is canonical success. Same 3s/120s poll primitive as Level-A; never an inline HTTP wait.
+        onStatus("Recording your owner-hidden verification on-chain…")
+        var done = false
+        var failedMsg: String? = null
+        for (attempt in 0 until 40) {
+            val recorded = withContext(Dispatchers.IO) {
+                RoaxRpc.consumed(AppConfig.ROAX_RPC, verificationRegistry, nullifier)
+            }
+            if (recorded) {
+                done = true
+                break
+            }
+            val session = withContext(Dispatchers.IO) {
+                runCatching { CentralApi.verifySessionStatus(host, sess.sessionId, token) }.getOrNull()
+            }
+            if (session?.status == "error") {
+                failedMsg = session.txHash?.ifBlank { null } ?: "recording failed"
+                break
+            }
+            kotlinx.coroutines.delay(3000)
+        }
+        if (failedMsg != null) {
+            onDone("Verification failed: $failedMsg")
+            return
+        }
+        if (done) {
+            val tx = withContext(Dispatchers.IO) {
+                runCatching { CentralApi.verifySessionStatus(host, sess.sessionId, token) }.getOrNull()
+            }?.txHash
+            onStatus(
+                if (!tx.isNullOrBlank()) "Verified on-chain — owner hidden. tx ${tx.take(14)}…"
+                else "Verified on-chain — owner hidden.",
+            )
+        } else {
+            onStatus("Submitted; awaiting confirmation.")
+        }
         onDone(null)
     } catch (e: Exception) {
         onDone("Owner-hidden verification refused: ${e.message}")
