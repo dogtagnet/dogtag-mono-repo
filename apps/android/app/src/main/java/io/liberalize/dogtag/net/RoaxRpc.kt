@@ -32,13 +32,8 @@ object RoaxRpc {
      */
     private val IS_VALID_SELECTOR = functionSelector("isValid(bytes32)")
     private val IS_WHITELISTED_FOR_SELECTOR = functionSelector("isWhitelistedFor(bytes32,address)")
-    private val BIND_NONCE_SELECTOR = functionSelector("bindNonce(address)")
-    private val KEY_OF_SELECTOR = functionSelector("keyOf(address)")
     private val CONSUMED_SELECTOR = functionSelector("consumed(bytes32)")
     private val PROFILE_ROOT_SELECTOR = functionSelector("profileRoot(uint256)")
-
-    /** ERC-721 standard signature, not a DogTag-specific one. */
-    private val OWNER_OF_SELECTOR = functionSelector("ownerOf(uint256)")
 
     sealed class Result {
         object Valid : Result()
@@ -98,22 +93,6 @@ object RoaxRpc {
     }
 
     /**
-     * `DogTagSBT.ownerOf(dogTagId)` → the owner address (0x.. 20-byte, lowercased), or null on
-     * failure. `dogTagId` is the decimal tokenId.
-     */
-    suspend fun ownerOf(rpcUrl: String, dogTagSbt: String, dogTagId: String): String? {
-        if (dogTagSbt.isBlank() || dogTagId.isBlank()) return null
-        val data = OWNER_OF_SELECTOR + padUint(dogTagId)
-        return when (val r = ethCall(rpcUrl, dogTagSbt, data)) {
-            is CallResult.Ok -> {
-                val padded = r.hex.padStart(64, '0')
-                "0x" + padded.takeLast(40).lowercase()
-            }
-            is CallResult.Err -> null
-        }
-    }
-
-    /**
      * `IssuerRegistry.isWhitelistedFor(key, signer)` — the PRE-PROOF groomer check. `key` is the
      * 0x.. 32-byte VERIFY key (`verifyWhitelistKeyHex(purpose)`); `signer` is the scanned relayer.
      * Returns Valid (whitelisted), Invalid (not), or Unknown (RPC unreachable). On Unknown the caller
@@ -138,27 +117,11 @@ object RoaxRpc {
         }
     }
 
-    /** `ConsentKeyRegistry.bindNonce(subject)` → the current bind nonce (decimal) or null on failure. */
-    suspend fun bindNonce(rpcUrl: String, consentKeyRegistry: String, subject: String): Long? {
-        if (consentKeyRegistry.isBlank() || subject.isBlank()) return null
-        val data = BIND_NONCE_SELECTOR + padAddr(subject)
-        return when (val r = ethCall(rpcUrl, consentKeyRegistry, data)) {
-            is CallResult.Ok -> runCatching {
-                java.math.BigInteger(r.hex.ifBlank { "0" }, 16).toLong()
-            }.getOrNull()
-            is CallResult.Err -> null
-        }
-    }
-
     /**
      * `VerificationRegistry.consumed(nullifier)` → true once the relayer's `recordVerificationZK`
-     * (or the legacy path) has landed on-chain for this nullifier. This is the CANONICAL completion
+     * has landed on-chain for this nullifier. This is the canonical completion
      * signal for the async export/verify flow: the groomer host records in the background, so the
-     * phone polls this until it flips true. `nullifier` is the proof's nullifier signal —
-     * `PublicSignalIndex.LevelA.NULLIFIER` for the Level-A proofs this app produces today, which is
-     * index 4; note Level-B puts `R` in that slot and the nullifier at 3, so callers must resolve the
-     * index through `PublicSignalIndex` rather than hard-coding it (passing `R` here would poll a key
-     * that is never set and hang on a verification that actually succeeded). Accepts a decimal field
+     * phone polls this until it flips true. `nullifier` is public signal index 3. Accepts a decimal field
      * element or 0x.. hex, encoded here as a 32-byte word. Returns false on any RPC failure so
      * the caller simply keeps polling (and ultimately times out) rather than treating it as success.
      */
@@ -171,29 +134,18 @@ object RoaxRpc {
         }
     }
 
-    /** `VerificationRegistry.keyOf(subject)` → the bound consent keyHash (0x..), or null/0x00.. if unbound. */
-    suspend fun keyOf(rpcUrl: String, verificationRegistry: String, subject: String): String? {
-        if (verificationRegistry.isBlank() || subject.isBlank()) return null
-        val data = KEY_OF_SELECTOR + padAddr(subject)
-        return when (val r = ethCall(rpcUrl, verificationRegistry, data)) {
-            is CallResult.Ok -> "0x" + r.hex.padStart(64, '0')
-            is CallResult.Err -> null
-        }
-    }
-
     private val GET_CONTRACT_SET_SELECTOR = functionSelector("getContractSet(bytes32)")
     private val GET_ACTIVE_ARTIFACT_SET_SELECTOR = functionSelector("getActiveArtifactSet(bytes32)")
 
     /** keccak256 of a version string as a 32-byte word — the `ProtocolRegistry` map key
-     * (`contractSetId`) for that version. `AnchorResolver.LEVEL_B_VERSION` → the Level-B query key. */
+     * (`contractSetId`) for that version. */
     fun versionId(version: String): String =
         Keccak256.digest(version.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
     /**
      * `ProtocolRegistry.getContractSet(versionId)` → the on-chain contract-set record (M-4 PR3).
      * Null when the registry is unconfigured/unreachable OR the version is unpublished (the getter
-     * reverts "unknown contract set"), so the Level-B branch FAILS CLOSED and never touches the
-     * Level-A path. `protocolRegistry` blank (not yet deployed) is a null, by design.
+     * reverts "unknown contract set"), so verification fails closed. A blank address is null.
      */
     suspend fun getContractSet(rpcUrl: String, protocolRegistry: String, version: String): AnchorResolver.ContractSetRecord? {
         if (protocolRegistry.isBlank()) return null
@@ -207,7 +159,7 @@ object RoaxRpc {
     /**
      * `ProtocolRegistry.getActiveArtifactSet(versionId)` → the artifact-set record currently bound to
      * the version (M-4 PR3). Follows `activeArtifactSetOf` on-chain and reverts if unbound, so a null
-     * here (unconfigured registry, unpublished version, or no binding) fails the Level-B branch
+     * here (unconfigured registry, unpublished version, or no binding) fails verification
      * closed. Decodes only `artifactSetId`/`minAppVersion`/`active` — see `AnchorResolver`.
      */
     suspend fun getActiveArtifactSet(rpcUrl: String, protocolRegistry: String, version: String): AnchorResolver.ArtifactSetRecord? {

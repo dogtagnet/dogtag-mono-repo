@@ -65,8 +65,6 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
 
     var walletExists by remember { mutableStateOf(Wallet.exists(context)) }
     var ethAddr by remember { mutableStateOf<String?>(null) }
-    var consentAx by remember { mutableStateOf<String?>(null) }
-    var consentKeyHash by remember { mutableStateOf<String?>(null) }
     var mnemonic by remember { mutableStateOf<String?>(null) }
     var walletMsg by remember { mutableStateOf("") }
     // Whether the user has affirmed they stored this wallet's phrase offline. Gates owner-secret
@@ -137,8 +135,8 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text(
-                "A self-custodial key: BIP-39 seed → secp256k1 wallet + a distinct BabyJubjub consent " +
-                    "key (derived in Rust). The seed is encrypted behind the Android Keystore " +
+                "A self-custodial BIP-39 seed. Rust derives a distinct owner secret and consent key " +
+                    "for each dog tag. The seed is encrypted behind the Android Keystore " +
                     "(StrongBox when available), biometric-gated.",
                 fontSize = 12.sp, color = c.muted,
             )
@@ -152,8 +150,6 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
                                     val id = Wallet.create(context)
                                     walletExists = true
                                     ethAddr = id.ethAddress
-                                    consentAx = id.consent.axHex
-                                    consentKeyHash = id.consent.keyHashHex
                                     mnemonic = id.mnemonic
                                     // A brand-new seed cannot already be confirmed; no need to
                                     // decrypt it again just to learn that.
@@ -175,8 +171,6 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
                                 try {
                                     val id = Wallet.load(context)
                                     ethAddr = id?.ethAddress
-                                    consentAx = id?.consent?.axHex
-                                    consentKeyHash = id?.consent?.keyHashHex
                                     // Authenticated already, so resolve the backup flag here rather
                                     // than on every composition. Still guarded: a Keystore failure
                                     // must leave it undetermined, not crash the screen.
@@ -194,14 +188,6 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             }
 
             ethAddr?.let { KV("Wallet", it) }
-            consentAx?.let { KV("Consent Ax", it.take(22) + "…") }
-            consentKeyHash?.let { KV("keyHash", it.take(22) + "…") }
-            consentKeyHash?.let {
-                Text(
-                    "Bind on-chain: ConsentKeyRegistry.bindConsentKey(keyHash) @ ${roax.consentKeyRegistry.take(10)}…",
-                    fontSize = 11.sp, color = c.muted,
-                )
-            }
             mnemonic?.let {
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surfaceVariant).padding(12.dp)) {
                     Text("Recovery phrase (24 words)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.danger)
@@ -301,7 +287,7 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             if (walletMsg.isNotBlank()) Text(walletMsg, fontSize = 12.sp, color = c.muted)
         }
 
-        // ---- Dog-tags: dog tags issued to this wallet (scan the vet's /p/<token> QR to issue one) ----
+        // ---- Dog-tags: owner-hidden trees created from scanned vet issuance sessions ----
         SectionTitle("Dog-tags")
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
@@ -310,8 +296,8 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             val minted = pets.filter { it.dogTagId.isNotBlank() && it.dogTagId.all { ch -> ch.isDigit() } }
             if (minted.isEmpty()) {
                 Text(
-                    "No dog tag yet. Scan your vet's dog-tag QR (Scan) to have one issued and bound to " +
-                        "this wallet — the dogTagId then appears here.",
+                    "No dog tag yet. Scan your vet's dog-tag QR to build its owner-hidden profile " +
+                        "tree and have the root issued.",
                     fontSize = 12.sp, color = c.muted,
                 )
             } else {
@@ -329,9 +315,8 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
         ) {
             KV("Chain", "ROAX (chainId ${roax.chainId})")
             KV("DogTagSBT", roax.dogTagSbt.take(16) + "…")
-            KV("VerificationRegistry", roax.verificationRegistry.take(16) + "…")
-            KV("ConsentKeyRegistry", roax.consentKeyRegistry.take(16) + "…")
             KV("IssuerRegistry", roax.issuerRegistry.take(16) + "…")
+            KV("ProtocolRegistry", roax.protocolRegistry.ifBlank { "Not deployed" }.take(16) + "…")
         }
 
         // ---- Developer · on-device ZK self-test (debug builds only) ----

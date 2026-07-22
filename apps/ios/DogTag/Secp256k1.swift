@@ -35,9 +35,7 @@ enum Secp256k1 {
 
     /**
      Sign a 32-byte digest with the secp256k1 private key → 65-byte Ethereum `r || s || v` (0x.. hex).
-     Deterministic nonce (RFC-6979 / HMAC-SHA256), low-S normalised, recovery id 27/28. This is the
-     raw EIP-712 digest signature consumed by `ConsentKeyRegistry.bindConsentKeyFor` (digest from the
-     Rust FFI `bindConsentKeyDigestHex`).
+     Deterministic nonce (RFC-6979 / HMAC-SHA256), low-S normalised, recovery id 27/28.
      */
     static func signDigest(priv: Data, digest: Data) -> String {
         precondition(digest.count == 32, "digest must be 32 bytes")

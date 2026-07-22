@@ -53,7 +53,7 @@ targets:
       # ZkeyAsset's descriptor/registry/resolve are pure (Foundation only); only ensure()/ensureGraph()
       # touch Bundle.main, and the tests never call those. Safe to compile into the host-less bundle.
       - path: DogTag/ZkeyAsset.swift
-      # AnchorResolver is Foundation-only (the mode gate + the two pure ABI decoders); the FFI glue
+      # AnchorResolver is Foundation-only (the two pure ABI decoders); the FFI glue
       # that builds a TrustedAnchor + calls validateDiscovery lives in ScanScreen, not here.
       - path: DogTag/AnchorResolver.swift
     settings:

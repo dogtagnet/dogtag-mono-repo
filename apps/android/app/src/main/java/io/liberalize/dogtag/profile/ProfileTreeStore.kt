@@ -21,10 +21,10 @@ import uniffi.dogtag_standard.ProfileTreeFfi
 
 /**
  * The recoverable owner-secret's device-local store - the Android counterpart of iOS
- * `ProfileTreeStore` (Level-B M5 / M-2b).
+ * `ProfileTreeStore` owner-hidden issuance/recovery path.
  *
  * `<noBackupFilesDir>/dogtag-owner-secrets.json.enc` is a DEVICE-LOCAL store, not a cross-device
- * backup. It holds the owner-secret for every Level-B tag on the device: anyone who reads it can
+ * backup. It holds the owner-secret for every owner-hidden tag on the device: anyone who reads it can
  * generate that tag's proofs. It is never uploaded, never logged, and never leaves the device.
  *
  * # Why the file looks different from iOS's, and why that is still parity

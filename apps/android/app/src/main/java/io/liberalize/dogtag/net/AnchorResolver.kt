@@ -1,9 +1,9 @@
 package io.liberalize.dogtag.net
 
 /**
- * Client-side discovery anchor resolution — the Level-B trust gate (M-4 PR3, M7 §5.3).
+ * Client-side discovery anchor resolution for the owner-hidden protocol.
  *
- * Before the app acts on a platform's owner-hidden (`mode == "levelb"`) session it must pin the
+ * Before the app acts on a platform's owner-hidden session it must pin the
  * platform's CLAIMS (`{protocolVersion, chainId, verificationRegistry, purpose}` from the resolve
  * GET) against the dogtag-owned TRUST ANCHOR read from `ProtocolRegistry` on-chain — otherwise a
  * lying platform could steer an owner-hidden proof onto an attacker registry/chain. The actual
@@ -11,10 +11,7 @@ package io.liberalize.dogtag.net
  * (`dogtag_standard::discovery::validate`); this file does the two jobs that binding leaves to the
  * caller (its own docs: "RESOLVING the anchor is the CALLER's job"):
  *
- *   1. the `mode == "levelb"` GATE — [isLevelB], a pure string check. Everything Level-B (the
- *      eth_calls, the anchor build, the `validateDiscovery` call) sits behind it, so a non-`levelb`
- *      session makes ZERO `ProtocolRegistry` calls and the Level-A path is byte-for-byte untouched.
- *   2. DECODING the two `ProtocolRegistry` getter returns — [decodeContractSet] / [decodeArtifactSet]
+ * It decodes the two `ProtocolRegistry` getter returns — [decodeContractSet] / [decodeArtifactSet]
  *      — into plain records. Kept PURE (no FFI, no chain I/O) so they compile into the host-less JVM
  *      unit tests and are pinned against fixed hex vectors.
  *
@@ -24,17 +21,12 @@ package io.liberalize.dogtag.net
  * Mirrored, with the same split, in `apps/ios/DogTag/AnchorResolver.swift`.
  */
 object AnchorResolver {
-    /** The Level-B protocol constants the app supplies to the anchor (the on-chain records carry only
+    /** The protocol constants the app supplies to the anchor (the on-chain records carry only
      * the keccak ids; `validateDiscovery` checks `keccak256(string) == id` for both axes). These MUST
      * match `ProtocolVersions.sol` / `dogtag_prover::artifact` — a drift is a fail-closed refusal. */
-    const val LEVEL_B_VERSION = "dogtag-levelb/1"
-    const val LEVEL_B_ARTIFACT_SET = "dogtag-levelb-artifacts/1"
-    const val LEVEL_B_CIRCUIT_ID = "consent.circom/DogTagConsent(6)"
-
-    /** The `mode == "levelb"` gate. THE seam that keeps the default path free of any anchor
-     * dependency: callers must resolve/validate the anchor only when this is true. Case-insensitive to
-     * match the server's stored `mode` vocabulary (`"normal" | "zk" | "levelb"`). */
-    fun isLevelB(mode: String): Boolean = mode.lowercase() == "levelb"
+    const val PROTOCOL_VERSION = "dogtag-levelb/1"
+    const val ARTIFACT_SET = "dogtag-levelb-artifacts/1"
+    const val CIRCUIT_ID = "consent.circom/DogTagConsent(6)"
 
     /** The fields of `ProtocolRegistry.ContractSet` an app-side anchor needs. */
     data class ContractSetRecord(

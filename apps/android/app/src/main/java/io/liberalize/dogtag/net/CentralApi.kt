@@ -1,81 +1,156 @@
 package io.liberalize.dogtag.net
 
+import io.liberalize.dogtag.profile.BackedUpAttribute
 import org.json.JSONArray
 import org.json.JSONObject
-import uniffi.dogtag_standard.ProofFfi
 
 /**
- * Typed client for the per-host vet/groomer APIs: dog-tag issuance bind, the export-consent relay, and
- * the export-session resolve/poll. Every host comes from a scanned QR — the device never calls a
- * central admin base for registration or pet sync (the dog tag is issued by the vet via `/p/<token>`).
+ * Typed client for the scanned vet/groomer host. Issuance sends only the device-built owner-hidden
+ * profile root; verification sends only the owner-hidden consent proof.
  */
 object CentralApi {
 
-    /** POST /v1/verify/consent — relay the signed consent. Owner-session gated server-side. */
-    suspend fun postConsent(centralBase: String, sessionToken: String?, payloadJson: String): Http.Response =
-        Http.postJson("$centralBase/v1/verify/consent", payloadJson, bearer = sessionToken)
+    data class WeightEntry(val unit: String, val value: String, val measuredOn: String)
 
-    /** The result of binding a dog-tag at the vet host: the issued DOG_PROFILE + its on-chain anchors. */
-    data class DogTagIssue(
-        val wrappedDocJson: String,
-        val dogTagId: String,
-        val root: String,
-        val txHash: String,
-        val walletAddress: String,
+    data class Microchip(
+        val code: String,
+        val standard: String,
+        val implantDate: String,
+        val bodyLocation: String,
     )
 
-    /**
-     * POST <host>/profiles/issue/bind { token, walletAddress, signature } — the vet-issues-the-dog-tag
-     * flow. The host comes from the scanned `/p/<token>` QR (NOT a central base URL). `signature` is the
-     * EIP-191 personal_sign from `Wallet.registerSignature()`. The server now responds IMMEDIATELY with
-     * the off-chain-built credential `{ wrappedDoc, dogTagId, root, walletAddress, status: "minting" }`
-     * and mints the SBT in the background; there is NO `txHash` in this response — the phone polls the
-     * chain (profileRoot/ownerOf) until the mint lands. Null on failure.
-     */
-    suspend fun bindDogTagIssue(host: String, token: String, walletAddress: String, signature: String): DogTagIssue? {
-        if (token.isBlank()) return null
-        val body = JSONObject().apply {
-            put("token", token)
-            put("walletAddress", walletAddress)
-            put("signature", signature)
-        }.toString()
-        return try {
-            // the bind no longer waits for the on-chain mint (it returns the off-chain credential at once,
-            // status "minting"), so a modest read timeout suffices — the slow chain wait moves to the poll.
-            val resp = Http.postJson("$host/profiles/issue/bind", body, readTimeoutMs = 20000)
-            if (!resp.ok) return null
-            val o = JSONObject(resp.body)
-            val wrapped = o.opt("wrappedDoc")
-            val wrappedJson = when (wrapped) {
-                is JSONObject -> wrapped.toString()
-                is String -> wrapped
-                else -> return null
+    data class PetProfile(
+        val name: String,
+        val species: String,
+        val breedVbo: String,
+        val breedLabel: String,
+        val sex: String,
+        val neuterStatus: String,
+        val dateOfBirth: String,
+        val weightHistory: List<WeightEntry>,
+        val microchip: Microchip,
+    ) {
+        /**
+         * The public pet-profile leaves committed into R. The owner-control triple is added by the
+         * Rust profile-tree builder; owner identity is intentionally excluded until the later D1
+         * identity-disclosure slice.
+         */
+        fun attributes(salt: () -> String): List<BackedUpAttribute> {
+            val out = mutableListOf<BackedUpAttribute>()
+            fun add(path: String, value: String, tag: UByte = 2u) {
+                if (value.isNotBlank()) out += BackedUpAttribute(path, salt(), tag, value)
             }
-            DogTagIssue(
-                wrappedDocJson = wrappedJson,
-                dogTagId = o.optString("dogTagId", ""),
-                root = o.optString("root", ""),
-                txHash = o.optString("txHash", o.optString("tx_hash", "")),
-                walletAddress = o.optString("walletAddress", walletAddress),
-            )
-        } catch (e: Exception) {
+            add("credentialSubject.name", name)
+            add("credentialSubject.species", species)
+            add("credentialSubject.breedVbo", breedVbo)
+            add("credentialSubject.breedLabel", breedLabel)
+            add("credentialSubject.sex", sex)
+            add("credentialSubject.neuterStatus", neuterStatus)
+            add("credentialSubject.dateOfBirth", dateOfBirth)
+            weightHistory.forEachIndexed { i, weight ->
+                add("credentialSubject.weightHistory[$i].unit", weight.unit)
+                add("credentialSubject.weightHistory[$i].value", weight.value, 4u)
+                add("credentialSubject.weightHistory[$i].measuredOn", weight.measuredOn)
+            }
+            add("credentialSubject.microchip.code", microchip.code)
+            add("credentialSubject.microchip.standard", microchip.standard)
+            add("credentialSubject.microchip.implantDate", microchip.implantDate)
+            add("credentialSubject.microchip.bodyLocation", microchip.bodyLocation)
+            return out
+        }
+
+        /** Compare metadata on an issuance retry without comparing freshly generated salts. */
+        fun matches(attributes: List<BackedUpAttribute>): Boolean {
+            val expected = attributes { "ignored" }.map { Triple(it.keyPath, it.tag, it.value) }
+            val stored = attributes.map { Triple(it.keyPath, it.tag, it.value) }
+            return expected == stored
+        }
+    }
+
+    data class ProfileIssueSession(
+        val sessionId: String,
+        val dogTagId: String,
+        val pet: PetProfile,
+        /** Parsed for response-shape parity only. It is not folded into R in this slice. */
+        val ownerIdentity: Map<String, String>,
+    )
+
+    data class CustodialBind(
+        val dogTagId: String,
+        val root: String,
+        val status: String,
+        val txHash: String?,
+    )
+
+    class CustodialBindRejectedException(code: Int, body: String) : IllegalStateException(
+        "custodial bind rejected ($code): ${body.take(160)}",
+    )
+
+    data class IssueSessionStatus(
+        val status: String,
+        val bound: Boolean,
+        val dogTagId: String,
+        val root: String,
+        val txHash: String?,
+    )
+
+    /** Resolve the scanned `/p/<token>` before constructing the device-private profile tree. */
+    suspend fun resolveProfileIssueSession(host: String, token: String): ProfileIssueSession? {
+        if (token.isBlank()) return null
+        return try {
+            val response = Http.getJson("$host/p/$token")
+            if (!response.ok) null else parseProfileIssueSession(response.body)
+        } catch (_: Exception) {
             null
         }
     }
 
-    /**
-     * The export-session metadata resolved from the QR's one-time token. The phone GETs this
-     * (non-consuming) before proving so it can assert the groomer address, run the whitelist + DNS
-     * checks, and build the consent. The token is consumed only on submit.
-     */
-    /**
-     * The platform-OWNED, UNVERIFIED discovery claims from the resolve GET's `unverifiedClaims` block
-     * (M7 §5.2). NONE of these is authority — under a `mode == "levelb"` session they are validated
-     * against the dogtag `ProtocolRegistry` anchor via `validateDiscovery` before the app acts. Null
-     * when the server omits the block (every pre-M-4 / non-levelb response); the Level-A path never
-     * reads them. Deliberately NOT named `ConvenienceClaims` — that is the FFI record
-     * `validateDiscovery` consumes; this is the raw parse the caller maps into it.
-     */
+    /** POST only `{token, R}`. No owner address or signature crosses this boundary. */
+    suspend fun bindCustodialIssue(host: String, token: String, root: String): CustodialBind? {
+        if (token.isBlank() || root.isBlank()) return null
+        val body = JSONObject().put("token", token).put("R", root).toString()
+        return try {
+            val response = Http.postJson(
+                "$host/profiles/issue/custodial-bind",
+                body,
+                readTimeoutMs = 20_000,
+            )
+            if (!response.ok) throw CustodialBindRejectedException(response.code, response.body)
+            val o = JSONObject(response.body)
+            CustodialBind(
+                dogTagId = o.string("dogTagId", "dog_tag_id"),
+                root = o.string("root", "R"),
+                status = o.optString("status", ""),
+                txHash = o.string("txHash", "tx_hash").ifBlank { null },
+            )
+        } catch (rejected: CustodialBindRejectedException) {
+            throw rejected
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Poll until the server reports the custodial owner-hidden bind and its transaction hash. */
+    suspend fun profileIssueSessionStatus(host: String, sessionId: String): IssueSessionStatus? {
+        if (sessionId.isBlank()) return null
+        return try {
+            val response = Http.getJson("$host/profiles/issue/session/$sessionId")
+            if (!response.ok) return null
+            val o = JSONObject(response.body)
+            val status = o.optString("status", "")
+            IssueSessionStatus(
+                status = status,
+                bound = o.optBoolean("bound", status.equals("bound", ignoreCase = true)),
+                dogTagId = o.string("dogTagId", "dog_tag_id"),
+                root = o.string("root", "R"),
+                txHash = o.string("txHash", "tx_hash").ifBlank { null },
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Raw, platform-provided discovery hints. They are checked against ProtocolRegistry on-chain. */
     data class UnverifiedClaims(
         val protocolVersion: String,
         val chainId: Long,
@@ -89,20 +164,16 @@ object CentralApi {
         val relayer: String,
         val purpose: String,
         val recordType: String,
-        val challenge: String,
-        val mode: String,
-        /** The `unverifiedClaims` block, present only when the server emits it (M-4 levelb sessions). */
         val claims: UnverifiedClaims? = null,
     )
 
-    /** GET <host>/x/<token> → export-session metadata (non-consuming). Null on failure. */
+    /** GET `<host>/x/<token>` → owner-hidden verification session metadata. */
     suspend fun resolveExportSession(host: String, token: String): ExportSession? {
         if (token.isBlank()) return null
         return try {
-            val resp = Http.getJson("$host/x/$token")
-            if (!resp.ok) return null
-            val o = JSONObject(resp.body)
-            // The convenience tier is additive: absent on every non-levelb / pre-M-4 response.
+            val response = Http.getJson("$host/x/$token")
+            if (!response.ok) return null
+            val o = JSONObject(response.body)
             val claims = o.optJSONObject("unverifiedClaims")?.let { uc ->
                 UnverifiedClaims(
                     protocolVersion = uc.optString("protocolVersion", ""),
@@ -113,118 +184,120 @@ object CentralApi {
                 )
             }
             ExportSession(
-                sessionId = o.optString("sessionId", o.optString("session_id", "")),
+                sessionId = o.string("sessionId", "session_id"),
                 relayer = o.optString("relayer", ""),
                 purpose = o.optString("purpose", ""),
-                recordType = o.optString("recordType", o.optString("record_type", "")),
-                challenge = o.optString("challenge", ""),
-                mode = o.optString("mode", "zk"),
+                recordType = o.string("recordType", "record_type"),
                 claims = claims,
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
 
-    /**
-     * ZK path: POST the proof bundle directly to the GROOMER host (the scanned QR origin), NOT central.
-     * The groomer relays `recordVerificationZK` on-chain as the gas-payer. The body carries the one-time
-     * `exportToken` (consumed server-side on submit) plus `{consent, sig, mode, proof, bind}`.
-     */
+    /** Submit the one owner-hidden verification proof to the canonical route. */
     suspend fun postVerifyConsentToHost(host: String, payloadJson: String): Http.Response =
-        // The submit now returns 200 {status:"recording", sessionId} FAST (no on-chain wait — the
-        // groomer binds the consent key + relays recordVerificationZK in the background, ~24-48s on
-        // ROAX). A ~20s read timeout (like bindDogTagIssue) is ample for the quick ack.
-        Http.postJson("$host/v1/verify/consent", payloadJson, readTimeoutMs = 20000)
+        Http.postJson("$host/v1/verify/consent", payloadJson, readTimeoutMs = 20_000)
 
-    /**
-     * Level-B twin of [postVerifyConsentToHost]. The owner-hidden route acknowledges the detached
-     * broadcast immediately; the caller reuses [verifySessionStatus] plus the Level-B registry's
-     * `consumed(nullifier)` read-back loop.
-     */
-    suspend fun postVerifyConsentLevelBToHost(host: String, payloadJson: String): Http.Response =
-        Http.postJson("$host/v1/verify/consent/levelb", payloadJson, readTimeoutMs = 20000)
-
-    /**
-     * 32-bit-device fallback: ask the TRUSTED PROVER SERVICE to generate the Groth16 proof.
-     *
-     * A 32-bit-only Android phone cannot run the on-device circom-prover, so instead of
-     * `proveVerification(...)` it POSTs the SAME inputs — `{wrappedDoc, consent, eddsaSig}` — to
-     * `<proverBase>/prove-verification` and gets back the Solidity calldata `{a, b, c, pub}`. We adapt
-     * that into a `ProofFfi` (the exact type the on-device path yields) so the downstream submit +
-     * chain-poll flow is byte-for-byte identical. The prover service sees the witness; the GROOMER
-     * (where the proof is submitted next) never does.
-     *
-     * `eddsaSig` carries `{ r8xDec, r8yDec, sDec, axHex, ayHex }`. Returns null on any failure
-     * (no prover configured, network error, non-2xx, malformed body) — the caller surfaces an error.
-     */
-    suspend fun proveOnServer(
-        proverBase: String,
-        wrappedDocJson: String,
-        consentJson: String,
-        eddsaSig: ProverEddsaSig,
-    ): ProofFfi? {
-        if (proverBase.isBlank()) return null
-        val body = JSONObject().apply {
-            // wrappedDoc/consent are sent as embedded JSON objects (the server also accepts strings).
-            put("wrappedDoc", JSONObject(wrappedDocJson))
-            put("consent", JSONObject(consentJson))
-            put("eddsaSig", JSONObject().apply {
-                put("r8xDec", eddsaSig.r8xDec)
-                put("r8yDec", eddsaSig.r8yDec)
-                put("sDec", eddsaSig.sDec)
-                put("axHex", eddsaSig.axHex)
-                put("ayHex", eddsaSig.ayHex)
-            })
-        }.toString()
-        return try {
-            // Server-side Groth16 proving is CPU-heavy (~10-30s release); generous read timeout so a
-            // cold prove + LAN latency can't trip it during a demo (it returns as soon as the prove is done).
-            val resp = Http.postJson("$proverBase/prove-verification", body, readTimeoutMs = 120000)
-            if (!resp.ok) return null
-            val o = JSONObject(resp.body)
-            // Server returns the 7-vector under "pub" (Groth16Output shape); the on-device ProofFfi
-            // names it "pubSignals" — map across here.
-            val toList = { arr: JSONArray -> (0 until arr.length()).map { arr.getString(it) } }
-            val a = toList(o.getJSONArray("a"))
-            val c = toList(o.getJSONArray("c"))
-            val bOuter = o.getJSONArray("b")
-            val b = (0 until bOuter.length()).map { toList(bOuter.getJSONArray(it)) }
-            val pub = toList(o.getJSONArray("pub"))
-            ProofFfi(a, b, c, pub)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /** Pass-through EdDSA signature fields for [proveOnServer] (mirrors the UniFFI `EddsaSigInput`). */
-    data class ProverEddsaSig(
-        val r8xDec: String,
-        val r8yDec: String,
-        val sDec: String,
-        val axHex: String,
-        val ayHex: String,
-    )
-
-    /**
-     * Poll the export-session status on the GROOMER host: GET /verify/session/{id}?token=<token>.
-     * Returns the parsed `{status, txHash}` (or null on failure). Status flips to `recorded` once the
-     * relayer's `recordVerificationZK` tx confirms.
-     */
     data class SessionStatus(val status: String, val txHash: String?)
 
     suspend fun verifySessionStatus(host: String, sessionId: String, token: String): SessionStatus? {
         if (sessionId.isBlank()) return null
         return try {
-            val resp = Http.getJson("$host/verify/session/$sessionId?token=$token")
-            if (!resp.ok) return null
-            val o = JSONObject(resp.body)
+            val response = Http.getJson("$host/verify/session/$sessionId?token=$token")
+            if (!response.ok) return null
+            val o = JSONObject(response.body)
             SessionStatus(
                 status = o.optString("status", ""),
-                txHash = o.optString("txHash", o.optString("tx_hash", "")).ifBlank { null },
+                txHash = o.string("txHash", "tx_hash").ifBlank { null },
             )
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
+    }
+
+    internal fun parseProfileIssueSession(json: String): ProfileIssueSession? = try {
+        val root = JSONObject(json)
+        val petContainer = root.optJSONObject("pet")
+        val profileContainer = petContainer?.optJSONObject("profile") ?: root.optJSONObject("profile")
+        // An old backend returned only ids/claims. Issuing against that shape would silently build an
+        // owner-triple-only R, so metadata containers are a hard compatibility boundary.
+        if (petContainer == null && profileContainer == null) return null
+        val owner = root.optJSONObject("ownerIdentity")
+            ?: root.optJSONObject("owner_identity")
+            ?: return null
+        val pet = petContainer ?: JSONObject()
+        val profile = profileContainer ?: pet
+        fun metadata(vararg keys: String): String =
+            sequenceOf(profile, pet, root).map { it.string(*keys) }.firstOrNull { it.isNotBlank() }.orEmpty()
+        val microchip = profile.optJSONObject("microchip")
+            ?: pet.optJSONObject("microchip")
+            ?: root.optJSONObject("microchip")
+            ?: JSONObject()
+        val weights = profile.optJSONArray("weightHistory")
+            ?: pet.optJSONArray("weightHistory")
+            ?: root.optJSONArray("weightHistory")
+            ?: JSONArray()
+        val history = (0 until weights.length()).mapNotNull { i ->
+            weights.optJSONObject(i)?.let { w ->
+                WeightEntry(
+                    unit = w.string("unit"),
+                    value = w.valueString("value"),
+                    measuredOn = w.string("measuredOn", "measured_on"),
+                )
+            }
+        }
+        val ownerFields = buildMap {
+            val keys = owner.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val value = owner.opt(key)
+                if (value != null && value != JSONObject.NULL) put(key, value.toString())
+            }
+        }
+        ProfileIssueSession(
+            sessionId = root.string("sessionId", "session_id"),
+            dogTagId = root.string("dogTagId", "dog_tag_id").ifBlank {
+                pet.string("dogTagId", "dog_tag_id")
+            },
+            pet = PetProfile(
+                name = metadata("name", "petName", "pet_name"),
+                species = metadata("species"),
+                breedVbo = metadata("breedVbo", "breed_vbo"),
+                breedLabel = metadata("breedLabel", "breed_label", "breed"),
+                sex = metadata("sex"),
+                neuterStatus = metadata("neuterStatus", "neuter_status"),
+                dateOfBirth = metadata("dateOfBirth", "date_of_birth"),
+                weightHistory = history,
+                microchip = Microchip(
+                    code = microchip.string("code").ifBlank {
+                        root.valueString("microchip").takeUnless { it.startsWith("{") }.orEmpty()
+                    },
+                    standard = microchip.string("standard"),
+                    implantDate = microchip.string("implantDate", "implant_date"),
+                    bodyLocation = microchip.string("bodyLocation", "body_location"),
+                ),
+            ),
+            ownerIdentity = ownerFields,
+        ).takeIf {
+            it.sessionId.isNotBlank() && it.dogTagId.isNotBlank() && it.pet.name.isNotBlank()
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun JSONObject.string(vararg keys: String): String {
+        keys.forEach { key ->
+            val value = opt(key)
+            if (value != null && value != JSONObject.NULL && value !is JSONObject && value !is JSONArray) {
+                return value.toString()
+            }
+        }
+        return ""
+    }
+
+    private fun JSONObject.valueString(key: String): String {
+        val value = opt(key)
+        return if (value == null || value == JSONObject.NULL) "" else value.toString()
     }
 }

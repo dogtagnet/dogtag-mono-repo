@@ -26,7 +26,7 @@ data class ArtifactDescriptor(
 
 /**
  * Resolves the on-device prover assets for a protocol version — the Groth16 proving key and the
- * witness graph — to absolute filesystem paths so the prover (`proveVerification`) can read them by
+ * witness graph — to absolute filesystem paths so the consent prover can read them by
  * path.
  *
  * ## Version-keyed, not fetched
@@ -49,43 +49,27 @@ data class ArtifactDescriptor(
  * resources already have a path, so it needs no copy).
  */
 object ZkeyAsset {
-    /** The current Level-A artifact set — what a caller naming no version gets. */
-    val LEVEL_A_V1 = ArtifactDescriptor(
-        version = "dogtag-levela/1",
-        zkeyAsset = "verification_final.zkey",
-        graphAsset = "verification.graph",
-    )
-
     /**
-     * The Level-B owner-hidden consent artifact set (M-4). Its zkey (`consent_final.zkey`, ~24.8 MB)
-     * and witness graph (`consent.graph`) are the frozen M3 consent-ceremony outputs, bundled the same
-     * way the Level-A pair is: vendored into `src/main/assets` by the mobile workflow's "Ensure
-     * proving artifacts" step (uncompressed via `noCompress`), materialised into `filesDir` on first
-     * use. The version key is the SAME protocol constant as the Rust
-     * `dogtag_prover::artifact::LEVEL_B_V1` and iOS `ZkeyAsset.levelBV1` — three declarations of one
-     * string the server refuses if it does not recognise.
-     *
-     * Registering it does NOT make Level-B the default: [current] stays Level-A, so a caller that
-     * names no version is unaffected. A Level-B proof is produced only when a caller resolves this
-     * version explicitly (the version-aware selector, a later M-4 PR).
+     * The one owner-hidden consent artifact set. The compatibility version key is intentionally
+     * retained even though the old level names are no longer product or app vocabulary.
      */
-    val LEVEL_B_V1 = ArtifactDescriptor(
+    val OWNER_HIDDEN_V1 = ArtifactDescriptor(
         version = "dogtag-levelb/1",
         zkeyAsset = "consent_final.zkey",
         graphAsset = "consent.graph",
     )
 
-    /** Every version this build can prove. Level-B joins Level-A here (M-4); [current] is unchanged. */
-    val REGISTRY: List<ArtifactDescriptor> = listOf(LEVEL_A_V1, LEVEL_B_V1)
+    /** Every version this build can prove. There is exactly one owner-hidden protocol. */
+    val REGISTRY: List<ArtifactDescriptor> = listOf(OWNER_HIDDEN_V1)
 
     /** The version a caller gets when it names none. */
-    fun current(): ArtifactDescriptor = LEVEL_A_V1
+    fun current(): ArtifactDescriptor = OWNER_HIDDEN_V1
 
     /**
      * Resolve a version key to its artifact set.
      *
-     * `null` ⇒ [current] (back-compat: callers that name no version get the Level-A set). An
-     * unknown version throws rather than falling back — proving with another version's key yields a
+     * `null` resolves to [current]. An unknown version throws rather than falling back — proving
+     * with another version's key yields a
      * proof its verifier rejects, so failing closed beats answering wrongly.
      */
     fun resolve(version: String? = null): ArtifactDescriptor {

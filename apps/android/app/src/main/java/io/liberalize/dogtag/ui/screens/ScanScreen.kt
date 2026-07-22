@@ -1,6 +1,5 @@
 package io.liberalize.dogtag.ui.screens
 
-import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -45,13 +44,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.fragment.app.FragmentActivity
-import io.liberalize.dogtag.consent.ConsentKeyBind
-import io.liberalize.dogtag.consent.ConsentMode
-import io.liberalize.dogtag.consent.ConsentSigner
-import io.liberalize.dogtag.consent.VerificationRequest
 import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.LocalStore
+import io.liberalize.dogtag.data.Pet
 import io.liberalize.dogtag.data.RecordImporter
 import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.ZkeyAsset
@@ -64,6 +60,7 @@ import io.liberalize.dogtag.qr.QrPayload
 import io.liberalize.dogtag.qr.QrScannerView
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.wallet.Biometric
+import io.liberalize.dogtag.wallet.Keccak256
 import io.liberalize.dogtag.wallet.Wallet
 import io.liberalize.dogtag.zk.PublicSignalIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -71,12 +68,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.dogtag_standard.ConvenienceClaims
-import uniffi.dogtag_standard.EddsaSigInput
 import uniffi.dogtag_standard.TrustedAnchor
-import uniffi.dogtag_standard.bindConsentKeyDigestHex
 import uniffi.dogtag_standard.proveConsent
-import uniffi.dogtag_standard.proveVerification
-import uniffi.dogtag_standard.signConsentEddsa
 import uniffi.dogtag_standard.validateDiscovery
 import uniffi.dogtag_standard.verifyWhitelistKeyHex
 import java.security.SecureRandom
@@ -103,8 +96,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
     var status by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
 
-    // SCAN GATE (B1): import + export both need a wallet (the device address is what the record is
-    // minted to / the consent is signed with). No wallet → don't scan; point the user to Profile.
+    // Import, issuance and export all need the seed-backed owner-hidden wallet.
     if (!walletExists) {
         Column(
             Modifier.fillMaxSize().padding(20.dp),
@@ -256,11 +248,11 @@ private fun ImportPanel(
 }
 
 /**
- * The dog-tag issuance panel (vet-issues-the-dog-tag). POST <host>/profiles/issue/bind with the wallet
- * address + its registration signature; on `{ wrappedDoc, dogTagId, root, txHash }` verify the issued
- * DOG_PROFILE against the DogTagSBT (profileRoot + ownerOf) AND offline integrity, store it as a
- * Credential, and show a success card with the dogTagId + txHash.
+ * Owner-hidden issuance. Resolve the pet profile, build and persist R on-device, reveal only R to the
+ * issuer, then poll the server-owned custodial transaction to completion.
  */
+private data class IssuedDogTag(val dogTagId: String, val root: String, val txHash: String)
+
 @Composable
 private fun IssuePanel(
     qr: QrPayload.DogTagIssueSession,
@@ -270,83 +262,136 @@ private fun IssuePanel(
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val roax = remember { RoaxConfig.load(context) }
 
     var working by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
-    var issued by remember { mutableStateOf<CentralApi.DogTagIssue?>(null) }
-    var verdict by remember { mutableStateOf("") }
+    var issued by remember { mutableStateOf<IssuedDogTag?>(null) }
     var err by remember { mutableStateOf("") }
+    var session by remember { mutableStateOf<CentralApi.ProfileIssueSession?>(null) }
+    var resolveErr by remember { mutableStateOf<String?>(null) }
+
+    androidx.compose.runtime.LaunchedEffect(qr.token) {
+        val resolved = withContext(Dispatchers.IO) {
+            CentralApi.resolveProfileIssueSession(qr.host, qr.token)
+        }
+        if (resolved == null) resolveErr = "Could not resolve issuance session (expired or offline)."
+        else session = resolved
+    }
 
     Card {
         Text("Issue dog tag", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
         Text("From ${qr.host}", fontSize = 12.sp, color = c.muted)
         Text("Token ${qr.token.take(18)}…", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted)
-        Text(
-            "Your vet will bind a new dog tag to this wallet. We'll sign the binding, then verify the " +
-                "issued profile against the DogTagSBT (profileRoot + ownerOf) before storing it.",
-            fontSize = 12.sp, color = c.muted,
-        )
+        val resolved = session
+        if (resolved == null) {
+            Text(resolveErr ?: "Resolving pet profile…", fontSize = 12.sp,
+                color = if (resolveErr == null) c.muted else c.danger)
+        } else {
+            Field("Pet", resolved.pet.name.ifBlank { "Unnamed" })
+            Field("dogTagId", resolved.dogTagId)
+            Text(
+                "Your phone will build the owner-hidden profile tree and keep its secret locally. " +
+                    "The vet receives only the Merkle root R.",
+                fontSize = 12.sp, color = c.muted,
+            )
+        }
 
-        if (issued == null && !working) {
+        if (issued == null && !working && resolved != null) {
             Button(
                 onClick = {
                     err = ""
                     Biometric.prompt(
-                        activity, "Issue dog tag", "Authenticate to bind this dog tag to your wallet",
+                        activity, "Issue dog tag", "Authenticate to create this tag's owner secret",
                         onSuccess = {
                             val wallet = runCatching { Wallet.load(context) }.getOrNull()
                             if (wallet == null) { err = "Create your wallet first (Profile)."; return@prompt }
+                            val seedHex = runCatching { Wallet.seedHex(context) }.getOrNull()
+                            if (seedHex == null) { err = "Wallet seed unavailable."; return@prompt }
                             working = true
-                            status = "Binding dog tag…"
+                            status = "Building owner-hidden profile tree…"
                             scope.launch {
                                 try {
-                                    val sig = wallet.registerSignature()
-                                    val res = withContext(Dispatchers.IO) {
-                                        CentralApi.bindDogTagIssue(qr.host, qr.token, wallet.ethAddress, sig)
+                                    val treeStore = ProfileTreeStore(context)
+                                    val existing = withContext(Dispatchers.IO) {
+                                        treeStore.load().firstOrNull { it.dogTagIdDec == resolved.dogTagId }
                                     }
-                                    if (res == null) {
-                                        working = false; err = "Bind failed (expired token / network)."; return@launch
-                                    }
-                                    // The bind responds immediately (status "minting") and the vet mints the
-                                    // SBT in the background. Poll the chain (profileRoot + ownerOf) until the
-                                    // mint lands — retrying a miss rather than failing on the first read.
-                                    status = "Minting your dog tag on-chain…"
-                                    val poll = withContext(Dispatchers.IO) {
-                                        RecordImporter.pollSbtMint(
-                                            dogTagId = res.dogTagId,
-                                            expectedRoot = res.root,
-                                            walletAddress = wallet.ethAddress,
-                                            dogTagSbt = roax.dogTagSbt,
-                                            rpcUrl = AppConfig.ROAX_RPC,
-                                        )
-                                    }
-                                    if (poll is RecordImporter.MintPoll.Timeout) {
-                                        working = false
-                                        err = "Mint not confirmed — check the vet portal."
-                                        return@launch
-                                    }
-                                    // Mint confirmed on-chain: run the offline integrity + (now-landed) SBT check.
-                                    status = "Verifying against DogTagSBT…"
-                                    val r = withContext(Dispatchers.IO) {
-                                        RecordImporter.verifyIssuedDogTag(
-                                            wrappedDocJson = res.wrappedDocJson,
-                                            dogTagId = res.dogTagId,
-                                            expectedRoot = res.root,
-                                            walletAddress = wallet.ethAddress,
-                                            dogTagSbt = roax.dogTagSbt,
-                                            rpcUrl = AppConfig.ROAX_RPC,
-                                        )
-                                    }
-                                    working = false
-                                    if (r.credential != null) {
-                                        store.addCredential(r.credential)
-                                        issued = res
-                                        verdict = r.verdict
-                                        status = "Issued (${r.verdict}) — ${r.detail}"
+                                    val root = if (existing != null) {
+                                        check(existing.derivationVersion == ProfileTreeStore.DERIVATION_VERSION) {
+                                            "existing owner secret uses an unsupported derivation version"
+                                        }
+                                        check(existing.ownerAddress.equals(wallet.ethAddress, ignoreCase = true)) {
+                                            "this dog tag belongs to a different wallet on this device"
+                                        }
+                                        check(resolved.pet.matches(existing.attributes)) {
+                                            "issuance retry metadata differs from the persisted profile"
+                                        }
+                                        withContext(Dispatchers.Default) {
+                                            treeStore.verifyRecoverable(seedHex, existing)
+                                        }
                                     } else {
-                                        err = "Verify failed: ${r.detail}"
+                                        val attributes = resolved.pet.attributes(::randomSalt16)
+                                        withContext(Dispatchers.Default) {
+                                            treeStore.buildAndPersist(
+                                                seedHex = seedHex,
+                                                dogTagIdDec = resolved.dogTagId,
+                                                ownerAddress = wallet.ethAddress,
+                                                attributes = attributes,
+                                            ).rootHex
+                                        }
                                     }
+
+                                    status = "Sending only R to the vet…"
+                                    val bind = withContext(Dispatchers.IO) {
+                                        CentralApi.bindCustodialIssue(qr.host, qr.token, root)
+                                    }
+                                    if (bind != null) {
+                                        check(bind.dogTagId.isBlank() || bind.dogTagId == resolved.dogTagId) {
+                                            "issuer returned a different dogTagId"
+                                        }
+                                        check(bind.root.isBlank() || bind.root.equals(root, ignoreCase = true)) {
+                                            "issuer returned a different profile root"
+                                        }
+                                    }
+
+                                    // A null means the response may have been lost after the server accepted it.
+                                    // Poll the already-persisted root; never generate a second set of salts.
+                                    status = "Issuing owner-hidden root on-chain…"
+                                    var confirmed: CentralApi.IssueSessionStatus? = null
+                                    for (attempt in 0 until 40) {
+                                        val current = withContext(Dispatchers.IO) {
+                                            CentralApi.profileIssueSessionStatus(qr.host, resolved.sessionId)
+                                        }
+                                        if (current != null) {
+                                            check(current.dogTagId.isBlank() || current.dogTagId == resolved.dogTagId) {
+                                                "issuance status returned a different dogTagId"
+                                            }
+                                            check(current.root.isBlank() || current.root.equals(root, ignoreCase = true)) {
+                                                "issuance status returned a different profile root"
+                                            }
+                                            if (current.status.lowercase() in setOf("error", "failed", "expired")) {
+                                                error("issuance ${current.status}")
+                                            }
+                                            if (current.bound && !current.txHash.isNullOrBlank()) {
+                                                confirmed = current
+                                                break
+                                            }
+                                        }
+                                        kotlinx.coroutines.delay(3000)
+                                    }
+                                    checkNotNull(confirmed) { "issuance was not confirmed in time" }
+                                    val txHash = checkNotNull(confirmed.txHash)
+                                    store.upsertPet(
+                                        Pet(
+                                            dogTagId = resolved.dogTagId,
+                                            name = resolved.pet.name.ifBlank { "DogTag #${resolved.dogTagId}" },
+                                            breed = resolved.pet.breedLabel.ifBlank { resolved.pet.breedVbo },
+                                            ageLabel = resolved.pet.dateOfBirth,
+                                            microchip = resolved.pet.microchip.code.takeIf { it.isNotBlank() },
+                                        ),
+                                    )
+                                    issued = IssuedDogTag(resolved.dogTagId, root, txHash)
+                                    working = false
+                                    status = "Issued — owner hidden."
                                 } catch (e: Exception) {
                                     working = false; err = "Issue failed: ${e.message}"
                                 }
@@ -358,13 +403,13 @@ private fun IssuePanel(
                 enabled = !working,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent),
-            ) { Text("Issue & verify") }
+            ) { Text("Build & issue") }
         }
         if (working) {
             ForgingAnimation(status)
         }
         if (!working && status.isNotBlank()) {
-            Text(status, fontSize = 12.sp, color = if (verdict == "VALID") c.success else c.muted)
+            Text(status, fontSize = 12.sp, color = if (issued != null) c.success else c.muted)
         }
         if (err.isNotBlank()) Text(err, fontSize = 12.sp, color = c.danger)
     }
@@ -373,7 +418,6 @@ private fun IssuePanel(
         Card {
             Text("Dog tag issued", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.success)
             Field("dogTagId", res.dogTagId.ifBlank { "—" })
-            Field("Verdict", verdict.ifBlank { "—" })
             Field("Root", res.root.take(18).ifBlank { "—" } + "…")
             Field("Tx", res.txHash.take(18).ifBlank { "—" } + "…")
             Text("Stored under your dog tags.", fontSize = 12.sp, color = c.muted)
@@ -430,7 +474,7 @@ private fun ExportPanel(
         Field("Groomer", sess.relayer.ifBlank { "Unknown" })
         Field("Purpose", sess.purpose.ifBlank { "—" })
         Field("Record type", sess.recordType.ifBlank { "any" })
-        Field("Mode", if (sess.mode.lowercase() == "normal" || sess.mode.lowercase() == "ecdsa") "ECDSA (EIP-712)" else "Zero-knowledge")
+        Field("Privacy", "Owner hidden")
     }
 
     Card {
@@ -463,7 +507,6 @@ private fun ExportPanel(
 
     val sel = selected
     var busy by remember { mutableStateOf(false) }
-    val isZk = sess.mode.lowercase() != "normal" && sess.mode.lowercase() != "ecdsa"
     if (busy) {
         ForgingAnimation(
             status.ifBlank { "Recording your verification on-chain…" },
@@ -478,272 +521,28 @@ private fun ExportPanel(
                 activity, "Authorize consent",
                 "Present '${sel.title}' to ${sess.relayer.ifBlank { "the groomer" }}",
                 onSuccess = {
-                    val wallet = runCatching { Wallet.load(context) }.getOrNull()
-                    val subject = wallet?.ethAddress
-                    val consentPriv = if (isZk) wallet?.consent?.prvHex else null
-                    val req = VerificationRequest.from(
-                        exportToken = qr.token,
-                        relayer = sess.relayer,
-                        purpose = sess.purpose,
-                        recordType = sess.recordType,
-                        challenge = sess.challenge,
-                        mode = sess.mode,
-                        dogTagIdDec = sel.dogTagId,
-                        credentialRoot = sel.credentialRoot,
-                        subjectWallet = subject,
-                        callbackUrl = "${AppConfig.centralApi(context)}/v1/verify/consent",
-                    )
-                    if (!isZk) {
-                        // ECDSA (legacy) path — relay through central as before.
-                        scope.launch {
-                            try {
-                                val signed = ConsentSigner.sign(req, null)
-                                onStatus("Signed (${signed.mode}); submitting…")
-                                val token = AppConfig.sessionToken(context)
-                                val r = runCatching { CentralApi.postConsent(AppConfig.centralApi(context), token, signed.payloadJson) }.getOrNull()
-                                onStatus(
-                                    if (r == null) "Signed locally; submit failed (no network / session)."
-                                    else "POST /v1/verify/consent → ${r.code}",
-                                )
-                            } catch (e: Exception) { err = "sign failed: ${e.message}" }
-                        }
+                    if (runCatching { Wallet.load(context) }.getOrNull() == null) {
+                        err = "Create your wallet first (Profile)."
                         return@prompt
                     }
-
                     busy = true
                     scope.launch {
-                        // -------- LEVEL-B owner-hidden path: validate, prove, submit, and read back --------
-                        // Gated on the STORED `mode`, EXPLICITLY — NOT `isZk`, which is true for any
-                        // non-normal/ecdsa mode and would drop a `levelb` session into the Level-A prover
-                        // below. Every ProtocolRegistry eth_call and the `validateDiscovery` call live inside
-                        // this branch, so a non-levelb session makes ZERO registry calls and the Level-A path
-                        // is byte-for-byte untouched (the acceptance bar).
-                        if (AnchorResolver.isLevelB(sess.mode)) {
-                            runLevelBFlow(
-                                context = context,
-                                sess = sess,
-                                credential = sel,
-                                req = req,
-                                host = qr.host,
-                                token = qr.token,
-                                groomerAddr = qr.groomerAddr,
-                                onStatus = onStatus,
-                                onDone = { errMsg ->
-                                    busy = false
-                                    if (errMsg != null) {
-                                        err = errMsg
-                                        onStatus(errMsg)
-                                    }
-                                },
-                            )
-                            return@launch
-                        }
-
-                        // -------- ZERO-KNOWLEDGE on-device path --------
-                        try {
-                            val roax = RoaxConfig.load(context)
-
-                            // (a) PRE-PROOF GROOMER CHECK — hard-stop if the relayer is not a
-                            // whitelisted groomer for this purpose. Never sign/prove/disclose otherwise.
-                            onStatus("Checking groomer authorization…")
-                            val verifyKey = verifyWhitelistKeyHex(sess.purpose)
-                            val wl = withContext(Dispatchers.IO) {
-                                RoaxRpc.isWhitelistedFor(
-                                    AppConfig.ROAX_RPC, roax.issuerRegistry, verifyKey, sess.relayer,
-                                )
-                            }
-                            if (wl !is RoaxRpc.Result.Valid) {
+                        runLevelBFlow(
+                            context = context,
+                            sess = sess,
+                            credential = sel,
+                            host = qr.host,
+                            token = qr.token,
+                            groomerAddr = qr.groomerAddr,
+                            onStatus = onStatus,
+                            onDone = { errMsg ->
                                 busy = false
-                                err = "This groomer is not authorized (not whitelisted)."
-                                onStatus("Blocked — not an authorized groomer (${wl}).")
-                                return@launch
-                            }
-
-                            // (a2) DNS VERIFY (prod/remote only) — the groomer's domain must publish a
-                            // TXT `dogtag-verify=<groomerAddr>`. Local hosts skip this entirely.
-                            if (!io.liberalize.dogtag.net.DnsVerify.isLocalHost(qr.host)) {
-                                onStatus("Verifying groomer DNS…")
-                                val dnsOk = withContext(Dispatchers.IO) {
-                                    io.liberalize.dogtag.net.DnsVerify.verifyGroomer(qr.host, qr.groomerAddr)
+                                if (errMsg != null) {
+                                    err = errMsg
+                                    onStatus(errMsg)
                                 }
-                                if (!dnsOk) {
-                                    busy = false
-                                    err = "Groomer DNS not verified — refusing to present."
-                                    onStatus("Blocked — groomer DNS not verified.")
-                                    return@launch
-                                }
-                            }
-
-                            // (b) Sign the EdDSA consent + generate the Groth16 proof on-device.
-                            if (consentPriv == null || wallet == null) {
-                                busy = false; err = "Create your wallet first (Profile)."; return@launch
-                            }
-                            val eddsa = signConsentEddsa(
-                                consentPriv,
-                                req.dogTagId, req.recordType, req.purpose, req.credentialRoot, req.challenge,
-                                req.relayer, req.subject, req.nonce, req.deadline,
-                            )
-                            // 32-BIT FALLBACK DECISION. A 32-bit-only device (no arm64 ABI) cannot run
-                            // the on-device circom-prover, so it queries the trusted PROVER SERVICE for
-                            // the proof instead. 64-bit devices (arm64 Android, iOS) keep true
-                            // on-device proving — that path is unchanged. `SUPPORTED_64_BIT_ABIS` is
-                            // empty iff the device is 32-bit only.
-                            val is32BitOnly = Build.SUPPORTED_64_BIT_ABIS.isEmpty()
-                            val consentJson = eddsaConsentJson(req)
-                            val proof = if (is32BitOnly) {
-                                // ---- 32-bit: prove on the prover service (groomer never sees witness) ----
-                                onStatus("Proving on the prover service (32-bit device)…")
-                                val proverUrl = AppConfig.proverApiUrl(context)
-                                if (proverUrl.isBlank()) {
-                                    busy = false
-                                    err = "No prover service configured for this 32-bit device."
-                                    onStatus("Blocked — 32-bit device has no prover service configured.")
-                                    return@launch
-                                }
-                                val served = withContext(Dispatchers.IO) {
-                                    CentralApi.proveOnServer(
-                                        proverUrl,
-                                        sel.wrappedDocJson,
-                                        consentJson,
-                                        CentralApi.ProverEddsaSig(
-                                            r8xDec = eddsa.r8xDec, r8yDec = eddsa.r8yDec, sDec = eddsa.sDec,
-                                            axHex = wallet.consent.axHex, ayHex = wallet.consent.ayHex,
-                                        ),
-                                    )
-                                }
-                                if (served == null) {
-                                    busy = false
-                                    err = "Prover service failed to return a proof."
-                                    onStatus("Blocked — prover service unavailable.")
-                                    return@launch
-                                }
-                                served
-                            } else {
-                                // ---- 64-bit: TRUE on-device proving (UNCHANGED) ----
-                                onStatus("Generating proof…")
-                                val zkeyPath = withContext(Dispatchers.IO) { ZkeyAsset.ensure(context) }
-                                val graphPath = withContext(Dispatchers.IO) { ZkeyAsset.ensureGraph(context) }
-                                val eddsaInput = EddsaSigInput(
-                                    r8xDec = eddsa.r8xDec, r8yDec = eddsa.r8yDec, sDec = eddsa.sDec,
-                                    axHex = wallet.consent.axHex, ayHex = wallet.consent.ayHex,
-                                )
-                                withContext(Dispatchers.Default) {
-                                    proveVerification(sel.wrappedDocJson, consentJson, eddsaInput, zkeyPath, graphPath)
-                                }
-                            }
-
-                            // (c) CONSENT-KEY BIND (gasless) — owner signs the EIP-712 bind digest;
-                            // the RELAYER submits bindConsentKeyFor (owner pays no gas).
-                            val bind: ConsentKeyBind? = runCatching {
-                                val nonce = withContext(Dispatchers.IO) {
-                                    RoaxRpc.bindNonce(AppConfig.ROAX_RPC, roax.consentKeyRegistry, wallet.ethAddress)
-                                } ?: 0L
-                                val digestHex = bindConsentKeyDigestHex(
-                                    roax.consentKeyRegistry, wallet.consent.keyHashHex,
-                                    wallet.ethAddress, nonce.toULong(), roax.chainId.toULong(),
-                                )
-                                val digest = hexToBytes(digestHex)
-                                val ownerSig = wallet.signEthDigest(digest)
-                                ConsentKeyBind(wallet.ethAddress, wallet.consent.keyHashHex, ownerSig)
-                            }.getOrNull()
-
-                            // The proof's nullifier (a decimal field element). This is the on-chain
-                            // `VerificationRegistry.consumed(bytes32)` key — the canonical completion
-                            // signal we poll the CHAIN for below. LEVEL-A index: this screen proves with
-                            // the bundled Level-A zkey. Under Level-B that same slot is `R`, so a bare
-                            // `pubSignals[4]` here would poll a key that is never set and hang on a
-                            // SUCCESSFUL verification.
-                            val nullifier = proof.pubSignals
-                                .getOrNull(PublicSignalIndex.LevelA.NULLIFIER).orEmpty()
-
-                            // PRE-SUBMIT REPLAY GUARD: if this nullifier is already consumed on-chain,
-                            // the verification was recorded before — submitting again is a doomed replay
-                            // the relayer will reject. Stop early with a clear message.
-                            val alreadyRecorded = withContext(Dispatchers.IO) {
-                                RoaxRpc.consumed(AppConfig.ROAX_RPC, roax.verificationRegistry, nullifier)
-                            }
-                            if (alreadyRecorded) {
-                                busy = false
-                                err = "This verification was already recorded."
-                                onStatus("Already recorded on-chain.")
-                                return@launch
-                            }
-
-                            // (d) SUBMIT to the QR host (groomer), NOT central. The one-time exportToken
-                            // is consumed server-side on record-success. The submit now returns 200
-                            // {status:"recording"} FAST and records on-chain in the background, so we
-                            // ALWAYS proceed to the chain poll — even on a null/non-2xx submit response
-                            // (the relayer may still be recording). Only a clearly-rejected 4xx carrying
-                            // an {error} body is a hard failure.
-                            onStatus("Submitting proof to groomer…")
-                            val signed = ConsentSigner.signWithProof(req, consentPriv, proof, bind)
-                            val r = withContext(Dispatchers.IO) {
-                                runCatching { CentralApi.postVerifyConsentToHost(qr.host, signed.payloadJson) }.getOrNull()
-                            }
-                            if (r != null && r.code in 400..499) {
-                                val rejectMsg = runCatching {
-                                    org.json.JSONObject(r.body).optString("error", "")
-                                }.getOrNull().orEmpty()
-                                if (rejectMsg.isNotBlank()) {
-                                    busy = false
-                                    err = "Rejected: $rejectMsg"
-                                    onStatus("Submit rejected ($rejectMsg).")
-                                    return@launch
-                                }
-                            }
-                            // Otherwise (2xx, null/network, or a 4xx without an {error} body) proceed
-                            // to the chain poll — the canonical success signal is consumed(nullifier).
-
-                            // (e) POLL THE CHAIN until VerificationRegistry.consumed(nullifier) == true.
-                            // Do NOT rely on the token-gated session poll: the export token is consumed
-                            // at record-success, so that GET starts returning 401 exactly when it
-                            // succeeds. Poll every ~3s up to ~120s.
-                            // The export token is consumed server-side only on record-SUCCESS, so the
-                            // token-gated session poll keeps returning until success/error. We poll it
-                            // ALONGSIDE the chain: a bind/record failure flips the session to
-                            // status="error" (the reason is carried in txHash/message) and would
-                            // otherwise never set consumed(nullifier)=true — leaving the phone stuck
-                            // until the ~120s timeout. On error we STOP and surface it immediately.
-                            onStatus("Recording your verification on-chain…")
-                            var done = false
-                            var failedMsg: String? = null
-                            for (i in 0 until 40) {
-                                val ok = withContext(Dispatchers.IO) {
-                                    RoaxRpc.consumed(AppConfig.ROAX_RPC, roax.verificationRegistry, nullifier)
-                                }
-                                if (ok) { done = true; break }
-                                val st = withContext(Dispatchers.IO) {
-                                    runCatching { CentralApi.verifySessionStatus(qr.host, sess.sessionId, qr.token) }.getOrNull()
-                                }
-                                if (st?.status == "error") {
-                                    failedMsg = st.txHash?.ifBlank { null } ?: "recording failed"
-                                    break
-                                }
-                                kotlinx.coroutines.delay(3000)
-                            }
-                            if (failedMsg != null) {
-                                busy = false
-                                err = "Verification failed: $failedMsg"
-                                onStatus("Verification failed: $failedMsg")
-                                return@launch
-                            }
-                            if (done) {
-                                // Optional: one best-effort session read to surface a txHash for display.
-                                val tx = withContext(Dispatchers.IO) {
-                                    runCatching { CentralApi.verifySessionStatus(qr.host, sess.sessionId, qr.token) }.getOrNull()
-                                }?.txHash
-                                onStatus(
-                                    if (!tx.isNullOrBlank()) "Verified on-chain — no data disclosed. tx ${tx.take(14)}…"
-                                    else "Verified on-chain — no data disclosed.",
-                                )
-                            } else {
-                                onStatus("Submitted; awaiting confirmation.")
-                            }
-                            busy = false
-                        } catch (e: Exception) {
-                            busy = false
-                            err = "ZK verify failed: ${e.message}"
-                        }
+                            },
+                        )
                     }
                 },
                 onError = { err = it },
@@ -764,18 +563,13 @@ private fun ExportPanel(
 }
 
 /**
- * M-4 PR4 — the complete owner-hidden (`mode == "levelb"`) consent flow.
- *
- * The explicit caller branch preserves the Level-A block verbatim. Here we validate the on-chain
- * anchor, rebuild the profile witness from the M-2b store, call `proveConsent` with the version-keyed
- * bundled artifact, submit to the Level-B phone route, then read back the detached broadcast through
- * the same session-status + `consumed(nullifier)` seams as Level-A.
+ * The one owner-hidden consent flow: validate discovery, rebuild the private witness, prove on-device,
+ * submit to the canonical consent route, and read back the detached on-chain broadcast.
  */
 private suspend fun runLevelBFlow(
     context: android.content.Context,
     sess: CentralApi.ExportSession,
     credential: Credential,
-    req: VerificationRequest,
     host: String,
     token: String,
     groomerAddr: String,
@@ -789,9 +583,9 @@ private suspend fun runLevelBFlow(
         return
     }
     val roax = RoaxConfig.load(context)
-    val version = AnchorResolver.LEVEL_B_VERSION
+    val version = AnchorResolver.PROTOCOL_VERSION
     // Resolve BOTH on-chain axes. Either null — registry unconfigured/undeployed, version unpublished,
-    // or no artifact binding — fails closed without entering Level-A.
+    // or no artifact binding — fails closed.
     val cs = withContext(Dispatchers.IO) {
         RoaxRpc.getContractSet(AppConfig.ROAX_RPC, roax.protocolRegistry, version)
     }
@@ -807,11 +601,11 @@ private suspend fun runLevelBFlow(
     val anchor = TrustedAnchor(
         version = version,
         versionId = cs.contractSetId,
-        artifactSet = AnchorResolver.LEVEL_B_ARTIFACT_SET,
+        artifactSet = AnchorResolver.ARTIFACT_SET,
         artifactSetId = arti.artifactSetId,
         chainId = roax.chainId.toULong(),
         verificationRegistry = cs.verificationRegistry,
-        circuitId = AnchorResolver.LEVEL_B_CIRCUIT_ID,
+        circuitId = AnchorResolver.CIRCUIT_ID,
         minAppVersion = arti.minAppVersion,
         contractSetActive = cs.active,
         artifactSetActive = arti.active,
@@ -824,17 +618,17 @@ private suspend fun runLevelBFlow(
         purpose = claims.purpose,
     )
     // `appVersion`: this build's versionName (dotted semver core). `expectedPurpose`: the session's
-    // purpose (D1 ruling (i)). The app has no purpose independent of the scanned QR today, so
+    // purpose. The app has no purpose independent of the scanned QR today, so
     // `validateDiscovery`'s purpose check (§5.3 step 4) is INTENTIONALLY WEAK here — claim vs the same
-    // session it came from. Not a regression: it matches the Level-A path's existing posture, and the
-    // load-bearing anti-redirect weight sits in the registry/chainId/version/versionId/both-active/
+    // session it came from. The load-bearing anti-redirect weight sits in the registry/chainId/
+    // version/versionId/both-active/
     // minAppVersion checks, which all still fire. An independent app-side purpose is queued follow-up.
     try {
         withContext(Dispatchers.IO) {
             validateDiscovery(ffiClaims, anchor, BuildConfig.VERSION_NAME, sess.purpose)
         }
 
-        // Match the Level-A pre-proof authorization posture, entirely inside the Level-B branch.
+        // Hard-stop before proving if the scanned groomer is not authorized.
         onStatus("Checking groomer authorization…")
         val verifyKey = verifyWhitelistKeyHex(sess.purpose)
         val wl = withContext(Dispatchers.IO) {
@@ -857,7 +651,7 @@ private suspend fun runLevelBFlow(
             }
         }
 
-        // M-2b accessors confirmed at kickoff: Wallet.seedHex(context) supplies the seed, while the
+        // Wallet.seedHex(context) supplies the seed, while the
         // per-tag ProfileTreeStore record supplies the decimal handle, owner address and salted
         // attributes. ownerSecretHex never crosses this seam; proveConsent derives it internally.
         val seedHex = runCatching { Wallet.seedHex(context) }.getOrNull()
@@ -892,7 +686,7 @@ private suspend fun runLevelBFlow(
         // The server requires >120s at preflight because broadcast is detached and retried. Ten
         // minutes leaves ample room for proving plus deferred settlement.
         val deadlineDec = ((System.currentTimeMillis() / 1000) + 600).toString()
-        val descriptor = ZkeyAsset.resolve(AnchorResolver.LEVEL_B_VERSION)
+        val descriptor = ZkeyAsset.resolve(AnchorResolver.PROTOCOL_VERSION)
         val zkeyPath = withContext(Dispatchers.IO) { ZkeyAsset.ensure(context, descriptor) }
         val graphPath = withContext(Dispatchers.IO) { ZkeyAsset.ensureGraph(context, descriptor) }
 
@@ -903,9 +697,9 @@ private suspend fun runLevelBFlow(
                 dogTagIdHandle = owner.dogTagIdDec,
                 ownerAddressHex = owner.ownerAddress,
                 attributesJson = attributesJson,
-                purposeHex = req.purpose,
-                relayerHex = req.relayer,
-                recordTypeHex = req.recordType,
+                purposeHex = labelFieldHex(sess.purpose),
+                relayerHex = sess.relayer,
+                recordTypeHex = labelFieldHex(sess.recordType),
                 consentNonceHex = consentNonce,
                 deadlineDec = deadlineDec,
                 zkeyPath = zkeyPath,
@@ -913,9 +707,9 @@ private suspend fun runLevelBFlow(
             )
         }
 
-        // Level-B nullifier index is 3. Index 4 is R; polling it hangs after a successful submit.
+        // The frozen consent nullifier is public signal 3; signal 4 is R.
         val nullifier = proof.pubSignals
-            .getOrNull(PublicSignalIndex.LevelB.NULLIFIER).orEmpty()
+            .getOrNull(PublicSignalIndex.NULLIFIER).orEmpty()
         if (nullifier.isBlank()) {
             onDone("Owner-hidden proof omitted its nullifier.")
             return
@@ -940,7 +734,7 @@ private suspend fun runLevelBFlow(
         }.toString()
         onStatus("Submitting owner-hidden proof to groomer…")
         val response = withContext(Dispatchers.IO) {
-            runCatching { CentralApi.postVerifyConsentLevelBToHost(host, payloadJson) }.getOrNull()
+            runCatching { CentralApi.postVerifyConsentToHost(host, payloadJson) }.getOrNull()
         }
         if (response != null && response.code in 400..499) {
             val reject = runCatching {
@@ -953,7 +747,7 @@ private suspend fun runLevelBFlow(
         }
 
         // Detached-broadcast read-back: session status surfaces terminal errors while consumed(nf)
-        // is canonical success. Same 3s/120s poll primitive as Level-A; never an inline HTTP wait.
+        // is canonical success; never an inline HTTP wait.
         onStatus("Recording your owner-hidden verification on-chain…")
         var done = false
         var failedMsg: String? = null
@@ -995,27 +789,16 @@ private suspend fun runLevelBFlow(
     }
 }
 
-/**
- * The consent JSON the Rust prover consumes for `proveVerification` — the canonical §1.10 consent
- * fields (all 0x.. hex). The prover internally re-derives the circuit signals from these + the
- * wrapped doc + the EdDSA signature.
- */
-private fun eddsaConsentJson(req: VerificationRequest): String =
-    org.json.JSONObject().apply {
-        put("dogTagId", req.dogTagId)
-        put("recordType", req.recordType)
-        put("purpose", req.purpose)
-        put("credentialRoot", req.credentialRoot)
-        put("challenge", req.challenge)
-        put("relayer", req.relayer)
-        put("subject", req.subject)
-        put("nonce", req.nonce)
-        put("deadline", req.deadline)
-    }.toString()
+private fun labelFieldHex(label: String): String {
+    if (label.startsWith("0x") && label.length == 66) return label
+    if (label.isBlank()) return "0x" + "00".repeat(32)
+    return "0x" + Keccak256.digest(label.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+}
 
-private fun hexToBytes(hex: String): ByteArray {
-    val h = hex.removePrefix("0x")
-    return ByteArray(h.length / 2) { i -> ((Character.digit(h[i * 2], 16) shl 4) + Character.digit(h[i * 2 + 1], 16)).toByte() }
+private fun randomSalt16(): String {
+    val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+    return "0x" + bytes.joinToString("") { "%02x".format(it) }
 }
 
 /** Animated waiting screen shown while the dog tag is minted on-chain (the bind returns instantly, the

@@ -1,39 +1,15 @@
 package io.liberalize.dogtag.net
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins the pure Level-B discovery-anchor logic: the `mode == "levelb"` gate and the two
- * `ProtocolRegistry` ABI decoders. These need no FFI and no chain, so they run as a plain JVM unit
- * test. The actual fail-closed comparison is `validateDiscovery` (Rust-tested in `dogtag_standard` /
- * #55) and is not re-tested here; this covers the caller's two jobs — gate + decode.
+ * Pins the pure ProtocolRegistry ABI decoders. These need no FFI and no chain.
  *
  * The iOS mirror is `apps/ios/DogTagTests/AnchorResolverTests.swift`.
  */
 class AnchorResolverTest {
-
-    // ---- The gate (the acceptance bar: non-levelb ⇒ Level-B logic never runs) ----
-
-    /**
-     * Only `"levelb"` (any case) is Level-B. Every other mode the server can stamp — `normal`, `zk`,
-     * and anything unexpected — is NOT, so the caller makes ZERO ProtocolRegistry calls and stays on
-     * the Level-A path. This is the load-bearing "Level-A untouched" guarantee, at its source.
-     */
-    @Test
-    fun isLevelBGate() {
-        assertTrue(AnchorResolver.isLevelB("levelb"))
-        assertTrue(AnchorResolver.isLevelB("LEVELB"))
-        assertTrue(AnchorResolver.isLevelB("LevelB"))
-        for (notLevelB in listOf("zk", "normal", "ecdsa", "level-b", "levelb ", "", "consent")) {
-            assertFalse("$notLevelB must NOT be Level-B", AnchorResolver.isLevelB(notLevelB))
-        }
-    }
-
-    // ---- ABI decoders ----
 
     private fun word(hex: String): String {
         val h = hex.removePrefix("0x")

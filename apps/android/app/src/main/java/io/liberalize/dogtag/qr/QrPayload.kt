@@ -28,7 +28,7 @@ sealed class QrPayload {
     /**
      * An export-session — the groomer requests the owner present a record. The QR is a SHORT one-time
      * token plus the groomer's wallet/relayer address: `/x/<token>?a=<addr>`. The session metadata
-     * (relayer/purpose/recordType/challenge/mode/sessionId) is fetched non-consuming from `/x/<token>`.
+     * (relayer/purpose/recordType/sessionId) is fetched non-consuming from `/x/<token>`.
      */
     data class ExportSession(
         val host: String,
@@ -38,9 +38,8 @@ sealed class QrPayload {
 
     /**
      * A dog-tag ISSUANCE session — the vet displays `/p/<token>` (token = 32 hex, one-time, 180s).
-     * The phone POSTs `<host>/profiles/issue/bind { token, walletAddress, signature }` to bind the
-     * dog tag to this wallet, then verifies the returned DOG_PROFILE against the DogTagSBT and stores
-     * it as a credential. (Optional non-consuming pre-step: GET `<host>/p/<token>`.)
+     * The phone resolves pet metadata, builds and persists the owner-hidden tree, then POSTs only
+     * `{token, R}` to `<host>/profiles/issue/custodial-bind` and polls the issuance session.
      */
     data class DogTagIssueSession(val host: String, val token: String) : QrPayload()
 

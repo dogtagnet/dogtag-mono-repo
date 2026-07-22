@@ -14,8 +14,8 @@ enum QrPayload {
     /// An export-session one-time token plus the groomer's wallet/relayer address (`/x/<token>?a=<addr>`).
     case exportSession(host: String, token: String, groomerAddr: String)
     /// A dog-tag ISSUANCE session — the vet displays `/p/<token>` (32 hex, one-time, 180s). The phone
-    /// POSTs `<host>/profiles/issue/bind { token, walletAddress, signature }`, verifies the returned
-    /// DOG_PROFILE against the DogTagSBT, and stores it as a credential.
+    /// resolves pet metadata, builds/persists the owner-hidden profile tree, and POSTs only
+    /// `{token, root}` to `<host>/profiles/issue/custodial-bind`.
     case dogTagIssueSession(host: String, token: String)
     case unknown(String)
 
