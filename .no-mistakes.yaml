@@ -1,0 +1,40 @@
+# Dogtag policy starts every new run with --skip=document until no-mistakes has
+# an enforced step/file budget. These trusted controls are defense-in-depth for
+# accidental raw runs and take effect only after this file reaches the default branch.
+agent: codex
+allow_repo_commands: false
+
+# Keep project settings enabled so the repository's AGENTS.md constrains gate agents.
+disable_project_settings: false
+
+commands:
+  # Check-only tools: no formatter writes, generators, codegen, or binding sync.
+  lint: >-
+    bash scripts/check-no-mistakes-document-guard.sh &&
+    pnpm --filter @dogtag/standard exec tsc -p tsconfig.json --noEmit &&
+    pnpm --filter @dogtag/ui typecheck
+  # A bounded baseline, not the full Cargo/Foundry/circuit/mobile/e2e suite.
+  # With user intent, v1.40.0 still launches the test evidence agent as well.
+  test: >-
+    bash scripts/test-no-mistakes-document-guard.sh &&
+    pnpm --filter @dogtag/standard test
+
+document:
+  instructions: |
+    Update only documentation made stale directly by the submitted branch.
+    Never run write-mode formatters, generators, codegen, or UniFFI/binding synchronization.
+    Never modify functional source, tests, workflows, circuits, contracts, or generated bindings during Document.
+    If resolving documentation would require more than 10 files, any non-documentation file, or cross-slice reconciliation, make no such edits and return an ask-user finding instead.
+
+# Zero disables follow-up fix loops. In v1.40.0 the initial Document agent may
+# still make fixes in an accidental raw run, so these prompt constraints and the
+# post-stage commit guard remain defense-in-depth, not a runtime cap.
+auto_fix:
+  review: 0
+  document: 0
+  lint: 0
+
+# The lint guard identifies Document commits by this exact v1.40.0 expansion:
+# "no-mistakes(document): <summary>".
+commit:
+  fix_message: "no-mistakes({{.Step}}): {{.Summary}}"
