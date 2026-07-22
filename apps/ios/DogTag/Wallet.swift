@@ -7,18 +7,10 @@ import Security
 /// The embedded, self-custodial wallet (mirrors Android Wallet.kt).
 ///
 /// Design:
-///  - A BIP-39 mnemonic (24 words) → BIP-39 seed → secp256k1 private key (the user's on-chain
-///    `userWallet`). The BabyJubjub *consent* key is derived in Rust from the same seed under a
-///    DISTINCT domain (so the two keys never collide), via the EdDSA FFI `deriveBabyjubConsentKey`.
-///
-///    NOTE: `WalletIdentity.consent` is the **wallet-level** (per-wallet, `v1`) consent key, and it
-///    is used by the **Level-A** path ONLY - `ScanScreen`'s `proveVerification` plus the
-///    `ConsentKeyRegistry.bindConsentKey` gasless bind, where `keyOf` is a per-wallet
-///    `mapping(address => bytes32)`. It is NOT the key in the profile tree. The Level-B
-///    `owner.consentKey` leaf uses a **per-tag** (`v2`) key derived from `(seed, dogTagId)` entirely
-///    inside Rust - `buildProfileTreeHex` / `proveConsent` already take the `dogTagId`, so nothing
-///    on the Swift side hands that key around. Do not "unify" these two: making the Level-A key
-///    per-tag would force an on-chain `keyOf` rebind on every tag switch.
+///  - A BIP-39 mnemonic (24 words) → BIP-39 seed. Its secp256k1 public address is used only as one
+///    private input to the per-tag owner-control tree; issuance never transmits it or mints to it.
+///    The per-tag BabyJubjub consent key and owner secret are derived inside Rust by
+///    `buildProfileTreeHex` / `proveConsent`.
 ///  - The 64-byte BIP-39 seed is stored in the iOS Keychain with
 ///    `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`; reveal is gated behind a fresh LAContext
 ///    biometric/passcode authentication. (A Secure Enclave key can wrap the blob on real hardware;
@@ -28,29 +20,9 @@ import Security
 ///    self-custody backup/migration - BIP-39 seed→mnemonic is one-way, so without the entropy the
 ///    phrase would be unrecoverable after genesis. Export (`revealMnemonic`) is biometric-gated and
 ///    the phrase is never logged or transmitted. Neither Keychain item is iCloud-synced.
-///  - keyHash = Poseidon(Ax,Ay) is what gets bound on-chain in ConsentKeyRegistry.
 struct WalletIdentity {
     let mnemonic: String          // fresh phrase at genesis; re-derivable later via Wallet.revealMnemonic()
-    let ethAddress: String        // secp256k1 userWallet (0x… 20 bytes)
-    let consent: BabyjubConsentKeyFfi
-    let secpPriv: Data            // 32-byte secp256k1 scalar (in-memory only, post-unlock)
-
-    /// Sign a 32-byte EIP-712 digest with the secp256k1 wallet key → 65-byte 0x.. r||s||v.
-    func signEthDigest(_ digest: Data) -> String { Secp256k1.signDigest(priv: secpPriv, digest: digest) }
-
-    /// The EIP-191 `personal_sign` signature over the central registration message
-    /// "DogTag wallet registration: <ethAddress lowercased>". The digest is
-    /// keccak256(0x19 + "Ethereum Signed Message:\n" + len + message), signed with the secp256k1
-    /// wallet key → 65-byte 0x.. r||s||v (recovers to ethAddress server-side).
-    func registerSignature() -> String {
-        let message = "DogTag wallet registration: \(ethAddress.lowercased())"
-        let msgBytes = Data(message.utf8)
-        var prefixed = Data([0x19])
-        prefixed.append(Data("Ethereum Signed Message:\n\(msgBytes.count)".utf8))
-        prefixed.append(msgBytes)
-        let digest = Keccak256.digest(prefixed)
-        return signEthDigest(digest)
-    }
+    let ethAddress: String        // private profile input (0x… 20 bytes); never sent at issuance
 }
 
 enum Wallet {
@@ -77,14 +49,14 @@ enum Wallet {
         // clean-retriable (no live-but-unexportable wallet) and the orphan entropy is overwritten.
         try storeBlob(entropy, account: entropyAccount)
         try storeBlob(seed, account: seedAccount)
-        return try identity(from: seed, mnemonic: mnemonic)
+        return identity(from: seed, mnemonic: mnemonic)
     }
 
     /// Re-derive the identity from the stored seed. The mnemonic is not returned here; use
     /// `revealMnemonic()` (biometric-gated) to re-derive it for export.
     static func load() throws -> WalletIdentity? {
         guard let seed = loadBlob(account: seedAccount) else { return nil }
-        return try identity(from: seed, mnemonic: "")
+        return identity(from: seed, mnemonic: "")
     }
 
     /// Re-derive the 24-word BIP-39 recovery phrase from the stored entropy, for self-custody
@@ -109,7 +81,7 @@ enum Wallet {
     }
 
     /// The stored 64-byte BIP-39 seed as `0x…` hex, for the Rust FFI's seed-derived material
-    /// (`deriveBabyjubConsentKey`, `deriveOwnerSecretHex`, `buildProfileTreeHex`).
+    /// (`deriveOwnerSecretHex`, `buildProfileTreeHex`, `proveConsent`).
     ///
     /// This is the root secret of the wallet: keep it in memory only for the duration of a
     /// derivation call, and never log, persist or transmit it. The user's 24-word phrase restores
@@ -120,15 +92,10 @@ enum Wallet {
         return "0x" + seed.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func identity(from seed: Data, mnemonic: String) throws -> WalletIdentity {
+    private static func identity(from seed: Data, mnemonic: String) -> WalletIdentity {
         let priv = Bip39.seedToSecp256k1Priv(seed)              // 32-byte secp256k1 scalar
         let ethAddress = Secp256k1.address(fromPriv: priv)
-        let seedHex = "0x" + seed.map { String(format: "%02x", $0) }.joined()
-        let consent = try deriveBabyjubConsentKey(seedHex: seedHex)
-        // Belt-and-suspenders: keyHash must equal Poseidon(Ax,Ay).
-        let kh = try keyHashHex(axHex: consent.axHex, ayHex: consent.ayHex)
-        precondition(kh == consent.keyHashHex, "consent keyHash mismatch")
-        return WalletIdentity(mnemonic: mnemonic, ethAddress: ethAddress, consent: consent, secpPriv: priv)
+        return WalletIdentity(mnemonic: mnemonic, ethAddress: ethAddress)
     }
 
     // ---- Keychain (hardware-protected, this-device-only) -------------------------------------
@@ -170,7 +137,7 @@ enum WalletError: Error { case keychain(OSStatus); case randomGenerationFailed }
 
 /// Records that the user has confirmed they wrote down their 24-word recovery phrase.
 ///
-/// Load-bearing for Level-B recovery, not a nag: the wallet seed is the ONLY cross-device path to a
+/// Load-bearing for owner-hidden recovery, not a nag: the wallet seed is the ONLY cross-device path to a
 /// tag's owner-secret. `Documents/dogtag-owner-secrets.json` is excluded from device backups
 /// (`ProfileTreeStore`), and the seed/entropy Keychain items are `…ThisDeviceOnly`, so a replacement
 /// phone can regenerate the owner-secret ONLY by restoring the phrase. Minting an owner-secret for a

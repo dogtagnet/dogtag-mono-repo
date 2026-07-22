@@ -8,14 +8,14 @@ import uniffi.dogtag_standard.dogTagIdFieldHex
 import uniffi.dogtag_standard.deriveOwnerSecretHex
 
 /**
- * Device-side per-tag Merkle tree building - the Android half of Level-B M5, and the exact parity
+ * Device-side owner-hidden per-tag Merkle tree building, and the exact parity
  * counterpart of iOS `ProfileTreeStore`'s build path.
  *
  * The owner's app builds the tree LOCALLY and hands the issuer only the root `R`, which the issuer
  * seals into `DogTagSBTConsent.profileRoot(dogTagId)` (write-once). The owner's wallet never reaches
  * the chain. Everything else this returns - above all `ownerSecretHex`, the nullifier's secret leaf -
  * is owner-private and must never be transmitted: a server that learned it could link nullifiers
- * back to the owner, which is exactly what Level B removes.
+ * back to the owner, which the owner-hidden model prevents.
  *
  * **No crypto lives here.** The tree math, the Poseidon parameter set, the reserved-leaf encoding
  * and every KDF are in Rust (`crates/dogtag-standard-rs/src/profile_tree.rs`) and are reached

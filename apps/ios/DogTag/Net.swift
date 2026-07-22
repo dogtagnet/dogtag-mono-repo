@@ -92,31 +92,20 @@ enum RoaxRpc {
     }
 
     private static let isWhitelistedForSelector = "0x779c3985" // keccak256("isWhitelistedFor(bytes32,address)")[:4]
-    private static let bindNonceSelector = "0x15c95be6"        // keccak256("bindNonce(address)")[:4]
-    private static let keyOfSelector = "0xfa073d76"            // keccak256("keyOf(address)")[:4]
     private static let consumedSelector = "0x4648c943"         // keccak256("consumed(bytes32)")[:4]
     private static let profileRootSelector = "0x85105cb3"      // keccak256("profileRoot(uint256)")[:4]
-    private static let ownerOfSelector = "0x6352211e"          // keccak256("ownerOf(uint256)")[:4] (ERC-721)
 
-    /// `DogTagSBT.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or nil. This
-    /// is the SBT anchor used to verify an issued DOG_PROFILE (NOT the DogTagIssuer-clone isValid).
+    /// `DogTagSBTConsent.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or
+    /// nil. `dogTagId` is the CANONICAL field-hashed id (`dogTagIdFieldHex`), the same value the tag
+    /// was minted under — NOT the raw decimal handle, which reads an unset slot forever. This is the
+    /// SBT anchor used to confirm an issued DOG_PROFILE (NOT the DogTagIssuer-clone isValid).
     static func profileRoot(rpcUrl: String, dogTagSbt: String, dogTagId: String) async -> String? {
         guard !dogTagSbt.isEmpty, !dogTagId.isEmpty else { return nil }
         let data = profileRootSelector + padUint(dogTagId)
         switch await ethCall(rpcUrl: rpcUrl, to: dogTagSbt, data: data) {
-        case let .success(hex): return "0x" + String(repeating: "0", count: max(0, 64 - hex.count)) + hex
-        case .failure: return nil
-        }
-    }
-
-    /// `DogTagSBT.ownerOf(dogTagId)` → owner address (0x.. 20-byte, lowercased), or nil.
-    static func ownerOf(rpcUrl: String, dogTagSbt: String, dogTagId: String) async -> String? {
-        guard !dogTagSbt.isEmpty, !dogTagId.isEmpty else { return nil }
-        let data = ownerOfSelector + padUint(dogTagId)
-        switch await ethCall(rpcUrl: rpcUrl, to: dogTagSbt, data: data) {
         case let .success(hex):
-            let padded = String(repeating: "0", count: max(0, 64 - hex.count)) + hex
-            return "0x" + padded.suffix(40).lowercased()
+            guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else { return nil }
+            return "0x" + hex.lowercased()
         case .failure: return nil
         }
     }
@@ -135,24 +124,12 @@ enum RoaxRpc {
         }
     }
 
-    /// `ConsentKeyRegistry.bindNonce(subject)` → the current bind nonce (or nil on failure).
-    static func bindNonce(rpcUrl: String, consentKeyRegistry: String, subject: String) async -> UInt64? {
-        guard !consentKeyRegistry.isEmpty, !subject.isEmpty else { return nil }
-        let data = bindNonceSelector + padAddr(subject)
-        switch await ethCall(rpcUrl: rpcUrl, to: consentKeyRegistry, data: data) {
-        case let .success(hex): return UInt64(hex.suffix(16), radix: 16) ?? UInt64(hex, radix: 16) ?? 0
-        case .failure: return nil
-        }
-    }
-
     /// `VerificationRegistry.consumed(nullifier)` → true once the relayer's `recordVerificationZK`
     /// (or the legacy path) has landed on-chain for this nullifier. This is the CANONICAL completion
     /// signal for the async export/verify flow: the groomer host records in the background, so the
-    /// phone polls this until it flips true. `nullifier` is the proof's nullifier signal —
-    /// `PublicSignalIndex.levelA.nullifier` for the Level-A proofs this app produces today, which is
-    /// index 4; note Level-B puts `R` in that slot and the nullifier at 3, so callers must resolve the
-    /// index through `PublicSignalIndex` rather than hard-coding it (passing `R` here would poll a key
-    /// that is never set and hang on a verification that actually succeeded). Accepts a decimal field
+    /// phone polls this until it flips true. `nullifier` is the consent proof's index-3 public signal;
+    /// callers resolve it through `PublicSignalIndex` rather than hard-coding it (index 4 is `R`,
+    /// which is never marked consumed). Accepts a decimal field
     /// element or 0x.. hex, encoded here as a 32-byte word. Returns false on any RPC failure so
     /// the caller simply keeps polling (and ultimately times out) rather than treating it as success.
     static func consumed(rpcUrl: String, verificationRegistry: String, nullifier: String) async -> Bool {
@@ -164,29 +141,19 @@ enum RoaxRpc {
         }
     }
 
-    /// `VerificationRegistry.keyOf(subject)` → bound consent keyHash (0x..), or nil.
-    static func keyOf(rpcUrl: String, verificationRegistry: String, subject: String) async -> String? {
-        guard !verificationRegistry.isEmpty, !subject.isEmpty else { return nil }
-        let data = keyOfSelector + padAddr(subject)
-        switch await ethCall(rpcUrl: rpcUrl, to: verificationRegistry, data: data) {
-        case let .success(hex): return "0x" + String(repeating: "0", count: max(0, 64 - hex.count)) + hex
-        case .failure: return nil
-        }
-    }
-
     private static let getContractSetSelector = functionSelector("getContractSet(bytes32)")
     private static let getActiveArtifactSetSelector = functionSelector("getActiveArtifactSet(bytes32)")
 
     /// keccak256 of a version string as a 32-byte word — the `ProtocolRegistry` map key
-    /// (`contractSetId`) for that version. `AnchorResolver.levelBVersion` → the Level-B query key.
+    /// (`contractSetId`) for that version. `AnchorResolver.protocolVersion` is the canonical key.
     static func versionId(_ version: String) -> String {
         Keccak256.digest(Data(version.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// `ProtocolRegistry.getContractSet(versionId)` → the on-chain contract-set record (M-4 PR3).
     /// Returns nil when the registry is unconfigured/unreachable OR the version is unpublished (the
-    /// getter reverts "unknown contract set"), so the Level-B branch FAILS CLOSED and never touches
-    /// the Level-A path. `protocolRegistry` empty (not yet deployed) is a nil, by design.
+    /// getter reverts "unknown contract set"), so verification fails closed. `protocolRegistry`
+    /// empty (not yet deployed) is a nil, by design.
     static func getContractSet(rpcUrl: String, protocolRegistry: String, version: String) async -> AnchorResolver.ContractSetRecord? {
         guard !protocolRegistry.isEmpty else { return nil }
         let data = getContractSetSelector + versionId(version)
@@ -198,8 +165,8 @@ enum RoaxRpc {
 
     /// `ProtocolRegistry.getActiveArtifactSet(versionId)` → the artifact-set record currently bound to
     /// the version (M-4 PR3). Follows `activeArtifactSetOf` on-chain and reverts if unbound, so a nil
-    /// here (unconfigured registry, unpublished version, or no binding) fails the Level-B branch
-    /// closed. Decodes only `artifactSetId`/`minAppVersion`/`active` — see `AnchorResolver`.
+    /// here (unconfigured registry, unpublished version, or no binding) fails verification closed.
+    /// Decodes only `artifactSetId`/`minAppVersion`/`active` — see `AnchorResolver`.
     static func getActiveArtifactSet(rpcUrl: String, protocolRegistry: String, version: String) async -> AnchorResolver.ArtifactSetRecord? {
         guard !protocolRegistry.isEmpty else { return nil }
         let data = getActiveArtifactSetSelector + versionId(version)
@@ -263,63 +230,203 @@ enum RoaxRpc {
 /// and the export-session resolve/poll. Every host comes from a scanned QR — the device never calls a
 /// central admin base for registration or pet sync (the dog tag is issued by the vet via `/p/<token>`).
 enum CentralApi {
-    static func postConsent(sessionToken: String?, payloadJson: String) async -> Http.Response {
-        await Http.postJSON("\(AppConfig.centralApi)/v1/verify/consent", body: payloadJson, bearer: sessionToken)
+    /// Human identity collected by the issuing vet. It is resolved so this response stays forwards-
+    /// compatible with the later D1 identity-leaf slice, but this mobile slice deliberately does NOT
+    /// fold these values into `R` yet.
+    struct OwnerIdentity {
+        let countryOfIdentification: String
+        let identification: String
+        let name: String
     }
 
-    /// The result of binding a dog-tag at the vet host: the issued DOG_PROFILE + its on-chain anchors.
+    struct IssueMicrochip {
+        let code: String
+        let standard: String
+        let implantDate: String
+        let bodyLocation: String
+    }
+
+    struct IssueWeight {
+        let unit: String
+        let value: String
+        let measuredOn: String
+    }
+
+    /// Pet metadata the device commits as ordinary, random-salted profile attribute leaves.
+    struct IssuePet {
+        let name: String
+        let species: String
+        let breedVbo: String
+        let breedLabel: String
+        let sex: String
+        let neuterStatus: String
+        let dateOfBirth: String
+        let weightHistory: [IssueWeight]
+        let microchip: IssueMicrochip
+
+        /// The intentionally narrow v1 pet profile. The three reserved owner-control leaves are added
+        /// inside the Rust builder; vet-held human identity is a later slice and is excluded here.
+        var profileAttributeValues: [(keyPath: String, value: String, tag: UInt8)] {
+            var values: [(keyPath: String, value: String, tag: UInt8)] = [
+                ("credentialSubject.name", name, 2),
+                ("credentialSubject.species", species, 2),
+                ("credentialSubject.breedVbo", breedVbo, 2),
+                ("credentialSubject.breedLabel", breedLabel, 2),
+                ("credentialSubject.sex", sex, 2),
+                ("credentialSubject.neuterStatus", neuterStatus, 2),
+                ("credentialSubject.dateOfBirth", dateOfBirth, 2),
+            ]
+            for (index, weight) in weightHistory.enumerated() {
+                values.append(("credentialSubject.weightHistory[\(index)].unit", weight.unit, 2))
+                values.append(("credentialSubject.weightHistory[\(index)].value", weight.value, 4))
+                values.append(("credentialSubject.weightHistory[\(index)].measuredOn", weight.measuredOn, 2))
+            }
+            values += [
+                ("credentialSubject.microchip.code", microchip.code, 2),
+                ("credentialSubject.microchip.standard", microchip.standard, 2),
+                ("credentialSubject.microchip.implantDate", microchip.implantDate, 2),
+                ("credentialSubject.microchip.bodyLocation", microchip.bodyLocation, 2),
+            ]
+            return values.filter { !$0.value.isEmpty }
+        }
+    }
+
+    /// Non-consuming `GET /p/<token>` response. The parser accepts both the target nested `pet`
+    /// shape and the stored-session `petName` + `profile` + `microchip` shape during rollout.
+    struct DogTagIssueSession {
+        let sessionId: String
+        let dogTagId: String
+        let status: String
+        let pet: IssuePet
+        let ownerIdentity: OwnerIdentity
+    }
+
+    /// Final owner-hidden issuance result after the session reports `bound` with a transaction hash.
     struct DogTagIssue {
-        let wrappedDocJson: String
         let dogTagId: String
         let root: String
         let txHash: String
-        let walletAddress: String
+        let status: String
+        let bound: Bool
     }
 
-    /// POST <host>/profiles/issue/bind { token, walletAddress, signature } — the vet-issues-the-dog-tag
-    /// flow. The host comes from the scanned `/p/<token>` QR (NOT a central base URL). `signature` is the
-    /// EIP-191 personal_sign from `WalletIdentity.registerSignature()`. The server now responds
-    /// IMMEDIATELY with the off-chain-built credential `{ wrappedDoc, dogTagId, root, walletAddress,
-    /// status: "minting" }` and mints the SBT in the background; there is NO `txHash` yet — the phone
-    /// polls the chain until the mint lands. Nil on failure. A modest timeout suffices (no on-chain wait).
-    static func bindDogTagIssue(host: String, token: String, walletAddress: String, signature: String) async -> DogTagIssue? {
+    enum CustodialBindResult {
+        case accepted(DogTagIssue)
+        case inconclusive
+        case rejected(statusCode: Int, body: String)
+    }
+
+    static func resolveDogTagIssue(host: String, token: String) async -> DogTagIssueSession? {
         guard !token.isEmpty else { return nil }
-        let body: [String: Any] = ["token": token, "walletAddress": walletAddress, "signature": signature]
-        guard let raw = try? JSONSerialization.data(withJSONObject: body),
-              let bodyStr = String(data: raw, encoding: .utf8) else { return nil }
-        let resp = await Http.postJSON("\(host)/profiles/issue/bind", body: bodyStr, timeout: 20)
-        guard resp.ok, let d = resp.body.data(using: .utf8),
-              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
-        // wrappedDoc may be a nested JSON object or a string — normalise to a JSON string.
-        let wrappedJson: String
-        if let obj = o["wrappedDoc"] as? [String: Any],
-           let wd = try? JSONSerialization.data(withJSONObject: obj),
-           let s = String(data: wd, encoding: .utf8) {
-            wrappedJson = s
-        } else if let s = o["wrappedDoc"] as? String {
-            wrappedJson = s
-        } else {
+        let resp = await Http.getJSON("\(host)/p/\(token)")
+        guard resp.ok, let data = resp.body.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return nil
         }
-        // dogTagId may serialise as a JSON string or number.
-        let dogTagId: String
-        if let s = o["dogTagId"] as? String { dogTagId = s }
-        else if let n = o["dogTagId"] as? NSNumber { dogTagId = n.stringValue }
-        else { dogTagId = "" }
-        return DogTagIssue(
-            wrappedDocJson: wrappedJson,
+        let nestedPet = object["pet"] as? [String: Any]
+        let topProfile = object["profile"] as? [String: Any]
+        guard nestedPet != nil || topProfile != nil,
+              let identity = (object["ownerIdentity"] as? [String: Any])
+                ?? (object["owner_identity"] as? [String: Any]) else {
+            // An older backend returned only ids/status. Issuing from that shape would silently
+            // commit an owner-control-only tree and permanently discard the vet's pet metadata.
+            return nil
+        }
+        let profile = (nestedPet?["profile"] as? [String: Any])
+            ?? topProfile
+            ?? nestedPet
+            ?? [:]
+        let microchip = (nestedPet?["microchip"] as? [String: Any])
+            ?? (profile["microchip"] as? [String: Any])
+            ?? (object["microchip"] as? [String: Any])
+            ?? [:]
+        let rawWeights = (profile["weightHistory"] as? [[String: Any]])
+            ?? (nestedPet?["weightHistory"] as? [[String: Any]])
+            ?? (object["weightHistory"] as? [[String: Any]])
+            ?? []
+        let dogTagId = jsonString(object["dogTagId"] ?? object["dog_tag_id"])
+        let sessionId = jsonString(object["sessionId"] ?? object["session_id"])
+        guard !dogTagId.isEmpty, !sessionId.isEmpty else { return nil }
+        let pet = IssuePet(
+                name: jsonString(nestedPet?["name"] ?? profile["name"]
+                    ?? object["petName"] ?? object["pet_name"]),
+                species: jsonString(nestedPet?["species"] ?? profile["species"]),
+                breedVbo: jsonString(nestedPet?["breedVbo"] ?? profile["breedVbo"]
+                    ?? profile["breed_vbo"]),
+                breedLabel: jsonString(
+                    nestedPet?["breedLabel"] ?? profile["breedLabel"]
+                        ?? profile["breed_label"] ?? profile["breed"]),
+                sex: jsonString(nestedPet?["sex"] ?? profile["sex"]),
+                neuterStatus: jsonString(nestedPet?["neuterStatus"] ?? profile["neuterStatus"]
+                    ?? profile["neuter_status"]),
+                dateOfBirth: jsonString(nestedPet?["dateOfBirth"] ?? profile["dateOfBirth"]
+                    ?? profile["date_of_birth"]),
+                weightHistory: rawWeights.map { weight in
+                    IssueWeight(
+                        unit: jsonString(weight["unit"]),
+                        value: jsonString(weight["value"]),
+                        measuredOn: jsonString(weight["measuredOn"] ?? weight["measured_on"]))
+                },
+                microchip: IssueMicrochip(
+                    code: jsonString(microchip["code"]),
+                    standard: jsonString(microchip["standard"]),
+                    implantDate: jsonString(microchip["implantDate"] ?? microchip["implant_date"]),
+                    bodyLocation: jsonString(microchip["bodyLocation"] ?? microchip["body_location"])))
+        guard !pet.name.isEmpty, !pet.profileAttributeValues.isEmpty else { return nil }
+        return DogTagIssueSession(
+            sessionId: sessionId,
             dogTagId: dogTagId,
-            root: (o["root"] as? String) ?? "",
-            txHash: (o["txHash"] as? String) ?? (o["tx_hash"] as? String) ?? "",
-            walletAddress: (o["walletAddress"] as? String) ?? walletAddress)
+            status: jsonString(object["status"]),
+            pet: pet,
+            ownerIdentity: OwnerIdentity(
+                countryOfIdentification: jsonString(
+                    identity["countryOfIdentification"] ?? identity["country_of_identification"]),
+                identification: jsonString(identity["identification"]),
+                name: jsonString(identity["name"])))
+    }
+
+    /// POST <host>/profiles/issue/custodial-bind {token, root}. The device wallet and signature never
+    /// cross this boundary; ownership is the reserved secret triple committed inside `root`.
+    static func bindDogTagIssue(host: String, token: String, root: String) async -> CustodialBindResult {
+        guard !token.isEmpty, !root.isEmpty else {
+            return .rejected(statusCode: -1, body: "missing token or root")
+        }
+        let body: [String: Any] = ["token": token, "root": root]
+        guard let raw = try? JSONSerialization.data(withJSONObject: body),
+              let bodyStr = String(data: raw, encoding: .utf8) else {
+            return .rejected(statusCode: -1, body: "could not encode request")
+        }
+        let resp = await Http.postJSON("\(host)/profiles/issue/custodial-bind", body: bodyStr, timeout: 20)
+        if resp.code < 0 || resp.code == 410 { return .inconclusive }
+        guard resp.ok else { return .rejected(statusCode: resp.code, body: resp.body) }
+        guard let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
+            return .inconclusive
+        }
+        let dogTagId = jsonString(o["dogTagId"] ?? o["dog_tag_id"])
+        let returnedRoot = jsonString(o["root"] ?? o["R"])
+        guard !dogTagId.isEmpty, !returnedRoot.isEmpty else {
+            return .inconclusive
+        }
+        return .accepted(DogTagIssue(
+            dogTagId: dogTagId,
+            root: returnedRoot,
+            txHash: jsonString(o["txHash"] ?? o["tx_hash"]),
+            status: jsonString(o["status"]),
+            bound: (o["bound"] as? Bool) ?? false))
+    }
+
+    private static func jsonString(_ value: Any?) -> String {
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        return ""
     }
 
     /// The platform-OWNED, UNVERIFIED discovery claims from the resolve GET's `unverifiedClaims` block
-    /// (M7 §5.2). NONE of these is authority — under a `mode == "levelb"` session they are validated
-    /// against the dogtag `ProtocolRegistry` anchor via `validateDiscovery` before the app acts. Empty
-    /// when the server omits the block (every pre-M-4 / non-levelb response), which is fine: the
-    /// Level-A path never reads them. Deliberately NOT named `ConvenienceClaims` — that is the FFI
-    /// record `validateDiscovery` consumes; this is the raw parse the caller maps into it.
+    /// (M7 §5.2). NONE of these is authority: they are validated against the dogtag
+    /// `ProtocolRegistry` anchor before the app acts. Missing claims fail closed. Deliberately NOT
+    /// named `ConvenienceClaims` — that is the FFI record `validateDiscovery` consumes; this is the
+    /// raw parse the caller maps into it.
     struct UnverifiedClaims {
         let protocolVersion: String
         let chainId: UInt64
@@ -334,18 +441,9 @@ enum CentralApi {
         let relayer: String
         let purpose: String
         let recordType: String
-        let challenge: String
-        let mode: String
-        /// The `unverifiedClaims` block, present only when the server emits it (M-4 levelb sessions).
+        /// The platform-owned claims are always required by the owner-hidden flow and are validated
+        /// against the on-chain ProtocolRegistry before proving.
         let claims: UnverifiedClaims?
-
-        /// Whether this session presents via the zero-knowledge path. The ECDSA (EIP-712) modes
-        /// ("normal"/"ecdsa") have no leaf-count limit; anything else is the ZK circuit path, which
-        /// can only prove records within the circuit's leaf budget. Single source for that decision.
-        var isZk: Bool {
-            let m = mode.lowercased()
-            return m != "normal" && m != "ecdsa"
-        }
     }
 
     /// GET <host>/x/<token> → export-session metadata (non-consuming). Nil on failure.
@@ -354,7 +452,7 @@ enum CentralApi {
         let resp = await Http.getJSON("\(host)/x/\(token)")
         guard resp.ok, let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
-        // The convenience tier is additive: absent on every non-levelb / pre-M-4 response.
+        // Missing claims are rejected by the single owner-hidden flow.
         var claims: UnverifiedClaims?
         if let uc = o["unverifiedClaims"] as? [String: Any] {
             let chain: UInt64
@@ -373,26 +471,14 @@ enum CentralApi {
             relayer: (o["relayer"] as? String) ?? "",
             purpose: (o["purpose"] as? String) ?? "",
             recordType: (o["recordType"] as? String) ?? (o["record_type"] as? String) ?? "",
-            challenge: (o["challenge"] as? String) ?? "",
-            mode: (o["mode"] as? String) ?? "zk",
             claims: claims)
     }
 
-    /// ZK path: POST the proof bundle directly to the GROOMER host (scanned QR origin), NOT central.
-    /// The body carries the one-time `exportToken` (no bearer, consumed on submit). The groomer relays
-    /// `recordVerificationZK`.
+    /// Submit the owner-hidden proof directly to the verifier host from the scanned QR. The Level-B
+    /// route is the one that accepts an `{exportToken, proof}` payload under the owner's one-time
+    /// export token; the non-`levelb` `/v1/verify/consent` requires `consent`+`sig` and refuses a
+    /// `levelb` session.
     static func postVerifyConsentToHost(host: String, payloadJson: String) async -> Http.Response {
-        // The submit now returns 200 {status:"recording", sessionId} FAST (no on-chain wait — the
-        // groomer binds the consent key + relays recordVerificationZK in the background, ~24-48s on
-        // ROAX). A ~20s timeout (like bindDogTagIssue) is ample for the quick ack.
-        await Http.postJSON("\(host)/v1/verify/consent", body: payloadJson, timeout: 20)
-    }
-
-    /// Level-B twin of ``postVerifyConsentToHost``. The owner-hidden route accepts the one-time
-    /// export token plus the client-generated consent proof and acknowledges immediately with
-    /// `status="recording"`; completion is read back through ``verifySessionStatus`` and the
-    /// Level-B registry's `consumed(nullifier)` seam.
-    static func postVerifyConsentLevelBToHost(host: String, payloadJson: String) async -> Http.Response {
         await Http.postJSON("\(host)/v1/verify/consent/levelb", body: payloadJson, timeout: 20)
     }
 

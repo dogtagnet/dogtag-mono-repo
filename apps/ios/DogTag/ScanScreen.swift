@@ -42,14 +42,14 @@ struct ScanScreen: View {
     // Export-session metadata resolved (non-consuming) from the QR's one-time token.
     @State private var exportSession: CentralApi.ExportSession? = nil
     @State private var exportResolveErr: String? = nil
-    // Dog-tag issuance result + verdict (vet-issues-the-dog-tag flow).
+    // Dog-tag issuance metadata and final owner-hidden anchoring result.
+    @State private var issueSession: CentralApi.DogTagIssueSession? = nil
     @State private var issued: CentralApi.DogTagIssue? = nil
-    @State private var issueVerdict = ""
     @State private var issueErr = ""
 
     var body: some View {
-        // SCAN GATE (B1): import + export both need a wallet (the device address is what the record is
-        // minted to / the consent is signed with). No wallet → don't scan; point the user to Profile.
+        // Import and owner-hidden presentation both rely on the local recovery seed. No wallet means
+        // there is no owner-control witness to build or prove.
         if !Wallet.exists() {
             walletGate
         } else if scanning {
@@ -116,7 +116,7 @@ struct ScanScreen: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button { status = ""; payload = nil; selected = nil; exportSession = nil; exportResolveErr = nil; issued = nil; issueVerdict = ""; issueErr = ""; scanning = true } label: {
+                    Button { status = ""; payload = nil; selected = nil; exportSession = nil; exportResolveErr = nil; issueSession = nil; issued = nil; issueErr = ""; scanning = true } label: {
                         Text("Scan again").foregroundColor(c.onBackground).padding(.horizontal, 16).padding(.vertical, 10)
                             .background(Capsule().fill(c.surfaceVariant))
                     }.buttonStyle(.plain)
@@ -175,12 +175,22 @@ struct ScanScreen: View {
                 Text("Issue dog tag").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
                 Text("From \(host)").font(.system(size: 12)).foregroundColor(c.muted)
                 Text("Token \(String(token.prefix(18)))…").font(.system(size: 11, design: .monospaced)).foregroundColor(c.muted)
-                Text("Your vet will bind a new dog tag to this wallet. We'll sign the binding, then verify the issued profile against the DogTagSBT (profileRoot + ownerOf) before storing it.")
+                Text("Your phone will create the private owner proof locally. Only its Merkle root is sent to the vet for anchoring; your wallet and owner secret never leave this device.")
                     .font(.system(size: 12)).foregroundColor(c.muted)
 
-                if issued == nil && !working {
-                    Button { bindIssue(host: host, token: token) } label: {
-                        Text("Issue & verify").frame(maxWidth: .infinity).padding(.vertical, 12)
+                if let session = issueSession {
+                    field("Pet", session.pet.name.isEmpty ? "DogTag #\(session.dogTagId)" : session.pet.name)
+                    field("Dog tag", session.dogTagId)
+                    if !session.pet.breedLabel.isEmpty { field("Breed", session.pet.breedLabel) }
+                    if !session.pet.microchip.code.isEmpty { field("Microchip", session.pet.microchip.code) }
+                    if !session.ownerIdentity.name.isEmpty { field("Owner", session.ownerIdentity.name) }
+                } else if issueErr.isEmpty {
+                    Text("Resolving issuance session…").font(.system(size: 12)).foregroundColor(c.muted)
+                }
+
+                if issued == nil && !working, let session = issueSession {
+                    Button { bindIssue(host: host, token: token, session: session) } label: {
+                        Text("Create private profile & issue").frame(maxWidth: .infinity).padding(.vertical, 12)
                             .foregroundColor(c.onAccent).background(RoundedRectangle(cornerRadius: 12).fill(c.accent))
                     }
                 }
@@ -188,7 +198,7 @@ struct ScanScreen: View {
                     ForgeWaitView(status: status)
                 }
                 if !working && !status.isEmpty {
-                    Text(status).font(.system(size: 12)).foregroundColor(issueVerdict == "VALID" ? c.success : c.muted)
+                    Text(status).font(.system(size: 12)).foregroundColor(issued == nil ? c.muted : c.success)
                 }
                 if !issueErr.isEmpty { Text(issueErr).font(.system(size: 12)).foregroundColor(c.danger) }
             }
@@ -197,60 +207,167 @@ struct ScanScreen: View {
                 card {
                     Text("Dog tag issued").font(.system(size: 16, weight: .bold)).foregroundColor(c.success)
                     CopyableMonoRow(label: "dogTagId", value: res.dogTagId, truncate: false)
-                    field("Verdict", issueVerdict.isEmpty ? "—" : issueVerdict)
                     CopyableMonoRow(label: "Merkle root", value: res.root)
-                    CopyableMonoRow(label: "Transaction", value: res.txHash)
-                    Text("Stored under your dog tags.").font(.system(size: 12)).foregroundColor(c.muted)
+                    if !res.txHash.isEmpty {
+                        CopyableMonoRow(label: "Transaction", value: res.txHash)
+                    }
+                    Text("The private recovery witness is stored on this device.").font(.system(size: 12)).foregroundColor(c.muted)
+                }
+            }
+        }
+        .task(id: token) {
+            issueSession = nil
+            issued = nil
+            issueErr = ""
+            guard let session = await CentralApi.resolveDogTagIssue(host: host, token: token) else {
+                issueErr = "Could not resolve issuance session (expired or offline)."
+                return
+            }
+            issueSession = session
+        }
+    }
+
+    private func bindIssue(host: String, token: String, session: CentralApi.DogTagIssueSession) {
+        issueErr = ""
+        Biometric.authenticate(reason: "Authenticate to create this dog tag's private owner proof") { ok, e in
+            guard ok else { issueErr = e ?? "auth failed"; return }
+            guard let wallet = (try? Wallet.load()) ?? nil else {
+                issueErr = "Create your wallet first (Profile)."; return
+            }
+            guard let seedHex = Wallet.seedHex() else {
+                issueErr = "Wallet seed unavailable — authenticate and try again."; return
+            }
+            working = true
+            status = "Building private owner profile on this device…"
+            Task {
+                do {
+                    let root = try buildOrReuseIssueRoot(
+                        session: session, seedHex: seedHex, ownerAddress: wallet.ethAddress)
+                    await MainActor.run { status = "Sending the private root to your vet…" }
+                    let bindResult = await CentralApi.bindDogTagIssue(
+                        host: host, token: token, root: root)
+                    var accepted: CentralApi.DogTagIssue? = nil
+                    switch bindResult {
+                    case let .accepted(result):
+                        accepted = result
+                        if result.dogTagId != session.dogTagId {
+                            throw issueFailure("vet returned a different dogTagId")
+                        }
+                        if result.root.caseInsensitiveCompare(root) != .orderedSame {
+                            throw issueFailure("vet returned a different profile root")
+                        }
+                    case .inconclusive:
+                        accepted = nil
+                    case let .rejected(statusCode, body):
+                        throw issueFailure(
+                            "custodial bind rejected (\(statusCode)): \(String(body.prefix(160)))")
+                    }
+
+                    // The HTTP response can be lost after the one-time token was consumed, and the
+                    // issuance-session status route is operator-gated (the device holds no operator
+                    // session). Confirm completion the way the pre-change flow did: read the anchor
+                    // straight from the public chain. `mintCustodial` writes
+                    // `DogTagSBTConsent.profileRoot(id) = R` once both txs mine, keyed by the CANONICAL
+                    // field-hashed id (never the raw handle). The persisted root is authoritative, so
+                    // poll even when the POST result is inconclusive and never rebuild with new salts.
+                    let roax = RoaxConfig.load()
+                    let onchainId = try dogTagIdFieldHex(dogTagIdDec: session.dogTagId)
+                    await MainActor.run { status = "Anchoring your dog tag on-chain…" }
+                    var anchored = false
+                    var delayNanos: UInt64 = 2_000_000_000
+                    for _ in 0..<40 {
+                        if let chainRoot = await RoaxRpc.profileRoot(
+                            rpcUrl: AppConfig.roaxRpc, dogTagSbt: roax.dogTagSbt, dogTagId: onchainId),
+                           chainRoot.dropFirst(2).contains(where: { $0 != "0" }) {
+                            guard chainRoot.caseInsensitiveCompare(root) == .orderedSame else {
+                                throw issueFailure(
+                                    "dog tag is already anchored to a different profile root")
+                            }
+                            anchored = true
+                            break
+                        }
+                        try? await Task.sleep(nanoseconds: delayNanos)
+                        delayNanos = min(delayNanos + 500_000_000, 5_000_000_000)
+                    }
+                    guard anchored else {
+                        await MainActor.run {
+                            working = false
+                            issueErr = "Submitted; anchoring is still pending. Check the vet portal for completion."
+                        }
+                        return
+                    }
+                    await MainActor.run {
+                        store.upsertPet(Pet(
+                            dogTagId: session.dogTagId,
+                            name: session.pet.name.isEmpty ? "DogTag #\(session.dogTagId)" : session.pet.name,
+                            breed: session.pet.breedLabel.isEmpty ? session.pet.breedVbo : session.pet.breedLabel,
+                            ageLabel: session.pet.dateOfBirth,
+                            microchip: session.pet.microchip.code.isEmpty ? nil : session.pet.microchip.code))
+                        issued = CentralApi.DogTagIssue(
+                            dogTagId: session.dogTagId,
+                            root: root,
+                            txHash: accepted?.txHash ?? "",
+                            status: "bound",
+                            bound: true)
+                        working = false
+                        status = "Issued and anchored — owner hidden."
+                    }
+                } catch {
+                    await MainActor.run {
+                        working = false
+                        issueErr = "Issue failed: \(error.localizedDescription)"
+                    }
                 }
             }
         }
     }
 
-    private func bindIssue(host: String, token: String) {
-        issueErr = ""
-        Biometric.authenticate(reason: "Authenticate to bind this dog tag to your wallet") { ok, e in
-            guard ok else { issueErr = e ?? "auth failed"; return }
-            guard let wallet = (try? Wallet.load()) ?? nil else {
-                issueErr = "Create your wallet first (Profile)."; return
+    /// A bind retry must reuse the exact persisted salts/root. Generating fresh salts for the same
+    /// allocated dogTagId would create a second root that the write-once contract can never accept.
+    private func buildOrReuseIssueRoot(
+        session: CentralApi.DogTagIssueSession,
+        seedHex: String,
+        ownerAddress: String
+    ) throws -> String {
+        let requested = session.pet.profileAttributeValues
+        if let existing = try ProfileTreeStore.load().first(where: {
+            $0.dogTagIdDec == session.dogTagId
+        }) {
+            guard existing.abandonedAt == nil else {
+                throw issueFailure("this dogTagId was retired and cannot be reused")
             }
-            working = true
-            status = "Binding dog tag…"
-            let sig = wallet.registerSignature()
-            let addr = wallet.ethAddress
-            let roax = RoaxConfig.load()
-            Task {
-                guard let res = await CentralApi.bindDogTagIssue(host: host, token: token, walletAddress: addr, signature: sig) else {
-                    await MainActor.run { working = false; issueErr = "Bind failed (expired token / network)." }
-                    return
-                }
-                // The bind responds immediately (status "minting") and the vet mints the SBT in the
-                // background. Poll the chain (profileRoot + ownerOf) until the mint lands — retrying a
-                // miss rather than failing on the first read.
-                await MainActor.run { status = "Minting your dog tag on-chain…" }
-                let poll = await RecordImporter.pollSbtMint(
-                    dogTagId: res.dogTagId, expectedRoot: res.root, walletAddress: addr,
-                    dogTagSbt: roax.dogTagSbt, rpcUrl: AppConfig.roaxRpc)
-                if case .timeout = poll {
-                    await MainActor.run { working = false; issueErr = "Mint not confirmed — check the vet portal." }
-                    return
-                }
-                await MainActor.run { status = "Verifying against DogTagSBT…" }
-                let r = await RecordImporter.verifyIssuedDogTag(
-                    wrappedDocJson: res.wrappedDocJson, dogTagId: res.dogTagId, expectedRoot: res.root,
-                    walletAddress: addr, dogTagSbt: roax.dogTagSbt, rpcUrl: AppConfig.roaxRpc)
-                await MainActor.run {
-                    working = false
-                    if let cred = r.credential {
-                        store.addCredential(cred)
-                        issued = res
-                        issueVerdict = r.verdict
-                        status = "Issued (\(r.verdict)) — \(r.detail)"
-                    } else {
-                        issueErr = "Verify failed: \(r.detail)"
-                    }
-                }
+            guard existing.derivationVersion == ProfileTreeStore.derivationVersion else {
+                throw issueFailure("existing owner secret uses an unsupported derivation version")
             }
+            let metadataMatches = existing.attributes.count == requested.count
+                && zip(existing.attributes, requested).allSatisfy { stored, incoming in
+                    stored.keyPath == incoming.keyPath
+                        && stored.value == incoming.value
+                        && stored.tag == incoming.tag
+                }
+            let matches = existing.ownerAddress.caseInsensitiveCompare(ownerAddress) == .orderedSame
+                && metadataMatches
+            guard matches else {
+                throw issueFailure("this dogTagId already has different private profile metadata")
+            }
+            return try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
         }
+        let attributes = try requested.map { item -> ProfileTreeStore.BackedUpAttribute in
+            let salted = try ProfileTreeStore.randomStringAttribute(
+                keyPath: item.keyPath, value: item.value)
+            return ProfileTreeStore.BackedUpAttribute(
+                keyPath: salted.keyPath, saltHex: salted.saltHex, tag: item.tag, value: salted.value)
+        }
+        return try ProfileTreeStore.buildAndPersist(
+            seedHex: seedHex,
+            dogTagIdDec: session.dogTagId,
+            ownerAddress: ownerAddress,
+            attributes: attributes).rootHex
+    }
+
+    private func issueFailure(_ message: String) -> NSError {
+        NSError(domain: "DogTag.OwnerHiddenIssuance", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     // ---- export ----
@@ -277,16 +394,12 @@ struct ScanScreen: View {
             let wantGroup = CredentialGroup.from(recordType: sess.recordType)
             let matching = store.credentials.filter { $0.group == wantGroup }
             let candidates = matching.isEmpty ? store.credentials : matching
-            // Zero-knowledge export can only prove records within the circuit's leaf budget; the ECDSA
-            // (EIP-712) path has no such limit. Gate the "too many fields" state on the ZK mode only.
-            let isZk = sess.isZk
             VStack(alignment: .leading, spacing: 14) {
                 card {
                     Text("Export request").font(.system(size: 16, weight: .bold)).foregroundColor(c.onBackground)
                     field("Groomer", sess.relayer.isEmpty ? "Unknown" : sess.relayer)
                     field("Purpose", sess.purpose.isEmpty ? "—" : sess.purpose)
                     field("Record type", sess.recordType.isEmpty ? "any" : sess.recordType)
-                    field("Mode", sess.isZk ? "Zero-knowledge" : "ECDSA (EIP-712)")
                 }
                 card {
                     Text("Select the record to export").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
@@ -294,7 +407,6 @@ struct ScanScreen: View {
                         Text("No matching records yet — scan a vet's QR to import one first.").font(.system(size: 12)).foregroundColor(c.muted)
                     }
                     ForEach(candidates) { cred in
-                        let tooManyFields = isZk && cred.exceedsZkLeafLimit
                         let isSel = selected?.id == cred.id
                         Button { selected = cred } label: {
                             VStack(alignment: .leading, spacing: 6) {
@@ -303,23 +415,13 @@ struct ScanScreen: View {
                                     Spacer()
                                     VerdictBadge(verdict: cred.verdict)
                                 }
-                                if tooManyFields {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10))
-                                        Text("Can't be privately verified — too many fields (\(cred.leafCount) of max \(ZkCircuit.maxLeaves)).")
-                                            .font(.system(size: 11))
-                                    }
-                                    .foregroundColor(c.danger)
-                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .opacity(tooManyFields ? 0.6 : 1)
                             .padding(12)
                             .background(RoundedRectangle(cornerRadius: 12).fill(isSel ? c.accent.opacity(0.14) : c.surfaceVariant))
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSel ? c.accent : .clear, lineWidth: 1.5))
                         }
                         .buttonStyle(.plain)
-                        .disabled(tooManyFields)
                     }
                 }
                 if working {
@@ -348,229 +450,38 @@ struct ScanScreen: View {
     }
 
     private func presentExport(host: String, token: String, groomerAddr: String, sess: CentralApi.ExportSession) {
-        guard let sel = selected else { status = "Select a record first."; return }
-        let relayer = sess.relayer, purpose = sess.purpose, sessionId = sess.sessionId
-        let isZk = sess.isZk
-        // Belt-and-suspenders behind the disabled picker row: never hand a record that exceeds the ZK
-        // circuit's leaf budget to the prover — it would abort with `too many leaves`. Fail clearly first.
-        if isZk && sel.exceedsZkLeafLimit {
-            status = "This record can't be privately verified — too many fields (\(sel.leafCount) of max \(ZkCircuit.maxLeaves)). Pick a record with fewer fields."
+        guard let credential = selected else {
+            status = "Select a record first."
             return
         }
-        Biometric.authenticate(reason: "Present '\(sel.displayTypeLabel)' to \(relayer.isEmpty ? "the groomer" : relayer)") { ok, e in
-            guard ok else { status = e ?? "auth failed"; return }
-            let wallet: WalletIdentity? = (try? Wallet.load()) ?? nil
-            let subject = wallet?.ethAddress
-            let req = VerificationRequest.from(
-                exportToken: token, relayer: sess.relayer, purpose: sess.purpose,
-                recordType: sess.recordType, challenge: sess.challenge, mode: sess.mode,
-                dogTagIdDec: sel.dogTagId, credentialRoot: sel.credentialRoot,
-                subjectWallet: subject, callbackUrl: "\(AppConfig.centralApi)/v1/verify/consent")
-
-            if !isZk {
-                // ECDSA (legacy) path — relay through central as before.
-                Task {
-                    do {
-                        let signed = try ConsentSigner.sign(req, consentPrivHex: nil)
-                        await MainActor.run { status = "Signed (\(signed.mode.rawValue)); submitting…" }
-                        let r = await CentralApi.postConsent(sessionToken: AppConfig.sessionToken, payloadJson: signed.payloadJson)
-                        await MainActor.run {
-                            status = r.code < 0 ? "Signed locally; submit failed (no network / session)."
-                                                : "POST /v1/verify/consent → \(r.code)"
-                        }
-                    } catch { await MainActor.run { status = "sign failed: \(error)" } }
-                }
+        Biometric.authenticate(
+            reason: "Present '\(credential.displayTypeLabel)' to \(sess.relayer.isEmpty ? "the verifier" : sess.relayer)"
+        ) { ok, error in
+            guard ok else {
+                status = error ?? "auth failed"
                 return
             }
-
-            // -------- LEVEL-B owner-hidden path: validate, prove, submit, and read back --------
-            // Gated on the STORED `mode`, EXPLICITLY — NOT `isZk`, which is true for any non-normal/ecdsa
-            // mode and would drop a `levelb` session into the Level-A prover below. Every ProtocolRegistry
-            // eth_call and the `validateDiscovery` call live inside this branch, so a non-levelb session
-            // makes ZERO registry calls and the Level-A path is byte-for-byte untouched (the acceptance bar).
-            if AnchorResolver.isLevelB(mode: sess.mode) {
-                working = true
-                let roax = RoaxConfig.load()
-                Task {
-                    await runLevelBFlow(
-                        sess: sess, roax: roax, credential: sel, req: req,
-                        host: host, token: token, groomerAddr: groomerAddr)
-                }
-                return
-            }
-
-            // -------- ZERO-KNOWLEDGE on-device path --------
-            guard let wallet = wallet else { status = "Create your wallet first (Profile)."; return }
             working = true
             let roax = RoaxConfig.load()
             Task {
-                do {
-                    // (a) PRE-PROOF GROOMER CHECK — hard-stop if the relayer is not whitelisted.
-                    await MainActor.run { status = "Checking groomer authorization…" }
-                    let verifyKey = verifyWhitelistKeyHex(purposeLabel: purpose)
-                    let wl = await RoaxRpc.isWhitelistedFor(
-                        rpcUrl: AppConfig.roaxRpc, issuerRegistry: roax.issuerRegistry,
-                        key: verifyKey, signer: relayer)
-                    guard case .valid = wl else {
-                        await MainActor.run {
-                            working = false
-                            status = "This groomer is not authorized (not whitelisted)."
-                        }
-                        return
-                    }
-
-                    // (a2) DNS VERIFY (prod/remote only) — the groomer's domain must publish a TXT
-                    // `dogtag-verify=<groomerAddr>`. Local hosts skip this entirely.
-                    if !DnsVerify.isLocalHost(host) {
-                        await MainActor.run { status = "Verifying groomer DNS…" }
-                        let dnsOk = await DnsVerify.verifyGroomer(host: host, groomerAddr: groomerAddr)
-                        if !dnsOk {
-                            await MainActor.run {
-                                working = false
-                                status = "Groomer DNS not verified — refusing to present."
-                            }
-                            return
-                        }
-                    }
-
-                    // (b) Sign EdDSA consent + generate the Groth16 proof on-device.
-                    let eddsa = try signConsentEddsa(
-                        prvHex: wallet.consent.prvHex,
-                        dogTagIdHex: req.dogTagId, recordTypeHex: req.recordType, purposeHex: req.purpose,
-                        credentialRootHex: req.credentialRoot, challengeHex: req.challenge,
-                        relayerHex: req.relayer, subjectHex: req.subject, nonceHex: req.nonce, deadlineHex: req.deadline)
-                    guard let zkeyUrl = Bundle.main.url(forResource: "verification_final", withExtension: "zkey") else {
-                        await MainActor.run { working = false; status = "proving key missing from bundle." }
-                        return
-                    }
-                    // The witness graph (`verification.graph`) is the pure-Rust circom-witnesscalc
-                    // input — loaded by absolute path exactly like the zkey. Mirrors Android
-                    // ZkeyAsset.ensureGraph().
-                    guard let graphPath = ZkeyAsset.ensureGraph() else {
-                        await MainActor.run { working = false; status = "witness graph missing from bundle." }
-                        return
-                    }
-                    await MainActor.run { status = "Generating proof…" }
-                    let eddsaInput = EddsaSigInput(
-                        r8xDec: eddsa.r8xDec, r8yDec: eddsa.r8yDec, sDec: eddsa.sDec,
-                        axHex: wallet.consent.axHex, ayHex: wallet.consent.ayHex)
-                    let proof = try proveVerification(
-                        wrappedDocJson: sel.wrappedDocJson, consentJson: eddsaConsentJson(req),
-                        eddsaSig: eddsaInput, zkeyPath: zkeyUrl.path, graphPath: graphPath)
-
-                    // (c) CONSENT-KEY BIND (gasless) — owner signs the EIP-712 digest; relayer submits.
-                    var bind: ConsentKeyBind? = nil
-                    let nonce = await RoaxRpc.bindNonce(
-                        rpcUrl: AppConfig.roaxRpc, consentKeyRegistry: roax.consentKeyRegistry,
-                        subject: wallet.ethAddress) ?? 0
-                    if let digestHex = try? bindConsentKeyDigestHex(
-                        consentKeyRegistryAddr: roax.consentKeyRegistry, keyHashHex: wallet.consent.keyHashHex,
-                        walletAddr: wallet.ethAddress, nonce: nonce, chainId: UInt64(roax.chainId)) {
-                        let ownerSig = wallet.signEthDigest(hexToData(digestHex))
-                        bind = ConsentKeyBind(subject: wallet.ethAddress, keyHash: wallet.consent.keyHashHex, ownerSig: ownerSig)
-                    }
-
-                    // The proof's nullifier (a decimal field element). This is the on-chain
-                    // `VerificationRegistry.consumed(bytes32)` key — the canonical completion signal we
-                    // poll the CHAIN for below. LEVEL-A index: this screen proves with the bundled
-                    // Level-A zkey. Under Level-B that same slot is `R`, so a bare `pubSignals[4]`
-                    // here would poll a key that is never set and hang on a SUCCESSFUL verification.
-                    let nfIdx = PublicSignalIndex.levelA.nullifier
-                    let nullifier = proof.pubSignals.count > nfIdx ? proof.pubSignals[nfIdx] : ""
-
-                    // PRE-SUBMIT REPLAY GUARD: if this nullifier is already consumed on-chain, the
-                    // verification was recorded before — submitting again is a doomed replay the relayer
-                    // will reject. Stop early with a clear message (mirrors Android ScanScreen).
-                    let alreadyRecorded = await RoaxRpc.consumed(
-                        rpcUrl: AppConfig.roaxRpc, verificationRegistry: roax.verificationRegistry,
-                        nullifier: nullifier)
-                    if alreadyRecorded {
-                        await MainActor.run { working = false; status = "This verification was already recorded." }
-                        return
-                    }
-
-                    // (d) SUBMIT to the QR host (groomer), NOT central. The one-time exportToken is
-                    // consumed server-side on record-success. The submit now returns 200
-                    // {status:"recording"} FAST and records on-chain in the background, so we ALWAYS
-                    // proceed to the chain poll — even on a non-2xx/network-failure submit response
-                    // (the relayer may still be recording). Only a clearly-rejected 4xx carrying an
-                    // {error} body is a hard failure.
-                    await MainActor.run { status = "Submitting proof to groomer…" }
-                    let signed = try ConsentSigner.sign(req, consentPrivHex: wallet.consent.prvHex, proof: proof, bind: bind)
-                    let r = await CentralApi.postVerifyConsentToHost(host: host, payloadJson: signed.payloadJson)
-                    if (400..<500).contains(r.code),
-                       let d = r.body.data(using: .utf8),
-                       let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
-                       let rejectMsg = o["error"] as? String, !rejectMsg.isEmpty {
-                        await MainActor.run { working = false; status = "Submit rejected (\(rejectMsg))." }
-                        return
-                    }
-                    // Otherwise (2xx, network failure, or a 4xx without an {error} body) proceed to the
-                    // chain poll — the canonical success signal is consumed(nullifier).
-
-                    // (e) POLL THE CHAIN until VerificationRegistry.consumed(nullifier) == true. Do NOT
-                    // rely SOLELY on the token-gated session poll: the export token is consumed at
-                    // record-success, so that GET starts returning 401 exactly when it succeeds. Poll
-                    // every ~3s up to ~120s.
-                    // The export token is consumed server-side only on record-SUCCESS, so the
-                    // token-gated session poll keeps returning until success/error. We poll it
-                    // ALONGSIDE the chain: a bind/record failure flips the session to status="error"
-                    // (the reason is carried in txHash/message) and would otherwise never set
-                    // consumed(nullifier)=true — leaving the phone stuck until the ~120s timeout. On
-                    // error we STOP and surface it immediately (mirrors Android ScanScreen).
-                    await MainActor.run { status = "Recording your verification on-chain…" }
-                    var done = false
-                    var failedMsg: String? = nil
-                    for _ in 0..<40 {
-                        if await RoaxRpc.consumed(rpcUrl: AppConfig.roaxRpc, verificationRegistry: roax.verificationRegistry, nullifier: nullifier) {
-                            done = true
-                            break
-                        }
-                        if let st = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, token: token),
-                           st.status == "error" {
-                            let reason = st.txHash?.isEmpty == false ? st.txHash! : "recording failed"
-                            failedMsg = reason
-                            break
-                        }
-                        try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    }
-                    if let failedMsg = failedMsg {
-                        await MainActor.run { working = false; status = "Verification failed: \(failedMsg)" }
-                        return
-                    }
-                    if done {
-                        // Optional: one best-effort session read to surface a txHash for display.
-                        let tx = await CentralApi.verifySessionStatus(host: host, sessionId: sessionId, token: token)?.txHash
-                        await MainActor.run {
-                            working = false
-                            if let tx = tx, !tx.isEmpty {
-                                status = "Verified on-chain — no data disclosed. tx \(String(tx.prefix(14)))…"
-                            } else {
-                                status = "Verified on-chain — no data disclosed."
-                            }
-                        }
-                    } else {
-                        await MainActor.run { working = false; status = "Submitted; awaiting confirmation." }
-                    }
-                } catch {
-                    await MainActor.run { working = false; status = "ZK verify failed: \(error)" }
-                }
+                await runLevelBFlow(
+                    sess: sess,
+                    roax: roax,
+                    credential: credential,
+                    host: host,
+                    token: token,
+                    groomerAddr: groomerAddr)
             }
         }
     }
-
-    /// M-4 PR4 — the owner-hidden (`mode == "levelb"`) consent flow.
-    ///
-    /// The explicit branch preserves the Level-A path below verbatim. It resolves and validates the
-    /// on-chain anchor, rebuilds the profile witness from the M-2b store, calls `proveConsent` with the
-    /// bundled Level-B artifact, submits to the Level-B phone route, then polls the detached broadcast
-    /// through the same session-status + `consumed(nullifier)` seams as Level-A.
+    /// The one owner-hidden consent flow. It validates the on-chain discovery anchor, rebuilds the
+    /// device-private profile witness, proves consent, submits it to the canonical verifier route,
+    /// and polls the detached on-chain recording.
     @MainActor
     private func runLevelBFlow(
         sess: CentralApi.ExportSession,
         roax: RoaxConfig,
         credential: Credential,
-        req: VerificationRequest,
         host: String,
         token: String,
         groomerAddr: String
@@ -581,9 +492,8 @@ struct ScanScreen: View {
             status = "Owner-hidden session is missing its discovery claims — refusing."
             return
         }
-        // Resolve BOTH on-chain axes. Either nil — registry unconfigured/undeployed, version
-        // unpublished, or no artifact binding — fails closed without entering Level-A.
-        let version = AnchorResolver.levelBVersion
+        // Resolve both on-chain axes. Missing configuration/publication fails closed.
+        let version = AnchorResolver.protocolVersion
         async let csTask = RoaxRpc.getContractSet(
             rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
         async let asTask = RoaxRpc.getActiveArtifactSet(
@@ -598,11 +508,11 @@ struct ScanScreen: View {
         let anchor = TrustedAnchor(
             version: version,
             versionId: cs.contractSetId,
-            artifactSet: AnchorResolver.levelBArtifactSet,
+            artifactSet: AnchorResolver.artifactSet,
             artifactSetId: arti.artifactSetId,
             chainId: UInt64(roax.chainId),
             verificationRegistry: cs.verificationRegistry,
-            circuitId: AnchorResolver.levelBCircuitId,
+            circuitId: AnchorResolver.circuitId,
             minAppVersion: arti.minAppVersion,
             contractSetActive: cs.active,
             artifactSetActive: arti.active)
@@ -613,10 +523,9 @@ struct ScanScreen: View {
             issuerClone: claims.issuerClone,
             purpose: claims.purpose)
         // `appVersion`: this build's marketing version (dotted semver). `expectedPurpose`: the
-        // session's purpose (D1 ruling (i)). The app has no purpose independent of the scanned QR
+        // session's purpose. The app has no purpose independent of the scanned QR
         // today, so `validateDiscovery`'s purpose check (§5.3 step 4) is INTENTIONALLY WEAK here —
-        // claim vs the same session it came from. That is not a regression: it matches the Level-A
-        // path's existing posture, and the load-bearing anti-redirect weight sits in the
+        // claim vs the same session it came from. The load-bearing anti-redirect weight sits in the
         // registry/chainId/version/versionId/both-active/minAppVersion checks, which all still fire.
         // An independent app-side purpose is queued as follow-up hardening.
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
@@ -624,8 +533,7 @@ struct ScanScreen: View {
             _ = try validateDiscovery(
                 claims: ffiClaims, anchor: anchor, appVersion: appVersion, expectedPurpose: sess.purpose)
 
-            // Match the Level-A pre-proof authorization posture, but keep every read inside the
-            // Level-B branch. The server and contract repeat the whitelist check before spending gas.
+            // The server and contract repeat this whitelist check before spending gas.
             status = "Checking groomer authorization…"
             let verifyKey = verifyWhitelistKeyHex(purposeLabel: sess.purpose)
             let wl = await RoaxRpc.isWhitelistedFor(
@@ -674,7 +582,7 @@ struct ScanScreen: View {
             }
             let attributesData = try JSONSerialization.data(withJSONObject: attributes)
             guard let attributesJson = String(data: attributesData, encoding: .utf8) else {
-                throw NSError(domain: "DogTag.LevelB", code: 1,
+                throw NSError(domain: "DogTag.OwnerHidden", code: 1,
                               userInfo: [NSLocalizedDescriptionKey: "could not encode profile attributes"])
             }
             let consentNonce = "0x" + Keccak256.digest(Data(UUID().uuidString.utf8))
@@ -683,7 +591,7 @@ struct ScanScreen: View {
             // retried. Ten minutes leaves ample room for proving plus deferred settlement.
             let deadlineDec = String(UInt64(Date().timeIntervalSince1970) + 600)
 
-            guard let descriptor = ZkeyAsset.resolve(version: AnchorResolver.levelBVersion),
+            guard let descriptor = ZkeyAsset.resolve(version: AnchorResolver.protocolVersion),
                   let zkeyPath = ZkeyAsset.ensure(descriptor: descriptor),
                   let graphPath = ZkeyAsset.ensureGraph(descriptor: descriptor) else {
                 working = false
@@ -693,14 +601,14 @@ struct ScanScreen: View {
             status = "Generating owner-hidden proof…"
             // Groth16 proving is synchronous and runs seconds-to-minutes on-device. This function is
             // @MainActor, so the FFI MUST run off the main actor or it freezes the UI (and the
-            // ForgeWait animation) and risks a watchdog kill — mirroring the Level-A path's
-            // non-MainActor Task. Use Task.detached (a plain Task would re-inherit MainActor here);
+            // ForgeWait animation) and risks a watchdog kill. Use Task.detached (a plain Task would
+            // re-inherit MainActor here);
             // capture only Sendable String locals and transfer the ProofFfi back before resuming.
             let dogTagIdHandle = owner.dogTagIdDec
             let ownerAddressHex = owner.ownerAddress
-            let purposeHex = req.purpose
-            let relayerHex = req.relayer
-            let recordTypeHex = req.recordType
+            let purposeHex = ConsentField.keccakLabel(sess.purpose)
+            let relayerHex = sess.relayer
+            let recordTypeHex = ConsentField.keccakLabel(sess.recordType)
             let proof = try await Task.detached(priority: .userInitiated) {
                 try proveConsent(
                     seedHex: seedHex,
@@ -716,12 +624,11 @@ struct ScanScreen: View {
                     graphPath: graphPath)
             }.value
 
-            // Level-B's nullifier is index 3. Index 4 is R; polling it is the classic successful-
-            // submit hang because VerificationRegistryConsent never marks R as consumed.
-            let nfIdx = PublicSignalIndex.levelB.nullifier
+            // The consent nullifier is index 3. Index 4 is R and is never a consumed-key.
+            let nfIdx = PublicSignalIndex.ownerHidden.nullifier
             guard proof.pubSignals.count > nfIdx else {
-                throw NSError(domain: "DogTag.LevelB", code: 2,
-                              userInfo: [NSLocalizedDescriptionKey: "proof omitted the Level-B nullifier"])
+                throw NSError(domain: "DogTag.OwnerHidden", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "proof omitted the consent nullifier"])
             }
             let nullifier = proof.pubSignals[nfIdx]
             let verificationRegistry = cs.verificationRegistry
@@ -739,12 +646,12 @@ struct ScanScreen: View {
             let payload: [String: Any] = ["exportToken": token, "proof": proofObject]
             let payloadData = try JSONSerialization.data(withJSONObject: payload)
             guard let payloadJson = String(data: payloadData, encoding: .utf8) else {
-                throw NSError(domain: "DogTag.LevelB", code: 3,
-                              userInfo: [NSLocalizedDescriptionKey: "could not encode Level-B proof"])
+                throw NSError(domain: "DogTag.OwnerHidden", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "could not encode consent proof"])
             }
 
             status = "Submitting owner-hidden proof to groomer…"
-            let response = await CentralApi.postVerifyConsentLevelBToHost(
+            let response = await CentralApi.postVerifyConsentToHost(
                 host: host, payloadJson: payloadJson)
             if (400..<500).contains(response.code),
                let data = response.body.data(using: .utf8),
@@ -755,9 +662,8 @@ struct ScanScreen: View {
                 return
             }
 
-            // Detached-broadcast read-back: the session reports terminal errors while the Level-B
-            // registry's consumed(nullifier) bit is the canonical success signal. Same cadence and
-            // timeout as the existing Level-A primitive; there is no synchronous 120s HTTP request.
+            // Detached-broadcast read-back: the session reports terminal errors while the registry's
+            // consumed(nullifier) bit is the canonical success signal.
             status = "Recording your owner-hidden verification on-chain…"
             var done = false
             var failedMsg: String? = nil
@@ -798,29 +704,6 @@ struct ScanScreen: View {
             working = false
             status = "Owner-hidden verification refused: \(error)"
         }
-    }
-
-    /// The canonical §1.10 consent JSON the Rust prover consumes for `proveVerification`.
-    private func eddsaConsentJson(_ req: VerificationRequest) -> String {
-        let o: [String: Any] = [
-            "dogTagId": req.dogTagId, "recordType": req.recordType, "purpose": req.purpose,
-            "credentialRoot": req.credentialRoot, "challenge": req.challenge, "relayer": req.relayer,
-            "subject": req.subject, "nonce": req.nonce, "deadline": req.deadline,
-        ]
-        return String(data: (try? JSONSerialization.data(withJSONObject: o)) ?? Data(), encoding: .utf8) ?? "{}"
-    }
-
-    private func hexToData(_ hex: String) -> Data {
-        var h = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
-        if h.count % 2 != 0 { h = "0" + h }
-        var out = Data()
-        var i = h.startIndex
-        while i < h.endIndex {
-            let next = h.index(i, offsetBy: 2)
-            if let b = UInt8(h[i..<next], radix: 16) { out.append(b) }
-            i = next
-        }
-        return out
     }
 
     // ---- helpers ----

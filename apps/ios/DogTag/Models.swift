@@ -211,16 +211,6 @@ struct WrappedDoc {
 // the credential detail and the export picker so the presentation stays consistent.
 // --------------------------------------------------------------------------------------------
 
-/// Constraints of the on-device zero-knowledge verification circuit
-/// (`circuits/verification.circom` — `DogTagVerification(24, 5)`; mirrored by
-/// `crates/dogtag-prover-rs` `pub const N: usize = 24`). A record with more Merkle leaves than this
-/// cannot be proven privately (the prover aborts with `too many leaves: <n> > N=24`).
-/// NOTE: this is the single display-layer source of truth for the limit — if the sibling ZK work
-/// (dogtag-zkverify-z2) changes the circuit width, update this constant to match.
-enum ZkCircuit {
-    static let maxLeaves = 24
-}
-
 /// Formats the "which pet" line shared across every record display.
 enum PetLabel {
     /// "<name> · DogTag #<id>", or just "DogTag #<id>", or "" when neither is known.
@@ -278,42 +268,28 @@ extension Credential {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Number of Merkle leaves in this record — the same count the ZK prover computes as `numLeaves`
-    /// (`decodedFields()` flattens `data` identically to the prover's `flatten_data`).
-    var leafCount: Int { wrapped?.decodedFields().count ?? 0 }
-
-    /// True when this record has more leaves than the ZK verification circuit supports, so it cannot be
-    /// privately (zero-knowledge) verified. See `ZkCircuit.maxLeaves`.
-    var exceedsZkLeafLimit: Bool { leafCount > ZkCircuit.maxLeaves }
 }
 
 /// The live ROAX (chainId 135) deployment addresses, loaded from the bundled `roax.json`.
 struct RoaxConfig {
     let chainId: Int
     let dogTagSbt: String
-    let verificationRegistry: String
-    let consentKeyRegistry: String
     let issuerRegistry: String
     let poseidon6: String
-    /// `ProtocolRegistry` — the discovery TRUST ANCHOR the Level-B (`mode == "levelb"`) path reads to
-    /// validate a platform's claims (M-4 PR3). Empty until the registry is deployed on ROAX: an empty
-    /// address makes `RoaxRpc.getContractSet` return nil, so the Level-B branch fails closed while the
-    /// Level-A default path — which never reads this field — is untouched.
+    /// `ProtocolRegistry` is the discovery trust anchor. Empty until redeployment; verification then
+    /// fails closed instead of inventing an address.
     let protocolRegistry: String
 
     static func load() -> RoaxConfig {
         guard let url = Bundle.main.url(forResource: "roax", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return RoaxConfig(chainId: 135, dogTagSbt: "", verificationRegistry: "",
-                              consentKeyRegistry: "", issuerRegistry: "", poseidon6: "",
-                              protocolRegistry: "")
+            return RoaxConfig(chainId: 135, dogTagSbt: "", issuerRegistry: "",
+                              poseidon6: "", protocolRegistry: "")
         }
         return RoaxConfig(
             chainId: (o["chainId"] as? Int) ?? 135,
             dogTagSbt: (o["DogTagSBT"] as? String) ?? "",
-            verificationRegistry: (o["VerificationRegistry"] as? String) ?? "",
-            consentKeyRegistry: (o["ConsentKeyRegistry"] as? String) ?? "",
             issuerRegistry: (o["IssuerRegistry"] as? String) ?? "",
             poseidon6: (o["Poseidon6"] as? String) ?? "",
             protocolRegistry: (o["ProtocolRegistry"] as? String) ?? ""
@@ -321,28 +297,8 @@ struct RoaxConfig {
     }
 }
 
-/// Endpoint configuration (mirrors Android AppConfig). Per-vet/-groomer hosts always come from scanned
-/// QR origins — the device never calls a central admin base for registration or pet sync. The legacy
-/// ECDSA export path still reads an optional central base URL + owner session token (read-only here);
-/// `roaxRpc` is the on-chain read endpoint.
+/// Endpoint configuration. Per-vet/-verifier hosts always come from scanned QR origins; `roaxRpc`
+/// is the gasless on-chain read endpoint.
 enum AppConfig {
-    static let defaultCentralApi = "https://api.dogtag.io"
     static let roaxRpc = "https://devrpc.roax.net"
-
-    private static let centralKey = "central_api"
-    private static let sessionKey = "owner_session"
-
-    /// The configured central API base URL (no trailing slash), or the compiled-in default.
-    static var centralApi: String {
-        let v = UserDefaults.standard.string(forKey: centralKey)?
-            .trimmingCharacters(in: .whitespaces)
-        if let v = v, !v.isEmpty {
-            return v.hasSuffix("/") ? String(v.dropLast()) : v
-        }
-        return defaultCentralApi
-    }
-
-    static var sessionToken: String? {
-        UserDefaults.standard.string(forKey: sessionKey)
-    }
 }

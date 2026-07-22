@@ -45,10 +45,7 @@ class RoaxRpcSelectorTest {
     fun everyDerivedSelectorMatchesItsCanonicalSignature() {
         assertEquals("0x6a938567", RoaxRpc.functionSelector("isValid(bytes32)"))
         assertEquals("0x779c3985", RoaxRpc.functionSelector("isWhitelistedFor(bytes32,address)"))
-        assertEquals("0x15c95be6", RoaxRpc.functionSelector("bindNonce(address)"))
-        assertEquals("0xfa073d76", RoaxRpc.functionSelector("keyOf(address)"))
         assertEquals("0x4648c943", RoaxRpc.functionSelector("consumed(bytes32)"))
         assertEquals("0x85105cb3", RoaxRpc.functionSelector("profileRoot(uint256)"))
-        assertEquals("0x6352211e", RoaxRpc.functionSelector("ownerOf(uint256)"))
     }
 }

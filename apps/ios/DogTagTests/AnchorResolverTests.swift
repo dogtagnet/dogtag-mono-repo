@@ -1,26 +1,10 @@
 import XCTest
 
-/// Pins the pure Level-B discovery-anchor logic: the `mode == "levelb"` gate and the two
-/// `ProtocolRegistry` ABI decoders. These need no FFI and no chain, so they run in the host-less
-/// bundle. The actual fail-closed comparison is `validateDiscovery` (Rust-tested in `dogtag_standard`
-/// / #55) and is not re-tested here; this covers the caller's two jobs — gate + decode.
+/// Pins the pure ProtocolRegistry ABI decoders. These need no FFI and no chain, so they run in the
+/// host-less bundle. The actual fail-closed comparison is Rust-tested in `dogtag_standard`.
 ///
 /// The Kotlin mirror is `apps/android/.../net/AnchorResolverTest.kt`.
 final class AnchorResolverTests: XCTestCase {
-
-    // MARK: - The gate (the acceptance bar: non-levelb ⇒ Level-B logic never runs)
-
-    /// Only `"levelb"` (any case) is Level-B. Every other mode the server can stamp — `normal`, `zk`,
-    /// and anything unexpected — is NOT, so the caller makes ZERO ProtocolRegistry calls and stays on
-    /// the Level-A path. This is the load-bearing "Level-A untouched" guarantee, at its source.
-    func testIsLevelBGate() {
-        XCTAssertTrue(AnchorResolver.isLevelB(mode: "levelb"))
-        XCTAssertTrue(AnchorResolver.isLevelB(mode: "LEVELB"))
-        XCTAssertTrue(AnchorResolver.isLevelB(mode: "LevelB"))
-        for notLevelB in ["zk", "normal", "ecdsa", "level-b", "levelb ", "", "consent"] {
-            XCTAssertFalse(AnchorResolver.isLevelB(mode: notLevelB), "\(notLevelB) must NOT be Level-B")
-        }
-    }
 
     // MARK: - ABI decoders
 
@@ -122,7 +106,7 @@ final class AnchorResolverTests: XCTestCase {
             "000000000000000000000000000000000000000000000000000000000002a301" +
             "0000000000000000000000000000000000000000000000000000000000000001"
         let cs = AnchorResolver.decodeContractSet(hex)
-        // The canonical M5 Level-B trio (ProtocolVersions.sol levelBContracts).
+        // The canonical owner-hidden trio (kept at its deployed compatibility key).
         XCTAssertEqual(cs?.verificationRegistry, "0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87")
         XCTAssertEqual(cs?.active, true)
     }

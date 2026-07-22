@@ -9,7 +9,7 @@ import org.junit.Test
 
 /**
  * Cross-platform parity: the Android device-side profile-tree builder must produce the SAME `R` as
- * the Rust/iOS reference for the same witness (Level-B M-2b).
+ * the Rust/iOS reference for the same owner-hidden witness.
  *
  * The anchor is `contracts/test/device-profile-root.json`, the shared fixture whose `R` is built by
  * `profile_tree::build_profile_tree` from the fixed demo witness in

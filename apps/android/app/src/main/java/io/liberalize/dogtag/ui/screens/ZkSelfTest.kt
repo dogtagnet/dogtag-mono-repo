@@ -24,7 +24,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.ZkeyAsset
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
@@ -32,47 +31,16 @@ import io.liberalize.dogtag.zk.PublicSignalIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
-import uniffi.dogtag_standard.EddsaSigInput
-import uniffi.dogtag_standard.bindConsentKeyDigestHex
-import uniffi.dogtag_standard.keyHashHex
-import uniffi.dogtag_standard.proveVerification
-import uniffi.dogtag_standard.signConsentEddsa
+import uniffi.dogtag_standard.proveConsent
 
-/**
- * Debug-only ON-DEVICE ZK self-test — the mobile end-to-end check the audit could previously only
- * read (no device in the lab). It drives the SAME native code path the privacy-preserving groomer
- * export uses, end to end, with no camera / biometric / network: a fixed *imported record* (a
- * deterministic [io.liberalize.dogtag.data.Models]-shaped WrappedDoc) is signed, proved, and the
- * proof is checked against the server-recomputed public signals — all on the device's own arm64
- * native libraries (UniFFI → Rust SDK + circom-prover graph witness calculator + bundled zkey).
- *
- * The fixed vector (`assets/zk_selftest.json`) is produced by, and byte-for-byte mirrors,
- * `dogtag-standard-rs/tests/prove_parity.rs::fixed_prove_inputs` (regenerate via its
- * `dump_selftest_fixture` test), so the device proof MUST reproduce the same 7 public signals the
- * server SDK computes — and the on-chain `Groth16Verifier` was generated from the same vkey.
- *
- * Steps (each a real native call):
- *   1. `signConsentEddsa`     — EdDSA-BabyJubjub consent signature (consent signing). The circuit
- *                               re-verifies this signature as a constraint inside step 2's proof.
- *   2. `proveVerification`    — generate the Groth16 proof ON-DEVICE (graph witnesscalc + zkey).
- *   3. public-signal check    — proof's `pubSignals` == the server-recomputed expected vector, and
- *                               the 32-bit-regression guard (nullifier & keyHash non-zero). Matching
- *                               signals are themselves proof the consent signature verified.
- *   4. `keyHashHex` +
- *      `bindConsentKeyDigestHex` — derive the consent keyHash and the EIP-712 consent-key bind
- *                               digest (consent-key bind).
- *
- * The result line renders the stable text `ZK-SELFTEST: PASS` / `ZK-SELFTEST: FAIL` that the Maestro
- * flow (`apps/android/maestro/zk_e2e.yaml`) asserts on. Gated behind `BuildConfig.DEBUG` by its
- * caller so it never ships in a release build.
- */
+/** Debug-only device proof over the exact Rust `consent_prove_parity` fixture. */
 @Composable
 fun ZkSelfTestCard() {
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-
     var running by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<ZkSelfTestResult?>(null) }
     var status by remember { mutableStateOf("") }
@@ -83,9 +51,8 @@ fun ZkSelfTestCard() {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            "Runs the REAL on-device Groth16 prover (UniFFI → Rust circom-prover, graph witness " +
-                "calculator + bundled proving key) over a fixed imported-record vector, then checks " +
-                "the proof's public signals match the server-recomputed values. Debug builds only.",
+            "Runs the real owner-hidden consent prover and checks all seven public signals against " +
+                "the Rust parity vector. Debug builds only.",
             fontSize = 12.sp, color = c.muted,
         )
         Button(
@@ -94,10 +61,7 @@ fun ZkSelfTestCard() {
                 result = null
                 status = "Starting…"
                 scope.launch {
-                    val r = withContext(Dispatchers.Default) {
-                        runZkSelfTest(context) { s -> status = s }
-                    }
-                    result = r
+                    result = withContext(Dispatchers.Default) { runZkSelfTest(context) { status = it } }
                     running = false
                 }
             },
@@ -124,13 +88,9 @@ fun ZkSelfTestCard() {
             },
             modifier = Modifier.testTag("zk_selftest_result"),
         )
-        val detail = r?.detail ?: status
-        if (detail.isNotBlank()) {
+        (r?.detail ?: status).takeIf { it.isNotBlank() }?.let {
             Text(
-                detail,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                color = c.muted,
+                it, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = c.muted,
                 modifier = Modifier.testTag("zk_selftest_detail"),
             )
         }
@@ -139,72 +99,52 @@ fun ZkSelfTestCard() {
 
 private data class ZkSelfTestResult(val pass: Boolean, val detail: String)
 
-/**
- * Execute the on-device ZK self-test off the main thread. Returns PASS only if every native step
- * succeeds AND the proof's public signals equal the server-recomputed expected vector.
- */
 private fun runZkSelfTest(context: Context, onStatus: (String) -> Unit): ZkSelfTestResult = try {
-    val fixture = JSONObject(
-        context.assets.open("zk_selftest.json").bufferedReader().use { it.readText() },
+    val seedHex = "0x636f6e73656e74207061726974792077616c6c65742073656564202d2054455354204d4154455249414c204f4e4c592c206e6576657220686f6c642076616c7565"
+    val attributes = JSONArray().apply {
+        put(JSONObject().put("keyPath", "credentialSubject.name")
+            .put("salt", "0x07070707070707070707070707070707").put("tag", 2).put("value", "Rex"))
+        put(JSONObject().put("keyPath", "credentialSubject.breedLabel")
+            .put("salt", "0x09090909090909090909090909090909").put("tag", 2).put("value", "Shiba Inu"))
+    }.toString()
+    val expected = listOf(
+        "19282080935305080861096842252900215298393603684181619512414474199363734335896",
+        "7",
+        "97433442488726861213578988847752201310395502865",
+        "10082827006016799336744122064490401655461844512429394449644692943092461376845",
+        "17331201248350577047385658568212808264533738615016772120609589632882809234778",
+        "19",
+        "1893456000",
     )
-    val wrappedDocJson = fixture.getString("wrappedDocJson")
-    val consentJson = fixture.getString("consentJson")
-    val prvHex = fixture.getString("consentPrvHex")
-    val axHex = fixture.getString("consentAxHex")
-    val ayHex = fixture.getString("consentAyHex")
-    val expected = fixture.getJSONArray("expectedPubSignals").let { arr ->
-        ArrayList<String>(arr.length()).apply { for (i in 0 until arr.length()) add(arr.getString(i)) }
-    }
-    val cj = JSONObject(consentJson)
-    fun field(k: String) = cj.getString(k)
-
-    // 1. EdDSA-BabyJubjub consent signature (real native signing). The circuit verifies this
-    //    signature as a constraint inside the proof below, so a proof whose public signals match the
-    //    expected vector is itself proof that the signature was valid — no separate verify needed.
-    onStatus("Signing EdDSA consent…")
-    val sig = signConsentEddsa(
-        prvHex,
-        field("dogTagId"), field("recordType"), field("purpose"), field("credentialRoot"),
-        field("challenge"), field("relayer"), field("subject"), field("nonce"), field("deadline"),
+    val word = { value: String -> "0x" + value.padStart(64, '0') }
+    onStatus("Materialising consent artifacts…")
+    val descriptor = ZkeyAsset.current()
+    val zkeyPath = ZkeyAsset.ensure(context, descriptor)
+    val graphPath = ZkeyAsset.ensureGraph(context, descriptor)
+    onStatus("Generating owner-hidden proof on-device…")
+    val proof = proveConsent(
+        seedHex = seedHex,
+        dogTagIdHandle = "424242",
+        ownerAddressHex = "0x00000000000000000000000000000000deadbeef",
+        attributesJson = attributes,
+        purposeHex = word("7"),
+        relayerHex = "0x" + "11".repeat(20),
+        recordTypeHex = word("13"),
+        consentNonceHex = word("63"),
+        deadlineDec = "1893456000",
+        zkeyPath = zkeyPath,
+        graphPath = graphPath,
     )
-
-    // 2. Generate the Groth16 proof ON-DEVICE (graph witness calculator + bundled zkey).
-    onStatus("Materialising zkey + graph…")
-    val zkeyPath = ZkeyAsset.ensure(context)
-    val graphPath = ZkeyAsset.ensureGraph(context)
-    onStatus("Generating Groth16 proof on-device…")
-    val eddsaInput = EddsaSigInput(sig.r8xDec, sig.r8yDec, sig.sDec, axHex, ayHex)
-    val proof = proveVerification(wrappedDocJson, consentJson, eddsaInput, zkeyPath, graphPath)
-
-    // 3. The proof's public signals MUST equal the server-recomputed expected vector.
-    if (proof.pubSignals.size != 7) {
-        return ZkSelfTestResult(false, "expected 7 public signals, got ${proof.pubSignals.size}")
+    if (proof.pubSignals.size != PublicSignalIndex.COUNT) {
+        ZkSelfTestResult(false, "expected 7 public signals, got ${proof.pubSignals.size}")
+    } else if (proof.pubSignals != expected) {
+        val bad = proof.pubSignals.indices.firstOrNull { proof.pubSignals[it] != expected[it] } ?: -1
+        ZkSelfTestResult(false, "public-signal mismatch at index $bad")
+    } else if (proof.pubSignals[PublicSignalIndex.NULLIFIER] == "0") {
+        ZkSelfTestResult(false, "nullifier is zero")
+    } else {
+        ZkSelfTestResult(true, "7/7 consent public signals match · prover=on-device")
     }
-    if (proof.pubSignals != expected) {
-        val firstBad = proof.pubSignals.indices.firstOrNull { proof.pubSignals[it] != expected[it] } ?: -1
-        return ZkSelfTestResult(false, "public-signal mismatch at index $firstBad")
-    }
-    // 32-bit witness regression guard (wasm2c zeroed the last-computed output wires).
-    // LEVEL-A indices — the self-test proves with the bundled Level-A zkey.
-    if (proof.pubSignals[PublicSignalIndex.LevelA.NULLIFIER] == "0") return ZkSelfTestResult(false, "nullifier is zero")
-    if (proof.pubSignals[PublicSignalIndex.LevelA.KEY_HASH] == "0") return ZkSelfTestResult(false, "keyHash is zero")
-
-    // 4. Consent-key bind: derive the keyHash and the EIP-712 bind digest (real native calls).
-    onStatus("Deriving consent-key bind digest…")
-    val keyHash = keyHashHex(axHex, ayHex)
-    val roax = RoaxConfig.load(context)
-    val bindDigest = bindConsentKeyDigestHex(
-        roax.consentKeyRegistry, keyHash, field("subject"), 0u, roax.chainId.toULong(),
-    )
-    if (!bindDigest.startsWith("0x") || bindDigest.length != 66) {
-        return ZkSelfTestResult(false, "bad consent-key bind digest: $bindDigest")
-    }
-
-    ZkSelfTestResult(
-        true,
-        "7/7 public signals match · nullifier+keyHash non-zero · " +
-            "bind digest ${bindDigest.take(12)}… · prover=on-device(arm64)",
-    )
 } catch (t: Throwable) {
     ZkSelfTestResult(false, "exception: ${t::class.simpleName}: ${t.message}")
 }

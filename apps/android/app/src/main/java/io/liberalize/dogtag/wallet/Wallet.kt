@@ -18,25 +18,17 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-// The UniFFI surface (BabyJubjub consent key derivation lives in Rust).
-import uniffi.dogtag_standard.BabyjubConsentKeyFfi
-import uniffi.dogtag_standard.deriveBabyjubConsentKey
-import uniffi.dogtag_standard.keyHashHex
-
 /**
  * The embedded, self-custodial wallet.
  *
  * Design (matching the build spec):
- *  - A BIP-39 mnemonic (24 words) → BIP-39 seed → secp256k1 private key (the user's on-chain
- *    `userWallet`). The BabyJubjub *consent* key is derived in Rust from the same seed under a
- *    DISTINCT domain (so the two keys never collide), via the new EdDSA FFI.
+ *  - A BIP-39 mnemonic (24 words) → BIP-39 seed → secp256k1 address. Per-tag owner secrets and
+ *    consent keys are derived inside the Rust profile-tree/prover calls under distinct domains.
  *  - The 64-byte BIP-39 seed is encrypted with an AES-256-GCM key held in the Android Keystore
  *    (StrongBox-backed when the hardware supports it), and that Keystore key is biometric-gated
  *    (`setUserAuthenticationRequired(true)`), so decryption requires a fresh biometric auth.
- *  - keyHash = Poseidon(Ax,Ay) is what gets bound on-chain in ConsentKeyRegistry.
- *
  * Crypto primitives (BIP-39 PBKDF2, secp256k1 point mul) use BouncyCastle so we have no network
- * dependency; the consent-key + signing path is the audited Rust core over UniFFI.
+ * dependency; owner-hidden consent proving is the audited Rust core over UniFFI.
  */
 object Wallet {
     private const val KEY_ALIAS = "dogtag_wallet_seed_key"
@@ -51,35 +43,15 @@ object Wallet {
 
     data class WalletIdentity(
         val mnemonic: String,         // shown ONCE at genesis; never persisted in plaintext
-        val ethAddress: String,       // secp256k1 userWallet (0x… 20 bytes)
-        val consent: BabyjubConsentKeyFfi,  // Ax/Ay/keyHash for ConsentKeyRegistry binding
-        val secpPriv: ByteArray,      // 32-byte secp256k1 scalar (in-memory only, post-unlock)
-    ) {
-        /** Sign a 32-byte EIP-712 digest with the secp256k1 wallet key → 65-byte 0x.. r||s||v. */
-        fun signEthDigest(digest: ByteArray): String = Secp256k1.signDigest(secpPriv, digest)
-
-        /**
-         * The EIP-191 `personal_sign` signature over the central registration message
-         * "DogTag wallet registration: <ethAddress lowercased>". The digest is
-         * keccak256("\x19Ethereum Signed Message:\n" + len + message), signed with the secp256k1
-         * wallet key → 65-byte 0x.. r||s||v (recovers to ethAddress server-side).
-         */
-        fun registerSignature(): String {
-            val message = "DogTag wallet registration: ${ethAddress.lowercase()}"
-            val msgBytes = message.toByteArray(Charsets.UTF_8)
-            val prefix = byteArrayOf(0x19) +
-                "Ethereum Signed Message:\n${msgBytes.size}".toByteArray(Charsets.UTF_8)
-            val digest = Keccak256.digest(prefix + msgBytes)
-            return signEthDigest(digest)
-        }
-    }
+        val ethAddress: String,       // owner-address leaf input (0x… 20 bytes)
+    )
 
     /** True once a wallet seed has been generated and stored. */
     fun exists(context: Context): Boolean = SeedVault(context).hasSeed()
 
     /**
      * Create a brand-new wallet: generate a 24-word mnemonic, store the encrypted BIP-39 seed behind
-     * the Keystore, and derive both the secp256k1 address and the BabyJubjub consent key. The
+     * the Keystore, and derive the secp256k1 address. The
      * mnemonic is returned ONCE for the user to back up.
      */
     fun create(context: Context): WalletIdentity {
@@ -101,7 +73,7 @@ object Wallet {
 
     /**
      * The stored 64-byte BIP-39 seed as `0x…` hex, for the Rust FFI's seed-derived material
-     * (`deriveBabyjubConsentKey`, `deriveOwnerSecretHex`, `buildProfileTreeHex`). Mirrors iOS
+     * (`deriveOwnerSecretHex`, `buildProfileTreeHex`, `proveConsent`). Mirrors iOS
      * `Wallet.seedHex()`.
      *
      * The seed is the master secret for every tag on this device: it regenerates every owner-secret
@@ -116,13 +88,7 @@ object Wallet {
     private fun identityFromSeed(seed: ByteArray, mnemonic: String): WalletIdentity {
         val priv = Bip39.seedToSecp256k1Priv(seed)             // 32-byte secp256k1 scalar
         val ethAddress = Secp256k1.addressFromPriv(priv)
-        // Distinct-domain BabyJubjub consent key derived in Rust from the same seed.
-        val seedHex = "0x" + seed.joinToString("") { "%02x".format(it) }
-        val consent = deriveBabyjubConsentKey(seedHex)
-        // Belt-and-suspenders: keyHash must equal Poseidon(Ax,Ay).
-        val kh = keyHashHex(consent.axHex, consent.ayHex)
-        require(kh == consent.keyHashHex) { "consent keyHash mismatch" }
-        return WalletIdentity(mnemonic, ethAddress, consent, priv)
+        return WalletIdentity(mnemonic, ethAddress)
     }
 
     // ---- Android Keystore AES-GCM envelope (StrongBox when available) -------------------------
@@ -321,8 +287,7 @@ object Secp256k1 {
      * Sign a 32-byte digest with the secp256k1 private key, producing a 65-byte Ethereum
      * `r || s || v` signature (0x.. hex). Deterministic (RFC-6979), low-S normalised, with the
      * recovery id recovered against the signer's own public key (v ∈ {27,28}). This is the raw
-     * EIP-712 digest signature consumed by `ConsentKeyRegistry.bindConsentKeyFor` (digest comes from
-     * the Rust FFI `bindConsentKeyDigestHex`).
+     * Ethereum-compatible raw digest signature helper retained for wallet primitives.
      */
     fun signDigest(priv: ByteArray, digest: ByteArray): String {
         require(digest.size == 32) { "digest must be 32 bytes" }

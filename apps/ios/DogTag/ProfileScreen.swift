@@ -9,8 +9,6 @@ struct ProfileScreen: View {
 
     @State private var walletExists = Wallet.exists()
     @State private var ethAddr: String? = nil
-    @State private var consentAx: String? = nil
-    @State private var consentKeyHash: String? = nil
     @State private var mnemonic: String? = nil
     @State private var walletMsg = ""
     @State private var exportPayload: ExportPayload? = nil
@@ -54,7 +52,7 @@ struct ProfileScreen: View {
                 // ---- Embedded wallet ----
                 SectionTitle(text: "Embedded wallet")
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("A self-custodial key: BIP-39 seed → secp256k1 wallet + a distinct BabyJubjub consent key (derived in Rust). The seed is stored in the iOS Keychain (hardware-protected, this-device-only); reveal is biometric-gated.")
+                    Text("A self-custodial recovery seed creates each dog tag's private owner proof on this device. The seed is stored in the iOS Keychain (hardware-protected, this-device-only); reveal is biometric-gated.")
                         .font(.system(size: 12)).foregroundColor(c.muted)
 
                     if !walletExists {
@@ -65,8 +63,6 @@ struct ProfileScreen: View {
                                     let id = try Wallet.create()
                                     walletExists = true
                                     ethAddr = id.ethAddress
-                                    consentAx = id.consent.axHex
-                                    consentKeyHash = id.consent.keyHashHex
                                     mnemonic = id.mnemonic
                                     walletMsg = "Wallet created. Back up your recovery phrase now."
                                 } catch { walletMsg = "create failed: \(error)" }
@@ -79,8 +75,6 @@ struct ProfileScreen: View {
                                 do {
                                     let id = try Wallet.load()
                                     ethAddr = id?.ethAddress
-                                    consentAx = id?.consent.axHex
-                                    consentKeyHash = id?.consent.keyHashHex
                                     walletMsg = "Unlocked."
                                 } catch { walletMsg = "unlock failed: \(error)" }
                             }
@@ -99,13 +93,7 @@ struct ProfileScreen: View {
                     }
 
                     // Tap any value to copy it (full value, not the truncated preview).
-                    if let a = ethAddr { CopyRow(label: "Wallet", value: a) }
-                    if let ax = consentAx { CopyRow(label: "Consent Ax", value: ax) }
-                    if let kh = consentKeyHash {
-                        CopyRow(label: "keyHash", value: kh)
-                        Text("Bind on-chain: ConsentKeyRegistry.bindConsentKey(keyHash) @ \(String(roax.consentKeyRegistry.prefix(10)))…")
-                            .font(.system(size: 11)).foregroundColor(c.muted)
-                    }
+                    if let a = ethAddr { CopyRow(label: "Account", value: a) }
                     if let m = mnemonic {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Recovery phrase (24 words)").font(.system(size: 12, weight: .bold)).foregroundColor(c.danger)
@@ -131,12 +119,12 @@ struct ProfileScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
 
-                // ---- Dog-tags: dog tags issued to this wallet (scan the vet's /p/<token> QR to issue one) ----
+                // ---- Dog-tags: owner-hidden tags created from scanned vet issuance sessions ----
                 SectionTitle(text: "Dog-tags")
                 VStack(alignment: .leading, spacing: 6) {
                     let minted = store.pets.filter { !$0.dogTagId.isEmpty && $0.dogTagId.allSatisfy { $0.isNumber } }
                     if minted.isEmpty {
-                        Text("No dog tag yet. Scan your vet's dog-tag QR (Scan) to have one issued and bound to this wallet — the dogTagId then appears here.")
+                        Text("No dog tag yet. Scan your vet's dog-tag QR (Scan) to create its private owner proof and anchor the tag.")
                             .font(.system(size: 12)).foregroundColor(c.muted)
                     } else {
                         ForEach(minted) { pet in
@@ -155,9 +143,9 @@ struct ProfileScreen: View {
                 VStack(alignment: .leading, spacing: 4) {
                     kv("Chain", "ROAX (chainId \(roax.chainId))")
                     kv("DogTagSBT", String(roax.dogTagSbt.prefix(16)) + "…")
-                    kv("VerificationRegistry", String(roax.verificationRegistry.prefix(16)) + "…")
-                    kv("ConsentKeyRegistry", String(roax.consentKeyRegistry.prefix(16)) + "…")
                     kv("IssuerRegistry", String(roax.issuerRegistry.prefix(16)) + "…")
+                    kv("ProtocolRegistry", roax.protocolRegistry.isEmpty
+                       ? "pending deployment" : String(roax.protocolRegistry.prefix(16)) + "…")
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -205,7 +193,7 @@ struct ProfileScreen: View {
 
 /// A labelled value row that copies its FULL value to the clipboard on tap and flashes a brief
 /// "Copied" confirmation. The on-screen text may be a shortened preview; the clipboard always gets
-/// the whole value. Used for the wallet address, consent Ax, keyHash, and dog-tag ids.
+/// the whole value. Used for the local account address and dog-tag ids.
 private struct CopyRow: View {
     @Environment(\.dogTagColors) var c
     let label: String

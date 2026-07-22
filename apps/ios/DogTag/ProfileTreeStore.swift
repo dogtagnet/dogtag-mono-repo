@@ -1,13 +1,14 @@
 import Foundation
+import Security
 
 /// Device-side per-tag Merkle tree building + the recoverable owner-secret's device-local store
-/// (Level-B M5).
+/// for owner-hidden issuance and verification.
 ///
 /// The owner's app builds the tree LOCALLY and hands the issuer only the root `R`, which the issuer
 /// seals into `DogTagSBTConsent.profileRoot(dogTagId)` (write-once). The owner's wallet never
 /// reaches the chain. Everything else the builder returns - above all the owner-secret, which is the
 /// nullifier's secret leaf - is owner-private and must never be transmitted: a server that learned
-/// it could link nullifiers back to the owner, which is exactly what Level-B removes.
+/// it could link nullifiers back to the owner, which the owner-hidden model prevents.
 ///
 /// The tree math lives in Rust (`crates/dogtag-standard-rs/src/profile_tree.rs`) and is reached
 /// through the `buildProfileTreeHex` FFI, so the Poseidon parameter set and the reserved-leaf
@@ -68,13 +69,13 @@ enum ProfileTreeStore {
         let derivationVersion: String
         let savedAt: Date
 
-        // ---- re-issue bookkeeping (Level-B M6, decision D3) ------------------------------------
+        // ---- re-issue bookkeeping (decision D3) -------------------------------------------------
         //
         // A lost owner-secret is NOT repaired on-chain (`profileRoot` is write-once); the remedy is
         // a fresh custodial issuance under a NEW `dogTagId` (`reissue(...)`). These fields record,
         // DEVICE-LOCALLY, that this tag was abandoned and which fresh tag replaced it. This file is
         // excluded from device backups and never transmitted, so keeping the old<->new link here
-        // does NOT reintroduce the correlation Level-B keeps off-chain. Never put this linkage in an
+        // does NOT reintroduce owner correlation. Never put this linkage in an
         // on-chain event, a `setStatus` reason, or any issuer record.
         //
         // Optional so records written before M6 decode unchanged (a missing key is `nil`).
@@ -93,6 +94,7 @@ enum ProfileTreeStore {
         case unreadableFile(underlying: Error)
         case seedBackupNotConfirmed
         case reissueRequiresFreshId(dogTagId: String)
+        case randomSaltGenerationFailed
 
         var errorDescription: String? {
             switch self {
@@ -109,6 +111,8 @@ enum ProfileTreeStore {
             case let .reissueRequiresFreshId(dogTagId):
                 return "re-issue must allocate a NEW dogTagId; \(dogTagId) is the tag being abandoned "
                     + "(D3: a burned/abandoned id is retired forever and can never be reused)"
+            case .randomSaltGenerationFailed:
+                return "could not generate a cryptographically random profile-leaf salt"
             }
         }
     }
@@ -127,6 +131,18 @@ enum ProfileTreeStore {
     }
 
     // ---- build ---------------------------------------------------------------------------------
+
+    /// Create a string-valued profile leaf with a fresh 128-bit salt. Issuance calls this for each
+    /// pet attribute before building `R`; the returned salts are persisted with the owner secret so
+    /// the exact tree can be rebuilt later.
+    static func randomStringAttribute(keyPath: String, value: String) throws -> BackedUpAttribute {
+        var salt = [UInt8](repeating: 0, count: 16)
+        guard SecRandomCopyBytes(kSecRandomDefault, salt.count, &salt) == errSecSuccess else {
+            throw StoreError.randomSaltGenerationFailed
+        }
+        let saltHex = "0x" + salt.map { String(format: "%02x", $0) }.joined()
+        return BackedUpAttribute(keyPath: keyPath, saltHex: saltHex, tag: 2, value: value)
+    }
 
     /// Build the tag's tree on-device from the wallet seed and persist the recovery record.
     ///
@@ -171,7 +187,7 @@ enum ProfileTreeStore {
         return tree
     }
 
-    // ---- re-issue (Level-B M6, decision D3) ----------------------------------------------------
+    // ---- re-issue (decision D3) -----------------------------------------------------------------
 
     /// Recover from a permanently-lost owner-secret by RE-ISSUING: abandon the old tag and persist a
     /// fresh one under a NEW `dogTagId`.

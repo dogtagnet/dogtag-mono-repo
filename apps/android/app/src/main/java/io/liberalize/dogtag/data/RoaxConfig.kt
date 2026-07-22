@@ -6,19 +6,13 @@ import org.json.JSONObject
 /**
  * The live ROAX (chainId 135) deployment addresses, loaded from the bundled `roax.json`
  * (contracts/deployments/roax.json). Used as the default config for on-chain reads and for the
- * consent-binding (ConsentKeyRegistry) + verification (VerificationRegistry) flows.
+ * owner-hidden issuance and verification reads.
  */
 data class RoaxConfig(
     val chainId: Long,
     val dogTagSbt: String,
-    val verificationRegistry: String,
-    val consentKeyRegistry: String,
     val issuerRegistry: String,
-    val poseidon6: String,
-    /** `ProtocolRegistry` — the discovery TRUST ANCHOR the Level-B (`mode == "levelb"`) path reads to
-     * validate a platform's claims (M-4 PR3). Blank until the registry is deployed on ROAX: a blank
-     * address makes `RoaxRpc.getContractSet` return null, so the Level-B branch fails closed while the
-     * Level-A default path — which never reads this field — is untouched. */
+    /** Protocol discovery trust anchor. Blank fails closed until the registry is deployed. */
     val protocolRegistry: String,
 ) {
     companion object {
@@ -28,10 +22,7 @@ data class RoaxConfig(
             return RoaxConfig(
                 chainId = o.optLong("chainId", 135),
                 dogTagSbt = o.optString("DogTagSBT"),
-                verificationRegistry = o.optString("VerificationRegistry"),
-                consentKeyRegistry = o.optString("ConsentKeyRegistry"),
                 issuerRegistry = o.optString("IssuerRegistry"),
-                poseidon6 = o.optString("Poseidon6"),
                 protocolRegistry = o.optString("ProtocolRegistry"),
             )
         }
