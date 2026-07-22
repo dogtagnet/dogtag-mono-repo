@@ -37,7 +37,7 @@ const NAV: NavItem[] = [
   { key: "issue", href: "/issue", label: "Issue a record", icon: FileSignature },
   { key: "records", href: "/records", label: "Records", icon: FileStack },
   { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
-  { key: "verify", href: "/verify", label: "Export", icon: ShieldCheck },
+  { key: "verify", href: "/verify", label: "Verification", icon: ShieldCheck },
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];

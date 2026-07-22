@@ -490,8 +490,6 @@ fn zero_addr() -> String {
     format!("0x{}", hex::encode([0u8; 20]))
 }
 
-/// Normalize a dogTagId (decimal or hex) into a canonical decimal string so MemChain keys collide
-/// regardless of input radix.
 // --------------------------------------------------------------------------------------------
 // Calldata encoders (canonical typed ABI).
 // --------------------------------------------------------------------------------------------
