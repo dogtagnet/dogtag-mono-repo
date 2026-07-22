@@ -6,6 +6,8 @@ set -euo pipefail
 repo_root=$(git rev-parse --show-toplevel)
 guard="$repo_root/scripts/check-no-mistakes-document-guard.sh"
 config="$repo_root/.no-mistakes.yaml"
+agents="$repo_root/AGENTS.md"
+guide="$repo_root/docs/NO_MISTAKES.md"
 test_root=$(mktemp -d "${TMPDIR:-/tmp}/dogtag-nmguard.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT
 
@@ -57,7 +59,7 @@ expect_fail() {
 # no-mistakes v1.40.0 RepoConfig fields and types, including the trusted-control
 # switches and commit template used by the guard. This is deliberately static:
 # running the no-mistakes pipeline is forbidden until firstmate reviews this PR.
-ruby --disable-gems - "$config" <<'RUBY'
+ruby --disable-gems - "$config" "$agents" "$guide" <<'RUBY'
 require "yaml"
 
 config = YAML.safe_load(File.read(ARGV.fetch(0)), permitted_classes: [], aliases: false)
@@ -80,8 +82,29 @@ instructions = config.dig("document", "instructions")
 %w[10 non-documentation cross-slice UniFFI ask-user functional tests workflows circuits contracts].each do |term|
   raise "document.instructions missing #{term}" unless instructions.include?(term)
 end
+
+[File.read(ARGV.fetch(1)), File.read(ARGV.fetch(2))].each do |policy|
+  raise "missing mandatory Document skip" unless policy.include?("--skip=document")
+  raise "missing upstream budget condition" unless policy.include?("enforced step/file budget")
+  raise "missing rerun warning" unless policy.include?("rerun")
+  raise "guard represented as runtime cap" unless policy.include?("not a runtime cap")
+end
 RUBY
-pass '.no-mistakes.yaml matches v1.40.0 repo-config semantics'
+pass '.no-mistakes.yaml and skip policy match v1.40.0 semantics'
+
+repo=$(new_repo unstaged-dirty)
+printf 'unstaged change\n' >> "$repo/README.md"
+expect_fail 'unstaged worktree changes fail closed' 'worktree is dirty' "$repo"
+
+repo=$(new_repo staged-dirty)
+mkdir -p "$repo/docs"
+printf 'staged change\n' > "$repo/docs/staged.md"
+git -C "$repo" add docs/staged.md
+expect_fail 'staged worktree changes fail closed' 'worktree is dirty' "$repo"
+
+repo=$(new_repo untracked-dirty)
+printf 'untracked change\n' > "$repo/untracked.txt"
+expect_fail 'untracked worktree changes fail closed' 'worktree is dirty' "$repo"
 
 repo=$(new_repo ordinary-commit)
 mkdir -p "$repo/src"

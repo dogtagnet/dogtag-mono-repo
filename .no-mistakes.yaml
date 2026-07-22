@@ -1,4 +1,6 @@
-# Gate-control fields are trusted only after this file reaches the default branch.
+# Dogtag policy starts every new run with --skip=document until no-mistakes has
+# an enforced step/file budget. These trusted controls are defense-in-depth for
+# accidental raw runs and take effect only after this file reaches the default branch.
 agent: codex
 allow_repo_commands: false
 
@@ -25,7 +27,8 @@ document:
     If resolving documentation would require more than 10 files, any non-documentation file, or cross-slice reconciliation, make no such edits and return an ask-user finding instead.
 
 # Zero disables follow-up fix loops. In v1.40.0 the initial Document agent may
-# still make fixes, so the instructions and lint-invoked commit guard remain necessary.
+# still make fixes in an accidental raw run, so these prompt constraints and the
+# post-stage commit guard remain defense-in-depth, not a runtime cap.
 auto_fix:
   review: 0
   document: 0

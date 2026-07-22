@@ -4,7 +4,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## No-mistakes Document safety (high priority, conditional)
 
-When acting as the no-mistakes Document agent, update only documentation made stale directly by the submitted branch. Never run write-mode formatters, generators, codegen, or UniFFI/binding synchronization, and never edit functional source, tests, workflows, circuits, contracts, or generated bindings. If the work would require more than 10 files, any non-documentation file, or cross-slice reconciliation, make no such edits and return an ask-user finding.
+Start every new Dogtag run with `no-mistakes axi run --skip=document --intent "<intent>"` until upstream provides an enforced step/file budget and this policy is deliberately revised. Do not use bare `axi run` or `no-mistakes rerun`, which cannot preserve this skip. The config instructions and post-stage commit guard are prompt/supervision defense-in-depth for accidental raw runs, not a runtime cap: update only documentation made stale directly by the submitted branch; never run write-mode formatters, generators, codegen, or UniFFI/binding synchronization; and never edit functional source, tests, workflows, circuits, contracts, or generated bindings. If the work would require more than 10 files, any non-documentation file, or cross-slice reconciliation, make no such edits and return an ask-user finding.
 
 ## No-mistakes Test safety (high priority, conditional)
 

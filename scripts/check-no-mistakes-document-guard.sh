@@ -58,6 +58,11 @@ is_forbidden_document_slice_path() {
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'not inside a Git repository'
 cd "$repo_root"
 
+dirty_state=$(git status --porcelain=v1 --untracked-files=all --ignore-submodules=none) || fail 'cannot inspect worktree state'
+if [ -n "$dirty_state" ]; then
+  fail 'worktree is dirty; commit or remove all staged, unstaged, untracked, and submodule changes before lint'
+fi
+
 head_ref=${2:-HEAD}
 git rev-parse --verify --quiet "${head_ref}^{commit}" >/dev/null || fail "head ref is not a commit: $head_ref"
 
