@@ -107,7 +107,10 @@ object CentralApi {
                 body,
                 readTimeoutMs = 20_000,
             )
-            if (!response.ok) throw CustodialBindRejectedException(response.code, response.body)
+            if (!response.ok) {
+                if (response.code == 410) return null
+                throw CustodialBindRejectedException(response.code, response.body)
+            }
             val o = JSONObject(response.body)
             CustodialBind(
                 dogTagId = o.string("dogTagId", "dog_tag_id"),
