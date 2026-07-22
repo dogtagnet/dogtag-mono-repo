@@ -12,7 +12,7 @@ const WITHHELD_PLACEHOLDER = "— withheld by holder —";
  * reveal; the rest are cryptographically withheld (their cleartext dropped, their leaf hash kept) while
  * the on-chain Merkle root stays the same. The recipient can still confirm the copy is the same,
  * authentic, unmodified credential — they just cannot read the withheld values. This is the Merkle
- * selective-disclosure counterpart to the ZK Present flow, and mirrors the native apps' "Share redacted".
+ * selective-disclosure flow for browser-held records, mirroring the native apps' "Share redacted".
  */
 export function Share() {
   const { id = "" } = useParams();

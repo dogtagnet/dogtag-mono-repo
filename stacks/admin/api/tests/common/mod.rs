@@ -28,7 +28,7 @@ pub const FACTORY: &str = "0x00000000000000000000000000000000000000fa";
 /// plus typed handles to the chain/business/dns mocks for assertions.
 pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
     let chain = MemChain::new();
-    // register the admin signer at index 0 (so whitelistFor/mint succeed).
+    // Register the admin signer at index 0 for whitelisting and governance actions.
     chain.set_signer(0, "0x00000000000000000000000000000000000000ad");
     let vault = MemVault::new();
     let business = MockBusinessClient::new(true);
@@ -37,12 +37,9 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         rpc_url: "http://localhost:0".to_string(),
         issuer_registry_addr: REGISTRY.to_string(),
         chain_id: 135,
-        verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string(),
+        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
         sbt_addr: SBT.to_string(),
         factory_addr: FACTORY.to_string(),
-        issuer_name: "DogTag Central".to_string(),
-        issuer_domain: "dogtag.example".to_string(),
-        profile_document_store: SBT.to_string(),
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
     };

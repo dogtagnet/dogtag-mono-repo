@@ -8,10 +8,7 @@ export const env = {
   roaxRpc: import.meta.env.VITE_ROAX_RPC ?? "https://devrpc.roax.net",
   /** DogTagIssuer contract address — used to poll isValid(root) in backend mode. */
   dogtagIssuerAddr: import.meta.env.VITE_DOGTAG_ISSUER_ADDR ?? "",
-  /** Deployed ROAX contract addresses (surfaced for parity / status displays). */
+  /** Shared issuer registry used by direct credential verification. */
   issuerRegistryAddr: import.meta.env.VITE_ISSUER_REGISTRY_ADDR ?? "",
-  dogTagSbtAddr: import.meta.env.VITE_DOGTAG_SBT_ADDR ?? "",
-  verificationRegistryAddr: import.meta.env.VITE_VERIFICATION_REGISTRY_ADDR ?? "",
-  poseidon6Addr: import.meta.env.VITE_POSEIDON6_ADDR ?? "",
   demoMode: import.meta.env.VITE_DEMO_MODE === "1" || import.meta.env.VITE_DEMO_MODE === "true",
 };

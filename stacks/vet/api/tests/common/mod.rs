@@ -17,25 +17,17 @@ use vet_api::calendar::{CalendarProvider, CentralClient, MockCalendar, MockCentr
 use vet_api::chain::ChainClient;
 use vet_api::custody::Custody;
 use vet_api::oversight::DisabledFeed;
-use vet_api::prover::{ProverClient, StubProver};
 use vet_api::store::MemStore;
 
 pub const OPERATOR_PW: &str = "op-pw";
 pub const ADMIN_PW: &str = "admin-pw";
 pub const CENTRAL_HMAC_SECRET: &str = "central-shared-secret";
 pub const BUSINESS_ID: &str = "biz-test";
-/// The DogTagSBT mint target used by tests (DOG_PROFILE issuance).
-pub const SBT_ADDR: &str = "0x00000000000000000000000000000000000000cc";
-/// Level-B `DogTagSBTConsent` — a DISTINCT address from `SBT_ADDR`, so a test that mints custodially
-/// cannot accidentally pass by hitting the Level-A SBT`s state.
+/// Owner-hidden `DogTagSBTConsent` mint target.
 pub const SBT_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000dd";
-/// The `DogTagIssuer` clone Level-B profile roots are anchored into via `issue(R)`.
+/// The `DogTagIssuer` clone profile roots are anchored into via `issue(R)`.
 pub const PROFILE_ISSUER_ADDR: &str = "0x00000000000000000000000000000000000000ee";
-/// Level-B `VerificationRegistryConsent` — the owner-hidden submit target. A DISTINCT address from
-/// the Level-A registry for the same reason `SBT_CONSENT_ADDR` is distinct from `SBT_ADDR`: a test
-/// that submits a Level-B proof cannot accidentally pass by landing in Level-A registry state (the
-/// `consumed` maps are keyed per-registry, so a shared address would let a Level-A nullifier mask a
-/// Level-B replay).
+/// `VerificationRegistryConsent` — the sole owner-hidden submit target.
 pub const VREG_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000ff";
 
 /// Build an AppState with the given chain client + issuer/registry addresses.
@@ -53,13 +45,9 @@ pub fn state_with(
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url,
         issuer_registry_addr,
-        verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
-        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain,
-        sbt_addr: SBT_ADDR.to_string(),
-        profile_document_store: SBT_ADDR.to_string(),
         verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
         profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
@@ -74,87 +62,6 @@ pub fn state_with(
     AppState {
         store: Arc::new(MemStore::new()),
         chain,
-        prover: Arc::new(StubProver),
-        consent_prover: Arc::new(vet_api::prover::ConsentProver::disabled()),
-        calendar: Arc::new(MockCalendar::new()),
-        central: Arc::new(MockCentralClient::new()),
-        custody: Custody::new(),
-        jwt: JwtKeys::generate(),
-        cfg: Arc::new(cfg),
-        ratelimit: Arc::new(vet_api::auth::RateLimiter::new()),
-        // Traceability feed default: disabled (fail-closed 503). Trace tests override `state.feed`
-        // with a `MemFeed` seeded to mirror the indexer's scoped `/v1/events` response.
-        feed: Arc::new(DisabledFeed),
-    }
-}
-
-/// Like [`state_with`] but also sets the VerificationRegistry address and the prover (real or stub).
-#[allow(clippy::too_many_arguments)]
-pub fn state_with_verify(
-    chain: Arc<dyn ChainClient>,
-    rpc_url: String,
-    issuer_registry_addr: String,
-    verification_registry_addr: String,
-    vaccination_issuer_addr: String,
-    issuer_domain: String,
-    confirmations: u64,
-    prover: Arc<dyn ProverClient>,
-) -> AppState {
-    state_with_verify_keys(
-        chain,
-        rpc_url,
-        issuer_registry_addr,
-        verification_registry_addr,
-        "0x0000000000000000000000000000000000000000".to_string(),
-        vaccination_issuer_addr,
-        issuer_domain,
-        confirmations,
-        prover,
-    )
-}
-
-/// Like [`state_with_verify`] but also wires the ConsentKeyRegistry address (the relayer-sponsored
-/// bind target / `keyOf` read surface for the ZK consent path).
-#[allow(clippy::too_many_arguments)]
-pub fn state_with_verify_keys(
-    chain: Arc<dyn ChainClient>,
-    rpc_url: String,
-    issuer_registry_addr: String,
-    verification_registry_addr: String,
-    consent_key_registry_addr: String,
-    vaccination_issuer_addr: String,
-    issuer_domain: String,
-    confirmations: u64,
-    prover: Arc<dyn ProverClient>,
-) -> AppState {
-    let mut issuer_addrs = HashMap::new();
-    issuer_addrs.insert("VACCINATION".to_string(), vaccination_issuer_addr);
-    let cfg = Config {
-        deployment_url: "http://localhost:41874".to_string(),
-        rpc_url,
-        issuer_registry_addr,
-        verification_registry_addr,
-        consent_key_registry_addr,
-        issuer_addrs,
-        issuer_name: "DogTag Vet".to_string(),
-        issuer_domain,
-        sbt_addr: SBT_ADDR.to_string(),
-        profile_document_store: SBT_ADDR.to_string(),
-        verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
-        sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
-        profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
-        vet_signer_index: 0,
-        operator_password: OPERATOR_PW.to_string(),
-        admin_password: ADMIN_PW.to_string(),
-        confirmations,
-        business_id: BUSINESS_ID.to_string(),
-        central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
-        custody_seal_path: None,
-    };
-    AppState {
-        store: Arc::new(MemStore::new()),
-        chain,
-        prover,
         consent_prover: Arc::new(vet_api::prover::ConsentProver::disabled()),
         calendar: Arc::new(MockCalendar::new()),
         central: Arc::new(MockCentralClient::new()),
@@ -183,13 +90,9 @@ pub fn state_for_calendar(
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
-        verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
-        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),
-        sbt_addr: SBT_ADDR.to_string(),
-        profile_document_store: SBT_ADDR.to_string(),
         verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
         profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
@@ -204,7 +107,6 @@ pub fn state_for_calendar(
     AppState {
         store: Arc::new(MemStore::new()),
         chain: Arc::new(vet_api::chain::MemChain::new()),
-        prover: Arc::new(StubProver),
         consent_prover: Arc::new(vet_api::prover::ConsentProver::disabled()),
         calendar: calendar as Arc<dyn CalendarProvider>,
         central: central as Arc<dyn CentralClient>,
@@ -228,13 +130,9 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
-        verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
-        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),
-        sbt_addr: SBT_ADDR.to_string(),
-        profile_document_store: SBT_ADDR.to_string(),
         verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         sbt_consent_addr: SBT_CONSENT_ADDR.to_string(),
         profile_issuer_addr: PROFILE_ISSUER_ADDR.to_string(),
@@ -249,7 +147,6 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
     AppState {
         store: store as Arc<dyn vet_api::store::Store>,
         chain: Arc::new(vet_api::chain::MemChain::new()),
-        prover: Arc::new(StubProver),
         consent_prover: Arc::new(vet_api::prover::ConsentProver::disabled()),
         calendar: Arc::new(MockCalendar::new()),
         central: Arc::new(MockCentralClient::new()),

@@ -2,16 +2,16 @@
 //!   (a) appointment ownership + rev allocation (businessB cannot touch businessA's appt; rev never collides)
 //!   (b) one-time share JWT (reuse -> 401)
 //!   (c) microchip.code uniqueness (duplicate rejected)
-//!   (d) erasure (crypto-shred): delete-request + fulfill destroys DEKs incl. verification_records
-//!   (e) verify/consent relay (relays to mock verifier /verify/consent/submit + stores a receipt)
+//!   (d) erasure (crypto-shred): delete-request + fulfill destroys DEKs incl. historical records
 
 mod common;
 
 use axum::http::StatusCode;
 use common::*;
 
-use admin_api::auth::{self, hmac_sign, keccak256_hex, sign_jwt};
-use admin_api::crypto::KeyVault;
+use admin_api::auth::{self, hmac_sign};
+use admin_api::crypto::{seal_json, KeyVault};
+use admin_api::store::{ConsentReceipt, VerificationRecord};
 
 // --------------------------------------------------------------------------------------------
 // helper: register a business (admin) -> (businessId, hmacSecret).
@@ -211,6 +211,38 @@ async fn microchip_uniqueness() {
     assert_eq!(s, StatusCode::OK, "distinct microchip ok");
 }
 
+#[tokio::test]
+async fn retired_mint_and_central_consent_routes_are_absent() {
+    let (state, _chain, _vault, _business) = hermetic_state();
+    let app = admin_api::router(state);
+    let (_owner_id, session) = signup(
+        &app,
+        "routes@x.io",
+        "0x00000000000000000000000000000000000000e6",
+    )
+    .await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/pets/retired/mint",
+        Some(&session),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/verify/consent",
+        Some(&session),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 // ============================================================================================
 // (d) erasure — crypto-shred incl. verification_records
 // ============================================================================================
@@ -219,7 +251,7 @@ async fn microchip_uniqueness() {
 async fn erasure_crypto_shreds_records_and_deks() {
     // keep a clone of `state` (AppState is Clone, sharing the same Arc store+vault) so we can drive the
     // erasure module against the EXACT collections the router mutates.
-    let (state, _chain, vault, business) = hermetic_state();
+    let (state, _chain, vault, _business) = hermetic_state();
     let store = state.store.clone();
     let app = admin_api::router(state.clone());
     let wallet = "0x00000000000000000000000000000000000000e4";
@@ -234,45 +266,45 @@ async fn erasure_crypto_shreds_records_and_deks() {
         "credential DEK exists pre-erasure"
     );
 
-    // a verification_records row (sealed under a DEK) via the REAL relay path (consent receipt + record).
-    let admin = admin_token(&app).await;
-    let _ = register_business(&app, &admin, "Verifier").await; // documentStore == relayer below
+    // Seed historical verification/receipt rows directly. The retired central relay no longer creates
+    // these, but erasure must still destroy rows written before the owner-hidden cutover.
     let relayer = "0x00000000000000000000000000000000000000cc";
     let n = auth::now();
-    let claims = admin_api::verify_relay::VerifyClaims {
-        iss: "verifier".into(),
-        sub: "sess-x".into(),
-        aud: "dogtag-mobile".into(),
-        relayer: relayer.into(),
-        purpose: "BOARDING".into(),
-        record_type: "VACCINATION".into(),
-        challenge: "0x00".into(),
-        mode: "normal".into(),
-        exp: n + 180,
-        jti: "vjti-erase".into(),
-        verifier_api_base: Some("http://biz.example".into()),
-    };
-    let session_jwt = sign_jwt(&state.jwt, &claims);
-    let consent = serde_json::json!({
-        "dogTagId": "7", "recordType": keccak256_hex("VACCINATION"), "purpose": "0x00",
-        "relayer": relayer, "subject": wallet, "nonce": "1", "deadline": n + 3600,
-    });
-    let (s, _b) = call(
-        &app, "POST", "/v1/verify/consent", Some(&sess),
-        Some(serde_json::json!({ "sessionJwt": session_jwt, "consent": consent, "sig": "0xdead", "mode": "normal" })),
+    let vr_sealed = seal_json(
+        &vault,
+        &serde_json::json!({ "dogTagId": "7", "purpose": "BOARDING" }),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert!(business
-        .calls()
-        .iter()
-        .any(|c| c.url.ends_with("/verify/consent/submit")));
+    .await
+    .unwrap();
+    let vr_dek = vr_sealed.dek_id.clone();
+    store
+        .put_verification_record(VerificationRecord {
+            record_id: "historical-verification".into(),
+            owner_id: owner_id.clone(),
+            dog_tag_id: "7".into(),
+            purpose: "BOARDING".into(),
+            relayer: relayer.into(),
+            status: "recorded".into(),
+            sealed: vr_sealed,
+        })
+        .await;
+    let receipt_sealed = seal_json(&vault, &serde_json::json!({ "dogTagId": "7" }))
+        .await
+        .unwrap();
+    let receipt_dek = receipt_sealed.dek_id.clone();
+    store
+        .put_consent_receipt(ConsentReceipt {
+            receipt_id: "historical-receipt".into(),
+            owner_id: owner_id.clone(),
+            hash: "0x01".into(),
+            issued_at: n,
+            sealed: receipt_sealed,
+        })
+        .await;
     let vrs = store.verification_records_of_owner(&owner_id).await;
     assert_eq!(vrs.len(), 1, "one verification_record");
-    let vr_dek = vrs[0].sealed.dek_id.clone();
     let receipts = store.receipts_of_owner(&owner_id).await;
     assert_eq!(receipts.len(), 1, "one consent receipt");
-    let receipt_dek = receipts[0].sealed.dek_id.clone();
     assert!(
         vault.has_dek(&vr_dek).await && vault.has_dek(&receipt_dek).await,
         "DEKs exist pre-erasure"
@@ -332,210 +364,10 @@ async fn erasure_crypto_shreds_records_and_deks() {
     );
 }
 
-// ============================================================================================
-// (e) verify/consent relay
-// ============================================================================================
-
 #[tokio::test]
-async fn verify_consent_relay_stores_receipt() {
-    let (state, _chain, _vault, business) = hermetic_state();
-    let store = state.store.clone();
-    let app = admin_api::router(state.clone());
-    let wallet = "0x00000000000000000000000000000000000000e5";
-    let (owner_id, sess) = signup(&app, "e@x.io", wallet).await;
-
-    // register the verifier business (relayer == its documentStore) so discovery resolves verifierApiBase.
-    let admin = admin_token(&app).await;
-    let relayer = "0x00000000000000000000000000000000000000cc"; // == the registered documentStore
-    let (_bid, _secret) = register_business(&app, &admin, "Verifier").await;
-
-    // mint a verifier session JWT (aud dogtag-mobile) signed with the deployment key.
-    let n = auth::now();
-    let claims = admin_api::verify_relay::VerifyClaims {
-        iss: "verifier".into(),
-        sub: "sess-1".into(),
-        aud: "dogtag-mobile".into(),
-        relayer: relayer.into(),
-        purpose: "BOARDING".into(),
-        record_type: "VACCINATION".into(),
-        challenge: "0x00".into(),
-        mode: "normal".into(),
-        exp: n + 180,
-        jti: "vjti-1".into(),
-        verifier_api_base: Some("http://biz.example".into()),
-    };
-    let session_jwt = sign_jwt(&state.jwt, &claims);
-
-    let consent = serde_json::json!({
-        "dogTagId": "7",
-        "recordType": keccak256_hex("VACCINATION"),
-        "purpose": "0x00",
-        "relayer": relayer,
-        "subject": wallet,
-        "nonce": "1",
-        "deadline": n + 3600,
-    });
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/v1/verify/consent",
-        Some(&sess),
-        Some(serde_json::json!({ "sessionJwt": session_jwt, "consent": consent, "sig": "0xdead", "mode": "normal" })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "relay: {b}");
-    assert_eq!(b["relayed"], true);
-
-    // relayed to the verifier's /verify/consent/submit.
-    assert!(
-        business
-            .calls()
-            .iter()
-            .any(|c| c.url.ends_with("/verify/consent/submit")),
-        "relayed to verifier submit endpoint"
-    );
-    // a receipt + verification_record were stored (off-chain, deletable).
-    assert_eq!(
-        store.receipts_of_owner(&owner_id).await.len(),
-        1,
-        "consent receipt stored"
-    );
-    assert_eq!(
-        store.verification_records_of_owner(&owner_id).await.len(),
-        1,
-        "verification_record stored"
-    );
-
-    // reusing the SAME session JWT (same jti) -> 401 (one-time consume).
-    let (s, _b) = call(
-        &app,
-        "POST",
-        "/v1/verify/consent",
-        Some(&sess),
-        Some(serde_json::json!({ "sessionJwt": session_jwt, "consent": consent, "sig": "0xdead", "mode": "normal" })),
-    )
-    .await;
-    assert_eq!(
-        s,
-        StatusCode::UNAUTHORIZED,
-        "reused session jti must be 401"
-    );
-}
-
-// ============================================================================================
-// (f) central mint -> wrap: a created pet mints an SBT end-to-end and the wrapped DOG_PROFILE VC
-//     passes schema validation + integrity verify.
-// ============================================================================================
-
-#[tokio::test]
-async fn pet_mint_produces_valid_dog_profile_sbt() {
-    let (state, _chain, vault, _biz) = hermetic_state();
-    let store = state.store.clone();
-    let app = admin_api::router(state.clone());
-    let wallet = "0x00000000000000000000000000000000000000f1";
-    let (_oid, sess) = signup(&app, "mint@x.io", wallet).await;
-
-    // create a pet WITH the DOG_PROFILE fields the schema requires.
-    let (s, pet) = call(
-        &app,
-        "POST",
-        "/v1/pets",
-        Some(&sess),
-        Some(serde_json::json!({
-            "name": "Rex",
-            "microchip": {
-                "code": "985141006580319", "standard": "ISO_11784_11785",
-                "implantDate": "2024-01-01", "bodyLocation": "neck"
-            },
-            "profile": {
-                "species": "Canis lupus familiaris",
-                "breedVbo": "VBO:0200798",
-                "breedLabel": "Labrador Retriever",
-                "sex": "male",
-                "neuterStatus": "neutered",
-                "dateOfBirth": "2022-03-15",
-                "weightHistory": [
-                    { "unit": "kg", "value": "22.7", "measuredOn": "2024-05-01" }
-                ]
-            }
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "create pet: {pet}");
-    let pet_id = pet["id"].as_str().unwrap().to_string();
-
-    // mint SUCCEEDS and returns {dogTagId, root, txHash}.
-    let (s, m) = call(
-        &app,
-        "POST",
-        &format!("/v1/pets/{pet_id}/mint"),
-        Some(&sess),
-        Some(serde_json::json!({})),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "mint must succeed: {m}");
-    assert!(m["dogTagId"].as_str().is_some(), "dogTagId present");
-    assert!(m["root"].as_str().is_some(), "root present");
-    assert!(m["txHash"].as_str().is_some(), "txHash present");
-    assert_eq!(m["recordType"], "DOG_PROFILE");
-
-    // the stored wrapped doc opens, has the returned root, and passes integrity verify.
-    let stored = store.get_pet(&pet_id).await.unwrap();
-    assert_eq!(stored.dog_tag_id.as_deref(), m["dogTagId"].as_str());
-    assert_eq!(stored.root.as_deref(), m["root"].as_str());
-    let sealed = stored.sealed_doc.expect("sealed doc stored");
-    let doc_val: serde_json::Value = admin_api::crypto::open_json(&vault, &sealed)
-        .await
-        .expect("open sealed doc");
-    let doc: dogtag_standard::wrap::WrappedDoc =
-        serde_json::from_value(doc_val).expect("stored doc is a WrappedDoc");
-    assert_eq!(
-        doc.signature.merkle_root,
-        m["root"].as_str().unwrap(),
-        "stored root == returned root"
-    );
-    assert!(
-        admin_api::verify::structural_valid(&doc),
-        "wrapped DOG_PROFILE VC integrity must verify"
-    );
-    // the non-personal dogTagId is the disclosed reference identity.
-    assert_eq!(
-        admin_api::verify::dog_tag_id_of(&doc).as_deref(),
-        m["dogTagId"].as_str(),
-        "dogTagId disclosed in the wrapped doc",
-    );
-
-    // M7 P2 (§4.2): mint closes the admin gap - queryable provenance columns on the Pet row AND the
-    // `protocol` block inside the (sealed) envelope, both populated + consistent.
-    assert_eq!(stored.chain_id, Some(135));
-    assert_eq!(stored.protocol_version.as_deref(), Some("dogtag-levela/1"));
-    assert_eq!(
-        stored.verification_registry.as_deref(),
-        Some("0x4E2f0996e1CB4E24F1053346f3da2186906835E8")
-    );
-    // issuerClone == the profile store (the SBT contract).
-    assert_eq!(stored.issuer_addr.as_deref(), Some(SBT));
-    // issuerSigner == the central minting signer (registered at index 0 in the hermetic chain).
-    assert_eq!(
-        stored.issuer_signer.as_deref(),
-        Some("0x00000000000000000000000000000000000000ad")
-    );
-    let block = doc
-        .protocol
-        .expect("sealed envelope carries the protocol block");
-    assert_eq!(block.chain_id, 135);
-    assert_eq!(block.version, "dogtag-levela/1");
-    assert_eq!(block.issuer_clone, SBT);
-    assert_eq!(
-        block.issuer_signer,
-        "0x00000000000000000000000000000000000000ad"
-    );
-}
-
-#[tokio::test]
-async fn import_projects_level_a_default_provenance() {
-    // §4.4 live consumer: importing a pre-M7 doc (no `protocol` block) projects the DEFAULTED Level-A
-    // provenance into the queryable columns - existing records stay importable + still resolve.
+async fn import_projects_unified_default_provenance() {
+    // Importing an unstamped document projects the single owner-hidden protocol metadata into the
+    // queryable columns.
     let (state, _chain, _vault, _biz) = hermetic_state();
     let store = state.store.clone();
     let app = admin_api::router(state);
@@ -552,77 +384,22 @@ async fn import_projects_level_a_default_provenance() {
         .await
         .expect("credential persisted");
     assert_eq!(cred.chain_id, Some(135));
-    assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levela/1"));
+    assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levelb/1"));
     assert_eq!(
         cred.verification_registry.as_deref(),
-        Some("0x4E2f0996e1CB4E24F1053346f3da2186906835E8")
+        Some("0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87")
     );
     // issuerClone defaults to the imported doc's own documentStore.
     assert_eq!(
         cred.issuer_addr.as_deref(),
         Some("0x0000000000000000000000000000000000000001")
     );
-    // issuerSigner's default is the on-chain issuedBy[R], not resolvable off-chain at import -> absent
-    // (the live per-backend read is the deferred P5 verify-path brick).
+    // An unstamped import cannot resolve the on-chain issuer signer, so it remains absent.
     assert_eq!(cred.issuer_signer, None);
 }
 
-#[tokio::test]
-async fn pet_mint_fills_defaults_when_profile_omitted() {
-    // even with NO profile fields supplied, mint must still emit a schema-valid DOG_PROFILE VC.
-    let (state, _chain, vault, _biz) = hermetic_state();
-    let store = state.store.clone();
-    let app = admin_api::router(state.clone());
-    let (_oid, sess) = signup(
-        &app,
-        "mint2@x.io",
-        "0x00000000000000000000000000000000000000f2",
-    )
-    .await;
-
-    let (s, pet) = call(
-        &app,
-        "POST",
-        "/v1/pets",
-        Some(&sess),
-        Some(serde_json::json!({
-            "name": "Buddy",
-            "microchip": { "code": "985141006580320", "standard": "ISO_11784_11785", "implantDate": "2024-01-01", "bodyLocation": "neck" }
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "create pet: {pet}");
-    let pet_id = pet["id"].as_str().unwrap().to_string();
-
-    let (s, m) = call(
-        &app,
-        "POST",
-        &format!("/v1/pets/{pet_id}/mint"),
-        Some(&sess),
-        Some(serde_json::json!({})),
-    )
-    .await;
-    assert_eq!(
-        s,
-        StatusCode::OK,
-        "mint with default profile must succeed: {m}"
-    );
-
-    let stored = store.get_pet(&pet_id).await.unwrap();
-    let sealed = stored.sealed_doc.expect("sealed doc stored");
-    let doc_val: serde_json::Value = admin_api::crypto::open_json(&vault, &sealed)
-        .await
-        .expect("open sealed doc");
-    let doc: dogtag_standard::wrap::WrappedDoc =
-        serde_json::from_value(doc_val).expect("WrappedDoc");
-    assert!(
-        admin_api::verify::structural_valid(&doc),
-        "defaulted DOG_PROFILE VC integrity must verify"
-    );
-}
-
 // ============================================================================================
-// (g) approve → grant DogTagSBT.ISSUER_ROLE for dog-tag issuers (DOG_PROFILE), NOT for groomers.
+// (e) approve → grant DogTagSBT.ISSUER_ROLE for dog-tag issuers (DOG_PROFILE), NOT for groomers.
 // ============================================================================================
 
 /// Submit an issuer-application and return its applicationId.

@@ -106,7 +106,6 @@ pub struct VerifySession {
     pub relayer: String,
     pub purpose: String,
     pub record_type: String,
-    pub mode: String, // "normal" | "zk" | "levelb"
     pub challenge: String,
     pub status: String, // "pending" | "recording" | "recorded" | "error"
     pub tx_hash: Option<String>,
@@ -122,9 +121,9 @@ pub struct VerifySession {
 }
 
 // --------------------------------------------------------------------------------------------
-// DOG_PROFILE (SBT) issuance — pet record + owner identity + the device-bind session.
+// DOG_PROFILE issuance — pet record + owner identity + the device-bind session.
 // The vet ISSUES dog tags: the operator starts a session (allocating a dogTagId + a one-time QR
-// token); the device scans the QR, posts its wallet + a signature, and the vet mints the SBT.
+// token); the device scans the QR, posts its owner-hidden root, and the vet anchors + mints it.
 // Pet record structs are ported from the admin stack (stacks/admin/api/src/store.rs).
 // --------------------------------------------------------------------------------------------
 
@@ -138,8 +137,8 @@ pub struct Microchip {
     pub body_location: String,
 }
 
-/// The owner's official identity, entered by the vet operator at session-start and signed into the
-/// DOG_PROFILE `credentialSubject.ownerIdentity`. The schema requires the keys present as strings.
+/// The owner's official identity, entered by the vet operator at session-start and retained for the
+/// later D1 identity-leaf fold. The schema requires the keys present as strings.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnerIdentity {
@@ -158,7 +157,7 @@ pub struct WeightEntry {
     pub measured_on: String,
 }
 
-/// Optional DOG_PROFILE identity fields. All optional on input; `build_profile_vc` fills defaults.
+/// Optional DOG_PROFILE pet fields collected at session start.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PetProfile {
     #[serde(default)]
@@ -178,7 +177,8 @@ pub struct PetProfile {
 }
 
 /// A VET-side DOG_PROFILE issuance session. Created at `POST /profiles/issue/session/start` with a
-/// fresh one-time QR token; consumed at `POST /profiles/issue/bind` when the device posts its wallet.
+/// fresh one-time QR token; consumed at `POST /profiles/issue/custodial-bind` when the device posts
+/// its owner-hidden root.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProfileIssueSession {
     /// stable id the portal polls (`GET /profiles/issue/session/{id}`). NOT the one-time QR token.
@@ -193,22 +193,13 @@ pub struct ProfileIssueSession {
     /// "pending" -> "bound".
     pub status: String,
     pub created_at: u64,
-    /// set on bind: the device wallet the SBT was minted to.
-    #[serde(default)]
-    pub wallet_address: Option<String>,
     /// set on bind: the DOG_PROFILE merkle root (== SBT profileRoot[dogTagId]).
     #[serde(default)]
     pub root: Option<String>,
     /// set on bind: the mint txHash.
     #[serde(default)]
     pub tx_hash: Option<String>,
-    /// set on bind: which protocol the tag was issued under — [`dogtag_standard::wrap::LEVEL_A_VERSION`]
-    /// for the owner-revealing `mint(to,id,root)` path, [`dogtag_standard::wrap::LEVEL_B_VERSION`] for
-    /// the owner-hidden `mintCustodial` + `issue(R)` path.
-    ///
-    /// This is the on-chain `ContractSet` axis of the two-axis registry (R-5), never the artifact axis:
-    /// it names the deployed trio a tag is bound to, which a zkey rotation must not move. `None` on
-    /// rows written before M-2 (`#[serde(default)]`), which are Level-A by construction.
+    /// set on bind: the owner-hidden protocol version used by `mintCustodial` + `issue(R)`.
     #[serde(default)]
     pub protocol_version: Option<String>,
 }
@@ -330,17 +321,14 @@ pub trait Store: Send + Sync {
     /// has not expired. A missing/expired token returns `None` (and is purged if expired).
     async fn take_share_token(&self, token: &str) -> Option<String>;
 
-    // ---- export tokens (short one-time EXPORT QR token -> verify session) ----
-    /// Store a short one-time export token mapping to `session_id`, expiring at unix-seconds `exp`.
+    // ---- export tokens (short-lived EXPORT QR token -> verify session) ----
+    /// Store a short-lived export token mapping to `session_id`, expiring at unix-seconds `exp`.
     /// Mirrors the share-token pattern but resolves to a verify (export) session instead of a record.
     async fn put_export_token(&self, token: &str, session_id: &str, exp: u64);
     /// NON-consuming lookup: return the export token's `session_id` iff it exists and has not
     /// expired. Used by `GET /x/{token}` (resolve) and the status poll — the token is NOT consumed
-    /// here (consume happens only on consent submit). An expired token returns `None`.
+    /// here; session status provides the replay guard. An expired token returns `None`.
     async fn peek_export_token(&self, token: &str) -> Option<String>;
-    /// Atomically REMOVE the export token (one-time consume) and return its `session_id` iff it
-    /// exists and has not expired. Used by the consent SUBMIT for replay protection.
-    async fn take_export_token(&self, token: &str) -> Option<String>;
 
     // ---- DOG_PROFILE issuance: dogTagId counter + bind sessions + one-time bind tokens ----
     /// Allocate the next non-personal dogTagId (atomic monotonic counter). NEVER a hash of the
@@ -356,7 +344,7 @@ pub trait Store: Send + Sync {
     /// NON-consuming lookup: the bind token's `session_id` iff present and unexpired (`GET /p/{token}`).
     async fn peek_bind_token(&self, token: &str) -> Option<String>;
     /// Atomically REMOVE the bind token (one-time consume) and return its `session_id` iff present and
-    /// unexpired. Used by `POST /profiles/issue/bind` for replay protection.
+    /// unexpired. Used by `POST /profiles/issue/custodial-bind` for replay protection.
     async fn take_bind_token(&self, token: &str) -> Option<String>;
 
     // ---- issuer settings ----
@@ -572,21 +560,6 @@ impl Store for MemStore {
             Some(session_id.clone())
         }
     }
-    async fn take_export_token(&self, token: &str) -> Option<String> {
-        // atomic remove under the write lock == one-time consume.
-        let mut inner = self.inner.write().unwrap();
-        let (session_id, exp) = inner.export_tokens.remove(token)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        if now > exp {
-            None
-        } else {
-            Some(session_id)
-        }
-    }
-
     async fn next_dog_tag_id(&self) -> u64 {
         let mut g = self.inner.write().unwrap();
         g.dog_tag_seq += 1;

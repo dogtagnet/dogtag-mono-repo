@@ -1,61 +1,58 @@
 #!/usr/bin/env bash
-# Prepare the on-chain precondition for a REAL phone to run the groomer EXPORT (on-chain ZK verify).
+# Prepare a REAL phone for the owner-hidden dog-tag issuance and consent demo.
 #
-# The export verify requires `ownerOf(dogTagId) == subject` where subject = the phone's wallet. The
-# mobile app does NOT mint; the central/issuer does. This mints a DOG_PROFILE SBT with a fresh NUMERIC
-# dogTagId to the phone's wallet (so ownerOf holds), and — if given the groomer's signer — funds +
-# whitelists it for issuance + the VERIFY purposes. Then issue a VACCINATION for the SAME dogTagId in
-# the vet portal so the phone can import it and export a proof.
+# There is deliberately no scripted pre-mint: the phone derives the profile root R from its owner
+# secret, and the vet learns only R when the phone redeems the one-time issuance QR. The issuance
+# session allocates the dogTagId, so neither a phone wallet address nor a preselected id belongs here.
 #
-#   scripts/demo-prepare-phone.sh <phoneWalletAddr> [groomerSignerAddr]
+# Optionally bootstrap the groomer relayer that will submit the later consent proof:
 #
-# Prints DOG_TAG_ID=<n> — set that exact numeric value as the dogTagId in the vet Issue form.
+#   scripts/demo-prepare-phone.sh
+#   scripts/demo-prepare-phone.sh --groomer-relayer 0x<groomerSignerAddress>
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
-[ $# -ge 1 ] || { echo "usage: $0 <phoneWalletAddr> [groomerSignerAddr]" >&2; exit 1; }
-PHONE="$1"
-set -a; source contracts/.env; set +a
-RPC="${ROAX_RPC:-https://devrpc.roax.net}"
-# The DogTagSBT mint below needs ISSUER_ROLE, held by governance signer-1 after Phase-2 (executed
-# 2026-07-05, block 123835) moved the governance/admin authority off the old deployer EOA 0x119F… to
-# signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2. Set GOVERNANCE_PRIVATE_KEY (signer-1) in
-# contracts/.env. The old deployer EOA still holds the legacy Level-A ISSUER_ROLE + record-type
-# whitelists, so it is NOT role-free and must not be reused as a neutral key.
-PK="${GOVERNANCE_PRIVATE_KEY:?set GOVERNANCE_PRIVATE_KEY (governance signer-1 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2) in contracts/.env - Phase-2 removed the governance/admin authority from the old deployer EOA 0x119F…, which still holds legacy Level-A ISSUER_ROLE + record-type whitelists and is NOT a neutral key}"
-SBT=$(jq -r .DogTagSBT contracts/deployments/roax.json)
 
-# The CANONICAL on-chain dogTagId is field_of_value(Integer(rawNumeric)) — the SAME value the credential
-# leaf hashes to, which the circuit compares pub[0] against and the contract feeds to ownerOf. The raw
-# numeric is only an off-chain HANDLE (what the operator types into the vaccination Issue form). Build
-# the helper that computes the on-chain id.
-cargo build -q -p dogtag-standard-rs --bin field-hash
-FH="$ROOT/target/debug/field-hash"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
-# pick a fresh numeric handle whose field-hashed on-chain id is not yet minted (ownerOf reverts -> "none")
-DOGTAG=""; ONCHAIN=""
-for _ in $(seq 1 10); do
-  cand=$(( (RANDOM * 32768 + RANDOM) % 900000000 + 100000000 ))
-  oc=$("$FH" "$cand")
-  owner=$(cast call "$SBT" 'ownerOf(uint256)(address)' "$oc" --rpc-url "$RPC" 2>/dev/null || echo none)
-  if [ "$owner" = "none" ]; then DOGTAG="$cand"; ONCHAIN="$oc"; break; fi
-done
-[ -n "$DOGTAG" ] || { echo "could not find a free dogTagId" >&2; exit 1; }
+GROOMER_RELAYER=""
+case $# in
+  0) ;;
+  2)
+    if [ "$1" != "--groomer-relayer" ]; then
+      echo "usage: $0 [--groomer-relayer 0x<groomerSignerAddress>]" >&2
+      exit 1
+    fi
+    GROOMER_RELAYER="$2"
+    ;;
+  *)
+    echo "usage: $0 [--groomer-relayer 0x<groomerSignerAddress>]" >&2
+    echo "A phone wallet address is not needed: ownership is hidden in the device-computed root." >&2
+    exit 1
+    ;;
+esac
 
-# DOG_PROFILE SBT root is metadata only (the verify checks ownerOf, not this root) -> placeholder.
-ROOTH=0x0000000000000000000000000000000000000000000000000000000000000001
-echo "Minting DOG_PROFILE SBT (handle=$DOGTAG -> on-chain id=$ONCHAIN) to phone $PHONE…"
-cast send "$SBT" 'mint(address,uint256,bytes32)' "$PHONE" "$ONCHAIN" "$ROOTH" \
-  --rpc-url "$RPC" --private-key "$PK" --legacy >/dev/null
-got=$(cast call "$SBT" 'ownerOf(uint256)(address)' "$ONCHAIN" --rpc-url "$RPC")
-echo "  ownerOf($ONCHAIN) = $got"
-[ "$(echo "$got" | tr 'A-F' 'a-f')" = "$(echo "$PHONE" | tr 'A-F' 'a-f')" ] || { echo "ownerOf != phone" >&2; exit 1; }
-
-if [ $# -ge 2 ]; then
-  echo "Funding + whitelisting groomer relayer $2 (issuance + VERIFY:grooming/boarding/daycare)…"
-  scripts/demo-bootstrap.sh "$2"
+if [ -n "$GROOMER_RELAYER" ]; then
+  if [[ ! "$GROOMER_RELAYER" =~ ^0x[[:xdigit:]]{40}$ ]]; then
+    echo "invalid groomer relayer address: $GROOMER_RELAYER" >&2
+    exit 1
+  fi
+  echo "Bootstrapping groomer relayer $GROOMER_RELAYER..."
+  "$ROOT/scripts/demo-bootstrap.sh" "$GROOMER_RELAYER"
+  echo
 fi
 
-echo
-echo "NEXT — in the VET portal:  Issue → set dogTagId = $DOGTAG (exact) → Fill demo data → Sign & Issue → Create QR."
-echo "Then on the phone:  scan the import QR, then scan the groomer EXPORT QR → on-device proof → recorded."
-echo "DOG_TAG_ID=$DOGTAG"
+cat <<'EOF'
+PHONE PREPARATION
+
+1. On the phone, create or restore the owner's wallet/owner secret. The phone needs no gas.
+2. In the VET portal, open Register pet, enter the owner identity and pet details, then Start.
+   The backend allocates a fresh dogTagId and displays a one-time /p/<token> QR.
+3. Scan that QR with the phone. The phone folds its owner secret into profile root R and submits only
+   {token, root} to POST /profiles/issue/custodial-bind. No owner address enters the request or chain.
+4. Keep the portal open until the issuance session reports bound and shows its transaction proof.
+5. Issue the pet's VACCINATION record for that session's dogTagId, then scan its import QR on the phone.
+6. In the groomer portal, start a consent verification and scan its /x/<token> QR with the phone.
+   The phone creates the owner-hidden consent proof; the groomer relays and records it.
+
+The device-owned root cannot be precomputed or pre-minted by this script. That is the privacy boundary.
+EOF

@@ -206,8 +206,8 @@ function AuthorityHeader({ authority }: { authority: GovernanceAuthorityResp }) 
             </div>
             <p className="mt-2 text-xs text-muted">
               Phase-2 removed its factory ownership, WHITELIST_ADMIN and DEFAULT_ADMIN. It still holds
-              the legacy Level-A DogTagSBT ISSUER_ROLE and record-type whitelists, so never reuse it as
-              a neutral key.
+              the retired owner-revealing SBT's ISSUER_ROLE and historical record-type whitelists, so
+              never reuse it as a neutral key.
             </p>
           </div>
         </div>
@@ -597,7 +597,7 @@ function Phase2RunbookCard() {
           />
           <RunbookStep
             icon={<TriangleAlert className="h-4 w-4 text-muted" />}
-            text="The original deployer EOA lost those three governance authorities in Phase-2, but it is not role-free: it still holds the legacy Level-A DogTagSBT ISSUER_ROLE + record-type whitelists, so never reuse it as a neutral key."
+            text="The original deployer EOA lost those three governance authorities in Phase-2, but it is not role-free: it still holds the retired owner-revealing SBT's ISSUER_ROLE plus historical record-type whitelists, so never reuse it as a neutral key."
           />
           <RunbookStep
             icon={<History className="h-4 w-4 text-primary" />}

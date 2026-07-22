@@ -77,27 +77,23 @@ async fn share_token_missing_and_expired_are_none() {
 }
 
 // --------------------------------------------------------------------------------------------
-// export tokens — peek is NON-consuming, take consumes once; both honor expiry.
+// export tokens — peek is non-consuming and honors expiry.
 // --------------------------------------------------------------------------------------------
 
 #[tokio::test]
-async fn export_token_peek_does_not_consume_take_does() {
+async fn export_token_peek_does_not_consume() {
     let s = MemStore::new();
     s.put_export_token("x", "sess-9", future()).await;
     // peek twice: still resolvable both times (not consumed).
     assert_eq!(s.peek_export_token("x").await, Some("sess-9".to_string()));
     assert_eq!(s.peek_export_token("x").await, Some("sess-9".to_string()));
-    // take consumes; a second take is empty.
-    assert_eq!(s.take_export_token("x").await, Some("sess-9".to_string()));
-    assert_eq!(s.take_export_token("x").await, None);
 }
 
 #[tokio::test]
-async fn export_token_expired_peek_and_take_are_none() {
+async fn export_token_expired_peek_is_none() {
     let s = MemStore::new();
     s.put_export_token("x", "sess-9", past()).await;
     assert_eq!(s.peek_export_token("x").await, None);
-    assert_eq!(s.take_export_token("x").await, None);
 }
 
 // --------------------------------------------------------------------------------------------

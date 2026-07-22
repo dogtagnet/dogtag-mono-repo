@@ -28,10 +28,7 @@ pub enum EventType {
     RootIssued,
     /// `DogTagIssuer.RootRevoked(root, by, ts)` — a credential root was invalidated.
     RootRevoked,
-    /// A registry `Verified` event. Two on-chain shapes map to this one kind: the Level-A
-    /// `VerificationRegistry.Verified(dogTagId, relayer, subject, purpose, nullifier, ts)` and the
-    /// Level-B `VerificationRegistryConsent.Verified(dogTagId, relayer, purpose, nullifier, deadline,
-    /// ts)`. Level-A rows carry `subject`; Level-B rows carry `deadline` and leave `subject` absent.
+    /// `VerificationRegistryConsent.Verified(dogTagId, relayer, purpose, nullifier, deadline, ts)`.
     Verified,
 }
 
@@ -150,17 +147,13 @@ pub struct IndexedEvent {
     /// The non-personal SBT id (Verified).
     #[serde(rename = "dogTagId", skip_serializing_if = "Option::is_none")]
     pub dog_tag_id: Option<String>,
-    /// The credential subject wallet address (Verified) — a public on-chain address, not PII.
-    #[serde(rename = "subject", skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
     /// keccak/BN254 purpose key (Verified).
     #[serde(rename = "purpose", skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
     /// The one-time verification nullifier (Verified) — a Poseidon image, unlinkable.
     #[serde(rename = "nullifier", skip_serializing_if = "Option::is_none")]
     pub nullifier: Option<String>,
-    /// The consent deadline (Unix seconds) carried by the Level-B `Verified` only — the validity
-    /// horizon the proof was bound to. `None` for Level-A rows (that event has no deadline).
+    /// The proof-bound consent deadline (Unix seconds) carried by `Verified`.
     #[serde(rename = "deadline", skip_serializing_if = "Option::is_none")]
     pub deadline: Option<u64>,
     /// The on-chain `ts` field carried by RootIssued/RootRevoked/Verified (== emit block timestamp).

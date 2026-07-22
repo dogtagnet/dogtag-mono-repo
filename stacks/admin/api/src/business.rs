@@ -1,6 +1,5 @@
 //! `BusinessClient` — outbound cross-backend HTTP the central stack makes:
-//!   - PUT an appointment to a business `apiBaseUrl` (Idempotency-Key + HMAC), §4.4/architecture §8.3;
-//!   - relay a verification consent to a verifier's `/verify/consent/submit`, §4.1.
+//!   - PUT an appointment to a business `apiBaseUrl` (Idempotency-Key + HMAC), §4.4/architecture §8.3.
 //!
 //! `ReqwestBusinessClient` is the real impl; `MockBusinessClient` records calls for hermetic tests.
 
@@ -38,13 +37,6 @@ pub trait BusinessClient: Send + Sync {
         idempotency_key: &str,
         body: &Value,
     ) -> Result<(), BusinessError>;
-
-    /// POST {verifierApiBase}/verify/consent/submit to relay a consent for on-chain submission.
-    async fn relay_consent(
-        &self,
-        verifier_api_base: &str,
-        body: &Value,
-    ) -> Result<Value, BusinessError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -91,30 +83,6 @@ impl BusinessClient for ReqwestBusinessClient {
         }
         Ok(())
     }
-
-    async fn relay_consent(
-        &self,
-        verifier_api_base: &str,
-        body: &Value,
-    ) -> Result<Value, BusinessError> {
-        let url = format!(
-            "{}/verify/consent/submit",
-            verifier_api_base.trim_end_matches('/')
-        );
-        let resp = self
-            .client
-            .post(&url)
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| BusinessError::Http(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(BusinessError::Status(resp.status().as_u16()));
-        }
-        resp.json()
-            .await
-            .map_err(|e| BusinessError::Http(e.to_string()))
-    }
 }
 
 // --------------------------------------------------------------------------------------------
@@ -124,7 +92,7 @@ impl BusinessClient for ReqwestBusinessClient {
 #[derive(Clone, Default)]
 pub struct MockBusinessClient {
     pub calls: Arc<Mutex<Vec<CallRecord>>>,
-    /// if true, relay/put succeed; else they error.
+    /// if true, appointment writes succeed; else they error.
     pub ok: bool,
 }
 
@@ -157,23 +125,6 @@ impl BusinessClient for MockBusinessClient {
         });
         if self.ok {
             Ok(())
-        } else {
-            Err(BusinessError::Status(502))
-        }
-    }
-
-    async fn relay_consent(
-        &self,
-        verifier_api_base: &str,
-        body: &Value,
-    ) -> Result<Value, BusinessError> {
-        self.calls.lock().unwrap().push(CallRecord {
-            method: "POST".into(),
-            url: format!("{verifier_api_base}/verify/consent/submit"),
-            body: body.clone(),
-        });
-        if self.ok {
-            Ok(serde_json::json!({ "recorded": true }))
         } else {
             Err(BusinessError::Status(502))
         }

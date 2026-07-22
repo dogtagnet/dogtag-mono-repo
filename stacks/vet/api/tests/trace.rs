@@ -43,7 +43,7 @@ fn record(root: &str, tx: &str, dog_tag_id: &str) -> Record {
         prepared_calldata: "0x".to_string(),
         issuer_addr: CLONE_A.to_string(),
         chain_id: Some(135),
-        protocol_version: Some("dogtag-levela/1".to_string()),
+        protocol_version: Some("dogtag-levelb/1".to_string()),
         verification_registry: Some("0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string()),
         issuer_signer: Some(SIGNER_A.to_string()),
         status: RecordStatus::Issued,

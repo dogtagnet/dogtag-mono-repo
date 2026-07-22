@@ -50,23 +50,20 @@ async fn manifest_route_serve_and_verify_offline() {
     let signing_key = SigningKey::from_bytes(&seed);
     std::env::set_var(SIGNING_KEY_ENV, hex::encode(seed));
 
-    let mut served = Vec::new();
-    for version in ["dogtag-levela/1", "dogtag-levelb/1"] {
-        let r = get(version).await;
-        assert_eq!(r.status(), 200, "known version {version} must 200");
-        let raw = r.text().await.unwrap();
-        let sm: SignedManifest = serde_json::from_str(&raw).expect("valid SignedManifest JSON");
+    let version = dogtag_standard::wrap::LEVEL_B_VERSION;
+    let r = get(version).await;
+    assert_eq!(r.status(), 200, "unified version must 200");
+    let raw = r.text().await.unwrap();
+    let sm: SignedManifest = serde_json::from_str(&raw).expect("valid SignedManifest JSON");
 
-        // THE faithful offline check: an app pins the dogtag PUBLIC key and verifies with no RPC.
-        verify(&sm, &signing_key.verifying_key())
-            .unwrap_or_else(|e| panic!("served {version} manifest must verify offline: {e:?}"));
-        assert_eq!(sm.content.version, version);
-        assert_eq!(sm.alg, "ed25519");
-        served.push((version.to_string(), raw, sm));
-    }
+    // THE faithful offline check: an app pins the dogtag PUBLIC key and verifies with no RPC.
+    verify(&sm, &signing_key.verifying_key())
+        .unwrap_or_else(|e| panic!("served manifest must verify offline: {e:?}"));
+    assert_eq!(sm.content.version, version);
+    assert_eq!(sm.alg, "ed25519");
 
     // --- 4. unknown version -> 404 (fail-closed) ------------------------------------------------
-    let r = get("dogtag-levelc/9").await;
+    let r = get("dogtag-levela/1").await;
     let status_unknown = r.status();
     let body_unknown = r.text().await.unwrap();
     assert_eq!(status_unknown, 404, "unknown version must 404");
@@ -77,14 +74,12 @@ async fn manifest_route_serve_and_verify_offline() {
     println!("[1] key UNSET      -> HTTP {} : {}", status_unset.as_u16(), body_unset);
     println!("[2] key MALFORMED  -> HTTP {} : {}", status_bad.as_u16(), body_bad);
     println!("[4] unknown version-> HTTP {} : {}", status_unknown.as_u16(), body_unknown);
-    for (version, raw, sm) in &served {
-        let pretty = serde_json::to_string_pretty(
-            &serde_json::from_str::<serde_json::Value>(raw).unwrap(),
-        )
-        .unwrap();
-        println!("\n[3] key VALID, version={version} -> HTTP 200, offline-verify: PASS");
-        println!("    ed25519 pubkey (app pins this): {}", sm.public_key);
-        println!("{pretty}");
-    }
+    let pretty = serde_json::to_string_pretty(
+        &serde_json::from_str::<serde_json::Value>(&raw).unwrap(),
+    )
+    .unwrap();
+    println!("\n[3] key VALID, version={version} -> HTTP 200, offline-verify: PASS");
+    println!("    ed25519 pubkey (app pins this): {}", sm.public_key);
+    println!("{pretty}");
     println!("\n=============================================================================\n");
 }

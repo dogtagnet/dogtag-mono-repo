@@ -38,9 +38,10 @@ Nav mirrors the reference groomer dashboard:
   an operator never sees another operator's activity. Reads the standalone oversight indexer
   (`INDEXER_API_BASE` + a scoped bearer); when unset the page shows a first-class "Oversight indexer not
   connected" state. Same page as the vet portal.
-- **Verify** (`/verify`) — the shared `<VerifyFlow/>` (purpose + Normal/ZK toggle → session QR →
-  on-chain status). Emphasizes that a groomer can verify a vet-issued vaccination **without being an
-  issuer** (the `VERIFY:<purpose>` whitelist namespace, distinct from issuer roles).
+- **Verify** (`/verify`) — one owner-hidden consent flow (purpose → session QR → owner proof →
+  on-chain status), with no disclosure-mode choice. Emphasizes that a groomer can verify a vet-issued
+  vaccination **without being an issuer** (the `VERIFY:<purpose>` whitelist namespace, distinct from
+  issuer roles).
 - **Setup** (`/setup`) — the same genesis/custody wizard as the vet portal (groomers can issue their
   own records too): custody admin login → genesis (24 words → confirm + passphrase → unlock) →
   derive accounts → apply for whitelist (central `POST /v1/issuer-applications`) → DNS-TXT.
@@ -57,6 +58,12 @@ Nav mirrors the reference groomer dashboard:
 - **Placeholder**: Calendar, Appointments, Clients, Groomers, Reports, Marketing.
 - **Note**: like the vet portal, the Verify flow shows the session QR + awaiting-consent state and
   polls `GET /verify/session/:id` for the "pending → Verified" transition.
+
+## E2E
+
+With the dev server running, `pnpm --filter @dogtag/groomer-web test:e2e` exercises the mocked portal
+flows. `e2e/verify.spec.ts` pins the single consent UI and asserts its session-start request carries
+only the purpose and record type.
 
 ## Env
 

@@ -1,7 +1,7 @@
 //! Unit coverage for the pure credential-import verification helpers in `admin_api::verify`.
 //!
 //! `structural_valid` and `dog_tag_id_of` are otherwise exercised only via the happy path of the
-//! end-to-end `central.rs` mint test. These tests pin their error/edge branches directly by wrapping
+//! import-path integration coverage. These tests pin their error/edge branches directly by wrapping
 //! a real document with the SDK and then mutating it: tampered roots, obfuscated (partial) docs,
 //! empty data, malformed leaves, and the colon-preserving / missing-field behaviour of the dogTagId
 //! extractor. Behaviour-preserving — no source change.

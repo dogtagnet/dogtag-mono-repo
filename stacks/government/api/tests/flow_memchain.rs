@@ -23,7 +23,7 @@ fn demo_state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
-        verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".into(),
+        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "DogTag Government Authority".into(),
@@ -201,10 +201,10 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
     // Envelope carries the block, with the routing key + the issuer's own signer as the claim.
     let block = &issued["wrappedDoc"]["protocol"];
     assert_eq!(block["chainId"], 135);
-    assert_eq!(block["version"], "dogtag-levela/1");
+    assert_eq!(block["version"], "dogtag-levelb/1");
     assert_eq!(
         block["verificationRegistry"],
-        "0x4E2f0996e1CB4E24F1053346f3da2186906835E8"
+        "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87"
     );
     assert_eq!(block["issuerClone"], ISSUER_ADDR);
     assert_eq!(
@@ -220,10 +220,10 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
         .await
         .expect("credential persisted");
     assert_eq!(cred.chain_id, Some(135));
-    assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levela/1"));
+    assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levelb/1"));
     assert_eq!(
         cred.verification_registry.as_deref(),
-        Some("0x4E2f0996e1CB4E24F1053346f3da2186906835E8")
+        Some("0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87")
     );
     assert_eq!(
         cred.issuer_signer.map(|s| s.to_lowercase()),

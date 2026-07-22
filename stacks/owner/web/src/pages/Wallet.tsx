@@ -23,7 +23,7 @@ export function Wallet() {
           <h3>Your wallet is empty</h3>
           <p>
             When a vet, groomer, or government authority issues your pet a credential, add it here to
-            hold it and present zero-knowledge proofs.
+            hold it, view its receipts, and share selected fields.
           </p>
           <Link to="/receive" className="btn" data-testid="empty-receive">
             Receive a credential

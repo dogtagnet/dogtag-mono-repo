@@ -1,14 +1,7 @@
-//! The M-4 PHONE path for Level-B: `POST /v1/verify/consent/levelb` + the per-session opt-in.
+//! The phone path for canonical owner-hidden verification: `POST /v1/verify/consent`.
 //!
-//! Companion to `submit_consent_levelb_route.rs`, which covers the operator-gated M-3 route and its
-//! preflight. This file covers only what M-4 adds, and the two things it must NOT break:
-//!
-//!   1. the export-token gate that makes the route reachable by the phone at all,
-//!   2. the `mode="levelb"` per-session opt-in that advertises Level-B in the convenience tier,
-//!   3. **the DEFAULT staying Level-A** — the single most important assertion here. Making Level-B
-//!      AVAILABLE must not make it the DEFAULT; flipping the default is M-5, not M-4. A regression
-//!      that flipped it would be invisible in every Level-B test and would strand every shipped
-//!      Level-A phone, so it is asserted explicitly rather than left implied.
+//! Companion to `submit_consent_levelb_route.rs`, which covers the operator-gated route and its
+//! preflight. This file covers the export-token gate and session-bound proof checks.
 //!
 //! `MemChain` does not verify Groth16, so `a/b/c` are placeholders and the public signals do the
 //! talking — the same division of labour as the M-3 route tests.
@@ -70,7 +63,7 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Built through the NAMED Level-B indices, so a circuit reordering moves this fixture rather than
+/// Built through the named consent indices, so a circuit reordering moves this fixture rather than
 /// silently producing a vector that means something else.
 fn pubs_for(relayer: &str, purpose_label: &str) -> [String; 7] {
     let mut p: [String; 7] = std::array::from_fn(|_| "0".to_string());
@@ -128,18 +121,18 @@ async fn boot_with_state(
     (app, op, relayer, st)
 }
 
-/// Start a session in `mode` and return `(sessionId, exportToken)`. The token is carried in the QR
+/// Start a session and return `(sessionId, exportToken)`. The token is carried in the QR
 /// URL (`/x/<token>?a=<relayer>`), which is exactly where the phone reads it from.
-async fn start_session(app: &axum::Router, op: &str, mode: &str) -> (String, String) {
+async fn start_session(app: &axum::Router, op: &str) -> (String, String) {
     let (s, b) = call(
         app,
         "POST",
         "/verify/session/start",
         Some(op),
-        Some(json!({"purpose": PURPOSE, "recordType": "VACCINATION", "mode": mode})),
+        Some(json!({"purpose": PURPOSE, "recordType": "VACCINATION"})),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "session start ({mode}): {b}");
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
     let session_id = b["sessionId"].as_str().expect("sessionId").to_string();
     let qr = b["qrUrl"].as_str().expect("qrUrl");
     let token = qr
@@ -173,17 +166,15 @@ async fn settle(app: &axum::Router, op: &str, session_id: &str) -> Value {
 }
 
 // ------------------------------------------------------------------------------------------------
-// The per-session opt-in — and the default that must not move
+// Unified convenience claims
 // ------------------------------------------------------------------------------------------------
 
-/// A `levelb` session advertises Level-B in the convenience tier, on the SAME resolve GET the phone
-/// already hits for its QR. Both fields must move together: an app that resolves the anchor for
-/// `dogtag-levelb/1` and finds the Level-A registry beside it fails closed with `RegistryMismatch`.
+/// Every session advertises the unified protocol and owner-hidden registry in the convenience tier.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn levelb_session_advertises_levelb_claims() {
+async fn session_advertises_unified_claims() {
     let chain = Arc::new(MemChain::new());
     let (app, op, _relayer) = boot(chain).await;
-    let (_sid, token) = start_session(&app, &op, "levelb").await;
+    let (_sid, token) = start_session(&app, &op).await;
 
     let (s, b) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
     assert_eq!(s, StatusCode::OK, "resolve: {b}");
@@ -192,53 +183,8 @@ async fn levelb_session_advertises_levelb_claims() {
     assert_eq!(
         claims["verificationRegistry"].as_str().unwrap(),
         common::VREG_CONSENT_ADDR,
-        "the Level-B registry must accompany the Level-B version: {b}"
+        "the owner-hidden registry must accompany the unified version: {b}"
     );
-    assert_eq!(b["mode"], "levelb", "{b}");
-}
-
-/// **The load-bearing regression guard.** M-4 makes Level-B AVAILABLE, not DEFAULT. A plain `zk`
-/// session — what every shipped phone starts today — must still advertise Level-A, unchanged. If
-/// this ever fails, the version-stamp flip (M-5) has leaked into M-4 and every installed Level-A
-/// binary is stranded.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn default_session_still_advertises_levela() {
-    let chain = Arc::new(MemChain::new());
-    let (app, op, _relayer) = boot(chain).await;
-    let (_sid, token) = start_session(&app, &op, "zk").await;
-
-    let (s, b) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
-    assert_eq!(s, StatusCode::OK, "resolve: {b}");
-    let claims = &b["unverifiedClaims"];
-    assert_eq!(
-        claims["protocolVersion"], "dogtag-levela/1",
-        "the DEFAULT must stay Level-A — flipping it is M-5, not M-4: {b}"
-    );
-    assert_ne!(
-        claims["verificationRegistry"].as_str().unwrap(),
-        common::VREG_CONSENT_ADDR,
-        "a `zk` session must not be pointed at the Level-B registry: {b}"
-    );
-}
-
-/// An unrecognised mode is refused at session start. Before this it fell through the
-/// `if mode == "normal"` dispatch into the LEVEL-A branch, so `"level-b"` or `"levelB"` would have
-/// quietly produced a Level-A session advertising Level-A claims.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unknown_mode_is_refused_at_session_start() {
-    let chain = Arc::new(MemChain::new());
-    let (app, op, _relayer) = boot(chain).await;
-    for bad in ["level-b", "levelB", "LEVELB", "zk-levelb", ""] {
-        let (s, b) = call(
-            &app,
-            "POST",
-            "/verify/session/start",
-            Some(&op),
-            Some(json!({"purpose": PURPOSE, "recordType": "VACCINATION", "mode": bad})),
-        )
-        .await;
-        assert_eq!(s, StatusCode::BAD_REQUEST, "mode {bad:?} should 400: {b}");
-    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -252,12 +198,12 @@ async fn unknown_mode_is_refused_at_session_start() {
 async fn phone_submits_with_export_token_and_settles_on_the_session_row() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain).await;
-    let (sid, token) = start_session(&app, &op, "levelb").await;
+    let (sid, token) = start_session(&app, &op).await;
 
     let (s, ack) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None, // no operator bearer — the token alone must satisfy the gate
         Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(&token))),
     )
@@ -272,7 +218,7 @@ async fn phone_submits_with_export_token_and_settles_on_the_session_row() {
 
     let row = settle(&app, &op, &sid).await;
     assert_eq!(row["status"], "recorded", "row: {row}");
-    // The E-1 guard: the row must key on pub[3] (the Level-B NULLIFIER), never pub[4] (which holds
+    // The E-1 guard: the row must key on pub[3] (the nullifier), never pub[4] (which holds
     // R here). Reading the wrong slot compiles and yields a plausible field element, so assert the
     // recorded value is the nullifier's and specifically NOT the root's.
     let word = |dec: &str| {
@@ -300,134 +246,12 @@ async fn phone_route_refuses_unauthenticated() {
     let (s, b) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(&relayer, PURPOSE), None)),
     )
     .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED, "{b}");
-}
-
-// ------------------------------------------------------------------------------------------------
-// The two routes cannot be crossed
-// ------------------------------------------------------------------------------------------------
-
-/// A `zk` (Level-A) session's token must not buy a Level-B submission. Both routes read the SAME
-/// export token, so without the mode check the token would be accepted by both.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn levela_session_is_refused_on_the_levelb_route() {
-    let chain = Arc::new(MemChain::new());
-    let (app, op, relayer) = boot(chain).await;
-    let (_sid, token) = start_session(&app, &op, "zk").await;
-
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/v1/verify/consent/levelb",
-        None,
-        Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(&token))),
-    )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
-    assert!(
-        b["error"].as_str().unwrap_or_default().contains("level-b"),
-        "the error should name the mode mismatch: {b}"
-    );
-}
-
-/// The mirror: a `levelb` session must not be served by the LEVEL-A route. Without the guard it
-/// falls through `if mode == "normal" { .. } else { <Level-A ZK> }` into the Level-A branch, which
-/// reads `pub[SUBJECT]`/`pub[KEY_HASH]` and encodes the Level-A selector — i.e. it interprets an
-/// owner-hidden proof with Level-A indices.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn levelb_session_is_refused_on_the_levela_route() {
-    let chain = Arc::new(MemChain::new());
-    let (app, op, relayer) = boot(chain).await;
-    let (sid, _token) = start_session(&app, &op, "levelb").await;
-
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/verify/consent/submit",
-        Some(&op),
-        Some(json!({
-            "sessionId": sid,
-            "consent": {
-                "dogTagId": "42",
-                "recordType": "0x00",
-                "purpose": "0x00",
-                "credentialRoot": "0x11",
-                "challenge": "0x00",
-                "relayer": relayer,
-                "subject": "0x00000000000000000000000000000000000000cc",
-                "nonce": "1",
-                "deadline": (now_secs() + 300)
-            },
-            "sig": "0x00",
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
-    assert!(
-        b["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("/v1/verify/consent/levelb"),
-        "the error should route the caller to the Level-B path: {b}"
-    );
-}
-
-/// The refusal above must read the session's STORED mode, never the request body's `mode` override.
-/// A caller holding a `levelb` session's credentials can otherwise pass `"mode":"zk"` and land in
-/// the Level-A ZK branch anyway — which reads `pub[SUBJECT]`/`pub[KEY_HASH]` and encodes the Level-A
-/// selector, i.e. the exact E-1 misinterpretation the refusal exists to close.
-///
-/// The sibling test omits `mode` entirely, which is precisely why this gap survived it. `mode` keeps
-/// its legitimate job (normal vs zk WITHIN a Level-A session); it just must not pick the LEVEL.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn levelb_session_is_refused_on_the_levela_route_even_with_a_mode_override() {
-    let chain = Arc::new(MemChain::new());
-    let (app, op, relayer) = boot(chain).await;
-    let (sid, _token) = start_session(&app, &op, "levelb").await;
-
-    for override_mode in ["zk", "normal"] {
-        let (s, b) = call(
-            &app,
-            "POST",
-            "/verify/consent/submit",
-            Some(&op),
-            Some(json!({
-                "sessionId": sid,
-                "mode": override_mode,
-                "consent": {
-                    "dogTagId": "42",
-                    "recordType": "0x00",
-                    "purpose": "0x00",
-                    "credentialRoot": "0x11",
-                    "challenge": "0x00",
-                    "relayer": relayer,
-                    "subject": "0x00000000000000000000000000000000000000cc",
-                    "nonce": "1",
-                    "deadline": (now_secs() + 300)
-                },
-                "sig": "0x00",
-            })),
-        )
-        .await;
-        assert_eq!(
-            s,
-            StatusCode::BAD_REQUEST,
-            "mode override {override_mode:?} must not reach the Level-A branch: {b}"
-        );
-        assert!(
-            b["error"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("/v1/verify/consent/levelb"),
-            "the refusal must be the LEVEL-B routing error, not an incidental \
-             downstream failure inside the Level-A branch: {b}"
-        );
-    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -440,12 +264,12 @@ async fn levelb_session_is_refused_on_the_levela_route_even_with_a_mode_override
 async fn proof_purpose_must_match_the_session() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain).await;
-    let (_sid, token) = start_session(&app, &op, "levelb").await;
+    let (_sid, token) = start_session(&app, &op).await;
 
     let (s, b) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(
             &pubs_for(&relayer, "SOME_OTHER_PURPOSE"),
@@ -472,7 +296,7 @@ async fn proof_record_type_must_match_the_session() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain).await;
     // The session is started for VACCINATION (see `start_session`).
-    let (_sid, token) = start_session(&app, &op, "levelb").await;
+    let (_sid, token) = start_session(&app, &op).await;
 
     let mut pubs = pubs_for(&relayer, PURPOSE);
     pubs[PB::RECORD_TYPE] = purpose_field("EU_HEALTH_CERT");
@@ -480,7 +304,7 @@ async fn proof_record_type_must_match_the_session() {
     let (s, b) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs, Some(&token))),
     )
@@ -502,12 +326,12 @@ async fn proof_record_type_must_match_the_session() {
 async fn matching_record_type_passes_the_binding() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain).await;
-    let (sid, token) = start_session(&app, &op, "levelb").await;
+    let (sid, token) = start_session(&app, &op).await;
 
     let (s, ack) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(&token))),
     )
@@ -523,14 +347,14 @@ async fn matching_record_type_passes_the_binding() {
 
 /// The phone route FAILS CLOSED when a token-authed session cannot be read.
 ///
-/// Falling through to `session = None` would silently demote the request to the COLD path, skipping
-/// the mode refusal, all three binding axes AND the status replay guard — and the cold path is the
-/// one with no replay protection at all, since this route never consumes the token. That is not
+/// Falling through to `session = None` would silently demote the request to the cold path, skipping
+/// all three binding axes and the status replay guard. The cold path has no session replay guard
+/// because it has no token. That is not
 /// hypothetical: `MongoStore::get_session` maps driver errors to `None` (`.ok().flatten()`), so a
 /// transient DB blip is indistinguishable here from "no such session".
 ///
 /// The orphan token is minted through the store directly because the HTTP surface cannot produce
-/// this state — which is exactly why it went unnoticed.
+/// this state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn token_authed_submit_fails_closed_when_the_session_cannot_be_read() {
     let chain = Arc::new(MemChain::new());
@@ -544,7 +368,7 @@ async fn token_authed_submit_fails_closed_when_the_session_cannot_be_read() {
     let (s, b) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(token))),
     )
@@ -558,7 +382,7 @@ async fn token_authed_submit_fails_closed_when_the_session_cannot_be_read() {
 
 /// The operator half of the same rule: naming a sessionId that does not exist is refused rather than
 /// quietly minting an unrelated cold row. Cold entry stays available — it is simply the caller
-/// OMITTING `sessionId` (the operator-gated `/verify/consent/levelb` route), not naming a bad one.
+/// omitting `sessionId` on the canonical operator-gated route, not naming a bad one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn operator_submit_naming_an_unknown_session_is_refused() {
     let chain = Arc::new(MemChain::new());
@@ -569,7 +393,7 @@ async fn operator_submit_naming_an_unknown_session_is_refused() {
     let (s, b) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(body),
     )
@@ -580,7 +404,7 @@ async fn operator_submit_naming_an_unknown_session_is_refused() {
     let (s, b) = call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(proof_body(&pubs_for(&relayer, PURPOSE), None)),
     )
@@ -595,12 +419,9 @@ async fn operator_submit_naming_an_unknown_session_is_refused() {
 /// The other half of the one-time-token property, and the one that actually blocks replay: after a
 /// SUCCEEDING submit, the SAME token must not buy a second one.
 ///
-/// This is the discriminator for how the phone route mirrors Level-A. Level-A consumes the token in
-/// its background task on record success; the Level-B route instead relies on the session row having
-/// left `"pending"` (it is persisted `"recording"` BEFORE the broadcast is spawned, so the window is
-/// closed synchronously). The two are equivalent in effect only if the guard actually holds — which
-/// nothing asserted until this test. Without it, a replay would spend the relayer's gas a second
-/// time on a proof the chain then reverts as `"replayed"`.
+/// The route relies on the session row having left `"pending"` (it is persisted `"recording"` before
+/// the broadcast is spawned, so the window is closed synchronously). Without the guard, a replay
+/// would spend the relayer's gas a second time on a proof the chain then reverts as `"replayed"`.
 ///
 /// The equivalence also rests on a session outliving its token: a session that vanished while its
 /// token was live would fall through to the COLD mint path, which has no status guard. Sessions are
@@ -610,12 +431,12 @@ async fn operator_submit_naming_an_unknown_session_is_refused() {
 async fn a_successful_submission_cannot_be_replayed_with_the_same_token() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain).await;
-    let (sid, token) = start_session(&app, &op, "levelb").await;
+    let (sid, token) = start_session(&app, &op).await;
 
     let (s, ack) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(&token))),
     )
@@ -631,7 +452,7 @@ async fn a_successful_submission_cannot_be_replayed_with_the_same_token() {
     let (s, b) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(&token))),
     )
@@ -655,13 +476,13 @@ async fn a_successful_submission_cannot_be_replayed_with_the_same_token() {
 async fn proof_relayer_must_match_the_session() {
     let chain = Arc::new(MemChain::new());
     let (app, op, _relayer) = boot(chain).await;
-    let (_sid, token) = start_session(&app, &op, "levelb").await;
+    let (_sid, token) = start_session(&app, &op).await;
 
     let other = "0x00000000000000000000000000000000000000ff";
     let (s, b) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(other, PURPOSE), Some(&token))),
     )
@@ -675,18 +496,18 @@ async fn proof_relayer_must_match_the_session() {
 }
 
 /// A FAILED submission must not burn the owner's one-time token — they retry with the same QR. This
-/// is why the gate PEEKS (`consume=false`), exactly as the Level-A alias does.
+/// is why the gate peeks (`consume=false`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_submission_does_not_burn_the_export_token() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain).await;
-    let (sid, token) = start_session(&app, &op, "levelb").await;
+    let (sid, token) = start_session(&app, &op).await;
 
     // First attempt fails the purpose binding.
     let (s, _) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(&relayer, "WRONG"), Some(&token))),
     )
@@ -697,7 +518,7 @@ async fn a_failed_submission_does_not_burn_the_export_token() {
     let (s, ack) = call(
         &app,
         "POST",
-        "/v1/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(proof_body(&pubs_for(&relayer, PURPOSE), Some(&token))),
     )

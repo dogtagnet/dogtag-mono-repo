@@ -23,8 +23,8 @@ const QUICK_LINKS: {
   },
   {
     href: "/verify",
-    label: "Export on chain",
-    blurb: "The owner exports a proof; record a proof-of-verification (Normal/ZK) without being a credential issuer.",
+    label: "Request verification",
+    blurb: "The owner approves an owner-hidden proof; record verification without becoming a credential issuer.",
     icon: ShieldCheck,
   },
   {

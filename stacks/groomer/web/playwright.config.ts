@@ -1,11 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * E2E config for the GROOMER portal's records-management surface. Like the government/owner e2e it is NOT
- * part of `pnpm test` / CI (needs a served portal + browsers). It drives the REAL Records UI + the
- * shared `@dogtag/ui` API client against a MOCKED backend (network interception), so the full
- * issue → list (with explorer link) → edit (off-chain only) → revoke (soft, keeps history) loop is
- * exercised deterministically without custody/chain. Run against a served dev portal:
+ * E2E config for the GROOMER portal. Like the government/owner e2e it is NOT part of `pnpm test` / CI
+ * (needs a served portal + browsers). It drives the real UI against a mocked backend, covering record
+ * management, traceability, and the single owner-hidden verification request. Run against a served
+ * dev portal:
  *
  *   pnpm --filter @dogtag/groomer-web dev            # in one shell (port 43617)
  *   pnpm --filter @dogtag/groomer-web test:e2e       # in another (GROOMER_URL overrides the base)

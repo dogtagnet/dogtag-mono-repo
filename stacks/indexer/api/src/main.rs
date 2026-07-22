@@ -18,10 +18,7 @@ use indexer_api::store::{MemStore, Store};
 // ROAX deployment (contracts/deployments/roax.json), lowercased. Overridable via env.
 const DEFAULT_FACTORY: &str = "0xd3179abbfb0274d0a5f7017d76015a93c159511d";
 const DEFAULT_REGISTRY: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
-const DEFAULT_VREG: &str = "0x4e2f0996e1cb4e24f1053346f3da2186906835e8";
-// Level-B `VerificationRegistryConsent` (roax.json canonical M5 pairing), lowercased. Watched
-// ALONGSIDE the Level-A `DEFAULT_VREG` above so the indexer recognizes both `Verified` shapes during
-// the transition — M8. This is additive: M7 (not this change) later flips which registry is primary.
+// Unified owner-hidden `VerificationRegistryConsent` (roax.json canonical pairing), lowercased.
 const DEFAULT_VREG_CONSENT: &str = "0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87";
 const GOV_TRAVEL_CLONE: &str = "0x8e276bd4c57740766a7e173d05f4f02013681c6a";
 const GOV_EUHEALTH_CLONE: &str = "0xe30a17396c0fb75d3e8bfc862a49677b3dd568e2";
@@ -67,7 +64,6 @@ async fn main() {
         chain_id,
         factory_addr: lc(env("FACTORY_ADDR", DEFAULT_FACTORY)),
         registry_addr: lc(env("ISSUER_REGISTRY_ADDR", DEFAULT_REGISTRY)),
-        verification_registry_addr: lc(env("VERIFICATION_REGISTRY_ADDR", DEFAULT_VREG)),
         verification_registry_consent_addr: lc(env(
             "VERIFICATION_REGISTRY_CONSENT_ADDR",
             DEFAULT_VREG_CONSENT,
@@ -255,7 +251,6 @@ fn demo_seed(mem: &MemLogSource, cfg: &Config) {
     use indexer_api::chain::emit;
     let rt_travel = keccak_key("TRAVEL_CLEARANCE");
     let purpose = keccak_key("boarding_intake");
-    let subject = "0x00000000000000000000000000000000deadbeef";
     let root1 = "0x1111111111111111111111111111111111111111111111111111111111111111";
     let root2 = "0x2222222222222222222222222222222222222222222222222222222222222222";
     let null1 = "0x3333333333333333333333333333333333333333333333333333333333333333";
@@ -291,12 +286,12 @@ fn demo_seed(mem: &MemLogSource, cfg: &Config) {
         "0x05",
         base_ts + 60,
         vec![emit::verified(
-            &cfg.verification_registry_addr,
+            &cfg.verification_registry_consent_addr,
             42,
             GOV_SIGNER,
-            subject,
             &purpose,
             null1,
+            base_ts + 3600,
             base_ts + 60,
         )],
     );

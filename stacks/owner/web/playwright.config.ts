@@ -1,13 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * E2E for the PET-OWNER (holder) wallet — the full holder loop: receive → hold/display → generate a
- * ZK proof (real in-browser EdDSA-BabyJubjub consent signing) → present to a verifier → verified.
+ * E2E for the PET-OWNER (holder) wallet — receive, hold/display, selective disclosure, and receipts.
  *
- * By default it runs against a LOCAL vite dev server this config starts, with the prover + verifier
- * HTTP endpoints MOCKED at the network layer (see e2e/owner.spec.ts). That makes the loop
- * deterministic and self-contained — the REAL client-side crypto still runs; only the two remote
- * services (the owner's prover + the verifier) are stubbed. Point it at a live wallet instead with:
+ * By default it runs against a LOCAL vite dev server this config starts, with read-only ROAX RPC
+ * mocked at the network layer (see e2e/owner.spec.ts). Point it at a live wallet instead with:
  *
  *   OWNER_URL=https://<tunnel> pnpm --filter @dogtag/owner-web test:e2e
  */

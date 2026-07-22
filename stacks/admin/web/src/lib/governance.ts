@@ -18,7 +18,7 @@ export const GOVERNANCE_SIGNER_1_LABEL = "signer-1";
 /**
  * The original deployer EOA. Phase-2 stripped it of the three governance authorities (factory owner,
  * WHITELIST_ADMIN, DEFAULT_ADMIN), so it must never be assumed to hold governance authority again.
- * It is NOT role-free: a 2026-07-16 audit found it still holds the legacy Level-A `DogTagSBT`
+ * It is NOT role-free: a 2026-07-16 audit found it still holds the retired owner-revealing SBT's
  * `ISSUER_ROLE` and known record-type whitelists, so it must not be reused as a neutral custodian.
  */
 export const FORMER_DEPLOYER_EOA = "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96";

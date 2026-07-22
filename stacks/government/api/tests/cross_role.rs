@@ -58,7 +58,7 @@ fn government_stack(chain: MemChain) -> AppState {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY.into(),
-        verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".into(),
+        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: "0x1111111111111111111111111111111111111111".into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "Example Competent Authority".into(),

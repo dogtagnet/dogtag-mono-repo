@@ -6,9 +6,9 @@
 //!   signing        — EIP-1559 sign+send helper (re-exported from chain)
 //!   store.rs       — `Store` trait + `MemStore` (+ optional `MongoStore`)
 //!   auth.rs        — operator/admin sessions + EdDSA share/verify JWTs
-//!   prover.rs      — `ProverClient` trait + `StubProver` (ZK, wired later)
+//!   prover.rs      — owner-hidden consent prover service
 //!   app.rs         — AppState/config + server-side VC build/wrap
-//!   verify.rs      — third-party verify + /verify/consent/submit
+//!   verify.rs      — third-party verify + canonical owner-hidden consent submission
 //!   routes.rs      — Axum router + all handlers
 
 pub mod app;

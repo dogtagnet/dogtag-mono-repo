@@ -49,7 +49,7 @@ async fn after_erase_dek_destroyed_and_salts_pii_unrecoverable() {
         })
         .await;
 
-    let vr_body = serde_json::json!({ "consent": { "subject": "0x...secret", "dogTagId": "7" }, "purpose": "VET_INTAKE" });
+    let vr_body = serde_json::json!({ "consent": { "dogTagId": "7" }, "purpose": "VET_INTAKE" });
     let vr_sealed: Sealed = seal_json(&vault, &vr_body).await.unwrap();
     let vr_dek = vr_sealed.dek_id.clone();
     state
@@ -60,7 +60,6 @@ async fn after_erase_dek_destroyed_and_salts_pii_unrecoverable() {
             dog_tag_id: "7".into(),
             purpose: "VET_INTAKE".into(),
             relayer: "0x00000000000000000000000000000000000000aa".into(),
-            mode: "zk".into(),
             status: "recorded".into(),
             sealed: vr_sealed.clone(),
         })

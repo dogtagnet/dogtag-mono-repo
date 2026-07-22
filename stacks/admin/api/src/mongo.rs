@@ -166,26 +166,6 @@ impl Store for MongoStore {
         let coll: Collection<Document> = self.db.collection("microchips");
         coll.insert_one(doc! { "code": code }).await.is_ok()
     }
-    async fn next_dog_tag_id(&self) -> u64 {
-        // atomic counter via findOneAndUpdate($inc).
-        use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};
-        let coll: Collection<Document> = self.db.collection("counters");
-        let opts = FindOneAndUpdateOptions::builder()
-            .upsert(true)
-            .return_document(ReturnDocument::After)
-            .build();
-        let d = coll
-            .find_one_and_update(
-                doc! { "_id": "dog_tag_id" },
-                doc! { "$inc": { "seq": 1i64 } },
-            )
-            .with_options(opts)
-            .await
-            .ok()
-            .flatten();
-        d.and_then(|d| d.get_i64("seq").ok()).unwrap_or(1) as u64
-    }
-
     async fn put_credential(&self, c: Credential) {
         let _ = self
             .credentials()

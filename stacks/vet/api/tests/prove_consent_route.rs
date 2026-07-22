@@ -24,7 +24,7 @@ use dogtag_standard::types::TypedScalar;
 use dogtag_standard::public_signals::level_b as P;
 
 use vet_api::chain::MemChain;
-use vet_api::prover::{ConsentProver, ProverClient, StubProver};
+use vet_api::prover::ConsentProver;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -37,17 +37,15 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// A base AppState (Level-A stub prover); the caller sets `consent_prover` as needed.
+/// A base AppState; the caller sets `consent_prover` as needed.
 fn base_state() -> vet_api::app::AppState {
-    common::state_with_verify(
+    common::state_with(
         Arc::new(MemChain::new()),
         "memchain".to_string(),
         "0x00000000000000000000000000000000000000aa".to_string(),
-        "0x00000000000000000000000000000000000000bb".to_string(),
         "0x00000000000000000000000000000000000000cc".to_string(),
         "vet.example".to_string(),
         1,
-        Arc::new(StubProver) as Arc<dyn ProverClient>,
     )
 }
 
@@ -75,7 +73,7 @@ fn sample_circuit_input() -> serde_json::Value {
 }
 
 /// Fail-closed PER REQUEST: an instance with no consent artifacts (the default, `disabled()`) returns
-/// 503 for `/prove-consent` — it does NOT crash, so the same instance still serves Level-A.
+/// 503 for `/prove-consent` — it does NOT crash the rest of the vet API.
 #[tokio::test]
 async fn prove_consent_unavailable_without_artifacts_is_503() {
     let state = base_state(); // consent_prover defaults to disabled()
@@ -93,7 +91,7 @@ async fn prove_consent_unavailable_without_artifacts_is_503() {
 /// A malformed device-assembled `circuitInput` is a CLIENT error → 400 (not a 5xx), and this holds
 /// even on an instance with NO consent artifacts: the input is parsed BEFORE the prover load, so a
 /// bad body is distinguished from this instance being unable to prove (503) or a genuine prove
-/// failure (502). Mirrors the Level-A route's in-route assemble 400.
+/// failure (502).
 #[tokio::test]
 async fn prove_consent_malformed_input_is_400() {
     let state = base_state(); // consent_prover defaults to disabled() — no artifacts needed
@@ -121,7 +119,7 @@ async fn prove_consent_refuses_a_non_consent_version() {
     let router = vet_api::public_router(state);
     let body = json!({
         "circuitInput": sample_circuit_input(),
-        "version": dogtag_prover::artifact::LEVEL_A_V1,
+        "version": "unsupported/1",
     });
 
     let (status, resp) = common::call(&router, "POST", "/prove-consent", None, Some(body)).await;
@@ -131,7 +129,7 @@ async fn prove_consent_refuses_a_non_consent_version() {
         "a non-consent version must be refused: {resp}"
     );
     assert!(
-        resp.to_string().contains(dogtag_prover::artifact::LEVEL_A_V1),
+        resp.to_string().contains("unsupported/1"),
         "the error must name the refused version: {resp}"
     );
     // The consent version explicitly is accepted (reaches the prover; disabled here ⇒ 503, not 400).

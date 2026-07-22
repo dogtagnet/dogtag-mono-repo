@@ -59,24 +59,22 @@ INDEXER_DEMO_MODE=1 PORT=46001 VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
   run indexer-api ":46001" "$ROOT/target/release/indexer-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  SBT_ADDR=$SBT PROFILE_DOCUMENT_STORE=$PROFILE_ISSUER \
+  SBT_ADDR=$SBT \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 # Every verifier/issuance process receives the same owner-hidden pair. PROFILE_ISSUER is a real
 # factory clone: roots are issue(R)'d there, while mintCustodial seals the same R on the SBT.
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
-  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  VERIFICATION_REGISTRY_CONSENT_ADDR=$VR SBT_ADDR=$SBT SBT_CONSENT_ADDR=$SBT \
-  PROFILE_DOCUMENT_STORE=$PROFILE_ISSUER PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
+  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Seaport Vet" ISSUER_DOMAIN=vet.local \
   BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 DEPLOYMENT_URL="${VET_PUBLIC_URL:-http://$LAN_IP:41874}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
   CUSTODY_SEAL_PATH="$ROOT/.demo/vet-custody.json" \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
-  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  VERIFICATION_REGISTRY_CONSENT_ADDR=$VR SBT_ADDR=$SBT SBT_CONSENT_ADDR=$SBT \
-  PROFILE_DOCUMENT_STORE=$PROFILE_ISSUER PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
+  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Pampered Paws" ISSUER_DOMAIN=groomer.local \
   BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="${GROOMER_PUBLIC_URL:-http://$LAN_IP:43618}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
@@ -90,9 +88,8 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 #   cloudflared tunnel --url http://localhost:41875  ->  PROVER_PUBLIC_URL=https://<sub>.trycloudflare.com
 # then point the phone's `prover_api` pref at that URL (demo-prepare-phone.sh / Settings).
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
-  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  VERIFICATION_REGISTRY_CONSENT_ADDR=$VR SBT_ADDR=$SBT SBT_CONSENT_ADDR=$SBT \
-  PROFILE_DOCUMENT_STORE=$PROFILE_ISSUER PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
+  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="DogTag Prover" ISSUER_DOMAIN=prover.local \
   BUSINESS_ID=biz-prover CONFIRMATIONS=1 PORT=41875 DEPLOYMENT_URL="${PROVER_PUBLIC_URL:-http://$LAN_IP:41875}" \
   CIRCUITS_BUILD_DIR="$ROOT/circuits/build" \
@@ -105,6 +102,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 # GOV_SIGNER_KEY + a DogTagIssuer clone (TRAVEL_CLEARANCE_ISSUER_ADDR) — an ops step; unset here means
 # /issue builds+persists via dry_run. See docs/ROLE_APPS.md §7.
 ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority" ISSUER_DOMAIN=gov.local \
+  VERIFICATION_REGISTRY_ADDR=$VR \
   CHAIN_ID=135 PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
   TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}" GOV_SIGNER_KEY="${GOV_SIGNER_KEY:-}" \
   GOV_API_TOKEN="${GOV_API_TOKEN:-dogtag-gov-demo-token}" \
@@ -112,19 +110,19 @@ ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority"
   run government-api ":44832" "$ROOT/target/release/government-api"
 
 echo "Starting portals (vite dev):"
-run admin-web ":39741" env VITE_DEMO_MODE=1 VITE_DOGTAG_SBT_ADDR="$SBT" pnpm --filter @dogtag/admin-web dev
-run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_SBT_ADDR="$SBT" VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/vet-web dev
-run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_SBT_ADDR="$SBT" VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/groomer-web dev
+run admin-web ":39741" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/admin-web dev
+run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/vet-web dev
+run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/groomer-web dev
 run government-web ":44831" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/government-web dev
-# OWNER (holder) wallet - the consumer front. No backend; its prover URL points at the prover svc
-# (:41875) and the verifier host comes from the /x/<token> link the owner pastes/scans.
-run owner-web ":45931" env VITE_OWNER_PROVER_URL="${PROVER_PUBLIC_URL:-http://localhost:41875}" pnpm --filter @dogtag/owner-web dev
+# OWNER (holder) wallet — local records, selective disclosure, and verification receipts. The native
+# apps own the owner-hidden scan/prove flow; the browser wallet has no backend or prover wiring.
+run owner-web ":45931" pnpm --filter @dogtag/owner-web dev
 
 echo
 echo "UP. Portals:  admin http://localhost:39741  vet http://localhost:41873  groomer http://localhost:43617  government http://localhost:44831  owner-wallet http://localhost:45931"
 echo "Backends:     admin :39742  vet :41874  groomer :43618  government :44832  prover :41875  indexer :46001   (ROAX chainId 135)"
 echo "Three-role showcase: scripts/e2e-roles.sh --live   (vet ISSUES -> government VERIFIES -> government ISSUES)"
 echo "Prover svc:   POST :41875/prove-consent  (32-bit-Android fallback; set PROVER_PUBLIC_URL to tunnel it)"
-echo "Owner wallet: http://localhost:45931  (Receive an issued wrapped doc -> Present a ZK proof to a verifier's /x/<token> link)"
+echo "Owner wallet: http://localhost:45931  (Receive a wrapped doc -> inspect receipts or share selected fields)"
 echo "Next: provision the fresh issuance/verification roles, then Issue -> Create QR -> scan on phone (docs/DEMO.md)."
 echo "For the PHONE: set its server base to this Mac's LAN IP (not localhost) — see docs/DEMO.md."

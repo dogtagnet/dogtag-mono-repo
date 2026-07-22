@@ -13,7 +13,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::app::{self, AppState, DOG_PROFILE};
+use crate::app::{AppState, DOG_PROFILE};
 use crate::auth::{self, keccak256_hex, ShareClaims};
 use crate::chain::{
     create_issuer_calldata, default_admin_role, delist_for_calldata, grant_issuer_role_calldata,
@@ -237,7 +237,7 @@ async fn admin_login(
 }
 
 // ============================================================================================
-// §4.1 Pets + mint
+// §4.1 Pet management (historical issuance fields are read-only)
 // ============================================================================================
 
 #[derive(Deserialize)]
@@ -303,7 +303,7 @@ async fn create_pet(
         root: None,
         mint_tx: None,
         sealed_doc: None,
-        // M7 provenance mirror (§4.2): populated at mint (see `mint_pet`), None until then.
+        // Retained for historical records; new pet rows are not issued by the admin backend.
         chain_id: None,
         protocol_version: None,
         verification_registry: None,
@@ -312,99 +312,6 @@ async fn create_pet(
     };
     st.store.put_pet(pet.clone()).await;
     ok(pet_json(pet))
-}
-
-async fn mint_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
-    let owner_id = match require_owner(&st, &headers).await {
-        Ok(o) => o,
-        Err(e) => return e,
-    };
-    let mut pet = match st.store.get_pet(&id).await {
-        Some(p) if p.owner_id == owner_id => p,
-        Some(_) => return err(StatusCode::FORBIDDEN, "not your pet"),
-        None => return err(StatusCode::NOT_FOUND, "pet not found"),
-    };
-    if pet.dog_tag_id.is_some() {
-        return err(StatusCode::CONFLICT, "already minted");
-    }
-    let owner = match st.store.get_owner(&owner_id).await {
-        Some(o) => o,
-        None => return err(StatusCode::NOT_FOUND, "owner not found"),
-    };
-    // allocate the non-personal dogTagId, build + wrap the DOG_PROFILE VC -> root.
-    let dog_tag_id = st.store.next_dog_tag_id().await.to_string();
-    let meta = app::profile_issuer_meta(&st.cfg);
-    // owner-session mint does not collect ownerIdentity; emit empty-string fields (schema only
-    // requires the keys present as strings).
-    let owner_identity = OwnerIdentity::default();
-    let vc = app::build_profile_vc(
-        &st.cfg,
-        &pet.name,
-        &pet.microchip,
-        &pet.profile,
-        &owner_identity,
-        &dog_tag_id,
-    );
-    let mut doc = match app::wrap_vc(meta, &vc) {
-        Ok(d) => d,
-        Err(e) => return err(StatusCode::BAD_REQUEST, &e),
-    };
-    // Stamp the M7 provenance block (§4.2), BESIDE R. `issuerClone` == the profile store (the SBT);
-    // `issuerSigner` is the central minting signer (== `DogTagSBT.issuerOf[id]`). Stamped before the
-    // seal so the sealed copy AND the queryable columns agree.
-    let issuer_signer = st
-        .chain
-        .signer_address(st.cfg.admin_signer_index)
-        .await
-        .unwrap_or_default();
-    doc.protocol = Some(app::protocol_meta(
-        &st.cfg,
-        &st.cfg.profile_document_store,
-        &issuer_signer,
-    ));
-    let root = doc.signature.merkle_root.clone();
-    // central protocol signer mints the SBT to the USER'S wallet.
-    let sent = match st
-        .chain
-        .mint(
-            st.cfg.admin_signer_index,
-            &st.cfg.sbt_addr,
-            &owner.wallet_address,
-            &dog_tag_id,
-            &root,
-        )
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("mint: {e}")),
-    };
-    // store the wrapped doc encrypted under a per-record DEK (erasure scope).
-    let sealed = match crypto::seal_json(st.vault.as_ref(), &doc).await {
-        Ok(s) => s,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "seal failed"),
-    };
-    pet.dog_tag_id = Some(dog_tag_id.clone());
-    pet.root = Some(root.clone());
-    pet.mint_tx = Some(sent.tx_hash.clone());
-    pet.sealed_doc = Some(sealed);
-    // M7 provenance mirror (§4.2): close the admin gap with queryable plaintext columns.
-    pet.chain_id = Some(st.cfg.chain_id);
-    pet.protocol_version = Some(dogtag_standard::wrap::LEVEL_A_VERSION.to_string());
-    pet.verification_registry = Some(st.cfg.verification_registry_addr.clone());
-    pet.issuer_addr = Some(st.cfg.profile_document_store.clone());
-    pet.issuer_signer = if issuer_signer.is_empty() {
-        None
-    } else {
-        Some(issuer_signer.clone())
-    };
-    st.store.put_pet(pet).await;
-    ok(json!({
-        "dogTagId": dog_tag_id,
-        "root": root,
-        "txHash": sent.tx_hash,
-        "ownerWallet": owner.wallet_address,
-        "recordType": DOG_PROFILE,
-    }))
 }
 
 // ============================================================================================
@@ -456,11 +363,18 @@ async fn import_credential(
         );
     }
     let dog_tag_id = crate::verify::dog_tag_id_of(&doc).unwrap_or_else(|| "unknown".to_string());
-    // M7 provenance (§4.4): project the imported doc's `protocol` block into queryable columns, or its
-    // Level-A default when absent (a pre-M7 doc self-routes to the old trio). `issuerSigner`'s default
-    // is the on-chain `issuedBy[R]`, not resolvable off-chain here -> left absent for pre-M7 imports
-    // (the live per-backend read is the P5 verify-path brick); a stamped block carries it directly.
-    let prov = doc.resolved_protocol(st.cfg.chain_id, &st.cfg.verification_registry_addr, "");
+    // Project the stamped unified protocol block into queryable columns. An unstamped document is
+    // assigned the single owner-hidden version/registry; the issuer clone comes from its envelope.
+    let prov = doc
+        .protocol
+        .clone()
+        .unwrap_or_else(|| dogtag_standard::wrap::ProtocolMeta {
+            chain_id: st.cfg.chain_id,
+            version: dogtag_standard::wrap::LEVEL_B_VERSION.to_string(),
+            verification_registry: st.cfg.verification_registry_addr.clone(),
+            issuer_clone: doc.issuer.document_store.clone(),
+            issuer_signer: String::new(),
+        });
     let sealed = match crypto::seal_json(st.vault.as_ref(), &body.wrapped_doc).await {
         Ok(s) => s,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "seal failed"),
@@ -568,38 +482,8 @@ async fn get_share(
 }
 
 // ============================================================================================
-// §4.1 verify/consent relay + receipts
+// §4.1 verification receipts
 // ============================================================================================
-
-#[derive(Deserialize)]
-struct VerifyConsentReq {
-    #[serde(rename = "sessionJwt")]
-    session_jwt: String,
-    consent: Value,
-    sig: String,
-    #[serde(default)]
-    mode: Option<String>,
-}
-
-async fn verify_consent(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<VerifyConsentReq>,
-) -> Resp {
-    let owner_id = match require_owner(&st, &headers).await {
-        Ok(o) => o,
-        Err(e) => return e,
-    };
-    crate::verify_relay::relay(
-        &st,
-        &owner_id,
-        body.session_jwt,
-        body.consent,
-        body.sig,
-        body.mode,
-    )
-    .await
-}
 
 async fn verify_receipts(State(st): State<AppState>, headers: HeaderMap) -> Resp {
     let owner_id = match require_owner(&st, &headers).await {
@@ -614,7 +498,7 @@ async fn verify_receipts(State(st): State<AppState>, headers: HeaderMap) -> Resp
         .map(|v| {
             json!({
                 "id": v.record_id, "dogTagId": v.dog_tag_id, "purpose": v.purpose,
-                "relayer": v.relayer, "mode": v.mode, "status": v.status,
+                "relayer": v.relayer, "status": v.status,
             })
         })
         .collect();
@@ -880,7 +764,8 @@ async fn approve_application(
         }
     }
     // dog-tag issuer onboarding: if this application is for the DOG_PROFILE record type, ALSO grant
-    // DogTagSBT.ISSUER_ROLE to each signer address so it can mint dog tags (`DogTagSBT.mint`). The
+    // DogTagSBTConsent.ISSUER_ROLE to each signer address so it can issue owner-hidden tags via
+    // `mintCustodial`. The
     // admin signer holds the SBT's DEFAULT_ADMIN_ROLE, so it can grantRole. Idempotent: skipped if the
     // address already holds the role. (The DOG_PROFILE IssuerRegistry whitelist entry above stays —
     // harmless.) Groomers have no DOG_PROFILE record type, so this is a no-op for them.
@@ -1610,7 +1495,7 @@ async fn dispatch_all(
 
 /// `POST /v1/admin/whitelist/grant` — grant an issuer/verifier capability directly. Whitelists the
 /// signer for the record type + each verify purpose, and (for DOG_PROFILE) grants DogTagSBT
-/// ISSUER_ROLE so it can mint — the same machinery `approve_application` runs, but for one signer and
+/// ISSUER_ROLE so it can call `mintCustodial` — the same machinery `approve_application` runs, but for one signer and
 /// decoupled from the application queue. Each write is a `GovernanceAction` (executed if the hosted
 /// key holds the authority, else proposed).
 async fn whitelist_grant(
@@ -1646,7 +1531,7 @@ async fn whitelist_grant(
         Err(e) => return e,
     };
 
-    // DOG_PROFILE onboarding: also grant DogTagSBT.ISSUER_ROLE (mint rights). Gated by the SBT's
+    // DOG_PROFILE onboarding: also grant DogTagSBTConsent.ISSUER_ROLE. Gated by the SBT's
     // DEFAULT_ADMIN authority (a distinct key post-Phase-2), so it too routes through GovernanceAction.
     // Idempotent: skipped when the signer already holds the role.
     let is_dog_tag_issuer = body
@@ -1971,14 +1856,12 @@ pub fn public_router(state: AppState) -> Router {
         .route("/v1/auth/login", post(login))
         // pets
         .route("/v1/pets", get(list_pets).post(create_pet))
-        .route("/v1/pets/:id/mint", post(mint_pet))
         // credentials
         .route("/v1/credentials", get(list_credentials))
         .route("/v1/credentials/import", post(import_credential))
         .route("/v1/share/:id", post(share_credential))
         .route("/share/:ref", get(get_share))
         // verify relay
-        .route("/v1/verify/consent", post(verify_consent))
         .route("/v1/verify/receipts", get(verify_receipts))
         // registry / discovery
         .route(

@@ -273,7 +273,6 @@ fn session_summary(s: &crate::store::VerifySession) -> Value {
         "sessionId": s.session_id,
         "recordType": s.record_type,
         "purpose": s.purpose,
-        "mode": s.mode,
         "status": s.status,
     })
 }

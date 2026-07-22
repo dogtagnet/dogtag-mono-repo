@@ -10,7 +10,7 @@ export interface StoredCredential {
   id: string;
   /** ISO timestamp the credential was added to the wallet. */
   addedAt: string;
-  /** the full wrapped document (the witness) — re-verifiable + presentable. */
+  /** the full wrapped document — re-verifiable, receipt-capable, and selectively disclosable. */
   wrappedDoc: WrappedDoc;
 }
 

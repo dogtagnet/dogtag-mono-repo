@@ -11,9 +11,7 @@
 //!   `unverifiedClaims` -> resolve the dogtag TRUST anchor -> `validate_discovery` (the FFI entry the
 //!   mobile app calls) -> PASS, then a LYING platform's tampered claims -> REFUSED on every axis.
 //!
-//! It also closes a coverage gap: `profile_issue.rs` asserts the `/p/` (issuance) convenience tier, but
-//! nothing asserted the `/x/` (verify) one — the more load-bearing of the two, since its `purpose` is the
-//! session's REAL verify purpose rather than the issuance record-type namespace.
+//! Both `/p/` (issuance) and `/x/` (verify) surfaces are covered.
 //!
 //! The anchor is built from `dogtag_prover::manifest::build` — an INDEPENDENT source of truth (the
 //! file-verified artifact descriptors + the recorded on-chain deployment), never an echo of the claims —
@@ -25,7 +23,6 @@ use axum::http::StatusCode;
 use common::*;
 use std::sync::Arc;
 use vet_api::chain::MemChain;
-use vet_api::prover::StubProver;
 use vet_api::verify::verify_key;
 
 use dogtag_standard::discovery::{
@@ -37,8 +34,7 @@ const ISSUER_REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
 const VACCINATION_ISSUER: &str = "0x00000000000000000000000000000000000000bb";
 /// The purpose the operator opens the session for — and, out-of-band, what the owner's app expects.
 const PURPOSE: &str = "GROOMING_INTAKE";
-/// Level-A is what this deployment serves today (`app::convenience_claims` stamps `LEVEL_A_VERSION`).
-const VERSION: &str = "dogtag-levela/1";
+const VERSION: &str = dogtag_standard::wrap::LEVEL_B_VERSION;
 
 /// Pull the one-time export TOKEN out of the export QR URL (`.../x/<token>?a=<relayer>`).
 fn token_from_qr(qr: &str) -> String {
@@ -48,7 +44,7 @@ fn token_from_qr(qr: &str) -> String {
 /// The dogtag-owned TRUST tier for the version this deployment serves, resolved the way an app would
 /// (P3 signed manifest / on-chain record), NOT from the platform's claims.
 fn dogtag_anchor() -> TrustedAnchor {
-    let m = dogtag_prover::manifest::build(VERSION).expect("Level-A is a known version");
+    let m = dogtag_prover::manifest::build(VERSION).expect("unified version is known");
     anchor_from_manifest(&m, true, true)
 }
 
@@ -73,20 +69,21 @@ fn report(label: &str, claims: &ConvenienceClaims, anchor: &TrustedAnchor, app_v
 /// against the dogtag anchor, and every tampered axis a lying platform could forge is REFUSED.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn verify_resolve_convenience_tier_is_validated_against_the_dogtag_anchor() {
-    // An HONESTLY-configured deployment: its VERIFICATION_REGISTRY_ADDR is the real Level-A registry,
+    // An honestly configured deployment uses the registry named by the unified manifest,
     // so the claims it emits should agree with dogtag's own anchor.
     let anchor = dogtag_anchor();
     let mem = MemChain::new();
-    let state = state_with_verify(
+    let mut state = state_with(
         Arc::new(mem.clone()),
         "memchain".to_string(),
         ISSUER_REGISTRY.to_string(),
-        anchor.verification_registry.clone(),
         VACCINATION_ISSUER.to_string(),
         "vet.example".to_string(),
         1,
-        Arc::new(StubProver),
     );
+    let mut cfg = (*state.cfg).clone();
+    cfg.verification_registry_consent_addr = anchor.verification_registry.clone();
+    state.cfg = Arc::new(cfg);
     let app = vet_api::router(state);
     let (_admin, op, relayer) = boot_custody(&app).await;
     mem.whitelist(ISSUER_REGISTRY, &verify_key(PURPOSE), &relayer);
@@ -97,7 +94,7 @@ async fn verify_resolve_convenience_tier_is_validated_against_the_dogtag_anchor(
         "POST",
         "/verify/session/start",
         Some(&op),
-        Some(serde_json::json!({"purpose": PURPOSE, "recordType": "VACCINATION", "mode": "zk"})),
+        Some(serde_json::json!({"purpose": PURPOSE, "recordType": "VACCINATION"})),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "verify session start: {b}");
@@ -110,8 +107,6 @@ async fn verify_resolve_convenience_tier_is_validated_against_the_dogtag_anchor(
     println!("\n=== GET /x/<token>  (verify resolve — what the owner's device receives) ===");
     println!("{}", serde_json::to_string_pretty(&meta).unwrap());
 
-    // Back-compat: the pre-P4 fields are untouched.
-    assert_eq!(meta["mode"], "zk", "existing resolve fields unchanged: {meta}");
     assert_eq!(meta["purpose"], PURPOSE, "existing resolve fields unchanged: {meta}");
 
     // The convenience tier is present, clearly labelled UNVERIFIED, and parses into the exact struct
@@ -227,16 +222,17 @@ async fn verify_resolve_convenience_tier_is_validated_against_the_dogtag_anchor(
 async fn issuance_resolve_convenience_tier_is_validated_against_the_dogtag_anchor() {
     let anchor = dogtag_anchor();
     let mem = MemChain::new();
-    let state = state_with_verify(
+    let mut state = state_with(
         Arc::new(mem.clone()),
         "memchain".to_string(),
         ISSUER_REGISTRY.to_string(),
-        anchor.verification_registry.clone(),
         VACCINATION_ISSUER.to_string(),
         "vet.example".to_string(),
         1,
-        Arc::new(StubProver),
     );
+    let mut cfg = (*state.cfg).clone();
+    cfg.verification_registry_consent_addr = anchor.verification_registry.clone();
+    state.cfg = Arc::new(cfg);
     let app = vet_api::router(state);
     let (_admin, op, _relayer) = boot_custody(&app).await;
 

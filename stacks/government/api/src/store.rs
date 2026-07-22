@@ -51,8 +51,7 @@ pub struct IssuedCredential {
     pub issuer_addr: String,
     /// M7 provenance mirror (§4.2), populated from the `WrappedDoc.protocol` block - persisted BESIDE
     /// `R`, never inside it. IMMUTABLE once set. `issuer_signer` is the on-chain `clone.issuedBy[R]`
-    /// (== this authority's issuing signer). `Option`/defaulted so rows written before M7 still load
-    /// (resolve the default via `WrappedDoc::resolved_protocol`).
+    /// (== this authority's issuing signer). `Option`/defaulted so older rows still load.
     #[serde(rename = "chainId", default, skip_serializing_if = "Option::is_none")]
     pub chain_id: Option<u64>,
     #[serde(

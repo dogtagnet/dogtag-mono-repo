@@ -25,7 +25,7 @@ const NAV: NavItem[] = [
   { key: "records", href: "/records", label: "Records", icon: ListChecks },
   { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
-  { key: "verify", href: "/verify", label: "Export", icon: ShieldCheck },
+  { key: "verify", href: "/verify", label: "Verification", icon: ShieldCheck },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

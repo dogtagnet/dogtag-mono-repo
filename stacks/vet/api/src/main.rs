@@ -12,7 +12,6 @@ use vet_api::calendar::{CalendarProvider, CentralClient, GoogleCalendar, Reqwest
 use vet_api::chain::AlloyChain;
 use vet_api::custody::Custody;
 use vet_api::oversight::{DisabledFeed, HttpOversightFeed, OversightFeed};
-use vet_api::prover::{ArkProver, ProverClient, StubProver};
 use vet_api::store::{MemStore, Store};
 
 #[tokio::main]
@@ -43,31 +42,14 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
-        verification_registry_addr: env(
-            "VERIFICATION_REGISTRY_ADDR",
-            "0x0000000000000000000000000000000000000000",
-        ),
-        // Level-B submit target. Separate from VERIFICATION_REGISTRY_ADDR, not an overload: both run
-        // side by side through the migration and their `recordVerificationZK` selectors differ.
         verification_registry_consent_addr: env(
             "VERIFICATION_REGISTRY_CONSENT_ADDR",
-            "0x0000000000000000000000000000000000000000",
-        ),
-        consent_key_registry_addr: env(
-            "CONSENT_KEY_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
         issuer_addrs,
         issuer_name: env("ISSUER_NAME", "DogTag Vet"),
         issuer_domain: env("ISSUER_DOMAIN", "vet.example"),
-        // DogTagSBT mint target (the vet signer must hold ISSUER_ROLE). PROFILE_DOCUMENT_STORE
-        // conventionally == SBT_ADDR (the SBT contract acts as the DOG_PROFILE document store).
-        sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
-        profile_document_store: {
-            let sbt = env("SBT_ADDR", "0x0000000000000000000000000000000000000000");
-            env("PROFILE_DOCUMENT_STORE", &sbt)
-        },
-        // Level-B (M-2) custodial issuance. Both default to the zero address and BOTH must be set for
+        // Owner-hidden custodial issuance. Both default to the zero address and BOTH must be set for
         // POST /profiles/issue/custodial-bind to accept a request — an unconfigured deployment fails
         // closed rather than half-issuing. Note PROFILE_ISSUER_ADDR must be a real DogTagIssuer clone,
         // NOT the SBT (see the Config doc): `issue(R)` on the SBT would revert.
@@ -137,59 +119,6 @@ async fn main() {
         cfg.central_hmac_secret.clone(),
     ));
 
-    // Choose the prover: if CIRCUITS_BUILD_DIR points at a circuits `build` dir, load the REAL
-    // ark-circom Groth16 prover; otherwise fall back to the StubProver (ZK control-flow only).
-    //
-    // WHICH artifacts the real prover loads comes from the version-keyed table (`artifact::resolve`),
-    // not from hard-coded filenames. PROTOCOL_VERSION names the version the REAL prover serves; unset
-    // ⇒ the current Level-A version, i.e. exactly the pre-M7 artifact set. It is resolved BEFORE the
-    // prover choice so an unknown version fails closed at boot whether or not a build dir is
-    // configured, rather than being silently discarded in stub mode. The StubProver serves the
-    // current Level-A version only (`ProverClient::version`'s default) and cannot stand in for
-    // another, so a resolvable PROTOCOL_VERSION only takes effect on the real-prover path.
-    //
-    // EXPECTED_ZKEY_SHA256, when set, overrides that version's pinned zkey hash so a production
-    // ceremony output (a different zkey) is a pure config swap — not a code change that would
-    // otherwise make this fail-closed boot path refuse to start.
-    let expected_zkey = std::env::var("EXPECTED_ZKEY_SHA256")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-    let requested_version = std::env::var("PROTOCOL_VERSION")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-    let descriptor = match dogtag_prover::artifact::resolve(requested_version.as_deref()) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("FATAL: PROTOCOL_VERSION names a version this build cannot prove: {e}");
-            std::process::exit(1);
-        }
-    };
-    let prover: Arc<dyn ProverClient> = match std::env::var("CIRCUITS_BUILD_DIR") {
-        Ok(dir) if !dir.is_empty() => {
-            match ArkProver::load_versioned(&dir, descriptor, expected_zkey.as_deref()) {
-                Ok(p) => {
-                    tracing::info!(
-                        "loaded real Groth16 prover from {dir} (version {}, zkey {})",
-                        p.version(),
-                        p.zkey_hash_hex()
-                    );
-                    Arc::new(p)
-                }
-                Err(e) => {
-                    // Fail-closed (audit M1): a configured real prover that fails to load must NOT
-                    // silently degrade to the StubProver (which emits zeroed proofs the chain would
-                    // reject). A prover-service whose whole job is real proofs has no business booting
-                    // without them.
-                    eprintln!(
-                        "FATAL: CIRCUITS_BUILD_DIR is set but the real Groth16 prover failed to load: {e}"
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
-        _ => Arc::new(StubProver),
-    };
-
     // Store selection: persistent MongoStore when MONGO_URI is set (fail-closed), else ephemeral MemStore
     // (demo/local — unchanged). Demo behavior is byte-for-byte preserved when MONGO_URI is unset/empty.
     let store: Arc<dyn Store> = build_store().await;
@@ -229,10 +158,7 @@ async fn main() {
     let state = AppState {
         store,
         chain: Arc::new(chain),
-        prover,
-        // The Level-B consent prover is loaded LAZILY on the first /prove-consent request (from the
-        // same CIRCUITS_BUILD_DIR the Level-A boot prover uses), so an instance serving Level-A never
-        // refuses to boot for want of consent artifacts (M7 §3.5, fail-closed per request not boot).
+        // The consent prover is loaded lazily on the first /prove-consent request.
         consent_prover: Arc::new(vet_api::prover::ConsentProver::from_env()),
         calendar,
         central,

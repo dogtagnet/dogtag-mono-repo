@@ -49,10 +49,10 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
-        // M7 §4.2 routing key; defaults to the deployed Level-A VerificationRegistry.
+        // Unified owner-hidden verification-registry routing key.
         verification_registry_addr: env(
             "VERIFICATION_REGISTRY_ADDR",
-            "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+            "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
         ),
         travel_clearance_issuer_addr: env(
             "TRAVEL_CLEARANCE_ISSUER_ADDR",

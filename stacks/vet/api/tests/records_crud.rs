@@ -108,15 +108,15 @@ async fn issue_stamps_m7_provenance_block_and_columns() {
 
     // mirrored columns (verification_registry mirrors the deployment config - zero in this harness).
     assert_eq!(rec["chain_id"], 135);
-    assert_eq!(rec["protocol_version"], "dogtag-levela/1");
-    assert_eq!(rec["verification_registry"], "0x0000000000000000000000000000000000000000");
+    assert_eq!(rec["protocol_version"], "dogtag-levelb/1");
+    assert_eq!(rec["verification_registry"], VREG_CONSENT_ADDR);
     let signer = rec["signer_address"].as_str().expect("signer set at confirm");
     assert_eq!(rec["issuer_signer"], signer, "issuer_signer mirrors the confirmed issuedBy[R]");
 
     // envelope block, beside R; issuerSigner patched to the authoritative signer at confirm.
     let block = &rec["wrapped_doc"]["protocol"];
     assert_eq!(block["chainId"], 135);
-    assert_eq!(block["version"], "dogtag-levela/1");
+    assert_eq!(block["version"], "dogtag-levelb/1");
     assert_eq!(
         block["issuerClone"].as_str().unwrap().to_lowercase(),
         rec["issuer_addr"].as_str().unwrap().to_lowercase()

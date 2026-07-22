@@ -6,11 +6,10 @@ import { isRootAnchored } from "../lib/chain";
 import { credentialStore } from "../lib/store";
 import { useCredentials } from "../lib/hooks";
 import { categoryIcon, categoryVar } from "../lib/ui";
-import type { OwnerWallet } from "../lib/wallet";
 
 type OnChain = "checking" | "valid" | "invalid" | "unknown";
 
-export function CredentialDetail({ wallet }: { wallet: OwnerWallet | null }) {
+export function CredentialDetail() {
   const { id = "" } = useParams();
   const decodedId = decodeURIComponent(id);
   const credentials = useCredentials();
@@ -139,16 +138,8 @@ export function CredentialDetail({ wallet }: { wallet: OwnerWallet | null }) {
             </Link>
           )}
           <Link
-            to={`/present?id=${encodeURIComponent(credential.id)}`}
-            className={`btn ${receiptCapable ? "secondary" : ""}`}
-            data-testid="detail-present"
-            aria-disabled={!wallet}
-          >
-            Present a proof →
-          </Link>
-          <Link
             to={`/share/${encodeURIComponent(credential.id)}`}
-            className="btn secondary"
+            className={`btn ${receiptCapable ? "secondary" : ""}`}
             data-testid="detail-share"
           >
             Share a redacted copy →
