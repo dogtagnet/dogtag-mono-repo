@@ -14,6 +14,8 @@ import org.json.JSONObject
 object RoaxRpc {
     const val DEFAULT_RPC = "https://devrpc.roax.net"
 
+    internal enum class ProfileRootObservation { Pending, Matched, Mismatch }
+
     /** 4-byte function selector = first 4 bytes of keccak256(canonical signature), `0x`-prefixed hex. */
     internal fun functionSelector(signature: String): String =
         "0x" + Keccak256.digest(signature.toByteArray(Charsets.US_ASCII)).take(4)
@@ -87,9 +89,24 @@ object RoaxRpc {
         if (dogTagSbt.isBlank() || dogTagId.isBlank()) return null
         val data = PROFILE_ROOT_SELECTOR + padUint(dogTagId)
         return when (val r = ethCall(rpcUrl, dogTagSbt, data)) {
-            is CallResult.Ok -> "0x" + r.hex.padStart(64, '0')
+            is CallResult.Ok -> normalizeBytes32(r.hex)
             is CallResult.Err -> null
         }
+    }
+
+    internal fun normalizeBytes32(value: String): String? {
+        val raw = if (value.startsWith("0x", ignoreCase = true)) value.substring(2) else value
+        if (raw.length != 64 || raw.any { it !in '0'..'9' && it.lowercaseChar() !in 'a'..'f' }) {
+            return null
+        }
+        return "0x${raw.lowercase()}"
+    }
+
+    internal fun classifyProfileRoot(chainRoot: String?, expectedRoot: String): ProfileRootObservation {
+        val observed = chainRoot?.let(::normalizeBytes32) ?: return ProfileRootObservation.Pending
+        if (observed.drop(2).all { it == '0' }) return ProfileRootObservation.Pending
+        val expected = normalizeBytes32(expectedRoot) ?: return ProfileRootObservation.Mismatch
+        return if (observed == expected) ProfileRootObservation.Matched else ProfileRootObservation.Mismatch
     }
 
     /**

@@ -72,6 +72,10 @@ pub const RESERVED_KEY_PATH_FIELDS: [(&str, &str); 3] = [
     ),
 ];
 
+pub(crate) const CONSENT_TREE_DEPTH: usize = 6;
+pub(crate) const MAX_PROFILE_ATTRIBUTES: usize =
+    (1usize << CONSENT_TREE_DEPTH) - RESERVED_KEY_PATH_FIELDS.len();
+
 /// Domain for the owner-secret KDF. Versioned: bumping `v1` re-derives every secret (and thus every
 /// `R`), so it must never change without a migration - `profileRoot` is write-once on-chain.
 const OWNER_SECRET_DOMAIN: &[u8] = b"DogTag/owner-secret/v1";
@@ -208,6 +212,12 @@ pub fn build_profile_tree(
     attributes: &[AttributeLeaf],
 ) -> Result<ProfileTree, DogTagError> {
     check_seed(seed)?;
+    if attributes.len() > MAX_PROFILE_ATTRIBUTES {
+        return Err(DogTagError::Other(format!(
+            "too many profile attributes: {} > {MAX_PROFILE_ATTRIBUTES}",
+            attributes.len()
+        )));
+    }
 
     let owner_secret = derive_owner_secret(seed, dog_tag_id)?;
     let consent = crate::eddsa::derive_babyjub_consent_key_per_tag(seed, dog_tag_id);
@@ -342,6 +352,45 @@ mod tests {
                 value: TypedScalar::Str("Shiba Inu".to_string()),
             },
         ]
+    }
+
+    fn capacity_attrs(count: usize) -> Vec<AttributeLeaf> {
+        (0..count)
+            .map(|i| AttributeLeaf {
+                key_path: format!("credentialSubject.extra[{i}]"),
+                salt: [(i % 256) as u8; SALT_LEN],
+                value: TypedScalar::Str(format!("value-{i}")),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn enforces_consent_tree_capacity_before_issuance() {
+        let tree = build_profile_tree(
+            SEED,
+            tag_id(),
+            &addr(),
+            &capacity_attrs(MAX_PROFILE_ATTRIBUTES),
+        )
+        .unwrap();
+        assert_eq!(tree.tree.layers[0].len(), 1usize << CONSENT_TREE_DEPTH);
+
+        let err = match build_profile_tree(
+            SEED,
+            tag_id(),
+            &addr(),
+            &capacity_attrs(MAX_PROFILE_ATTRIBUTES + 1),
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("an oversized profile tree must be rejected"),
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "too many profile attributes: {} > {MAX_PROFILE_ATTRIBUTES}",
+                MAX_PROFILE_ATTRIBUTES + 1
+            )
+        );
     }
 
     /// Drift guard: the SDK must derive exactly the keyPath fields `consent.circom` hard-codes.

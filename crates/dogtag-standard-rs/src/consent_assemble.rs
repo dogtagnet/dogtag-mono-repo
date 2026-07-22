@@ -38,12 +38,12 @@ use crate::field::{field_from_scalar_bytes, field_from_uint};
 use crate::leaf::field_of_value;
 use crate::merkle::{merkle_proof, ProofStep};
 use crate::poseidon::{poseidon, DS_NULLIFIER};
-use crate::profile_tree::{build_profile_tree, AttributeLeaf};
+use crate::profile_tree::{build_profile_tree, AttributeLeaf, CONSENT_TREE_DEPTH};
 use crate::prover_assemble::fe_to_dec;
 use crate::types::TypedScalar;
 
 /// Inclusion-path depth — `component main = DogTagConsent(6)`.
-pub const DEPTH: usize = 6;
+pub const DEPTH: usize = CONSENT_TREE_DEPTH;
 
 /// The disclosed + owner-private witness a consent proof is assembled from.
 ///

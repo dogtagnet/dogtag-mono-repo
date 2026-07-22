@@ -370,12 +370,14 @@ private fun IssuePanel(
                                         val chainRoot = withContext(Dispatchers.IO) {
                                             RoaxRpc.profileRoot(AppConfig.ROAX_RPC, roax.dogTagSbt, onchainId)
                                         }
-                                        if (chainRoot != null &&
-                                            chainRoot.removePrefix("0x").any { it != '0' } &&
-                                            chainRoot.equals(root, ignoreCase = true)
-                                        ) {
-                                            anchored = true
-                                            break
+                                        when (RoaxRpc.classifyProfileRoot(chainRoot, root)) {
+                                            RoaxRpc.ProfileRootObservation.Pending -> Unit
+                                            RoaxRpc.ProfileRootObservation.Matched -> {
+                                                anchored = true
+                                                break
+                                            }
+                                            RoaxRpc.ProfileRootObservation.Mismatch ->
+                                                error("dog tag is already anchored to a different profile root")
                                         }
                                         kotlinx.coroutines.delay(delayMs)
                                         delayMs = minOf(delayMs + 500L, 5_000L)

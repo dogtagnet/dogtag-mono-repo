@@ -103,7 +103,9 @@ enum RoaxRpc {
         guard !dogTagSbt.isEmpty, !dogTagId.isEmpty else { return nil }
         let data = profileRootSelector + padUint(dogTagId)
         switch await ethCall(rpcUrl: rpcUrl, to: dogTagSbt, data: data) {
-        case let .success(hex): return "0x" + String(repeating: "0", count: max(0, 64 - hex.count)) + hex
+        case let .success(hex):
+            guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else { return nil }
+            return "0x" + hex.lowercased()
         case .failure: return nil
         }
     }
@@ -308,6 +310,12 @@ enum CentralApi {
         let bound: Bool
     }
 
+    enum CustodialBindResult {
+        case accepted(DogTagIssue)
+        case inconclusive
+        case rejected(statusCode: Int, body: String)
+    }
+
     static func resolveDogTagIssue(host: String, token: String) async -> DogTagIssueSession? {
         guard !token.isEmpty else { return nil }
         let resp = await Http.getJSON("\(host)/p/\(token)")
@@ -379,20 +387,33 @@ enum CentralApi {
 
     /// POST <host>/profiles/issue/custodial-bind {token, root}. The device wallet and signature never
     /// cross this boundary; ownership is the reserved secret triple committed inside `root`.
-    static func bindDogTagIssue(host: String, token: String, root: String) async -> DogTagIssue? {
-        guard !token.isEmpty, !root.isEmpty else { return nil }
+    static func bindDogTagIssue(host: String, token: String, root: String) async -> CustodialBindResult {
+        guard !token.isEmpty, !root.isEmpty else {
+            return .rejected(statusCode: -1, body: "missing token or root")
+        }
         let body: [String: Any] = ["token": token, "root": root]
         guard let raw = try? JSONSerialization.data(withJSONObject: body),
-              let bodyStr = String(data: raw, encoding: .utf8) else { return nil }
+              let bodyStr = String(data: raw, encoding: .utf8) else {
+            return .rejected(statusCode: -1, body: "could not encode request")
+        }
         let resp = await Http.postJSON("\(host)/profiles/issue/custodial-bind", body: bodyStr, timeout: 20)
-        guard resp.ok, let d = resp.body.data(using: .utf8),
-              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return nil }
-        return DogTagIssue(
-            dogTagId: jsonString(o["dogTagId"]),
-            root: jsonString(o["root"]),
+        if resp.code < 0 || resp.code == 410 { return .inconclusive }
+        guard resp.ok else { return .rejected(statusCode: resp.code, body: resp.body) }
+        guard let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
+            return .rejected(statusCode: resp.code, body: resp.body)
+        }
+        let dogTagId = jsonString(o["dogTagId"] ?? o["dog_tag_id"])
+        let returnedRoot = jsonString(o["root"] ?? o["R"])
+        guard !dogTagId.isEmpty, !returnedRoot.isEmpty else {
+            return .rejected(statusCode: resp.code, body: resp.body)
+        }
+        return .accepted(DogTagIssue(
+            dogTagId: dogTagId,
+            root: returnedRoot,
             txHash: jsonString(o["txHash"] ?? o["tx_hash"]),
             status: jsonString(o["status"]),
-            bound: (o["bound"] as? Bool) ?? false)
+            bound: (o["bound"] as? Bool) ?? false))
     }
 
     private static func jsonString(_ value: Any?) -> String {

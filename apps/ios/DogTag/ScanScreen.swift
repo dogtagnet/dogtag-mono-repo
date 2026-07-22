@@ -244,16 +244,23 @@ struct ScanScreen: View {
                     let root = try buildOrReuseIssueRoot(
                         session: session, seedHex: seedHex, ownerAddress: wallet.ethAddress)
                     await MainActor.run { status = "Sending the private root to your vet…" }
-                    let accepted = await CentralApi.bindDogTagIssue(
+                    let bindResult = await CentralApi.bindDogTagIssue(
                         host: host, token: token, root: root)
-                    if let accepted {
-                        if !accepted.dogTagId.isEmpty, accepted.dogTagId != session.dogTagId {
+                    var accepted: CentralApi.DogTagIssue? = nil
+                    switch bindResult {
+                    case let .accepted(result):
+                        accepted = result
+                        if result.dogTagId != session.dogTagId {
                             throw issueFailure("vet returned a different dogTagId")
                         }
-                        if !accepted.root.isEmpty,
-                           accepted.root.caseInsensitiveCompare(root) != .orderedSame {
+                        if result.root.caseInsensitiveCompare(root) != .orderedSame {
                             throw issueFailure("vet returned a different profile root")
                         }
+                    case .inconclusive:
+                        accepted = nil
+                    case let .rejected(statusCode, body):
+                        throw issueFailure(
+                            "custodial bind rejected (\(statusCode)): \(String(body.prefix(160)))")
                     }
 
                     // The HTTP response can be lost after the one-time token was consumed, and the
@@ -271,8 +278,11 @@ struct ScanScreen: View {
                     for _ in 0..<40 {
                         if let chainRoot = await RoaxRpc.profileRoot(
                             rpcUrl: AppConfig.roaxRpc, dogTagSbt: roax.dogTagSbt, dogTagId: onchainId),
-                           chainRoot.dropFirst(2).contains(where: { $0 != "0" }),
-                           chainRoot.caseInsensitiveCompare(root) == .orderedSame {
+                           chainRoot.dropFirst(2).contains(where: { $0 != "0" }) {
+                            guard chainRoot.caseInsensitiveCompare(root) == .orderedSame else {
+                                throw issueFailure(
+                                    "dog tag is already anchored to a different profile root")
+                            }
                             anchored = true
                             break
                         }
@@ -326,6 +336,9 @@ struct ScanScreen: View {
             guard existing.abandonedAt == nil else {
                 throw issueFailure("this dogTagId was retired and cannot be reused")
             }
+            guard existing.derivationVersion == ProfileTreeStore.derivationVersion else {
+                throw issueFailure("existing owner secret uses an unsupported derivation version")
+            }
             let metadataMatches = existing.attributes.count == requested.count
                 && zip(existing.attributes, requested).allSatisfy { stored, incoming in
                     stored.keyPath == incoming.keyPath
@@ -337,7 +350,7 @@ struct ScanScreen: View {
             guard matches else {
                 throw issueFailure("this dogTagId already has different private profile metadata")
             }
-            return existing.rootHex
+            return try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
         }
         let attributes = try requested.map { item -> ProfileTreeStore.BackedUpAttribute in
             let salted = try ProfileTreeStore.randomStringAttribute(
