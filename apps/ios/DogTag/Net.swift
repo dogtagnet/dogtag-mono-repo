@@ -401,12 +401,12 @@ enum CentralApi {
         guard resp.ok else { return .rejected(statusCode: resp.code, body: resp.body) }
         guard let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
-            return .rejected(statusCode: resp.code, body: resp.body)
+            return .inconclusive
         }
         let dogTagId = jsonString(o["dogTagId"] ?? o["dog_tag_id"])
         let returnedRoot = jsonString(o["root"] ?? o["R"])
         guard !dogTagId.isEmpty, !returnedRoot.isEmpty else {
-            return .rejected(statusCode: resp.code, body: resp.body)
+            return .inconclusive
         }
         return .accepted(DogTagIssue(
             dogTagId: dogTagId,
