@@ -88,8 +88,12 @@ forge script script/Deploy.s.sol:Deploy \
 ```
 
 Deployed set (order in `Deploy.s.sol`): `IssuerRegistry` → `DogTagIssuer` (clone impl) →
-`DogTagIssuerFactory` → `DogTagSBT` → `ConsentKeyRegistry` → `PoseidonT6` (circomlib-exact creation
-bytecode, `POSEIDON6_INITCODE`) → `VerificationRegistry`.
+`DogTagIssuerFactory` — **the shared base only**. The owner-hidden stack (`Groth16VerifierConsent` →
+`DogTagSBTConsent` → `VerificationRegistryConsent`) is deployed separately by
+`DeployCustodialIssuance.s.sol` (§4 covers the retired Level-A verifier this script no longer produces).
+The retired owner-revealing Level-A contracts (`DogTagSBT`/`ConsentKeyRegistry`/`PoseidonT6`/`VerificationRegistry`)
+are no longer deployed by any script; their earlier instances remain in the deployment ledger for
+historical reads.
 
 ### Verify on Blockscout
 
@@ -143,6 +147,15 @@ forge verify-contract --rpc-url $ROAX_RPC \
    `docs/CEREMONY_RUNBOOK.md` (concise version: `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.
 
 ## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
+
+> **RETIRED / HISTORICAL - not runnable.**
+> This section covers the Level-A `verification.circom` ceremony + verifier deploy, whose circuit,
+> ceremony scripts (`scripts/ceremony.sh`, `scripts/setup.sh`), `npm run compile-circuit` /
+> `npm run build-circuit`, and the `Groth16Verifier`/`VerificationRegistry` contract sources were removed
+> when the owner-revealing layer was retired. The commands and `circuits/verification.circom` reference
+> below no longer resolve and are kept only as provenance for the already-deployed Level-A verifier. The
+> live owner-hidden consent ceremony is `circuits/scripts/ceremony-consent.sh` (transcript
+> `docs/CEREMONY_TRANSCRIPT.consent.md`).
 
 The Groth16 circuit (`circuits/`) needs a per-circuit phase-2 trusted setup. **The dev `.zkey` shipped
 for tests is NOT production** — using it would let anyone forge ZK proofs.

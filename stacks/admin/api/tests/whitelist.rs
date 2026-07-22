@@ -28,6 +28,8 @@ const ACC0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 // two issuer signer addresses (anvil accounts 1 and 2) — one issuer ENTITY, many addresses.
 const ADDR1: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const ADDR2: &str = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+// neutral custodian for the owner-hidden SBT constructor (anvil account 9).
+const CUSTODIAN: &str = "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720";
 
 struct Anvil {
     child: Child,
@@ -187,7 +189,7 @@ async fn anvil_whitelist_multi_address() {
 
     // deploy the contract set (IssuerRegistry with ACC0 as admin multisig -> WHITELIST_ADMIN).
     let registry = forge_create(&rpc, "src/IssuerRegistry.sol:IssuerRegistry", &[ACC0]);
-    let sbt = forge_create(&rpc, "src/DogTagSBT.sol:DogTagSBT", &[ACC0]);
+    let sbt = forge_create(&rpc, "src/DogTagSBTConsent.sol:DogTagSBTConsent", &[ACC0, CUSTODIAN]);
     // (factory/impl are part of the issuance set; not needed for the whitelist assertions.)
 
     let rt_vacc = record_type_key("VACCINATION");

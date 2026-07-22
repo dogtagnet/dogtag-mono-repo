@@ -213,8 +213,8 @@ cp circuits/build/consent.graph      apps/android/app/src/main/assets/consent.gr
 ```
 
 **Building the witness graphs.** Neither graph is committed and no in-repo script emits one: the
-`.graph` format is produced by iden3's `build-circuit` binary (NOT the `npm run build-circuit` dev
-setup, and NOT in the published `circom-witnesscalc` crate). Build each from its circom source the
+`.graph` format is produced by iden3's `build-circuit` binary (NOT the removed `npm run build-circuit`
+dev setup, and NOT in the published `circom-witnesscalc` crate). Build each from its circom source the
 same way — for Level-B:
 
 ```bash

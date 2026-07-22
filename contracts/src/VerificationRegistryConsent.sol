@@ -5,7 +5,7 @@ import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 
-/// @notice The M3 Level-B consent verifier (`Groth16VerifierConsent`), pub = 7 signals.
+/// @notice The frozen-ceremony consent verifier (`Groth16VerifierConsent`), pub = 7 signals.
 interface IGroth16VerifierConsent {
     function verifyProof(
         uint256[2] calldata a,
@@ -23,9 +23,9 @@ interface IDogTagIssuer {
     function isValid(bytes32 root) external view returns (bool);
 }
 
-/// @notice Level-B reads `profileRoot` for the tag<->root binding and `ownerOf` for token EXISTENCE
-/// only - never for owner IDENTITY (D1: the tag is minted to a neutral custodian, so `ownerOf` carries
-/// no owner meaning and must never gate verification by comparison).
+/// @notice Owner-hidden verification reads `profileRoot` for the tag<->root binding and `ownerOf` for
+/// token EXISTENCE only - never for owner IDENTITY (D1: the tag is minted to a neutral custodian, so
+/// `ownerOf` carries no owner meaning and must never gate verification by comparison).
 interface IDogTagSBT {
     function profileRoot(uint256 tokenId) external view returns (bytes32);
     function ownerOf(uint256 tokenId) external view returns (address);
@@ -35,28 +35,25 @@ interface IRootIndex {
     function rootIssuer(bytes32 root) external view returns (address);
 }
 
-/// @title VerificationRegistryConsent — Level-B owner-blind proof-of-verification (M4).
+/// @title VerificationRegistryConsent — owner-blind proof-of-verification.
 /// @notice Records a verification from a `DogTagConsent` (circuits/consent.circom) Groth16 proof that a
 /// HIDDEN owner consented to a DISCLOSED relayer for a DISCLOSED purpose. The owner never appears —
 /// not in the public signals, not in storage, not in the event.
 ///
-/// Spec: `dogtag-zkverify-z2/level-b-spec.md` §"Verify (M2 circuit + M4 registry)". This contract is
-/// the M4 half: verify vs the new VK, bind `R == profileRoot(dogTagId)`, consume the nullifier, emit an
-/// owner-blind `Verified`, and carry NO owner-IDENTITY checks - no `ownerOf == subject`, no `keyOf`.
+/// The registry verifies against the frozen VK, binds `R == profileRoot(dogTagId)`, consumes the
+/// nullifier, emits an owner-blind `Verified`, and carries NO owner-IDENTITY checks - no
+/// `ownerOf == subject`, no `keyOf`.
 /// (`ownerOf` IS called, but purely as a token-existence gate whose return value is discarded; see the
 /// burn note in `recordVerificationZK`.)
 ///
-/// @dev DELIBERATELY SEPARATE from the Level-A `VerificationRegistry` (still live on ROAX at
-/// 0x4E2f0996..., still serving the ECDSA + Level-A ZK flow until M7 cuts the apps over). Level-A is
-/// FROZEN, not edited — the same pattern M2 used for `verification.circom` and M3 for
-/// `Groth16Verifier`. Differences from Level-A, all forced by the owner-blind model:
+/// @dev The owner-blind model structurally removes the retired owner-revealing surfaces:
 ///   - NO ECDSA `recordVerification` path: it COMPARES `ownerOf(dogTagId) == subject`, and under D1
 ///     (custodial mint) `ownerOf` resolves to the custodian and can never match a real owner. It is the
 ///     owner-identity COMPARISON that is structurally dead here, not the `ownerOf` read itself (which
-///     this registry still makes, value discarded, as an existence gate). Level-B consent is proven
-///     in-ZK or not at all. Legacy ECDSA verification stays on the Level-A registry.
+///     this registry still makes, value discarded, as an existence gate). Consent is proven in-ZK or
+///     not at all.
 ///   - NO `ConsentKeyRegistry` (D2: the consent key moved INTO the tree, so `keyOf` is retired).
-///   - NO on-chain Poseidon6: Level-A derived the nullifier on-chain from `subject`; here the nullifier
+///   - NO on-chain Poseidon6: the retired path derived the nullifier on-chain from `subject`; here it
 ///     is a public signal the circuit binds to the hidden `ownerSecret` (D5).
 contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     uint256 internal constant SNARK_SCALAR_FIELD =
@@ -68,8 +65,8 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
     uint256 internal constant ZK_TIMELOCK = 2 days;
 
     // Art. 9: SERVICE_ATTESTATION has no on-chain root → NOT verifiable on-chain (§11.9(h)).
-    // REDUCED mod r, unlike Level-A's raw `keccak256("SERVICE_ATTESTATION")`. `recordType` is a public
-    // SIGNAL here, so it is always < r, while the raw keccak (0xa757...ed43) EXCEEDS r — comparing
+    // REDUCED mod r, unlike the retired path's raw `keccak256("SERVICE_ATTESTATION")`. `recordType` is
+    // a public SIGNAL here, so it is always < r, while the raw keccak (0xa757...ed43) EXCEEDS r — comparing
     // against the raw constant could never match and would silently make this guard dead code.
     // = keccak256("SERVICE_ATTESTATION") % r; asserted against the raw keccak in the test suite.
     uint256 internal constant SERVICE_ATTESTATION_FIELD =
@@ -99,9 +96,8 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
 
     /// @notice Owner-blind (spec §"Owner-blind events"): `subject` is GONE — emitting it would undo the
     /// circuit's whole purpose. `deadline` replaces it so a consumer can still bound the consent window.
-    /// @dev Same NAME but a different signature from the Level-A `Verified` (which carried `subject`),
-    /// hence a different topic0. The two never collide on one address: this event only ever comes from a
-    /// Level-B registry. The oversight indexer learned this topic0 in M8 (additive dual-decode).
+    /// @dev The signature contains no owner/subject field; its topic0 therefore commits to the
+    /// owner-hidden event shape expected by consumers.
     event Verified(
         uint256 indexed dogTagId,
         address indexed relayer,
@@ -127,8 +123,9 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
         return keccak256(abi.encode("VERIFY:", purpose));
     }
 
-    /// @notice Level-B ZK verify: pub = [dogTagId, purpose, relayer, nullifier, R, recordType, deadline].
-    /// @dev `recordType`/`deadline` are PUBLIC SIGNALS now (they were unbound calldata args in Level-A),
+    /// @notice Owner-hidden ZK verify:
+    /// pub = [dogTagId, purpose, relayer, nullifier, R, recordType, deadline].
+    /// @dev `recordType`/`deadline` are PUBLIC SIGNALS, rather than unbound calldata arguments,
     /// so both are cryptographically bound to the proof rather than relayer-supplied. `recordType` is
     /// nonetheless PROVER-asserted, not consent-signed (it is not in the EdDSA message `M` nor the
     /// nullifier): only the owner's app can build this proof, so the app — not the relayer — chooses it.
@@ -144,7 +141,7 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
         for (uint256 i; i < 7; i++) {
             require(pub[i] < SNARK_SCALAR_FIELD, "!field");
         }
-        // L1: `relayer` is the only address-typed signal in Level-B (`subject` is gone). It must fit in
+        // L1: `relayer` is the only address-typed signal (`subject` is absent). It must fit in
         // 160 bits so the `uint160` narrowing below cannot alias msg.sender via `pub = addr + k·2^160`.
         require(pub[P_RELAYER] < TWO_POW_160, "addr range");
 
@@ -157,36 +154,35 @@ contract VerificationRegistryConsent is AccessControlDefaultAdminRules {
             );
         }
 
-        // THE Level-B binding (spec §"Verify"): the proof's root must be THIS tag's on-chain root. The
+        // The owner-hidden binding: the proof's root must be THIS tag's on-chain root. The
         // circuit deliberately does NOT bind dogTagId <-> R, so this is the ONLY place it is checked.
         // Without it a prover could fold a tree they fully control and consent as any dogTagId.
         require(bytes32(pub[P_ROOT]) == sbt.profileRoot(pub[P_DOGTAGID]), "R !profileRoot");
 
-        // Token-existence gate - fails closed on burn/GDPR-erasure. `DogTagSBT.burn` (DEFAULT_ADMIN,
+        // Token-existence gate - fails closed on burn/GDPR-erasure. `DogTagSBTConsent.burn` (DEFAULT_ADMIN,
         // erasure-only) calls `_burn` but never clears `profileRoot[id]`, and `profileRoot` is a plain
         // mapping read that survives the burn - so the binding above still passes for an erased tag.
         // Without this call an erased tag keeps emitting `Verified` until someone SEPARATELY calls
-        // `revoke(R)`. Level-A failed closed here only as a side effect of its `ownerOf == subject`
-        // check; dropping that comparison (correctly, per D1) dropped the erasure gate with it.
+        // `revoke(R)`. The explicit existence read preserves this erasure gate without comparing an owner.
         // OWNER-BLIND: existence ONLY. OZ `ownerOf` is `_requireOwned`, so it REVERTS
         // (ERC721NonexistentToken) on a burned token - that revert IS the check. The return value is
         // DISCARDED and MUST NEVER be compared to anything: under D1 it is the neutral custodian, so it
-        // says nothing about the owner. Comparing it would reintroduce exactly what Level-B removes.
+        // says nothing about the owner. Comparing it would reintroduce exactly what this model removes.
         sbt.ownerOf(pub[P_DOGTAGID]);
 
         require(zkVerifier.verifyProof(a, b, c, pub), "bad proof");
 
         // D5: the nullifier is a PUBLIC SIGNAL bound to the hidden ownerSecret + consentNonce — never
-        // derived on-chain (Level-A hashed it from `subject`, which Level-B does not have). Replaying one
+        // derived on-chain from `subject`, which this model does not expose. Replaying one
         // signed consent repeats its nullifier and is rejected; a fresh nonce mints a new one and passes.
         bytes32 nf = bytes32(pub[P_NULLIFIER]);
         require(!consumed[nf], "replayed");
         consumed[nf] = true;
 
         // Revocation (§11.10(a)): resolve the issuing clone FROM the root and re-check validity, so a
-        // revoked tag stops verifying. Level-B keeps this Level-A protection unchanged.
+        // revoked tag stops verifying.
         // NOTE (M5): issuance MUST still `issue(R)` the per-tag root into a DogTagIssuer clone, not only
-        // `setProfileRoot`, or every Level-B verify reverts here as "unknown root".
+        // `mintCustodial`, or every verification reverts here as "unknown root".
         address clone = rootIndex.rootIssuer(bytes32(pub[P_ROOT]));
         require(clone != address(0), "unknown root");
         require(IDogTagIssuer(clone).isValid(bytes32(pub[P_ROOT])), "cred !valid");

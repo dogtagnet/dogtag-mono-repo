@@ -1,6 +1,6 @@
 # ProtocolRegistry deploy + publish runbook (M-4)
 
-Deploying the `ProtocolRegistry` and publishing the `dogtag-levela/1` + `dogtag-levelb/1` records.
+Deploying the `ProtocolRegistry` and publishing the single owner-hidden `dogtag-levelb/1` record.
 
 **Status: NOT YET RUN.**
 `ProtocolRegistry` is absent from `contracts/deployments/roax.json`, so no anchor exists on ROAX today.
@@ -80,8 +80,9 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
   --rpc-url $ROAX_RPC --broadcast --legacy --private-key $PUBLISHER_KEY
 ```
 
-This stages **six** records in one batch — both contract sets, both artifact sets, and both bindings.
-Their timelocks run **concurrently**, so this is still a two-phase rollout, not six sequential waits.
+This stages **three** records in one batch — the `dogtag-levelb/1` contract set, its artifact set, and
+their binding. Their timelocks run **concurrently**, so this is still a two-phase rollout, not three
+sequential waits.
 On the ROAX zero-delay deployment, every ETA equals the proposal block timestamp.
 
 The script prints each ETA. Record them; Phase 2 is invalid before the latest one elapses.
@@ -95,7 +96,7 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
 
 Sets are executed before bindings, because `executeArtifactBinding` requires both sides to already be
 published. With the ROAX zero-delay deploy, run this immediately after Step 2 confirms. Mainnet must
-wait the full 2 days. The script echoes back `active` and `minAppVersion` for both levels — check them.
+wait the full 2 days. The script echoes back `active` and `minAppVersion` for `dogtag-levelb/1` — check them.
 
 ## Verification
 

@@ -181,8 +181,7 @@ need the proving key + witness graph present in `circuits/build/`:
 | `circuits/build/verification.graph` | ~3 MB | prover-service witness assembly **and** vendored into each app build |
 
 The zkey is **gitignored in the apps**, so it must be vendored into each app **every build** (see
-[MOBILE_BUILD.md](./MOBILE_BUILD.md)). If `circuits/build/` is empty, regenerate it with
-`pnpm --filter @dogtag/circuits build-circuit` (runs `circuits/scripts/setup.sh`; uses `snarkjs`).
+[MOBILE_BUILD.md](./MOBILE_BUILD.md)).
 
 > **M-4 (Level-B):** each app now *also* bundles the owner-hidden consent pair `consent_final.zkey` +
 > `consent.graph` (version `dogtag-levelb/1`). The consent zkey is **committed** under `circuits/build/`

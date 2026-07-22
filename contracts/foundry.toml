@@ -9,11 +9,10 @@ evm_version = "paris"          # §13.1 M-4: consistent until ROAX PUSH0 confirm
 optimizer = true
 optimizer_runs = 200
 fs_permissions = [
-    { access = "read", path = "../circuits/poseidon-vectors.json" },
-    { access = "read", path = "test/poseidon6.initcode" },
-    { access = "read", path = "test/zk-fixture.json" },
     { access = "read", path = "test/consent-fixture.json" },
     { access = "read", path = "test/device-profile-root.json" },
+    { access = "read", path = "src" },
+    { access = "read", path = "out" },
     # ProtocolRegistry pin-verification test hashes the committed proving artifacts (M7 P3).
     { access = "read", path = "../circuits/build" },
     { access = "read-write", path = "deployments" },

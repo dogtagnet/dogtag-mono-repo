@@ -610,8 +610,8 @@ fn push_consent_inputs(
 }
 
 impl ProveInputs {
-    /// Build [`ProveInputs`] from the JSON object produced by the circuits'
-    /// `gen-zk-fixture.mjs` input builder (all string-valued; arrays of length `N`).
+    /// Build [`ProveInputs`] from the Level-A circuit-input JSON object
+    /// (all string-valued; arrays of length `N`; see [`push_named_inputs`]).
     ///
     /// Useful for tests / cross-checking against the snarkjs pipeline.
     pub fn from_circuit_input_json(v: &serde_json::Value) -> Result<Self, ProverError> {

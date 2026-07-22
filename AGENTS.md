@@ -34,15 +34,24 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
   always passes `--features prover`, and it checks the artifacts from the SHELL - where a `::error::`
   line is actually parsed and a non-zero exit is a real failure - naming the missing artifact. An
   annotation printed from inside the test could not work: libtest captures stdout for PASSING tests.
-  It is deliberately **not** in `make test` (like `test-consent` / `test-circuit`), since a normal
+  It is deliberately **not** in `make test` (like `test-consent`), since a normal
   checkout has no `consent.graph` and the gate fails closed. The complementary in-test leg stays:
   **`DOGTAG_REQUIRE_ZK_ARTIFACTS=1`** turns the skip into a panic - set it wherever artifacts are
   expected, since libtest DOES print captured output for failing tests. Note no GitHub workflow runs
   `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 71 tests incl. `ZkIntegration.t.sol` and `ConsentRegistry.t.sol` (both verify a real Groth16 proof on-chain - Level-A and Level-B respectively), `Verification.t.sol`, and `GovernanceMigration.t.sol` (EOA→multisig hand-off). Use `forge test`, **not** bare `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency closure and is green.
-- `cd circuits && node scripts/test-circuit.mjs` — generates REAL Groth16 proofs (leaf counts 1..24) + negative tests. Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`. Slow (large r1cs witness gen).
+- `cd contracts && forge test` - 83 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+  and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
+  exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
+  version on both registry axes; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
+  subject-bearing `Verified` ABI. Use `forge test`, **not** bare `forge build`: a bare full build tries
+  to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
+  aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project
+  error. `forge test` only compiles the real dependency closure and is green.
+- `cd circuits && pnpm test-consent` — generates real `DogTagConsent` Groth16 proofs across multiple
+  tree sizes, asserts the frozen seven-signal order and SDK root parity, and runs the negative tests.
+  Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`.
 - `make parity` — the Poseidon anchor gate; `make test` — parity + TS + Rust + contracts.
 - `cd apps/android && gradle test` - the JVM unit suites (`RoaxRpcSelectorTest`, `QrPayloadTest`,
   `PublicSignalIndexTest`, `ZkeyAssetTest`, `ProfileTreeParityTest`, `OwnerSecretRecordsTest`,
@@ -67,14 +76,9 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
   scheme are guarded by LOCAL runs only - including the QR-trap regression they were written for. Run
   them by hand before shipping mobile changes. (Dispatch-only CI is a standing decision, not an
   oversight; broadening it is captain-gated.)
-- `cargo test -p vet-api --test verify_onchain` — on-chain integration (self-spawns anvil). The ZK-path
-  test (`zk_path_records_verified_onchain`, real Groth16 proof, ~270s) needs forge/cast/anvil on PATH AND
-  the JS toolchain built first: `pnpm install` in `circuits/` plus `pnpm install && pnpm run build` in
-  `packages/dogtag-standard-ts/` (`crates/dogtag-prover-rs/tests/gen_input.mjs` imports its `dist/`). It
-  does NOT skip gracefully when those are missing.
 
 ### Sharp edges learned
-- **The parity gate is `circuits/scripts/gen-vectors.mjs`.** It is the source of truth: it computes the circom witness (reference-of-record) and cross-checks `poseidon-lite` (TS) and `circomlibjs`, then writes `circuits/poseidon-vectors.json` which Rust (`sdk_parity.rs`/`poseidon_parity.rs`) and Solidity (`PoseidonParity.t.sol`) assert. The "4-language" gate is the union of `make parity` + `test-rs` + `test-contracts`. (`circuits/scripts/check-ts.mjs` was referenced by `package.json` but never existed; it was removed — `gen-vectors.mjs` already covers TS↔circom.)
+- **The parity gate is `circuits/scripts/gen-vectors.mjs`.** It is the source of truth: it computes the circom witness (reference-of-record) and cross-checks `poseidon-lite` (TS) and `circomlibjs`, then writes `circuits/poseidon-vectors.json` which Rust (`sdk_parity.rs`/`poseidon_parity.rs`) asserts. The parity gate is now the union of `make parity` + `test-rs` (the Solidity `PoseidonParity.t.sol` leg was retired with the owner-revealing layer; the owner-hidden `VerificationRegistryConsent` computes no on-chain Poseidon). (`circuits/scripts/check-ts.mjs` was referenced by `package.json` but never existed; it was removed — `gen-vectors.mjs` already covers TS↔circom.)
 - `gen-vectors.mjs` rewrites `poseidon-vectors.json` deterministically, so running `make parity` leaves the tree clean (no spurious diff).
 - `rust-analyzer` in this worktree can't find the proc-macro server and emits false `E0308`/`tokio::test` errors; trust `cargo`, not the IDE diagnostics.
 - Pre-existing harmless warning: unused import `BigInteger` in `crates/dogtag-standard-rs/src/bin/field-hash.rs`.
@@ -83,8 +87,20 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service. Its artifacts are **version-keyed** (`src/artifact.rs`) — see "Version-keyed proving artifacts".
-- `circuits` — Groth16 `DogTagVerification(N=24, depth=5)`: Poseidon-Merkle membership + EdDSA consent sig + nullifier + keyHash. Committed artifacts (`verification_final.zkey`, `.r1cs`, `.wasm`, vkey) are a **testnet self-run** trusted setup produced by `circuits/scripts/ceremony.sh` (public Hermez phase-1 ptau + 3 phase-2 contributions + a public drand beacon), recorded in `docs/CEREMONY_TRANSCRIPT.md`. All 3 contributions were run on our own infra, so it does **NOT** yet have the 1-of-N-independent-honest guarantee — it is a real ceremony process producing a **testnet-grade** key, to be re-run with ≥3 genuinely independent external contributors before mainnet. The phase-1 ptau is the public Hermez/Perpetual-PoT file, fetched from a mirror and cryptographically re-verified by `ceremony.sh init` (`snarkjs powersoftau verify`), so its trust does not depend on the download URL.
-- `contracts` — `IssuerRegistry`, `DogTagIssuer` clones + factory; the still-live legacy contracts `DogTagSBT` (ERC-5192; legacy, being retired to the owner-hidden stack), `VerificationRegistry` (real Groth16 verify, timelocked verifier swap; legacy, being retired to the owner-hidden stack), `ConsentKeyRegistry` (gasless meta-tx; legacy, being retired to the owner-hidden stack), and `Groth16Verifier` (snarkjs-generated; legacy, being retired to the owner-hidden stack); and the **owner-hidden target stack**: `DogTagSBTConsent` `0x96Cba458…` (write-once `profileRoot`, neutral custodial sink), `VerificationRegistryConsent` `0xb9B313C1…`, and `Groth16VerifierConsent` `0x272be146…`, deployed + bytecode/wiring verified on ROAX (chainId 135; addresses in `contracts/deployments/roax.json`). Today Level-A still serves live consumers and the owner-hidden device issuance call site is pending. Going forward, retire Level-A and converge every app/server/web/config/docs path on this owner-hidden stack; do not add new legacy consumers. The former M4 registry `0x53F988Ae…` is deprecated because its immutable `sbt` points at the mutable legacy SBT; see "M5 as-built" below.
+- `circuits` — the active source is Groth16 `DogTagConsent(6)`: reserved-owner-leaf Merkle membership,
+  EdDSA consent, proof-bound relayer/purpose, and a hidden-owner nullifier. Its seven public signals are
+  `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. `verification.circom` and its
+  fixture generators are retired; its retained build products and ceremony transcript remain
+  historical provenance and are not inputs to new builds. The consent VK/zkey remain active and frozen.
+- `contracts` — live source consists of the shared `IssuerRegistry`, `DogTagIssuer` implementation +
+  factory/root index, `ProtocolRegistry`, and `IERC5192`, plus `Groth16VerifierConsent`,
+  `DogTagSBTConsent` (write-once `profileRoot`, neutral custodial sink), and
+  `VerificationRegistryConsent`. `Deploy.s.sol` deploys only the shared base;
+  `DeployCustodialIssuance.s.sol` explicitly deploys the frozen-ceremony verifier before the SBT and
+  registry and repoints only the canonical ledger keys. The retired owner-revealing contract sources
+  and deploy scripts are gone; their already-deployed addresses remain solely in the deployment ledger
+  for historical reads. Protocol publication keeps the exact compatibility key `dogtag-levelb/1` and
+  publishes one contract set plus one independently rotatable artifact set and their binding.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. `GOV_DEMO_MODE=1` → `MemChain`+`MemStore` (no node/gas/Mongo, used by `tests/flow_memchain.rs`); live mode → `AlloyChain` (+ `GOV_SIGNER_KEY` to anchor). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -392,7 +408,7 @@ The dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B): a small read-most
 - **Resolvers read the axis they belong to.** `getContractSet(id)` is for anything checking trio addresses / verifier / circuitId; `getArtifactSet(id)` and `getActiveArtifactSet(contractSetId)` (which follows the binding) are for anything fetching a zkey or enforcing `minAppVersion`; `resolve(contractSetId)` returns both halves in one call. All fail closed on an unknown id, and artifact resolution fails closed with `no artifact binding` when a contract set has no artifacts bound yet (a valid intermediate rollout state).
 - **Pins are single-sourced from `crates/dogtag-prover-rs/src/artifact.rs`** (the descriptors, file-verified against `circuits/build/*` by the crate's `level_{a,b}_descriptor_pins_match_the_real_artifacts` tests, which stream-hash even the 24-64 MB zkeys). `contracts/script/ProtocolVersions.sol` reuses the SAME hex (the DRY source both the publish script AND `ProtocolRegistry.t.sol` import). The Solidity test can only re-hash the ~4 MB `.wasm` in-EVM (`vm.readFileBinary` MemoryOOGs at the 11-30 MB r1cs / 24-64 MB zkey), so the big-file pins are verified by the Rust tests - that split is intentional, not a gap. `foundry.toml` gained a `../circuits/build` read permission for the wasm hash.
 - **Signed-manifest fallback (1B)** = `crates/dogtag-prover-rs/src/manifest.rs`: an **ed25519** dogtag-key-signed JSON of the SAME version content (§5.2 TRUST tier), built DRY from the artifact descriptor + `VersionDeployment` (the on-chain axis: trio addresses) + `ArtifactRelease` (the artifact axis: artifact-set name, base URL, `minAppVersion`; `artifact_release_for(version)` is the off-chain mirror of `activeArtifactSetOf`). The manifest carries BOTH axis identities (`version_id` and `artifact_set_id`). It is a CACHE/FALLBACK, never a second authority: `reconcile(signed, pinned_pubkey, &OnchainContractSet, &OnchainArtifactSet)` takes the two axes SEPARATELY (they are read separately on-chain, and a caller must be able to reconcile against a freshly-rotated artifact set without re-reading the contract set), verifies the sig, then returns the ALWAYS-on-chain authoritative fields of both + any `FieldConflict`s - **on conflict, on-chain wins**. `verify()` checks against the PINNED pubkey (not the envelope's advertised key), so a wrong-signer/tampered manifest fails. Real anchor is a compile-pinned `DOGTAG_MANIFEST_PUBKEY` (`None` until go-live). Served by vet-api `GET /protocol/manifest?version=…` (`stacks/vet/api/src/protocol.rs`; `version` is a query param because it contains `/`; key from env `DOGTAG_MANIFEST_SIGNING_KEY`, unset ⇒ 503; a NEW route that does NOT touch the resolve GET).
-- **Publish scripts** (`DeployProtocolRegistry.s.sol` + `PublishProtocolVersions.s.sol`): deploy is admin/publisher = governance `0x8E27E117…`; `PUBLISH_TIMELOCK_SECS` defaults to 2 days and `TESTNET_DEPLOY=true` is the mandatory loud opt-in for any non-default delay. Publish is TWO phases (`…Propose`, then `…Execute` at/after the printed ETAs), reading the registry address from `PROTOCOL_REGISTRY`. `ProtocolVersions.sol` now authors each level as THREE values - `levelBContracts()`, `levelBArtifacts()`, and the binding - so the FIRST publication uses the two-axis scheme from the start (there is nothing to migrate). Both `dogtag-levela/1` + `dogtag-levelb/1` publish with the confirmed roax.json trio addresses + the frozen pins. The registry is NOT yet on-chain (no address in `deployments/roax.json` yet - deploy + record it at go-live).
+- **Publish scripts** (`DeployProtocolRegistry.s.sol` + `PublishProtocolVersions.s.sol`): deploy is admin/publisher = governance `0x8E27E117…`; `PUBLISH_TIMELOCK_SECS` defaults to 2 days and `TESTNET_DEPLOY=true` is the mandatory loud opt-in for any non-default delay. Publish is TWO phases (`…Propose`, then `…Execute` at/after the printed ETAs), reading the registry address from `PROTOCOL_REGISTRY`. `ProtocolVersions.sol` now authors the single owner-hidden `dogtag-levelb/1` version as THREE values - `levelBContracts()`, `levelBArtifacts()`, and the binding - so the FIRST publication uses the two-axis scheme from the start (there is nothing to migrate). Only `dogtag-levelb/1` publishes (the retired owner-revealing `dogtag-levela/1` is no longer authored here), with the confirmed roax.json trio addresses + the frozen pins. The registry is NOT yet on-chain (no address in `deployments/roax.json` yet - deploy + record it at go-live).
 
 ## Discovery API + app anchor-validation (M7 P4)
 
@@ -425,14 +441,14 @@ Delegation = an owner authorizing a **non-owner** (caretaker at the groomer) for
 
 ## ZK trusted-setup ceremony
 
-- This section is the **Level-A `verification.circom`** ceremony. The **Level-B `consent.circom`** circuit has its OWN M3 ceremony — see "M3 trusted-setup ceremony" under "Level-B `DogTagConsent` circuit (M2)" and `docs/CEREMONY_TRANSCRIPT.consent.md`. Three ceremony scripts now exist, do not confuse them: `scripts/setup.sh` (DEV verification), `scripts/setup-consent.sh` (DEV consent), and the real ones — `scripts/ceremony.sh` (verification, multi-party) + `scripts/ceremony-consent.sh` (consent, testnet single-contributor).
-- Two scripts, do not confuse them: `circuits/scripts/setup.sh` is the **DEV/TEST** single-contributor setup (self-generated ptau, throwaway beacon) and must never secure production; `circuits/scripts/ceremony.sh` is the **production** multi-party ceremony (public Hermez phase-1 ptau + ≥3 independent contributors + public beacon). Subcommands: `init` → `contribute IN OUT "name"` (×N) → `beacon LAST 0x<hex> "note"` → `finalize`.
+- This section is the **Level-A `verification.circom`** ceremony. **RETIRED / HISTORICAL:** the Level-A circuit and its ceremony scripts (`scripts/setup.sh`, `scripts/ceremony.sh`) were removed with the owner-revealing layer, so every ceremony command in this section is non-runnable provenance for the already-deployed Level-A verifier - only the frozen artifacts + on-chain addresses stay live. The **Level-B `consent.circom`** circuit has its OWN M3 ceremony - see "M3 trusted-setup ceremony" under "Level-B `DogTagConsent` circuit (M2)" and `docs/CEREMONY_TRANSCRIPT.consent.md`. The surviving ceremony scripts are the consent ones: `scripts/setup-consent.sh` (DEV consent) + `scripts/ceremony-consent.sh` (consent, testnet single-contributor).
+- Two now-removed verification scripts (historical): `circuits/scripts/setup.sh` was the **DEV/TEST** single-contributor setup (self-generated ptau, throwaway beacon) and must never have secured production; `circuits/scripts/ceremony.sh` was the **production** multi-party ceremony (public Hermez phase-1 ptau + ≥3 independent contributors + public beacon). Subcommands were: `init` → `contribute IN OUT "name"` (×N) → `beacon LAST 0x<hex> "note"` → `finalize`.
 - Security model is **1-of-N honest, NOT majority/multisig**: the setup is sound if *any one* contributor destroys their toxic waste (entropy); broken only if *all* collude. So maximize diverse, independent contributors — adding more can only help. Do not describe it as a threshold/quorum scheme.
-- The testnet key currently on-chain is a **single-operator self-run** (`docs/CEREMONY_TRANSCRIPT.md`, audit Finding H3) → forgeable; production requires re-running `ceremony.sh` per `docs/CEREMONY_RUNBOOK.md`. The ceremony gates only the ZK path (`recordVerificationZK`); the ECDSA path and three-pillar trust model are unaffected.
+- The testnet key currently on-chain is a **single-operator self-run** (`docs/CEREMONY_TRANSCRIPT.md`, audit Finding H3) → forgeable; a production Level-A key would have required re-running the now-removed `ceremony.sh` (historical runbook `docs/CEREMONY_RUNBOOK.md`). The ceremony gates only the ZK path (`recordVerificationZK`); the ECDSA path and three-pillar trust model are unaffected.
 - Circuit `DogTagVerification(24,5)` = 94,459 constraints → needs **2^17** powers of tau (`PTAU_POW=17`).
 - Final artifacts: `circuits/build/verification_final.zkey` (proving key the Rust prover loads + pins SHA-256, impl §11.8(f)), `circuits/Groth16Verifier.sol` (vkey compiled in → deployed), `circuits/build/verification_key.json` (for `snarkjs groth16 verify`). `finalize` exports all three; verify with `snarkjs zkey verify r1cs ptau zkey` → `ZKey Ok!`.
 - On-chain verifier swap has **no single-call setter**: `VerificationRegistry.proposeZkVerifier(addr)` → wait `ZK_TIMELOCK = 2 days` → `executeZkVerifier()`; confirm with `zkVerifier()`. Live registry `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` (`contracts/deployments/roax.json`; the prior `0x8bA836eCe9…` is `VerificationRegistry_4arg_legacy`).
-- **The live `VerificationRegistry` address is baked into MANY committed consumers that must move together on any redeploy** (the 4-arg→6-arg fix split-brained precisely because only 2 of them were updated). The full set: `contracts/deployments/roax.json` (canonical; keep the old address as `VerificationRegistry_4arg_legacy`), the two compile-time mobile bundles `apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json` (rebuild+reinstall both), the web/shared config `packages/ui/src/wallet/contracts.ts` + `stacks/owner/web/src/lib/config.ts`, the oversight indexer's `DEFAULT_VREG` in `stacks/indexer/api/src/main.rs` (its anti-spoof gate drops `Verified` logs from any address it does not recognize — since **M8** it recognizes BOTH `DEFAULT_VREG` and the Level-B `DEFAULT_VREG_CONSENT`, so M7's flip has no oversight blind window) + `stacks/indexer/.env.example`, the demo/e2e scripts `scripts/{e2e-zk,demo-up,e2e-smoke}.sh` (`VR=`), the `stacks/{vet,groomer,admin,indexer}/**/.env.example` files, and the live-address tables in `README.md` + `AGENTS.md` + `docs/{DEPLOY,DEPLOYMENT,DEMO,GROOMER_ZK_DEMO,REMOTE_DEPLOYMENT,CEREMONY_RUNBOOK}.md`. `RedeployVerificationRegistry.s.sol` prints this checklist post-deploy. Do NOT rewrite the historical records (`roax.json` `_4arg_legacy`/`_zk_verifier_swap`/`_verification_registry_redeploy` fields, `docs/CEREMONY_TRANSCRIPT.md`) — those intentionally pin the old address.
+- **The live `VerificationRegistry` address is baked into MANY committed consumers that must move together on any redeploy** (the 4-arg→6-arg fix split-brained precisely because only 2 of them were updated). The full set: `contracts/deployments/roax.json` (canonical; keep the old address as `VerificationRegistry_4arg_legacy`), the two compile-time mobile bundles `apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json` (rebuild+reinstall both), the web/shared config `packages/ui/src/wallet/contracts.ts` + `stacks/owner/web/src/lib/config.ts`, the oversight indexer's `DEFAULT_VREG` in `stacks/indexer/api/src/main.rs` (its anti-spoof gate drops `Verified` logs from any address it does not recognize — since **M8** it recognizes BOTH `DEFAULT_VREG` and the Level-B `DEFAULT_VREG_CONSENT`, so M7's flip has no oversight blind window) + `stacks/indexer/.env.example`, the demo/e2e scripts `scripts/{e2e-zk,demo-up,e2e-smoke}.sh` (`VR=`), the `stacks/{vet,groomer,admin,indexer}/**/.env.example` files, and the live-address tables in `README.md` + `AGENTS.md` + `docs/{DEPLOY,DEPLOYMENT,DEMO,GROOMER_ZK_DEMO,REMOTE_DEPLOYMENT,CEREMONY_RUNBOOK}.md`. (The Level-A `RedeployVerificationRegistry.s.sol` that printed this checklist post-deploy was removed with the owner-revealing layer.) Do NOT rewrite the historical records (`roax.json` `_4arg_legacy`/`_zk_verifier_swap`/`_verification_registry_redeploy` fields, `docs/CEREMONY_TRANSCRIPT.md`) — those intentionally pin the old address.
 - The **v2 ceremony verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` is the LIVE on-chain verifier** since the 2026-07-02 `executeZkVerifier()` cutover (tx `0xe2e3270f…40e70`, block 103419); the v1 verifier `0x138b4330…1761` is retired and rejects v2-key proofs (and vice versa). The live verifier address is baked in several places that must move together on any future swap: `contracts/deployments/roax.json`, `README.md` (Live ROAX addresses table), `stacks/owner/web/src/lib/config.ts`, `packages/ui/src/wallet/contracts.ts`, `scripts/e2e-zk.sh` (`ZKV=`), the live-chain parity tests (`crates/dogtag-standard-rs/tests/prove_parity.rs`, `stacks/vet/api/tests/prove_verification.rs`), and the docs that quote the live address (`docs/DEPLOY.md`, `docs/DEPLOYMENT.md`, `docs/DEMO.md`, `docs/CEREMONY_RUNBOOK.md`). The **mobile apps also carry the coupling** - each bundles the verifier's paired zkey/graph plus `roax.json` addresses and must be rebuilt + reinstalled on any swap (see "Building the mobile (iOS) holder app").
 
 ## Mobile end-to-end testing (Android, on-device ZK proof)
@@ -502,8 +518,10 @@ maestro test apps/android/maestro/zk_e2e.yaml
 - **Witness graph is not in the repo and not built by the published crate.**
   `circuits/build/verification.graph` (`wtns.graph.001` format, consumed by `circom_witnesscalc::
   calc_witness`) is gitignored AND the published `circom-witnesscalc` 0.2.1 crate ships no
-  `build-circuit` binary (only `calc-witness`/`cvm-compile`). It is built from
-  `circuits/verification.circom` by iden3's `build-circuit` tool. Validate any graph against the
+  `build-circuit` binary (only `calc-witness`/`cvm-compile`). It was built from the now-retired
+  `circuits/verification.circom` (that owner-revealing source has been removed) by iden3's `build-circuit`
+  tool, so a fresh graph can no longer be generated from source — use a retained/vendored copy (below).
+  Validate any graph against the
   zkey with `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
   **Consequence:** a fresh clone/worktree FAILS `prove_parity` with `missing witness graph:
   circuits/build/verification.graph` until you vendor one — that failure is environmental, not a
@@ -679,7 +697,7 @@ cp circuits/build/verification.graph      apps/ios/DogTag/verification.graph
 ```
 
 **The `verification.graph` is not produced by a plain checkout.**
-`circuits/build/verification.graph` is itself gitignored and is built from `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); if it is missing, build it before this copy - a 26-byte `stub-graph-for-build-only` placeholder will NOT prove.
+`circuits/build/verification.graph` is itself gitignored and was built from the now-retired `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); that owner-revealing source has been removed, so a fresh graph can no longer be generated - vendor a retained copy before this step (a 26-byte `stub-graph-for-build-only` placeholder will NOT prove).
 Validate the vendored pair on the host: `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
 
 ### 3. Regenerate the Xcode project + set the signing team
@@ -713,7 +731,7 @@ If the build fails with **code-signing / "no team" / "failed to register bundle 
 
 The bundled `verification_final.zkey` + `verification.graph` + the compiled-in FFI prover **must match the ZK verifier currently deployed on-chain** - `VerificationRegistry.zkVerifier()` for the target chain.
 Unlike the **server** prover, which fails closed on a mismatched key (it pins `EXPECTED_ZKEY_SHA256_HEX`, `crates/dogtag-prover-rs/src/lib.rs`; see "Deployment / production guards"), **the mobile bundle has no such guard** - it will happily ship any zkey and emit proofs the chain rejects.
-A stale bundled key produces a proof the on-chain verifier refuses: `VerificationRegistry.recordVerificationZK` reverts at `require(zkVerifier.verifyProof(...), "bad proof")` (`contracts/src/VerificationRegistry.sol`), surfacing to the operator as **`recordVerificationZK ... "bad proof"`** or a bare **`execution reverted, data: "0x"`**.
+A stale bundled key produces a proof the on-chain verifier refuses: `VerificationRegistry.recordVerificationZK` reverts at `require(zkVerifier.verifyProof(...), "bad proof")` (in the deployed Level-A `VerificationRegistry`), surfacing to the operator as **`recordVerificationZK ... "bad proof"`** or a bare **`execution reverted, data: "0x"`**.
 This is audit finding **H-1 (no zkey<->verifier version handshake)** made concrete: nothing on-chain advertises which zkey it expects, so the match is a **manual, mobile-side responsibility**.
 
 Check it on every build:
@@ -734,11 +752,12 @@ An already-installed app keeps proving against its **baked** key until you do, s
 
 ## Contract sharp edges
 
-- `VerificationRegistry.recordVerificationZK(a, b, c, pub[7], bytes32 recordType, uint256 deadline)` —
-  the trailing `recordType`/`deadline` are defense-in-depth guards supplied by the relayer (NOT bound to
-  the proof; audit L2). Address-typed public signals `pub[2]` (relayer) and `pub[3]` (subject) are
-  range-checked `< 2^160` so `uint160(..)` truncation can't alias a victim address (audit L1). The Rust
-  relay ABI (`stacks/vet/api/src/chain.rs`) must stay in sync with this signature.
+- `VerificationRegistryConsent.recordVerificationZK(a, b, c, pub[7])` uses the frozen signal order
+  `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`; `recordType` and `deadline` are
+  proof-bound signals, not trailing calldata. `pub[2]` is range-checked below `2^160`, `pub[4]` must
+  equal the tag's write-once `profileRoot`, and `ownerOf` is called only as a token-existence gate—its
+  neutral-custodian return value must never be compared as owner identity. Every relay ABI must stay in
+  sync with this four-argument signature.
 
 ## Governance authority (Phase-2 executed) - tooling signer
 
@@ -813,7 +832,7 @@ An already-installed app keeps proving against its **baked** key until you do, s
   `credentialSubject`. Extract by keyPath suffix.
 
 ### ZK export leaf limit
-- The on-device ZK circuit (`circuits/verification.circom` `DogTagVerification(24, 5)`,
+- The on-device ZK circuit (the retired Level-A `DogTagVerification(24, 5)`,
   `crates/dogtag-prover-rs` `pub const N = 24`) proves at most 24 Merkle leaves; more aborts with
   `too many leaves: <n> > N=24`. `ZkCircuit.maxLeaves` (Models.swift) is the display-layer mirror —
   keep it in sync if the circuit width changes.
@@ -960,9 +979,10 @@ Tests: `circuits/scripts/test-consent.mjs`. Dev setup: `circuits/scripts/setup-c
 
 `DogTagConsent` proves in zero-knowledge that a **hidden** pet owner consented to a **disclosed**
 relayer for a **disclosed** purpose, revealing nothing about the owner. It supersedes the Level-A
-`verification.circom` (which exposed `subject` + `keyHash`). **`verification.circom` is frozen — do
-not edit it** (it has a pinned dev zkey and its own test); the shared `NodeHash`/`LessThanField`
-templates were *copied* into `lib/merkle_inclusion.circom`, not refactored out of it.
+`verification.circom` (which exposed `subject` + `keyHash`). **That owner-revealing circuit source has
+since been retired/removed** (its build products + ceremony transcript remain as historical provenance);
+the shared `NodeHash`/`LessThanField` templates were *copied* into `lib/merkle_inclusion.circom`, not
+refactored out of the then-frozen circuit.
 
 ### Public-signal vector (ORDER IS LOAD-BEARING for M4 calldata)
 
@@ -1105,7 +1125,7 @@ Since M3, the **production** consent artifacts are **committed** (force-added pa
 `contracts/src/Groth16VerifierConsent.sol`. The **intermediate/DEV** artifacts stay **gitignored** and
 must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/*.ptau`), and
 `Groth16Verifier.consent.dev.sol` (`*.dev.sol`). `test-consent` now runs against the committed prod key
-(33/33 green) and is a standalone heavy gate (like `test-circuit`), intentionally **not** in `make test`.
+(33/33 green) and is a standalone heavy gate, intentionally **not** in `make test`.
 
 ---
 
@@ -1113,7 +1133,7 @@ must never be deployed: `build/consent_000{0,1}.zkey`, the ptau (`circuits/ptau/
 
 Source of truth: `/Users/zhenhaowu/firstmate/data/dogtag-zkverify-z2/level-b-spec.md`.
 Contract: `contracts/src/VerificationRegistryConsent.sol`. Deploy: **`contracts/script/DeployCustodialIssuance.s.sol`**
-(M5) - `DeployConsentRegistry.s.sol` is the M4 script and is **SUPERSEDED, do not run it**: it defaults `SBT` to the
+(M5) - `DeployConsentRegistry.s.sol` was the M4 script (now removed) and is **SUPERSEDED**: it defaulted `SBT` to the
 Level-A `DogTagSBT`, whose mutable `setProfileRoot` is the hijack M5 closes, and the registry's `sbt` is immutable so
 that mistake is unrepairable. Tests: `contracts/test/ConsentRegistry.t.sol` (16, real M3 proof; deliberately still
 pairs the registry with the Level-A SBT, proving it is SBT-agnostic) + `contracts/test/CustodialIssuance.t.sol` (the
@@ -1280,7 +1300,7 @@ If you touch issuance, keep the control.
 Recorded so it is not re-derived or "simplified" back into a broken shape.
 
 1. **The suggested `status == Active` gate is already there and does NOT fix the hijack.**
-   `DogTagSBT.setProfileRoot` (`contracts/src/DogTagSBT.sol:89`) already does
+   `DogTagSBT.setProfileRoot` (in the deployed Level-A `DogTagSBT`) already does
    `require(status[id] == Status.Active, "!active")`. A hijacker targets an *Active* victim tag, so this
    gate never fires against them. **Append-only/immutable `profileRoot` is the only structural fix of the
    two the open question offers.**

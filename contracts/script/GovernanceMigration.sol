@@ -25,23 +25,22 @@ interface IOwnable2Step {
 ///                        GOVERNANCE roles (DEFAULT_ADMIN / WHITELIST_ADMIN / factory ownership) so the
 ///                        deployer key can no longer govern.
 ///
-/// SCOPE — what this migration does NOT do: it never revokes the EOA's Level-A `DogTagSBT` ISSUER_ROLE or
-/// its `IssuerRegistry` record-type whitelists. After a completed hand-off the deployer EOA is stripped of
-/// governance but is NOT role-free: it can still mint/issue on the live Level-A surface (confirmed by the
-/// 2026-07-16 audit). Retire those legacy issuance capabilities separately, and never treat the old EOA as
-/// a neutral or role-free key.
+/// SCOPE — what this migration does NOT do: it never revokes issuance roles or `IssuerRegistry`
+/// record-type whitelists. After a completed hand-off the old deployer EOA is stripped of governance but
+/// may still retain historical issuer capabilities. Retire those capabilities separately, and never
+/// treat the old EOA as a neutral or role-free key.
 ///
 /// Coverage of the governed surface (see architecture §13.1 H-3):
 ///   - IssuerRegistry        AccessControlDefaultAdminRules (3-day) DEFAULT_ADMIN + WHITELIST_ADMIN role
-///   - VerificationRegistry  AccessControlDefaultAdminRules (2-day) DEFAULT_ADMIN
-///   - DogTagSBT             AccessControlDefaultAdminRules (3-day) DEFAULT_ADMIN  *for a fresh deploy*;
+///   - VerificationRegistryConsent  AccessControlDefaultAdminRules (2-day) DEFAULT_ADMIN
+///   - DogTagSBTConsent             AccessControlDefaultAdminRules (3-day) DEFAULT_ADMIN *for a fresh deploy*;
 ///                           a LEGACY live instance is still plain AccessControlEnumerable (no on-chain
 ///                           two-step retrofit without a state-orphaning redeploy), so it is handed over
 ///                           with an atomic grant→revoke instead. `_supportsTwoStep` auto-detects which.
 ///   - DogTagIssuerFactory   Ownable2Step owner
 ///   - DogTagIssuer clones    governed THROUGH IssuerRegistry's DEFAULT_ADMIN (hasRole(0x00)) — covered
 ///                           transitively by the IssuerRegistry hand-off; they hold no own admin.
-///   - ConsentKeyRegistry / Groth16Verifier / Poseidon6 — permissionless / no admin; nothing to migrate.
+///   - Groth16VerifierConsent — permissionless / no admin; nothing to migrate.
 library GovernanceMigration {
     bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
     // keccak256("WHITELIST_ADMIN") — IssuerRegistry's operational whitelist role (kept off DEFAULT_ADMIN).
@@ -88,8 +87,8 @@ library GovernanceMigration {
 
     /// @notice Phase 2 — must be sent by/through the multisig AFTER the per-contract timelocks elapse.
     /// @param oldAdmin the deployer EOA whose GOVERNANCE roles are stripped (DEFAULT_ADMIN /
-    /// WHITELIST_ADMIN / factory ownership). Its legacy Level-A ISSUER_ROLE + record-type whitelists are
-    /// left intact — see the SCOPE note in the library header.
+    /// WHITELIST_ADMIN / factory ownership). Issuance roles and record-type whitelists are left intact —
+    /// see the SCOPE note in the library header.
     function accept(Targets memory t, address oldAdmin) internal {
         // IssuerRegistry: accept admin, then revoke the EOA's operational WHITELIST_ADMIN. (Accepting the
         // two-step transfer already revokes the EOA's DEFAULT_ADMIN_ROLE.)

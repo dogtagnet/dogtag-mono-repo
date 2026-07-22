@@ -151,7 +151,7 @@ struct LeafFields {
 
 /// Assemble all 19 circuit inputs from the wrapped doc, consent, and EdDSA signature.
 ///
-/// MIRRORS `circuits/scripts/gen-zk-fixture.mjs` + `dogtag-prover-rs::push_named_inputs` ordering:
+/// MIRRORS `dogtag-prover-rs::push_named_inputs` ordering:
 /// per-leaf fields in canonical flatten order; `sortedLeafHashes` = the ascending-sorted active
 /// prefix (`merkle::build_merkle(active).layers[0]`); `perm[k]` = index in the canonical active
 /// order of `sortedLeafHashes[k]`; padding slots `[numLeaves, N)` pinned diagonal (`perm[k]=k`,
@@ -354,7 +354,7 @@ pub(crate) fn input_map(inp: &AssembledInputs) -> HashMap<String, Vec<String>> {
     m
 }
 
-/// Serialize the assembled inputs into the `gen-zk-fixture.mjs` / `tests/gen_input.mjs` JSON shape
+/// Serialize the assembled inputs into the JSON shape
 /// that `dogtag-prover-rs::ProveInputs::from_circuit_input_json` consumes: SCALAR signals are bare
 /// decimal STRINGS, the six width-`N` signals are decimal-string ARRAYS.
 ///
@@ -416,7 +416,7 @@ pub fn assemble_circuit_input(
 mod tests {
     use super::*;
 
-    /// Build the SAME deterministic input the gen-zk-fixture / tests/gen_input.mjs reference uses
+    /// Build the SAME deterministic Level-A prover input
     /// (numLeaves=13, dogTagId=424242, ...) directly in Rust and assert the assembled
     /// sortedLeafHashes / perm / dogTagIdLeafIndex / R match the reference fixture's structure.
     ///

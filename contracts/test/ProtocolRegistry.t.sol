@@ -20,16 +20,24 @@ contract ProtocolRegistryTest is Test {
     address internal constant PUBLISHER = address(0xB0B);
     address internal constant OUTSIDER = address(0xBAD);
 
-    bytes32 internal aId;
+    address internal constant FACTORY = address(0xFACADE);
+    address internal constant VERIFICATION_REGISTRY = address(0xC0DE);
+    address internal constant SBT = address(0x5B7);
+    address internal constant VERIFIER = address(0xBEEF);
+
+    bytes32 internal constant ZKEY_SHA256 =
+        0xf83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868;
+    bytes32 internal constant R1CS_SHA256 =
+        0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7;
+    bytes32 internal constant WASM_SHA256 =
+        0x482debcff5a4325c008dd00e4476bba011d0a706da955e3129d114f996a913e6;
+
     bytes32 internal bId;
-    bytes32 internal aArtId;
     bytes32 internal bArtId;
 
     function setUp() public {
         reg = new ProtocolRegistry(ADMIN, PUBLISHER, 2 days);
-        aId = ProtocolVersions.levelAId();
         bId = ProtocolVersions.levelBId();
-        aArtId = ProtocolVersions.levelAArtifactsId();
         bArtId = ProtocolVersions.levelBArtifactsId();
     }
 
@@ -59,10 +67,20 @@ contract ProtocolRegistryTest is Test {
         reg.executeArtifactBinding(contractSetId);
     }
 
-    /// Publish a whole level the way `PublishProtocolVersions` does: both axes, then the binding.
+    function _contracts() internal pure returns (ProtocolRegistry.ContractSet memory) {
+        return ProtocolVersions.levelBContracts(FACTORY, VERIFICATION_REGISTRY, SBT, VERIFIER);
+    }
+
+    function _artifacts() internal pure returns (ProtocolRegistry.ArtifactSet memory) {
+        return ProtocolVersions.levelBArtifacts(
+            ZKEY_SHA256, bytes32(0), R1CS_SHA256, WASM_SHA256, "https://artifacts.dogtag.io/consent1"
+        );
+    }
+
+    /// Publish the one live version on both independent axes, then bind them.
     function _publishLevelB() internal {
-        _publishContracts(ProtocolVersions.levelBContracts());
-        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+        _publishContracts(_contracts());
+        _publishArtifacts(_artifacts());
         _bind(bId, bArtId);
     }
 
@@ -105,7 +123,7 @@ contract ProtocolRegistryTest is Test {
         ProtocolRegistry.ContractSet memory before = reg.getContractSet(bId);
 
         // A genuine artifact-only rotation: brand new zkey + pins + host + app floor, same protocol.
-        ProtocolRegistry.ArtifactSet memory v2 = ProtocolVersions.levelBArtifacts();
+        ProtocolRegistry.ArtifactSet memory v2 = _artifacts();
         v2.artifactSetId = keccak256("dogtag-levelb-artifacts/2");
         v2.zkeySha256 = keccak256("a-freshly-ceremonied-zkey");
         v2.witnessServerR1csSha256 = keccak256("new-r1cs");
@@ -129,7 +147,7 @@ contract ProtocolRegistryTest is Test {
         assertEq(reg.contractSetCount(), 1, "no new contract set was created");
 
         // And the superseded artifact set is still pinned in history, readable by its own id.
-        _assertEqArtifacts(reg.getArtifactSet(bArtId), ProtocolVersions.levelBArtifacts());
+        _assertEqArtifacts(reg.getArtifactSet(bArtId), _artifacts());
         assertEq(reg.artifactSetCount(), 2, "both artifact sets enumerated");
     }
 
@@ -143,7 +161,7 @@ contract ProtocolRegistryTest is Test {
         _publishLevelB();
         ProtocolRegistry.ArtifactSet memory before = reg.getArtifactSet(bArtId);
 
-        ProtocolRegistry.ContractSet memory c2 = ProtocolVersions.levelBContracts();
+        ProtocolRegistry.ContractSet memory c2 = _contracts();
         c2.factory = address(0xF00D);
         c2.verificationRegistry = address(0xDEAD);
         c2.sbt = address(0xBEEF);
@@ -175,24 +193,12 @@ contract ProtocolRegistryTest is Test {
         reg.getContractSet(bArtId); // and vice versa
     }
 
-    /// One artifact set may serve several contract sets (e.g. a trio rotation that keeps the same
-    /// proving artifacts) — the binding is many-to-one, another consequence of the axes being separate.
-    function test_one_artifact_set_can_back_several_contract_sets() public {
-        _publishLevelB();
-        _publishContracts(ProtocolVersions.levelAContracts());
-        _bind(aId, bArtId);
-
-        assertEq(reg.getActiveArtifactSet(aId).artifactSetId, bArtId);
-        assertEq(reg.getActiveArtifactSet(bId).artifactSetId, bArtId);
-        assertEq(reg.artifactSetCount(), 1, "shared, not duplicated");
-    }
-
     /// `resolve` is the one-call app path and must return BOTH halves, each from its own axis.
     function test_resolve_returns_both_axes() public {
         _publishLevelB();
         (ProtocolRegistry.ContractSet memory c, ProtocolRegistry.ArtifactSet memory a) = reg.resolve(bId);
-        _assertEqContracts(c, ProtocolVersions.levelBContracts());
-        _assertEqArtifacts(a, ProtocolVersions.levelBArtifacts());
+        _assertEqContracts(c, _contracts());
+        _assertEqArtifacts(a, _artifacts());
     }
 
     // --- binding: fail-closed + timelock ----------------------------------------------------------
@@ -200,7 +206,7 @@ contract ProtocolRegistryTest is Test {
     /// A contract set with no artifacts bound yet is a valid intermediate state during rollout, and
     /// every artifact-side resolver must FAIL CLOSED on it rather than read a zeroed record.
     function test_unbound_contract_set_fails_closed_on_artifact_resolution() public {
-        _publishContracts(ProtocolVersions.levelBContracts());
+        _publishContracts(_contracts());
 
         vm.expectRevert(bytes("no artifact binding"));
         reg.getActiveArtifactSet(bId);
@@ -215,8 +221,8 @@ contract ProtocolRegistryTest is Test {
     /// The binding is the pointer an app follows to decide which bytes to fetch, so a one-transaction
     /// repoint must be impossible — it carries the same 2-day timelock as a publish.
     function test_binding_is_timelocked() public {
-        _publishContracts(ProtocolVersions.levelBContracts());
-        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+        _publishContracts(_contracts());
+        _publishArtifacts(_artifacts());
 
         vm.prank(PUBLISHER);
         reg.proposeArtifactBinding(bId, bArtId);
@@ -236,7 +242,7 @@ contract ProtocolRegistryTest is Test {
     /// The pointer can never be made to dangle: both sides must be published AT EXECUTE. Checking at
     /// execute (not propose) is what lets the first rollout run all three timelocks concurrently.
     function test_binding_execute_requires_both_sides_published() public {
-        _publishContracts(ProtocolVersions.levelBContracts());
+        _publishContracts(_contracts());
 
         vm.prank(PUBLISHER);
         reg.proposeArtifactBinding(bId, bArtId); // artifact set not published yet — allowed to stage
@@ -246,7 +252,7 @@ contract ProtocolRegistryTest is Test {
         reg.executeArtifactBinding(bId);
 
         // Publish it, and the SAME pending binding now executes (the proposal was not consumed).
-        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+        _publishArtifacts(_artifacts());
         vm.prank(PUBLISHER);
         reg.executeArtifactBinding(bId);
         assertEq(reg.activeArtifactSetOf(bId), bArtId);
@@ -256,8 +262,8 @@ contract ProtocolRegistryTest is Test {
     /// reachable through a proposal staged before the retirement, or the window that exists to catch a
     /// malicious repoint would let the repoint through anyway.
     function test_binding_cannot_point_at_a_deprecated_artifact_set() public {
-        _publishContracts(ProtocolVersions.levelBContracts());
-        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+        _publishContracts(_contracts());
+        _publishArtifacts(_artifacts());
 
         vm.prank(PUBLISHER);
         reg.proposeArtifactBinding(bId, bArtId); // staged while the set is still active
@@ -276,8 +282,8 @@ contract ProtocolRegistryTest is Test {
     /// The symmetric case on the on-chain axis: each `active` bit is an independent kill switch, so
     /// retiring the contract set must refuse a new binding just as retiring the artifact set does.
     function test_binding_cannot_point_at_a_deprecated_contract_set() public {
-        _publishContracts(ProtocolVersions.levelBContracts());
-        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+        _publishContracts(_contracts());
+        _publishArtifacts(_artifacts());
 
         vm.prank(PUBLISHER);
         reg.proposeArtifactBinding(bId, bArtId);
@@ -316,18 +322,18 @@ contract ProtocolRegistryTest is Test {
     function test_publish_reads_back_exactly() public {
         // Publish each axis separately (not via _publishLevelB) so `block.timestamp` at the moment of
         // each execute is known and `publishedAt` can be asserted exactly.
-        _publishContracts(ProtocolVersions.levelBContracts());
+        _publishContracts(_contracts());
         uint64 contractsPublishedAt = uint64(block.timestamp);
 
         ProtocolRegistry.ContractSet memory gotC = reg.getContractSet(bId);
-        _assertEqContracts(gotC, ProtocolVersions.levelBContracts());
+        _assertEqContracts(gotC, _contracts());
         assertTrue(gotC.active, "contract set active at execute");
         assertEq(gotC.publishedAt, contractsPublishedAt, "contract publishedAt stamped at execute");
 
-        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+        _publishArtifacts(_artifacts());
 
         ProtocolRegistry.ArtifactSet memory gotA = reg.getArtifactSet(bArtId);
-        _assertEqArtifacts(gotA, ProtocolVersions.levelBArtifacts());
+        _assertEqArtifacts(gotA, _artifacts());
         assertTrue(gotA.active, "artifact set active at execute");
         assertEq(gotA.publishedAt, uint64(block.timestamp), "artifact publishedAt stamped at execute");
         // The two axes were published at DIFFERENT times — further evidence they are separate writes.
@@ -337,21 +343,21 @@ contract ProtocolRegistryTest is Test {
     /// The executes IGNORE calldata publishedAt/active on BOTH axes — a publisher cannot back-date or
     /// pre-activate, and a re-proposed record cannot smuggle active=false through execute.
     function test_execute_ignores_calldata_publishedAt_and_active() public {
-        ProtocolRegistry.ContractSet memory c = ProtocolVersions.levelAContracts();
+        ProtocolRegistry.ContractSet memory c = _contracts();
         c.publishedAt = 12345; // lie
         c.active = false; // will be overridden to true
         _publishContracts(c);
 
-        ProtocolRegistry.ContractSet memory gotC = reg.getContractSet(aId);
+        ProtocolRegistry.ContractSet memory gotC = reg.getContractSet(bId);
         assertEq(gotC.publishedAt, uint64(block.timestamp), "publishedAt is block time, not calldata");
         assertTrue(gotC.active, "active forced true");
 
-        ProtocolRegistry.ArtifactSet memory a = ProtocolVersions.levelAArtifacts();
+        ProtocolRegistry.ArtifactSet memory a = _artifacts();
         a.publishedAt = 12345;
         a.active = false;
         _publishArtifacts(a);
 
-        ProtocolRegistry.ArtifactSet memory gotA = reg.getArtifactSet(aArtId);
+        ProtocolRegistry.ArtifactSet memory gotA = reg.getArtifactSet(bArtId);
         assertEq(gotA.publishedAt, uint64(block.timestamp), "publishedAt is block time, not calldata");
         assertTrue(gotA.active, "active forced true");
     }
@@ -364,8 +370,8 @@ contract ProtocolRegistryTest is Test {
 
         uint256 proposedAt = block.timestamp;
         vm.startPrank(PUBLISHER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
-        reg.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        reg.proposeContractSet(_contracts());
+        reg.proposeArtifactSet(_artifacts());
         reg.proposeArtifactBinding(bId, bArtId);
         vm.stopPrank();
 
@@ -390,8 +396,8 @@ contract ProtocolRegistryTest is Test {
         vm.warp(100);
 
         vm.startPrank(PUBLISHER);
-        fastRegistry.proposeContractSet(ProtocolVersions.levelBContracts());
-        fastRegistry.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        fastRegistry.proposeContractSet(_contracts());
+        fastRegistry.proposeArtifactSet(_artifacts());
         fastRegistry.proposeArtifactBinding(bId, bArtId);
         assertEq(fastRegistry.contractSetEta(bId), block.timestamp, "contract ETA is immediate");
         assertEq(fastRegistry.artifactSetEta(bArtId), block.timestamp, "artifact ETA is immediate");
@@ -408,7 +414,7 @@ contract ProtocolRegistryTest is Test {
 
     function test_execute_contract_set_before_timelock_reverts() public {
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
 
         // one second short of the ETA
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK() - 1);
@@ -425,7 +431,7 @@ contract ProtocolRegistryTest is Test {
 
     function test_execute_artifact_set_before_timelock_reverts() public {
         vm.prank(PUBLISHER);
-        reg.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        reg.proposeArtifactSet(_artifacts());
 
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK() - 1);
         vm.prank(PUBLISHER);
@@ -454,13 +460,13 @@ contract ProtocolRegistryTest is Test {
 
     function test_reproposing_resets_the_timelock() public {
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
         uint256 firstEta = reg.contractSetEta(bId);
 
         // Nearly at the first ETA, re-propose: the ETA must move forward by a fresh full timelock.
         vm.warp(firstEta - 1);
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
         assertEq(reg.contractSetEta(bId), block.timestamp + reg.PUBLISH_TIMELOCK(), "eta reset");
 
         // The old ETA is no longer sufficient.
@@ -484,18 +490,18 @@ contract ProtocolRegistryTest is Test {
     function test_propose_requires_publisher_role() public {
         _expectUnauthorized(OUTSIDER);
         vm.prank(OUTSIDER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
     }
 
     function test_propose_artifact_set_requires_publisher_role() public {
         _expectUnauthorized(OUTSIDER);
         vm.prank(OUTSIDER);
-        reg.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        reg.proposeArtifactSet(_artifacts());
     }
 
     function test_execute_requires_publisher_role() public {
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
 
         _expectUnauthorized(OUTSIDER);
@@ -527,7 +533,7 @@ contract ProtocolRegistryTest is Test {
         reg.grantRole(role, newPub);
 
         vm.prank(newPub);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
         vm.prank(newPub);
         reg.executeContractSet(bId);
@@ -546,7 +552,7 @@ contract ProtocolRegistryTest is Test {
         // Still readable, still enumerated, still fully pinned — only `active` changed.
         ProtocolRegistry.ContractSet memory got = reg.getContractSet(bId);
         assertFalse(got.active, "active flipped false");
-        _assertEqContracts(got, ProtocolVersions.levelBContracts()); // history pinned
+        _assertEqContracts(got, _contracts()); // history pinned
         assertEq(reg.contractSetCount(), 1, "deprecate does not remove from the list");
         assertEq(reg.contractSetList(0), bId, "list entry preserved");
 
@@ -563,7 +569,7 @@ contract ProtocolRegistryTest is Test {
 
         ProtocolRegistry.ArtifactSet memory got = reg.getArtifactSet(bArtId);
         assertFalse(got.active, "active flipped false");
-        _assertEqArtifacts(got, ProtocolVersions.levelBArtifacts()); // history pinned
+        _assertEqArtifacts(got, _artifacts()); // history pinned
         assertEq(reg.artifactSetCount(), 1);
         assertEq(reg.artifactSetList(0), bArtId);
 
@@ -579,7 +585,7 @@ contract ProtocolRegistryTest is Test {
 
         // A swap for the SAME id is staged and its timelock fully elapses...
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
 
         // ...then the set is found compromised and retired.
@@ -594,7 +600,7 @@ contract ProtocolRegistryTest is Test {
         assertEq(reg.contractSetEta(bId), 0, "the stale proposal's ETA is cleared");
         // History is untouched — cancelling a PENDING proposal is not deleting the published record.
         assertEq(reg.contractSetCount(), 1);
-        _assertEqContracts(reg.getContractSet(bId), ProtocolVersions.levelBContracts());
+        _assertEqContracts(reg.getContractSet(bId), _contracts());
     }
 
     // The same halt on the artifact axis, where re-activation bites harder: deprecate leaves
@@ -604,7 +610,7 @@ contract ProtocolRegistryTest is Test {
         _publishLevelB();
 
         vm.prank(PUBLISHER);
-        reg.proposeArtifactSet(ProtocolVersions.levelBArtifacts());
+        reg.proposeArtifactSet(_artifacts());
         vm.warp(block.timestamp + reg.PUBLISH_TIMELOCK());
 
         vm.prank(PUBLISHER);
@@ -618,7 +624,7 @@ contract ProtocolRegistryTest is Test {
         assertEq(reg.artifactSetEta(bArtId), 0, "the stale proposal's ETA is cleared");
         assertEq(reg.activeArtifactSetOf(bId), bArtId, "the binding still points at it, hence the halt");
         assertEq(reg.artifactSetCount(), 1);
-        _assertEqArtifacts(reg.getArtifactSet(bArtId), ProtocolVersions.levelBArtifacts());
+        _assertEqArtifacts(reg.getArtifactSet(bArtId), _artifacts());
     }
 
     // Re-publishing after a deprecate is still possible — it just costs a FRESH propose and the full
@@ -630,7 +636,7 @@ contract ProtocolRegistryTest is Test {
         reg.deprecateContractSet(bId);
 
         vm.prank(PUBLISHER);
-        reg.proposeContractSet(ProtocolVersions.levelBContracts());
+        reg.proposeContractSet(_contracts());
 
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("timelock"));
@@ -654,31 +660,31 @@ contract ProtocolRegistryTest is Test {
 
     // --- enumeration -----------------------------------------------------------------------------
 
-    function test_enumeration_of_both_versions() public {
-        _publishContracts(ProtocolVersions.levelAContracts());
-        _publishContracts(ProtocolVersions.levelBContracts());
-        _publishArtifacts(ProtocolVersions.levelAArtifacts());
-        _publishArtifacts(ProtocolVersions.levelBArtifacts());
+    function test_single_surviving_version_keeps_the_compatibility_key() public view {
+        assertEq(bId, keccak256(bytes("dogtag-levelb/1")));
+        assertEq(bArtId, keccak256(bytes("dogtag-levelb-artifacts/1")));
+    }
 
-        assertEq(reg.contractSetCount(), 2, "two distinct contract sets");
-        assertEq(reg.artifactSetCount(), 2, "two distinct artifact sets");
-        // Order is publish order.
-        assertEq(reg.contractSetList(0), aId);
-        assertEq(reg.contractSetList(1), bId);
-        assertEq(reg.artifactSetList(0), aArtId);
-        assertEq(reg.artifactSetList(1), bArtId);
-        assertEq(reg.getContractSet(aId).contractSetId, aId);
+    function test_enumeration_has_one_version_on_both_axes() public {
+        _publishLevelB();
+
+        assertEq(reg.contractSetCount(), 1, "one contract set");
+        assertEq(reg.artifactSetCount(), 1, "one artifact set");
+        assertEq(reg.contractSetList(0), bId);
+        assertEq(reg.artifactSetList(0), bArtId);
+        assertEq(reg.getContractSet(bId).contractSetId, bId);
         assertEq(reg.getArtifactSet(bArtId).artifactSetId, bArtId);
+        assertEq(reg.activeArtifactSetOf(bId), bArtId, "both axes are bound");
     }
 
     /// A swap-republish (same id, new addresses) updates in place and MUST NOT duplicate the list
     /// entry — history is one row per set, updated, never appended twice.
     function test_swap_republish_does_not_duplicate_list_entry() public {
-        _publishContracts(ProtocolVersions.levelBContracts());
+        _publishContracts(_contracts());
         assertEq(reg.contractSetCount(), 1);
 
         // Contract-only bump (§5.5): same set id, new registry address, same VK.
-        ProtocolRegistry.ContractSet memory c2 = ProtocolVersions.levelBContracts();
+        ProtocolRegistry.ContractSet memory c2 = _contracts();
         c2.verificationRegistry = address(0xDEAD);
         _publishContracts(c2);
 
@@ -713,7 +719,7 @@ contract ProtocolRegistryTest is Test {
     // --- propose input validation ----------------------------------------------------------------
 
     function test_propose_rejects_zero_contractSetId() public {
-        ProtocolRegistry.ContractSet memory c = ProtocolVersions.levelBContracts();
+        ProtocolRegistry.ContractSet memory c = _contracts();
         c.contractSetId = bytes32(0);
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("contractSetId=0"));
@@ -721,7 +727,7 @@ contract ProtocolRegistryTest is Test {
     }
 
     function test_propose_rejects_zero_artifactSetId() public {
-        ProtocolRegistry.ArtifactSet memory a = ProtocolVersions.levelBArtifacts();
+        ProtocolRegistry.ArtifactSet memory a = _artifacts();
         a.artifactSetId = bytes32(0);
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("artifactSetId=0"));
@@ -729,7 +735,7 @@ contract ProtocolRegistryTest is Test {
     }
 
     function test_propose_rejects_zero_trio_or_verifier() public {
-        ProtocolRegistry.ContractSet memory c = ProtocolVersions.levelBContracts();
+        ProtocolRegistry.ContractSet memory c = _contracts();
         c.verifier = address(0);
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("zero trio/verifier"));
@@ -737,7 +743,7 @@ contract ProtocolRegistryTest is Test {
     }
 
     function test_propose_rejects_zero_circuitId() public {
-        ProtocolRegistry.ContractSet memory c = ProtocolVersions.levelBContracts();
+        ProtocolRegistry.ContractSet memory c = _contracts();
         c.circuitId = bytes32(0);
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("circuitId=0"));
@@ -745,7 +751,7 @@ contract ProtocolRegistryTest is Test {
     }
 
     function test_propose_rejects_zero_zkey_pin() public {
-        ProtocolRegistry.ArtifactSet memory a = ProtocolVersions.levelBArtifacts();
+        ProtocolRegistry.ArtifactSet memory a = _artifacts();
         a.zkeySha256 = bytes32(0);
         vm.prank(PUBLISHER);
         vm.expectRevert(bytes("zkeySha256=0"));
@@ -755,7 +761,7 @@ contract ProtocolRegistryTest is Test {
     /// The graph pin is DELIBERATELY allowed to be 0 (unpinned — the .graph is not committed), unlike
     /// the mandatory zkey pin. Publishing with witnessMobileSha256 == 0 must succeed.
     function test_propose_allows_unpinned_graph() public {
-        ProtocolRegistry.ArtifactSet memory a = ProtocolVersions.levelBArtifacts();
+        ProtocolRegistry.ArtifactSet memory a = _artifacts();
         assertEq(a.witnessMobileSha256, bytes32(0), "fixture leaves the graph unpinned");
         _publishArtifacts(a);
         assertEq(reg.getArtifactSet(bArtId).witnessMobileSha256, bytes32(0));
@@ -770,29 +776,16 @@ contract ProtocolRegistryTest is Test {
     function test_wasm_pins_match_committed_artifacts() public view {
         assertEq(
             sha256(vm.readFileBinary("../circuits/build/consent_js/consent.wasm")),
-            ProtocolVersions.levelBArtifacts().witnessServerWasmSha256,
-            "levelb wasm pin != committed consent.wasm"
-        );
-        assertEq(
-            sha256(vm.readFileBinary("../circuits/build/verification_js/verification.wasm")),
-            ProtocolVersions.levelAArtifacts().witnessServerWasmSha256,
-            "levela wasm pin != committed verification.wasm"
+            _artifacts().witnessServerWasmSha256,
+            "wasm pin != committed consent.wasm"
         );
     }
 
     /// Guard the frozen zkey/r1cs pins as explicit non-zero constants (the values the Rust tests hash
     /// the committed files against). A pin silently zeroed or swapped in the fixture fails here.
     function test_frozen_zkey_and_r1cs_pins_are_the_expected_constants() public pure {
-        ProtocolRegistry.ArtifactSet memory a = ProtocolVersions.levelAArtifacts();
-        assertEq(a.zkeySha256, 0x9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992);
-        assertEq(
-            a.witnessServerR1csSha256, 0x8890e52860b5b43535143682892bd6fa87ffefab3084b4eb2186b91c99be6fe8
-        );
-
-        ProtocolRegistry.ArtifactSet memory b = ProtocolVersions.levelBArtifacts();
-        assertEq(b.zkeySha256, 0xf83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868);
-        assertEq(
-            b.witnessServerR1csSha256, 0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7
-        );
+        ProtocolRegistry.ArtifactSet memory current = _artifacts();
+        assertEq(current.zkeySha256, ZKEY_SHA256);
+        assertEq(current.witnessServerR1csSha256, R1CS_SHA256);
     }
 }

@@ -1,5 +1,12 @@
 # DogTag — ZK Trusted-Setup Ceremony (production)
 
+> **RETIRED / HISTORICAL - not runnable.**
+> This documents the Level-A `verification.circom` ceremony, whose circuit, ceremony scripts
+> (`scripts/ceremony.sh`, `scripts/setup.sh`) and `npm run compile-circuit` / `npm run build-circuit`
+> were removed when the owner-revealing layer was retired. The commands below no longer resolve and are
+> kept only as provenance for the already-deployed Level-A verifier. The live owner-hidden consent
+> ceremony is `circuits/scripts/ceremony-consent.sh` (transcript `docs/CEREMONY_TRANSCRIPT.consent.md`).
+
 > **See also** [`CEREMONY_RUNBOOK.md`](./CEREMONY_RUNBOOK.md) — the expanded, captain-fill-in production
 > runbook (participant slot table, attestation/transcript format, air-gapped step detail). This file is the
 > concise version; `ceremony.sh` points operators at the runbook for the deploy hand-off.

@@ -7,7 +7,7 @@
 //! 3. Calls `prover_ffi::prove_verification(...)` with `circuits/build/verification_final.zkey`.
 //! 4. Independently VERIFIES the returned proof against `circuits/build/verification_key.json`
 //!    (NOT the zkey), reconstructing the ark proof from the Solidity-calldata strings (undoing the
-//!    snarkjs->Solidity b-swap) — same harness pattern as dogtag-prover-rs/tests/prove.rs.
+//!    snarkjs->Solidity b-swap).
 //! 5. Asserts the 7 public signals equal the independently-recomputed
 //!    [dogTagId, purpose, relayer, subject, nullifier, keyHash, R].
 //!

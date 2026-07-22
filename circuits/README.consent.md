@@ -5,12 +5,12 @@ Groth16 circuit proving **owner-unlinkable consent**: that a **hidden** pet owne
 milestone **M2** of the Level-B rework (spec: `dogtag-zkverify-z2/level-b-spec.md`). Built with the
 same toolchain as the verification circuit (circom 2.1.9 + snarkjs 0.7.6 + circomlib 2.0.5).
 
-`DogTagConsent` **supersedes** the Level-A [`verification.circom`](README.verification.md), which
-exposed `subject` (the owner) + `keyHash` as public signals. It does **not replace it yet**:
-`verification.circom` is **frozen** (pinned dev zkey, its own test) and is LEFT UNTOUCHED. The
+`DogTagConsent` **superseded** the retired Level-A `verification.circom`, which
+exposed `subject` (the owner) + `keyHash` as public signals. That owner-revealing circuit source has
+since been retired (its build products + ceremony transcript remain as historical provenance). The
 shared `NodeHash`/`LessThanField`/`LessEqThanField` templates were **copied verbatim** into
-[`lib/merkle_inclusion.circom`](lib/merkle_inclusion.circom) (kept bit-identical so both circuits
-agree on the integer sort inside `hashNode`), NOT refactored out of the frozen circuit.
+[`lib/merkle_inclusion.circom`](lib/merkle_inclusion.circom) (kept bit-identical so the two circuits
+agreed on the integer sort inside `hashNode`), NOT refactored out of the then-frozen circuit.
 
 > **DEV setup vs the real ceremony.** `scripts/setup-consent.sh` is the throwaway DEV trusted setup
 > (self-generated ptau, forgeable) used only by the circuit test below. The **real testnet-grade phase-2
@@ -29,7 +29,7 @@ agree on the integer sort inside `hashNode`), NOT refactored out of the frozen c
 
 `DogTagConsent(depth)` (instantiated `main = DogTagConsent(6)` — inclusion paths up to 6 siblings, so
 trees up to `2^6 = 64` leaves; the Level-B tree is 3 owner leaves + credential attributes, well under
-64). Unlike `verification.circom`, this circuit does **NOT** re-derive the tree — it folds three
+64). Unlike the retired `verification.circom`, this circuit does **NOT** re-derive the tree — it folds three
 **owner leaves** up caller-supplied M1 inclusion **paths** (private inputs) to the public root `R`:
 
 - **(1..3)** Recompute the three reserved owner leaves `Poseidon5([DS_LEAF, keyPath, salt, typeTag,
@@ -48,7 +48,7 @@ trees up to `2^6 = 64` leaves; the Level-B tree is 3 owner leaves + credential a
 ## Public-signal ordering (ORDER IS LOAD-BEARING for M4 calldata; verified via `build/consent.sym`)
 
 snarkjs orders public signals by wire index, and circom gives **OUTPUT signals the lowest wire
-indices** — so, as in `verification.circom`, **all seven public signals are declared as OUTPUTS** (in
+indices** — so, as in the retired `verification.circom`, **all seven public signals are declared as OUTPUTS** (in
 this exact order) to fix the vector. The echoed outputs (`out* <== in*`) are fully constrained by
 their private input, so exposing them as outputs does not weaken soundness.
 
@@ -143,7 +143,7 @@ Since M3, `build/consent.r1cs`, `build/consent_final.zkey`, `build/consent_verif
 `build/consent_js/consent.wasm` are **committed**, so `npm run test-consent` runs the full suite against
 the **real production key** (33/33 green: round-trip verify + R-parity + negatives + D5). It still
 **SKIPs cleanly (exit 0)** if those artifacts are absent, so it never reds an unbuilt checkout — it is a
-**standalone heavy manual gate** (like `test-circuit`), intentionally **not** wired into `make test`.
+**standalone heavy manual gate**, intentionally **not** wired into `make test`.
 
 > **`build-consent`/`setup-consent.sh` produce a DEV key that MUST NOT be deployed.** Its
 > `Groth16Verifier.consent.dev.sol` comes from a locally-generated power-of-tau with a single
@@ -169,7 +169,7 @@ verifier `0x272be146…`. Both runtimes and constructor wiring match the compile
 registry's `sbt` is immutable, this deployment supersedes M4's `0x53F988Ae…`, which is permanently bound
 to the mutable Level-A SBT and is **deprecated / do not use for Level-B** (it was never live and has zero
 `Verified` events). `contracts/script/DeployCustodialIssuance.s.sol` deploys the canonical pair; the M4
-`DeployConsentRegistry.s.sol` is superseded. The pair remains **additive and not live**: the Level-A
+`DeployConsentRegistry.s.sol` (now removed) is superseded. The pair remains **additive and not live**: the Level-A
 `VerificationRegistry` `0x4E2f0996…` still serves every consumer until the **M7** cutover. The M5 app side - the
 device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) - has landed
 too, and **M-2 has since added the issuer end of that handoff**: vet-api's

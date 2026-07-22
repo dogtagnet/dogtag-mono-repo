@@ -26,20 +26,20 @@ Moving admin to an `N`-of-`M` multisig removes the single point of compromise wh
 | Contract | Admin mechanism | Hand-off |
 |---|---|---|
 | `IssuerRegistry` | `AccessControlDefaultAdminRules` (3-day) + `WHITELIST_ADMIN` role | two-step `begin`/`accept` + grant/revoke `WHITELIST_ADMIN` |
-| `VerificationRegistry` | `AccessControlDefaultAdminRules` (2-day) | two-step `begin`/`accept` |
-| `DogTagSBT` (fresh deploy) | `AccessControlDefaultAdminRules` (3-day) | two-step `begin`/`accept` |
-| `DogTagSBT` (**currently live**) | plain `AccessControlEnumerable` | atomic `grantRole`→`revokeRole` (see note) |
+| `VerificationRegistryConsent` | `AccessControlDefaultAdminRules` (2-day) | two-step `begin`/`accept` |
+| `DogTagSBTConsent` (fresh deploy) | `AccessControlDefaultAdminRules` (3-day) | two-step `begin`/`accept` |
+| a legacy plain-`AccessControlEnumerable` SBT instance | plain `AccessControlEnumerable` | atomic `grantRole`→`revokeRole` (see note) |
 | `DogTagIssuerFactory` | `Ownable2Step` | `transferOwnership`→`acceptOwnership` |
 | `DogTagIssuer` clones | governed via `IssuerRegistry` admin (`hasRole(0x00)`) | covered transitively by the `IssuerRegistry` hand-off; no own admin |
-| `ConsentKeyRegistry` | none (permissionless bind) | nothing to migrate |
-| `Groth16Verifier`, `Poseidon6` | none | nothing to migrate |
+| `Groth16VerifierConsent`, `Poseidon6` | none | nothing to migrate |
 
-**Legacy `DogTagSBT` note.**
-The live SBT (`0x1FB8…`) predates the two-step upgrade in this PR and is still plain `AccessControlEnumerable`.
-A soulbound token contract is not upgradeable, and redeploying would orphan every minted pet + every referencing credential, so the two-step protection cannot be retrofitted on-chain.
-The migration therefore hands the live SBT over with an atomic `grantRole(DEFAULT_ADMIN_ROLE, multisig)` then `revokeRole(DEFAULT_ADMIN_ROLE, eoa)` — the multisig itself is the security boundary.
-The upgraded two-step code applies to any **fresh** SBT deploy.
-`script/GovernanceMigration.sol` auto-detects which branch a given SBT needs (`supportsTwoStep`).
+> The owner-revealing Level-A contracts (`VerificationRegistry`, `DogTagSBT`, `ConsentKeyRegistry`, `Groth16Verifier`) were retired; `MigrateGovernance.s.sol` now reads the owner-hidden `VerificationRegistryConsent`/`DogTagSBTConsent` targets from `deployments/roax.json`. Their already-deployed Level-A instances remain on-chain, and the Track-1 hand-off (above) that moved their admin to signer-1 is historical.
+
+**Legacy plain-`AccessControlEnumerable` SBT note.**
+`script/GovernanceMigration.sol` auto-detects (`supportsTwoStep`) whether a target SBT is two-step (`AccessControlDefaultAdminRules`) or a legacy plain `AccessControlEnumerable` instance.
+The forward Track-2 target `DogTagSBTConsent` (`0x96Cba…`) is a **fresh two-step deploy**, so it is handed over with the timelocked two-step `begin`/`accept`.
+A plain `AccessControlEnumerable` SBT cannot be retrofitted on-chain — a soulbound token contract is not upgradeable, and redeploying would orphan every minted pet + every referencing credential — so such an instance is instead handed over with an atomic `grantRole(DEFAULT_ADMIN_ROLE, multisig)` then `revokeRole(DEFAULT_ADMIN_ROLE, eoa)`, the multisig itself being the security boundary.
+The still-live Level-A `DogTagSBT` (`0x1FB8…`) is such a plain-`AccessControlEnumerable` instance.
 
 ## Procedure
 
@@ -65,7 +65,7 @@ The script logs each contract's accept-ETA.
 
 ### 2. Wait for the timelocks
 
-`IssuerRegistry` and the fresh `DogTagSBT` use a 3-day delay; `VerificationRegistry` uses 2 days.
+`IssuerRegistry` and the fresh `DogTagSBTConsent` use a 3-day delay; `VerificationRegistryConsent` uses 2 days.
 Phase 2 `acceptDefaultAdminTransfer()` reverts until each ETA passes.
 
 ### 3. Phase 2 — accept (run by / through the multisig)
@@ -73,8 +73,8 @@ Phase 2 `acceptDefaultAdminTransfer()` reverts until each ETA passes.
 The multisig must execute, for each contract, the calls in `GovernanceMigration.accept`:
 
 - `IssuerRegistry.acceptDefaultAdminTransfer()` then `IssuerRegistry.revokeRole(WHITELIST_ADMIN, oldAdmin)`
-- `VerificationRegistry.acceptDefaultAdminTransfer()`
-- `DogTagSBT.acceptDefaultAdminTransfer()` **or** (legacy) `DogTagSBT.revokeRole(0x00, oldAdmin)`
+- `VerificationRegistryConsent.acceptDefaultAdminTransfer()`
+- `DogTagSBTConsent.acceptDefaultAdminTransfer()` (two-step) **or**, for a legacy plain-`AccessControlEnumerable` SBT, `revokeRole(0x00, oldAdmin)`
 - `DogTagIssuerFactory.acceptOwnership()`
 
 **If the multisig is a Safe** (a contract, not a single key), submit these as Safe transactions from the Safe UI/SDK — the call list above is the exact set, and the Phase 1 log echoes the targets.
