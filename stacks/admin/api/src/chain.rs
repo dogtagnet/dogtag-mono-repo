@@ -1,8 +1,8 @@
 //! `ChainClient` trait abstracting the ROAX (chainId 135) on-chain surface the CENTRAL/admin backend
 //! needs: the `IssuerRegistry` whitelist (`whitelistFor` / `delistFor` / `isWhitelistedFor`) written by
-//! the WHITELIST_ADMIN signer, plus `DogTagSBT.mint(to,dogTagId,root)` written by the ISSUER signer.
+//! the WHITELIST_ADMIN signer, plus issuer-role and governance administration.
 //! An Alloy-backed implementation broadcasts real transactions; an in-memory `MemChain` emulates the
-//! whitelist set + the SBT mint/ownerOf so the full HTTP flow is testable without a live node.
+//! whitelist and governance surfaces so the full HTTP flow is testable without a live node.
 //!
 //! Signing (impl §1.8): EIP-1559 with a legacy `gas_price` fallback; chainId pinned to 135.
 
@@ -25,9 +25,7 @@ sol! {
 
     #[sol(rpc)]
     contract IDogTagSBT {
-        function mint(address to, uint256 id, bytes32 root) external;
-        function ownerOf(uint256 id) external view returns (address);
-        // AccessControl surface — the DEFAULT_ADMIN holder grants ISSUER_ROLE so a vet can mint.
+        // AccessControl surface — the DEFAULT_ADMIN holder grants ISSUER_ROLE to owner-hidden issuers.
         function grantRole(bytes32 role, address account) external;
         function hasRole(bytes32 role, address account) external view returns (bool);
     }
@@ -66,7 +64,7 @@ pub fn default_admin_role() -> String {
     format!("0x{}", hex::encode([0u8; 32]))
 }
 
-/// `DogTagSBT.ISSUER_ROLE = keccak256("ISSUER")` — the role that gates `mint`.
+/// `DogTagSBTConsent.ISSUER_ROLE = keccak256("ISSUER")` — gates `mintCustodial`.
 pub fn issuer_role_key() -> String {
     use alloy::primitives::keccak256;
     let h: FixedBytes<32> = keccak256(b"ISSUER");
@@ -77,8 +75,6 @@ pub fn issuer_role_key() -> String {
 pub enum ChainError {
     #[error("rpc: {0}")]
     Rpc(String),
-    #[error("not found")]
-    NotFound,
     #[error("{0}")]
     Other(String),
 }
@@ -102,15 +98,6 @@ fn parse_b256(h: &str) -> B256 {
 
 fn parse_addr(h: &str) -> Address {
     h.parse::<Address>().unwrap_or(Address::ZERO)
-}
-
-fn parse_u256_dec_or_hex(s: &str) -> U256 {
-    let t = s.trim();
-    if let Some(h) = t.strip_prefix("0x") {
-        U256::from_str_radix(h, 16).unwrap_or(U256::ZERO)
-    } else {
-        U256::from_str_radix(t, 10).unwrap_or(U256::ZERO)
-    }
 }
 
 /// Abstract chain surface. Addresses/roots are passed as lowercase `0x..` hex strings.
@@ -147,21 +134,8 @@ pub trait ChainClient: Send + Sync {
         signer: &str,
     ) -> Result<bool, ChainError>;
 
-    /// DogTagSBT.mint(to, dogTagId, root) — the admin holds the ISSUER role.
-    async fn mint(
-        &self,
-        account_index: u32,
-        sbt_addr: &str,
-        to: &str,
-        dog_tag_id: &str,
-        root: &str,
-    ) -> Result<SentTx, ChainError>;
-
-    /// DogTagSBT.ownerOf(dogTagId) (lowercase 0x.. address; Err(NotFound) if unminted).
-    async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError>;
-
-    /// DogTagSBT.grantRole(ISSUER_ROLE, grantee) — broadcast by the admin signer (which holds
-    /// DEFAULT_ADMIN_ROLE), granting the mint capability so `grantee` can call `DogTagSBT.mint`.
+    /// DogTagSBTConsent.grantRole(ISSUER_ROLE, grantee) — broadcast by the admin signer (which holds
+    /// DEFAULT_ADMIN_ROLE), granting `grantee` the owner-hidden `mintCustodial` capability.
     async fn grant_issuer_role(
         &self,
         account_index: u32,
@@ -222,15 +196,13 @@ pub trait ChainClient: Send + Sync {
 }
 
 // --------------------------------------------------------------------------------------------
-// MemChain — in-memory emulation of the whitelist set + SBT mint/ownerOf.
+// MemChain — in-memory emulation of the whitelist + governance surfaces.
 // --------------------------------------------------------------------------------------------
 
 #[derive(Default)]
 struct MemChainInner {
     /// (registry_addr, record_type, signer) -> whitelisted.
     whitelist: HashMap<(String, String, String), bool>,
-    /// (sbt_addr, dog_tag_id) -> owner address.
-    owners: HashMap<(String, String), String>,
     /// (sbt_addr, account) holding DogTagSBT.ISSUER_ROLE.
     issuer_roles: std::collections::HashSet<(String, String)>,
     /// admin signer addresses by account index.
@@ -405,36 +377,6 @@ impl ChainClient for MemChain {
             .unwrap_or(false))
     }
 
-    async fn mint(
-        &self,
-        account_index: u32,
-        sbt_addr: &str,
-        to: &str,
-        dog_tag_id: &str,
-        _root: &str,
-    ) -> Result<SentTx, ChainError> {
-        let mut g = self.inner.lock().unwrap();
-        g.signers
-            .get(&account_index)
-            .cloned()
-            .ok_or_else(|| ChainError::Other("no issuer signer for index".into()))?;
-        let key = (sbt_addr.to_lowercase(), normalize_id(dog_tag_id));
-        if g.owners.contains_key(&key) {
-            return Err(ChainError::Other("ERC721: token already minted".into()));
-        }
-        g.owners.insert(key, to.to_lowercase());
-        let tx_hash = Self::next_tx(&mut g);
-        Ok(SentTx { tx_hash })
-    }
-
-    async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
-        let g = self.inner.lock().unwrap();
-        g.owners
-            .get(&(sbt_addr.to_lowercase(), normalize_id(dog_tag_id)))
-            .cloned()
-            .ok_or(ChainError::NotFound)
-    }
-
     async fn grant_issuer_role(
         &self,
         account_index: u32,
@@ -548,12 +490,6 @@ fn zero_addr() -> String {
     format!("0x{}", hex::encode([0u8; 20]))
 }
 
-/// Normalize a dogTagId (decimal or hex) into a canonical decimal string so MemChain keys collide
-/// regardless of input radix.
-fn normalize_id(dog_tag_id: &str) -> String {
-    parse_u256_dec_or_hex(dog_tag_id).to_string()
-}
-
 // --------------------------------------------------------------------------------------------
 // Calldata encoders (canonical typed ABI).
 // --------------------------------------------------------------------------------------------
@@ -593,16 +529,6 @@ pub fn create_issuer_calldata(name: &str, record_type: &str, business: &str) -> 
         name: name.to_string(),
         recordType: parse_b256(record_type),
         business: parse_addr(business),
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
-
-pub fn mint_calldata(to: &str, dog_tag_id: &str, root: &str) -> String {
-    use alloy::sol_types::SolCall;
-    let call = IDogTagSBT::mintCall {
-        to: parse_addr(to),
-        id: parse_u256_dec_or_hex(dog_tag_id),
-        root: parse_b256(root),
     };
     format!("0x{}", hex::encode(call.abi_encode()))
 }
@@ -683,7 +609,7 @@ impl AlloyChain {
             .send_transaction(tx)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        // wait for the tx to be mined so on-chain reads (isWhitelistedFor/ownerOf) reflect it.
+        // Wait for the tx to be mined so subsequent on-chain reads reflect it.
         let receipt = pending
             .get_receipt()
             .await
@@ -747,38 +673,6 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
-    }
-
-    async fn mint(
-        &self,
-        account_index: u32,
-        sbt_addr: &str,
-        to: &str,
-        dog_tag_id: &str,
-        root: &str,
-    ) -> Result<SentTx, ChainError> {
-        let calldata = mint_calldata(to, dog_tag_id, root);
-        self.sign_and_send(account_index, sbt_addr, &calldata).await
-    }
-
-    async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IDogTagSBT::new(parse_addr(sbt_addr), provider);
-        match c.ownerOf(parse_u256_dec_or_hex(dog_tag_id)).call().await {
-            Ok(r) => Ok(format!("{:#x}", r._0)),
-            Err(e) => {
-                let s = e.to_string();
-                if s.contains("nonexistent") || s.contains("ERC721") || s.contains("revert") {
-                    Err(ChainError::NotFound)
-                } else {
-                    Err(ChainError::Rpc(s))
-                }
-            }
-        }
     }
 
     async fn grant_issuer_role(
@@ -1063,20 +957,6 @@ mod tests {
         assert_eq!(record_type_key("grooming").len(), 66);
     }
 
-    /// `parse_u256_dec_or_hex` accepts decimal or `0x`-hex (trimming whitespace) and falls back to ZERO on
-    /// garbage; decimal and hex spellings of the same number must parse equal.
-    #[test]
-    fn parse_u256_dec_or_hex_radix_and_fallback() {
-        use alloy::primitives::U256;
-        assert_eq!(parse_u256_dec_or_hex("42"), U256::from(42u64));
-        assert_eq!(parse_u256_dec_or_hex("0x2a"), U256::from(42u64));
-        assert_eq!(parse_u256_dec_or_hex("  0x2a  "), U256::from(42u64));
-        assert_eq!(parse_u256_dec_or_hex("42"), parse_u256_dec_or_hex("0x2a"));
-        assert_eq!(parse_u256_dec_or_hex(""), U256::ZERO);
-        assert_eq!(parse_u256_dec_or_hex("not-a-number"), U256::ZERO);
-        assert_eq!(parse_u256_dec_or_hex("0xzz"), U256::ZERO);
-    }
-
     /// `create_issuer_calldata` selects the correct 4-byte selector and is deterministic for fixed args.
     #[test]
     fn create_issuer_calldata_selector_and_determinism() {
@@ -1125,13 +1005,4 @@ mod tests {
         assert_ne!(p1, p3);
     }
 
-    /// `normalize_id` canonicalizes any radix into the decimal string so MemChain keys collide regardless
-    /// of how the caller spelled the dogTagId.
-    #[test]
-    fn normalize_id_collapses_radix() {
-        assert_eq!(normalize_id("42"), "42");
-        assert_eq!(normalize_id("0x2a"), "42");
-        assert_eq!(normalize_id("42"), normalize_id("0x2a"));
-        assert_eq!(normalize_id("garbage"), "0");
-    }
 }

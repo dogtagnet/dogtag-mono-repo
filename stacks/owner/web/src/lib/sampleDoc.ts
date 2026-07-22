@@ -3,7 +3,7 @@ import type { WrappedDoc } from "@dogtag/standard";
 /**
  * A real, integrity-VALID DogTag credential (a rabies VACCINATION for "Rex", dog tag #424242),
  * produced by the SDK's `wrapDocument` with deterministic salts. Used by the "Fill sample" demo
- * button and the e2e test so the receive → hold → present flow can be exercised without a live
+ * button and the e2e test so the receive → hold → share flow can be exercised without a live
  * issuer. Its Merkle root is genuine — `checkIntegrity` passes on it.
  */
 export const SAMPLE_WRAPPED_DOC: WrappedDoc = {

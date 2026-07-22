@@ -17,10 +17,7 @@ pub struct Config {
     // Watched contracts (lowercase `0x…`).
     pub factory_addr: String,
     pub registry_addr: String,
-    /// Level-A `VerificationRegistry` (subject-bearing `Verified`).
-    pub verification_registry_addr: String,
-    /// Level-B `VerificationRegistryConsent` (subject-less, deadline-bearing `Verified`). Watched
-    /// alongside the Level-A registry so the M8 dual-decode has no blind window ahead of the M7 flip.
+    /// The unified owner-hidden `VerificationRegistryConsent`.
     pub verification_registry_consent_addr: String,
     /// `DogTagIssuer` clones known from the deployment record (government + demo clones), so
     /// issuances anchored *before* the indexer's first run are still attributed to a known clone.
@@ -54,8 +51,7 @@ impl Config {
         WatchContext {
             factory: self.factory_addr.clone(),
             registry: self.registry_addr.clone(),
-            verification_registry: self.verification_registry_addr.clone(),
-            verification_registry_consent: self.verification_registry_consent_addr.clone(),
+            verification_registry: self.verification_registry_consent_addr.clone(),
             known_clones: known,
         }
     }

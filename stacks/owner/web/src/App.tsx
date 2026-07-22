@@ -4,7 +4,6 @@ import type { OwnerWallet } from "./lib/wallet";
 import { Wallet } from "./pages/Wallet";
 import { Receive } from "./pages/Receive";
 import { CredentialDetail } from "./pages/CredentialDetail";
-import { Present } from "./pages/Present";
 import { Share } from "./pages/Share";
 import { Receipt } from "./pages/Receipt";
 import { Receipts } from "./pages/Receipts";
@@ -45,24 +44,20 @@ export function App() {
         <NavLink to="/receipts" className={({ isActive }) => (isActive ? "active" : "")}>
           Receipts
         </NavLink>
-        <NavLink to="/present" className={({ isActive }) => (isActive ? "active" : "")}>
-          Present
-        </NavLink>
       </nav>
       <Routes>
         <Route path="/" element={<Navigate to="/wallet" replace />} />
         <Route path="/wallet" element={<Wallet />} />
         <Route path="/receive" element={<Receive />} />
         <Route path="/receipts" element={<Receipts />} />
-        <Route path="/credential/:id" element={<CredentialDetail wallet={wallet} />} />
+        <Route path="/credential/:id" element={<CredentialDetail />} />
         <Route path="/receipt/:id" element={<Receipt />} />
         <Route path="/share/:id" element={<Share />} />
-        <Route path="/present" element={<Present wallet={wallet} />} />
         <Route path="*" element={<Navigate to="/wallet" replace />} />
       </Routes>
       <p className="foot">
-        Your credentials and keys live only on this device. Proofs are generated with your own key;
-        verifiers learn only that a valid credential exists — never its contents.
+        Your credentials and keys live only on this device. You decide which credential fields to
+        share.
       </p>
     </div>
   );

@@ -28,7 +28,8 @@ pub struct Owner {
     pub email: Option<String>,
     #[serde(default)]
     pub password_hash: Option<String>,
-    /// self-custodial / embedded-MPC wallet address the SBT is minted to (§4.1), lowercased.
+    /// self-custodial / embedded-MPC wallet used for account authentication, lowercased. It is never
+    /// an owner-hidden SBT recipient.
     pub wallet_address: String,
     pub push_token: Option<String>,
     /// encrypted owner PII (name etc.) under a per-record DEK — erasure shreds this.
@@ -47,20 +48,6 @@ pub struct Microchip {
     pub body_location: String,
 }
 
-/// The owner's official identity, entered by the admin at mint time and signed into the
-/// DOG_PROFILE `credentialSubject.ownerIdentity`. All three fields are free text; the schema
-/// requires the keys present as strings (empty allowed for non-admin mint paths).
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OwnerIdentity {
-    /// country that issued the owner's ID (e.g. "GB", "SG", or a country name).
-    pub country_of_identification: String,
-    /// owner's government ID / passport number (free text).
-    pub identification: String,
-    /// owner's official full name exactly as on the ID.
-    pub name: String,
-}
-
 /// One dated, unit-bearing weight measurement (DOG_PROFILE `weightHistory[i]`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WeightEntry {
@@ -72,9 +59,7 @@ pub struct WeightEntry {
     pub measured_on: String,
 }
 
-/// Optional DOG_PROFILE identity fields supplied at `POST /v1/pets` (or defaulted at mint).
-/// All optional on input; `build_profile_vc` fills sensible defaults so the wrapped VC always
-/// passes `validate_schema` (impl §1.6 / CHANGESPEC §0/§1.8).
+/// Optional DOG_PROFILE identity fields retained by the pet-management API.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PetProfile {
     /// taxonomic species, defaults to "Canis lupus familiaris".
@@ -109,7 +94,7 @@ pub struct Pet {
     /// optional DOG_PROFILE identity fields (species/breed/sex/neuterStatus/dateOfBirth/weightHistory).
     #[serde(default)]
     pub profile: PetProfile,
-    /// assigned at mint (non-personal random/sequential id — NEVER a hash of the microchip).
+    /// Historical tag id retained for rows created by the retired admin issuance path.
     #[serde(rename = "dogTagId")]
     pub dog_tag_id: Option<String>,
     pub root: Option<String>,
@@ -119,7 +104,7 @@ pub struct Pet {
     // M7 provenance mirror (§4.2): QUERYABLE plaintext columns that close the admin gap - provenance
     // previously lived ONLY inside the encrypted `sealed_doc`. Persisted BESIDE `R`, never inside it.
     // `issuer_addr` is the issuer clone (== `WrappedDoc.protocol.issuerClone`/`issuer.documentStore`);
-    // `issuer_signer` is who issued/minted. `Option`/defaulted so pre-M7 rows still load.
+    // `issuer_signer` is who issued the historical row. `Option`/defaulted for compatibility.
     #[serde(default)]
     pub chain_id: Option<u64>,
     #[serde(default)]
@@ -144,8 +129,8 @@ pub struct Credential {
     /// encrypted wrapped-doc reference (salts/data) — erasure shreds it.
     pub sealed_doc: Sealed,
     // M7 provenance mirror (§4.2): QUERYABLE plaintext columns projected from the imported
-    // `WrappedDoc.protocol` block, or its §4.4 Level-A default when absent (pre-M7 doc). Persisted
-    // BESIDE `R`. `Option`/defaulted so pre-M7 rows still load.
+    // `WrappedDoc.protocol` block, or the unified owner-hidden default when absent. Persisted BESIDE
+    // `R`. `Option`/defaulted so older rows still load.
     #[serde(default)]
     pub chain_id: Option<u64>,
     #[serde(default)]
@@ -268,8 +253,7 @@ pub struct ConsentReceipt {
     pub sealed: Sealed,
 }
 
-/// A relayed verification record (impl §4.1) — the off-chain copy of a VerificationConsent + receipt.
-/// Deletable under erasure (the on-chain Verified tuple persists but is unlinkable).
+/// A historical off-chain verification record retained for receipt reads and erasure.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VerificationRecord {
     pub record_id: String,
@@ -278,7 +262,6 @@ pub struct VerificationRecord {
     pub dog_tag_id: String,
     pub purpose: String,
     pub relayer: String,
-    pub mode: String,
     pub status: String,
     /// encrypted consent + receipt body — erasure shreds it.
     pub sealed: Sealed,
@@ -317,9 +300,6 @@ pub trait Store: Send + Sync {
     async fn microchip_exists(&self, code: &str) -> bool;
     /// Atomic: reserve a microchip code; true if newly reserved (unique), false if taken.
     async fn reserve_microchip(&self, code: &str) -> bool;
-    /// Allocate the next non-personal sequential dogTagId.
-    async fn next_dog_tag_id(&self) -> u64;
-
     // credentials
     async fn put_credential(&self, c: Credential);
     async fn get_credential(&self, id: &str) -> Option<Credential>;
@@ -389,7 +369,6 @@ struct MemInner {
     admin_sessions: std::collections::HashSet<String>,
     pets: HashMap<String, Pet>,
     microchips: std::collections::HashSet<String>,
-    dog_tag_seq: u64,
     credentials: HashMap<String, Credential>,
     share_refs: HashMap<String, ShareRef>,
     jtis: std::collections::HashSet<String>,
@@ -470,12 +449,6 @@ impl Store for MemStore {
             .microchips
             .insert(code.to_string())
     }
-    async fn next_dog_tag_id(&self) -> u64 {
-        let mut g = self.inner.write().unwrap();
-        g.dog_tag_seq += 1;
-        g.dog_tag_seq
-    }
-
     async fn put_credential(&self, c: Credential) {
         self.inner
             .write()

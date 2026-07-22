@@ -85,9 +85,8 @@ cargo build -q --release -p vet-api
 mkdir -p "$ROOT/.demo"
 DEMO_MODE=1 ADMIN_PASSWORD=$ADMIN_PW OPERATOR_PASSWORD=$OP_PW \
   CENTRAL_HMAC_SECRET=dev-central-hmac-secret ROAX_RPC=$RPC CHAIN_ID=$CHAIN_ID \
-  ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  VERIFICATION_REGISTRY_CONSENT_ADDR=$VR SBT_ADDR=$SBT SBT_CONSENT_ADDR=$SBT \
-  PROFILE_DOCUMENT_STORE=$PROFILE_ISSUER PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
+  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
   ISSUER_NAME="Consent E2E Groomer" ISSUER_DOMAIN=groomer.e2e BUSINESS_ID=biz-e2e \
   BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=$PORT DEPLOYMENT_URL=$GROOMER \
   "$ROOT/target/release/vet-api" >"$LOG" 2>&1 &
@@ -189,7 +188,7 @@ OTOK="$(curl -fsS -X POST "$GROOMER/login" -H 'content-type: application/json' \
   -d "{\"password\":\"$OP_PW\"}" | jq -r .token)"
 PROOF="$(jq -nc --argjson a "$PUB_A" --argjson b "$PUB_B" --argjson c "$PUB_C" --argjson pubSignals "$PUB" \
   '{a:$a,b:$b,c:$c,pubSignals:$pubSignals}')"
-ACK="$(curl -sS --max-time 180 -X POST "$GROOMER/verify/consent/levelb" \
+ACK="$(curl -sS --max-time 180 -X POST "$GROOMER/v1/verify/consent" \
   -H "authorization: Bearer $OTOK" -H 'content-type: application/json' \
   -d "$(jq -nc --argjson proof "$PROOF" '{proof:$proof}')")"
 [ "$(printf %s "$ACK" | jq -r .status 2>/dev/null || true)" = recording ] || fail "submit failed: $ACK"

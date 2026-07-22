@@ -331,7 +331,7 @@ async fn issue(
         issuer_addr: issuer_addr.clone(),
         // M7 provenance mirror (§4.2), from the `protocol` block just stamped on `doc`.
         chain_id: Some(st.cfg.chain_id),
-        protocol_version: Some(dogtag_standard::wrap::LEVEL_A_VERSION.to_string()),
+        protocol_version: Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string()),
         verification_registry: Some(st.cfg.verification_registry_addr.clone()),
         issuer_signer: if issuer_signer.is_empty() {
             None

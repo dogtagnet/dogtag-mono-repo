@@ -1,4 +1,4 @@
-// REDACT — holder-controlled selective disclosure, the Merkle counterpart of the ZK present flow.
+// REDACT — holder-controlled selective disclosure for a browser-held record.
 //
 // A held credential is a salted Merkle tree of typed leaves. `@dogtag/standard`'s `obfuscate` moves a
 // chosen leaf's HASH into `privacy.obfuscated[]` and drops its cleartext, leaving the on-chain Merkle
@@ -7,7 +7,7 @@
 // credential (`checkIntegrity`) and that it is anchored/valid on-chain (`DogTagIssuer.isValid`) — they
 // just cannot read the withheld values. This is the SAME primitive the native holder apps use for
 // "Share redacted" (the mobile FFI `obfuscateDocumentJson`); the web wallet now offers it too. NO ZK on
-// this path — it is the selective-disclosure Merkle proof, distinct from the anonymous ZK presentation.
+// this path — it is a selective-disclosure Merkle proof, not an owner-consent proof.
 import { checkIntegrity, obfuscate, type FragmentState, type WrappedDoc } from "@dogtag/standard";
 import { decodeFields, type DecodedField } from "./credential";
 

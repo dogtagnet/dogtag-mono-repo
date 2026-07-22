@@ -58,6 +58,9 @@ pub fn signing_key() -> Result<SigningKey, SigningKeyError> {
 /// Build + sign the manifest for a known version, or `None` if the version is unrecognized.
 /// The content is assembled DRY from the file-verified artifact descriptor (§3.2) + deployment.
 pub fn signed_manifest(version: &str, key: &SigningKey) -> Option<SignedManifest> {
+    if version != dogtag_standard::wrap::LEVEL_B_VERSION {
+        return None;
+    }
     let content = manifest::build(version)?;
     Some(manifest::sign(&content, key))
 }
@@ -132,9 +135,9 @@ mod tests {
     }
 
     #[test]
-    fn both_current_versions_are_servable() {
+    fn only_the_unified_version_is_servable() {
         let key = test_key();
-        assert!(signed_manifest("dogtag-levela/1", &key).is_some());
+        assert!(signed_manifest("dogtag-levela/1", &key).is_none());
         assert!(signed_manifest("dogtag-levelb/1", &key).is_some());
     }
 

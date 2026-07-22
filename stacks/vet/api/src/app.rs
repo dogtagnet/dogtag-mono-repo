@@ -3,18 +3,16 @@
 use std::sync::Arc;
 
 use dogtag_standard::discovery::ConvenienceClaims;
-use dogtag_standard::schema::{validate_schema, DOGTAG_CONTEXT_URI};
 use dogtag_standard::wrap::{
-    wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION, LEVEL_B_VERSION,
+    wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_B_VERSION,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::auth::JwtKeys;
 use crate::calendar::{CalendarProvider, CentralClient};
 use crate::chain::{record_type_key, ChainClient};
 use crate::custody::Custody;
 use crate::oversight::OversightFeed;
-use crate::prover::ProverClient;
 use crate::store::Store;
 
 /// Resolved issuer/contract addresses + deployment config.
@@ -23,46 +21,18 @@ pub struct Config {
     pub deployment_url: String,
     pub rpc_url: String,
     pub issuer_registry_addr: String,
-    pub verification_registry_addr: String,
-    /// `VerificationRegistryConsent` address (env `VERIFICATION_REGISTRY_CONSENT_ADDR`) — the Level-B,
-    /// owner-hidden submit target for the 4-arg `recordVerificationZK(a,b,c,pub)`.
-    ///
-    /// Deliberately a SEPARATE field from [`Config::verification_registry_addr`] rather than an
-    /// overload of it, the same reasoning as [`Config::sbt_consent_addr`]: the two registries run side
-    /// by side through the migration (mirroring the indexer's `DEFAULT_VREG`/`DEFAULT_VREG_CONSENT`
-    /// pair), so the Level-A path keeps serving while the Level-B path is wired. The addresses are NOT
-    /// interchangeable — the two `recordVerificationZK` selectors differ, so pointing either path at
-    /// the other's registry reverts empty. Unset (zero address) → the Level-B submit route fails
-    /// closed as unconfigured.
+    /// Owner-hidden `VerificationRegistryConsent` address (env
+    /// `VERIFICATION_REGISTRY_CONSENT_ADDR`) — the sole verification submit target.
     pub verification_registry_consent_addr: String,
-    /// ConsentKeyRegistry address (env `CONSENT_KEY_REGISTRY_ADDR`) — the relayer-sponsored
-    /// `bindConsentKeyFor` target and the `keyOf`/`bindNonce` read surface for the ZK consent path.
-    /// LEVEL-A ONLY: Level-B retires the registry entirely (D2, the consent key moved into the tree).
-    pub consent_key_registry_addr: String,
     /// recordType (string) -> issuer clone address (documentStore).
     pub issuer_addrs: std::collections::HashMap<String, String>,
     pub issuer_name: String,
     pub issuer_domain: String,
-    /// DogTagSBT contract address — the mint target for the DOG_PROFILE SBT (env `SBT_ADDR`). The vet
-    /// signer must hold ISSUER_ROLE on this contract.
-    pub sbt_addr: String,
-    /// the documentStore the DOG_PROFILE VC anchors to (the DogTagSBT contract acts as the profile
-    /// store; env `PROFILE_DOCUMENT_STORE`, conventionally == `sbt_addr`).
-    pub profile_document_store: String,
-    /// `DogTagSBTConsent` address (env `SBT_CONSENT_ADDR`) — the Level-B, owner-blind mint target for
-    /// `mintCustodial(id, R)`. Deliberately a SEPARATE field from [`Config::sbt_addr`] rather than an
-    /// overload of it: the two registries run side by side through the migration (the same
-    /// dual-address pattern the indexer already uses for `DEFAULT_VREG`/`DEFAULT_VREG_CONSENT`), so
-    /// the Level-A path keeps minting while the Level-B path is wired. The vet signer must hold
-    /// ISSUER_ROLE here. Unset (zero address) → the custodial route fails closed as unconfigured.
+    /// `DogTagSBTConsent` address (env `SBT_CONSENT_ADDR`) — the owner-blind mint target for
+    /// `mintCustodial(id, R)`. The vet signer must hold ISSUER_ROLE here.
     pub sbt_consent_addr: String,
-    /// The `DogTagIssuer` CLONE that anchors Level-B profile roots (env `PROFILE_ISSUER_ADDR`) — the
+    /// The `DogTagIssuer` clone that anchors profile roots (env `PROFILE_ISSUER_ADDR`) — the
     /// `issue(R)` target that makes `rootIssuer[R]` resolve.
-    ///
-    /// This is NOT [`Config::profile_document_store`]. That field defaults to the SBT address because
-    /// under Level-A the SBT doubles as the DOG_PROFILE document store and `issue` is never called on
-    /// it; sending `issue(R)` there would revert. Level-B needs a real factory-deployed clone, and the
-    /// vet signer must be whitelisted for its recordType. Unset → the custodial route fails closed.
     pub profile_issuer_addr: String,
     /// account index of the vet signer that mints the DOG_PROFILE SBT (holds ISSUER_ROLE). Index 0 is
     /// the unlocked custody signer used everywhere else in the vet stack.
@@ -95,8 +65,7 @@ impl Config {
 pub struct AppState {
     pub store: Arc<dyn Store>,
     pub chain: Arc<dyn ChainClient>,
-    pub prover: Arc<dyn ProverClient>,
-    /// The Level-B consent prover (M7 P0), lazily loaded per request (fail-closed per request, not at
+    /// The consent prover, lazily loaded per request (fail-closed per request, not at
     /// boot — see [`crate::prover::ConsentProver`]). `disabled()` on instances that do not serve
     /// `/prove-consent`; `from_env()` (reads `CIRCUITS_BUILD_DIR`) on the prover-service.
     pub consent_prover: Arc<crate::prover::ConsentProver>,
@@ -137,8 +106,8 @@ pub fn protocol_meta(
 ) -> ProtocolMeta {
     ProtocolMeta {
         chain_id,
-        version: LEVEL_A_VERSION.to_string(),
-        verification_registry: cfg.verification_registry_addr.clone(),
+        version: LEVEL_B_VERSION.to_string(),
+        verification_registry: cfg.verification_registry_consent_addr.clone(),
         issuer_clone: issuer_clone.to_string(),
         issuer_signer: issuer_signer.to_string(),
     }
@@ -157,45 +126,10 @@ pub fn convenience_claims(
     issuer_clone: &str,
     purpose: &str,
 ) -> ConvenienceClaims {
-    convenience_claims_for_mode(cfg, chain_id, issuer_clone, purpose, "zk")
-}
-
-/// [`convenience_claims`] for a session whose `mode` is known — the M-4 per-session Level-B opt-in.
-///
-/// # This is NOT the version-stamp flip (P-3 / M-5)
-///
-/// The DEFAULT is unchanged and stays [`LEVEL_A_VERSION`] + the Level-A registry: every existing
-/// caller, every `zk`/`normal` session, and every flow with no session at all keeps advertising
-/// Level-A exactly as before. ONLY a session explicitly started with `mode="levelb"` advertises
-/// Level-B. That is what makes Level-B AVAILABLE without making it the DEFAULT — flipping the
-/// default is M-5, and it is deliberately not done here.
-///
-/// The two fields move TOGETHER and must never be split: an app that resolves the dogtag anchor for
-/// `protocol_version` and then compares it against a `verification_registry` from the other level
-/// fails closed with `RegistryMismatch`. Advertising `dogtag-levelb/1` beside the Level-A registry
-/// address would therefore make every validating app refuse the session.
-pub fn convenience_claims_for_mode(
-    cfg: &Config,
-    chain_id: u64,
-    issuer_clone: &str,
-    purpose: &str,
-    mode: &str,
-) -> ConvenienceClaims {
-    let (protocol_version, verification_registry) = if mode == "levelb" {
-        (
-            LEVEL_B_VERSION.to_string(),
-            cfg.verification_registry_consent_addr.clone(),
-        )
-    } else {
-        (
-            LEVEL_A_VERSION.to_string(),
-            cfg.verification_registry_addr.clone(),
-        )
-    };
     ConvenienceClaims {
-        protocol_version,
+        protocol_version: LEVEL_B_VERSION.to_string(),
         chain_id,
-        verification_registry,
+        verification_registry: cfg.verification_registry_consent_addr.clone(),
         issuer_clone: issuer_clone.to_string(),
         purpose: purpose.to_string(),
     }
@@ -272,183 +206,13 @@ pub fn rt_key(record_type: &str) -> String {
     record_type_key(record_type)
 }
 
-// --------------------------------------------------------------------------------------------
-// DOG_PROFILE (SBT) build/wrap — ported from the admin stack (stacks/admin/api/src/app.rs). The vet
-// now ISSUES dog tags: it builds the DOG_PROFILE VC with the owner-identity baked into the merkle
-// leaves, computes the root, and mints the SBT to the device wallet.
-// --------------------------------------------------------------------------------------------
-
-/// The DOG_PROFILE record type the vet mints SBT profiles under.
+/// The DOG_PROFILE record type used by owner-hidden profile issuance.
 pub const DOG_PROFILE: &str = "DOG_PROFILE";
-
-/// Build the issuer metadata for the vet's DOG_PROFILE issuer (documentStore == the DogTagSBT
-/// contract, which acts as the profile store).
-pub fn profile_issuer_meta(cfg: &Config) -> IssuerMeta {
-    IssuerMeta {
-        name: cfg.issuer_name.clone(),
-        domain: cfg.issuer_domain.clone(),
-        document_store: cfg.profile_document_store.clone(),
-        record_type: DOG_PROFILE.to_string(),
-    }
-}
-
-/// Build a COMPLETE, valid DOG_PROFILE VC (plain JSON — the shape `validate_schema` operates on) from
-/// the session's pet record + owner identity (ported from admin `build_profile_vc`). Missing optional
-/// DOG_PROFILE subject fields fall back to sensible defaults. The returned VC passes `validate_schema`
-/// for recordType DOG_PROFILE; `wrap_vc` then converts it to typed-scalar leaves + the Merkle root.
-pub fn build_profile_vc(
-    cfg: &Config,
-    name: &str,
-    microchip: &crate::store::Microchip,
-    profile: &crate::store::PetProfile,
-    owner_identity: &crate::store::OwnerIdentity,
-    owner_address: &str,
-    dog_tag_id: &str,
-) -> Value {
-    let species = profile
-        .species
-        .clone()
-        .unwrap_or_else(|| "Canis lupus familiaris".to_string());
-    let breed_vbo = profile
-        .breed_vbo
-        .clone()
-        .unwrap_or_else(|| "VBO:0200000".to_string());
-    let breed_label = profile
-        .breed_label
-        .clone()
-        .unwrap_or_else(|| "Mixed Breed".to_string());
-    let sex = profile.sex.clone().unwrap_or_else(|| "male".to_string());
-    let neuter_status = profile
-        .neuter_status
-        .clone()
-        .unwrap_or_else(|| "intact".to_string());
-    let date_of_birth = profile
-        .date_of_birth
-        .clone()
-        .unwrap_or_else(|| "2020-01-01".to_string());
-
-    let weight_history: Vec<Value> = profile
-        .weight_history
-        .iter()
-        .map(|w| json!({ "unit": w.unit, "value": w.value, "measuredOn": w.measured_on }))
-        .collect();
-
-    let now = crate::auth::now();
-    let valid_from = iso_date_utc(now);
-
-    // dogTagId is a non-personal integer id; emit it as a JSON number when numeric so the typed
-    // projection wraps it as an INTEGER (tag 3), matching `build_vc`.
-    let dog_tag_id_val: Value = dog_tag_id
-        .parse::<u64>()
-        .map(|n| json!(n))
-        .unwrap_or_else(|_| json!(dog_tag_id));
-
-    json!({
-        "@context": ["https://www.w3.org/ns/credentials/v2", DOGTAG_CONTEXT_URI],
-        "type": ["VerifiableCredential", "DogProfile"],
-        "id": format!("urn:dogtag:profile:{dog_tag_id}"),
-        "issuer": format!("did:web:{}", cfg.issuer_domain),
-        "validFrom": valid_from,
-        "credentialSchema": { "id": format!("https://{}/schemas/dog-profile", cfg.issuer_domain), "type": "JsonSchema" },
-        "credentialStatus": { "id": format!("https://{}/status/{dog_tag_id}", cfg.issuer_domain), "type": "DogTagStatus2025" },
-        "recordType": DOG_PROFILE,
-        // legal/trust meta (owner-asserted profile minted by the vet's issuer signer).
-        "attestationType": "identity",
-        "signatureTrustTier": "self_attested",
-        "legalEffect": "evidentiary",
-        "legalBasisVersion": "DOGTAG-PROFILE-v1",
-        "jurisdiction": "GLOBAL",
-        "credentialSubject": {
-            // subject/holder ownership is established on-chain by the SBT mint (ownerOf[dogTagId] ==
-            // the device wallet that scanned the vet's QR). The VC ALSO bakes the device wallet as the
-            // `ownerAddress` leaf + the 3 owner-identity leaves — committed (salted) record attestations
-            // in the DOG_PROFILE merkle root (the on-chain `ownerOf`/consent-key remain the ZK binding;
-            // these leaves do not feed the export circuit — verified safe).
-            "dogTagId": dog_tag_id_val,
-            // the device's wallet address (the on-chain owner), committed as a record-anchored leaf.
-            "ownerAddress": owner_address.to_lowercase(),
-            "name": name,
-            "species": species,
-            "breedVbo": breed_vbo,
-            "breedLabel": breed_label,
-            "sex": sex,
-            "neuterStatus": neuter_status,
-            "dateOfBirth": date_of_birth,
-            "weightHistory": weight_history,
-            "microchip": {
-                "code": microchip.code,
-                "standard": microchip.standard,
-                "implantDate": microchip.implant_date,
-                "bodyLocation": microchip.body_location,
-            },
-            // owner's official identity, entered by the vet operator at session-start (wrap_vc turns
-            // the 3 scalars into typed Merkle leaves automatically).
-            "ownerIdentity": {
-                "countryOfIdentification": owner_identity.country_of_identification,
-                "identification": owner_identity.identification,
-                "name": owner_identity.name,
-            },
-        },
-    })
-}
-
-/// Format a unix-seconds timestamp as ISO `YYYY-MM-DD` (UTC). Howard Hinnant's civil algorithm so we
-/// don't pull a date crate just for `validFrom` (ported from admin).
-fn iso_date_utc(unix_secs: u64) -> String {
-    let days = (unix_secs / 86_400) as i64; // days since 1970-01-01
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// Convert a plain JSON VC into the SDK's typed-scalar wrap input (`{tag, value}` leaves). Mirrors the
-/// admin `to_typed_vc`. Tag mapping: 0=null, 1=bool, 2=string, 3=integer, 4=decimal.
-fn to_typed_vc(v: &Value) -> Value {
-    match v {
-        Value::Object(m) => {
-            let mut out = serde_json::Map::new();
-            for (k, val) in m {
-                out.insert(k.clone(), to_typed_vc(val));
-            }
-            Value::Object(out)
-        }
-        Value::Array(a) => Value::Array(a.iter().map(to_typed_vc).collect()),
-        Value::Null => json!({ "tag": 0u8, "value": Value::Null }),
-        Value::Bool(b) => json!({ "tag": 1u8, "value": b }),
-        Value::String(s) => json!({ "tag": 2u8, "value": s }),
-        Value::Number(n) => {
-            let s = n.to_string();
-            let tag = if n.is_i64() || n.is_u64() { 3u8 } else { 4u8 };
-            json!({ "tag": tag, "value": s })
-        }
-    }
-}
-
-/// Validate a plain DOG_PROFILE VC against the SDK schema, then wrap it into a `WrappedDoc` (ported
-/// from admin `wrap_vc`). The validator runs on the plain VC; we wrap the typed-scalar projection so
-/// the on-chain root covers every field.
-pub fn wrap_vc(issuer_meta: IssuerMeta, vc: &Value) -> Result<WrappedDoc, String> {
-    validate_schema(vc).map_err(|violations| format!("schema: {}", violations.join("; ")))?;
-    let typed = to_typed_vc(vc);
-    let mut salt = || {
-        let mut s = [0u8; 16];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut s);
-        s
-    };
-    wrap_document(&typed, issuer_meta, &mut salt).map_err(|e| format!("wrap: {e}"))
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     // ---- build_vc: dogTagId injection + INTEGER/STRING tag selection ----
 
@@ -527,45 +291,6 @@ mod tests {
         );
     }
 
-    // ---- to_typed_vc: does NOT preserve pre-typed leaves (re-wraps every scalar) ----
-
-    #[test]
-    fn to_typed_vc_maps_every_scalar_kind() {
-        let input = json!({ "s": "x", "b": false, "i": 10, "d": 1.5, "n": Value::Null });
-        let out = to_typed_vc(&input);
-        assert_eq!(out["s"], json!({ "tag": 2u8, "value": "x" }));
-        assert_eq!(out["b"], json!({ "tag": 1u8, "value": false }));
-        assert_eq!(out["i"], json!({ "tag": 3u8, "value": "10" }));
-        assert_eq!(out["d"], json!({ "tag": 4u8, "value": "1.5" }));
-        assert_eq!(out["n"], json!({ "tag": 0u8, "value": Value::Null }));
-    }
-
-    #[test]
-    fn to_typed_vc_double_wraps_a_pretyped_leaf_unlike_to_typed() {
-        // Documented divergence: to_typed_vc has no is-typed-scalar short-circuit, so a
-        // {tag,value} object is walked as a plain object and each member re-typed. build_profile_vc
-        // never feeds it pre-typed leaves, so this divergence is safe in practice.
-        let pretyped = json!({ "tag": 3u8, "value": "5" });
-        let out = to_typed_vc(&pretyped);
-        assert_eq!(out["tag"], json!({ "tag": 3u8, "value": "3" }));
-        assert_eq!(out["value"], json!({ "tag": 2u8, "value": "5" }));
-        // to_typed, by contrast, keeps it verbatim
-        assert_eq!(to_typed(&pretyped), pretyped);
-    }
-
-    // ---- iso_date_utc: Howard Hinnant civil-date algorithm ----
-
-    #[test]
-    fn iso_date_utc_anchors() {
-        assert_eq!(iso_date_utc(0), "1970-01-01");
-        assert_eq!(iso_date_utc(1_700_000_000), "2023-11-14");
-        // leap day: 2020-02-29T00:00:00Z
-        assert_eq!(iso_date_utc(1_582_934_400), "2020-02-29");
-        // intra-day seconds are truncated to the day
-        assert_eq!(iso_date_utc(86_400 - 1), "1970-01-01");
-        assert_eq!(iso_date_utc(86_400), "1970-01-02");
-    }
-
     // ---- issuer metadata helpers ----
 
     #[test]
@@ -576,15 +301,6 @@ mod tests {
         assert_eq!(m.domain, "vet.example");
         assert_eq!(m.document_store, "0xstore");
         assert_eq!(m.record_type, "BOARDING");
-    }
-
-    #[test]
-    fn profile_issuer_meta_uses_profile_document_store_and_dog_profile() {
-        let cfg = test_cfg();
-        let m = profile_issuer_meta(&cfg);
-        assert_eq!(m.document_store, "0xprofilestore");
-        assert_eq!(m.record_type, DOG_PROFILE);
-        assert_eq!(m.record_type, "DOG_PROFILE");
     }
 
     #[test]
@@ -609,14 +325,10 @@ mod tests {
             deployment_url: String::new(),
             rpc_url: String::new(),
             issuer_registry_addr: String::new(),
-            verification_registry_addr: String::new(),
             verification_registry_consent_addr: String::new(),
-            consent_key_registry_addr: String::new(),
             issuer_addrs: std::collections::HashMap::new(),
             issuer_name: "Test Vet".to_string(),
             issuer_domain: "vet.example".to_string(),
-            sbt_addr: String::new(),
-            profile_document_store: "0xprofilestore".to_string(),
             sbt_consent_addr: "0xsbtconsent".to_string(),
             profile_issuer_addr: "0xprofileissuer".to_string(),
             vet_signer_index: 0,

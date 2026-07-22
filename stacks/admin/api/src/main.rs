@@ -41,20 +41,17 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
-        // M7 §4.2: mirror the chain client's id + the routing-key registry into the provenance block.
+        // Unified owner-hidden registry used for unstamped imported-document metadata.
         chain_id,
         verification_registry_addr: env(
             "VERIFICATION_REGISTRY_ADDR",
-            "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+            "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
         ),
-        sbt_addr: env("SBT_ADDR", "0x0000000000000000000000000000000000000000"),
+        sbt_addr: env(
+            "SBT_ADDR",
+            "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
+        ),
         factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
-        issuer_name: env("ISSUER_NAME", "DogTag Central"),
-        issuer_domain: env("ISSUER_DOMAIN", "dogtag.example"),
-        profile_document_store: env(
-            "PROFILE_DOCUMENT_STORE",
-            "0x0000000000000000000000000000000000000000",
-        ),
         // Store a real password HASH, never the plaintext (audit L4) — admin_login verifies against
         // this with auth::verify_password. Optional `ADMIN_PASSWORD_HASH` ("<salt_hex>$<hash_hex>")
         // overrides; otherwise the ADMIN_PASSWORD plaintext (still required non-default in prod by the
@@ -97,7 +94,7 @@ async fn main() {
     }
 
     // Wire the admin/WHITELIST_ADMIN+ISSUER signer at the configured index from ADMIN_PRIVATE_KEY so
-    // whitelistFor/delistFor/mint can broadcast on-chain. Without this the chain client has no signer
+    // whitelist, issuer-role, and governance actions can broadcast. Without this the chain client has no signer
     // and every admin write fails with "no signer for index". (The custody stacks unlock their own
     // signers; the central stack's signer is a static deployer key supplied at boot.)
     let chain = AlloyChain::new(rpc_url).with_chain_id(chain_id);
@@ -125,7 +122,7 @@ async fn main() {
         }
     } else {
         tracing::warn!(
-            "ADMIN_PRIVATE_KEY unset; on-chain admin writes (whitelistFor/mint) will fail"
+            "ADMIN_PRIVATE_KEY unset; on-chain admin/governance writes will fail"
         );
     }
 

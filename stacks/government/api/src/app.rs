@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_A_VERSION};
+use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_B_VERSION};
 use serde_json::{json, Value};
 
 use crate::chain::ChainClient;
@@ -31,7 +31,7 @@ pub struct Config {
     /// IssuerRegistry (the whitelist gate) — used to read issuer-identity of a credential's signer.
     pub issuer_registry_addr: String,
     /// VerificationRegistry address - THE routing key stamped in the M7 `protocol` block (§4.2).
-    /// Defaults to the Level-A registry.
+    /// Defaults to the unified owner-hidden registry.
     pub verification_registry_addr: String,
     /// DogTagIssuer clone this authority anchors TRAVEL_CLEARANCE roots to (documentStore).
     pub travel_clearance_issuer_addr: String,
@@ -101,7 +101,7 @@ pub fn issuer_meta(cfg: &Config, record_type: &str, issuer_addr: &str) -> Issuer
 pub fn protocol_meta(cfg: &Config, issuer_clone: &str, issuer_signer: &str) -> ProtocolMeta {
     ProtocolMeta {
         chain_id: cfg.chain_id,
-        version: LEVEL_A_VERSION.to_string(),
+        version: LEVEL_B_VERSION.to_string(),
         verification_registry: cfg.verification_registry_addr.clone(),
         issuer_clone: issuer_clone.to_string(),
         issuer_signer: issuer_signer.to_string(),
@@ -323,7 +323,7 @@ mod tests {
             rpc_url: "https://devrpc.roax.net".into(),
             chain_id: 135,
             issuer_registry_addr: "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c".into(),
-            verification_registry_addr: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".into(),
+            verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
             travel_clearance_issuer_addr: "0x1111111111111111111111111111111111111111".into(),
             eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
             issuer_name: "DogTag Government Authority".into(),

@@ -88,7 +88,7 @@ function categoryOf(recordType: string): Category {
 
 // WrappedDoc objects are immutable in the store (replaced, never mutated), so a per-object cache is
 // collision-free and lets `checkIntegrity`'s Poseidon Merkle rebuild run once per credential instead
-// of on every unrelated re-render (e.g. each present-flow progress tick re-renders the dropdown).
+// of on every unrelated re-render.
 const summaryCache = new WeakMap<WrappedDoc, CredentialSummary>();
 
 /** The at-a-glance summary the wallet card + detail header render. */

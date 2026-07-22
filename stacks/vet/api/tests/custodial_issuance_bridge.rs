@@ -1,9 +1,7 @@
-//! The Level-B CUSTODIAL ISSUANCE BRIDGE (M-2 / unifyplan §P-1, closing datamodel D-1).
+//! The owner-hidden custodial issuance bridge.
 //!
-//! Before this milestone no backend called `mintCustodial`, so no owner-hidden tag could exist
-//! on-chain: the vet/admin stacks only ever minted through the Level-A, owner-revealing
-//! `mint(to, id, root)`. These tests drive the new `POST /profiles/issue/custodial-bind` end to end
-//! against `MemChain` and pin the ways it must fail closed.
+//! These tests drive `POST /profiles/issue/custodial-bind` end to end against `MemChain` and pin the
+//! ways it must fail closed.
 //!
 //! What is asserted, and why each matters:
 //!
@@ -12,7 +10,7 @@
 //!    change to the device builder moves this test rather than silently desyncing the server.
 //! 2. **BOTH on-chain conditions land in one flow** (datamodel §3.5): `R` is sealed as
 //!    `profileRoot[dogTagId]` AND anchored so `rootIssuer[R]` resolves and `isValid(R)` holds. These
-//!    are the exact two reads a Level-B verify performs (`VerificationRegistryConsent.sol:163` and
+//!    are the exact two reads owner-hidden verification performs (`VerificationRegistryConsent.sol:163` and
 //!    `:188-192`), so satisfying both is what makes the minted tag verifiable. Skipping the anchor is
 //!    the tested-in-Solidity failure mode at `contracts/test/CustodialIssuance.t.sol:367`
 //!    ("unknown root" on EVERY verify); here we prove the SERVER path never produces it.
@@ -23,9 +21,6 @@
 //! 4. **Owner-blindness.** No wallet is sent, none is stored, and the mint calldata cannot express
 //!    one.
 //!
-//! The Level-A `/profiles/issue/bind` route is untouched by this milestone and keeps its own coverage
-//! in `profile_issue.rs`; `level_a_issuance_path_still_works` here guards the two paths coexisting.
-
 mod common;
 
 use axum::http::StatusCode;
@@ -142,7 +137,7 @@ async fn await_settled(app: &axum::Router, op: &str, session_id: &str) -> serde_
 
 /// THE MILESTONE TEST: a device-computed `R` is accepted by the server, minted owner-blind via
 /// `mintCustodial(id, R)`, and anchored via `issue(R)` in the SAME flow — leaving on-chain state that
-/// satisfies BOTH conditions a Level-B consent verify checks.
+/// satisfies BOTH conditions an owner-hidden consent verify checks.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn device_computed_root_mints_custodially_and_is_anchored_for_verification() {
     let mem = MemChain::new();
@@ -175,7 +170,7 @@ async fn device_computed_root_mints_custodially_and_is_anchored_for_verification
     // the deployed trio this tag is bound to. NOT the artifact axis, which a zkey rotation moves.
     assert_eq!(
         b["protocolVersion"], "dogtag-levelb/1",
-        "a Level-B tag must never claim the Level-A version"
+        "owner-hidden issuance must stamp the unified version"
     );
     // Owner-blind on the wire: the response cannot hand back a wallet because none was ever sent.
     assert!(
@@ -197,11 +192,11 @@ async fn device_computed_root_mints_custodially_and_is_anchored_for_verification
     // ---- the two independent on-chain conditions (datamodel §3.5) ----
     let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
 
-    // (1) sealed: R == profileRoot[dogTagId], under the CANONICAL id, on the LEVEL-B SBT.
+    // (1) sealed: R == profileRoot[dogTagId], under the CANONICAL id.
     let sealed = chain
         .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
         .await
-        .expect("profileRoot set on the Level-B SBT");
+        .expect("profileRoot set on the owner-hidden SBT");
     assert_eq!(
         sealed.to_lowercase(),
         root.to_lowercase(),
@@ -213,13 +208,6 @@ async fn device_computed_root_mints_custodially_and_is_anchored_for_verification
     assert!(
         chain.is_valid(PROFILE_ISSUER_ADDR, &root).await.unwrap(),
         "R must be anchored in the DogTagIssuer clone, not merely sealed"
-    );
-
-    // Owner-blind on-chain: `mintCustodial` has no recipient parameter, so unlike the Level-A path
-    // there is no per-tag owner to read back at all.
-    assert!(
-        chain.owner_of(SBT_CONSENT_ADDR, &onchain_id).await.is_err(),
-        "custodial issuance must not write a per-tag owner"
     );
 
     // The one-time token is consumed: a replay cannot mint a second tag.
@@ -348,10 +336,10 @@ async fn raw_handle_binding_breaks_the_r_binding_fail_closed() {
     );
 }
 
-/// FAIL-CLOSED: an unconfigured Level-B deployment refuses, and does so WITHOUT burning the
+/// FAIL-CLOSED: an unconfigured owner-hidden deployment refuses, and does so WITHOUT burning the
 /// operator's one-time token — a half-wired stack must never consume a QR it cannot fulfil.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unconfigured_level_b_refuses_without_consuming_the_token() {
+async fn unconfigured_owner_hidden_refuses_without_consuming_the_token() {
     let mem = MemChain::new();
     let chain = Arc::new(mem.clone());
     let mut state = mem_state(chain.clone());
@@ -375,7 +363,7 @@ async fn unconfigured_level_b_refuses_without_consuming_the_token() {
     assert_eq!(
         s,
         StatusCode::SERVICE_UNAVAILABLE,
-        "unconfigured Level-B must fail closed: {b}"
+        "unconfigured owner-hidden issuance must fail closed: {b}"
     );
 
     // The token survives, so the operator can retry once the deployment is wired.
@@ -425,73 +413,7 @@ async fn malformed_or_zero_root_is_rejected() {
     }
 }
 
-/// NON-REGRESSION: adding the Level-B path must not disturb the Level-A one. Both routes are live on
-/// the same router, and a Level-A bind still mints owner-revealingly to the device wallet on the
-/// Level-A SBT, stamping the Level-A version. The cutover is a later milestone; until then the two
-/// coexist.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn level_a_issuance_path_still_works_alongside() {
-    use alloy::signers::local::PrivateKeySigner;
-    use alloy::signers::SignerSync;
-
-    let mem = MemChain::new();
-    let chain = Arc::new(mem.clone());
-    let app = vet_api::router(mem_state(chain.clone()));
-    let (_admin, op, _backend) = boot_custody(&app).await;
-    let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
-
-    let signer = PrivateKeySigner::random();
-    let wallet = format!("{:#x}", signer.address()).to_lowercase();
-    let sig = signer
-        .sign_message_sync(vet_api::auth::register_message(&wallet).as_bytes())
-        .unwrap();
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/profiles/issue/bind",
-        None,
-        Some(serde_json::json!({
-            "token": token,
-            "walletAddress": wallet,
-            "signature": format!("0x{}", hex::encode(sig.as_bytes())),
-        })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "Level-A bind must still work: {b}");
-    let root = b["root"].as_str().unwrap().to_string();
-
-    let settled = await_settled(&app, &op, &session_id).await;
-    assert_eq!(settled["status"], "bound", "Level-A mint: {settled}");
-    assert_eq!(
-        settled["protocolVersion"], "dogtag-levela/1",
-        "the Level-A path keeps stamping the Level-A version - M-2 flips nothing"
-    );
-
-    // It minted on the LEVEL-A SBT, to the wallet, leaving the Level-B SBT untouched.
-    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
-    assert_eq!(
-        chain.owner_of(SBT_ADDR, &onchain_id).await.unwrap(),
-        wallet,
-        "Level-A still mints to the device wallet"
-    );
-    assert_eq!(
-        chain
-            .profile_root_of(SBT_ADDR, &onchain_id)
-            .await
-            .unwrap()
-            .to_lowercase(),
-        root.to_lowercase()
-    );
-    assert!(
-        chain
-            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
-            .await
-            .is_err(),
-        "a Level-A issuance must not touch the Level-B SBT"
-    );
-}
-
-/// FAIL-CLOSED: a MALFORMED (non-zero but unparseable) Level-B address is refused, and — like the
+/// FAIL-CLOSED: a MALFORMED (non-zero but unparseable) owner-hidden address is refused, and — like the
 /// unconfigured case — WITHOUT burning the operator's one-time token.
 ///
 /// A bare non-zero test is not enough: `chain::parse_addr` coerces an unparseable address to
@@ -499,7 +421,7 @@ async fn level_a_issuance_path_still_works_alongside() {
 /// `issue(R)` and `mintCustodial` at the zero address — txs that succeed against a codeless address,
 /// surfacing only at the read-back, after gas is spent and the QR is burned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn malformed_level_b_address_refuses_without_consuming_the_token() {
+async fn malformed_owner_hidden_address_refuses_without_consuming_the_token() {
     for bad in [
         "0xnotanaddress",                              // non-zero, non-hex
         "0x00000000000000000000000000000000000000d",   // 39 digits — one short
@@ -560,22 +482,20 @@ async fn malformed_level_b_address_refuses_without_consuming_the_token() {
     }
 }
 
-/// A `dogTagId` already RETIRED by a Level-B custodial issuance must never be handed out again.
+/// A `dogTagId` already retired by custodial issuance must never be handed out again.
 ///
 /// `mintCustodial` writes no owner the allocator can see (the holder is the neutral custodian) and
-/// retires the id through the write-once `profileRoot[id]`, a marker that survives a burn — so an
-/// allocator consulting only the Level-A `ownerOf` reads a Level-B-consumed id as FREE. That is
+/// retires the id through the write-once `profileRoot[id]`, a marker that survives a burn. That is
 /// expensive here specifically: `issue(R)` runs BEFORE the mint and `registerRoot` is globally
 /// write-once, so the collision would burn both the operator's QR and the device-computed `R`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_level_b_retired_dog_tag_id_is_not_reallocated() {
+async fn a_retired_dog_tag_id_is_not_reallocated() {
     let mem = MemChain::new();
     let chain = Arc::new(mem.clone());
     let app = vet_api::router(mem_state(chain.clone()));
     let (_admin, op, _backend) = boot_custody(&app).await;
 
-    // Retire the first two ids the counter would hand out, sealed on the LEVEL-B SBT only — exactly
-    // the state a prior custodial issuance leaves behind (no owner, non-zero profileRoot).
+    // Retire the first two ids the counter would hand out, exactly as prior custodial issuances do.
     for handle in ["1", "2"] {
         let onchain_id = vet_api::routes::onchain_dog_tag_id(handle).unwrap();
         chain
@@ -586,17 +506,13 @@ async fn a_level_b_retired_dog_tag_id_is_not_reallocated() {
                 &device_root(canonical_field(handle)),
             )
             .await
-            .expect("seed a Level-B retired id");
-        assert!(
-            chain.owner_of(SBT_CONSENT_ADDR, &onchain_id).await.is_err(),
-            "the custodial mint must leave the allocator NO owner to see — that is the whole trap"
-        );
+            .expect("seed a retired id");
     }
 
     let (_token, dog_tag_id, _session_id) = start_session(&app, &op).await;
     assert!(
         dog_tag_id != "1" && dog_tag_id != "2",
-        "an id retired by a Level-B custodial issuance must not be re-allocated, got {dog_tag_id}"
+        "an id retired by custodial issuance must not be re-allocated, got {dog_tag_id}"
     );
     let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
     assert!(
@@ -604,31 +520,11 @@ async fn a_level_b_retired_dog_tag_id_is_not_reallocated() {
             .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
             .await
             .is_err(),
-        "the allocated id must be free on the Level-B SBT"
+        "the allocated id must be free on the owner-hidden SBT"
     );
 }
 
-/// The Level-B leg of the allocation check is SKIPPED on a Level-A-only deployment (unset/zero
-/// `SBT_CONSENT_ADDR`), so the deployments that exist today keep allocating exactly as before.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn level_a_only_deployment_still_allocates_from_the_counter() {
-    let mem = MemChain::new();
-    let chain = Arc::new(mem.clone());
-    let mut state = mem_state(chain.clone());
-    let mut cfg = (*state.cfg).clone();
-    cfg.sbt_consent_addr = "0x0000000000000000000000000000000000000000".to_string();
-    state.cfg = Arc::new(cfg);
-    let app = vet_api::router(state);
-    let (_admin, op, _backend) = boot_custody(&app).await;
-
-    let (_token, dog_tag_id, _session_id) = start_session(&app, &op).await;
-    assert_eq!(
-        dog_tag_id, "1",
-        "with Level-B unconfigured the allocator must not consult it at all"
-    );
-}
-
-/// A `dogTagId` sealed on the Level-B SBT AFTER its session started must be refused at bind time —
+/// A `dogTagId` sealed on the owner-hidden SBT AFTER its session started must be refused at bind time —
 /// and refused having written NOTHING to the chain.
 ///
 /// The allocation check in `/profiles/issue/session/start` cannot cover this: it runs up to 180s

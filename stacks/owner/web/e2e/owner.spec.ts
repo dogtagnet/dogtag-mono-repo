@@ -5,32 +5,17 @@ import { test, expect, type Page } from "@playwright/test";
  *
  *   1. RECEIVE  — paste a real wrapped credential → integrity-checked → held in the wallet
  *   2. DISPLAY  — the wallet lists it; the detail view decodes its fields
- *   3. GENERATE — build the §1.10 consent + EdDSA-BabyJubjub sign it IN THE BROWSER (real crypto),
- *                 then obtain a Groth16 proof from the (mocked) trusted prover-service
- *   4. PRESENT  — submit the proof to the (mocked) verifier, which records it and reports VERIFIED
+ *   3. SHARE    — create an integrity-preserving selectively disclosed copy
+ *   4. RECEIPT  — render government travel/health receipts with live validity
  *
- * The prover + verifier + ROAX RPC are mocked at the network layer so the loop is deterministic; the
- * client-side crypto (consent assembly + EdDSA signature + EIP-712 bind signature) is 100% real.
+ * ROAX RPC is mocked at the network layer so the live validity reads are deterministic. Owner-hidden
+ * consent proving requires the private tag-profile witness held by the native wallet and is not a
+ * browser-wallet surface.
  */
 
-const VERIFIER = "http://verifier.test";
-const VERIFY_LINK = `${VERIFIER}/x/tok_demo_123?a=0x1111111111111111111111111111111111111111`;
-
-const SESSION = {
-  sessionId: "sess-abc-001",
-  relayer: "0x1111111111111111111111111111111111111111",
-  purpose: "grooming_intake",
-  recordType: "VACCINATION",
-  challenge: "0x" + "ab".repeat(32),
-  mode: "zk",
-};
-
-const TX_HASH = "0x" + "9".repeat(64);
-const NULLIFIER = "0x" + "7".repeat(64);
-
-/** Install the network mocks: verifier session, prover, submit, poll, and the ROAX JSON-RPC. */
+/** Install the sole remote dependency used by this browser wallet: read-only ROAX JSON-RPC. */
 async function installMocks(page: Page) {
-  // ROAX JSON-RPC (isValid / bindNonce reads) — echo the request id, return a non-zero word.
+  // ROAX JSON-RPC (`DogTagIssuer.isValid`) — echo the request id, return true.
   await page.route(/devrpc\.roax\.net/, async (route) => {
     let id: unknown = 1;
     try {
@@ -44,43 +29,13 @@ async function installMocks(page: Page) {
     });
   });
 
-  // Verifier: resolve the scanned verify-session token.
-  await page.route(`${VERIFIER}/x/**`, async (route) => {
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify(SESSION) });
-  });
-
-  // Trusted prover-service: return a well-shaped Groth16 calldata bundle {a,b,c,pub}.
-  await page.route("**/prove-verification", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        a: ["1", "2"],
-        b: [["3", "4"], ["5", "6"]],
-        c: ["7", "8"],
-        pub: ["424242", "9", "0x1111", "0x2222", NULLIFIER, "0x" + "5".repeat(64), SESSION.challenge],
-      }),
-    });
-  });
-
-  // Verifier: accept the submitted proof.
-  await page.route(`${VERIFIER}/verify/consent/submit`, async (route) => {
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
-  });
-
-  // Verifier: session poll → recorded on-chain.
-  await page.route(`${VERIFIER}/verify/session/**`, async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ status: "recorded", txHash: TX_HASH, nullifier: NULLIFIER }),
-    });
-  });
 }
 
 test.beforeEach(async ({ page }) => {
   await installMocks(page);
 });
 
-test("holder loop: receive → hold → generate ZK proof → present → verified", async ({ page }) => {
+test("holder loop: receive → hold → display", async ({ page }) => {
   // Fresh wallet each run.
   await page.goto("/wallet");
   await page.evaluate(() => localStorage.clear());
@@ -112,18 +67,9 @@ test("holder loop: receive → hold → generate ZK proof → present → verifi
   await expect(page.getByTestId("cred-count")).toContainText("1 held");
   await expect(page.getByTestId("cred-name")).toHaveText("Rex");
 
-  // 3 + 4. GENERATE + PRESENT — drive the ZK present flow to a recorded verification.
+  // The retired browser proof surface is gone; unknown routes return safely to the wallet.
   await page.goto("/present");
-  await page.getByTestId("present-link").fill(VERIFY_LINK);
-  await page.getByTestId("present-run").click();
-
-  // The proving step is genuinely reached (real consent + EdDSA signing precede it).
-  await expect(page.getByTestId("present-steps")).toBeVisible();
-
-  // Verified — the (mocked) verifier recorded the proof on chain; the tx + nullifier are surfaced.
-  await expect(page.getByTestId("present-verified")).toBeVisible({ timeout: 45_000 });
-  await expect(page.getByTestId("present-tx")).toContainText(TX_HASH);
-  await expect(page.getByTestId("present-nullifier")).toContainText(NULLIFIER);
+  await expect(page.getByTestId("cred-count")).toContainText("1 held");
 });
 
 test("holder selective disclosure: withhold a field → redacted copy still verifies", async ({ page }) => {

@@ -184,26 +184,6 @@ impl Store for MongoStore {
             d.get_str("session_id").ok().map(|s| s.to_string())
         }
     }
-    async fn take_export_token(&self, token: &str) -> Option<String> {
-        // find_one_and_delete is atomic == one-time consume; then enforce expiry on the read.
-        let coll: Collection<Document> = self.db.collection("export_tokens");
-        let d = coll
-            .find_one_and_delete(doc! { "token": token })
-            .await
-            .ok()
-            .flatten()?;
-        let exp = d.get_i64("exp").unwrap_or(0) as u64;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        if now > exp {
-            None
-        } else {
-            d.get_str("session_id").ok().map(|s| s.to_string())
-        }
-    }
-
     async fn next_dog_tag_id(&self) -> u64 {
         // atomic counter via findOneAndUpdate($inc) (mirrors admin mongo.rs:145).
         use mongodb::options::{FindOneAndUpdateOptions, ReturnDocument};

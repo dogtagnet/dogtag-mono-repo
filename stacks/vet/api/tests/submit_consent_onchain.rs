@@ -542,62 +542,9 @@ async fn level_b_submit_fails_closed_on_a_consumed_nullifier() {
     );
 }
 
-/// The two `recordVerificationZK` shapes are NOT interchangeable on the wire. Submitting a Level-B
-/// proof through the LEVEL-A encoder hits a selector the consent registry does not implement, so the
-/// call reverts — the historical `0x` empty-revert mode this milestone exists to prevent.
-///
-/// Worth an on-chain test rather than a unit assert: the selectors already differ by construction
-/// (pinned in `chain.rs`), but this proves the deployed contract actually rejects the wrong one,
-/// which is what a mis-wired relayer would really hit.
+/// The owner-hidden stack deploys and records without any `ConsentKeyRegistry` in the picture.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_level_a_encoder_cannot_drive_the_level_b_registry() {
-    if !have_foundry() {
-        eprintln!(
-            "SKIP the_level_a_encoder_cannot_drive_the_level_b_registry: Foundry not on PATH"
-        );
-        return;
-    }
-    let anvil = start_anvil();
-    let rpc = anvil.rpc();
-    let f = load_fixture();
-    let stack = deploy_level_b(&rpc, &f);
-    issue_then_mint(&rpc, &stack, &f.dog_tag_id, &f.root);
-
-    let chain = AlloyChain::new(rpc.clone());
-    chain
-        .register_signer(0, pk0_bytes(), ACC0.to_string())
-        .await;
-
-    // Same proof, same registry — only the ENCODER is wrong (Level-A's 6-arg shape).
-    let wrong = vet_api::chain::record_verification_zk_calldata(
-        &f.a,
-        &f.b,
-        &f.c,
-        &f.pubs,
-        &f.record_type,
-        1893456000,
-    );
-    let res = chain
-        .sign_and_send(0, &stack.verification_consent, &wrong)
-        .await;
-    assert!(
-        res.is_err(),
-        "the Level-A 6-arg encoder must not drive the Level-B registry"
-    );
-
-    // The correct encoder against the same state succeeds — so the failure above is the SELECTOR,
-    // not a broken fixture or a mis-deployed stack.
-    chain
-        .record_verification_zk_consent(0, &stack.verification_consent, &f.a, &f.b, &f.c, &f.pubs)
-        .await
-        .expect("the Level-B encoder should succeed against the same state");
-}
-
-/// The Level-A registry is untouched by this milestone: a Level-B stack deploys and records without
-/// any `ConsentKeyRegistry` in the picture at all. Guards the non-scope boundary — if someone later
-/// reintroduces a key-bind leg into the Level-B path, this stops compiling or starts needing one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn level_b_records_without_any_consent_key_registry() {
+async fn records_without_any_consent_key_registry() {
     if !have_foundry() {
         eprintln!("SKIP level_b_records_without_any_consent_key_registry: Foundry not on PATH");
         return;
@@ -616,7 +563,7 @@ async fn level_b_records_without_any_consent_key_registry() {
     chain
         .record_verification_zk_consent(0, &stack.verification_consent, &f.a, &f.b, &f.c, &f.pubs)
         .await
-        .expect("Level-B records with no ConsentKeyRegistry deployed");
+        .expect("owner-hidden verification records with no ConsentKeyRegistry deployed");
 
     // `ownerOf` is called by the registry as an EXISTENCE gate only, and resolves to the neutral
     // custodian — never the owner. Asserting it here pins D1: if the mint ever went to a real owner,
@@ -629,7 +576,7 @@ async fn level_b_records_without_any_consent_key_registry() {
     );
     assert!(
         owner.eq_ignore_ascii_case(CUSTODIAN),
-        "the Level-B tag must be held by the neutral custodian, got {owner}"
+        "the tag must be held by the neutral custodian, got {owner}"
     );
     assert!(
         !owner.eq_ignore_ascii_case(&f.owner_address),

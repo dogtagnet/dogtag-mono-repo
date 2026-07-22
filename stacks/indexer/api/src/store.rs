@@ -250,7 +250,6 @@ mod tests {
             name: None,
             root: None,
             dog_tag_id: None,
-            subject: None,
             purpose: None,
             nullifier: None,
             deadline: None,

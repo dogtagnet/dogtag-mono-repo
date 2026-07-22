@@ -277,7 +277,7 @@ async fn whitelist_grant_executes_all_capabilities_when_holds_role() {
     }
 }
 
-/// A DOG_PROFILE grant also grants DogTagSBT.ISSUER_ROLE (mint rights) when the hosted key holds the
+/// A DOG_PROFILE grant also grants DogTagSBTConsent.ISSUER_ROLE (`mintCustodial`) when the hosted key holds the
 /// SBT DEFAULT_ADMIN authority — the same onboarding step approve runs, as a standalone action.
 #[tokio::test]
 async fn whitelist_grant_dog_profile_grants_issuer_role() {

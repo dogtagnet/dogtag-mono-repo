@@ -28,7 +28,7 @@ export function App() {
       <Route path="/records" element={<Layout title="Records"><Records /></Layout>} />
       <Route path="/traceability" element={<Layout title="Traceability"><Traceability /></Layout>} />
       <Route path="/import" element={<Layout title="Import from user"><ImportFromUser /></Layout>} />
-      <Route path="/verify" element={<Layout title="Export"><Verify /></Layout>} />
+      <Route path="/verify" element={<Layout title="Verification"><Verify /></Layout>} />
       <Route path="/settings" element={<Layout title="Settings"><Settings /></Layout>} />
       <Route path="*" element={<Navigate to="/issue" replace />} />
     </Routes>

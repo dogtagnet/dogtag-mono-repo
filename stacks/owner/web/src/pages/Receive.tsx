@@ -83,7 +83,7 @@ export function Receive() {
       </div>
       <div className="notice">
         Nothing is uploaded. The credential is stored only in this browser, exactly as a phone wallet
-        holds it. You choose when to present a zero-knowledge proof of it.
+        holds it. You choose which fields to reveal when sharing a copy.
       </div>
     </div>
   );

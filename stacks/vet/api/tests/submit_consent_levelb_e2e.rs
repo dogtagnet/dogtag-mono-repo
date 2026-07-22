@@ -10,7 +10,7 @@
 //! chain". The endpoint IS that network layer, so this file runs ONE flow through BOTH halves, in
 //! the order a real caller experiences it:
 //!
-//!   POST /verify/consent/levelb  (real Groth16 proof, real operator session)
+//!   POST /v1/verify/consent      (real Groth16 proof, real operator session)
 //!     -> ack `recording` + sessionId
 //!     -> detached broadcast to the REAL `VerificationRegistryConsent` on anvil
 //!     -> poll GET /verify/session/:id  until `recorded` + txHash
@@ -37,7 +37,6 @@ use vet_api::calendar::{MockCalendar, MockCentralClient};
 use vet_api::chain::AlloyChain;
 use vet_api::custody::Custody;
 use vet_api::oversight::DisabledFeed;
-use vet_api::prover::StubProver;
 use vet_api::store::MemStore;
 
 const CONTRACTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../contracts");
@@ -47,7 +46,7 @@ const ACC0: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 /// Custody MUST unlock to this exact phrase: the handler validates `pub[relayer]` against
 /// `custody.active_address()`, so any other seed is a 403 preflight, not a chain revert.
 const ANVIL_PHRASE: &str = "test test test test test test test test test test test junk";
-/// D1: the Level-B tag is minted to a NEUTRAL CUSTODIAN, never the owner.
+/// The tag is minted to a neutral custodian, never the owner.
 const CUSTODIAN: &str = "0x00000000000000000000000000000000c0ffee00";
 
 // ------------------------------------------------------------------------------------------------
@@ -313,23 +312,16 @@ fn deploy_and_issue(rpc: &str, f: &Fixture) -> Stack {
     }
 }
 
-/// An `AppState` wired to the REAL deployed Level-B stack on anvil.
+/// An `AppState` wired to the real owner-hidden stack on anvil.
 fn state_for(rpc: &str, st: &Stack) -> AppState {
     let cfg = Config {
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: rpc.to_string(),
         issuer_registry_addr: st.registry.clone(),
-        // Level-A stays unconfigured here: this flow must reach the chain over the LEVEL-B address
-        // alone, so a handler that fell back to the Level-A registry would fail rather than pass.
-        verification_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         verification_registry_consent_addr: st.verification_consent.clone(),
-        // D2: Level-B retires the ConsentKeyRegistry entirely. Left unset on purpose.
-        consent_key_registry_addr: "0x0000000000000000000000000000000000000000".to_string(),
         issuer_addrs: std::collections::HashMap::new(),
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),
-        sbt_addr: "0x0000000000000000000000000000000000000000".to_string(),
-        profile_document_store: "0x0000000000000000000000000000000000000000".to_string(),
         sbt_consent_addr: st.sbt.clone(),
         profile_issuer_addr: st.clone.clone(),
         vet_signer_index: 0,
@@ -343,7 +335,6 @@ fn state_for(rpc: &str, st: &Stack) -> AppState {
     AppState {
         store: Arc::new(MemStore::new()),
         chain: Arc::new(AlloyChain::new(rpc.to_string())),
-        prover: Arc::new(StubProver),
         consent_prover: Arc::new(vet_api::prover::ConsentProver::disabled()),
         calendar: Arc::new(MockCalendar::new()),
         central: Arc::new(MockCentralClient::new()),
@@ -466,7 +457,7 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     println!("  relayer (custody account 0) : {relayer}");
     println!("  operator session            : authenticated");
 
-    hr("3. POST /verify/consent/levelb  (real Groth16 proof)");
+    hr("3. POST /v1/verify/consent  (real Groth16 proof)");
     println!(
         "  request  : {}",
         serde_json::to_string(&json!({
@@ -477,12 +468,12 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     let (s, ack) = common::call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(json!({ "proof": f.proof })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "level-b submit: {ack}");
+    assert_eq!(s, StatusCode::OK, "owner-hidden submit: {ack}");
     println!("  {s}");
     println!(
         "  response : {}",
@@ -512,7 +503,7 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     println!("  {}", serde_json::to_string_pretty(&row).unwrap());
     assert_eq!(
         row["status"], "recorded",
-        "the Level-B submission must settle as recorded (tx_hash carries the revert reason on error)"
+        "the submission must settle as recorded (tx_hash carries the revert reason on error)"
     );
     let tx_hash = row["txHash"].as_str().expect("txHash on a recorded row");
 
@@ -525,12 +516,11 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
         .iter()
         .find(|r| r["sessionId"] == session_id.as_str())
         .expect("this verification is in the operator's history");
-    assert_eq!(mine["mode"], "levelb");
     assert_eq!(mine["status"], "recorded");
     // Owner-blind by construction: there is no field a subject could occupy.
     assert!(
         mine.get("subject").is_none(),
-        "a Level-B audit row must have no subject slot: {mine}"
+        "an owner-hidden audit row must have no subject slot: {mine}"
     );
 
     hr("6. the on-chain Verified log — OWNER-BLIND");
@@ -543,8 +533,7 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
 
     // Fetch the raw log, then render it as the DECODED field list — that list is the artifact the
     // whole milestone is about: six fields, and none of them names an owner.
-    const LEVEL_B_SIG: &str = "Verified(uint256,address,bytes32,bytes32,uint256,uint256)";
-    const LEVEL_A_SIG: &str = "Verified(uint256,address,address,bytes32,bytes32,uint256)";
+    const VERIFIED_SIG: &str = "Verified(uint256,address,bytes32,bytes32,uint256,uint256)";
     let decoded = run(Command::new("cast").args([
         "logs",
         "--rpc-url",
@@ -553,7 +542,7 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
         &stack.verification_consent,
         "--from-block",
         "0",
-        LEVEL_B_SIG,
+        VERIFIED_SIG,
     ]));
     let field = |k: &str| -> String {
         decoded
@@ -574,7 +563,7 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     );
     let data = field("data");
     let word = |i: usize| format!("0x{}", &data.trim_start_matches("0x")[i * 64..(i + 1) * 64]);
-    println!("  Level-B {LEVEL_B_SIG}");
+    println!("  owner-hidden {VERIFIED_SIG}");
     println!("    topic0    (event sig)  : {}", topics[0]);
     println!("    dogTagId  (indexed)    : {}", topics[1]);
     println!("    relayer   (indexed)    : {}", topics[2]);
@@ -582,34 +571,7 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     println!("    nullifier              : {}", word(1));
     println!("    deadline               : {}", word(2));
     println!("    ts                     : {}", word(3));
-    println!("    subject                : <NO SUCH FIELD — Level-B emits no owner>");
-
-    // The Level-A shape (which HAS a subject) has a different topic0 and must match nothing here —
-    // the owner-blind property is structural, not a matter of leaving a field zero.
-    let level_a = run(Command::new("cast").args([
-        "logs",
-        "--rpc-url",
-        &rpc,
-        "--address",
-        &stack.verification_consent,
-        "--from-block",
-        "0",
-        LEVEL_A_SIG,
-    ]));
-    let level_a_topic0 = run(Command::new("cast").args(["sig-event", LEVEL_A_SIG]));
-    println!(
-        "\n  Level-A {LEVEL_A_SIG}\n    topic0 {} -> logs on this registry: {}",
-        level_a_topic0.trim(),
-        if level_a.trim().is_empty() {
-            "NONE (different topic0 — the owner-bearing shape is never emitted)"
-        } else {
-            "UNEXPECTED"
-        }
-    );
-    assert!(
-        level_a.trim().is_empty(),
-        "the Level-A owner-bearing Verified must not be emitted here:\n{level_a}"
-    );
+    println!("    subject                : <NO SUCH FIELD — owner remains hidden>");
 
     // The hidden owner appears nowhere: not in the log data, not in the submitted calldata.
     let owner_bare = f.owner_address.trim_start_matches("0x").to_lowercase();
@@ -662,12 +624,12 @@ async fn a_real_consent_proof_travels_the_endpoint_to_the_chain_owner_blind() {
     let (s2, ack2) = common::call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(json!({ "proof": f.proof })),
     )
     .await;
-    println!("  POST /verify/consent/levelb (same proof again) -> {s2}");
+    println!("  POST /v1/verify/consent (same proof again) -> {s2}");
     let mut row2 = Value::Null;
     if s2 == StatusCode::OK {
         let sid2 = ack2["sessionId"].as_str().expect("sessionId").to_string();

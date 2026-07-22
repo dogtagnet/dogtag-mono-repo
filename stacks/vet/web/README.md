@@ -35,7 +35,10 @@ pnpm --filter @dogtag/vet-web dev
   the indexer is unset the page shows a first-class "Oversight indexer not connected" state.
 - **Import from user** (`/import`) — scan prompt → `POST /import/pull` (off-chain, decoupled
   from Verify).
-- **Verify** (`/verify`) — the shared `<VerifyFlow/>` (purpose + Normal/ZK → session QR → status).
+- **Verify** (`/verify`) — one owner-hidden consent flow (purpose → session QR → owner proof →
+  on-chain status), with no disclosure choice. Boarding and travel vaccination checks are offered;
+  `SERVICE_ATTESTATION` remains excluded because it is off-chain-only and cannot be verified through
+  the on-chain consent registry.
 - **Settings** (`/settings`) — signing-mode toggle (`PUT /settings/signing-mode`), status panel
   (`GET /issuer/signers`), theme toggle.
 
@@ -54,3 +57,9 @@ real one. The central API base is where the whitelist application is posted.
 - **Visual / partially wired**: the Verify flow renders the session QR and the
   awaiting-consent state and polls `GET /verify/session/:id` for the "pending → Verified"
   transition.
+
+## E2E
+
+With the dev server running, `pnpm --filter @dogtag/vet-web test:e2e` exercises the mocked portal
+flows. `e2e/verify-consent.spec.ts` pins the single consent UI and asserts its session-start request
+carries only the purpose and record type.

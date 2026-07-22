@@ -1,18 +1,17 @@
 // The pet owner's self-custodial identity — the holder's key material, held ENTIRELY on the device
 // (localStorage). Two keys, exactly as the mobile wallet derives them (apps/*/wallet):
 //
-//   1. a secp256k1 wallet  -> the on-chain address (the credential SUBJECT / SBT owner). It ECDSA-
-//      signs the EIP-712 BindConsentKey digest so a relayer can gaslessly bind the consent key.
-//   2. a BabyJubjub consent key -> the in-circuit EdDSA key. keyHash = Poseidon(Ax, Ay) is bound
-//      on-chain (ConsentKeyRegistry) and proven inside the circuit; the owner EdDSA-signs the §1.10
-//      consent message with it. This is the sensitive "phone ZK" key and it never leaves the device.
+//   1. a secp256k1 wallet -> the owner's local wallet address.
+//   2. a BabyJubjub consent key -> private consent material retained on-device. Owner-hidden tag
+//      issuance commits the consent key into the tag's profile root; there is no separate on-chain
+//      wallet-to-key binding transaction.
 //
 // The BabyJubjub seed is derived deterministically from the wallet key (a distinct domain tag) so a
 // single stored secret reconstitutes both keys. This mirrors the native apps' single-mnemonic model.
 import { deriveBabyjubConsentKey, keyHash as consentKeyHash } from "@dogtag/standard";
 import { keccak256, concatBytes, toBytes } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import type { Hex, LocalAccount } from "viem";
+import type { Hex } from "viem";
 
 const STORAGE_KEY = "dogtag.owner.wallet.v1";
 const CONSENT_SEED_DOMAIN = toBytes("dogtag/consent-key/v1");
@@ -20,16 +19,14 @@ const CONSENT_SEED_DOMAIN = toBytes("dogtag/consent-key/v1");
 export interface OwnerWallet {
   /** secp256k1 private key (0x + 64 hex) — the only persisted secret. */
   privateKey: Hex;
-  /** the on-chain wallet address (the credential subject / SBT owner). */
+  /** the owner's local wallet address. */
   address: `0x${string}`;
-  /** viem local account for ECDSA / EIP-712 signing. */
-  account: LocalAccount;
   /** BabyJubjub consent private-key bytes (in-circuit EdDSA signer). */
   consentPrv: Uint8Array;
   /** BabyJubjub public point A = (Ax, Ay) as decimal-safe bigints. */
   Ax: bigint;
   Ay: bigint;
-  /** keyHash = Poseidon(Ax, Ay), 0x + 64 hex — bound on-chain, proven in-circuit. */
+  /** keyHash = Poseidon(Ax, Ay), 0x + 64 hex — committed into an owner-hidden profile tree. */
   keyHash: string;
 }
 
@@ -41,7 +38,6 @@ async function hydrate(privateKey: Hex): Promise<OwnerWallet> {
   return {
     privateKey,
     address: account.address,
-    account,
     consentPrv: prv,
     Ax,
     Ay,

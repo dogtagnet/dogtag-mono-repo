@@ -1,11 +1,11 @@
-//! The Level-B submit HANDLER (`POST /verify/consent/levelb`, M-3) against `MemChain`.
+//! The canonical owner-hidden submit handler (`POST /v1/verify/consent`) against `MemChain`.
 //!
 //! Companion to `submit_consent_onchain.rs`, which proves a real proof reaches a real registry.
 //! These tests cover what that one cannot: the SERVER preflight, and the ways it must fail closed
 //! before the relayer pays gas. They need no Foundry, so they run everywhere.
 //!
 //! The preflight deliberately mirrors the registry's own requires. It is NOT the security boundary —
-//! the on-chain gates are, and they run again regardless (the trust root for Level-B is
+//! the on-chain gates are, and they run again regardless (the trust root is
 //! `zkVerifier.verifyProof` on-chain). Its only job is to stop the relayer broadcasting a tx that
 //! cannot mine. That is why every case below asserts a 4xx BEFORE any chain write, not a revert
 //! after one.
@@ -29,7 +29,7 @@ use vet_api::chain::{ChainClient, MemChain};
 const REGISTRY: &str = "0x00000000000000000000000000000000000000aa";
 const ISSUER: &str = "0x00000000000000000000000000000000000000bb";
 
-/// A well-formed Level-B public-signal vector, built through the NAMED indices so a reordering of the
+/// A well-formed consent public-signal vector, built through the NAMED indices so a reordering of the
 /// circuit's outputs moves this fixture rather than silently producing a vector that means something
 /// else.
 fn pubs_for(relayer: &str, deadline: u64) -> [String; 7] {
@@ -108,7 +108,7 @@ async fn boot(chain: Arc<MemChain>) -> (axum::Router, String, String) {
     (app, op, relayer)
 }
 
-/// Submit a Level-B proof and poll the audit row to its TERMINAL state.
+/// Submit an owner-hidden proof and poll the audit row to its TERMINAL state.
 ///
 /// The handler acks `"recording"` and broadcasts from a detached `tokio::spawn` (Axum cancels a
 /// handler's future on client disconnect, so awaiting the receipt inline would strand the row). The
@@ -118,12 +118,12 @@ async fn submit_and_settle(app: &axum::Router, op: &str, pubs: &[String; 7]) -> 
     let (s, ack) = call(
         app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(op),
         Some(body_for(pubs)),
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "level-b ack: {ack}");
+    assert_eq!(s, StatusCode::OK, "owner-hidden ack: {ack}");
     assert_eq!(ack["status"], "recording", "the ack is not terminal: {ack}");
     let session_id = ack["sessionId"].as_str().expect("sessionId echoed");
 
@@ -143,7 +143,7 @@ async fn submit_and_settle(app: &axum::Router, op: &str, pubs: &[String; 7]) -> 
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    panic!("level-b session {session_id} never left recording");
+    panic!("owner-hidden session {session_id} never left recording");
 }
 
 /// `keccak256(abi.encode("VERIFY:", purpose))` from a decimal purpose field element.
@@ -167,19 +167,18 @@ fn verify_key_word(purpose_dec: &str) -> String {
 // ------------------------------------------------------------------------------------------------
 
 /// The happy path, and the E-1 guard that motivates the whole shared-constants module: the one-time
-/// check must key on `pub[3]`, the LEVEL-B nullifier — not `pub[4]`, which is `R` here.
+/// check must key on `pub[3]`, the consent nullifier — not `pub[4]`, which is `R` here.
 ///
 /// This is the single most valuable assertion in the file. Reading the wrong slot compiles, runs, and
 /// returns a plausible field element; the visible symptom is a SUCCESSFUL verification that the app
 /// polls as forever-unconsumed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_level_b_proof_records_and_consumes_the_pub3_nullifier() {
+async fn a_proof_records_and_consumes_the_pub3_nullifier() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain.clone()).await;
     let pubs = pubs_for(&relayer, now_secs() + 3600);
 
     let (ack, row) = submit_and_settle(&app, &op, &pubs).await;
-    assert_eq!(ack["level"], "level-b");
     assert_eq!(ack["protocolVersion"], "dogtag-levelb/1");
     assert_eq!(
         row["status"], "recorded",
@@ -221,16 +220,16 @@ async fn a_level_b_proof_records_and_consumes_the_pub3_nullifier() {
         "consuming pub[4] (R) instead of pub[3] is the E-1 bug"
     );
 
-    // OWNER-BLIND: neither the ack nor the audit row may carry an owner-shaped field. Level-B has no
+    // OWNER-BLIND: neither the ack nor the audit row may carry an owner-shaped field. Consent has no
     // public signal that could fill one, and these are the two places it would leak back in.
     for owner_key in ["subject", "owner", "ownerAddress", "wallet", "keyHash"] {
         assert!(
             ack.get(owner_key).is_none(),
-            "the level-b ack must never carry {owner_key}: {ack}"
+            "the owner-hidden ack must never carry {owner_key}: {ack}"
         );
         assert!(
             row.get(owner_key).is_none(),
-            "the level-b audit row must never carry {owner_key}: {row}"
+            "the owner-hidden audit row must never carry {owner_key}: {row}"
         );
     }
 }
@@ -283,7 +282,7 @@ async fn a_proof_naming_another_relayer_is_refused() {
     let (s, b) = call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(body_for(&pubs)),
     )
@@ -293,8 +292,8 @@ async fn a_proof_naming_another_relayer_is_refused() {
 
 /// An expired (or about-to-expire) `deadline` is refused.
 ///
-/// Level-B's deadline is `pub[6]` — PROOF-BOUND and device-chosen — so unlike Level-A the relayer
-/// cannot widen it to buy broadcast time. Re-encoding cannot save the tx; only a fresher proof can.
+/// The deadline is `pub[6]` — proof-bound and device-chosen. Re-encoding cannot save the tx; only a
+/// fresher proof can.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_expired_deadline_is_refused() {
     let chain = Arc::new(MemChain::new());
@@ -305,7 +304,7 @@ async fn an_expired_deadline_is_refused() {
         let (s, b) = call(
             &app,
             "POST",
-            "/verify/consent/levelb",
+            "/v1/verify/consent",
             Some(&op),
             Some(body_for(&pubs)),
         )
@@ -330,7 +329,7 @@ async fn a_service_attestation_record_type_is_refused() {
     let (s, b) = call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(body_for(&pubs)),
     )
@@ -352,7 +351,7 @@ async fn an_out_of_field_public_signal_is_refused() {
     let (s, b) = call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(body_for(&pubs)),
     )
@@ -382,7 +381,7 @@ async fn a_relayer_signal_above_2_160_is_refused_even_when_it_truncates_to_us() 
     let (s, b) = call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(body_for(&pubs)),
     )
@@ -397,13 +396,13 @@ async fn a_relayer_signal_above_2_160_is_refused_even_when_it_truncates_to_us() 
     );
 }
 
-/// An unconfigured Level-B registry fails closed BEFORE anything is broadcast.
+/// An unconfigured owner-hidden registry fails closed BEFORE anything is broadcast.
 ///
 /// `chain::parse_addr` coerces an unparseable address to the zero address, and a tx to a codeless
 /// address SUCCEEDS — so without this edge check a half-wired stack would spend gas and only discover
 /// the problem at read-back. Mirrors M-2's `unconfigured_level_b_refuses_...`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unconfigured_level_b_registry_fails_closed() {
+async fn an_unconfigured_registry_fails_closed() {
     let chain = Arc::new(MemChain::new());
     let mut st = mem_state(chain.clone() as Arc<dyn ChainClient>);
     let mut cfg = (*st.cfg).clone();
@@ -415,7 +414,7 @@ async fn an_unconfigured_level_b_registry_fails_closed() {
     let (s, b) = call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         Some(&op),
         Some(body_for(&pubs_for(&relayer, now_secs() + 3600))),
     )
@@ -432,7 +431,7 @@ async fn an_unconfigured_level_b_registry_fails_closed() {
 /// revert. Note this is only a SPEND gate: it grants no authority over the submission, because the
 /// proof names its own submitter.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_level_b_route_requires_an_operator() {
+async fn the_canonical_route_requires_an_operator() {
     let chain = Arc::new(MemChain::new());
     let app = vet_api::router(mem_state(chain as Arc<dyn ChainClient>));
     let pubs = pubs_for(
@@ -443,7 +442,7 @@ async fn the_level_b_route_requires_an_operator() {
     let (s, _) = call(
         &app,
         "POST",
-        "/verify/consent/levelb",
+        "/v1/verify/consent",
         None,
         Some(body_for(&pubs)),
     )
@@ -467,29 +466,25 @@ async fn a_malformed_proof_is_rejected() {
         // reader CAN catch cheaply.
         json!({"proof": {"a": ["1","2"], "b": [["3","4"],["5","6"]], "c": ["7","8"], "pubSignals": ["0","0","0","0","0","0"]}}),
     ] {
-        let (s, b) = call(&app, "POST", "/verify/consent/levelb", Some(&op), Some(bad)).await;
+        let (s, b) = call(&app, "POST", "/v1/verify/consent", Some(&op), Some(bad)).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
     }
 }
 
-/// The Level-A route is untouched and still mounted alongside. Guards the non-scope boundary: M-3
-/// adds the Level-B path BESIDE Level-A, it does not cut over.
+/// Removed route aliases stay absent; only the canonical endpoint is served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_level_a_consent_route_is_still_mounted() {
+async fn retired_consent_route_aliases_are_not_mounted() {
     let chain = Arc::new(MemChain::new());
     let (app, op, _relayer) = boot(chain.clone()).await;
 
-    // An empty body on the Level-A route is a 4xx from ITS OWN handler — the point is that the route
-    // still resolves (a removed route would 404).
-    let (s, _) = call(
-        &app,
-        "POST",
+    for path in [
         "/verify/consent/submit",
-        Some(&op),
-        Some(json!({})),
-    )
-    .await;
-    assert_ne!(s, StatusCode::NOT_FOUND, "Level-A route must stay mounted");
+        "/verify/consent/levelb",
+        "/v1/verify/consent/levelb",
+    ] {
+        let (s, _) = call(&app, "POST", path, Some(&op), Some(json!({}))).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "retired alias {path} must be absent");
+    }
 }
 
 /// The relayer the preflight VALIDATES and the signer the broadcast SENDS FROM must be the same
@@ -541,8 +536,8 @@ async fn the_broadcast_uses_the_same_signer_the_preflight_validated() {
         .as_array()
         .expect("verifications")
         .iter()
-        .find(|r| r["mode"] == "levelb")
-        .unwrap_or_else(|| panic!("no level-b row in the trail: {hb}"));
+        .find(|r| r["relayer"].as_str().is_some())
+        .unwrap_or_else(|| panic!("no owner-hidden row in the trail: {hb}"));
     assert_eq!(
         logged["relayer"]
             .as_str()
@@ -552,13 +547,11 @@ async fn the_broadcast_uses_the_same_signer_the_preflight_validated() {
     );
 }
 
-/// A Level-B verification lands in the operator audit trail (`GET /verify/history`), owner-blind.
+/// An owner-hidden verification lands in the operator audit trail (`GET /verify/history`).
 ///
-/// The trail is the verifier's operational record. Level-A writes a `VerifySession` row on every
-/// outcome; a Level-B path that wrote none would silently drop every owner-hidden verification out of
-/// the trail at the M-4 cutover.
+/// The trail is the verifier's operational record and must retain every terminal outcome.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_recorded_level_b_verification_lands_in_the_audit_history() {
+async fn a_recorded_verification_lands_in_the_audit_history() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain.clone()).await;
     let pubs = pubs_for(&relayer, now_secs() + 3600);
@@ -575,10 +568,9 @@ async fn a_recorded_level_b_verification_lands_in_the_audit_history() {
     let row = rows
         .iter()
         .find(|r| r["sessionId"] == session_id.as_str())
-        .unwrap_or_else(|| panic!("the level-b verification is missing from the trail: {hb}"));
+        .unwrap_or_else(|| panic!("the verification is missing from the trail: {hb}"));
 
     assert_eq!(row["status"], "recorded");
-    assert_eq!(row["mode"], "levelb");
     // The terminal txHash reaches the trail from the DETACHED task, not from the handler's ack.
     assert!(
         row["txHash"].as_str().is_some(),
@@ -591,17 +583,17 @@ async fn a_recorded_level_b_verification_lands_in_the_audit_history() {
         Some(relayer.to_lowercase())
     );
 
-    // OWNER-BLIND: the row carries operational proof metadata only. Level-B has no `subject` public
+    // OWNER-BLIND: the row carries operational proof metadata only. Consent has no `subject` public
     // signal, so no owner-shaped field may appear here — this is the property the whole path exists
     // for, and an audit row is exactly where it would leak back in.
     for owner_key in ["subject", "owner", "ownerAddress", "wallet", "keyHash"] {
         assert!(
             row.get(owner_key).is_none(),
-            "the level-b audit row must never carry {owner_key}: {row}"
+            "the owner-hidden audit row must never carry {owner_key}: {row}"
         );
     }
 
-    // And it is individually addressable, like a Level-A session.
+    // And it is individually addressable.
     let (ss, sb) = call(
         &app,
         "GET",
@@ -617,7 +609,7 @@ async fn a_recorded_level_b_verification_lands_in_the_audit_history() {
 /// A FAILED broadcast is auditable too — the gas is spent either way, so a submit that reverts must
 /// stay visible in the trail rather than vanishing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failed_level_b_broadcast_is_recorded_as_an_error_row() {
+async fn a_failed_broadcast_is_recorded_as_an_error_row() {
     let chain = Arc::new(MemChain::new());
     let (app, op, relayer) = boot(chain.clone()).await;
     let pubs = pubs_for(&relayer, now_secs() + 3600);
@@ -640,7 +632,6 @@ async fn a_failed_level_b_broadcast_is_recorded_as_an_error_row() {
         1,
         "the reverted submit must leave exactly one error row: {hb}"
     );
-    assert_eq!(errored[0]["mode"], "levelb");
     assert!(
         errored[0]["txHash"]
             .as_str()

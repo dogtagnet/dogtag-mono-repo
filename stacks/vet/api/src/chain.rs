@@ -12,14 +12,7 @@ use alloy::sol;
 use alloy::sol_types::SolEvent;
 use async_trait::async_trait;
 
-// LEVEL-A public-signal indices. The `recordVerificationZK` surface here is the 6-arg Level-A one
-// (it carries `subject` and a ConsentKeyRegistry-bound `keyHash`, and takes `recordType`/`deadline` as
-// unbound calldata); M-3 added the separate Level-B interface below rather than editing this one, so
-// these stay `level_a`.
-use dogtag_standard::public_signals::level_a as P;
-// LEVEL-B public-signal indices, for the owner-hidden consent surface only. The orders diverge from
-// index 3 on, so the two imports must never be used interchangeably: Level-A's NULLIFIER slot (4) is
-// Level-B's ROOT. See `dogtag_standard::public_signals`.
+// Owner-hidden consent public-signal indices.
 use dogtag_standard::public_signals::level_b as PB;
 
 pub const ROAX_CHAIN_ID: u64 = 135;
@@ -43,68 +36,11 @@ sol! {
 
     #[sol(rpc)]
     contract IDogTagSBT {
-        function mint(address to, uint256 id, bytes32 root) external;
-        // Level-B (M-2): owner-BLIND issuance. Note the absence of a recipient - the tag is minted to
-        // the contract's immutable `custodian`, so the owner's wallet is not even expressible in the
-        // calldata. Both selectors live side by side on purpose: the Level-A `mint` path stays.
         function mintCustodial(uint256 id, bytes32 root) external;
-        function ownerOf(uint256 id) external view returns (address);
         function profileRoot(uint256 id) external view returns (bytes32);
     }
 
-    #[sol(rpc)]
-    contract IVerificationRegistry {
-        struct VerificationConsent {
-            uint256 dogTagId;
-            bytes32 recordType;
-            bytes32 purpose;
-            bytes32 credentialRoot;
-            bytes32 challenge;
-            address relayer;
-            address subject;
-            uint256 nonce;
-            uint256 deadline;
-        }
-
-        event Verified(
-            uint256 indexed dogTagId,
-            address indexed relayer,
-            address indexed subject,
-            bytes32 purpose,
-            bytes32 nullifier,
-            uint256 ts
-        );
-
-        function recordVerification(VerificationConsent c, bytes userSig) external;
-        function recordVerificationZK(
-            uint256[2] a,
-            uint256[2][2] b,
-            uint256[2] c,
-            uint256[7] pub,
-            bytes32 recordType,
-            uint256 deadline
-        ) external;
-        function consumed(bytes32 nf) external view returns (bool);
-    }
-
-    /// Level-B (`contracts/src/VerificationRegistryConsent.sol`) — the OWNER-HIDDEN submit surface.
-    ///
-    /// DELIBERATELY SEPARATE from [`IVerificationRegistry`] above, not an edit of it ([e9] R-2): that
-    /// interface carries `subject` and is paired with a `ConsentKeyRegistry`, both of which the
-    /// owner-hidden model deletes. Editing it in place would yield a Level-A/B hybrid that matches
-    /// neither deployed contract. The two run side by side through the migration, the same pattern
-    /// M-2 used for `mint` / `mintCustodial`.
-    ///
-    /// Three differences, all forced by the owner-blind model:
-    ///   - `recordVerificationZK` is 4-ARG. `recordType` and `deadline` moved out of relayer-supplied
-    ///     calldata and into `pub[5]`/`pub[6]`, so they are cryptographically bound to the proof. This
-    ///     is a DIFFERENT SELECTOR from the Level-A 6-arg call — pinned in the tests below, because
-    ///     selector drift against a deployed registry is what produced the historical `0x` empty
-    ///     revert.
-    ///   - `Verified` drops `subject` (and gains `deadline`), so it has a DIFFERENT topic0 than the
-    ///     Level-A event of the same name. The two never collide on one address: this shape only ever
-    ///     comes from a Level-B registry, and the decode below is address-gated regardless.
-    ///   - no `ConsentKeyRegistry` leg at all (D2: the consent key moved into the tree).
+    /// Owner-hidden verification registry. The event and calldata contain no owner/subject address.
     #[sol(rpc)]
     contract IVerificationRegistryConsent {
         event Verified(
@@ -125,33 +61,9 @@ sol! {
         function consumed(bytes32 nf) external view returns (bool);
     }
 
-    #[sol(rpc)]
-    contract IConsentKeyRegistry {
-        function bindConsentKey(bytes32 babyJubPubKeyHash, bytes ecdsaSig) external;
-        function bindConsentKeyFor(address wallet, bytes32 babyJubPubKeyHash, bytes ecdsaSig) external;
-        function bindNonce(address wallet) external view returns (uint256);
-        function keyOf(address wallet) external view returns (bytes32);
-    }
 }
 
-/// A `Verified` event read off a recordVerification(ZK) receipt.
-#[derive(Clone, Debug)]
-pub struct VerifiedEvent {
-    pub dog_tag_id: U256,
-    pub relayer: String,
-    pub subject: String,
-    pub purpose: String,
-    pub nullifier: String,
-    pub ts: U256,
-}
-
-/// A Level-B `Verified` event read off a `VerificationRegistryConsent` receipt.
-///
-/// OWNER-BLIND: there is no `subject` field, and one must never be added — the absence IS the
-/// property. `deadline` takes its place so a consumer can still bound the consent window. Kept a
-/// SEPARATE type from [`VerifiedEvent`] rather than making `subject` an `Option`: an optional field
-/// invites a caller to unwrap-or-default it back into an owner slot, and the whole point of Level-B
-/// is that no such slot exists.
+/// An owner-hidden `Verified` event read from a `VerificationRegistryConsent` receipt.
 #[derive(Clone, Debug)]
 pub struct ConsentVerifiedEvent {
     pub dog_tag_id: U256,
@@ -235,34 +147,8 @@ pub trait ChainClient: Send + Sync {
         issuer_addr: &str,
         confirmations: u64,
     ) -> Result<TxView, ChainError>;
-    /// Broadcast recordVerification(consent, userSig) to the VerificationRegistry FROM the backend
-    /// signer at `account_index` (the relayer pays gas). Returns the tx hash.
-    async fn record_verification(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        consent: &ConsentInput,
-        user_sig: &str,
-    ) -> Result<SentTx, ChainError>;
-    /// Broadcast recordVerificationZK(a,b,c,pub) FROM the backend signer at `account_index`. The
-    /// relayer (== pub[2]) must be the broadcaster on-chain. Returns the tx hash.
-    async fn record_verification_zk(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        a: &[String; 2],
-        b: &[[String; 2]; 2],
-        c: &[String; 2],
-        pub_signals: &[String; 7],
-        record_type: &str,
-        deadline: u64,
-    ) -> Result<SentTx, ChainError>;
-    /// Broadcast the LEVEL-B 4-arg `recordVerificationZK(a,b,c,pub)` to a
+    /// Broadcast the owner-hidden 4-arg `recordVerificationZK(a,b,c,pub)` to a
     /// `VerificationRegistryConsent` at `registry_addr`, FROM the backend signer at `account_index`.
-    ///
-    /// Separate from [`ChainClient::record_verification_zk`] rather than an overload of it: the arg
-    /// lists differ (no `recordType`/`deadline` — both are `pub[5]`/`pub[6]` here) and so does the
-    /// selector, so one method cannot serve both without silently encoding for the wrong registry.
     ///
     /// The relayer must be the broadcaster: the contract requires
     /// `address(uint160(pub[level_b::RELAYER])) == msg.sender`, and `relayer` is bound into both the
@@ -277,18 +163,8 @@ pub trait ChainClient: Send + Sync {
         c: &[String; 2],
         pub_signals: &[String; 7],
     ) -> Result<SentTx, ChainError>;
-    /// Read the `Verified(dogTagId,relayer,subject,purpose,nullifier,ts)` event emitted by
-    /// `registry_addr` in the given tx's receipt. Err(NotFound) if absent/unmined.
-    async fn get_verified_event(
-        &self,
-        tx_hash: &str,
-        registry_addr: &str,
-    ) -> Result<VerifiedEvent, ChainError>;
-    /// Read the LEVEL-B owner-blind `Verified(dogTagId,relayer,purpose,nullifier,deadline,ts)` event
+    /// Read the owner-hidden `Verified(dogTagId,relayer,purpose,nullifier,deadline,ts)` event
     /// emitted by `registry_addr` in the given tx's receipt. Err(NotFound) if absent/unmined.
-    ///
-    /// Decodes a DIFFERENT topic0 than [`ChainClient::get_verified_event`] (no `subject`), so pointing
-    /// this at a Level-A registry yields NotFound rather than a mis-decoded owner field.
     async fn get_consent_verified_event(
         &self,
         tx_hash: &str,
@@ -296,47 +172,12 @@ pub trait ChainClient: Send + Sync {
     ) -> Result<ConsentVerifiedEvent, ChainError>;
     /// VerificationRegistry.consumed(nullifier).
     async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError>;
-    /// ConsentKeyRegistry.keyOf(wallet) — the bound babyJubPubKeyHash (0x0..0 if unbound). Hex string.
-    async fn consent_key_of(&self, registry_addr: &str, wallet: &str)
-        -> Result<String, ChainError>;
-    /// ConsentKeyRegistry.bindNonce(wallet) — the next bind nonce the owner's EIP-712 sig must use.
-    async fn bind_nonce(&self, registry_addr: &str, wallet: &str) -> Result<U256, ChainError>;
-    /// Broadcast bindConsentKeyFor(wallet, keyHash, ecdsaSig) to the ConsentKeyRegistry FROM the
-    /// backend signer at `account_index` (the relayer pays gas; the owner's EIP-712 sig authorizes).
-    /// Returns the tx hash (awaits the receipt in the Alloy impl). Default = encode + sign_and_send.
-    async fn bind_consent_key_for(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        wallet: &str,
-        key_hash: &str,
-        ecdsa_sig: &str,
-    ) -> Result<SentTx, ChainError> {
-        let calldata = bind_consent_key_for_calldata(wallet, key_hash, ecdsa_sig);
-        self.sign_and_send(account_index, registry_addr, &calldata)
-            .await
-    }
-    /// DogTagSBT.mint(to, dogTagId, root) FROM the signer at `account_index` (the vet signer must hold
-    /// ISSUER_ROLE). The vet ISSUES the DOG_PROFILE SBT to the device wallet, baking the owner-identity
-    /// merkle root in as `profileRoot[id]`. Default = encode + sign_and_send (AlloyChain path); MemChain
-    /// overrides to emulate the ownerOf/profileRoot effect without a node.
-    async fn mint(
-        &self,
-        account_index: u32,
-        sbt_addr: &str,
-        to: &str,
-        dog_tag_id: &str,
-        root: &str,
-    ) -> Result<SentTx, ChainError> {
-        let calldata = mint_calldata(to, dog_tag_id, root);
-        self.sign_and_send(account_index, sbt_addr, &calldata).await
-    }
     /// `DogTagIssuer.issue(R)` on `issuer_addr` FROM the signer at `account_index` (which must be
     /// whitelisted for the clone's recordType). Anchors `R` so `rootIssuer[R]` resolves to this clone.
     ///
-    /// This is HALF of a Level-B issuance. On its own it does not mint anything; paired with
+    /// On its own this does not mint anything; paired with
     /// [`ChainClient::mint_custodial`] it satisfies the second of the two independent on-chain
-    /// conditions a Level-B verify checks (`VerificationRegistryConsent.sol:188-192`).
+    /// conditions an owner-hidden verify checks (`VerificationRegistryConsent.sol:188-192`).
     async fn issue(
         &self,
         account_index: u32,
@@ -348,7 +189,7 @@ pub trait ChainClient: Send + Sync {
             .await
     }
     /// `DogTagSBTConsent.mintCustodial(dogTagId, R)` FROM the signer at `account_index` (must hold
-    /// ISSUER_ROLE on the Level-B SBT). Seals `R` as `profileRoot[dogTagId]`, write-once.
+    /// ISSUER_ROLE on the owner-hidden SBT). Seals `R` as `profileRoot[dogTagId]`, write-once.
     ///
     /// **Call [`ChainClient::issue`] FIRST.** The mint is irreversible and the id is single-use
     /// forever (`profileRoot[id] != 0` rejects any re-mint, even after a burn), so minting before the
@@ -366,10 +207,6 @@ pub trait ChainClient: Send + Sync {
     ) -> Result<SentTx, ChainError> {
         let calldata = mint_custodial_calldata(dog_tag_id, root);
         self.sign_and_send(account_index, sbt_addr, &calldata).await
-    }
-    /// DogTagSBT.ownerOf(dogTagId) (lowercase 0x.. address; Err(NotFound) if unminted).
-    async fn owner_of(&self, _sbt_addr: &str, _dog_tag_id: &str) -> Result<String, ChainError> {
-        Err(ChainError::NotFound)
     }
     /// DogTagSBT.profileRoot(dogTagId) (0x.. bytes32 hex; 0x0..0 if unminted).
     async fn profile_root_of(
@@ -424,17 +261,7 @@ pub fn revoke_calldata(root: &str) -> String {
 pub fn explorer_tx_url(tx_hash: &str) -> String {
     format!("https://explorer.roax.net/tx/{tx_hash}")
 }
-/// ABI-encode DogTagSBT.mint(to, dogTagId, root). Mirrors admin's `mint_calldata`.
-pub fn mint_calldata(to: &str, dog_tag_id: &str, root: &str) -> String {
-    use alloy::sol_types::SolCall;
-    let call = IDogTagSBT::mintCall {
-        to: parse_addr(to),
-        id: parse_u256_dec_or_hex(dog_tag_id),
-        root: parse_b256(root),
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
-/// ABI-encode `DogTagSBTConsent.mintCustodial(dogTagId, root)` - the Level-B owner-blind mint (M-2).
+/// ABI-encode the owner-blind `DogTagSBTConsent.mintCustodial(dogTagId, root)`.
 ///
 /// `dog_tag_id` MUST already be the CANONICAL field `field_of_value(Integer(handle))`, never the raw
 /// operator handle: the same field is the KDF binding input the device folded into `R`, so a raw
@@ -455,37 +282,6 @@ fn normalize_id(dog_tag_id: &str) -> String {
     parse_u256_dec_or_hex(dog_tag_id).to_string()
 }
 
-/// The 9-field VerificationConsent in the registry's struct order — all hex strings (uint256/bytes32
-/// as 0x.. 32-byte words; addresses as 0x.. 20-byte). Mirrors §11.9(a).
-#[derive(Clone, Debug)]
-pub struct ConsentInput {
-    pub dog_tag_id: U256,
-    pub record_type: String,
-    pub purpose: String,
-    pub credential_root: String,
-    pub challenge: String,
-    pub relayer: String,
-    pub subject: String,
-    pub nonce: U256,
-    pub deadline: U256,
-}
-
-impl ConsentInput {
-    fn to_sol(&self) -> IVerificationRegistry::VerificationConsent {
-        IVerificationRegistry::VerificationConsent {
-            dogTagId: self.dog_tag_id,
-            recordType: parse_b256(&self.record_type),
-            purpose: parse_b256(&self.purpose),
-            credentialRoot: parse_b256(&self.credential_root),
-            challenge: parse_b256(&self.challenge),
-            relayer: parse_addr(&self.relayer),
-            subject: parse_addr(&self.subject),
-            nonce: self.nonce,
-            deadline: self.deadline,
-        }
-    }
-}
-
 fn parse_u256_dec_or_hex(s: &str) -> U256 {
     let t = s.trim();
     if let Some(h) = t.strip_prefix("0x") {
@@ -495,58 +291,13 @@ fn parse_u256_dec_or_hex(s: &str) -> U256 {
     }
 }
 
-/// ABI-encode recordVerification(consent, userSig).
-pub fn record_verification_calldata(consent: &ConsentInput, user_sig: &str) -> String {
-    use alloy::sol_types::SolCall;
-    let sig = Bytes::from(
-        hex::decode(user_sig.strip_prefix("0x").unwrap_or(user_sig)).unwrap_or_default(),
-    );
-    let call = IVerificationRegistry::recordVerificationCall {
-        c: consent.to_sol(),
-        userSig: sig,
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
-
-/// ABI-encode recordVerificationZK(a,b,c,pub,recordType,deadline) from decimal-string proof
-/// components. `record_type` is the credential recordType (Art. 9 exclusion) and `deadline` is a
-/// unix-seconds freshness bound — both defense-in-depth guards the relayer supplies (see the contract).
-pub fn record_verification_zk_calldata(
-    a: &[String; 2],
-    b: &[[String; 2]; 2],
-    c: &[String; 2],
-    pub_signals: &[String; 7],
-    record_type: &str,
-    deadline: u64,
-) -> String {
-    use alloy::sol_types::SolCall;
-    let g = |s: &str| parse_u256_dec_or_hex(s);
-    let a_arr = [g(&a[0]), g(&a[1])];
-    let b_arr = [[g(&b[0][0]), g(&b[0][1])], [g(&b[1][0]), g(&b[1][1])]];
-    let c_arr = [g(&c[0]), g(&c[1])];
-    let mut pub_arr: [U256; 7] = [U256::ZERO; 7];
-    for (slot, s) in pub_arr.iter_mut().zip(pub_signals.iter()) {
-        *slot = g(s);
-    }
-    let call = IVerificationRegistry::recordVerificationZKCall {
-        a: a_arr,
-        b: b_arr,
-        c: c_arr,
-        r#pub: pub_arr,
-        recordType: parse_b256(record_type),
-        deadline: U256::from(deadline),
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
-
-/// ABI-encode the LEVEL-B `recordVerificationZK(a,b,c,pub)` — FOUR args, from decimal-or-hex string
+/// ABI-encode `recordVerificationZK(a,b,c,pub)` — four args, from decimal-or-hex string
 /// proof components.
 ///
-/// No `recordType`/`deadline` parameters, and that is the point: under Level-B both are public
+/// No `recordType`/`deadline` parameters: both are public
 /// signals (`pub[5]`/`pub[6]`) bound to the proof, so the relayer cannot choose or widen them. A
 /// relayer that wants a longer freshness window cannot get one by re-encoding — it has to ask the
-/// device for a fresh proof. Contrast [`record_verification_zk_calldata`], the Level-A 6-arg encoder,
-/// where both are relayer-supplied defense-in-depth guards.
+/// device for a fresh proof.
 pub fn record_verification_zk_consent_calldata(
     a: &[String; 2],
     b: &[[String; 2]; 2],
@@ -571,35 +322,6 @@ pub fn record_verification_zk_consent_calldata(
     format!("0x{}", hex::encode(call.abi_encode()))
 }
 
-/// ABI-encode bindConsentKey(babyJubPubKeyHash, ecdsaSig).
-pub fn bind_consent_key_calldata(key_hash: &str, ecdsa_sig: &str) -> String {
-    use alloy::sol_types::SolCall;
-    let sig = Bytes::from(
-        hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default(),
-    );
-    let call = IConsentKeyRegistry::bindConsentKeyCall {
-        babyJubPubKeyHash: parse_b256(key_hash),
-        ecdsaSig: sig,
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
-
-/// ABI-encode bindConsentKeyFor(wallet, babyJubPubKeyHash, ecdsaSig) — the permissionless,
-/// relayer-sponsored bind. The relayer broadcasts; `ecdsaSig` is the owner's EIP-712 BindConsentKey
-/// signature (recover == wallet on-chain), so the owner never pays gas.
-pub fn bind_consent_key_for_calldata(wallet: &str, key_hash: &str, ecdsa_sig: &str) -> String {
-    use alloy::sol_types::SolCall;
-    let sig = Bytes::from(
-        hex::decode(ecdsa_sig.strip_prefix("0x").unwrap_or(ecdsa_sig)).unwrap_or_default(),
-    );
-    let call = IConsentKeyRegistry::bindConsentKeyForCall {
-        wallet: parse_addr(wallet),
-        babyJubPubKeyHash: parse_b256(key_hash),
-        ecdsaSig: sig,
-    };
-    format!("0x{}", hex::encode(call.abi_encode()))
-}
-
 // --------------------------------------------------------------------------------------------
 // MemChain — in-memory emulation of issue / isValid / issuedAt / RootIssued + whitelist.
 // --------------------------------------------------------------------------------------------
@@ -617,18 +339,8 @@ struct MemChainInner {
     signers: HashMap<u32, String>,
     /// (registry_addr, nullifier) consumed by a recordVerification(ZK).
     consumed: HashMap<(String, String), bool>,
-    /// txHash -> Verified event emitted by a recordVerification(ZK).
-    verified: HashMap<String, VerifiedEvent>,
-    /// txHash -> LEVEL-B owner-blind Verified event emitted by the consent registry. A separate map
-    /// from `verified`, mirroring the two distinct on-chain topic0s: a Level-B tx must not be
-    /// readable as a Level-A event (which would invent a `subject`), or vice versa.
+    /// txHash -> owner-hidden Verified event emitted by the consent registry.
     consent_verified: HashMap<String, ConsentVerifiedEvent>,
-    /// (consent_key_registry_addr, wallet) -> bound babyJubPubKeyHash (keyOf).
-    consent_keys: HashMap<(String, String), String>,
-    /// (consent_key_registry_addr, wallet) -> bindNonce (incremented on each successful bind).
-    bind_nonce: HashMap<(String, String), u64>,
-    /// (sbt_addr, dog_tag_id) -> owner address (DogTagSBT.ownerOf).
-    sbt_owners: HashMap<(String, String), String>,
     /// (sbt_addr, dog_tag_id) -> profileRoot (DogTagSBT.profileRoot).
     sbt_roots: HashMap<(String, String), String>,
     nonce: u64,
@@ -661,13 +373,6 @@ impl MemChain {
                 signer.to_lowercase(),
             ),
             true,
-        );
-    }
-    /// Pre-bind a consent key (test harness): set `keyOf[wallet]` in the given ConsentKeyRegistry.
-    pub fn set_consent_key(&self, registry: &str, wallet: &str, key_hash: &str) {
-        self.inner.lock().unwrap().consent_keys.insert(
-            (registry.to_lowercase(), wallet.to_lowercase()),
-            key_hash.to_lowercase(),
         );
     }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
@@ -800,91 +505,6 @@ impl ChainClient for MemChain {
         }
         Ok(view)
     }
-    async fn record_verification(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        consent: &ConsentInput,
-        _user_sig: &str,
-    ) -> Result<SentTx, ChainError> {
-        // Emulate the on-chain effect: derive the nullifier (parity with consent.rs), consume it
-        // (reject replays), and record a Verified event. No real signature/ownership checks here —
-        // those are enforced on the real chain; MemChain exercises the backend control flow only.
-        let nf = mem_consent_nullifier(consent);
-        let mut g = self.inner.lock().unwrap();
-        let _from = g
-            .signers
-            .get(&account_index)
-            .cloned()
-            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
-        let reg = registry_addr.to_lowercase();
-        if g.consumed
-            .get(&(reg.clone(), nf.clone()))
-            .copied()
-            .unwrap_or(false)
-        {
-            return Err(ChainError::Other("replayed".into()));
-        }
-        g.consumed.insert((reg.clone(), nf.clone()), true);
-        g.clock += 12;
-        let ts = U256::from(g.clock);
-        g.nonce += 1;
-        let tx_hash = format!("0x{:064x}", g.nonce);
-        let ev = VerifiedEvent {
-            dog_tag_id: consent.dog_tag_id,
-            relayer: consent.relayer.to_lowercase(),
-            subject: consent.subject.to_lowercase(),
-            purpose: consent.purpose.to_lowercase(),
-            nullifier: nf,
-            ts,
-        };
-        g.verified.insert(tx_hash.clone(), ev);
-        Ok(SentTx { tx_hash })
-    }
-    async fn record_verification_zk(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        _a: &[String; 2],
-        _b: &[[String; 2]; 2],
-        _c: &[String; 2],
-        pub_signals: &[String; 7],
-        _record_type: &str,
-        _deadline: u64,
-    ) -> Result<SentTx, ChainError> {
-        // LEVEL-A indices: this mock mirrors the Level-A `recordVerificationZK` the relayer actually
-        // broadcasts (it carries a `subject`, which Level-B has no signal for).
-        let nf = format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[P::NULLIFIER])));
-        let mut g = self.inner.lock().unwrap();
-        let _from = g
-            .signers
-            .get(&account_index)
-            .cloned()
-            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
-        let reg = registry_addr.to_lowercase();
-        if g.consumed
-            .get(&(reg.clone(), nf.clone()))
-            .copied()
-            .unwrap_or(false)
-        {
-            return Err(ChainError::Other("replayed".into()));
-        }
-        g.consumed.insert((reg.clone(), nf.clone()), true);
-        g.clock += 12;
-        let ts = U256::from(g.clock);
-        g.nonce += 1;
-        let tx_hash = format!("0x{:064x}", g.nonce);
-        let ev = VerifiedEvent {
-            dog_tag_id: parse_u256_dec_or_hex(&pub_signals[P::DOG_TAG_ID]),
-            relayer: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[P::RELAYER])),
-            subject: format!("0x{:040x}", parse_u256_dec_or_hex(&pub_signals[P::SUBJECT])),
-            purpose: format!("0x{}", hex::encode(parse_b256_dec_or_hex(&pub_signals[P::PURPOSE]))),
-            nullifier: nf,
-            ts,
-        };
-        g.verified.insert(tx_hash.clone(), ev);
-        Ok(SentTx { tx_hash })
-    }
     async fn record_verification_zk_consent(
         &self,
         account_index: u32,
@@ -894,9 +514,7 @@ impl ChainClient for MemChain {
         _c: &[String; 2],
         pub_signals: &[String; 7],
     ) -> Result<SentTx, ChainError> {
-        // LEVEL-B indices via `PB`. The nullifier is pub[3], NOT pub[4] — pub[4] is `R` here, and
-        // reading it as the nullifier is precisely the E-1 bug: the one-time check would key on the
-        // root, so a SUCCESSFUL verification would look unconsumed forever.
+        // The nullifier is pub[3]; pub[4] is the profile root.
         let nf = format!(
             "0x{}",
             hex::encode(parse_b256_dec_or_hex(&pub_signals[PB::NULLIFIER]))
@@ -939,14 +557,6 @@ impl ChainClient for MemChain {
         g.consent_verified.insert(tx_hash.clone(), ev);
         Ok(SentTx { tx_hash })
     }
-    async fn get_verified_event(
-        &self,
-        tx_hash: &str,
-        _registry_addr: &str,
-    ) -> Result<VerifiedEvent, ChainError> {
-        let g = self.inner.lock().unwrap();
-        g.verified.get(tx_hash).cloned().ok_or(ChainError::NotFound)
-    }
     async fn get_consent_verified_event(
         &self,
         tx_hash: &str,
@@ -965,76 +575,6 @@ impl ChainClient for MemChain {
             .copied()
             .unwrap_or(false))
     }
-    async fn consent_key_of(
-        &self,
-        registry_addr: &str,
-        wallet: &str,
-    ) -> Result<String, ChainError> {
-        let g = self.inner.lock().unwrap();
-        Ok(g.consent_keys
-            .get(&(registry_addr.to_lowercase(), wallet.to_lowercase()))
-            .cloned()
-            .unwrap_or_else(|| format!("0x{}", "0".repeat(64))))
-    }
-    async fn bind_nonce(&self, registry_addr: &str, wallet: &str) -> Result<U256, ChainError> {
-        let g = self.inner.lock().unwrap();
-        let n = g
-            .bind_nonce
-            .get(&(registry_addr.to_lowercase(), wallet.to_lowercase()))
-            .copied()
-            .unwrap_or(0);
-        Ok(U256::from(n))
-    }
-    async fn bind_consent_key_for(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        wallet: &str,
-        key_hash: &str,
-        _ecdsa_sig: &str,
-    ) -> Result<SentTx, ChainError> {
-        // Emulate the on-chain effect: set keyOf[wallet]=keyHash and bump bindNonce. No signature
-        // recovery here — that is enforced on the real chain; MemChain exercises control flow only.
-        let mut g = self.inner.lock().unwrap();
-        let _from = g
-            .signers
-            .get(&account_index)
-            .cloned()
-            .ok_or_else(|| ChainError::Other("no signer for index".into()))?;
-        let reg = registry_addr.to_lowercase();
-        let w = wallet.to_lowercase();
-        g.consent_keys
-            .insert((reg.clone(), w.clone()), key_hash.to_lowercase());
-        *g.bind_nonce.entry((reg, w)).or_insert(0) += 1;
-        g.nonce += 1;
-        let tx_hash = format!("0x{:064x}", g.nonce);
-        Ok(SentTx { tx_hash })
-    }
-    async fn mint(
-        &self,
-        account_index: u32,
-        sbt_addr: &str,
-        to: &str,
-        dog_tag_id: &str,
-        root: &str,
-    ) -> Result<SentTx, ChainError> {
-        // Emulate DogTagSBT.mint(to,id,root): set ownerOf[id]=to AND profileRoot[id]=root. Requires a
-        // registered signer at this index (the vet ISSUER signer). Re-mint of the same id reverts.
-        let mut g = self.inner.lock().unwrap();
-        g.signers
-            .get(&account_index)
-            .cloned()
-            .ok_or_else(|| ChainError::Other("no issuer signer for index".into()))?;
-        let key = (sbt_addr.to_lowercase(), normalize_id(dog_tag_id));
-        if g.sbt_owners.contains_key(&key) {
-            return Err(ChainError::Other("ERC721: token already minted".into()));
-        }
-        g.sbt_owners.insert(key.clone(), to.to_lowercase());
-        g.sbt_roots.insert(key, root.to_lowercase());
-        g.nonce += 1;
-        let tx_hash = format!("0x{:064x}", g.nonce);
-        Ok(SentTx { tx_hash })
-    }
     async fn mint_custodial(
         &self,
         account_index: u32,
@@ -1042,12 +582,8 @@ impl ChainClient for MemChain {
         dog_tag_id: &str,
         root: &str,
     ) -> Result<SentTx, ChainError> {
-        // Emulate DogTagSBTConsent.mintCustodial(id, root). Two differences from `mint` above, both
-        // load-bearing for the Level-B tests:
-        //   * NO ownerOf write. The tag goes to the contract's custodian, which is not a per-tag value
-        //     and is deliberately not modelled here - nothing in the Level-B path may read an owner.
-        //   * Write-once is keyed on profileRoot, not ownerOf, mirroring `profileRoot[id] != 0` at
-        //     `DogTagSBTConsent.sol:150`. That mapping survives a burn, so an id is retired FOREVER.
+        // Emulate DogTagSBTConsent.mintCustodial(id, root). No per-tag owner is modelled; write-once is
+        // keyed by profileRoot, mirroring `profileRoot[id] != 0` in the contract.
         let mut g = self.inner.lock().unwrap();
         g.signers
             .get(&account_index)
@@ -1065,13 +601,6 @@ impl ChainClient for MemChain {
         let tx_hash = format!("0x{:064x}", g.nonce);
         Ok(SentTx { tx_hash })
     }
-    async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
-        let g = self.inner.lock().unwrap();
-        g.sbt_owners
-            .get(&(sbt_addr.to_lowercase(), normalize_id(dog_tag_id)))
-            .cloned()
-            .ok_or(ChainError::NotFound)
-    }
     async fn profile_root_of(
         &self,
         sbt_addr: &str,
@@ -1088,35 +617,6 @@ impl ChainClient for MemChain {
 /// Big-endian 32-byte word from a decimal-or-hex string (for MemChain nullifier emulation).
 fn parse_b256_dec_or_hex(s: &str) -> B256 {
     B256::from(parse_u256_dec_or_hex(s).to_be_bytes::<32>())
-}
-
-/// MemChain-side nullifier: reuse the SDK's `consent_nullifier` for byte-for-byte parity with the
-/// registry's on-chain Poseidon6 computation.
-fn mem_consent_nullifier(c: &ConsentInput) -> String {
-    use dogtag_standard::consent::{consent_nullifier, VerificationConsent};
-    let b32 = |s: &str| parse_b256_dec_or_hex(s).0;
-    let a20 = |s: &str| {
-        let a: Address = parse_addr(s);
-        let mut out = [0u8; 20];
-        out.copy_from_slice(a.as_slice());
-        out
-    };
-    let mut dog = [0u8; 32];
-    dog.copy_from_slice(&c.dog_tag_id.to_be_bytes::<32>());
-    let mut nonce = [0u8; 32];
-    nonce.copy_from_slice(&c.nonce.to_be_bytes::<32>());
-    let consent = VerificationConsent {
-        dog_tag_id: dog,
-        record_type: b32(&c.record_type),
-        purpose: b32(&c.purpose),
-        credential_root: b32(&c.credential_root),
-        challenge: b32(&c.challenge),
-        relayer: a20(&c.relayer),
-        subject: a20(&c.subject),
-        nonce,
-        deadline: [0u8; 32],
-    };
-    format!("0x{}", hex::encode(consent_nullifier(&consent)))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -1347,32 +847,6 @@ impl ChainClient for AlloyChain {
             root_issued_logs: logs,
         })
     }
-    async fn record_verification(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        consent: &ConsentInput,
-        user_sig: &str,
-    ) -> Result<SentTx, ChainError> {
-        let calldata = record_verification_calldata(consent, user_sig);
-        self.sign_and_send(account_index, registry_addr, &calldata)
-            .await
-    }
-    async fn record_verification_zk(
-        &self,
-        account_index: u32,
-        registry_addr: &str,
-        a: &[String; 2],
-        b: &[[String; 2]; 2],
-        c: &[String; 2],
-        pub_signals: &[String; 7],
-        record_type: &str,
-        deadline: u64,
-    ) -> Result<SentTx, ChainError> {
-        let calldata = record_verification_zk_calldata(a, b, c, pub_signals, record_type, deadline);
-        self.sign_and_send(account_index, registry_addr, &calldata)
-            .await
-    }
     async fn record_verification_zk_consent(
         &self,
         account_index: u32,
@@ -1408,8 +882,7 @@ impl ChainClient for AlloyChain {
         }
         let reg = parse_addr(registry_addr);
         for log in receipt.inner.logs() {
-            // Address-gate first, then decode the LEVEL-B topic0. A Level-A `Verified` from another
-            // address cannot satisfy both, so this never mis-decodes across shapes.
+            // Address-gate before decoding the owner-hidden event.
             if log.address() != reg {
                 continue;
             }
@@ -1426,108 +899,19 @@ impl ChainClient for AlloyChain {
         }
         Err(ChainError::NotFound)
     }
-    async fn get_verified_event(
-        &self,
-        tx_hash: &str,
-        registry_addr: &str,
-    ) -> Result<VerifiedEvent, ChainError> {
-        use alloy::providers::{Provider, ProviderBuilder};
-        use alloy::sol_types::SolEvent;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let hash: B256 = parse_b256(tx_hash);
-        let receipt = provider
-            .get_transaction_receipt(hash)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?
-            .ok_or(ChainError::NotFound)?;
-        if !receipt.status() {
-            return Err(ChainError::Other("tx reverted".into()));
-        }
-        let reg = parse_addr(registry_addr);
-        for log in receipt.inner.logs() {
-            if log.address() != reg {
-                continue;
-            }
-            if let Ok(ev) = IVerificationRegistry::Verified::decode_log(log.as_ref(), true) {
-                return Ok(VerifiedEvent {
-                    dog_tag_id: ev.dogTagId,
-                    relayer: format!("{:#x}", ev.relayer),
-                    subject: format!("{:#x}", ev.subject),
-                    purpose: format!("0x{}", hex::encode(ev.purpose.as_slice())),
-                    nullifier: format!("0x{}", hex::encode(ev.nullifier.as_slice())),
-                    ts: ev.ts,
-                });
-            }
-        }
-        Err(ChainError::NotFound)
-    }
     async fn consumed(&self, registry_addr: &str, nullifier: &str) -> Result<bool, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
             .on_builtin(&self.rpc_url)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IVerificationRegistry::new(parse_addr(registry_addr), provider);
+        let c = IVerificationRegistryConsent::new(parse_addr(registry_addr), provider);
         let r = c
             .consumed(parse_b256(nullifier))
             .call()
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
-    }
-    async fn consent_key_of(
-        &self,
-        registry_addr: &str,
-        wallet: &str,
-    ) -> Result<String, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IConsentKeyRegistry::new(parse_addr(registry_addr), provider);
-        let r = c
-            .keyOf(parse_addr(wallet))
-            .call()
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        Ok(format!("0x{}", hex::encode(r._0.as_slice())))
-    }
-    async fn bind_nonce(&self, registry_addr: &str, wallet: &str) -> Result<U256, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IConsentKeyRegistry::new(parse_addr(registry_addr), provider);
-        let r = c
-            .bindNonce(parse_addr(wallet))
-            .call()
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        Ok(r._0)
-    }
-    async fn owner_of(&self, sbt_addr: &str, dog_tag_id: &str) -> Result<String, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IDogTagSBT::new(parse_addr(sbt_addr), provider);
-        match c.ownerOf(parse_u256_dec_or_hex(dog_tag_id)).call().await {
-            Ok(r) => Ok(format!("{:#x}", r._0)),
-            Err(e) => {
-                let s = e.to_string();
-                if s.contains("nonexistent") || s.contains("ERC721") || s.contains("revert") {
-                    Err(ChainError::NotFound)
-                } else {
-                    Err(ChainError::Rpc(s))
-                }
-            }
-        }
     }
     async fn profile_root_of(
         &self,
@@ -1573,33 +957,8 @@ mod tests {
         // issue(bytes32) / revoke(bytes32)
         assert_eq!(selector(&issue_calldata("0x00")), "0f75e81f");
         assert_eq!(selector(&revoke_calldata("0x00")), "b75c7dc6");
-        // mint(address,uint256,bytes32)
-        assert_eq!(
-            selector(&mint_calldata(
-                "0x0000000000000000000000000000000000000001",
-                "1",
-                "0x00"
-            )),
-            "1e458bee"
-        );
-        // mintCustodial(uint256,bytes32) — the Level-B owner-blind mint. A DIFFERENT selector from
-        // mint(address,uint256,bytes32) above: the two paths can never be confused on the wire, and
-        // this one has no address word to carry an owner.
+        // mintCustodial(uint256,bytes32) has no address word that could carry an owner.
         assert_eq!(selector(&mint_custodial_calldata("1", "0x00")), "de49152b");
-        // bindConsentKey(bytes32,bytes) / bindConsentKeyFor(address,bytes32,bytes)
-        assert_eq!(
-            selector(&bind_consent_key_calldata("0x00", "0x")),
-            "79f75077"
-        );
-        assert_eq!(
-            selector(&bind_consent_key_for_calldata(
-                "0x0000000000000000000000000000000000000001",
-                "0x00",
-                "0x"
-            )),
-            "7fe27b21"
-        );
-        // recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7],bytes32,uint256)
         let a = ["0".to_string(), "0".to_string()];
         let b = [
             ["0".to_string(), "0".to_string()],
@@ -1615,62 +974,10 @@ mod tests {
             "0".to_string(),
             "0".to_string(),
         ];
-        assert_eq!(
-            selector(&record_verification_zk_calldata(&a, &b, &c, &pubs, "0x00", 0)),
-            "423a45b6"
-        );
-        // LEVEL-B recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7]) — 4-arg.
+        // recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7]) — 4-arg.
         assert_eq!(
             selector(&record_verification_zk_consent_calldata(&a, &b, &c, &pubs)),
             "dd080593"
-        );
-    }
-
-    /// The two `recordVerificationZK` encoders MUST NOT share a selector. They target different
-    /// deployed registries with different arities, so a collision (or a copy-paste that pointed the
-    /// Level-B encoder at the Level-A call struct) would send a Level-B proof to a Level-A registry
-    /// as a malformed call — the historical `0x` empty-revert failure mode, which is silent at the
-    /// type level because both take the same `(a, b, c, pub)` prefix.
-    #[test]
-    fn the_two_record_verification_zk_selectors_are_distinct() {
-        let a = ["0".to_string(), "0".to_string()];
-        let b = [
-            ["0".to_string(), "0".to_string()],
-            ["0".to_string(), "0".to_string()],
-        ];
-        let c = ["0".to_string(), "0".to_string()];
-        let pubs: [String; 7] = std::array::from_fn(|_| "0".to_string());
-        let level_a = selector(&record_verification_zk_calldata(
-            &a, &b, &c, &pubs, "0x00", 0,
-        ));
-        let level_b = selector(&record_verification_zk_consent_calldata(&a, &b, &c, &pubs));
-        assert_ne!(level_a, level_b, "Level-A and Level-B selectors collided");
-        // And the Level-B call carries strictly less calldata: no recordType/deadline words, because
-        // both are public signals bound to the proof rather than relayer-supplied.
-        assert!(
-            record_verification_zk_consent_calldata(&a, &b, &c, &pubs).len()
-                < record_verification_zk_calldata(&a, &b, &c, &pubs, "0x00", 0).len(),
-            "Level-B calldata should not carry the two extra relayer-supplied words"
-        );
-    }
-
-    #[test]
-    fn record_verification_calldata_uses_canonical_selector() {
-        let consent = ConsentInput {
-            dog_tag_id: U256::from(1u64),
-            record_type: "0x00".to_string(),
-            purpose: "0x00".to_string(),
-            credential_root: "0x00".to_string(),
-            challenge: "0x00".to_string(),
-            relayer: "0x0000000000000000000000000000000000000001".to_string(),
-            subject: "0x0000000000000000000000000000000000000002".to_string(),
-            nonce: U256::ZERO,
-            deadline: U256::ZERO,
-        };
-        // recordVerification((uint256,bytes32,bytes32,bytes32,bytes32,address,address,uint256,uint256),bytes)
-        assert_eq!(
-            selector(&record_verification_calldata(&consent, "0x")),
-            "627946ab"
         );
     }
 

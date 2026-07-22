@@ -16,9 +16,8 @@
 //! matching `issuerEntityId → Business.business_id`, else `domain → Business.domain` (mirroring the
 //! indexer's own join), falling back to the raw application `domain` when no business row exists yet.
 //!
-//! Today only an O(n) relayer→business scan exists (`verify_relay.rs::resolve_verifier_api_base`,
-//! keyed on `document_stores`). This promotes that idea to a proper indexed `HashMap<signer, entry>`
-//! built once from the store, keyed on the actual signer addresses (plan §3.5).
+//! The directory is a proper indexed `HashMap<signer, entry>` built once from the store and keyed on
+//! the actual signer addresses (plan §3.5).
 
 use std::collections::HashMap;
 

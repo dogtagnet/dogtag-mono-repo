@@ -112,7 +112,6 @@ fn vrecord(id: &str, owner_id: &str) -> VerificationRecord {
         dog_tag_id: "1".to_string(),
         purpose: "boarding_intake".to_string(),
         relayer: "0xrelayer".to_string(),
-        mode: "ThirdParty".to_string(),
         status: "verified".to_string(),
         sealed: sealed("vrec"),
     }
@@ -204,14 +203,6 @@ async fn reserve_microchip_is_atomic_one_time_and_visible_to_exists() {
     assert!(s.microchip_exists("chip-a").await);
     // a distinct code reserves independently.
     assert!(s.reserve_microchip("chip-b").await);
-}
-
-#[tokio::test]
-async fn next_dog_tag_id_is_monotonic_from_one() {
-    let s = MemStore::new();
-    assert_eq!(s.next_dog_tag_id().await, 1);
-    assert_eq!(s.next_dog_tag_id().await, 2);
-    assert_eq!(s.next_dog_tag_id().await, 3);
 }
 
 #[tokio::test]

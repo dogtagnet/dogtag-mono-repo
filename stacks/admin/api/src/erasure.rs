@@ -33,7 +33,7 @@ pub async fn erase(st: &AppState, owner_id: &str, scope: &str) -> (usize, usize,
             st.store.delete_credential(&c.credential_id).await;
             creds += 1;
         }
-        // pet profile docs (the minted DOG_PROFILE wrapped doc).
+        // historical pet profile documents.
         for p in st.store.pets_of_owner(owner_id).await {
             if let Some(s) = &p.sealed_doc {
                 st.vault.shred(&s.dek_id).await;

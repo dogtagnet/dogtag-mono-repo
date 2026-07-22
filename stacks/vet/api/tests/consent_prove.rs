@@ -12,11 +12,10 @@
 //! that `pub[0]` is the canonical `dogTagId` field, and that `pub[4]` (`R`) is the tree root the SBT
 //! seals as `profileRoot(dogTagId)`.
 //!
-//! Hermetic: the consent artifacts are committed under `circuits/build`. Self-skips if absent (same
-//! artifact-presence gate the Level-A `prove_verification` test uses), so it never reds an unbuilt
-//! checkout. A piece-wise unit test can pass while a subtle encoding bug hides; a real proof against
-//! the frozen VK cannot — this is the ground truth for input names, `M`/nullifier, path-packing, and
-//! the canonical field, together.
+//! Hermetic: the consent artifacts are committed under `circuits/build`. The test self-skips if they
+//! are absent, so it never reds an unbuilt checkout. A piece-wise unit test can pass while a subtle
+//! encoding bug hides; a real proof against the frozen VK cannot — this is the ground truth for
+//! input names, `M`/nullifier, path-packing, and the canonical field together.
 #![cfg(feature = "prover")]
 
 use std::path::PathBuf;
@@ -149,8 +148,7 @@ fn consent_proves_and_verifies_against_the_frozen_vk() {
     );
 }
 
-/// Fail-closed at load: the consent prover refuses a zkey whose hash differs from the pinned one —
-/// the same audit-M4 discipline the Level-A prover has, now for the consent artifact set.
+/// Fail-closed at load: the consent prover refuses a zkey whose hash differs from the pinned one.
 #[test]
 fn consent_prover_rejects_an_unexpected_zkey_hash() {
     let build_dir = repo_root().join("circuits").join("build");
