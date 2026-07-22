@@ -69,6 +69,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.dogtag_standard.ConvenienceClaims
 import uniffi.dogtag_standard.TrustedAnchor
+import uniffi.dogtag_standard.dogTagIdFieldHex
 import uniffi.dogtag_standard.proveConsent
 import uniffi.dogtag_standard.validateDiscovery
 import uniffi.dogtag_standard.verifyWhitelistKeyHex
@@ -353,33 +354,37 @@ private fun IssuePanel(
                                         }
                                     }
 
-                                    // A null means the response may have been lost after the server accepted it.
+                                    // A null bind means the response may have been lost after the
+                                    // server accepted it, and the issuance-session status route is
+                                    // operator-gated (the device holds no operator session). Confirm
+                                    // completion straight from the public chain instead: `mintCustodial`
+                                    // writes `DogTagSBTConsent.profileRoot(id) = R` once both txs mine,
+                                    // keyed by the CANONICAL field-hashed id (never the raw handle).
                                     // Poll the already-persisted root; never generate a second set of salts.
                                     status = "Issuing owner-hidden root on-chain…"
-                                    var confirmed: CentralApi.IssueSessionStatus? = null
+                                    val roax = RoaxConfig.load(context)
+                                    val onchainId = dogTagIdFieldHex(resolved.dogTagId)
+                                    var anchored = false
+                                    var delayMs = 2_000L
                                     for (attempt in 0 until 40) {
-                                        val current = withContext(Dispatchers.IO) {
-                                            CentralApi.profileIssueSessionStatus(qr.host, resolved.sessionId)
+                                        val chainRoot = withContext(Dispatchers.IO) {
+                                            RoaxRpc.profileRoot(AppConfig.ROAX_RPC, roax.dogTagSbt, onchainId)
                                         }
-                                        if (current != null) {
-                                            check(current.dogTagId.isBlank() || current.dogTagId == resolved.dogTagId) {
-                                                "issuance status returned a different dogTagId"
-                                            }
-                                            check(current.root.isBlank() || current.root.equals(root, ignoreCase = true)) {
-                                                "issuance status returned a different profile root"
-                                            }
-                                            if (current.status.lowercase() in setOf("error", "failed", "expired")) {
-                                                error("issuance ${current.status}")
-                                            }
-                                            if (current.bound && !current.txHash.isNullOrBlank()) {
-                                                confirmed = current
-                                                break
-                                            }
+                                        if (chainRoot != null &&
+                                            chainRoot.removePrefix("0x").any { it != '0' } &&
+                                            chainRoot.equals(root, ignoreCase = true)
+                                        ) {
+                                            anchored = true
+                                            break
                                         }
-                                        kotlinx.coroutines.delay(3000)
+                                        kotlinx.coroutines.delay(delayMs)
+                                        delayMs = minOf(delayMs + 500L, 5_000L)
                                     }
-                                    checkNotNull(confirmed) { "issuance was not confirmed in time" }
-                                    val txHash = checkNotNull(confirmed.txHash)
+                                    if (!anchored) {
+                                        working = false
+                                        status = "Submitted; anchoring is still pending. Check the vet portal for completion."
+                                        return@launch
+                                    }
                                     store.upsertPet(
                                         Pet(
                                             dogTagId = resolved.dogTagId,
@@ -389,7 +394,7 @@ private fun IssuePanel(
                                             microchip = resolved.pet.microchip.code.takeIf { it.isNotBlank() },
                                         ),
                                     )
-                                    issued = IssuedDogTag(resolved.dogTagId, root, txHash)
+                                    issued = IssuedDogTag(resolved.dogTagId, root, bind?.txHash.orEmpty())
                                     working = false
                                     status = "Issued — owner hidden."
                                 } catch (e: Exception) {
@@ -419,7 +424,7 @@ private fun IssuePanel(
             Text("Dog tag issued", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = c.success)
             Field("dogTagId", res.dogTagId.ifBlank { "—" })
             Field("Root", res.root.take(18).ifBlank { "—" } + "…")
-            Field("Tx", res.txHash.take(18).ifBlank { "—" } + "…")
+            if (res.txHash.isNotBlank()) Field("Tx", res.txHash.take(18) + "…")
             Text("Stored under your dog tags.", fontSize = 12.sp, color = c.muted)
         }
     }

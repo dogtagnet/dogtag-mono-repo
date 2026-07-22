@@ -86,14 +86,6 @@ object CentralApi {
         "custodial bind rejected ($code): ${body.take(160)}",
     )
 
-    data class IssueSessionStatus(
-        val status: String,
-        val bound: Boolean,
-        val dogTagId: String,
-        val root: String,
-        val txHash: String?,
-    )
-
     /** Resolve the scanned `/p/<token>` before constructing the device-private profile tree. */
     suspend fun resolveProfileIssueSession(host: String, token: String): ProfileIssueSession? {
         if (token.isBlank()) return null
@@ -105,10 +97,10 @@ object CentralApi {
         }
     }
 
-    /** POST only `{token, R}`. No owner address or signature crosses this boundary. */
+    /** POST only `{token, root}`. No owner address or signature crosses this boundary. */
     suspend fun bindCustodialIssue(host: String, token: String, root: String): CustodialBind? {
         if (token.isBlank() || root.isBlank()) return null
-        val body = JSONObject().put("token", token).put("R", root).toString()
+        val body = JSONObject().put("token", token).put("root", root).toString()
         return try {
             val response = Http.postJson(
                 "$host/profiles/issue/custodial-bind",
@@ -125,26 +117,6 @@ object CentralApi {
             )
         } catch (rejected: CustodialBindRejectedException) {
             throw rejected
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /** Poll until the server reports the custodial owner-hidden bind and its transaction hash. */
-    suspend fun profileIssueSessionStatus(host: String, sessionId: String): IssueSessionStatus? {
-        if (sessionId.isBlank()) return null
-        return try {
-            val response = Http.getJson("$host/profiles/issue/session/$sessionId")
-            if (!response.ok) return null
-            val o = JSONObject(response.body)
-            val status = o.optString("status", "")
-            IssueSessionStatus(
-                status = status,
-                bound = o.optBoolean("bound", status.equals("bound", ignoreCase = true)),
-                dogTagId = o.string("dogTagId", "dog_tag_id"),
-                root = o.string("root", "R"),
-                txHash = o.string("txHash", "tx_hash").ifBlank { null },
-            )
         } catch (_: Exception) {
             null
         }
@@ -195,9 +167,13 @@ object CentralApi {
         }
     }
 
-    /** Submit the one owner-hidden verification proof to the canonical route. */
+    /**
+     * Submit the one owner-hidden verification proof. The Level-B route is the one that accepts an
+     * `{exportToken, proof}` payload under the owner's one-time export token; the non-`levelb`
+     * `/v1/verify/consent` requires `consent`+`sig` and refuses a `levelb` session.
+     */
     suspend fun postVerifyConsentToHost(host: String, payloadJson: String): Http.Response =
-        Http.postJson("$host/v1/verify/consent", payloadJson, readTimeoutMs = 20_000)
+        Http.postJson("$host/v1/verify/consent/levelb", payloadJson, readTimeoutMs = 20_000)
 
     data class SessionStatus(val status: String, val txHash: String?)
 

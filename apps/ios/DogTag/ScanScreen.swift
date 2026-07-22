@@ -208,7 +208,9 @@ struct ScanScreen: View {
                     Text("Dog tag issued").font(.system(size: 16, weight: .bold)).foregroundColor(c.success)
                     CopyableMonoRow(label: "dogTagId", value: res.dogTagId, truncate: false)
                     CopyableMonoRow(label: "Merkle root", value: res.root)
-                    CopyableMonoRow(label: "Transaction", value: res.txHash)
+                    if !res.txHash.isEmpty {
+                        CopyableMonoRow(label: "Transaction", value: res.txHash)
+                    }
                     Text("The private recovery witness is stored on this device.").font(.system(size: 12)).foregroundColor(c.muted)
                 }
             }
@@ -254,39 +256,35 @@ struct ScanScreen: View {
                         }
                     }
 
-                    // The HTTP response can be lost after the one-time token was consumed. The
-                    // persisted root and resolved session id are enough to read completion back, so
+                    // The HTTP response can be lost after the one-time token was consumed, and the
+                    // issuance-session status route is operator-gated (the device holds no operator
+                    // session). Confirm completion the way the pre-change flow did: read the anchor
+                    // straight from the public chain. `mintCustodial` writes
+                    // `DogTagSBTConsent.profileRoot(id) = R` once both txs mine, keyed by the CANONICAL
+                    // field-hashed id (never the raw handle). The persisted root is authoritative, so
                     // poll even when the POST result is inconclusive and never rebuild with new salts.
+                    let roax = RoaxConfig.load()
+                    let onchainId = try dogTagIdFieldHex(dogTagIdDec: session.dogTagId)
                     await MainActor.run { status = "Anchoring your dog tag on-chain…" }
-                    var final: CentralApi.DogTagIssue?
+                    var anchored = false
+                    var delayNanos: UInt64 = 2_000_000_000
                     for _ in 0..<40 {
-                        if let result = await CentralApi.dogTagIssueSessionStatus(
-                            host: host, sessionId: session.sessionId) {
-                            if result.status.caseInsensitiveCompare("error") == .orderedSame {
-                                throw issueFailure(result.txHash.isEmpty ? "issuance failed" : result.txHash)
-                            }
-                            if result.bound, !result.txHash.isEmpty {
-                                final = CentralApi.DogTagIssue(
-                                    dogTagId: result.dogTagId.isEmpty ? session.dogTagId : result.dogTagId,
-                                    root: result.root.isEmpty ? root : result.root,
-                                    txHash: result.txHash,
-                                    status: result.status,
-                                    bound: true)
-                                break
-                            }
+                        if let chainRoot = await RoaxRpc.profileRoot(
+                            rpcUrl: AppConfig.roaxRpc, dogTagSbt: roax.dogTagSbt, dogTagId: onchainId),
+                           chainRoot.dropFirst(2).contains(where: { $0 != "0" }),
+                           chainRoot.caseInsensitiveCompare(root) == .orderedSame {
+                            anchored = true
+                            break
                         }
-                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        try? await Task.sleep(nanoseconds: delayNanos)
+                        delayNanos = min(delayNanos + 500_000_000, 5_000_000_000)
                     }
-                    guard let final else {
+                    guard anchored else {
                         await MainActor.run {
                             working = false
                             issueErr = "Submitted; anchoring is still pending. Check the vet portal for completion."
                         }
                         return
-                    }
-                    guard final.dogTagId == session.dogTagId,
-                          final.root.caseInsensitiveCompare(root) == .orderedSame else {
-                        throw issueFailure("anchored tag metadata does not match the private profile")
                     }
                     await MainActor.run {
                         store.upsertPet(Pet(
@@ -295,7 +293,12 @@ struct ScanScreen: View {
                             breed: session.pet.breedLabel.isEmpty ? session.pet.breedVbo : session.pet.breedLabel,
                             ageLabel: session.pet.dateOfBirth,
                             microchip: session.pet.microchip.code.isEmpty ? nil : session.pet.microchip.code))
-                        issued = final
+                        issued = CentralApi.DogTagIssue(
+                            dogTagId: session.dogTagId,
+                            root: root,
+                            txHash: accepted?.txHash ?? "",
+                            status: "bound",
+                            bound: true)
                         working = false
                         status = "Issued and anchored — owner hidden."
                     }

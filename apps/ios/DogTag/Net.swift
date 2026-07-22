@@ -95,8 +95,10 @@ enum RoaxRpc {
     private static let consumedSelector = "0x4648c943"         // keccak256("consumed(bytes32)")[:4]
     private static let profileRootSelector = "0x85105cb3"      // keccak256("profileRoot(uint256)")[:4]
 
-    /// `DogTagSBT.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or nil. This
-    /// is the SBT anchor used to verify an issued DOG_PROFILE (NOT the DogTagIssuer-clone isValid).
+    /// `DogTagSBTConsent.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or
+    /// nil. `dogTagId` is the CANONICAL field-hashed id (`dogTagIdFieldHex`), the same value the tag
+    /// was minted under — NOT the raw decimal handle, which reads an unset slot forever. This is the
+    /// SBT anchor used to confirm an issued DOG_PROFILE (NOT the DogTagIssuer-clone isValid).
     static func profileRoot(rpcUrl: String, dogTagSbt: String, dogTagId: String) async -> String? {
         guard !dogTagSbt.isEmpty, !dogTagId.isEmpty else { return nil }
         let data = profileRootSelector + padUint(dogTagId)
@@ -393,24 +395,6 @@ enum CentralApi {
             bound: (o["bound"] as? Bool) ?? false)
     }
 
-    /// Poll the issuance session until the backend has read both owner-hidden anchors back on-chain.
-    static func dogTagIssueSessionStatus(host: String, sessionId: String) async -> DogTagIssue? {
-        guard !sessionId.isEmpty else { return nil }
-        let resp = await Http.getJSON("\(host)/profiles/issue/session/\(sessionId)")
-        guard resp.ok, let data = resp.body.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            return nil
-        }
-        let status = jsonString(object["status"])
-        return DogTagIssue(
-            dogTagId: jsonString(object["dogTagId"]),
-            root: jsonString(object["root"]),
-            txHash: jsonString(object["txHash"] ?? object["tx_hash"]),
-            status: status,
-            bound: (object["bound"] as? Bool)
-                ?? (status.caseInsensitiveCompare("bound") == .orderedSame))
-    }
-
     private static func jsonString(_ value: Any?) -> String {
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
@@ -469,10 +453,12 @@ enum CentralApi {
             claims: claims)
     }
 
-    /// Submit the owner-hidden proof directly to the verifier host from the scanned QR. This is the
-    /// single canonical consent route; the one-time export token is consumed on successful recording.
+    /// Submit the owner-hidden proof directly to the verifier host from the scanned QR. The Level-B
+    /// route is the one that accepts an `{exportToken, proof}` payload under the owner's one-time
+    /// export token; the non-`levelb` `/v1/verify/consent` requires `consent`+`sig` and refuses a
+    /// `levelb` session.
     static func postVerifyConsentToHost(host: String, payloadJson: String) async -> Http.Response {
-        await Http.postJSON("\(host)/v1/verify/consent", body: payloadJson, timeout: 20)
+        await Http.postJSON("\(host)/v1/verify/consent/levelb", body: payloadJson, timeout: 20)
     }
 
     struct SessionStatus { let status: String; let txHash: String? }
