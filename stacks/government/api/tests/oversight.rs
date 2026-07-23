@@ -165,6 +165,69 @@ async fn oversight_activity_unscoped_joins_own_credential() {
 }
 
 #[tokio::test]
+async fn verified_event_joins_credentialed_tag_by_onchain_dog_tag_id() {
+    // Travel-clearance oversight: an owner-blind `Verified(dogTagId, relayer, purpose, nullifier,
+    // deadline, ts)` event carries NO root and NO subject - only the FIELD-HASHED dogTagId. It must
+    // still join the authority's own issued credential for that tag ("a tag we credentialed was
+    // verified"), and a raw-handle key must never match (the transform is load-bearing).
+    let (mut state, _chain) = gov_state(Arc::new(DisabledFeed));
+    issue_one(&state).await; // dog_tag_id "7", receiptId committed + stored
+
+    let onchain_id = government_api::trace::onchain_dog_tag_id_decimal("7").unwrap();
+    assert_ne!(onchain_id, "7", "the event id is the field-hash, not the handle");
+    state.feed = Arc::new(MemFeed::new().with_events(json!({
+        "events": [
+            // The tag the authority credentialed, verified by SOME relayer (another business).
+            { "id": "0xv:0", "type": "verified", "actor": OTHER_SIGNER,
+              "dogTagId": onchain_id, "purpose": "0x70757270", "nullifier": "0x6e756c6c",
+              "deadline": 4102444800u64, "blockNumber": 30, "blockTimestamp": 3000,
+              "finality": "finalized", "txHash": "0xvtx",
+              "txUrl": "https://explorer.roax.net/tx/0xvtx" },
+            // A verification of some OTHER tag (its field-hash matches nothing we issued).
+            { "id": "0xw:0", "type": "verified", "actor": OTHER_SIGNER,
+              "dogTagId": "999999999", "purpose": "0x70757270", "nullifier": "0x6e756c6d",
+              "deadline": 4102444800u64, "blockNumber": 31, "blockTimestamp": 3001,
+              "finality": "finalized", "txHash": "0xwtx" }
+        ],
+        "total": 2, "limit": 100, "offset": 0,
+        "scope": { "label": "government-oversight", "unscoped": true }
+    })));
+
+    let (s, b) = call_with_token(
+        &state,
+        "GET",
+        "/v1/oversight/activity",
+        Value::Null,
+        Some(API_TOKEN),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let events = b["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(b["matched"], 1, "only the credentialed tag's verification joins");
+
+    let own = events.iter().find(|e| e["id"] == "0xv:0").unwrap();
+    assert_eq!(own["local"]["kind"], "issuance");
+    assert_eq!(own["local"]["recordType"], "TRAVEL_CLEARANCE");
+    assert_eq!(own["local"]["dogTagId"], "7");
+    assert!(
+        own["local"]["receiptId"].as_str().is_some(),
+        "the receipt handle names the credential: {b}"
+    );
+    assert_eq!(
+        own["local"]["joinedBy"], "dogTagId",
+        "stamped tag-granular - the event proves the TAG was verified, not which credential"
+    );
+    // Subject-less always: the join must never leak the Section-A importer block.
+    assert!(own["local"].get("subject").is_none());
+    assert!(own["local"].get("importer").is_none());
+
+    // The unrelated tag's verification is served (unscoped) but joins nothing.
+    let other = events.iter().find(|e| e["id"] == "0xw:0").unwrap();
+    assert_eq!(other["local"], Value::Null);
+}
+
+#[tokio::test]
 async fn oversight_requires_api_token() {
     let (state, _chain) = gov_state(Arc::new(
         MemFeed::new().with_events(json!({ "events": [] })),

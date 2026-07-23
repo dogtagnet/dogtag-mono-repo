@@ -8,6 +8,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  explorerAddressUrl,
 } from "@dogtag/ui";
 import { useEffect, useState } from "react";
 import {
@@ -15,6 +16,7 @@ import {
   eventMeta,
   type OversightActivityResp,
   type OversightEvent,
+  type OversightLocalJoin,
   type OversightStatsResp,
 } from "../lib/api";
 
@@ -27,6 +29,17 @@ function short(hex?: string): string {
 function fmtTime(secs?: number): string {
   if (!secs) return "—";
   return new Date(secs * 1000).toLocaleString();
+}
+
+/**
+ * The badge for an event joined to this authority's own data. An owner-blind `verified` event joins
+ * via the field-hashed dogTagId only (`joinedBy: "dogTagId"`), which proves a TAG this authority
+ * credentialed was verified - the event binds no root, so it never identifies WHICH credential;
+ * `purpose` is the only disambiguator. Label at tag granularity, never "our credential was verified".
+ */
+function localBadgeLabel(local: OversightLocalJoin): string {
+  if (local.joinedBy === "dogTagId") return "tag we credentialed";
+  return local.kind === "verification" ? "our verification" : "our record";
 }
 
 function Stat({ label, value }: { label: string; value: number | string }) {
@@ -146,7 +159,8 @@ export function Oversight() {
                   <TableRow>
                     <TableHead>Event</TableHead>
                     <TableHead>Issuer</TableHead>
-                    <TableHead>Record type</TableHead>
+                    <TableHead>Actor</TableHead>
+                    <TableHead>Details</TableHead>
                     <TableHead>This authority</TableHead>
                     <TableHead>Block</TableHead>
                     <TableHead>When</TableHead>
@@ -173,14 +187,62 @@ export function Oversight() {
                             <span className="font-mono text-muted">{short(ev.clone)}</span>
                           )}
                         </TableCell>
-                        <TableCell className="text-xs">
-                          {ev.recordType ?? <span className="text-muted">—</span>}
+                        <TableCell className="text-xs" data-testid="oversight-actor">
+                          {/* The acting signer: issuing/revoking signer, or - on `verified` - the
+                              relayer that submitted the consent proof. Central to oversight: WHO. */}
+                          {ev.actor ? (
+                            <a
+                              className="font-mono text-primary hover:underline"
+                              href={explorerAddressUrl(ev.actor)}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={ev.actorName ?? ev.actor}
+                            >
+                              {ev.actorName ?? short(ev.actor)}
+                            </a>
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs" data-testid="oversight-details">
+                          <div className="flex flex-col gap-0.5">
+                            {ev.recordType ? (
+                              <span>{ev.recordType}</span>
+                            ) : ev.type !== "verified" ? (
+                              <span className="text-muted">—</span>
+                            ) : null}
+                            {/* Owner-blind verified payload: opaque tag id, hashed purpose key,
+                                proof-bound consent deadline. No subject exists downstream. When the
+                                event joined a credentialed tag, the join line already names the SAME
+                                tag by its readable handle - showing the field-hash too would render
+                                one tag two ways, so it is suppressed. */}
+                            {ev.type === "verified" && (
+                              <>
+                                {ev.dogTagId && ev.local?.joinedBy !== "dogTagId" && (
+                                  <span
+                                    className="font-mono text-[10px] text-muted"
+                                    title={ev.dogTagId}
+                                  >
+                                    tag {short(ev.dogTagId)}
+                                  </span>
+                                )}
+                                <span className="font-mono text-[10px] text-muted" title={ev.purpose}>
+                                  purpose {ev.purpose ? short(ev.purpose) : "—"}
+                                </span>
+                                {(ev.deadline ?? 0) > 0 && (
+                                  <span className="text-[10px] text-muted">
+                                    consent until {fmtTime(ev.deadline)}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell data-testid="oversight-local">
                           {ev.local ? (
                             <div className="flex flex-col gap-0.5">
                               <Badge variant="success" data-testid="oversight-local-own">
-                                {ev.local.kind === "verification" ? "our verification" : "our record"}
+                                {localBadgeLabel(ev.local)}
                               </Badge>
                               <span className="font-mono text-[10px] text-muted">
                                 {ev.local.receiptId ? ev.local.receiptId : short(ev.local.root)}

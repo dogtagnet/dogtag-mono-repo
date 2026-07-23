@@ -100,6 +100,11 @@ export interface OversightLocalJoin {
   label?: string | null;
   id?: string;
   verdict?: boolean;
+  /**
+   * "dogTagId" when an owner-blind `verified` event (no root) joined via the field-hashed tag id:
+   * the event proves a TAG this authority credentialed was verified - not which credential.
+   */
+  joinedBy?: string;
 }
 
 /** One non-PII on-chain oversight event (from the indexer), joined to the government's own records. */
@@ -112,6 +117,12 @@ export interface OversightEvent {
   recordType?: string;
   root?: string;
   dogTagId?: string;
+  /** `verified` events (owner-blind): the hashed purpose key the consent was proven for. */
+  purpose?: string;
+  /** `verified` events: the unlinkable consent nullifier. */
+  nullifier?: string;
+  /** `verified` events: the consent window's proof-bound deadline (unix seconds). */
+  deadline?: number;
   txHash?: string;
   blockNumber?: number;
   blockTimestamp?: number;

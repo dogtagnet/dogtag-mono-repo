@@ -141,16 +141,17 @@ export type TraceEventType =
   | "rootRevoked"
   | "verified";
 
-/** The local DB record/verification joined to an on-chain event (this operator's own). */
+/** The local DB record/verification/mint joined to an on-chain event (this operator's own). */
 export interface TraceLocalJoin {
-  kind: "issuance" | "verification";
+  /** "mint" = a dog-tag issuance (ProfileIssueSession) joined by its anchored profile root. */
+  kind: "issuance" | "verification" | "mint";
   recordId?: string;
   recordType?: string;
   dogTagId?: string;
   status?: string;
   label?: string | null;
   notes?: string | null;
-  /** verification joins carry these instead. */
+  /** verification + mint joins carry a session handle instead of a record id. */
   sessionId?: string;
   purpose?: string;
   mode?: string;
@@ -170,6 +171,12 @@ export interface TraceEvent {
   recordType?: string;
   root?: string;
   dogTagId?: string;
+  /** `verified` events (owner-blind): the hashed purpose key the consent was proven for. */
+  purpose?: string;
+  /** `verified` events: the unlinkable consent nullifier. */
+  nullifier?: string;
+  /** `verified` events: the consent window's proof-bound deadline (unix seconds). */
+  deadline?: number;
   name?: string;
   actorName?: string;
   cloneName?: string;
@@ -214,8 +221,8 @@ export interface TraceStatsResp {
   activeCredentials?: number;
   verifications?: number;
   scope?: { label?: string; unscoped?: boolean };
-  /** this operator's own off-chain record/verification counts. */
-  local?: { records: number; verifications: number };
+  /** this operator's own off-chain record/verification/mint counts. */
+  local?: { records: number; verifications: number; dogTagsMinted?: number };
   [k: string]: unknown;
 }
 /** PATCH /records/:id — OFF-CHAIN metadata only. On-chain-derived fields are rejected by the backend. */

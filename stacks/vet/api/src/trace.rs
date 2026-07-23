@@ -193,6 +193,9 @@ pub async fn build_scope(
     for clone in cfg.issuer_addrs.values() {
         scope.add_clone(clone);
     }
+    // The DOG_PROFILE clone that dog-tag mints anchor `issue(R)` into (owner-hidden custodial issuance) -
+    // its `RootIssued` events are this operator's own mints.
+    scope.add_clone(&cfg.profile_issuer_addr);
 
     // Custody signer accounts (addresses only — never the seed). Present even when custody is locked.
     if let Some(blob) = store.get_custody().await {
@@ -218,10 +221,12 @@ pub async fn build_scope(
 }
 
 /// Build the DB-record join index from this operator's own store: every issued `Record` keyed by its
-/// anchored root + issuance/revocation tx, and every `VerifySession` keyed by its nullifier + tx.
+/// anchored root + issuance/revocation tx, every `VerifySession` keyed by its nullifier + tx, and
+/// every dog-tag mint (`ProfileIssueSession`) keyed by its anchored profile root + mint tx.
 pub fn build_index(
     records: &[crate::store::Record],
     sessions: &[crate::store::VerifySession],
+    mints: &[crate::store::ProfileIssueSession],
 ) -> LocalIndex {
     let mut idx = LocalIndex::default();
 
@@ -246,6 +251,22 @@ pub fn build_index(
         }
         if let Some(tx) = &s.tx_hash {
             idx.insert_by_tx(tx, summary);
+        }
+    }
+
+    // Dog-tag mints: a bound session's device-computed profile root is what `issue(R)` anchored, so
+    // the on-chain `RootIssued` event joins by root; the mint tx is a belt. A session whose bind
+    // errored has an error STRING in `tx_hash` (routes.rs settles it that way) - root-only for those,
+    // and the error text can never collide with a real `0x…` tx key anyway.
+    for m in mints {
+        let summary = mint_summary(m);
+        if let Some(root) = &m.root {
+            idx.insert_by_root(root, summary.clone());
+        }
+        if m.status == "bound" {
+            if let Some(tx) = &m.tx_hash {
+                idx.insert_by_tx(tx, summary.clone());
+            }
         }
     }
 
@@ -274,6 +295,20 @@ fn session_summary(s: &crate::store::VerifySession) -> Value {
         "recordType": s.record_type,
         "purpose": s.purpose,
         "status": s.status,
+    })
+}
+
+/// The join projection of a dog-tag mint (`ProfileIssueSession`) shown next to its on-chain
+/// `RootIssued` event. Mirrors `record_summary`'s shape and discipline: session handle, record type,
+/// dogTagId and status ONLY - never the session's `owner_identity` block or pet record (the activity
+/// feed stays subject-less even on the operator's own portal).
+fn mint_summary(m: &crate::store::ProfileIssueSession) -> Value {
+    json!({
+        "kind": "mint",
+        "sessionId": m.session_id,
+        "recordType": "DOG_PROFILE",
+        "dogTagId": m.dog_tag_id,
+        "status": m.status,
     })
 }
 
@@ -409,6 +444,70 @@ mod tests {
         assert_eq!(out.matched, 1, "only the government's own record joins");
         assert_eq!(out.events[0]["local"]["recordId"], "gov-1");
         assert_eq!(out.events[1]["local"], Value::Null);
+    }
+
+    #[test]
+    fn build_index_joins_dog_tag_mint_by_root_and_stays_subject_less() {
+        let mint = crate::store::ProfileIssueSession {
+            session_id: "ps-1".to_string(),
+            dog_tag_id: "42".to_string(),
+            owner_identity: crate::store::OwnerIdentity {
+                country_of_identification: "SG".to_string(),
+                identification: "S1234567A".to_string(),
+                name: "Jane Tan".to_string(),
+            },
+            pet_name: "Bella".to_string(),
+            microchip: Default::default(),
+            profile: Default::default(),
+            status: "bound".to_string(),
+            created_at: 1000,
+            root: Some("0xM1NT".to_string()),
+            tx_hash: Some("0xminttx".to_string()),
+            protocol_version: Some("dogtag-levelb/1".to_string()),
+        };
+        let idx = build_index(&[], &[], &[mint]);
+
+        // RootIssued for the device-computed profile root joins the mint session…
+        let issued = json!({ "type": "rootIssued", "root": "0xm1nt" });
+        let out = join_events(vec![issued], None, &idx);
+        assert_eq!(out.matched, 1);
+        let local = &out.events[0]["local"];
+        assert_eq!(local["kind"], "mint");
+        assert_eq!(local["sessionId"], "ps-1");
+        assert_eq!(local["dogTagId"], "42");
+        assert_eq!(local["recordType"], "DOG_PROFILE");
+        // …and the summary NEVER carries the vet-collected identity or pet record: the activity
+        // feed is subject-less by design, even on the operator's own portal.
+        let text = local.to_string();
+        for leaked in ["Jane", "S1234567A", "Bella", "ownerIdentity", "petName"] {
+            assert!(!text.contains(leaked), "mint join leaked `{leaked}`: {text}");
+        }
+
+        // The mint tx joins as a belt.
+        let by_tx = json!({ "type": "rootIssued", "txHash": "0xMINTTX" });
+        let out = join_events(vec![by_tx], None, &idx);
+        assert_eq!(out.matched, 1, "mint tx hash joins too");
+    }
+
+    #[test]
+    fn errored_mint_session_never_joins_by_its_error_text() {
+        // A failed bind stores an error STRING in tx_hash (routes.rs settles the row that way); it
+        // must not enter the tx join index. No root was anchored either.
+        let errored = crate::store::ProfileIssueSession {
+            session_id: "ps-err".to_string(),
+            dog_tag_id: "43".to_string(),
+            owner_identity: Default::default(),
+            pet_name: String::new(),
+            microchip: Default::default(),
+            profile: Default::default(),
+            status: "error".to_string(),
+            created_at: 1000,
+            root: None,
+            tx_hash: Some("issue(R) error: boom".to_string()),
+            protocol_version: None,
+        };
+        let idx = build_index(&[], &[], &[errored]);
+        assert!(idx.is_empty(), "an errored, rootless session indexes nothing");
     }
 
     #[test]
