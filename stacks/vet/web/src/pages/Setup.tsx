@@ -453,7 +453,7 @@ function ApplyWhitelist({ onNext }: { onNext: () => void }) {
     verifyPurposes: env.demoMode ? DEMO_WHITELIST_APPLY_VET.verifyPurposes : "",
     domain: env.demoMode ? "testvet.roax.net" : "",
     documentStore: env.demoMode
-      ? env.dogtagIssuerAddr || "0x5c703910111f942EE0f47E02214291b5274cDb53"
+      ? env.dogtagIssuerAddr || "0x1456f93f7376789c46408CC4616751eB853edD9A"
       : env.dogtagIssuerAddr || "",
     usdaNan: env.demoMode ? "123456" : "",
     licenseNumber: env.demoMode ? "VET-2024-0001" : "",

@@ -38,25 +38,25 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 
 | Contract | Address |
 |---|---|
-| IssuerRegistry | `0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c` |
+| IssuerRegistry | `0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21` |
 | DogTagSBT (RETIRED owner-revealing SBT; source deleted; instance kept for historical reads, pending removal at the fresh redeploy) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
-| DogTagSBTConsent (**the live owner-hidden SBT**; write-once `profileRoot`; custodial mint target of `POST /profiles/issue/custodial-bind`) | `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` |
-| DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
-| DogTagIssuerImpl (clone impl) | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
+| DogTagSBTConsent (**the live owner-hidden SBT**; write-once `profileRoot`; custodial mint target of `POST /profiles/issue/custodial-bind`) | `0xBEbc45A838643D27004827b797b30A464b2b02c0` |
+| DogTagIssuerFactory | `0xED20269E3eBF0119739aaB5258741F3aEb49F140` |
+| DogTagIssuerImpl (clone impl) | `0xe4aC139eB257C309Ec448C116A6F657Dab5590BA` |
 | ConsentKeyRegistry (RETIRED; the consent key now lives inside the tree as the per-tag `owner.consentKey` leaf - there is no on-chain key registry) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 | Poseidon6 (deployed with the retired owner-revealing set; historical) | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 | VerificationRegistry (RETIRED owner-revealing registry; source deleted; final instance kept for historical reads) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
 | ~~VerificationRegistry~~ `_4arg_legacy` (RETIRED) | `0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1` |
-| VerificationRegistryConsent (**the live owner-hidden registry**; 4-arg `recordVerificationZK`, owner-blind `Verified`) | `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` |
+| VerificationRegistryConsent (**the live owner-hidden registry**; 4-arg `recordVerificationZK`, owner-blind `Verified`) | `0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B` |
 | ~~VerificationRegistryConsent~~ `_M4_mutableRoot_legacy` (**DEPRECATED / DO NOT USE for Level-B**; bound to mutable Level-A SBT; never live; zero `Verified`) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
 | ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
 | Groth16Verifier (RETIRED; paired with the retired verification circuit) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
-| Groth16VerifierConsent (**the live consent verifier**; wired into `VerificationRegistryConsent`) | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` |
+| Groth16VerifierConsent (**the live consent verifier**; wired into `VerificationRegistryConsent`) | `0x1A9027986B859dc3879896B053deA78F636BE9b1` |
 | deployer EOA (genesis; governance/admin authority removed in Phase-2; still has legacy issuer/whitelist capabilities, so **not a neutral custodian**) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 | **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
-| demo clone — VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
-| demo clone — DOG_PROFILE | `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25` |
+| demo clone — VACCINATION | `0x1456f93f7376789c46408CC4616751eB853edD9A` |
+| demo clone — DOG_PROFILE | `0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf` |
 
 > **Historical.** The retired owner-revealing VerificationRegistry went through four generations: the
 > original was deployed with `zkVerifier = 0` (`VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`), a

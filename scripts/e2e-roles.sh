@@ -22,8 +22,8 @@ VET="${VET_BASE:-http://localhost:41874}"
 RPC="${ROAX_RPC:-https://devrpc.roax.net}"
 # Government operator bearer gating the issue endpoint (demo-mode default matches the API's baked token).
 GTOK="${GOV_API_TOKEN:-dogtag-gov-demo-token}"
-IR=0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c          # IssuerRegistry
-VACC_CLONE=0x5c703910111f942EE0f47E02214291b5274cDb53   # VACCINATION issuer clone (live ROAX)
+IR=0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21          # IssuerRegistry
+VACC_CLONE=0x1456f93f7376789c46408CC4616751eB853edD9A   # VACCINATION issuer clone (live ROAX)
 
 green(){ printf '\033[32mPASS\033[0m %s\n' "$1"; }
 info(){ printf '\033[36m •\033[0m %s\n' "$1"; }

@@ -737,12 +737,12 @@ Check it on every build:
 # 1. hash the key you are bundling
 shasum -a 256 apps/ios/DogTag/consent_final.zkey
 # 2. read the deployed consent verifier (ROAX; addresses in contracts/deployments/roax.json)
-cast call 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87 "zkVerifier()(address)" --rpc-url https://devrpc.roax.net
+cast call 0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B "zkVerifier()(address)" --rpc-url https://devrpc.roax.net
 ```
 
 The bundled zkey's sha256 must be the ceremony output paired with whatever `zkVerifier()` returns.
-Currently (see "M3 trusted-setup ceremony" and `roax.json` `_m3_consent_verifier`/`_m5_custodial_issuance`) that is `Groth16VerifierConsent` `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a`, paired with the frozen consent zkey sha256 `f83a111f…`.
-Do not transcribe these values into new places - `roax.json` and the M3/M5 sections own them.
+Currently (see `roax.json` `Groth16VerifierConsent` + `_r8_fresh_redeploy`) that is `Groth16VerifierConsent` `0x1A9027986B859dc3879896B053deA78F636BE9b1`, paired with the frozen consent zkey sha256 `f83a111f…`.
+Do not transcribe these values into new places - `roax.json` and its `_r8_fresh_redeploy` note own them.
 (The retired-generation registry's v1/v2 verifier history lives in the historical "ZK trusted-setup ceremony" section; it is not a target for new bundles.)
 
 **Rebuild + reinstall the app whenever the on-chain verifier is upgraded** - a trusted-setup/ceremony cutover done via `proposeZkVerifier(addr)` -> wait `ZK_TIMELOCK` (2 days) -> `executeZkVerifier()` (there is no single-call setter).
