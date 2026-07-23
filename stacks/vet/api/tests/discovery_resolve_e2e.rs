@@ -243,7 +243,12 @@ async fn issuance_resolve_convenience_tier_is_validated_against_the_dogtag_ancho
         Some(&op),
         Some(serde_json::json!({
             "ownerIdentity": {"countryOfIdentification":"GB","identification":"PASSPORT-123","name":"Alice Owner"},
-            "pet": {"name":"Rex","species":"Canis lupus familiaris","sex":"male","dateOfBirth":"2021-05-01"}
+            "pet": {
+                "name":"Rex","species":"Canis lupus familiaris","breedVbo":"VBO_0200800",
+                "breedLabel":"Shiba Inu","sex":"male","neuterStatus":"neutered","dateOfBirth":"2021-05-01",
+                "weightHistory":[{"unit":"kg","value":"22.7","measuredOn":"2026-07-01"}],
+                "microchip":{"code":"985113001234567","standard":"ISO 11784","implantDate":"2021-06-01","bodyLocation":"left shoulder"}
+            }
         })),
     )
     .await;
@@ -255,6 +260,45 @@ async fn issuance_resolve_convenience_tier_is_validated_against_the_dogtag_ancho
 
     println!("\n=== GET /p/<token>  (issuance resolve — what the owner's device receives) ===");
     println!("{}", serde_json::to_string_pretty(&meta).unwrap());
+
+    // --- the MOBILE issuance contract (apps/ios Net.swift `resolveDogTagIssue`, apps/android
+    // CentralApi `parseProfileIssueSession`). Both parsers FAIL CLOSED unless the resolve carries a
+    // pet-metadata container AND an ownerIdentity container with a resolvable non-empty pet name —
+    // these assertions mirror those guards, so this test breaking means mobile issuance breaking.
+    assert_eq!(meta["sessionId"], b["sessionId"], "existing resolve fields unchanged");
+    assert_eq!(meta["dogTagId"], b["dogTagId"], "existing resolve fields unchanged");
+    assert_eq!(meta["status"], "pending");
+    let pet = &meta["pet"];
+    assert!(pet.is_object(), "mobile fails closed without a pet container: {meta}");
+    assert_eq!(pet["name"], "Rex", "pet name resolvable at the `pet` level");
+    let profile = &pet["profile"];
+    assert!(profile.is_object(), "nested pet.profile container: {meta}");
+    assert_eq!(profile["species"], "Canis lupus familiaris");
+    assert_eq!(profile["breedVbo"], "VBO_0200800");
+    assert_eq!(profile["breedLabel"], "Shiba Inu");
+    assert_eq!(profile["sex"], "male");
+    assert_eq!(profile["neuterStatus"], "neutered");
+    assert_eq!(profile["dateOfBirth"], "2021-05-01");
+    let weights = profile["weightHistory"].as_array().expect("weightHistory array");
+    assert_eq!(weights.len(), 1);
+    assert_eq!(weights[0]["unit"], "kg");
+    assert_eq!(weights[0]["measuredOn"], "2026-07-01");
+    assert!(
+        weights[0]["value"].is_string(),
+        "weight value stays a decimal STRING (precision/leading-zero discipline): {meta}"
+    );
+    assert_eq!(weights[0]["value"], "22.7");
+    let chip = &pet["microchip"];
+    assert!(chip.is_object(), "microchip container beside the profile: {meta}");
+    assert_eq!(chip["code"], "985113001234567");
+    assert_eq!(chip["standard"], "ISO 11784");
+    assert_eq!(chip["implantDate"], "2021-06-01");
+    assert_eq!(chip["bodyLocation"], "left shoulder");
+    let owner = &meta["ownerIdentity"];
+    assert!(owner.is_object(), "mobile fails closed without ownerIdentity: {meta}");
+    assert_eq!(owner["countryOfIdentification"], "GB");
+    assert_eq!(owner["identification"], "PASSPORT-123");
+    assert_eq!(owner["name"], "Alice Owner");
 
     let claims: ConvenienceClaims = serde_json::from_value(meta["unverifiedClaims"].clone())
         .expect("unverifiedClaims parses as ConvenienceClaims");
@@ -276,4 +320,57 @@ async fn issuance_resolve_convenience_tier_is_validated_against_the_dogtag_ancho
         Err(DiscoveryError::RegistryMismatch { .. })
     ));
     println!();
+}
+
+/// A session started with NO identity data (and a name-only pet) still resolves with BOTH containers
+/// present. The mobile parsers fail closed only when a container is ABSENT and tolerate empty fields,
+/// so the degrade mode is empty strings under an always-present `ownerIdentity` — never a missing key
+/// (which would brick issuance for exactly the sessions that carry the least data).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issuance_resolve_without_identity_data_still_emits_the_containers() {
+    let mem = MemChain::new();
+    let state = state_with(
+        Arc::new(mem.clone()),
+        "memchain".to_string(),
+        ISSUER_REGISTRY.to_string(),
+        VACCINATION_ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let app = vet_api::router(state);
+    let (_admin, op, _relayer) = boot_custody(&app).await;
+
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/session/start",
+        Some(&op),
+        Some(serde_json::json!({ "ownerIdentity": {}, "pet": {"name":"Rex"} })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "profile issue session start: {b}");
+    let token = b["token"].as_str().expect("token").to_string();
+
+    let (s, meta) = call(&app, "GET", &format!("/p/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "GET /p/<token> resolve: {meta}");
+
+    // ownerIdentity: container present (the mobile fail-closed guard), every field an empty string.
+    let owner = &meta["ownerIdentity"];
+    assert!(owner.is_object(), "ownerIdentity container must survive empty identity: {meta}");
+    assert_eq!(owner["countryOfIdentification"], "");
+    assert_eq!(owner["identification"], "");
+    assert_eq!(owner["name"], "");
+
+    // pet: name resolvable; the profile + microchip containers still present with empty/absent leaves.
+    let pet = &meta["pet"];
+    assert!(pet.is_object(), "pet container must survive a name-only pet: {meta}");
+    assert_eq!(pet["name"], "Rex");
+    assert!(pet["profile"].is_object(), "profile container present: {meta}");
+    assert_eq!(
+        pet["profile"]["weightHistory"].as_array().map(Vec::len),
+        Some(0),
+        "no weights -> empty array, not a missing key: {meta}"
+    );
+    assert!(pet["microchip"].is_object(), "microchip container present: {meta}");
+    assert_eq!(pet["microchip"]["code"], "");
 }
