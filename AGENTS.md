@@ -1211,8 +1211,9 @@ is NOT an owner-identity check); `verifyProof` vs the consent VK; consume the nu
    `SERVICE_ATTESTATION_FIELD = keccak256("SERVICE_ATTESTATION") % r`
    (`10025591956217394737855806998434905929145386518960477508456501950324730293568`); `ConsentRegistry.t.sol`
    recomputes it natively in Solidity and fires it on a REAL proof, so the regression cannot come back
-   silently. The same applies to any bytes32 label crossing into a signal (`purpose` is already reduced —
-   `packages/dogtag-standard-ts/src/consent.ts`).
+   silently. The same applies to any bytes32 label crossing into a signal (`purpose` is already reduced
+   by the live label→field reducers: vet-api's `purpose_key` in `stacks/vet/api/src/verify.rs` and the
+   fixture generator's `labelField` in `circuits/scripts/gen-consent-fixture.mjs`).
 
 ### M5 handoff (issuance) — two hard requirements
 
@@ -1789,8 +1790,8 @@ must never be rebuilt as a default, opt-in, or fallback.
   than that produces an `R` no proof can be made against, and `build_profile_tree` will not stop you.
   Realistic pet credentials are far under it.
 
-> Note: `crates/dogtag-standard-rs/bindings/{swift,kotlin}/` are a STALE snapshot (they predate #40 and
-> already lacked `dogTagIdFieldHex`/`hashNodeHex` before this change). Nothing consumes them. iOS CI
-> regenerates and copies the live Swift binding, but Android CI rebuilds only the native `.so` and
-> consumes the committed `apps/android/.../dogtag_standard.kt` unchanged. Regenerate and commit BOTH
-> live `apps/` bindings after every FFI change; leave the stale crate snapshots for separate cleanup.
+> Note: the ONLY committed UniFFI bindings are the live `apps/` pair (the stale crates-local
+> `crates/dogtag-standard-rs/bindings/{swift,kotlin}/` snapshot, which nothing consumed, was deleted
+> in the final cleanup slice). iOS CI regenerates and copies the live Swift binding, but Android CI
+> rebuilds only the native `.so` and consumes the committed `apps/android/.../dogtag_standard.kt`
+> unchanged. Regenerate and commit BOTH live `apps/` bindings after every FFI change.
