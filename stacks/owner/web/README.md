@@ -1,8 +1,9 @@
 # DogTag - Pet-Owner (holder) wallet
 
 The consumer front of DogTag: the app the **pet owner** uses to **hold** their pet's records, render
-government travel/health **receipts**, and **share a redacted copy** of a record (selective
-disclosure). Issuers (vet, groomer, government) issue; this is the holder's record wallet.
+government travel/health **receipts**, review their own **consent history**, and **share a redacted
+copy** of a record (selective disclosure). Issuers (vet, groomer, government) issue; this is the
+holder's record wallet.
 
 It mirrors, on the web, what the native Android/iOS apps do on a phone: a self-custodial wallet that
 receives records, displays them, and shares selectively-redacted copies. Owner-hidden consent proofs
@@ -38,6 +39,35 @@ wins for revocation/not-anchored, then the local ISO validity window derives `EX
 receipt is `VALID`. The public status page is PII-free, and the owner wallet does not fetch or store any
 additional backend receipt data.
 
+## Consents (the owner's own consent-receipt history)
+
+**Consents** (`/consents`) renders the history of the owner-hidden consents the owner granted:
+when, to whom (the relayer), for what purpose and record type, with what consent window, and the
+on-chain confirmation (transaction + one-time nullifier).
+The detail view (`/consents/:nullifier`) shows the full record and offers **print** as its only
+export - this is the owner's private audit record, shown only to the owner.
+
+It is assembled entirely on-device from the two things the owner already has:
+
+1. the **held credentials**, whose `credentialSubject.dogTagId` handles are field-hashed
+   (`fieldOfValue(Integer(handle))`, the same canonical id the SBT was minted with) into the
+   owner's on-chain tag ids, and
+2. the public **owner-blind `Verified` events** of the live `VerificationRegistryConsent`, fetched
+   with a read-only `eth_getLogs` filtered by those tag ids. The `recordType` public signal is
+   read back from each verification transaction's calldata (`pub[5]`), since the owner-blind event
+   deliberately omits it.
+
+The events carry no owner identity (no `subject`) - only a holder who already knows their own tag
+ids can attribute them, which is exactly what this page does.
+No backend is involved and no server ever sees who the owner is; a consent for a tag whose
+credential is not held (e.g. after removal) is not attributable and does not appear.
+
+Every consent is a **point-in-time grant**: the proof authorized exactly one verification and its
+nullifier was consumed the moment it was recorded.
+The page therefore renders pure history - a lapsed window shows as "Window closed", and there is
+deliberately no action to undo a consent (record/credential revocation is the issuer's capability,
+not a holder surface).
+
 ## Share a redacted copy (selective disclosure)
 
 The holder can hand a recipient a **redacted copy of the credential itself**, mirroring the native
@@ -72,7 +102,9 @@ OWNER_URL=https://<tunnel> pnpm --filter @dogtag/owner-web test:e2e   # against 
 
 The default run starts its own dev server and **mocks ROAX RPC** at the network layer so validity
 reads are deterministic. It covers tamper rejection, the **receipt** path (travel clearance → receipt
-list/detail → QR/provenance), and the **selective-disclosure** path (withhold a field → the redacted
+list/detail → QR/provenance), the **selective-disclosure** path (withhold a field → the redacted
 copy still verifies with the same Merkle root, its cleartext gone, and the receipt renderer does not
-show that value). Owner-hidden consent is exercised by the native mobile flows, where the private
-tag-profile witness lives.
+show that value), and the **consent-history** path (owner-blind `Verified` logs + calldata-recovered
+recordType render as the owner's receipts; the mock bytes are real ABI encodings, see
+`e2e/consentFixture.ts`). Owner-hidden consent *proving* is exercised by the native mobile flows,
+where the private tag-profile witness lives.

@@ -977,8 +977,22 @@ details pre {
 }
 
 /* Print: strip the wallet chrome (topbar, nav, footer, controls) so only the official receipt sheet
- * prints, edge to edge, on white paper — "Print → Save as PDF" yields the clean official document. */
+ * prints, edge to edge, on white paper — "Print → Save as PDF" yields the clean official document.
+ * Remap the dark theme tokens to a light paper palette so token-driven surfaces (the consent-receipt
+ * detail card) print ink-friendly too; the receipt sheet's own fixed light palette is unaffected. */
 @media print {
+  :root {
+    --bg: #ffffff;
+    --bg-2: #ffffff;
+    --panel: #ffffff;
+    --panel-2: #f8fafc;
+    --border: #cbd5e1;
+    --text: #0f172a;
+    --muted: #475569;
+    --faint: #64748b;
+    color-scheme: light;
+  }
+
   .topbar,
   .tabs,
   .foot,
