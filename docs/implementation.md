@@ -1114,6 +1114,9 @@ mints the `DOG_PROFILE` SBT on-chain. **Gasless for the device** (the vet pays P
 POST /profiles/issue/session/start { ownerIdentity, ...petFields }   # operator session (demo: prefilled)
    require operator session && whitelistedFor(keccak256("DOG_PROFILE"), vetSigner)
    require hasRole(DogTagSBT.ISSUER_ROLE, vetSigner)         # else the §3 mint below would revert
+   require trim(pet.name) != ""                              # else 400 - both mobile parsers refuse a session whose
+                                                             #   pet name resolves blank, so it would resolve fine in
+                                                             #   (1b) yet always fail on-device, wasting the one-time QR
    dogTagId = allocate(); sessionId = uuid()
    // allocate() skips ids already taken on EITHER SBT — the counter resets on restart and the SBTs are
    //   shared across issuers. The two levels retire an id by DIFFERENT markers, so both are consulted:
@@ -1126,10 +1129,25 @@ POST /profiles/issue/session/start { ownerIdentity, ...petFields }   # operator 
 
 # (1b) phone resolves the issue session WITHOUT consuming the token (consume on bind)
 GET /p/{token}
-   s = issue_sessions[token]; require s.status=="pending"
+   s = issue_sessions[token]                                 # a token that still resolves IMPLIES the pre-bind state -
+                                                             #   the bind consumes it atomically before the session can
+                                                             #   leave "pending" - so the metadata needs no status gate
    claims = { protocolVersion, chainId, verificationRegistry,       # §3.10d CONVENIENCE tier; issuance has no verify
               issuerClone: profile_document_store, purpose:"DOG_PROFILE" }   #   purpose, so the record type is the namespace
-   return { sessionId, dogTagId, status, registrationMessagePrefix,
+   return { sessionId, dogTagId, status,
+            pet: { name,                                     # the session's pet record - the attributes the device
+                   profile: { species, breedVbo, breedLabel, #   folds into its device-built profile root R
+                              sex, neuterStatus, dateOfBirth,
+                              weightHistory: [{unit, value, measuredOn}] },   # weight `value` = decimal STRING, never a float
+                   microchip: { code, standard, implantDate, bodyLocation } },
+            ownerIdentity: { countryOfIdentification, identification, name },
+                                                             # BOTH containers emitted UNCONDITIONALLY: the mobile
+                                                             #   parsers (iOS Net.swift resolveDogTagIssue, Android
+                                                             #   CentralApi.parseProfileIssueSession) fail closed on an
+                                                             #   ABSENT container but tolerate empty fields, so a
+                                                             #   no-identity session degrades to empty strings, never a
+                                                             #   missing key. ownerIdentity rides BESIDE the pet data
+                                                             #   (the later D1 hidden-leaf source; NOT folded into R here)
             unverifiedClaims: claims }                       # phone shows what it's about to receive, and
                                                              #   validates unverifiedClaims vs the dogtag anchor (§3.10d)
 
