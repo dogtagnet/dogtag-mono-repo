@@ -44,11 +44,11 @@ Suggested decomposition:
 • Phase 1 (trust core): A=packages/dogtag-standard-ts, B=crates/dogtag-standard-rs,
   C=generate shared testvectors.json FROM circomlib incl. per-arity Poseidon anchors (t=2/3/6/7)
   + leaf/Merkle/nullifier vectors. Reconcile until TS == Rust == circomlib bit-identical.
-• Phase 2 (contracts): contracts/ (IssuerRegistry, DogTagIssuer, factory, DogTagSBT, write-once
+• Phase 2 (contracts): contracts/ (IssuerRegistry, DogTagIssuer, factory, DogTagSBTConsent, write-once
   rootIssuer index) + Foundry tests incl. ALL audit regression tests.
-• Phase 2.5 (ZK): A=circuits/ (circom Poseidon-Merkle + EdDSA-BabyJubjub consent, trusted setup),
-  B=VerificationRegistry + ConsentKeyRegistry + Groth16Verifier + Foundry tests (both paths,
-  shared-nullifier double-spend, range-checks, relayer binding, subject↔key/ownerOf/purpose).
+• Phase 2.5 (ZK): A=circuits/ (circom reserved-owner-leaf Poseidon-Merkle + EdDSA-BabyJubjub consent,
+  trusted setup), B=VerificationRegistryConsent + Groth16VerifierConsent + Foundry tests
+  (shared-nullifier double-spend, range-checks, relayer binding, root↔profileRoot(dogTagId)/purpose).
 • Phase 3 (vet backend) + Phase 4 (central backend): one agent per service area.
 • Phase 5 (portals): agent per app (packages/ui, vet, groomer, admin).
 • Phase 6 (mobile): Android agent, iOS agent, UniFFI-bindings agent.
@@ -60,7 +60,7 @@ Suggested decomposition:
   across circom/TS/Rust/Solidity. Block everything downstream until green.
 • Security gates (before any deploy): all audit Criticals/Highs from §13/§11 implemented —
   _disableInitializers, per-recordType isWhitelistedFor, issuedBy originator, write-once
-  rootIssuer[R] clone resolution, subject↔key + ownerOf + purpose binding, hardened confirm.
+  rootIssuer[R] clone resolution, proof↔tag/relayer/purpose binding, hardened confirm.
 • Pre-deploy prechecks: `cast chain-id --rpc-url https://devrpc.roax.net` returns 135 (it was 502
   at design time — confirm liveness), AND ROAX supports the BN254 pairing precompiles
   (ecAdd/ecMul/ecPairing) needed for Groth16. If either fails: STOP and report.

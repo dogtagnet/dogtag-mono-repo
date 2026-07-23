@@ -37,7 +37,7 @@ pub struct Record {
     /// `R`, never inside it. IMMUTABLE once set. `chain_id`/`protocol_version`/`verification_registry`
     /// are known at prepare; `issuer_signer` is the on-chain `clone.issuedBy[R]`, learned at confirm
     /// (== the `signer_address` derived from the `RootIssued` log). `Option`/defaulted so pre-M7 rows
-    /// still load (resolve the default via `WrappedDoc::resolved_protocol`).
+    /// still load.
     #[serde(default)]
     pub chain_id: Option<u64>,
     #[serde(default)]

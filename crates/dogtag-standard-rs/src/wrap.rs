@@ -27,13 +27,9 @@ pub struct IssuerMeta {
     pub record_type: String,
 }
 
-/// The Level-A protocol version string (M7 §4.4). This is the *protocol level* stamped in the
-/// `protocol` block, distinct from the envelope schema `WrappedDoc.version` (`"dogtag/1.0"`).
-pub const LEVEL_A_VERSION: &str = "dogtag-levela/1";
-
-/// The Level-B protocol version string - the **on-chain `ContractSet` axis** of the two-axis
+/// The protocol version string - the **on-chain `ContractSet` axis** of the two-axis
 /// `ProtocolRegistry` (R-5). Its keccak is the `contractSetId` that keys the trio + verifier +
-/// circuitId (`contracts/script/ProtocolVersions.sol:44`, `ProtocolRegistry.sol` §"ON-CHAIN axis").
+/// circuitId (`contracts/script/ProtocolVersions.sol`, `ProtocolRegistry.sol` §"ON-CHAIN axis").
 ///
 /// This is the axis an *issuance* stamps, because minting binds a tag to deployed contracts - the
 /// SBT it is sealed into and the registry that will verify it. It is deliberately NOT the artifact
@@ -41,9 +37,9 @@ pub const LEVEL_A_VERSION: &str = "dogtag-levela/1";
 /// rotation re-points `activeArtifactSetOf` and must NOT change what an already-minted tag claims.
 /// Resolve the two independently; never collapse them back into one version.
 ///
-/// Adding this constant does **not** flip any Level-A producer. Level-A issuance keeps stamping
-/// [`LEVEL_A_VERSION`] (that cutover is a separate milestone); this is stamped only by the Level-B
-/// custodial issuance path, so an owner-hidden tag never claims to be a Level-A record.
+/// The literal value is an INTERNAL version key, not a user-facing label: it is a load-bearing
+/// producer/consumer identifier (its keccak keys the on-chain registry), so it is never renamed
+/// even though the "level" vocabulary is retired everywhere user-facing.
 pub const LEVEL_B_VERSION: &str = "dogtag-levelb/1";
 
 /// M7 record-provenance block (§4.2): which protocol/contract a record was created on **and who
@@ -52,13 +48,12 @@ pub const LEVEL_B_VERSION: &str = "dogtag-levelb/1";
 /// It is a **routing hint only, never authority**: the on-chain re-derivation stays authoritative
 /// (`clone = rootIssuer[R]`, `R == profileRoot(id)`, `isValid(R)`). In particular `issuerSigner` is
 /// the envelope's *claim* of who issued; a verifier validates it against the on-chain
-/// `clone.issuedBy[R]` (see `verify`) and a wrong/forged claim fails closed. Absent on pre-M7
-/// records - consumers default it via [`WrappedDoc::resolved_protocol`] (§4.4).
+/// `clone.issuedBy[R]` (see `verify`) and a wrong/forged claim fails closed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProtocolMeta {
     #[serde(rename = "chainId")]
     pub chain_id: u64,
-    /// protocol level, e.g. `"dogtag-levela/1"` / `"dogtag-levelb/1"` - resolves circuit/VK/artifact
+    /// internal protocol version key, e.g. `"dogtag-levelb/1"` - resolves circuit/VK/artifact
     /// via the discovery anchor. NOT the envelope `WrappedDoc.version`.
     pub version: String,
     /// THE routing key -> derives `sbt()` + `rootIndex()` after a trio migration.
@@ -96,33 +91,13 @@ pub struct WrappedDoc {
     pub signature: Signature,
     pub privacy: Privacy,
     pub issuer: IssuerMeta,
-    /// M7 provenance block (§4.2), beside `signature.merkleRoot` - NOT inside `R`. Absent on pre-M7
-    /// records; default it with [`WrappedDoc::resolved_protocol`]. A routing hint only, never authority.
+    /// M7 provenance block (§4.2), beside `signature.merkleRoot` - NOT inside `R`. A routing hint
+    /// only, never authority. May be absent on a bare wrap; the issuing stack stamps it. (The old
+    /// absent-block default that routed pre-unification records to the retired registry is deleted
+    /// per decision D5: the testnet is disposable and the pending wipe + fresh redeploy leaves no
+    /// pre-unification records to route.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ProtocolMeta>,
-}
-
-impl WrappedDoc {
-    /// The effective provenance for routing (§4.4 back-compat). A stamped block is returned as-is
-    /// (a routing hint only - never authority). An **absent** block defaults to Level-A:
-    /// `verificationRegistry` = the Level-A registry, `version` = [`LEVEL_A_VERSION`],
-    /// `issuerClone` = `IssuerMeta.documentStore`, `issuerSigner` = the on-chain `clone.issuedBy[R]`
-    /// (supplied by the caller, which reads it on-chain - it exists for Level-A too). Existing
-    /// records self-route to the old trio and keep verifying unchanged.
-    pub fn resolved_protocol(
-        &self,
-        chain_id: u64,
-        level_a_verification_registry: &str,
-        onchain_issued_by: &str,
-    ) -> ProtocolMeta {
-        self.protocol.clone().unwrap_or_else(|| ProtocolMeta {
-            chain_id,
-            version: LEVEL_A_VERSION.to_string(),
-            verification_registry: level_a_verification_registry.to_string(),
-            issuer_clone: self.issuer.document_store.clone(),
-            issuer_signer: onchain_issued_by.to_string(),
-        })
-    }
 }
 
 /// Parse a 0x.. 32-byte hex back into a field element (mirror of TS `fromHex32`).

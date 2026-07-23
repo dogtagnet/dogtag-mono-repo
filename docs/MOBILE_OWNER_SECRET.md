@@ -1,12 +1,12 @@
 # MOBILE_OWNER_SECRET - the owner-secret, the device-built tree, and the local recovery file
 
 **Audience:** holder-app developers, and support staff explaining recovery to an owner.
-**Scope:** Level-B (owner-unlinkable) tags only.
-Level-A tags predate this and are unaffected.
+**Scope:** every DogTag tag.
+The owner-hidden custodial model is the only issuance model, so every tag on a device has an owner-secret.
 
 > **This document describes a file that holds a RECOVERY SECRET.**
 > `Documents/dogtag-owner-secrets.json` (iOS) / `<noBackupFilesDir>/dogtag-owner-secrets.json.enc`
-> (Android) contains the owner-secret for every Level-B tag on the device.
+> (Android) contains the owner-secret for every tag on the device.
 > Anyone who reads it can generate that tag's proofs.
 > It is never uploaded, never logged, and never leaves the device: it is excluded from device
 > backups and encrypted at rest, so it is a **device-local store, not a cross-device backup**.
@@ -14,7 +14,7 @@ Level-A tags predate this and are unaffected.
 
 ## Why the owner-secret exists, and why the DEVICE must derive it
 
-A Level-B verification emits a `nullifier` on-chain and nothing else about the owner:
+A DogTag verification emits a `nullifier` on-chain and nothing else about the owner:
 
 ```
 nullifier = Poseidon6(DS_NULLIFIER, ownerSecret, dogTagId, purpose, relayer, consentNonce)
@@ -22,7 +22,7 @@ nullifier = Poseidon6(DS_NULLIFIER, ownerSecret, dogTagId, purpose, relayer, con
 
 The owner-secret is the only owner-private input in that preimage.
 If a server generated it, that server could recompute every nullifier and link them back to the
-owner, which is exactly the linkability Level B removes.
+owner, which is exactly the linkability the owner-hidden design removes.
 So the owner-secret is derived on the device, from the wallet seed, and is never transmitted.
 
 The same reasoning is why the whole tree is built on-device: the app computes the root `R` locally
@@ -31,29 +31,20 @@ The issuer seals it with `DogTagSBTConsent.mintCustodial(dogTagId, R)`, which ta
 argument, so the owner's wallet appears nowhere on-chain.
 
 The issuer-side route for that handoff is **`POST /profiles/issue/custodial-bind { token, root }`**
-on the vet stack (M-2), where `token` is the one-time 180s bind token from the operator's QR and
+on the vet stack, where `token` is the one-time 180s bind token from the operator's QR and
 `root` is `rootHex`.
 It carries **no wallet and no signature** by design: `mintCustodial` has no recipient, so there is
 nothing for a signature to attest, and sending a wallet anyway would hand the server exactly the link
 this whole design removes.
 The server treats `R` as opaque (it cannot recompute it - it has no seed), anchors it with `issue(R)`
 and then seals it.
-No shipped app posts to it yet; the device call site is a follow-up.
+Both apps post to it from the pet-onboarding QR (`/p/<token>`) flow - the call sites are
+`Net.swift` (iOS) and `CentralApi.kt` (Android).
 
-The verification counterpart landed as **`POST /verify/consent/levelb { proof }`** (M-3): the app proves
-consent against `consent.circom` using the owner-secret described here, and the vet relays that proof to
-`VerificationRegistryConsent`.
-M-4 made that path phone-REACHABLE by adding the alias **`POST /v1/verify/consent/levelb`**, gated by the
-owner's one-time export token (mirroring the Level-A `/v1/verify/consent` gate, PEEK semantics) rather than
-an operator session, plus a per-session `mode="levelb"` opt-in.
-M-4 PR4 then added the mobile present call site that posts to it (`ScanScreen`'s `mode == "levelb"` branch),
-inert until the `ProtocolRegistry` is published - so nothing about the owner-secret handling here shifts.
-It matters to this document because the owner-secret **is** the nullifier secret: what the route carries
-is a `nullifier` derived from it, never the secret itself, so the ["Handling rules"](#handling-rules)
-below hold on this path unchanged - including their one deliberate exception, the remote
-`POST /prove-consent` fallback, which is the only place `ownerSecret` legitimately leaves the device.
-Like the issuance route it is off by default (`VERIFICATION_REGISTRY_CONSENT_ADDR`, else 503) and no
-shipped app posts to it yet.
+The verification counterpart is the owner-hidden consent submission.
+The app proves consent against `consent.circom` using the owner-secret described here and submits `{exportToken, proof}` under the owner's one-time export token; the verifying operator's stack relays the proof to `VerificationRegistryConsent` (the canonical backend route is `POST /v1/verify/consent`).
+It matters to this document because the owner-secret **is** the nullifier secret: what the submission carries is a `nullifier` derived from it, never the secret itself, so the ["Handling rules"](#handling-rules) below hold on this path unchanged - including their one deliberate exception, the remote `POST /prove-consent` fallback, which is the only place `ownerSecret` legitimately leaves the device.
+That fallback is backend-only today: no shipped app calls it (its mobile wiring lands in a later slice), so on current devices the secret never leaves the device at all.
 
 ## What recovery actually needs: the seed AND the credential
 
@@ -387,7 +378,7 @@ The owner-secret is bound to `dogTagId` ([§1](#1-seed-derivation)), so even the
 tag derives an independent nullifier secret; the abandoned tag's on-chain nullifiers cannot be
 correlated with the re-issued tag's.
 A "recovery" that reused the secret, or that surfaced the old<->new link anywhere off the device,
-would reintroduce exactly the linkage Level B removes.
+would reintroduce exactly the linkage the owner-hidden design removes.
 `ProfileTreeStore.reissue` MAY record the old<->new link because the store is excluded from device
 backups and never transmitted; that link must never reach an on-chain event, a status reason, or an
 issuer record.

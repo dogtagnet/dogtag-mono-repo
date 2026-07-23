@@ -96,59 +96,50 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 # The contract addresses — set on the stacks that read each one (see the REMOTE .env table for which
 # stack owns which key). Take every value from contracts/deployments/<chain>.json (§2.2):
 #   ISSUER_REGISTRY_ADDR=...            # all stacks
-#   SBT_ADDR=...                        # admin (+ vet via demo wiring); PROFILE_DOCUMENT_STORE usually = SBT_ADDR
-#   FACTORY_ADDR=...                    # admin  (DogTagIssuerFactory — createIssuer/predictIssuer + Ownable owner)
-#   VERIFICATION_REGISTRY_ADDR=...      # vet, groomer, admin  (CURRENT VR, not a legacy generation; admin uses it as the M7 provenance routing key;
-#                                       #   vet also publishes it in the resolve GETs' `unverifiedClaims` — keep it coherent with the protocol version
-#                                       #   the claims advertise, or validating apps fail closed with RegistryMismatch — impl §3.10d)
-#   CONSENT_KEY_REGISTRY_ADDR=...       # vet, groomer  (CURRENT CKR — meta-tx bindConsentKeyFor is the live path)
-#   VACCINATION_ISSUER_ADDR=...         # vet, groomer  (per-recordType clone; 0x0…0 for pure verifiers)
-#
-# Level-B custodial issuance (POST /profiles/issue/custodial-bind) - OPTIONAL, required as a PAIR.
-# Leave BOTH unset unless you are wiring Level-B; the route then fails closed with 503 and the rest
-# of the stack, including all Level-A issuance, runs normally.
-#   SBT_CONSENT_ADDR=...                # vet, groomer  (Level-B DogTagSBTConsent - the owner-blind
-#                                       #   mintCustodial target. SEPARATE from SBT_ADDR, which stays
-#                                       #   the Level-A DogTagSBT; both run side by side through the
-#                                       #   migration. The vet signer must hold ISSUER_ROLE on it)
+#   VERIFICATION_REGISTRY_CONSENT_ADDR=... # vet, groomer  (VerificationRegistryConsent - the owner-hidden
+#                                       #   relay target for POST /v1/verify/consent. The relayer -
+#                                       #   custody account 0 - must be whitelisted for the purpose it
+#                                       #   submits. Unset/malformed -> only that route 503s, fail-closed)
+#   SBT_CONSENT_ADDR=...                # vet, groomer  (DogTagSBTConsent - the owner-blind mintCustodial
+#                                       #   target for POST /profiles/issue/custodial-bind, the sole
+#                                       #   profile issuance path. The signer must hold ISSUER_ROLE on it)
 #   PROFILE_ISSUER_ADDR=...             # vet, groomer  (a real factory-deployed DogTagIssuer clone that
-#                                       #   Level-B roots are anchored into via issue(R), so rootIssuer[R]
-#                                       #   resolves. NOT PROFILE_DOCUMENT_STORE - that defaults to the SBT
-#                                       #   because under Level-A the SBT doubles as the DOG_PROFILE
-#                                       #   document store and issue is never called on it, so pointing
-#                                       #   this at the SBT REVERTS. Signer must be whitelisted for the
-#                                       #   clone's recordType)
-#
-# Level-B consent verification (POST /verify/consent/levelb) - OPTIONAL and INDEPENDENT of the pair
-# above (a stack may wire either, both, or neither). Unset -> only that route 503s; all Level-A
-# verification is unaffected.
-#   VERIFICATION_REGISTRY_CONSENT_ADDR=...  # vet, groomer  (Level-B VerificationRegistryConsent - the
-#                                       #   owner-hidden relay target. SEPARATE from
-#                                       #   VERIFICATION_REGISTRY_ADDR, which stays the Level-A registry;
-#                                       #   both run side by side through the migration and their
-#                                       #   recordVerificationZK calls take DIFFERENT selectors, so
-#                                       #   pointing either var at the other's registry encodes for the
-#                                       #   wrong one and reverts EMPTY. The relayer - custody account 0 -
-#                                       #   must be whitelisted for the purpose it submits)
+#                                       #   profile roots are anchored into via issue(R), so rootIssuer[R]
+#                                       #   resolves. NEVER the SBT - issue(R) sent to the SBT reverts.
+#                                       #   Signer must be whitelisted for the clone's recordType)
+#     SBT_CONSENT_ADDR + PROFILE_ISSUER_ADDR are REQUIRED AS A PAIR: if either is unset/malformed the
+#     custodial-bind route fails closed with 503 BEFORE the one-time bind token is consumed.
+#   VERIFICATION_REGISTRY_ADDR=...      # admin  (the SAME owner-hidden VerificationRegistryConsent,
+#                                       #   read by admin as the protocol default stamped into
+#                                       #   unstamped credential imports - provenance routing, not a
+#                                       #   relay target)
+#   SBT_ADDR=...                        # admin  (DogTagSBTConsent as the governance target -
+#                                       #   ISSUER_ROLE administration only; admin does not issue tags)
+#   FACTORY_ADDR=...                    # admin  (DogTagIssuerFactory — createIssuer/predictIssuer + Ownable owner)
+#   VACCINATION_ISSUER_ADDR=...         # vet, groomer  (per-recordType clone; 0x0…0 for pure verifiers)
 # Leave VITE_DEMO_MODE UNSET (remote-up.sh rejects it).
 ```
 
-**Critical:** there are **four VerificationRegistry generations** and two ConsentKeyRegistry generations
-in the testnet Address Book. Use the **current** VR/CKR (the meta-tx ones), never a `_legacy` address. The
-Address Book in [DEPLOYMENT.md](./DEPLOYMENT.md) marks which is current.
+**Critical:** the testnet deployment ledger still carries **retired and legacy registry generations** as
+history (struck rows in the Address Book). The only live registry is **`VerificationRegistryConsent`** -
+never point any `*_ADDR` at a retired or `_legacy` generation. The Address Book in
+[DEPLOYMENT.md](./DEPLOYMENT.md) marks which is current.
 
 ### 2.2 `contracts/deployments/<chain>.json` (the new source of truth)
 
-The address book for the new chain is a deployment JSON. If you deployed the contract set to the new chain,
-`forge script script/Deploy.s.sol:Deploy` writes this file (see the deploy runbook
-[DEPLOY.md](./DEPLOY.md) §2, and §3.2 for wiring the verifier). This file — not any doc, not any `.env` —
-is the **canonical address source**; everything in 2.1, 2.3, and 2.4 must be copied **from it**.
+The address book for the new chain is a deployment JSON. If you deployed the contract set to the new
+chain, the deploy scripts write this file: `forge script script/Deploy.s.sol:Deploy` deploys the shared
+base (IssuerRegistry + DogTagIssuer impl + factory) and the owner-hidden issuance/verification set is
+deployed by its own script - see the deploy runbook [DEPLOY.md](./DEPLOY.md). This file - not any doc,
+not any `.env` - is the **canonical address source**; everything in 2.1, 2.3, and 2.4 must be copied
+**from it**.
 
 ```bash
 # Confirm the deployment file exists for the new chain and lists every contract you reference:
 ls -1 contracts/deployments/<chain>.json
-cat contracts/deployments/<chain>.json   # eyeball: VerificationRegistry, ConsentKeyRegistry, IssuerRegistry,
-                                         # DogTagSBT, Groth16Verifier, Poseidon6, factory/impl, chainId
+cat contracts/deployments/<chain>.json   # eyeball: IssuerRegistry, DogTagIssuerFactory (+impl),
+                                         # DogTagSBTConsent, VerificationRegistryConsent,
+                                         # Groth16VerifierConsent, ProtocolRegistry, chainId
 ```
 
 **Verify.** `chainId` inside `contracts/deployments/<chain>.json` equals `<NEW_CHAIN_ID>`.
@@ -166,9 +157,6 @@ The full `VITE_*` table is owned by [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.m
 # Per stack web/.env — read-only chain RPC + contract addresses:
 #   VITE_ROAX_RPC=<NEW_RPC>                  # the variable is named *_ROAX_RPC but holds ANY chain's RPC
 #   VITE_ISSUER_REGISTRY_ADDR=...
-#   VITE_DOGTAG_SBT_ADDR=...
-#   VITE_VERIFICATION_REGISTRY_ADDR=...      # CURRENT VR
-#   VITE_POSEIDON6_ADDR=...
 #   VITE_DOGTAG_ISSUER_ADDR=...              # per-recordType issuer for isValid polling (optional)
 # Keep VITE_DEMO_MODE UNSET.
 ```
@@ -177,8 +165,8 @@ The full `VITE_*` table is owned by [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.m
 
 The phones do **not** read backend `.env`. Each app bundles its **own copy** of `roax.json` (a trimmed
 subset of contract addresses) and bakes the chain RPC as a constant. **There is no sync script** that
-copies addresses into the apps — you must hand-edit **both** files, re-vendor the production zkey, then
-rebuild and reinstall. Full mobile build steps are in **[MOBILE_BUILD.md](./MOBILE_BUILD.md)**.
+copies addresses into the apps - you must hand-edit **both** files, re-vendor the production proving
+assets, then rebuild and reinstall. Full mobile build steps are in **[MOBILE_BUILD.md](./MOBILE_BUILD.md)**.
 
 ```bash
 # 1. Hand-edit BOTH app roax.json copies to the new chain's addresses (from contracts/deployments/<chain>.json):
@@ -187,13 +175,17 @@ rebuild and reinstall. Full mobile build steps are in **[MOBILE_BUILD.md](./MOBI
 #    (verified iOS == Android; keep them identical.)
 #
 # 2. If the CHAIN itself changed (not just addresses), also update the baked RPC constant in each app
-#    (exact file paths also in MOBILE_BUILD.md §8):
+#    (exact file paths also in MOBILE_BUILD.md):
 #      iOS:     apps/ios/DogTag/Models.swift                                            -> AppConfig.roaxRpc = "<NEW_RPC>"
 #      Android: apps/android/app/src/main/java/io/liberalize/dogtag/data/AppConfig.kt   -> ROAX_RPC         = "<NEW_RPC>"
 #
-# 3. Re-vendor the PRODUCTION zkey (the gitignored ~65 MB key from §3) into BOTH apps:
-cp circuits/build/verification_final.zkey apps/ios/DogTag/
-cp circuits/build/verification_final.zkey apps/android/app/src/main/assets/
+# 3. Re-vendor the PRODUCTION consent proving assets (the §3 ceremony zkey; the app needs the pair
+#    consent_final.zkey + consent.graph):
+cp circuits/build/consent_final.zkey apps/ios/DogTag/
+cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/
+#    (consent.graph is built out-of-band and vendored the same way - MOBILE_BUILD.md documents the
+#    graph build and the current per-platform bundle wiring; the iOS project wiring for the consent
+#    pair is finalized in the mobile-issuance slice.)
 #
 # 4. Rebuild + reinstall both apps (see MOBILE_BUILD.md for the full commands):
 #      iOS:     cd apps/ios && xcodegen && <Xcode Run / xcodebuild ...>
@@ -212,8 +204,8 @@ Confirm the RPC's chain id and that the portals read the new addresses.
 # (a) The RPC really is the target chain:
 cast chain-id --rpc-url <NEW_RPC>        # expect: <NEW_CHAIN_ID>
 
-# (b) A contract actually exists at the new VR address (non-empty bytecode):
-cast code <VERIFICATION_REGISTRY_ADDR from contracts/deployments/<chain>.json> --rpc-url <NEW_RPC> | head -c 12
+# (b) A contract actually exists at the new registry address (non-empty bytecode):
+cast code <VerificationRegistryConsent from contracts/deployments/<chain>.json> --rpc-url <NEW_RPC> | head -c 12
 #     expect: 0x6080...  (non-empty). Empty (0x) = wrong address or wrong chain.
 ```
 
@@ -232,106 +224,98 @@ or vice versa) produces "unknown root" / signature-verification failures that lo
 
 ## 3. ZK trusted setup (BLOCKING) — ceremony + verifier timelock
 
-> **RETIRED / HISTORICAL - not runnable.**
-> This section covers the Level-A `verification.circom` ceremony + verifier deploy, whose circuit,
-> ceremony scripts (`scripts/ceremony.sh`, `scripts/setup.sh`), `npm run compile-circuit` /
-> `npm run build-circuit`, and the `Groth16Verifier`/`VerificationRegistry` contract sources were removed
-> when the owner-revealing layer was retired. The commands below no longer resolve and are kept only as
-> provenance for the already-deployed Level-A verifier. The live owner-hidden consent ceremony is
-> `circuits/scripts/ceremony-consent.sh` (transcript `docs/CEREMONY_TRANSCRIPT.consent.md`).
+> This doc OWNS the on-chain ceremony/timelock wiring (the step-by-step ceremony itself is in
+> [CEREMONY.md](./CEREMONY.md) - the live consent-ceremony guide, with
+> [CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md) as the expanded captain-fill-in detail; the on-chain
+> wiring procedure is here).
 
-> This doc OWNS the ceremony/timelock runbook (the step-by-step ceremony itself is in
-> [CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md) — the expanded captain-fill-in runbook, with
-> [CEREMONY.md](./CEREMONY.md) as the concise version; the on-chain wiring procedure is here).
-
-The zkey shipped in `circuits/build` (and the one bundled in the testnet apps) is a **single-operator**
-setup — fine for testnet, **NOT production**. A sole contributor who kept the toxic waste could **forge ZK
-attestations**. Before any real user relies on the ZK EXPORT path you MUST replace it with a multi-party
+The consent zkey shipped in `circuits/build` (the key the on-chain consent verifier checks against) is a
+**single-operator** setup - `circuits/scripts/ceremony-consent.sh`, transcript
+[CEREMONY_TRANSCRIPT.consent.md](./CEREMONY_TRANSCRIPT.consent.md) - fine for testnet, **NOT
+production**.
+A sole contributor who kept the toxic waste could **forge consent attestations**.
+Before any real user relies on the owner-hidden verify path you MUST replace it with a multi-party
 ceremony key and wire it through the registry's on-chain timelock.
 
-> The normal/ECDSA verification path (`recordVerification`) works on-chain today and does **not** depend on
-> this ceremony. Only the ZK path (`recordVerificationZK`) is gated by it. Until the ceremony completes,
-> leave the registry's `zkVerifier` unchanged / `0x0` for the ZK path.
+> The Merkle-proof side of the protocol (issuance anchoring, integrity, selective disclosure) does
+> **not** depend on this ceremony.
+> The ceremony gates the ZK consent path (`recordVerificationZK`) - the **only** on-chain verification
+> path - which is why this is a go-live blocker, not an optional hardening step.
 
-### 3.1 Run the ceremony (per CEREMONY_RUNBOOK.md)
+### 3.1 Run the ceremony (per CEREMONY.md)
 
-Follow **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** exactly: **≥3 independent contributors** each add and destroy
-secret entropy in sequence, then the coordinator applies a **public random beacon** (a value unpredictable
-at contribution time — e.g. a future Bitcoin block hash or a drand round) and finalizes.
+Follow **[CEREMONY.md](./CEREMONY.md)**: **≥3 independent contributors** each add and destroy secret
+entropy in sequence, then the coordinator applies a **public random beacon** (a value unpredictable at
+contribution time - e.g. a drand round) and finalizes.
+The production run is a re-run of the committed `circuits/scripts/ceremony-consent.sh` phases with one
+`snarkjs zkey contribute` per independent contributor inserted between setup and beacon.
 
-```bash
-# (Coordinator) finalize, per CEREMONY_RUNBOOK.md — produces the production artefacts:
-cd circuits
-bash scripts/ceremony.sh finalize build/ceremony_final.zkey
-#  -> exports circuits/Groth16Verifier.sol
-#  -> exports circuits/build/verification_key.json   (for independent `snarkjs groth16 verify`)
-#  -> copies build/verification_final.zkey   (the ~65 MB production key to vendor into the apps in §2.4)
-#  -> prints the final zkey sha256 to PIN (CI + the prover image)
-```
+A completed ceremony yields these things you carry forward:
 
-Finalize produces these things you carry forward:
-
-1. `circuits/Groth16Verifier.sol` — the verifier contract for **this** key.
-2. `circuits/build/verification_final.zkey` — the production proving key (re-vendor into both apps, §2.4,
+1. `circuits/Groth16Verifier.consent.sol` - the exported verifier contract for **this** key
+   (contract `Groth16VerifierConsent`).
+2. `circuits/build/consent_final.zkey` - the production proving key (re-vendor into both apps, §2.4,
    and into the owner's prover-service, §5).
-3. `circuits/build/verification_key.json` — the JSON verification key so anyone can independently run
-   `snarkjs groth16 verify`; publish it alongside the transcript.
-4. A pinned **sha256** of the final zkey — publish it in the transcript, pin it in CI and the prover image.
+3. `circuits/build/consent_verification_key.json` - the JSON verification key so anyone can
+   independently run `snarkjs groth16 verify`; publish it alongside the transcript.
+4. A pinned **sha256** of the final zkey - publish it in the transcript, pin it in CI and the prover
+   config (§5).
 
 **STOP: do not use the testnet zkey in production.** The testnet key's sha256 is recorded in
-[CEREMONY_TRANSCRIPT.md](./CEREMONY_TRANSCRIPT.md) (single-operator). If your apps/prover are serving that
-hash, the ZK path is **forgeable** — block go-live until they serve the new ceremony hash.
+[CEREMONY_TRANSCRIPT.consent.md](./CEREMONY_TRANSCRIPT.consent.md) (single-operator self-run). If your
+apps/prover are serving that hash, the consent path is **forgeable** - block go-live until they serve
+the new ceremony hash.
 
 ### 3.2 Deploy the verifier and wire it through the 2-day timelock
 
 The registry does **not** have a `setZkVerifier` — the swap is a real **2-day timelock**: propose, wait,
-execute. The function names and constant are verbatim from `contracts/src/VerificationRegistry.sol`:
-`proposeZkVerifier(address)`, `executeZkVerifier()`, and `ZK_TIMELOCK = 2 days` (the same timelock also
-guards the swappable consent-key registry via `proposeConsentKeys` / `executeConsentKeys`). Both calls are
-`onlyRole(DEFAULT_ADMIN_ROLE)` — send them from the registry's `DEFAULT_ADMIN`.
+execute. The function names and constant are verbatim from
+`contracts/src/VerificationRegistryConsent.sol`: `proposeZkVerifier(address)`, `executeZkVerifier()`,
+and `ZK_TIMELOCK = 2 days`. Both calls are `onlyRole(DEFAULT_ADMIN_ROLE)` - send them from the
+registry's `DEFAULT_ADMIN`.
 
 Placeholders:
 
-- `<VR_ADDR>` — the **VerificationRegistry** address. Replace: from `contracts/deployments/<chain>.json`
-  (or the Address Book in [DEPLOYMENT.md](./DEPLOYMENT.md) / the apps' `roax.json`). Use the **current**
-  VR, never a `_legacy` one.
+- `<VRC_ADDR>` - the **VerificationRegistryConsent** address. Replace: from
+  `contracts/deployments/<chain>.json` (or the Address Book in [DEPLOYMENT.md](./DEPLOYMENT.md) / the
+  apps' `roax.json`). Use the **current** registry, never a retired/`_legacy` generation.
 - `<DEPLOYER_PRIVATE_KEY>` — the registry's `DEFAULT_ADMIN` key. Replace: your protocol-admin EOA key.
 - `<NEW_RPC>` — the target chain RPC (§2).
 
 ```bash
-cp circuits/Groth16Verifier.sol contracts/src/Groth16Verifier.sol
+cp circuits/Groth16Verifier.consent.sol contracts/src/Groth16VerifierConsent.sol
 cd contracts && forge build
 
-# 1) Deploy the ceremony's verifier (deployer must be the registry DEFAULT_ADMIN):
-VERIFIER=$(forge create src/Groth16Verifier.sol:Groth16Verifier \
+# 1) Deploy the ceremony's verifier:
+VERIFIER=$(forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent \
   --rpc-url "<NEW_RPC>" --private-key "<DEPLOYER_PRIVATE_KEY>" --legacy --json | jq -r .deployedTo)
 echo "new verifier: $VERIFIER"
 
 # 2) Propose it — starts the 2-day timer (ZK_TIMELOCK = 2 days):
-cast send <VR_ADDR> "proposeZkVerifier(address)" "$VERIFIER" \
+cast send <VRC_ADDR> "proposeZkVerifier(address)" "$VERIFIER" \
   --rpc-url "<NEW_RPC>" --private-key "<DEPLOYER_PRIVATE_KEY>" --legacy
 
 # 3) WAIT >= 2 days, then execute (reverts with "timelock" if you call it early):
-cast send <VR_ADDR> "executeZkVerifier()" \
+cast send <VRC_ADDR> "executeZkVerifier()" \
   --rpc-url "<NEW_RPC>" --private-key "<DEPLOYER_PRIVATE_KEY>" --legacy
 ```
 
-**Verify.** After step 2, `cast call <VR_ADDR> "pendingZkVerifier()(address)" --rpc-url <NEW_RPC>` returns
-`$VERIFIER` and `cast call <VR_ADDR> "zkVerifierEta()(uint256)" --rpc-url <NEW_RPC>` is ~now + 172800s.
-After step 3 (≥2 days later), `cast call <VR_ADDR> "zkVerifier()(address)" --rpc-url <NEW_RPC>` returns
+**Verify.** After step 2, `cast call <VRC_ADDR> "pendingZkVerifier()(address)" --rpc-url <NEW_RPC>` returns
+`$VERIFIER` and `cast call <VRC_ADDR> "zkVerifierEta()(uint256)" --rpc-url <NEW_RPC>` is ~now + 172800s.
+After step 3 (≥2 days later), `cast call <VRC_ADDR> "zkVerifier()(address)" --rpc-url <NEW_RPC>` returns
 `$VERIFIER` and `pendingZkVerifier()` is back to `0x0`.
 
 **STOP if** `executeZkVerifier()` reverts `timelock` → fewer than 2 days have elapsed since `propose`;
 wait. **STOP if** either call reverts on access control → you are not sending from the registry's
-`DEFAULT_ADMIN`. **STOP if** `proposeZkVerifier` is rejected as an unknown function → you are pointed at a
-**legacy** VR address (the wrong generation); use the current `<VR_ADDR>`.
+`DEFAULT_ADMIN`. **STOP if** `proposeZkVerifier` is rejected as an unknown function → you are pointed at
+a retired/**legacy** registry address (the wrong generation); use the current `<VRC_ADDR>`.
 
-> Note: on **testnet** the ZK verifier was originally wired by **redeploying** the whole VerificationRegistry
-> with the verifier set at construction (to avoid waiting out the timelock on testnet) — see
-> [DEPLOY.md](./DEPLOY.md) §3.2; the later v2 verifier cutover (executed 2026-07-02) did go through the
-> propose → wait → execute timelock above. **In production use the timelock above**, not a redeploy: the redeploy
-> changes the VR address and forces every backend/portal/app to re-point, defeating the point of go-live
-> stability.
+> Note: on **testnet** the consent verifier was wired **at construction** of the registry (the
+> constructor takes the verifier address), so no timelock wait was needed there. **In production use
+> the timelock above**, not a redeploy: a redeploy changes the registry address and forces every
+> backend/portal/app to re-point, defeating the point of go-live stability. (History: the retired
+> owner-revealing registry's v2 verifier cutover, executed 2026-07-02, exercised exactly this
+> propose → wait → execute flow.)
 
 ---
 
@@ -379,8 +363,9 @@ the demo deployer key from `contracts/.env` (that file is **LOCAL-only**; remote
 cast wallet new                                  # prints a fresh private key + address
 cast wallet address --private-key <ADMIN_PRIVATE_KEY>   # confirm the address matches
 # Set in stacks/admin/.env:  ADMIN_PRIVATE_KEY=<key>  ADMIN_ADDRESS=<address>
-# Then FUND it with gas on the target chain (PLASMA on ROAX) and grant it the on-chain admin roles
-# (WHITELIST_ADMIN + DogTagSBT ISSUER_ROLE) — see DEPLOY.md §3.
+# Then FUND it with gas on the target chain (PLASMA on ROAX) and grant it the on-chain governance
+# authorities it needs (IssuerRegistry WHITELIST_ADMIN; DogTagSBTConsent issuer-role administration;
+# factory ownership for createIssuer) - see DEPLOY.md.
 ```
 
 **Verify.** `cast balance <ADMIN_ADDRESS> --rpc-url <NEW_RPC>` is non-zero (it must pay gas to whitelist
@@ -391,8 +376,8 @@ either reuse the demo key in production or fail with out-of-gas. Use a dedicated
 the on-chain admin roles. (On the **live ROAX testnet** that authority is governance signer-1
 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` - Governance Phase-2 (2026-07-05, block 123835) removed the
 `0x119F…` deployer EOA's governance/admin authority, so it can no longer grant whitelists. It is **not
-role-free** - it still holds the legacy Level-A `ISSUER_ROLE` + record-type whitelists, so it can still
-mint and must not be reused as a neutral key.)
+role-free** - it still holds the retired owner-revealing SBT's `ISSUER_ROLE` + record-type whitelists,
+so it can still mint on that retired contract and must not be reused as a neutral key.)
 
 ### 4.3 Edge-lock the admin surface (Caddy)
 
@@ -421,55 +406,53 @@ publicly reachable.
 Same mechanics as the prover-service in [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md) §8 — but in
 production it is **operated by you (the owner), monitored, and behind TLS**.
 
-- **Why it must be the owner's (or owner-trusted) infra:** the prover **sees the witness** (the cleartext
-  record + consent) while it builds the proof. It is therefore **NOT the groomer** — the groomer only ever
-  receives the resulting proof, never the witness. Running it on groomer infra would leak exactly what the
-  ZK path exists to hide.
-- **Who actually needs it:** only **32-bit-only Android** devices (`Build.SUPPORTED_64_BIT_ABIS.isEmpty()`).
-  64-bit iPhone and modern arm64 Android prove **on-device** and never call a prover. If you do not support
-  32-bit Android, you do **not** need to run this at all.
+- **Why it must be the owner's (or owner-trusted) infra:** the prover **sees the witness** (the request
+  carries `ownerSecret` / `ownerAddress`) while it builds the proof. It is therefore **NOT the
+  verifier/groomer** - they only ever receive the resulting proof, never the witness. Running it on
+  verifier infra would leak exactly what the consent path exists to hide. It still hides the owner from
+  the verifier, relayer, chain, and the emitted event.
+- **Who actually needs it:** proving is **on-device**; the `POST /prove-consent` fallback exists for
+  devices that cannot prove on-device (e.g. 32-bit-only Android). The device-side offload wiring lands
+  in a later slice, so today the fallback is exercised against the API directly. If you have no such
+  users, you do **not** need to run this at all.
 - **REMOTE does not start one** (`scripts/remote-up.sh` runs `admin,vet,groomer` only). Production stands
   it up the same way REMOTE describes — but as the owner's monitored, TLS-fronted service.
 
 ```bash
-# Build the prover binary (cargo feature `prover` — orthogonal to the FEATURES=mongo docker build-arg):
+# Build the prover binary (the `prover` cargo feature mounts POST /prove-consent; the stack images'
+# FEATURES=mongo build-arg does not include it):
 cargo build --release -p vet-api --features prover --target-dir target/prover
 
-# Run it with the PRODUCTION circuits dir so the REAL ArkProver loads (must contain the §3 ceremony
-# verification_final.zkey + verification.graph). If CIRCUITS_BUILD_DIR is UNSET it silently loads the
-# StubProver, whose proofs are NOT chain-valid. If it is SET but the real prover fails to load
-# (missing/corrupt zkey or graph), the service is fail-closed and EXITS with a FATAL error instead.
+# Run it with the PRODUCTION circuits dir (must contain the §3 ceremony consent_final.zkey plus
+# consent.r1cs + consent_js/consent.wasm). Loading is lazy and FAIL-CLOSED PER REQUEST: an unset dir,
+# missing/corrupt artifacts, or a zkey hash mismatch make /prove-consent return an error instead of a
+# proof - there is no stub or placeholder fallback.
 #
-# The prover ENFORCES a pinned zkey sha256 (audit M4): its hardcoded default is the TESTNET hash, so a
-# production ceremony zkey would be REJECTED at load (hash mismatch -> FATAL) unless you tell it the new
-# hash. Set EXPECTED_ZKEY_SHA256 to your §3 ceremony zkey's sha256 (the value your §3 ceremony recorded;
-# also re-vendored into the apps in §2.4). This is a pure config swap, not a code change.
-#
-# WHICH artifact set it loads is version-keyed (PROTOCOL_VERSION). Leave it UNSET: one version exists
-# today ("dogtag-levela/1" = the Level-A set), and unset means exactly that. A version this build cannot
-# prove FATALs at boot rather than falling back. EXPECTED_ZKEY_SHA256 overrides the served version's pin.
-CIRCUITS_BUILD_DIR=<path to circuits/build with the ceremony zkey+graph> \
-EXPECTED_ZKEY_SHA256=<sha256 of the §3 ceremony verification_final.zkey> \
+# The prover ENFORCES a pinned zkey sha256: the built-in pin is the TESTNET consent hash, so the §3
+# ceremony zkey would be REJECTED (hash mismatch) unless you tell it the new hash. Set
+# CONSENT_EXPECTED_ZKEY_SHA256 to your §3 ceremony zkey's sha256 (the value the ceremony recorded;
+# the same key is re-vendored into the apps in §2.4). This is a pure config swap, not a code change.
+CIRCUITS_BUILD_DIR=<path to circuits/build with the ceremony consent artifacts> \
+CONSENT_EXPECTED_ZKEY_SHA256=<sha256 of the §3 ceremony consent_final.zkey> \
 ROAX_RPC=<NEW_RPC> \
 PORT=<owner-chosen> \
   target/prover/release/vet-api
 ```
 
-Put it behind **TLS** (its own hostname / Caddy) and **monitor** it; mounts `POST /prove-verification`
-(unauthenticated by design — it returns only a proof, not data). 32-bit-Android users point at it via the
-app's `prover_api` override (Android SharedPrefs) — see [MOBILE_BUILD.md](./MOBILE_BUILD.md) and
-[TUNNELING.md](./TUNNELING.md). The app's baked `DEFAULT_PROVER_API` is a dead tunnel, so those users MUST
-set `prover_api` to your live prover host.
+Put it behind **TLS** (its own hostname / Caddy) and **monitor** it; it mounts `POST /prove-consent`
+(unauthenticated by design - it returns only a proof, not data). See
+[TUNNELING.md](./TUNNELING.md) for giving it a reachable HTTPS URL and
+[MOBILE_BUILD.md](./MOBILE_BUILD.md) for the app's endpoint model.
 
-**Verify.** `CIRCUITS_BUILD_DIR` points at a dir containing the **ceremony** `verification_final.zkey`
-(matching the §3.1 pinned sha256) + `verification.graph`, and `EXPECTED_ZKEY_SHA256` is set to that same
-ceremony sha256 (so the prover's pin check passes instead of fail-closing on the testnet default). A proof
-produced by this service is accepted by `recordVerificationZK` on the new chain (i.e. it was built by
-ArkProver, not StubProver).
+**Verify.** `CIRCUITS_BUILD_DIR` points at a dir containing the **ceremony** `consent_final.zkey`
+(matching the §3.1 pinned sha256) + `consent.r1cs` + `consent_js/consent.wasm`, and
+`CONSENT_EXPECTED_ZKEY_SHA256` is set to that same ceremony sha256 (so the pin check passes instead of
+fail-closing on the testnet default). A proof produced by this service is accepted by
+`recordVerificationZK` on the new chain.
 
-**STOP if** `CIRCUITS_BUILD_DIR` is unset or points at the **testnet** zkey → StubProver / forgeable
-proofs, or if the service FATALs on a zkey-hash mismatch → set `EXPECTED_ZKEY_SHA256` to the ceremony
-hash. Only run with the ceremony key from §3.
+**STOP if** `/prove-consent` fails closed with a prover-unavailable or hash-mismatch error → the dir is
+unset/incomplete, or `CONSENT_EXPECTED_ZKEY_SHA256` was not set to the ceremony hash. **STOP if** the
+service still serves the **testnet** zkey hash → forgeable key; only run with the ceremony key from §3.
 
 ---
 
@@ -494,8 +477,9 @@ into the unsigned-tx + confirm check on the vet stack) before relying on wallet 
 
 Run this last, after §§2–5. Every box must pass before real users.
 
-- [ ] **Ceremony done + verifier wired (§3).** `cast call <VR_ADDR> "zkVerifier()(address)"` returns the
-      **ceremony** verifier; apps + prover serve the **ceremony** zkey sha256 (not the testnet hash).
+- [ ] **Ceremony done + verifier wired (§3).** `cast call <VRC_ADDR> "zkVerifier()(address)"` returns the
+      **ceremony** `Groth16VerifierConsent`; apps + prover serve the **ceremony** consent-zkey sha256
+      (not the testnet hash).
 - [ ] **Secrets rotated (§4).** No `operator` / `admin` / `dev-central-hmac-secret` defaults remain;
       `CENTRAL_HMAC_SECRET` identical across all three stacks; `ADMIN_PRIVATE_KEY` is a **dedicated funded
       EOA** (not the demo deployer) with non-zero balance.
@@ -505,18 +489,18 @@ Run this last, after §§2–5. Every box must pass before real users.
 - [ ] **DNS-TXT published.** Issuer `dogtag-verify=<lowercased documentStore addr>` resolves for every
       business; the phone-side **groomer** TXT resolves for the EXPORT host (REMOTE §4).
 - [ ] **Apps rebuilt for the prod chain (§2.4).** Both `roax.json` files updated from
-      `contracts/deployments/<chain>.json`, the production zkey re-vendored, both apps rebuilt + reinstalled;
-      a phone round-trip lands on the **new** chain.
-- [ ] **Prover reachable if you have 32-bit users (§5).** Owner-run, TLS-fronted, real ArkProver
-      (`CIRCUITS_BUILD_DIR` set to the ceremony build); 32-bit Android `prover_api` points at it. (Skip if
-      no 32-bit Android.)
+      `contracts/deployments/<chain>.json`, the production consent proving assets re-vendored, both apps
+      rebuilt + reinstalled; a phone round-trip lands on the **new** chain.
+- [ ] **Prover reachable if you run the server-prove fallback (§5).** Owner-run, TLS-fronted, real
+      consent prover (`CIRCUITS_BUILD_DIR` at the ceremony build; `CONSENT_EXPECTED_ZKEY_SHA256` set to
+      the ceremony hash). (Skip if you do not offer the fallback.)
 - [ ] **Chain sanity (§2.5).** `cast chain-id --rpc-url <NEW_RPC>` == `<NEW_CHAIN_ID>`; portals show the
       new addresses; a fresh issue → verify round-trip succeeds.
 
 **Final STOP gates** (any failure blocks go-live):
 
 1. **STOP** if `zkVerifier()` is still the testnet verifier or the apps/prover serve the testnet zkey hash
-   → the ZK path is forgeable (§3).
+   → the consent path is forgeable (§3).
 2. **STOP** if any demo secret survives, or `ADMIN_PRIVATE_KEY` is the demo deployer / unfunded (§4).
 3. **STOP** if `/api/admin/*` is reachable from the public internet (§4.3).
 4. **STOP** if Mongo is published to the host or has no backups (custody loss is unrecoverable).
@@ -536,10 +520,9 @@ Run this last, after §§2–5. Every box must pass before real users.
 - **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)** — the base bring-up this doc deltas over (backend
   `.env` + portal `VITE_*` tables; prover-service §8).
 - **[DEPLOYMENT.md](./DEPLOYMENT.md)** — index, Address Book, service/port tables, tier decision-guide.
-- **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** — the multi-party ZK trusted-setup ceremony, step by step
-  (expanded captain-fill-in runbook; **[CEREMONY.md](./CEREMONY.md)** is the concise version).
-- **[DEPLOY.md](./DEPLOY.md)** — contract deploy runbook (writes `contracts/deployments/<chain>.json`;
-  §3.2 verifier wiring).
+- **[CEREMONY.md](./CEREMONY.md)** - the live consent trusted-setup ceremony guide
+  (**[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** is the expanded captain-fill-in runbook).
+- **[DEPLOY.md](./DEPLOY.md)** - contract deploy runbook (writes `contracts/deployments/<chain>.json`).
 - **[MOBILE_BUILD.md](./MOBILE_BUILD.md)** — build + install the iOS/Android apps and rebuild on chain swap.
 - **[TUNNELING.md](./TUNNELING.md)** — prover/host reachability and the phone networking model.
 - **[DPIA.md](./DPIA.md)** — Data Protection Impact Assessment (privacy + erasure obligations).

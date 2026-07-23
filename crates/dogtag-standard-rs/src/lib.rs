@@ -26,8 +26,6 @@ pub use merkle::{build_merkle, merkle_proof, process_proof, verify_inclusion, Pr
 pub use poseidon::{poseidon as poseidon_hash, DS_BYTES, DS_LEAF, DS_NODE, DS_NULLIFIER};
 pub use types::{DogTagError, TypeTag, TypedScalar};
 
-pub mod consent;
-
 // EdDSA-BabyJubjub consent SIGNING (Phase 6 — mobile crypto). Additive: a self-contained
 // circomlibjs-compatible BLAKE-512 + BabyJubjub Edwards curve + signer over the existing Poseidon.
 // Does NOT modify poseidon/field/leaf/merkle/encode.
@@ -51,23 +49,18 @@ pub mod ffi;
 // here (not the server-only prover crate) because the mobile app links this crate; additive, no ark.
 pub mod discovery;
 
-// Workstream A — circuit-input ASSEMBLY (prover-independent). Gated behind the lightweight
+// Workstream A — CONSENT circuit-input ASSEMBLY (prover-independent). Gated behind the lightweight
 // `assemble` feature: it pulls NO circom-prover (ark-0.5) deps, only the SDK's own field/merkle, so
-// the 64-bit backend (vet-api, on ark-0.6 dogtag-prover-rs) can reuse the SAME 19-input assembly to
-// drive the server proving API. Only decimal strings cross the boundary — no ark-version clash. The
-// full on-device `prover` feature implies `assemble` (the on-device prover reuses this assembly).
-#[cfg(feature = "assemble")]
-pub mod prover_assemble;
-
-// Workstream A — Level-B CONSENT circuit-input assembly (M7 P0). Same lightweight `assemble` gating
-// and ark-disjoint discipline as `prover_assemble`, but for the frozen `consent.circom` seven-signal
-// public layout; built from the circuit, NOT the stale Level-A `consent.rs` (ZK cross-check §2).
+// the 64-bit backend (vet-api, on ark-0.6 dogtag-prover-rs) can reuse the SAME assembly to drive
+// the server proving API for the frozen `consent.circom` seven-signal public layout. Only decimal
+// strings cross the boundary — no ark-version clash. The full on-device `prover` feature implies
+// `assemble` (the on-device prover reuses this assembly).
 #[cfg(feature = "assemble")]
 pub mod consent_assemble;
 
 // Workstream A — on-device Groth16 prover (mopro/circom-prover + circom-witnesscalc graph witness).
 // Gated behind the OFF-by-default `prover` feature so default workspace builds never pull the heavy
-// ark-0.5 deps. It layers the circom-prover proving on top of `prover_assemble`'s assembly.
+// ark-0.5 deps. It layers the circom-prover proving on top of `consent_assemble`'s assembly.
 #[cfg(feature = "prover")]
 pub mod prover_ffi;
 

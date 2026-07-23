@@ -40,7 +40,8 @@ REMOTE **is NOT**:
 - **A production chain.** It still runs on **ROAX testnet (135)** with the **same addresses**. Moving
   to another / production chain is Tier 3 → **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)**.
 - **A complete proving setup by default.** `scripts/remote-up.sh` starts **no prover-service**.
-  32-bit-only Android users need one, which **you run yourself** — see **§8**.
+  Phones prove on-device; the optional `/prove-consent` server-prove fallback is a service **you run
+  yourself** - see **§8**.
 
 ### LOCAL vs REMOTE at a glance
 
@@ -56,7 +57,7 @@ The single switch is **`VITE_DEMO_MODE`** (portal build-time flag): set = demo, 
 | DNS legitimacy | `DNS_CHECK=skip` (`.local`); phone groomer-DNS skipped | `DNS_CHECK=doh` + real `dogtag-verify=` TXT (issuer **and** EXPORT groomer, §4) |
 | `/admin/*` exposure | On the main listener (single host) | **Loopback-isolated** + proxy-denied publicly |
 | Confirmations | `CONFIRMATIONS=1` | `CONFIRMATIONS=2` |
-| Prover-service | Started on `:41875` (32-bit-Android fallback) | **Not started** — run it yourself (§8) |
+| Prover-service | Started on `:41875` (consent server-prove fallback) | **Not started** - run it yourself (§8) |
 | Chain | ROAX testnet (135) | **Same** ROAX testnet (135), same addresses |
 
 ---
@@ -88,7 +89,7 @@ the `docker compose` subcommand throughout).
 
 You do **not** need the Rust toolchain, foundry, or `circuits/build` for the base REMOTE bring-up — the
 api images are built inside Docker. You **only** need the Rust toolchain (or a prover image) **if you
-run a prover-service** for 32-bit Android (§8).
+run the consent server-prove fallback** (§8).
 
 ---
 
@@ -100,7 +101,7 @@ run a prover-service** for 32-bit Android (§8).
   (TLS). Custody (the issuer signer) lives in that business's Mongo and never leaves the box.
 - **One central / admin stack (you host):** `stacks/admin` — registry/discovery, issuer whitelisting,
   mobile API, appointment source-of-truth, erasure. It holds the **admin protocol signer** that
-  broadcasts `whitelistFor` / SBT `mint`.
+  broadcasts `whitelistFor` and administers issuer roles + factory governance (it does not issue tags).
 - **Contracts are reused as-is.** All stacks point at the **live ROAX addresses** — **no redeploy**.
   Don't transcribe addresses into your `.env` from memory; copy them from
   [`contracts/deployments/roax.json`](../contracts/deployments/roax.json) (the `.env.example` files are
@@ -163,16 +164,14 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `ADMIN_PORT` | all | loopback admin listener | default **PORT+1** | leave default (commented) |
 | `DEPLOYMENT_URL` | all | public base; **QR host** (vet/groomer); JWT issuer | LAN-IP via `*_PUBLIC_URL` | `https://<DOMAIN>` |
 | `DEPLOYMENT_DOMAIN` | vet, groomer | **NO-OP — not read by code; do NOT rely on it** | unset | use `ISSUER_DOMAIN` instead |
-| `ISSUER_NAME` | all | display name | "Example Veterinary Clinic" / "Example Grooming Salon" / "DogTag Central" | real name |
-| `ISSUER_DOMAIN` | all | **the real DNS-TXT issuer-domain binding** | `*.local` | your real domain |
+| `ISSUER_NAME` | vet, groomer | display name | "Example Veterinary Clinic" / "Example Grooming Salon" | real name |
+| `ISSUER_DOMAIN` | vet, groomer | **the real DNS-TXT issuer-domain binding** | `*.local` | your real domain |
 | `ISSUER_REGISTRY_ADDR` | all | IssuerRegistry | (roax.json, pre-filled) | per chain |
-| `VERIFICATION_REGISTRY_ADDR` | vet, groomer, admin | **current** VR (`0x4E2f0996…`; `0x8bA836eCe9…` is `_4arg_legacy`). admin reads it as the M7 provenance routing key (§4.2) stamped into pet/credential rows, not as a relay target. Since M7 P4 vet also publishes it in the resolve GETs' `unverifiedClaims` block, where a validating app checks it against the dogtag discovery anchor — it must stay COHERENT with the hardcoded `protocolVersion` (Level-A today), or every such app fails closed with `RegistryMismatch` | (roax.json, pre-filled) | current, **not** legacy |
-| `CONSENT_KEY_REGISTRY_ADDR` | vet, groomer | gasless `bindConsentKeyFor` (`0xA74DDe4a9b…`) | (roax.json, pre-filled) | current, **not** legacy |
-| `SBT_ADDR` | admin | DogTagSBT | (roax.json, pre-filled) | per chain |
-| `PROFILE_DOCUMENT_STORE` | admin | SBT mint target | `=SBT_ADDR` | usually `=SBT_ADDR` |
-| `SBT_CONSENT_ADDR` | vet, groomer | **Level-B** `DogTagSBTConsent` - the owner-blind `mintCustodial` target for `POST /profiles/issue/custodial-bind`. Distinct from `SBT_ADDR` (Level-A `DogTagSBT`), NOT an overload: both run side by side through the migration. The vet signer must hold `ISSUER_ROLE` on it | unset (Level-B not wired) | the deployed `DogTagSBTConsent` (`0x96Cba458…` on ROAX); leave unset to keep Level-B off |
-| `PROFILE_ISSUER_ADDR` | vet, groomer | **Level-B** `DogTagIssuer` clone that profile roots are anchored into via `issue(R)`, so `rootIssuer[R]` resolves and the tag is revocable. **NOT `PROFILE_DOCUMENT_STORE`** - that defaults to the SBT because under Level-A the SBT doubles as the DOG_PROFILE document store and `issue` is never called on it, so pointing this at the SBT **reverts**. The vet signer must be whitelisted for the clone's recordType | unset (Level-B not wired) | a real **factory-deployed** clone, never the SBT |
-| `VERIFICATION_REGISTRY_CONSENT_ADDR` | vet, groomer | **Level-B** `VerificationRegistryConsent` - the owner-hidden relay target for `POST /verify/consent/levelb`. Distinct from `VERIFICATION_REGISTRY_ADDR` (Level-A), NOT an overload: both run side by side through the migration and their `recordVerificationZK` calls take **different selectors**, so pointing either var at the other's registry encodes for the wrong one and reverts empty. The relayer (custody account 0) must be whitelisted for the purpose it submits | unset (Level-B verify not wired) | the deployed `VerificationRegistryConsent` (`0xb9B313C1…` on ROAX); leave unset to keep Level-B verify off |
+| `VERIFICATION_REGISTRY_CONSENT_ADDR` | vet, groomer | `VerificationRegistryConsent` - the owner-hidden relay target for `POST /v1/verify/consent`. The relayer (custody account 0) must be whitelisted for the purpose it submits. Unset or malformed → only that route fails closed with **503** | (roax.json, pre-filled) | per chain; **never** a retired/`_legacy` generation |
+| `SBT_CONSENT_ADDR` | vet, groomer | `DogTagSBTConsent` - the owner-blind `mintCustodial` target for `POST /profiles/issue/custodial-bind`, the **sole profile issuance path**. The signer must hold `ISSUER_ROLE` on it. Required **as a pair** with `PROFILE_ISSUER_ADDR` | (roax.json) pre-filled in vet; commented out in groomer (a pure verifier leaves the pair unset) | per chain |
+| `PROFILE_ISSUER_ADDR` | vet, groomer | a real **factory-deployed** `DogTagIssuer` clone that profile roots are anchored into via `issue(R)`, so `rootIssuer[R]` resolves and the tag is revocable. **Never the SBT** - `issue(R)` sent to the SBT reverts. The signer must be whitelisted for the clone's recordType | unset | a real factory-deployed clone, never the SBT |
+| `VERIFICATION_REGISTRY_ADDR` | admin | the **same** owner-hidden `VerificationRegistryConsent`, read by admin as the protocol default stamped into unstamped credential imports (provenance routing), not as a relay target | (roax.json, pre-filled) | per chain |
+| `SBT_ADDR` | admin | `DogTagSBTConsent` as the admin governance target (`ISSUER_ROLE` administration only; the admin stack does not issue tags) | (roax.json, pre-filled) | per chain |
 | `FACTORY_ADDR` | admin | DogTagIssuerFactory — `createIssuer`/`predictIssuer` target + the Ownable owner whose key gates deploys | (roax.json, pre-filled) | per chain |
 | `VACCINATION_ISSUER_ADDR` | vet, groomer | per-recordType clone | `0x0…0` (set to the real clone for an issuer) | `0x0…0` for pure verifiers |
 | `ADMIN_SIGNER_INDEX` | admin | HD signer index | `0` | `0` |
@@ -183,36 +182,36 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `OPERATOR_PASSWORD` | vet, groomer | operator login (`POST /login`) | `operator` | **secret** → `openssl rand -hex 32` |
 | `ADMIN_PASSWORD` | all | admin-session login (custody/console) | `admin` | **secret** → `openssl rand -hex 32` |
 | `CENTRAL_HMAC_SECRET` | all | central↔business HMAC; **identical across all stacks** | `dev-central-hmac-secret` | **secret** → `openssl rand -hex 32` (same value everywhere) |
-| `ADMIN_PRIVATE_KEY` | admin | on-chain signer (`whitelistFor` / SBT `mint` / factory `createIssuer`); its holdership of each authority is what the `GovernanceAction` dispatcher checks. Since Governance Phase-2 (2026-07-05, block 123835) this MUST be **governance signer-1**. The old deployer EOA `0x119F…` lost governance/admin authority but retains legacy Level-A issuer/whitelist capabilities and is not a neutral key | from `contracts/.env` (`GOVERNANCE_PRIVATE_KEY`) | **secret** - dedicated **funded** signer-1 key |
+| `ADMIN_PRIVATE_KEY` | admin | on-chain signer (`whitelistFor` / issuer-role administration / factory `createIssuer`); its holdership of each authority is what the `GovernanceAction` dispatcher checks. Since Governance Phase-2 (2026-07-05, block 123835) this MUST be **governance signer-1**. The old deployer EOA `0x119F…` lost governance/admin authority but retains the retired owner-revealing SBT's issuer/whitelist capabilities and is not a neutral key | from `contracts/.env` (`GOVERNANCE_PRIVATE_KEY`) | **secret** - dedicated **funded** signer-1 key |
 | `ADMIN_ADDRESS` | admin | address of `ADMIN_PRIVATE_KEY` - expected governance signer-1 `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | from `contracts/.env` | derive from the key |
 | `BUSINESS_ID` | vet, groomer | central registry id | `biz-vet-local` / `biz-groomer-local` | real id |
 | `BUSINESS_TYPE` | groomer | run `vet-api` as groomer | `groomer` | `groomer` |
 | `CENTRAL_BASE_URL` | vet, groomer | central api base for HMAC events | `http://localhost:39742` | `https://api.<DOMAIN>` (your admin stack) |
-| `CIRCUITS_BUILD_DIR` | **prover only** | load real ArkProver vs StubProver | `circuits/build` | set **only** on the prover-service (§8) |
-| `EXPECTED_ZKEY_SHA256` | **prover only** | override the pinned testnet zkey hash of the version being served | unset (enforce testnet hash) | leave **unset** with the bundled testnet zkey; set to the ceremony zkey's sha256 only if you ship a different key (§8) |
-| `PROTOCOL_VERSION` | **prover only** | which version-keyed artifact set the real prover loads | unset (the current Level-A set, `dogtag-levela/1`) | leave **unset** - one version exists today; an unknown value is fail-closed at boot (FATAL + exit) |
+| `INDEXER_API_BASE` + `INDEXER_SCOPED_TOKEN` (business) / `INDEXER_OVERSIGHT_TOKEN` (admin) | all | optional oversight-indexer wiring (`stacks/indexer`). Unset → the business `/trace/*` / admin `/v1/admin/activity*` surfaces return **503** while the rest of the stack runs | unset | optional |
+| `CIRCUITS_BUILD_DIR` | **prover only** | directory holding the consent proving artifacts (`consent_final.zkey`, `consent.r1cs`, `consent_js/consent.wasm`) so `POST /prove-consent` can prove. Unset → the route fails closed per request | `circuits/build` | set **only** on the prover-service (§8) |
+| `CONSENT_EXPECTED_ZKEY_SHA256` | **prover only** | override of the pinned consent-zkey sha256 | unset (enforce the pinned testnet hash) | leave **unset** with the bundled testnet zkey; set to the ceremony zkey's sha256 only if you ship a different key (§8) |
 | `DOGTAG_MANIFEST_SIGNING_KEY` | vet | signed-manifest fallback (M7 §5.1): a 32-byte ed25519 seed (64 hex). When set, serves `GET /protocol/manifest?version=<v>`, the dogtag-signed discovery manifest an app verifies OFFLINE (a cache/fallback for the on-chain `ProtocolRegistry`; on conflict on-chain wins) | unset (route → 503) | optional; leave unset to disable. If enabled it is a **secret** (the ed25519 seed whose paired public key apps pin); NEVER commit a real value |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_CALENDAR_ID` | vet, groomer | Phase-7 calendar OAuth | unset / `primary` | optional |
 
 > **`SBT_CONSENT_ADDR` and `PROFILE_ISSUER_ADDR` are required together** - both are needed for
-> `POST /profiles/issue/custodial-bind` (Level-B custodial issuance).
+> `POST /profiles/issue/custodial-bind` (owner-hidden custodial issuance, the sole profile issuance path).
 > If either is unset or malformed, that one route fails closed with **503** *before* it consumes the
 > one-time bind token, so a half-wired stack never burns an operator's QR code.
-> Everything else in the vet stack, including all Level-A issuance, is unaffected.
+> Everything else in the stack is unaffected.
 > Worth knowing when diagnosing: a 503 on only that route means exactly this pair, and the addresses
 > are shape-checked, so a typo is refused rather than silently coerced to `0x0…0`.
 
-> **`VERIFICATION_REGISTRY_CONSENT_ADDR` is INDEPENDENT of that pair** - it wires the Level-B *verify*
-> path (`POST /verify/consent/levelb`), not issuance, so a stack may set either, both, or neither.
+> **`VERIFICATION_REGISTRY_CONSENT_ADDR` is INDEPENDENT of that pair** - it wires the owner-hidden
+> *verify* path (`POST /v1/verify/consent`), not issuance.
 > Unset or malformed → only that one route fails closed with **503**, checked *before* custody or the
-> chain is touched; all Level-A verification and the whole Level-A trail are unaffected.
+> chain is touched.
 > Same shape-check discipline: a typo is refused, never coerced to `0x0…0` (a tx to a codeless address
 > would otherwise SUCCEED and the mistake would only surface after the gas was spent).
 
-> **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`,
-> `CONSENT_KEY_REGISTRY_ADDR`, `BUSINESS_TYPE`, `CENTRAL_BASE_URL`, or `DEPLOYMENT_DOMAIN` — it is the
-> central stack, not a business issuer. (It **does** read `VERIFICATION_REGISTRY_ADDR` since M7 — the
-> provenance routing key stamped into pet/credential rows.)
+> **The admin stack has no** `OPERATOR_PASSWORD`, `VACCINATION_ISSUER_ADDR`, `ISSUER_NAME` /
+> `ISSUER_DOMAIN`, `BUSINESS_TYPE`, `CENTRAL_BASE_URL`, or `DEPLOYMENT_DOMAIN` - it is the central
+> stack, not a business issuer. (It **does** read `VERIFICATION_REGISTRY_ADDR` and `SBT_ADDR` - both
+> pointing at the owner-hidden pair - as its provenance-routing and governance targets.)
 
 ### Portal `VITE_` keys (canonical — owned by this doc)
 
@@ -228,7 +227,7 @@ SPA bundle at `docker compose build`).
 | `VITE_DEPLOYMENT_URL` | QR caption URL | localhost portal port | `https://<DOMAIN>` |
 | `VITE_ROAX_RPC` | read-only chain RPC | `https://devrpc.roax.net` | per chain |
 | `VITE_DOGTAG_ISSUER_ADDR` | per-recordType issuer for `isValid` polling | empty | optional |
-| `VITE_ISSUER_REGISTRY_ADDR` / `VITE_DOGTAG_SBT_ADDR` / `VITE_VERIFICATION_REGISTRY_ADDR` / `VITE_POSEIDON6_ADDR` | contract addrs | (roax.json, pre-filled) | per chain |
+| `VITE_ISSUER_REGISTRY_ADDR` | IssuerRegistry (whitelist reads) | (roax.json, pre-filled) | per chain |
 
 > **Known template typo:** `stacks/vet/web/.env.example` ships `VITE_CENTRAL_API_BASE=http://localhost:41870`,
 > which is **wrong** — the central (admin) api listens on **39742**. The correct value is
@@ -498,9 +497,9 @@ Replace: `<GROOMER_RELAYER>` = the groomer's **relayer wallet** address (the add
 in the EXPORT QR). For example, a groomer whose relayer is `0x<GROOMER_RELAYER>` publishes on its `<host>`
 domain `dogtag-verify=0x<groomer_relayer_lowercased>`.
 
-> **Note — do NOT use a contract address here.** The relayer is a **wallet (EOA)**, not a registry
-> contract. In particular it is **not** the `ConsentKeyRegistry` (`0xA74DDe4a…`); using a registry
-> address as the "relayer" is wrong. Use the groomer's actual relayer wallet address.
+> **Note - do NOT use a contract address here.** The relayer is a **wallet (EOA)**, not a contract.
+> Publishing a registry/contract address as the "relayer" is wrong; use the groomer's actual relayer
+> wallet address.
 
 The phone resolves the QR host's domain via Cloudflare DoH and requires a TXT **containing**
 `dogtag-verify=<groomerAddr>`; if it's absent, the app **hard-stops and discloses nothing**. This is
@@ -514,17 +513,24 @@ enforced for **real domains** (remote/prod) and **skipped for local hosts** (IP 
 ## 8. Run the prover-service yourself (the gap)
 
 `scripts/remote-up.sh` starts **STACKS = admin, vet, groomer only** — it stands up **NO
-prover-service**. Most phones don't need one: **64-bit iOS and modern arm64 Android prove on-device**.
-But **32-bit-only Android** (`Build.SUPPORTED_64_BIT_ABIS.isEmpty()`, `ScanScreen.kt`) **cannot** prove
-on-device and **must** offload to a prover-service. If any of your users are on 32-bit Android, **you
-run a prover yourself**. The prover **sees the witness** (the raw record + consent), so it is
+prover-service**.
+Phones prove **on-device**: the app needs the consent proving pair `consent_final.zkey` +
+`consent.graph` bundled (see **[MOBILE_BUILD.md](./MOBILE_BUILD.md)**).
+The backend `POST /prove-consent` route is the **independent server-prove fallback** for devices that
+cannot prove on-device (e.g. 32-bit-only Android): the owner's device assembles the circuit input
+locally and offloads only the heavy Groth16 proving.
+The route is live server-side; the device-side offload wiring lands in a later slice, so today the
+fallback is exercised against the API directly.
+The prover **sees the witness** (the request carries `ownerSecret` / `ownerAddress`), so it is
 **owner-trusted only** and **unauthenticated by design** — never expose it as a shared/public service.
+It still hides the owner from the verifier, relayer, chain, and the emitted event.
 
-The prover is the `vet-api` binary built with the **`prover` cargo feature** (a `POST /prove-verification`
-endpoint). Note: the `prover` **cargo feature** is **orthogonal** to the `FEATURES=mongo` **docker
-build-arg** — don't confuse them.
+The prover is the `vet-api` binary built with the **`prover` cargo feature** (which mounts
+`POST /prove-consent`).
+The stack images build with the `FEATURES=mongo` build-arg (a cargo feature list that does **not**
+include `prover`), so a normal stack api never serves the route.
 
-**Build.** Either build the binary directly, or bake a `FEATURES=prover` image:
+**Build.**
 
 ```bash
 # Build the prover binary (separate target dir so it doesn't clobber the normal build):
@@ -532,49 +538,43 @@ cargo build --release -p vet-api --features prover --target-dir target/prover
 #   -> target/prover/release/vet-api
 ```
 
-**Run.** Set **`CIRCUITS_BUILD_DIR`** to a directory holding **`verification_final.zkey`** +
-**`verification.graph`** so the real **ArkProver** loads. If `CIRCUITS_BUILD_DIR` is unset, the binary
-**silently loads `StubProver`**, which emits placeholder proofs that are **NOT chain-valid**. If it is
-**set but the real prover fails to load** (missing/corrupt zkey or graph, **or a zkey whose sha256 does
-not match the pinned hash** — audit M4), the process is **fail-closed** and **exits with a FATAL error**
-rather than degrading to `StubProver` — so a misconfigured prover-service never silently ships forgeable
-proofs. REMOTE ships the **bundled testnet zkey**, which matches the crate's pinned hash, so you leave
-`EXPECTED_ZKEY_SHA256` unset; set it to the zkey's sha256 only if you swap in a different proving key.
+**Run.** Set **`CIRCUITS_BUILD_DIR`** to a directory holding the consent proving artifacts -
+**`consent_final.zkey`**, **`consent.r1cs`**, **`consent_js/consent.wasm`** (the committed
+`circuits/build` has all three).
+Loading is lazy (deferred to the first `/prove-consent` request) and **fail-closed per request**: if
+the directory is unset, an artifact is missing/corrupt, or the zkey's sha256 does not match the pinned
+hash, the route returns an error instead of a proof - there is no stub or placeholder fallback, so a
+misconfigured prover-service can never ship a bogus proof.
+`CONSENT_EXPECTED_ZKEY_SHA256` overrides the pinned hash - leave it **unset** with the bundled testnet
+zkey; set it only if you ship a different proving key (e.g. a production ceremony output).
 Also pass the usual chain env (`ROAX_RPC` and the `*_ADDR` contract addresses).
 
 ```bash
 CIRCUITS_BUILD_DIR=/circuits/build \
 ROAX_RPC=https://devrpc.roax.net \
 CHAIN_ID=135 \
-VERIFICATION_REGISTRY_ADDR=<current VerificationRegistry — see contracts/deployments/roax.json> \
 PORT=41875 \
   target/prover/release/vet-api
-#   mount /circuits/build with verification_final.zkey (~65 MB) + verification.graph (~3 MB)
+#   mount /circuits/build with consent_final.zkey + consent.r1cs + consent_js/consent.wasm
 ```
 
-> **`CIRCUITS_BUILD_DIR` IS the production proving path for 32-bit Android.** (An earlier version of
-> this doc wrongly called it "not the production proving path" — that was about the e2e test oracle.
-> With a live prover-service it is exactly how 32-bit phones obtain chain-valid proofs.)
-
 **Expose it behind its own TLS host** (a separate domain with its own Caddy, or a tunnel) — do **not**
-co-locate it on a business/admin domain. Then point the phone's **`prover_api`** override at it. The
-host comes from the in-app `prover_api` setting (Android only), **not** from any QR. See
-**[MOBILE_BUILD.md](./MOBILE_BUILD.md)** (the `prover_api` setting) and **[TUNNELING.md](./TUNNELING.md)**
-(giving the prover a reachable HTTPS URL).
+co-locate it on a business/admin domain. See **[TUNNELING.md](./TUNNELING.md)** (giving the prover a
+reachable HTTPS URL) and **[MOBILE_BUILD.md](./MOBILE_BUILD.md)** (the app's endpoint model).
 
-**Verify.** The endpoint answers (it's unauthenticated):
+**Verify.** The service answers (the prover route itself is unauthenticated):
 
 ```bash
 curl -fsS https://<PROVER_DOMAIN>/health     # {"status":"ok"}
 ```
 
-**STOP if** 32-bit-Android proofs are rejected on-chain:
-- **Symptom:** the groomer's verification reverts / `isValid` stays false for proofs from a 32-bit phone.
-- **Cause:** the prover loaded **`StubProver`** (placeholder proofs) because `CIRCUITS_BUILD_DIR` was
-  **unset**. (If it was **set** but the zkey/graph were missing/corrupt, the prover-service would have
-  **refused to boot** — see the FATAL log — rather than degrade to `StubProver`.)
-- **Fix:** set `CIRCUITS_BUILD_DIR` to a dir containing `verification_final.zkey` + `verification.graph`
-  and restart the prover.
+**STOP if** `/prove-consent` answers with a prover-unavailable error:
+- **Symptom:** the route returns an error naming the prover as unavailable, instead of a proof.
+- **Cause:** `CIRCUITS_BUILD_DIR` is unset, an artifact is missing/corrupt, or the zkey's sha256 does
+  not match the pin (the load error is cached until restart).
+- **Fix:** point `CIRCUITS_BUILD_DIR` at a dir containing `consent_final.zkey` + `consent.r1cs` +
+  `consent_js/consent.wasm` (set `CONSENT_EXPECTED_ZKEY_SHA256` only for a non-bundled key), then
+  restart the prover.
 
 ---
 
@@ -587,8 +587,7 @@ compose set each business's **`DEPLOYMENT_URL=https://<DOMAIN>`**, which becomes
 
 Because REMOTE stays on **ROAX testnet with the same contract addresses**, **no app rebuild is needed**
 to point phones at a REMOTE deployment — the bundled `roax.json` (addresses + chainId) is unchanged. You
-only rebuild the apps when you **change chains/addresses** (Tier 3) or set a new baked default. The one
-manual per-device setting that is **not** in any QR is `prover_api` (32-bit Android only, §8). Full
+only rebuild the apps when you **change chains/addresses** (Tier 3) or set a new baked default. Full
 build + install + endpoint model: **[MOBILE_BUILD.md](./MOBILE_BUILD.md)**.
 
 ---
@@ -620,14 +619,15 @@ docker compose -f stacks/vet/docker-compose.yml exec -T mongo \
 
 ## 11. Going to PRODUCTION
 
-REMOTE stays on **ROAX testnet** with the **single-operator testnet ZK key** — fine for testnet, **NOT**
-for a real deployment. Going live (a different / production chain, a **multi-party trusted-setup
-ceremony**, the verifier wired via the registry's **2-day timelock**, edge hardening, and rebuilding the
-mobile apps for the new addresses) is **Tier 3**:
+REMOTE stays on **ROAX testnet** with the **single-operator testnet consent-ceremony key** - fine for
+testnet, **NOT** for a real deployment. Going live (a different / production chain, a **multi-party
+trusted-setup ceremony**, the verifier wired via the registry's **2-day timelock**, edge hardening, and
+rebuilding the mobile apps for the new addresses) is **Tier 3**:
 
 ➡ **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** — the go-live delta over REMOTE (chain-swap
-checklist, ceremony + timelock runbook). The ceremony itself is **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)**
-(concise version: **[CEREMONY.md](./CEREMONY.md)**).
+checklist, ceremony + timelock runbook). The ceremony itself is **[CEREMONY.md](./CEREMONY.md)** (the
+live consent-ceremony guide; **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** is the expanded
+captain-fill-in runbook).
 
 ---
 
@@ -642,7 +642,7 @@ checklist, ceremony + timelock runbook). The ceremony itself is **[CEREMONY_RUNB
 | `/v1/issuer-applications/<id>/approve` → `403 DNS TXT verification failed` | `dogtag-verify=` TXT missing / not propagated / not lowercased | publish/correct the issuer TXT, wait, re-approve (§4, §7) |
 | phone hard-stops on EXPORT, discloses nothing | groomer host's `dogtag-verify=<relayer>` TXT missing/wrong (used a contract addr) | publish the TXT with the **lowercased groomer RELAYER wallet** address (§7) |
 | `/admin/*` route returns 403 from the internet | `ADMIN_LOOPBACK_ONLY=1` + Caddy edge-deny (by design) | run admin actions from the host or an allowlisted CIDR (§6) |
-| 32-bit-Android proofs rejected on-chain | prover ran `StubProver` (no `CIRCUITS_BUILD_DIR`) | set `CIRCUITS_BUILD_DIR` to a dir with the zkey + graph; restart the prover (§8) |
+| `/prove-consent` returns a prover-unavailable error | `CIRCUITS_BUILD_DIR` unset, artifacts missing/corrupt, or consent-zkey hash mismatch (fail-closed per request) | point `CIRCUITS_BUILD_DIR` at `consent_final.zkey` + `consent.r1cs` + `consent_js/consent.wasm`; restart the prover (§8) |
 | `429` on login/unlock | rate-limit lockout | wait out the lockout window; retry (§6) |
 
 ---
@@ -654,10 +654,10 @@ checklist, ceremony + timelock runbook). The ceremony itself is **[CEREMONY_RUNB
 - **[PREREQUISITES.md](./PREREQUISITES.md)** — install matrix (macOS + Linux), per-tool "needed by".
 - **[LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md)** — Tier 1 demo runbook (`VITE_DEMO_MODE=1`, MemStore).
 - **[PRODUCTION_DEPLOYMENT.md](./PRODUCTION_DEPLOYMENT.md)** — Tier 3 go-live delta (chain swap, ceremony, timelock).
-- **[MOBILE_BUILD.md](./MOBILE_BUILD.md)** — build/install iOS & Android, endpoint model, `prover_api`.
+- **[MOBILE_BUILD.md](./MOBILE_BUILD.md)** - build/install iOS & Android, endpoint model.
 - **[TUNNELING.md](./TUNNELING.md)** — public HTTPS for phones + the prover's own TLS host.
 - **[DEPLOY.md](./DEPLOY.md)** — ROAX contract deploy + Docker bring-up runbook.
-- **[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** — production ZK trusted-setup ceremony (expanded runbook;
-  **[CEREMONY.md](./CEREMONY.md)** is the concise version).
+- **[CEREMONY.md](./CEREMONY.md)** - the live consent trusted-setup ceremony guide
+  (**[CEREMONY_RUNBOOK.md](./CEREMONY_RUNBOOK.md)** is the expanded captain-fill-in runbook).
 - **[DPIA.md](./DPIA.md)** — Data Protection Impact Assessment.
 - **[`deploy/Caddyfile`](../deploy/Caddyfile)** · **[`scripts/remote-up.sh`](../scripts/remote-up.sh)** — TLS proxy + production bring-up.

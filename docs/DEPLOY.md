@@ -9,28 +9,32 @@
 > For go-live hardening see [`docs/PRODUCTION_DEPLOYMENT.md`](./PRODUCTION_DEPLOYMENT.md); for building +
 > installing the phone apps see [`docs/MOBILE_BUILD.md`](./MOBILE_BUILD.md).
 
-> **ALREADY DEPLOYED.** The full contract set is **live on ROAX (chainId 135)** with the **ZK path
-> wired** — addresses below and in `contracts/deployments/roax.json`. This runbook is the reproducible
-> procedure; to just run the live demo see `docs/DEMO.md` / `docs/DEMO_CLICKS.md`.
+> **ALREADY DEPLOYED.** The contract set is **deployed on ROAX (chainId 135)** - addresses below and in
+> `contracts/deployments/roax.json`; the live protocol surface is the **owner-hidden consent set**
+> (`DogTagSBTConsent` + `VerificationRegistryConsent` + `Groth16VerifierConsent`).
+> The retired owner-revealing contracts remain in the ledger only as historical records, pending removal
+> at the fresh testnet redeploy.
+> This runbook is the reproducible procedure; to just run the live demo see `docs/DEMO.md` /
+> `docs/DEMO_CLICKS.md`.
 >
 > Snapshot — authoritative copy is `contracts/deployments/roax.json`.
 >
 > | Contract | Address |
 > |---|---|
 > | IssuerRegistry | `0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c` |
-> | DogTagSBT (Level-A; live; **do not use for new Level-B credentials**) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
-> | DogTagSBTConsent (M5 canonical Level-B SBT; deployed + verified. vet-api's additive, off-by-default `POST /profiles/issue/custodial-bind` (M-2, needs `SBT_CONSENT_ADDR`+`PROFILE_ISSUER_ADDR`) can mint through it; **no live traffic until M7**) | `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` |
+> | DogTagSBT (RETIRED owner-revealing SBT; source deleted; historical reads only) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
+> | DogTagSBTConsent (**the live owner-hidden SBT**; write-once `profileRoot`; minted via `POST /profiles/issue/custodial-bind` → `mintCustodial(dogTagId, R)`) | `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc` |
 > | DogTagIssuerFactory | `0xd3179AbBfb0274D0a5F7017d76015A93C159511D` |
 > | DogTagIssuerImpl | `0x16671686a5926606aB05f5e167fC65B0f8825B85` |
-> | **ConsentKeyRegistry** (current; gasless `bindConsentKeyFor`) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
-> | Poseidon6 | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
-> | **VerificationRegistry** (current/LIVE; Level-A; ZK-wired; 6-arg `recordVerificationZK`) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
-> | VerificationRegistryConsent (M5 canonical Level-B registry; deployed + verified. vet-api's additive, off-by-default `POST /verify/consent/levelb` (M-3, needs `VERIFICATION_REGISTRY_CONSENT_ADDR`) can relay a consent proof to it; **no live traffic until M7**) | `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` |
+> | ConsentKeyRegistry (RETIRED; the consent key is now a per-tag leaf inside the tree - no on-chain key registry) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
+> | Poseidon6 (deployed with the retired owner-revealing set; historical) | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
+> | VerificationRegistry (RETIRED owner-revealing registry; source deleted; final instance kept for historical reads) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
+> | VerificationRegistryConsent (**the live owner-hidden registry**; 4-arg `recordVerificationZK`; owner-blind `Verified`) | `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87` |
 > | ~~VerificationRegistryConsent~~ `_M4_mutableRoot_legacy` (**DEPRECATED / DO NOT USE for Level-B**; never live; zero `Verified`) | `0x53F988Ae0124b96069d90CBC78E6245FeB01E125` |
 > | ~~VerificationRegistryConsent~~ `_preErasureGate_legacy` (RETIRED; lacks the erasure gate, never live) | `0x57A2998668B0F6332f7342016F5Df2Bb05cB900F` |
-> | Groth16Verifier (v2, live since 2026-07-02 cutover) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
+> | Groth16Verifier (RETIRED; paired with the retired verification circuit) | `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` |
 > | ~~Groth16Verifier~~ `_v1_legacy` (RETIRED) | `0x138b433071Ad806E841B5AD53623290a9bf21761` |
-> | Groth16VerifierConsent (Level-B; wired into the canonical M5 registry above) | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` |
+> | Groth16VerifierConsent (**the live consent verifier**; wired into the registry above) | `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` |
 > | deployer EOA (genesis; governance/admin authority removed; legacy issuer/whitelist capabilities remain, so **not a neutral custodian**) | `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96` |
 > | **governance authority / admin** (signer-1; live since Phase-2) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` |
 > | demo clone VACCINATION | `0x5c703910111f942EE0f47E02214291b5274cDb53` |
@@ -40,12 +44,12 @@
 > | ~~VerificationRegistry~~ `_zk0_legacy` (RETIRED) | `0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8` |
 > | ~~ConsentKeyRegistry~~ `_preMetaTx_legacy` (RETIRED) | `0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b` |
 >
-> There are **FOUR VerificationRegistry generations**. Current VR = `0x4E2f0996…` (6-arg
-> `recordVerificationZK`) and current CKR =
-> `0xA74DDe4a9b…` (the meta-tx migration is LIVE — gasless `bindConsentKeyFor`). RETIRED:
-> `0x8bA836eCe9…` (`_4arg_legacy` VR), `0x19C1B5f8…` (`_preMetaTx_legacy` VR), `0xb4FbbDb5…` (`_zk0_legacy` VR, deployed with `zkVerifier = 0`),
-> and `0xFD277b9B…` (`_preMetaTx_legacy` CKR). See §3.2 for how the ZK verifier was wired (testnet redeploy)
-> and the meta-tx migration vs the production timelock path.
+> There are **FOUR generations of the retired VerificationRegistry** - `0xb4FbbDb5…` (`_zk0_legacy`,
+> deployed with `zkVerifier = 0`), `0x19C1B5f8…` (`_preMetaTx_legacy`), `0x8bA836eCe9…` (`_4arg_legacy`),
+> and the final `0x4E2f0996…` - plus the retired CKRs `0xA74DDe4a9b…` (final) and `0xFD277b9B…`
+> (`_preMetaTx_legacy`).
+> The whole owner-revealing line is retired; none of these is a live write target.
+> See §3.2 for that wiring history and the live consent registry's timelock path.
 
 ---
 
@@ -76,9 +80,7 @@ If `cast chain-id` is not 135 or the precompiles are unavailable, **stop**.
 ```bash
 cd contracts
 
-# ADMIN = the protocol multisig (becomes DEFAULT_ADMIN of the registries + SBT). Default = broadcaster.
-# ZK_VERIFIER intentionally defaults to address(0): the ECDSA "normal" path needs no verifier, and the
-# Groth16Verifier is wired LATER (§3.2) — prod via the registry timelock, testnet via redeploy (done on ROAX).
+# ADMIN = the protocol multisig (becomes DEFAULT_ADMIN of the shared base). Default = broadcaster.
 export ADMIN=0x<protocol-multisig>
 export PRIVATE_KEY=0x<deployer-key>
 
@@ -90,8 +92,10 @@ forge script script/Deploy.s.sol:Deploy \
 Deployed set (order in `Deploy.s.sol`): `IssuerRegistry` → `DogTagIssuer` (clone impl) →
 `DogTagIssuerFactory` — **the shared base only**. The owner-hidden stack (`Groth16VerifierConsent` →
 `DogTagSBTConsent` → `VerificationRegistryConsent`) is deployed separately by
-`DeployCustodialIssuance.s.sol` (§4 covers the retired Level-A verifier this script no longer produces).
-The retired owner-revealing Level-A contracts (`DogTagSBT`/`ConsentKeyRegistry`/`PoseidonT6`/`VerificationRegistry`)
+`DeployCustodialIssuance.s.sol`, which wires the consent verifier into the registry at construction.
+The on-chain `ProtocolRegistry` discovery anchor has its own script, `DeployProtocolRegistry.s.sol`
+(see `docs/PROTOCOL_REGISTRY_RUNBOOK.md`).
+The retired owner-revealing contracts (`DogTagSBT`/`ConsentKeyRegistry`/`PoseidonT6`/`VerificationRegistry`)
 are no longer deployed by any script; their earlier instances remain in the deployment ledger for
 historical reads.
 
@@ -110,73 +114,46 @@ forge verify-contract --rpc-url $ROAX_RPC \
    verification** of its `DEPLOYMENT_DOMAIN`. The central admin flow triggers the on-chain
    `whitelistFor(recordType, signer)` — the registry supports **multiple signer addresses per issuer
    entity** (one-to-many). Delist inactive-mode addresses.
-2. **Wire the Groth16 verifier.** The first registry was deployed with `ZK_VERIFIER = address(0)`
-   (only the normal ECDSA path live; ZK reverts). There are two ways to activate the ZK path:
-
-   **(a) Production — 2-day timelock (the safe, canonical path).** After the ceremony (§4), the protocol
-   admin sets the real `Groth16Verifier` through the registry's **2-day timelock**:
+2. **Wire the Groth16 verifier.** The live `VerificationRegistryConsent` is deployed with its
+   `Groth16VerifierConsent` wired in at construction (`DeployCustodialIssuance.s.sol`), so no separate
+   activation step exists.
+   A later verifier swap (e.g. after a production ceremony) goes through the registry's **2-day timelock**:
    ```solidity
-   VerificationRegistry.proposeZkVerifier(groth16VerifierAddr);   // starts ZK_TIMELOCK = 2 days
+   VerificationRegistryConsent.proposeZkVerifier(newVerifierAddr);   // starts ZK_TIMELOCK = 2 days
    // ... wait >= 2 days ...
-   VerificationRegistry.executeZkVerifier();                      // activates it
+   VerificationRegistryConsent.executeZkVerifier();                  // activates it
    ```
 
-   **(b) Testnet — redeploy (what we did on ROAX).** Rather than wait out the 2-day timelock on testnet,
-   the **VerificationRegistry was REDEPLOYED** with the then-live `Groth16Verifier` (`0x138b4330…`, now `_v1_legacy`) wired in
-   at construction, so the ZK path is active immediately. That ZK-wired redeploy was `0x19C1B5f8…`; the
-   original zk=0 instance is kept as `VerificationRegistry_zk0_legacy` `0xb4FbbDb5…`.
+   > **Historical - the retired owner-revealing registry's wiring generations.** The first
+   > VerificationRegistry was deployed with `ZK_VERIFIER = address(0)` (ZK calls reverted); a testnet
+   > **redeploy** (`0x19C1B5f8…`) wired in the then-live v1 verifier at construction, retiring the zk=0
+   > instance as `_zk0_legacy` `0xb4FbbDb5…`; a **meta-tx migration** produced VR `0x8bA836eCe9…` plus
+   > CKR `0xA74DDe4a9b…` (gasless `bindConsentKeyFor`); and a **registry-only redeploy** produced the
+   > final VR `0x4E2f0996…` after `0x8bA836eCe9…` turned out to dispatch only the old 4-arg
+   > `recordVerificationZK` selector (`0xdd080593`) and bare-revert the 6-arg call (`0x423a45b6`).
+   > Four VR generations in all; the entire line is retired, and its testnet trusted setup stays
+   > recorded in `docs/CEREMONY_TRANSCRIPT.md` as provenance.
 
-   **(c) Meta-tx migration.** `0x19C1B5f8…` is itself now legacy
-   (`VerificationRegistry_preMetaTx_legacy`). A later **meta-tx migration** produced VR
-   `0x8bA836eCe9…` plus the **current CKR `0xA74DDe4a9b…`**, enabling the gasless `bindConsentKeyFor`
-   path that is now LIVE.
-
-   **(d) 6-arg registry-only redeploy (the CURRENT generation).** `0x8bA836eCe9…` was deployed before the
-   `recordType`/`deadline` args were added to `recordVerificationZK`, so its bytecode only dispatches the
-   old 4-arg selector `0xdd080593` and bare-reverts the v2 6-arg call `0x423a45b6`. A **registry-only
-   redeploy** (reusing all six live component contracts) produced the **current VR `0x4E2f0996…`**;
-   `0x8bA836eCe9…` is kept as `VerificationRegistry_4arg_legacy`. So there are **FOUR VR generations** —
-   `0xb4FbbDb5…` (zk0) → `0x19C1B5f8…` (preMetaTx) → `0x8bA836eCe9…` (4arg) → `0x4E2f0996…` (current) —
-   and only `0x4E2f0996…` is the current registry.
-
-   The testnet trusted setup is recorded in `docs/CEREMONY_TRANSCRIPT.md`. The repo ships the
-   **v2 self-run** (public Hermez ptau + 3 contributions + drand beacon, zkey sha256 `9e3636b9…`), and the
-   matching **v2 `Groth16Verifier`** (`0xEEFCfAF0…`) is the **live on-chain** verifier since the
-   2026-07-02 timelock swap (the prior `0x138b4330…` / `45d0b6fb…` key is retired as `_v1_legacy`).
-   The on-chain wiring + the prod timelock procedure are in
-   `docs/CEREMONY_RUNBOOK.md` (concise version: `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.
+   The live consent-circuit trusted setup (public Hermez ptau + a single contribution + drand beacon, zkey
+   sha256 `f83a111f…`) is recorded in `docs/CEREMONY_TRANSCRIPT.consent.md`.
+   The prod ceremony + timelock procedure are in `docs/CEREMONY_RUNBOOK.md` (concise version:
+   `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.
 
 ## 4. Trusted-setup ceremony (PRODUCTION REQUIREMENT — BLOCKING for the ZK path)
 
 > **RETIRED / HISTORICAL - not runnable.**
-> This section covers the Level-A `verification.circom` ceremony + verifier deploy, whose circuit,
-> ceremony scripts (`scripts/ceremony.sh`, `scripts/setup.sh`), `npm run compile-circuit` /
-> `npm run build-circuit`, and the `Groth16Verifier`/`VerificationRegistry` contract sources were removed
-> when the owner-revealing layer was retired. The commands and `circuits/verification.circom` reference
-> below no longer resolve and are kept only as provenance for the already-deployed Level-A verifier. The
-> live owner-hidden consent ceremony is `circuits/scripts/ceremony-consent.sh` (transcript
-> `docs/CEREMONY_TRANSCRIPT.consent.md`).
-
-The Groth16 circuit (`circuits/`) needs a per-circuit phase-2 trusted setup. **The dev `.zkey` shipped
-for tests is NOT production** — using it would let anyone forge ZK proofs.
-
-Production requirements:
-
-- **Phase 1:** reuse the **Hermez / Perpetual Powers of Tau** (`.ptau`) — do not run phase 1 yourself.
-- **Phase 2:** a **multi-party contribution with ≥ 3 independent contributors**, ending in a **public
-  random beacon** (e.g. a future drand round / block hash) so no single party knows the toxic waste.
-- **Publish** the full contribution transcript and **pin the `.zkey` hash** — the prover binary itself
-  **enforces** it at load (fail-closed on a hash mismatch — audit M4), not just CI. The crate's hardcoded
-  pin is the testnet hash of the **Level-A** artifact version (each version pins its own), so a production
-  ceremony zkey needs `EXPECTED_ZKEY_SHA256` set to its sha256;
-  the API loads the real prover only when `CIRCUITS_BUILD_DIR` is set.
-- **Generate** `Groth16Verifier.sol` via `snarkjs zkey export solidityverifier`, deploy it, then wire
-  it through the timelock (§3.2).
-
-**Production circuit note:** the circuit is **N=24 max leaves, depth 5 (24→12→6→3→2→1) with
-odd-promotion** exactly matching the SDK `buildMerkle` (commutative sorted-pair, single-leaf root,
-lone-odd promotion). This is already in place in `circuits/verification.circom`; the parity is gated by
-the Poseidon 4-language anchor vectors (t=2/3/6/7) and the in-circuit-root == SDK-`R` test.
+> This section covered the retired owner-revealing `verification.circom` ceremony + verifier deploy.
+> That circuit, its ceremony scripts (`scripts/ceremony.sh`, `scripts/setup.sh`), the
+> `npm run compile-circuit` / `npm run build-circuit` entry points, and the
+> `Groth16Verifier`/`VerificationRegistry` contract sources were all removed when the owner-revealing
+> layer was retired; only its transcript (`docs/CEREMONY_TRANSCRIPT.md`) and frozen build products are
+> kept as provenance for the already-deployed instances.
+> The live ceremony is the **consent-circuit** one: `circuits/scripts/ceremony-consent.sh`, transcript
+> `docs/CEREMONY_TRANSCRIPT.consent.md`, production runbook `docs/CEREMONY_RUNBOOK.md` (concise version
+> `docs/CEREMONY.md`).
+> The production requirements (Hermez ptau phase 1, ≥ 3 independent phase-2 contributors ending in a
+> public random beacon, published transcript, pinned zkey hash enforced by the prover) live in those
+> docs and still BLOCK a production ZK go-live.
 
 ## 5. Bring up the stacks (Docker)
 

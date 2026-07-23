@@ -604,7 +604,7 @@ mod tests {
     // validates it against the authoritative on-chain `clone.issuedBy[R]` (here the injected
     // `issued_by`). A wrong/forged claim must NOT make a record verify.
 
-    use crate::wrap::{ProtocolMeta, LEVEL_A_VERSION};
+    use crate::wrap::{ProtocolMeta, LEVEL_B_VERSION};
 
     /// The signer that actually issued R on-chain (== `clone.issuedBy[R]`).
     const SIGNER: &str = "0x00000000000000000000000000000000000515e6";
@@ -628,8 +628,8 @@ mod tests {
     fn protocol_block(issuer_signer: &str) -> ProtocolMeta {
         ProtocolMeta {
             chain_id: 135,
-            version: LEVEL_A_VERSION.to_string(),
-            verification_registry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string(),
+            version: LEVEL_B_VERSION.to_string(),
+            verification_registry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
             issuer_clone: issuer().document_store,
             issuer_signer: issuer_signer.to_string(),
         }
@@ -729,21 +729,4 @@ mod tests {
         assert!(!v.valid);
     }
 
-    #[test]
-    fn resolved_protocol_defaults_pre_m7_to_level_a() {
-        // §4.4: an absent block resolves to the Level-A provenance; a present block is returned as-is.
-        let doc = good_doc();
-        let reg = "0x4E2f0996e1CB4E24F1053346f3da2186906835E8";
-        let resolved = doc.resolved_protocol(135, reg, SIGNER);
-        assert_eq!(resolved.version, LEVEL_A_VERSION);
-        assert_eq!(resolved.chain_id, 135);
-        assert_eq!(resolved.verification_registry, reg);
-        assert_eq!(resolved.issuer_clone, doc.issuer.document_store);
-        assert_eq!(resolved.issuer_signer, SIGNER);
-
-        let mut stamped = good_doc();
-        let block = protocol_block(SIGNER);
-        stamped.protocol = Some(block.clone());
-        assert_eq!(stamped.resolved_protocol(1, "0xzzz", "0xother"), block);
-    }
 }

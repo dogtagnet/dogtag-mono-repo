@@ -1,237 +1,225 @@
-# DogTag — testnet end-to-end demo (LIVE on ROAX)
+# DogTag - testnet end-to-end demo (LIVE on ROAX)
 
-Click through the whole flow against the **live ROAX deployment** (chainId 135,
-`contracts/deployments/roax.json`): **admin onboards a vet/groomer** via **apply→approve** (issuers get
-issuance whitelists; **verifiers get `VERIFY:<purpose>` whitelisted** the same way — the admin portal
-**only approves + whitelists wallet addresses**) → the **phone creates a self-custodial wallet** → the
-**vet issues the dog tag** via a session + QR (`/p/<token>`): the device scans, sends its signed wallet
-address, and the **vet mints the `DogTagSBT` on-chain** and returns the credential, which the device
-imports → the vet issues a vaccination credential (anchored on-chain) → shows a QR → the owner app scans
-it → imports the raw doc + **polls the issuer contract until `isValid(root)` is true** → taps the
-credential to **view every decoded Merkle leaf field** → (optionally) signs a consent that records a
-proof-of-verification on-chain.
-There is **no central `/v1/register`** and **no admin "Registered devices" / "Mint dog-tag" page**.
+Click through the whole flow against the **live ROAX deployment** (chainId 135, addresses from `contracts/.env` / `contracts/deployments/roax.json`):
+**admin onboards a vet/groomer** via **apply→approve** (issuers get issuance whitelists - and a `DOG_PROFILE` issuer also gets `DogTagSBTConsent.ISSUER_ROLE` - while **verifiers get `VERIFY:<purpose>` whitelisted** the same way; the admin portal **only approves + whitelists wallet addresses**)
+→ the **phone creates a self-custodial wallet** (the seed is what the owner leaves are derived from)
+→ the **vet issues the dog tag owner-hidden** via a session + QR (`/p/<token>`): the device scans, folds the owner-hidden profile tree to the root `R` **on the device**, and POSTs only `{token, root}` - **no wallet address, no signature** - and the **vet anchors `issue(R)` + seals `mintCustodial(dogTagId, R)` on-chain** (no recipient address in the calldata; the tag goes to the contract's neutral custodian) while the phone polls `profileRoot(dogTagId)` until the tag is forged
+→ the vet issues a vaccination credential (anchored on-chain) → shows a QR → the owner app scans it → imports the raw doc + **polls the issuer contract until `isValid(root)` is true** → taps the credential to **view every decoded Merkle leaf field**
+→ (optionally) the owner **proves consent** to a verifier: a Groth16 proof over `circuits/consent.circom`, generated on-device, records an **owner-blind** proof-of-verification on-chain (`VerificationRegistryConsent`; the `Verified` event names no owner).
+There is **no central `/v1/register`**, **no admin "Registered devices" / "Mint dog-tag" page**, and **no verify-mode choice anywhere** - owner-hidden is the only flow.
 
-This flow is **verified working end-to-end on a real Android device** and by the automated
-`scripts/e2e-smoke.sh` (see [§7](#7-automated-verification-e2e-smokesh)).
+The credential lifecycle half is asserted by the automated `scripts/e2e-smoke.sh` (see [§7](#7-automated-verification-e2e-smokesh)); the owner-hidden consent half is asserted by `scripts/e2e-zk.sh`, which drives a REAL `consent.circom` proof through the live registry.
 
-> **No phone? Use the browser holder wallet.** The pet-owner (holder) side of this flow (receive a
-> wrapped credential, hold/display it, and present a ZK proof to a verifier) is also available as a
-> backend-less web app at **http://localhost:45931** (`scripts/demo-up.sh` boots it). Paste an issuer's
-> "Copy wrapped document" output to **Receive**, then paste a verifier's `/x/<token>` link into
-> **Present**. See [`stacks/owner/web/README.md`](../stacks/owner/web/README.md).
+> **No phone? Use the browser holder wallet.** The receive/hold/display side of the pet-owner (holder) role is also available as a backend-less web app at **http://localhost:45931** (`scripts/demo-up.sh` boots it).
+> Paste an issuer's "Copy wrapped document" output to **Receive**, then inspect receipts or share a selectively-redacted copy.
+> Owner-hidden consent **proving stays on the native apps** - they hold the private profile-tree witness; the browser wallet deliberately has no prover wiring.
+> See [`stacks/owner/web/README.md`](../stacks/owner/web/README.md).
 
 > **Start here:** this page is the narrated **LOCAL/demo** walkthrough. The authoritative LOCAL runbook
 > is **[LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md)**; `scripts/demo-up.sh` sets **`VITE_DEMO_MODE=1`**
 > (auto-fill + demo buttons + ephemeral MemStore). For a hardened, persistent, self-hosted, **type-
 > everything** deployment (flag **unset**), see **[REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md)**.
 
-Pre-created on ROAX for the demo: `DogTagIssuer` clones — VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53`,
-DOG_PROFILE `0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25`. ZK verifier is live (`0xEEFCfAF0…`, v2),
-VerificationRegistry `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` (ZK-wired).
+The demo consumes the fresh owner-hidden deployment through env only - `demo-up.sh` refuses to boot without `ISSUER_REGISTRY_ADDR`, `VERIFICATION_REGISTRY_CONSENT_ADDR`, `SBT_CONSENT_ADDR`, `PROFILE_ISSUER_ADDR` (the `DOG_PROFILE` clone) and `VACCINATION_ISSUER_ADDR` in `contracts/.env`.
+That is deliberate: the ROAX testnet is disposable and gets wiped + redeployed fresh, so a redeploy repoints the demo instead of silently hitting a stale deployment.
 
 ## 0. Boot
 ```bash
 scripts/demo-up.sh        # builds + starts admin/vet/groomer/government backends + the role portals + owner wallet (vite dev)
 # portals: admin http://localhost:39741 · vet http://localhost:41873 · groomer http://localhost:43617 · government http://localhost:44831
-# owner wallet (holder, no backend): http://localhost:45931   (Receive a wrapped doc → Present a ZK proof to a verifier's /x/<token> link)
+# owner wallet (holder, no backend): http://localhost:45931   (Receive a wrapped doc → inspect receipts / share selected fields)
 # backends: admin :39742 · vet :41874 · groomer :43618 · government :44832   (ROAX chainId 135)
-# also boots the prover-service :41875 (32-bit-Android ZK fallback + the owner wallet's trusted prover; see §5)
-# also boots the oversight indexer :46001 (demo mode) — the data layer for the vet/groomer Traceability + government Oversight pages
+# also boots the prover-service :41875 (POST /prove-consent - the trusted server-prove fallback; see §5)
+# also boots the oversight indexer :46001 (demo mode) - the data layer for the vet/groomer Traceability + government Oversight pages
 # stop with: scripts/demo-down.sh
 ```
-Backends keep records/sessions in an in-memory store (no Mongo needed) — those are **lost on restart** —
+Backends keep records/sessions in an in-memory store (no Mongo needed) - those are **lost on restart** -
 but **custody is sealed to `.demo/{vet,groomer,prover}-custody.json`**, so a **restart = re-UNLOCK with the
 same passphrase (same signer), NOT re-genesis** (records/sessions are simply re-created, and the signer is
 still funded + whitelisted on-chain, so no re-bootstrap is needed). A full re-genesis is required only after
-`rm -rf .demo`. `demo-up.sh` wires the
-governance signer-1 admin key (`contracts/.env` → `GOVERNANCE_PRIVATE_KEY`, passed to the central stack as
-`ADMIN_PRIVATE_KEY`) so it can broadcast `whitelistFor` - since Governance Phase-2 (2026-07-05, block
-123835) this admin authority is signer-1 `0x8E27…F4A2`, NOT the old deployer EOA `0x119F…` (now zero
-roles). (The dog-tag `mint` is broadcast by the **vet** signer, not central.) It also sets
-`DNS_CHECK=skip` (bypasses DNS-TXT for the `.local` demo domains), and sets the QR host to the Mac LAN
-IP (see [§6 phone networking](#6-phone-networking-real-gotchas)).
+`rm -rf .demo`.
+`demo-up.sh` wires the governance signer-1 admin key (`contracts/.env` → `GOVERNANCE_PRIVATE_KEY`, passed to the central stack as `ADMIN_PRIVATE_KEY`) so it can broadcast `whitelistFor` - since Governance Phase-2 (2026-07-05, block 123835) this admin authority is signer-1 `0x8E27…F4A2`, NOT the old deployer EOA `0x119F…` (now zero governance roles).
+(The dog-tag `mintCustodial` is broadcast by the **vet** signer, not central.)
+It also sets `DNS_CHECK=skip` (bypasses DNS-TXT for the `.local` demo domains), and sets the QR host to the Mac LAN IP (see [§6 phone networking](#6-phone-networking-real-gotchas)).
 
 For corporate/VPN Wi-Fi, boot with a public tunnel so the phone can reach the vet from any network:
 ```bash
 VET_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh   # see §6
 ```
 
-> **Just want the buttons?** See **[DEMO_CLICKS.md](./DEMO_CLICKS.md)** — the exact, literal
+> **Just want the buttons?** See **[DEMO_CLICKS.md](./DEMO_CLICKS.md)** - the exact, literal
 > click-through (every form is prefilled by demo buttons; passwords are prefilled; type nothing).
 > It also covers the stale-session recovery if you restart a backend mid-demo.
 
 ## 0.5 Device creates a wallet + the vet issues the dog tag
-The phone just creates a self-custodial wallet; the **vet** issues the dog tag into it via a session +
-QR (there is no central registration and no admin mint page). The phone has **no** "Central API URL"
-setting — every host it talks to comes from a scanned QR:
-1. **Phone**: **Profile → "Create embedded wallet"** → 24-word seed → derives the **secp256k1
-   walletAddress**.
+The phone just creates a self-custodial wallet; the **vet** issues the dog tag via a session + QR (there is no central registration and no admin mint page).
+The phone has **no** "Central API URL" setting - every host it talks to comes from a scanned QR:
+1. **Phone**: **Profile → "Create embedded wallet"** → 24-word seed.
+   The wallet seed is the root of the owner-hidden identity: the three reserved owner leaves (owner-address, consent-key, owner-secret) and their salts are all derived from it, per tag.
 2. **Vet** portal (:41873) → **Register pet** → **Fill demo data**: the operator enters the
-   `DOG_PROFILE` **`ownerIdentity`** (demo-prefilled): country `GB`, identification `P1234567`, name
-   `Alex Doe`, plus the pet fields — **but types NO wallet address** (the device sends its own). →
-   **Start** (`POST /profiles/issue/session/start`) → renders a one-time QR `<vetHost>/p/<token>`
-   (32-hex token, 180s TTL) + shows the allocated **`dogTagId` handle**. **Note this handle** — you set
-   it on the vaccination cert in §3.
-3. **Phone**: scan `/p/<token>` → the app `personal_sign`s (EIP-191) `DogTag wallet registration:
-   <walletAddress lowercased>` → POSTs `<vetHost>/profiles/issue/bind { token, walletAddress, signature }`
-   (proves the device owns the address).
-4. The **vet backend mints on-chain**: recovers the signer (`== walletAddress`), builds the
-   `DOG_PROFILE` VC (with `ownerIdentity` + `ownerAddress`), calls **`DogTagSBT.mint(walletAddress,
-   dogTagId, root)`** (sets `ownerOf` + `profileRoot`) — needs the vet signer's `ISSUER_ROLE` (§1) — and
-   returns `{ wrappedDoc, dogTagId, root, txHash }`. The phone verifies against the SBT (`profileRoot ==
-   root && ownerOf == wallet`) + offline integrity and imports its dog tag. **Gasless for the device**, so
-   `ownerOf(dogTagId) == walletAddress` holds at verify time.
+   **`ownerIdentity`** block (demo-prefilled: country `GB`, identification `P1234567`, name `Alex Doe`) plus the pet fields - and **no wallet address, ever** (nothing owner-linkable goes on-chain; the issuing vet legitimately knows who it issues to, see `docs/DPIA.md`).
+   → **Start** (`POST /profiles/issue/session/start`) → allocates a **`dogTagId` handle** (skipping any id already sealed on-chain) and renders a one-time QR `<vetHost>/p/<token>` (32-hex token, 180s TTL).
+   **Note this handle** - you set it on the vaccination cert in §3.
+3. **Phone**: scan `/p/<token>` → the app resolves the session, derives the per-tag owner leaves from its wallet seed + the `dogTagId`, folds the **owner-hidden profile tree** to the root `R` **on the device**, and POSTs `<vetHost>/profiles/issue/custodial-bind { token, root }`.
+   That is the whole payload: whoever redeems the one-time token defines ownership through the owner secret sealed inside `R`.
+4. The **vet backend mints on-chain**: it anchors **`issue(R)`** on the `DOG_PROFILE` clone, then seals **`DogTagSBTConsent.mintCustodial(dogTagId, R)`** (write-once `profileRoot`; the ERC-721 owner is the contract's neutral custodian, never the pet owner) - needs the vet signer's `ISSUER_ROLE` (§1) - and responds `status:"minting"`.
+   The phone polls `profileRoot(dogTagId)` on ROAX until it equals its own `R` (the "forging" animation), then stores the tag.
+   **Gasless for the device**, and the vet, the chain, and every later verifier learn only `R`.
 
-> The vet must be set up + whitelisted + hold `ISSUER_ROLE` first — do §1 + §2 before step 2 above.
+> The vet must be set up + whitelisted + hold `ISSUER_ROLE` first - do §1 + §2 before step 2 above.
 
 ## 1. Stand up the vet's signer (one-time)
 1. Open the **vet portal** (:41873) → **Setup wizard**: log in (operator password `operator`,
    prefilled), run **Genesis** (it shows 24 words → confirm the challenge words → set a passphrase →
-   Unlock). The wizard shows the derived **signer address** (auto-carried — you never copy/paste it).
+   Unlock). The wizard shows the derived **signer address** (auto-carried - you never copy/paste it).
    For a **groomer/verifier**, the Setup **Whitelist** step also fills the **verify purposes** field
    (`grooming_intake/boarding_intake/daycare_access`), carried on the application as `verifyPurposes`.
-2. **Fund** that signer on-chain + **grant the vet `ISSUER_ROLE`** (the **only** script step left;
-   whitelisting is the admin Approve in step 2):
+2. **Fund** that signer on-chain (the **only** thing the admin portal cannot do; whitelisting + the
+   `ISSUER_ROLE` grant are the admin Approve in step 2, and this script re-grants them idempotently):
    ```bash
    scripts/demo-bootstrap.sh 0x<vetSignerAddress>
    ```
-   (Funds 0.5 PLASMA, whitelists the issuance record-types, and grants `DogTagSBT.ISSUER_ROLE` so the vet
-   can mint dog tags — all using the deployer/admin key, **legacy gas**, see
-   [§8 notes](#8-notesgotchas-from-live-bring-up).) Repeat for the groomer signer (:43617) to demo the
-   groomer too (a groomer is a verifier/relayer — funding + VERIFY whitelist, no `ISSUER_ROLE`).
-   > **Prod note:** `ISSUER_ROLE` is a trust escalation (a holder can mint any id to any address) — grant
+   (Funds 0.5 PLASMA, whitelists `VACCINATION` + `DOG_PROFILE` issuance, grants `DogTagSBTConsent.ISSUER_ROLE` so the vet can seal tags, and whitelists the default `VERIFY:<purpose>` keys - all using the governance admin key, **legacy gas**, see [§8 notes](#8-notesgotchas-from-live-bring-up).)
+   Repeat for the groomer signer (:43617) to demo the groomer too (a groomer is a verifier/relayer - funding + `VERIFY` whitelist, no `ISSUER_ROLE`).
+   > **Prod note:** `ISSUER_ROLE` is a trust escalation (a holder can seal any unminted `dogTagId` to any root) - grant
    > only to accredited vets.
 
 ## 2. Admin onboards the business (admin portal :39741, password `admin`, prefilled)
-Follow the wizard: **Register business** (use the "Fill demo data" button → vet preset) → **Submit
+Follow the wizard: **Register business** (use the **Vet preset** button to fill the demo data) → **Submit
 issuer application** (its addresses + record types) → **Approve** → this sends `whitelistFor` txs
 on-chain (central broadcasts as the wired admin signer); the **Whitelist viewer** shows the live
 `isWhitelistedFor` state. Both **issuers and verifiers** onboard this way:
-- an **issuer** application whitelists the issuance record-types per address;
+- an **issuer** application whitelists the issuance record-types per address - and when the record
+  types include `DOG_PROFILE`, Approve **also grants `DogTagSBTConsent.ISSUER_ROLE`** to the signer
+  (the mint-capability grant is part of onboarding, not a script);
 - a **verifier** (groomer) application carries `verifyPurposes`, and **Approve** whitelists each
-  `VERIFY:<purpose>` on-chain — `key = keccak256(abi.encode("VERIFY:", keccak256(label) mod r))`,
-  `whitelistFor(verifyKey, relayer)` — gated separately from issuer roles (**no demo-bootstrap VERIFY
-  cast**).
+  `VERIFY:<purpose>` on-chain - `key = keccak256(abi.encode("VERIFY:", keccak256(label) mod r))`,
+  `whitelistFor(verifyKey, relayer)` - gated separately from issuer roles.
 
 ## 3. Vet issues a vaccination credential → QR (vet portal :41873)
-**Issue** → click **Fill demo data** (a valid rabies certificate; it fills the cert fields but **leaves
-`dogTagId` untouched**) → **set `dogTagId` = the dog tag's handle from §0.5** (the numeric `dogTagId`
-the Register-pet wizard allocated). This must match: on-chain the id is `field_of_value(handle)`, and
-the owner's later ZK export checks `ownerOf(field_of_value(dogTagId)) == subject` — a mismatch reverts
-`ERC721NonexistentToken`. → **Sign & Issue**: the backend builds the doc, anchors the Merkle root with
-`issue(root)` on ROAX, and re-verifies the `RootIssued` event (waits for the receipt) before marking it
-issued. Then **Create QR** → renders the QR.
+**Issue a record** → click **Fill demo data** (a valid rabies certificate; it fills the cert fields but **leaves
+`dogTagId` untouched**) → **set `dogTagId` = the dog tag's handle from §0.5** (the numeric handle the
+Register-pet wizard allocated). This must match: the credential's `dogTagId` leaf is what ties the
+record to the sealed tag (on-chain the tag key is `field_of_value(handle)`), and the phone attaches an
+imported record to a pet by that handle - a mismatch leaves the record orphaned from the tag, so it
+cannot be presented for that pet later. → **Sign &
+Issue**: the backend builds the doc, anchors the Merkle root with `issue(root)` on ROAX, and
+re-verifies the `RootIssued` event (waits for the receipt) before marking it issued. Then **Create
+QR** → renders the QR.
 
 > **dogTagId = the credential handle.** The numeric `dogTagId` is just the operator/credential id; the
 > on-chain SBT key is `field_of_value(handle)`. The operator only needs the **same handle** in §0.5
-> (dog-tag mint) and here (vaccination). The demo-fill **no longer clobbers** the `dogTagId` field (a
+> (dog-tag issuance) and here (vaccination). The demo-fill **no longer clobbers** the `dogTagId` field (a
 > fixed footgun), but you must still type the matching handle.
 
-> This is the **IMPORT** QR (device ← vet). It carries a SHORT one-time token — `http://<host>/r/<32-hex>`
-> — instead of a long embedded EdDSA record-JWT. The tiny payload makes a low-density QR the phone camera
+> This is the **IMPORT** QR (device ← vet). It carries a SHORT one-time token, `http://<host>/r/<32-hex>`,
+> instead of a long embedded record payload. The tiny payload makes a low-density QR the phone camera
 > can focus on and scan instantly. The token maps to the record server-side and is **deleted after the
-> first scan** (one-time; expires after 180s), so a second `GET /r/<token>` returns 404 — the same
-> one-time-use guarantee as the old JWT. (`<host>` is the vet's `DEPLOYMENT_URL` — the LAN IP or the
-> cloudflared tunnel; see §6.)
+> first scan** (one-time; expires after 180s), so a second `GET /r/<token>` returns 404. (`<host>` is
+> the vet's `DEPLOYMENT_URL` - the LAN IP or the cloudflared tunnel; see §6.)
 >
-> The symmetric **EXPORT** QR (device → groomer, §5) is also a one-time token, but carries the groomer's
-> wallet address too: `http://<host>/x/<token>?a=<groomerAddr>`. The phone resolves it via `GET /x/<token>`,
-> (prod/remote) DNS-verifies the groomer, proves **on-device**, and POSTs the proof — see §5.
+> The symmetric **verification** QR (device → groomer, §5) is also a one-time token, but carries the
+> groomer's wallet address too: `http://<host>/x/<token>?a=<groomerAddr>`. The phone resolves it via
+> `GET /x/<token>`, (prod/remote) DNS-verifies the groomer, proves **on-device**, and POSTs the proof - see §5.
 
 ## 4. Owner app scans → imports → polls on-chain → taps to view decoded fields
-On the phone (DogTag app), open **Scan** (the Home header **Scan** button or the Export tab) and scan the vet's QR:
+On the phone (DogTag app), open **Scan** (the Home header **Scan** button) and scan the vet's QR:
 - It `GET`s the wrapped doc (resolving `/r/<token>` server-side), recomputes the Merkle root via the
-  Rust SDK, and reads `DogTagIssuer.isValid(root)` on ROAX — showing **Anchoring… → Verified on-chain ✓**.
-- The record lands under the pet, grouped by type; filter by dog on the Travel/Documents tabs.
+  Rust SDK, and reads `DogTagIssuer.isValid(root)` on ROAX - showing **Anchoring… → Verified on-chain ✓**.
+- The record lands under the pet whose tag carries the same `dogTagId` handle; filter by dog on the
+  Travel/Documents tabs.
 - **Tap the imported credential** to open the detail view: it decodes **every Merkle leaf**
   (`data` `salt:tag:value` → field values) and shows the field values alongside the **on-chain
   root / issuer / verdict** (works on both Android and iOS).
 
 See [§6](#6-phone-networking-real-gotchas) for getting the phone to actually reach the backend.
 
-## 5. (Optional) EXPORT — proof-of-verification on-chain
-The owner **exports** a proof to the groomer (the symmetric counterpart of the §3–4 import). In the
-vet/groomer portal **Export** tab → pick a purpose (**Normal** or **ZK**) → **Start session** → QR. The
-EXPORT QR is a one-time token carrying the groomer's wallet address + host
-(`http://<host>/x/<token>?a=<groomerAddr>`). On the phone, scan it → the app resolves `GET /x/<token>`,
-asserts the groomer is whitelisted on-chain (and, on prod/remote, DNS-verifies the groomer — skipped for
-the `.local` demo) → review → select the record to present → sign consent (EdDSA-BabyJubjub) →
-**generate the Groth16 proof ON-DEVICE** → POST `{proof, pubSignals, consent, bind}` to
-`/v1/verify/consent` with the token. The portal **polls `GET /verify/session/:id`** → shows
-**Verified on-chain ✓** with the tx + a `Verified` event.
-- **Normal** path commits `credentialRoot` on-chain (ECDSA consent; instant).
-- **ZK** path (live, Groth16Verifier `0xEEFCfAF0…` — v2 since the 2026-07-02 cutover) keeps `recordType`/`credentialRoot` **off chain** and
-  the raw record **off the groomer entirely** — the phone proves in **~1–2 s** and sends only the proof.
+## 5. (Optional) EXPORT - proof-of-verification on-chain
+The owner proves consent to the groomer, revealing nothing about themselves (the symmetric counterpart of the §3–4 import).
+In the vet/groomer portal **Verification** tab → pick a purpose → **Start verification** → QR.
+There is **no mode picker** - owner-hidden ZK consent is the only path.
+The QR is a one-time token carrying the groomer's wallet address + host (`http://<host>/x/<token>?a=<groomerAddr>`).
+On the phone, scan it → the app resolves `GET /x/<token>` (purpose, recordType, relayer), asserts the groomer is whitelisted on-chain for that `VERIFY:<purpose>` (and, on prod/remote, DNS-verifies the groomer - skipped for the `.local` demo) → review → the app signs the consent with the tag's **in-tree consent key** and **generates the `DogTagConsent` Groth16 proof ON-DEVICE** → POSTs `{ exportToken, proof: {a, b, c, pubSignals} }` to `/v1/verify/consent`.
+The groomer's backend relays `recordVerificationZK(a, b, c, pub[7])` as the proof-bound relayer; `VerificationRegistryConsent` checks the proof, `R == profileRoot(dogTagId)`, the deadline, and the nullifier, then emits an **owner-blind `Verified` event** - no subject, no key hash, no owner bytes anywhere in the calldata.
+The portal **polls `GET /verify/session/:id`** → shows **Verified on-chain ✓** with the tx.
+The groomer never sees the record, the witness, or the owner - it learns only "the owner of tag `dogTagId` consented to `purpose` for me".
 
-> **Who generates the proof — 64-bit vs 32-bit.** 64-bit devices (iPhone, modern arm64 Android) prove
-> **on-device**. A **32-bit-only Android** (no arm64 ABI, `Build.SUPPORTED_64_BIT_ABIS` empty) can't run
-> the on-device circom-prover, so it POSTs `{wrappedDoc, consent, eddsaSig}` to the **prover-service**
-> (`POST /prove-verification`) and then submits the returned proof to the groomer itself — so the groomer
-> still never sees the witness. `demo-up.sh` boots that service on **:41875** (a `vet-api` built
-> `--features prover` with `CIRCUITS_BUILD_DIR` set so the real ArkProver loads); the phone targets
-> `AppConfig.DEFAULT_PROVER_API` (override via the `prover_api` pref). Since the phone usually can't reach
-> the Mac's LAN IP, tunnel it: `cloudflared tunnel --url http://localhost:41875` →
-> `PROVER_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh`, and point the phone's
-> `prover_api` at that URL. (`scripts/e2e-zk.sh` exercises the same backend-relay ZK path headlessly.)
+> **Who generates the proof.** Phones prove **on-device**, using the frozen consent artifacts the app
+> needs (`consent_final.zkey` + the witness graph; the iOS bundle wiring for the consent pair is
+> finalized in the mobile-issuance/redeploy slice). For devices that cannot run the on-device prover, the **prover-service**
+> (`POST /prove-consent`, booted by `demo-up.sh` on **:41875**) is the independent **server-prove
+> fallback**: it is the same `vet-api` binary built `--features prover` with `CIRCUITS_BUILD_DIR` set,
+> run as a SEPARATE process so the vet/groomer instances cannot accept a proving witness. Trust model:
+> the prover-service sees the witness, so in production it must be a prover the OWNER trusts - the
+> verifier/chain still never learn the owner, and the device submits the returned proof to the groomer
+> itself. The demo runs it as a platform service; tunnel it with
+> `cloudflared tunnel --url http://localhost:41875` →
+> `PROVER_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh`.
+> (`scripts/e2e-zk.sh` exercises the full consent path headlessly with a real proof.)
 
 ## 6. Phone networking (real gotchas)
-The phone is **not** the Mac — `localhost` on the phone is the phone itself. Two cases:
+The phone is **not** the Mac - `localhost` on the phone is the phone itself. Two cases:
 
 - **Same Wi-Fi (no client isolation):** set the app's server base to this Mac's **LAN IP**
-  (`ipconfig getifaddr en0`), e.g. `http://192.168.x.x:41874` for the vet (`:39742` for central).
+  (`ipconfig getifaddr en0`), e.g. `http://192.168.x.x:41874` for the vet.
   `demo-up.sh` already sets the vet/groomer `DEPLOYMENT_URL` to the LAN IP so the **QR host is
   reachable** from the phone (override with `LAN_IP=192.168.x.x scripts/demo-up.sh`). Android allows
   cleartext HTTP for the demo (`usesCleartextTraffic=true`).
-- **Corporate / VPN Wi-Fi (client isolation — phone can't see the Mac's LAN IP):** boot with a
+- **Corporate / VPN Wi-Fi (client isolation - phone can't see the Mac's LAN IP):** boot with a
   **cloudflared public HTTPS tunnel** so the phone reaches the vet from any network:
   ```bash
   cloudflared tunnel --url http://localhost:41874        # prints https://<sub>.trycloudflare.com
   VET_PUBLIC_URL=https://<sub>.trycloudflare.com scripts/demo-up.sh
   ```
   `VET_PUBLIC_URL` overrides the vet's `DEPLOYMENT_URL`, so the QR host becomes the public tunnel URL.
-  **The tunnel URL is ephemeral** — it changes each run; re-boot `demo-up.sh` with the new URL.
+  **The tunnel URL is ephemeral** - it changes each run; re-boot `demo-up.sh` with the new URL.
 
 The camera scanner was upgraded for reliable scanning (1280×720 + tap-to-focus).
 
 ## 7. Automated verification (e2e-smoke.sh)
-`scripts/e2e-smoke.sh` is the click-through ground truth — it drives the **live running backends**
-(admin :39742, vet :41874) through the full flow and asserts every on-chain effect, in **7 steps, all
-PASS on ROAX**:
+`scripts/e2e-smoke.sh` is the click-through ground truth for the credential lifecycle - it drives the
+**live running backends** (admin :39742, vet :41874) and asserts every on-chain effect, in **7 steps**:
 1. admin login → register business → issuer-application → **approve whitelists `keccak256(VACCINATION)`
    on-chain**;
 2. vet custody genesis + unlock (fresh signer each run);
-3. fund + whitelist the genesis signer (`demo-bootstrap.sh`);
-4. prepare VACCINATION → **`issue(root)` anchored on the clone** (`isValid(root)=true`);
+3. fund + whitelist the genesis signer on-chain;
+4. prepare VACCINATION → **`issue(root)` anchored on the clone** (`isValid(root)=true`, confirm
+   re-verified `RootIssued`);
 5. share → **short one-time `/r/<token>`** QR → `GET` returns the doc → **second GET = 404** (one-time);
-6. NORMAL-path EXPORT session → subject SBT mint + consent-key bind → ECDSA consent → **recorded on-chain**;
-7. `GET /verify/session/{id}` shows `recorded` + the txHash.
+6. direct credential check → integrity + anchor + issuer whitelist all **valid**;
+7. revoke → `isValid(root)=false` on-chain → the direct check reports **revoked**.
 ```bash
 scripts/demo-up.sh && scripts/e2e-smoke.sh
 ```
+The **owner-hidden consent path** needs a real holder witness + `DogTagConsent` proof, which the smoke
+harness does not fabricate - `scripts/e2e-zk.sh` is its ground truth: it generates a REAL proof from
+`consent.circom`, anchors `R` + seals a custodial tag, submits through the verifier backend, and then
+asserts nullifier consumption, the owner-blind `Verified` event shape, and that **no owner bytes appear
+in the calldata or logs**.
 
 ## 8. Notes/gotchas (from live bring-up)
-Five backend issues fixed while bringing the system up live on ROAX — worth knowing:
+Backend issues fixed while bringing the system up live on ROAX - worth knowing:
 - **ROAX needs legacy gas.** EIP-1559 txs are accepted but never mined; all broadcasts use `--legacy`
   (the backend chain client falls back to `gas_price`).
-- **The central stack needs its admin signer wired** (`ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS` — set by
+- **The central stack needs its admin signer wired** (`ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS` - set by
   `demo-up.sh` from `contracts/.env`'s `GOVERNANCE_PRIVATE_KEY`/`GOVERNANCE_ADDRESS`, i.e. governance
   signer-1 `0x8E27…F4A2` since Phase-2; the old deployer EOA `0x119F…` no longer has governance/admin
-  authority, though it does still hold legacy Level-A `ISSUER_ROLE` + record-type whitelists, so it is
-  not a neutral key) to broadcast
-  `whitelistFor`. Without it, Approve no-ops. (The
-  dog-tag `mint` is broadcast by the **vet** signer, which must hold `DogTagSBT.ISSUER_ROLE`.)
+  authority, though it does still hold a residual legacy issuer capability - `ISSUER_ROLE` +
+  record-type whitelists from the pre-unification era - so it is **not a neutral key**) to broadcast
+  `whitelistFor`. Without it, Approve no-ops. (The dog-tag `mintCustodial` is broadcast by the **vet**
+  signer, which must hold `DogTagSBTConsent.ISSUER_ROLE`.)
 - **`sign_and_send` waits for the receipt** before reporting success (so issue/verify reflect the real
   on-chain state, not just a submitted tx hash).
-- **The `VERIFY:` whitelist key** = `keccak256(abi.encode("VERIFY:", keccak256(label) mod r))` — the
+- **The `VERIFY:` whitelist key** = `keccak256(abi.encode("VERIFY:", keccak256(label) mod r))` - the
   purpose is reduced mod BN254 `r` before keying (the registry stores/nullifies the same reduced value).
 - **`DNS_CHECK=skip`** bypasses DNS-TXT issuer verification for the `.local` demo domains; production
   uses DNS-over-HTTPS (DoH).
-- The vet **wrap now types ALL scalar leaves** (fixes "non-typed leaf at authorizedVet").
+- The vet **wrap types ALL scalar leaves** (fixes "non-typed leaf at authorizedVet").
 
 General:
-- Backend (server-key) signing is the default — the clinic pays gas; wallet mode (MetaMask) is also wired.
+- Backend (server-key) signing is the default - the clinic pays gas; wallet mode (MetaMask) is also wired.
 - CORS is enabled on the backends; the groomer api is the **same `vet-api` binary** with
   `BUSINESS_TYPE=groomer` and `PORT` from env (`43618`).
-- This is **testnet**; the ZK trusted setup is a documented single-operator run
-  (`docs/CEREMONY_TRANSCRIPT.md`). Mainnet requires the multi-party ceremony (`docs/CEREMONY_RUNBOOK.md`).
+- This is **testnet**; the ZK trusted setup securing the consent circuit is a documented
+  single-operator run (`docs/CEREMONY_TRANSCRIPT.consent.md`). Mainnet requires the multi-party
+  ceremony (`docs/CEREMONY_RUNBOOK.md`).

@@ -1,15 +1,14 @@
 //! Level-B CONSENT circuit-input ASSEMBLY (M7 P0) — the prover-independent half of the consent
 //! proving path, gated behind the lightweight `assemble` feature.
 //!
-//! This is the consent analogue of [`crate::prover_assemble`]: it assembles the named inputs the
-//! **frozen** `circuits/consent.circom` (`DogTagConsent(6)`) needs, from the owner's wallet seed +
-//! the disclosed consent parameters, and emits them as decimal-string field elements. It is the SAME
-//! assembly the on-device `prover_ffi::prove_consent` runs and the server `/prove-consent` proves
-//! against; only decimal strings cross the crate boundary (the ark-0.5 SDK vs the ark-0.6 backend
-//! stay disjoint, exactly as the Level-A path).
+//! It assembles the named inputs the **frozen** `circuits/consent.circom` (`DogTagConsent(6)`)
+//! needs, from the owner's wallet seed + the disclosed consent parameters, and emits them as
+//! decimal-string field elements. It is the SAME assembly the on-device `prover_ffi::prove_consent`
+//! runs and the server `/prove-consent` proves against; only decimal strings cross the crate
+//! boundary (the ark-0.5 SDK vs the ark-0.6 backend stay disjoint).
 //!
-//! It is built from `consent.circom`, NOT from the stale Level-A `consent.rs` (whose `M`/nullifier
-//! carry `subject`+`R` and do NOT match the Level-B circuit — see the ZK cross-check §2). The
+//! It is built from `consent.circom` directly (its `M`/nullifier are relayer-bound and carry no
+//! `subject` — see the ZK cross-check §2). The
 //! circuit's seven public OUTPUTS, in frozen declaration order, are
 //! `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`; `nullifier` and `R` are
 //! circuit OUTPUTS (we never feed them in — the circuit computes them), and `dogTagId <-> R` is bound
@@ -39,8 +38,13 @@ use crate::leaf::field_of_value;
 use crate::merkle::{merkle_proof, ProofStep};
 use crate::poseidon::{poseidon, DS_NULLIFIER};
 use crate::profile_tree::{build_profile_tree, AttributeLeaf, CONSENT_TREE_DEPTH};
-use crate::prover_assemble::fe_to_dec;
 use crate::types::TypedScalar;
+
+/// Convert a field element to its base-10 decimal string.
+pub(crate) fn fe_to_dec(f: &Fr) -> String {
+    use ark_ff::PrimeField;
+    f.into_bigint().to_string()
+}
 
 /// Inclusion-path depth — `component main = DogTagConsent(6)`.
 pub const DEPTH: usize = CONSENT_TREE_DEPTH;
@@ -264,7 +268,7 @@ pub fn consent_circuit_input_value(inp: &ConsentAssembledInputs) -> Value {
 /// Build the circom-prover input map (signal name -> decimal-string values) for the on-device graph
 /// witness calculator. ONLY the full `prover` feature (`prover_ffi::prove_consent`) consumes this;
 /// the server path uses [`consent_circuit_input_value`] instead, so it is gated to `prover` to avoid
-/// a dead-code warning in the `assemble`-only (backend) build. Mirrors `prover_assemble::input_map`.
+/// a dead-code warning in the `assemble`-only (backend) build.
 #[cfg(feature = "prover")]
 pub(crate) fn consent_input_map(inp: &ConsentAssembledInputs) -> HashMap<String, Vec<String>> {
     let mut m: HashMap<String, Vec<String>> = HashMap::new();

@@ -4,40 +4,9 @@ import {hashLeaf} from "./leaf.js";
 import {flatten, unflatten} from "./flatten.js";
 import {asString, bytesToHex, hexToBytes} from "./encode.js";
 import {toHex32, type Field} from "./field.js";
-import {TypeTag, type IssuerMeta, type ProtocolMeta, type TypedScalar, type WrappedDoc} from "./types.js";
+import {TypeTag, type IssuerMeta, type TypedScalar, type WrappedDoc} from "./types.js";
 
 export type SaltProvider = () => Uint8Array;
-
-/**
- * The Level-A protocol version string (M7 §4.4) - the *protocol level* stamped in the `protocol`
- * block, distinct from the envelope schema `WrappedDoc.version` (`"dogtag/1.0"`). Mirror of the
- * Rust `LEVEL_A_VERSION`.
- */
-export const LEVEL_A_VERSION = "dogtag-levela/1";
-
-/**
- * The effective provenance for routing (§4.4 back-compat), mirror of Rust `WrappedDoc::resolved_protocol`.
- * A stamped block is returned as-is (a routing hint only - never authority). An **absent** block
- * defaults to Level-A: `verificationRegistry` = the Level-A registry, `version` = `LEVEL_A_VERSION`,
- * `issuerClone` = `IssuerMeta.documentStore`, `issuerSigner` = the on-chain `clone.issuedBy[R]`
- * (supplied by the caller). Existing records self-route to the old trio and keep verifying unchanged.
- */
-export function resolvedProtocol(
-  doc: WrappedDoc,
-  chainId: number,
-  levelAVerificationRegistry: string,
-  onchainIssuedBy: string,
-): ProtocolMeta {
-  return (
-    doc.protocol ?? {
-      chainId,
-      version: LEVEL_A_VERSION,
-      verificationRegistry: levelAVerificationRegistry,
-      issuerClone: doc.issuer.documentStore,
-      issuerSigner: onchainIssuedBy,
-    }
-  );
-}
 
 function defaultSalt(): Uint8Array {
   const s = new Uint8Array(16);

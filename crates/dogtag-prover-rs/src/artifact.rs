@@ -1,9 +1,9 @@
 //! Version-keyed proving artifacts (M7 §3.2).
 //!
-//! A protocol **version key** (e.g. [`LEVEL_A_V1`]) resolves to an [`ArtifactDescriptor`]: the set of
+//! A protocol **version key** (e.g. [`LEVEL_B_V1`]) resolves to an [`ArtifactDescriptor`]: the set of
 //! files a prover needs for that version, plus the integrity pins to check them against. This replaces
-//! the single hard-coded artifact set — the pinned zkey filename + the one `EXPECTED_ZKEY_SHA256_HEX`
-//! — with a table that can hold many versions.
+//! a single hard-coded artifact set — a pinned zkey filename + one expected hash — with a table that
+//! can hold many versions.
 //!
 //! # What this module is, and is NOT
 //!
@@ -19,35 +19,30 @@
 //! Two different things, deliberately carried as two fields (M7 §3.2; ZK cross-check §2):
 //!
 //! * [`ZkeyArtifact::sha256`] — the **fetch/integrity pin**: SHA-256 of the proving-key *file*. It is
-//!   what [`crate::Prover::load`] hashes the bytes against BEFORE parsing them, so a swapped or
+//!   what the loader hashes the bytes against BEFORE parsing them, so a swapped or
 //!   corrupt key fails closed (audit M4).
 //! * [`VerifyingKeyIdentity`] — which **VK** the resulting proof verifies against. The authoritative
-//!   VK is the one embedded in the on-chain `Groth16Verifier`, identified by its address; the
-//!   `verification_key.json` hash pinned here identifies the same VK off-chain. It is NOT a fetch pin
-//!   and the prover never loads that file (it uses the VK inside the zkey).
+//!   VK is the one embedded in the on-chain `Groth16VerifierConsent`, identified by its address; the
+//!   `consent_verification_key.json` hash pinned here identifies the same VK off-chain. It is NOT a
+//!   fetch pin and the prover never loads that file (it uses the VK inside the zkey).
 //!
 //! Conflating them would let a version publish one hash and imply the other, so they never share a
 //! field.
 //!
 //! # Adding a version
 //!
-//! Add an [`ArtifactDescriptor`] const and register it in [`REGISTRY`]. The Level-B consent version
-//! ([`LEVEL_B_V1_DESCRIPTOR`]) landed with the M7 P0 consent proving path: its code path is
-//! [`crate::ConsentProveInputs`] / [`crate::Prover::prove_consent_inputs`] (distinct signal names
-//! from Level-A's [`crate::Prover::prove`]), fed by the SDK's `consent_assemble` assembler. It is
-//! built from `circuits/consent.circom` (NOT the stale Level-A `consent.rs`, ZK cross-check §2) and
-//! pins its own zkey AND its own VK, separately.
+//! Add an [`ArtifactDescriptor`] const and register it in [`REGISTRY`]. The sole entry today is the
+//! owner-hidden consent version ([`LEVEL_B_V1_DESCRIPTOR`]): its code path is
+//! [`crate::ConsentProveInputs`] / [`crate::Prover::prove_consent_inputs`], fed by the SDK's
+//! `consent_assemble` assembler. It is built from `circuits/consent.circom` and pins its own zkey
+//! AND its own VK, separately.
 
-/// The Level-A verification circuit, version 1 - the default (unnamed-version) protocol version.
+/// The owner-hidden consent circuit, version 1 (M7 P0) - the sole and default protocol version.
 ///
-/// This is what every caller that names no version resolves to ([`resolve`]), so the pre-M7 path is
-/// simply this entry.
-pub const LEVEL_A_V1: &str = "dogtag-levela/1";
-
-/// The Level-B owner-unlinkable consent circuit, version 1 (M7 P0).
-///
-/// Its proofs verify against the frozen `Groth16VerifierConsent` VK; its inputs are the
-/// [`crate::ConsentProveInputs`] shape (NOT Level-A's `ProveInputs`), and its public-signal vector is
+/// The literal string is an INTERNAL version key (its keccak is the on-chain `contractSetId`), not a
+/// user-facing label - it is never renamed, even though the "level" vocabulary is retired everywhere
+/// user-facing. Proofs verify against the frozen `Groth16VerifierConsent` VK; inputs are the
+/// [`crate::ConsentProveInputs`] shape, and the public-signal vector is
 /// `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`.
 pub const LEVEL_B_V1: &str = "dogtag-levelb/1";
 
@@ -94,20 +89,15 @@ pub struct VerifyingKeyIdentity {
 
 /// Everything a prover needs for ONE protocol version.
 ///
-/// The seed entry is [`LEVEL_A_V1_DESCRIPTOR`]. Resolve one with [`resolve`] / [`current`].
+/// The sole entry is [`LEVEL_B_V1_DESCRIPTOR`]. Resolve one with [`resolve`] / [`current`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArtifactDescriptor {
-    /// The version key ([`LEVEL_A_V1`]) — the string callers pass over the wire.
+    /// The version key ([`LEVEL_B_V1`]) — the string callers pass over the wire.
     pub version: &'static str,
     /// The circuit this version proves, as `<source>/<template>(<params>)`.
     pub circuit_id: &'static str,
     /// How many public signals the circuit exposes.
     pub num_public: usize,
-    /// The circuit's max leaf count — the `N` width its fixed-size leaf arrays carry — for versions
-    /// whose inputs are the Level-A `ProveInputs` shape. `None` for a circuit that feeds no such
-    /// fixed-width leaf array (the Level-B consent circuit folds depth-6 inclusion PATHS, not an
-    /// `N`-wide leaf table), so the `max_leaves == N` load guard does not apply to it.
-    pub max_leaves: Option<usize>,
     /// The public-signal vector in snarkjs order — the meaning of each slot of
     /// [`crate::Groth16Output::public_signals`].
     pub public_signal_layout: &'static [&'static str],
@@ -125,64 +115,17 @@ pub struct ArtifactDescriptor {
     pub vk: VerifyingKeyIdentity,
 }
 
-/// The Level-A artifact set — the seed entry, and the default for every caller naming no version.
-///
-/// The zkey pin is the testnet self-run ceremony output recorded in `contracts/deployments/roax.json`
-/// (`_zk_ceremony`) and `docs/CEREMONY_TRANSCRIPT.md`.
-pub const LEVEL_A_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
-    version: LEVEL_A_V1,
-    circuit_id: "verification.circom/DogTagVerification(24,5)",
-    num_public: crate::NUM_PUBLIC,
-    max_leaves: Some(crate::N),
-    public_signal_layout: &[
-        "dogTagId",
-        "purpose",
-        "relayer",
-        "subject",
-        "nullifier",
-        "keyHash",
-        "R",
-    ],
-    zkey: ZkeyArtifact {
-        rel_path: "verification_final.zkey",
-        sha256: crate::EXPECTED_ZKEY_SHA256_HEX,
-    },
-    r1cs: ArtifactFile {
-        rel_path: "verification.r1cs",
-        sha256: Some("8890e52860b5b43535143682892bd6fa87ffefab3084b4eb2186b91c99be6fe8"),
-    },
-    wasm: ArtifactFile {
-        rel_path: "verification_js/verification.wasm",
-        sha256: Some("a2a2d7e28899e59019663f416c1ec1429ca0a35ead9363c7f832d9e476df874f"),
-    },
-    witness_graph: ArtifactFile {
-        rel_path: "verification.graph",
-        // Unpinned: unlike the zkey/r1cs/wasm, the graph is not committed — CI fetches it from
-        // DOGTAG_ARTIFACTS_URL (see `.github/workflows/*-mobile-e2e.yml`), so there is no byte-stable
-        // hash in-tree to pin it to. A version served by the discovery anchor publishes its graph
-        // pin like any other file, and the mobile resolver checks it then.
-        sha256: None,
-    },
-    vk: VerifyingKeyIdentity {
-        verification_key_json: ArtifactFile {
-            rel_path: "verification_key.json",
-            sha256: Some("4a4cee60ae59dcacc27ff940c350069caca35540a75bc92fe89fa9361da9cb60"),
-        },
-    },
-};
-
-/// The Level-B consent artifact set (M7 P0).
+/// The owner-hidden consent artifact set (M7 P0) — the sole entry, and the default for every caller
+/// naming no version.
 ///
 /// The zkey/VK are the frozen M3 testnet-grade ceremony output (`docs/CEREMONY_TRANSCRIPT.consent.md`,
-/// committed under `circuits/build`). `max_leaves` is `None`: `DogTagConsent(6)` feeds depth-6
-/// inclusion PATHS via [`crate::ConsentProveInputs`], not an `N`-wide leaf table, so the
-/// `max_leaves == N` load guard does not apply. Its public-signal layout is the frozen seven-OUTPUT
-/// order; the graph is not committed (fetched in CI, like Level-A's).
+/// committed under `circuits/build`). `DogTagConsent(6)` feeds depth-6 inclusion PATHS via
+/// [`crate::ConsentProveInputs`]. Its public-signal layout is the frozen seven-OUTPUT order; the
+/// graph is not committed (fetched in CI).
 pub const LEVEL_B_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     version: LEVEL_B_V1,
     circuit_id: "consent.circom/DogTagConsent(6)",
     num_public: crate::NUM_PUBLIC,
-    max_leaves: None,
     public_signal_layout: &[
         "dogTagId",
         "purpose",
@@ -206,8 +149,8 @@ pub const LEVEL_B_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     },
     witness_graph: ArtifactFile {
         rel_path: "consent.graph",
-        // Unpinned: the graph is not committed (CI fetches it from DOGTAG_ARTIFACTS_URL), like
-        // Level-A's. The mobile resolver pins it from the discovery anchor at fetch time.
+        // Unpinned: the graph is not committed (CI fetches it from DOGTAG_ARTIFACTS_URL). The
+        // mobile resolver pins it from the discovery anchor at fetch time.
         sha256: None,
     },
     vk: VerifyingKeyIdentity {
@@ -218,18 +161,17 @@ pub const LEVEL_B_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     },
 };
 
-/// Every version this build can prove: Level-A verification + Level-B consent (M7 P0).
-pub const REGISTRY: &[&ArtifactDescriptor] =
-    &[&LEVEL_A_V1_DESCRIPTOR, &LEVEL_B_V1_DESCRIPTOR];
+/// Every version this build can prove: the owner-hidden consent set.
+pub const REGISTRY: &[&ArtifactDescriptor] = &[&LEVEL_B_V1_DESCRIPTOR];
 
-/// The version a caller gets when it names none — the current Level-A artifact set.
+/// The version a caller gets when it names none — the current consent artifact set.
 pub fn current() -> &'static ArtifactDescriptor {
-    &LEVEL_A_V1_DESCRIPTOR
+    &LEVEL_B_V1_DESCRIPTOR
 }
 
 /// Resolve a version key to its artifact set.
 ///
-/// * `None` → [`current`] (back-compat: every pre-M7 caller names no version).
+/// * `None` → [`current`].
 /// * `Some(known)` → that version's descriptor.
 /// * `Some(unknown)` → [`crate::ProverError::UnknownVersion`] — **fail closed**. An unknown version
 ///   never falls back to the current one: proving a v2 request with v1's key would produce a proof
@@ -253,29 +195,20 @@ pub fn resolve(version: Option<&str>) -> Result<&'static ArtifactDescriptor, cra
 mod tests {
     use super::*;
 
-    /// No version named ⇒ the Level-A set. This is the back-compat contract every pre-M7 caller
-    /// relies on.
+    /// No version named ⇒ the consent set — the sole registered version is the default.
     #[test]
-    fn resolve_none_is_level_a() {
-        assert_eq!(resolve(None).unwrap().version, LEVEL_A_V1);
-        assert_eq!(current().version, LEVEL_A_V1);
+    fn resolve_none_is_the_consent_set() {
+        assert_eq!(resolve(None).unwrap().version, LEVEL_B_V1);
+        assert_eq!(current().version, LEVEL_B_V1);
     }
 
-    #[test]
-    fn resolve_known_version_returns_its_descriptor() {
-        let d = resolve(Some(LEVEL_A_V1)).unwrap();
-        assert_eq!(d.version, LEVEL_A_V1);
-        assert_eq!(d.zkey.rel_path, "verification_final.zkey");
-    }
-
-    /// The Level-B consent version (M7 P0) is now a registered, resolvable entry.
+    /// The consent version is a registered, resolvable entry.
     #[test]
     fn resolve_consent_version_returns_its_descriptor() {
         let d = resolve(Some(LEVEL_B_V1)).unwrap();
         assert_eq!(d.version, LEVEL_B_V1);
         assert_eq!(d.zkey.rel_path, "consent_final.zkey");
         assert_eq!(d.circuit_id, "consent.circom/DogTagConsent(6)");
-        assert_eq!(d.max_leaves, None, "consent feeds inclusion paths, not an N-wide leaf array");
         assert_eq!(
             d.public_signal_layout,
             ["dogTagId", "purpose", "relayer", "nullifier", "R", "recordType", "deadline"],
@@ -283,36 +216,29 @@ mod tests {
         );
     }
 
-    /// An unknown version FAILS CLOSED — it must never silently resolve to the current artifact set.
+    /// An unknown (including retired) version FAILS CLOSED — it must never silently resolve to the
+    /// current artifact set. `dogtag-levela/1` is the retired key; this build no longer serves it.
     #[test]
     fn resolve_unknown_version_fails_closed() {
-        match resolve(Some("dogtag-levelc/9")) {
-            Err(crate::ProverError::UnknownVersion { version, known }) => {
-                assert_eq!(version, "dogtag-levelc/9");
-                assert_eq!(known, vec![LEVEL_A_V1.to_string(), LEVEL_B_V1.to_string()]);
+        for unknown in ["dogtag-levela/1", "dogtag-levelc/9"] {
+            match resolve(Some(unknown)) {
+                Err(crate::ProverError::UnknownVersion { version, known }) => {
+                    assert_eq!(version, unknown);
+                    assert_eq!(known, vec![LEVEL_B_V1.to_string()]);
+                }
+                other => panic!("unknown version must fail closed, got {other:?}"),
             }
-            other => panic!("unknown version must fail closed, got {other:?}"),
         }
-    }
-
-    /// The seed descriptor's zkey pin IS the crate's published constant — one pin, two names, never
-    /// allowed to drift apart.
-    #[test]
-    fn level_a_zkey_pin_matches_crate_constant() {
-        assert_eq!(
-            LEVEL_A_V1_DESCRIPTOR.zkey.sha256,
-            crate::EXPECTED_ZKEY_SHA256_HEX
-        );
     }
 
     /// The zkey pin and the VK identity are DIFFERENT values (ZK cross-check §2: `zkeySha256 !=
     /// vkHash`). A refactor that made one the other would pass every other test here.
     #[test]
     fn zkey_pin_is_not_the_vk_hash() {
-        let vk = LEVEL_A_V1_DESCRIPTOR.vk.verification_key_json.sha256;
-        assert!(vk.is_some(), "Level-A must publish its VK identity");
+        let vk = LEVEL_B_V1_DESCRIPTOR.vk.verification_key_json.sha256;
+        assert!(vk.is_some(), "the consent version must publish its VK identity");
         assert_ne!(
-            Some(LEVEL_A_V1_DESCRIPTOR.zkey.sha256),
+            Some(LEVEL_B_V1_DESCRIPTOR.zkey.sha256),
             vk,
             "the zkey file hash and the VK hash are different artifacts and must never be conflated"
         );
@@ -338,18 +264,6 @@ mod tests {
                  exposing a different count would be rejected by `Prover::load_versioned`",
                 d.version
             );
-            // A version that DECLARES a fixed leaf-array width must match this build's N (the guard
-            // `Prover::load_versioned` enforces). A version with `None` (the consent circuit) feeds
-            // inclusion paths, not a fixed leaf table, so it is exempt.
-            if let Some(max_leaves) = d.max_leaves {
-                assert_eq!(
-                    max_leaves,
-                    crate::N,
-                    "{}: a fixed-width leaf-array version must feed exactly N; \
-                     `Prover::load_versioned` would reject any other width",
-                    d.version
-                );
-            }
             assert_eq!(
                 resolve(Some(d.version)).unwrap().version,
                 d.version,

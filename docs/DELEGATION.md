@@ -11,7 +11,7 @@
 **Why this document exists:** the fork recorded here is one of only two decisions that must precede the mainnet ceremony (the other is `DEPTH`, §6).
 Getting it wrong later is not a patch - it is a second forced circuit change and a second forced app-upgrade cycle.
 
-Related: [`architecture.md` §4.2](./architecture.md) (Level-B recovery = re-issue, and why delegation is a different thing - §7 below), [`architecture.md` §4.7](./architecture.md) (the Level-A verification circuit and the verification registries), [`CEREMONY_TRANSCRIPT.consent.md`](./CEREMONY_TRANSCRIPT.consent.md) (the current setup is testnet-grade and explicitly re-doable before mainnet).
+Related: [`architecture.md` §4.2](./architecture.md) (recovery = re-issue, and why delegation is a different thing - §7 below), [`CEREMONY_TRANSCRIPT.consent.md`](./CEREMONY_TRANSCRIPT.consent.md) (the current setup is testnet-grade and explicitly re-doable before mainnet).
 
 ---
 
@@ -97,7 +97,7 @@ It was **unified vs separate**, and only the unified branch is urgent.
 **Unified (rejected):** one circuit handles both principals, with a `principalClass` public signal saying which.
 That grows the owner circuit's public-signal vector from 7 to 8, which regenerates the verifier, changes the `VerificationRegistryConsent` signature, changes the relayer's `sol!` interface, and changes both apps' public-signal index constants.
 This repo has already been bitten once by exactly that drift class: the 4-arg-deployed / 6-arg-selector mismatch left `recordVerificationZK` reverting bare on-chain (`contracts/deployments/roax.json`, `_verification_registry_redeploy`).
-It was nearly bitten a second time by the Level-A/Level-B public-signal index divergence, which review caught as finding e9 E-1 before anything shipped - commit `25d4065` records that routing the call sites through the new constants was zero behaviour change, with no live read flipped.
+It was nearly bitten a second time by the public-signal index divergence between the consent circuit and the since-retired owner-revealing verification circuit, which review caught as finding e9 E-1 before anything shipped - commit `25d4065` records that routing the call sites through the new constants was zero behaviour change, with no live read flipped.
 That caught near-miss is precisely why `public_signals.rs` and its Swift and Kotlin twins exist at all.
 Under unified, the entire delegation design - scope granularity, revocation, whether verifiers must distinguish principals - becomes blocking work before the mainnet ceremony, and the submission-path and app-release milestones must hold.
 
@@ -184,9 +184,9 @@ These are separate mechanisms and must not be merged.
 Nothing on-chain changes; no new `dogTagId`; no new `R`.
 
 **Owner change / recovery**: the principal is replaced.
-Under Level-A this is `recover()`, a consensual signature-authorized rebind preserving `tokenId` and `issuerOf` ([`architecture.md` §4.2, §13.6](./architecture.md)).
-**Level-B supersedes that model**: `DogTagSBTConsent` has no `recover()` and no `RECOVERY_ROLE` (D3), because naming a new owner on-chain is exactly the linkage owner-unlinkability removes.
-Level-B recovery is instead a **fresh custodial issuance under a new `dogTagId` and a new `R`**, and referencing credentials do not survive it (accept-the-break, 2026-07-16).
+The retired owner-revealing SBT exposed `recover()`, a consensual signature-authorized rebind preserving `tokenId` and `issuerOf` - that model is history.
+`DogTagSBTConsent` has no `recover()` and no `RECOVERY_ROLE` (D3), because naming a new owner on-chain is exactly the linkage owner-unlinkability removes.
+Recovery is instead a **fresh custodial issuance under a new `dogTagId` and a new `R`**, and referencing credentials do not survive it (accept-the-break, 2026-07-16; [`architecture.md` §4.2](./architecture.md)).
 
 So: a delegation must never be implemented as a partial owner rebind, and an owner change must never be implemented as a delegation.
 Because `profileRoot` is write-once, anything that tries to express delegation *through* the tree collapses into the retire-and-re-issue path - which is precisely the trap §3.2 documents.

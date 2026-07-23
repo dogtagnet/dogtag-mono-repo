@@ -184,8 +184,8 @@ function withProtocol(doc: WrappedDoc, issuerSigner: string): WrappedDoc {
     ...doc,
     protocol: {
       chainId: 135,
-      version: "dogtag-levela/1",
-      verificationRegistry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+      version: "dogtag-levelb/1",
+      verificationRegistry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
       issuerClone: doc.issuer.documentStore,
       issuerSigner,
     },
@@ -227,20 +227,5 @@ describe("verify() M7 provenance issuer-signer check", () => {
     const v = await verify(doc, opts("third-party", {})); // issuedBy omitted -> unwired
     expect(v.fragments.issuance).toBe("VALID");
     expect(v.valid).toBe(true);
-  });
-
-  it("resolvedProtocol defaults a pre-M7 doc to Level-A, returns a stamped block as-is", async () => {
-    const {resolvedProtocol, LEVEL_A_VERSION} = await import("../src/wrap.js");
-    const reg = "0x4E2f0996e1CB4E24F1053346f3da2186906835E8";
-    const resolved = resolvedProtocol(validDoc(), 135, reg, SIGNER);
-    expect(resolved).toEqual({
-      chainId: 135,
-      version: LEVEL_A_VERSION,
-      verificationRegistry: reg,
-      issuerClone: issuer.documentStore,
-      issuerSigner: SIGNER,
-    });
-    const stamped = withProtocol(validDoc(), SIGNER);
-    expect(resolvedProtocol(stamped, 1, "0xzzz", "0xother")).toEqual(stamped.protocol);
   });
 });

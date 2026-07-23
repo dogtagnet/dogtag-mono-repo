@@ -6,15 +6,13 @@
 //! recovery phrase must yield independent `(Ax, Ay)`, independent `owner.consentKey` leaves and
 //! therefore independent `R`.
 //!
-//! It also pins the contrast that motivated the change: the **wallet-level** (`v1`) consent key
-//! exposed as `derive_babyjub_consent_key` is by construction identical for both tags — that is the
-//! Level-A per-wallet key, and it is exactly what the profile tree must NOT be using.
+//! (The retired per-wallet `v1` consent key was by construction identical for both tags — exactly
+//! the cross-linking vector the per-tag derivation removes.)
 //!
 //! Run with `-- --nocapture` to read the transcript.
 
 use dogtag_standard::ffi::{
-    build_profile_tree_hex, derive_babyjub_consent_key, dog_tag_id_field_hex, AttributeLeafFfi,
-    ProfileTreeFfi,
+    build_profile_tree_hex, dog_tag_id_field_hex, AttributeLeafFfi, ProfileTreeFfi,
 };
 
 /// One recovery phrase's BIP-39 seed. TEST MATERIAL ONLY, never holds value.
@@ -59,9 +57,6 @@ fn one_wallet_two_tags_get_independent_consent_keys() {
     let rex = register("424242", "Rex");
     let milo = register("424243", "Milo");
 
-    // The wallet-level (v1, Level-A) key: one per wallet, so identical for both pets by design.
-    let wallet_key = derive_babyjub_consent_key(SEED_HEX.to_string()).expect("wallet-level key");
-
     println!("\n=== One wallet (one recovery phrase), two dog tags ===\n");
     println!("{:<24} {:<24} {:<24}", "", "tag 424242 (Rex)", "tag 424243 (Milo)");
     for (label, a, b) in [
@@ -81,12 +76,6 @@ fn one_wallet_two_tags_get_independent_consent_keys() {
     }
 
     println!(
-        "\n{:<24} {:<24} {:<24} SHARED (Level-A, per-wallet by contract design)",
-        "wallet-level v1 Ax",
-        short(&wallet_key.ax_hex),
-        short(&wallet_key.ax_hex)
-    );
-    println!(
         "\nR sealed on-chain as profileRoot(dogTagId):\n  Rex : {}\n  Milo: {}\n",
         rex.root_hex, milo.root_hex
     );
@@ -103,17 +92,6 @@ fn one_wallet_two_tags_get_independent_consent_keys() {
         "the committed owner.consentKey leaf must differ per tag"
     );
     assert_ne!(rex.root_hex, milo.root_hex, "R must differ per tag");
-
-    // ...and the tree must not be using the wallet-level key for either tag. Before this change
-    // both of these were equal, which is precisely the cross-linking vector being removed.
-    assert_ne!(
-        rex.ax_hex, wallet_key.ax_hex,
-        "the tree must NOT commit the wallet-level v1 consent key"
-    );
-    assert_ne!(
-        milo.ax_hex, wallet_key.ax_hex,
-        "the tree must NOT commit the wallet-level v1 consent key"
-    );
 
     // Determinism: re-deriving on a restored wallet reproduces the same tag, so recovery still works.
     assert_eq!(

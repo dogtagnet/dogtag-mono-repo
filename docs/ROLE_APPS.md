@@ -15,7 +15,7 @@ For the demo, **the captain operates all of them**, but nothing about the code o
 
 The shared, deployed-once substrate stays untouched by this work:
 
-- **Contracts** (ROAX) — `DogTagSBT`, `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistry`, `ConsentKeyRegistry`, `Groth16Verifier`. Addresses in `contracts/deployments/roax.json`.
+- **Contracts** (ROAX) — `DogTagSBTConsent`, `IssuerRegistry`, `DogTagIssuer` clones + factory, `VerificationRegistryConsent`, `Groth16VerifierConsent`, `ProtocolRegistry`. Addresses in `contracts/deployments/roax.json`.
 - **The open standard** — `crates/dogtag-standard-rs` / `packages/dogtag-standard-ts`: canonicalization + salted-leaf Poseidon-Merkle root `R` + verify. Every role stack builds and verifies credentials through this one SDK, so a credential issued by any role verifies identically everywhere.
 
 The three roles differ only in **which record types they issue**, **what off-chain data they are the custodian of**, and **which on-chain capability (issue vs verify) they exercise**.
@@ -30,7 +30,7 @@ The three roles differ only in **which record types they issue**, **what off-cha
 | API binary | `vet-api` (own crate) | **`vet-api`** run with `BUSINESS_TYPE=groomer` | **`government-api`** (own crate — genuinely separate) |
 | Ports (web / api) | 41873 / 41874 | 43617 / 43618 | **44831 / 44832** |
 | Database | own Mongo (`vetdata`) | own Mongo (`groomerdata`) | own Mongo (`governmentdata`) |
-| On-chain **issue** | `DOG_PROFILE` (mints SBT), `VACCINATION`, `SERVICE_ATTESTATION` | — (verifier only) | **`TRAVEL_CLEARANCE`, `EU_HEALTH_CERT`** |
+| On-chain **issue** | `DOG_PROFILE` (custodial SBT mint), `VACCINATION`, `SERVICE_ATTESTATION` | — (verifier only) | **`TRAVEL_CLEARANCE`, `EU_HEALTH_CERT`** |
 | On-chain **verify** | `VET_INTAKE` presentations | `GROOMING_INTAKE` presentations (the canonical verifier) | **government-grade credential verification** (integrity + status + issuer identity) |
 | On-chain **govern** | — | — | — (governance stays with `stacks/admin` — see §6) |
 | Trust tier issued | `licensed_vet` | n/a | **`accredited_authority`** (authority-endorsement) |
@@ -46,15 +46,15 @@ The vet and groomer stacks are **already real and already separately deployable*
 ### 3.1 Vet — issuer + verifier (licensed_vet)
 
 **On-chain responsibilities.**
-The vet is the primary **issuer**: it mints the pet-identity SBT (`DogTagSBT.mint` under `DOG_PROFILE`, requires `ISSUER_ROLE`) and anchors `VACCINATION` / `SERVICE_ATTESTATION` roots on its `DogTagIssuer` clone (gated by `IssuerRegistry.isWhitelistedFor(recordType, signer)`).
-It is also a **verifier** for `VET_INTAKE` presentations (`VerificationRegistry`, normal + ZK paths).
+The vet is the primary **issuer**: it issues the pet-identity tag owner-hidden - `issue(R)` on the `DOG_PROFILE` clone, then `DogTagSBTConsent.mintCustodial(dogTagId, R)` (no recipient address; requires `ISSUER_ROLE`) - and anchors `VACCINATION` / `SERVICE_ATTESTATION` roots on its `DogTagIssuer` clone (gated by `IssuerRegistry.isWhitelistedFor(recordType, signer)`).
+It is also a **verifier** for `VET_INTAKE` presentations (`VerificationRegistryConsent`, the owner-hidden consent-proof path).
 
 **Centralized DB (what it stores off-chain and why).**
 The vet backend is the legal **record-custodian**: it holds full credential records (salted cleartext leaves, per-record DEKs), the age-encrypted custody seed (its signer), operator/admin sessions, appointment replicas, and calendar-sync state.
 On-chain we anchor **only** the salted root `R` — all PII stays in the vet's Mongo, erasable per the DPIA.
 
 **API + web surface.**
-`vet-api` (Axum): issue → prepare/confirm, share, third-party verify, export-session (owner→verifier ZK consent), dog-tag issuance (`/profiles/issue/*` — the Level-A `bind` plus the additive, off-by-default Level-B owner-hidden `custodial-bind`, M-2), calendar sync, custody genesis/unlock; records management (`GET /records` operator-gated list, `PATCH /records/:id` off-chain metadata only — on-chain-derived fields rejected, `POST /records/:id/revoke` soft-invalidation) — each record bundles its immutable on-chain proof (tx hash, block number, issuer clone, explorer link).
+`vet-api` (Axum): issue → prepare/confirm, share, third-party verify, export-session (owner→verifier ZK consent), dog-tag issuance (`/profiles/issue/*` — the owner-hidden `custodial-bind` session flow, the sole bind path), calendar sync, custody genesis/unlock; records management (`GET /records` operator-gated list, `PATCH /records/:id` off-chain metadata only — on-chain-derived fields rejected, `POST /records/:id/revoke` soft-invalidation) — each record bundles its immutable on-chain proof (tx hash, block number, issuer clone, explorer link).
 `vet-web` (React+Vite+`@dogtag/ui`): issue wizards (dog-tag + vaccination), records (DB-backed list + edit/expire/revoke), verify, settings.
 
 **Deployment.** `stacks/vet/docker-compose.yml`: `caddy` (TLS) + `web` (nginx) + `api` (`vet-api`, `--features mongo`) + `mongo` (internal). Host `41873`/`41874`.
@@ -62,11 +62,12 @@ On-chain we anchor **only** the salted root `R` — all PII stays in the vet's M
 ### 3.2 Groomer — verifier (the same binary, a separate deployable)
 
 **On-chain responsibilities.**
-The groomer is a **verifier only**: it records `GROOMING_INTAKE` presentations on `VerificationRegistry` with the owner's signed consent (the privacy-maximal ZK path is the default for sensitive purposes — the proof is generated **on-device**, so the groomer never receives the underlying record).
+The groomer is a **verifier only**: it records `GROOMING_INTAKE` presentations on `VerificationRegistryConsent` with the owner's ZK consent proof.
+The proof is generated **on-device**, so the groomer never receives the underlying record or the owner's identity - there is no other verify mode.
 It holds **no** issuer role; verifier capability is granted via the separate `VERIFY:<purpose>` whitelist namespace (architecture §4.3).
 
 **Centralized DB.**
-Its own Mongo (`groomerdata`): verification sessions/records, operator sessions, its own custody seed (the relayer wallet that pays gas for the on-chain `recordVerification`), appointment replicas.
+Its own Mongo (`groomerdata`): verification sessions/records, operator sessions, its own custody seed (the relayer wallet that pays gas for the on-chain `recordVerificationZK`), appointment replicas.
 
 **API + web surface.**
 Runs the **same `vet-api` binary** with `BUSINESS_TYPE=groomer` + groomer env/port — this is a deliberate reuse (the business-backend surface is identical), but it is still a **separate deployable** (own compose, own DB, own keys, own domain).
@@ -160,7 +161,7 @@ Adding the government stack touched none of their files (only the shared workspa
 ## 6. Where governance lives
 
 "Govern" is deliberately **not** a government-app capability.
-Protocol governance — issuer/verifier whitelisting (`IssuerRegistry.whitelistFor` / `delistFor`), role grants on `DogTagSBT`, the `DEFAULT_ADMIN_ROLE` two-step timelock, and GDPR erasure — stays centralized in **`stacks/admin`** (the protocol registry we host).
+Protocol governance — issuer/verifier whitelisting (`IssuerRegistry.whitelistFor` / `delistFor`), role grants on `DogTagSBTConsent`, the `DEFAULT_ADMIN_ROLE` two-step timelock, and GDPR erasure — stays centralized in **`stacks/admin`** (the protocol registry we host).
 The government app is a **credential authority** (a high-trust issuer/verifier), not the protocol operator; conflating the two would put chain-wide admin power in a per-authority deployable.
 When a real competent authority onboards, the protocol admin whitelists its signer for `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` through the **same apply→approve flow** as any vet/groomer.
 
@@ -180,7 +181,7 @@ Tracked so the next PRs can close them:
 4. **Web parity.** ✅ **DONE (PR-2).**
    `government-web` was migrated onto the shared `@dogtag/ui` AppShell + Tailwind + tokens (theming, toasts) at vet/groomer portal parity, and gained the printable CDC-modeled receipt view (`pages/Receipt.tsx`) with a QR to the public PII-free status page. No wallet-connect: government authenticates with the `VITE_GOV_API_TOKEN` bearer, not a wallet.
 5. **Verification consent path.**
-   Government verify currently checks the three authenticity pillars (integrity + on-chain status + issuer identity) as gasless reads. Recording a **consented `VerificationRegistry` presentation** for a government purpose (e.g. `TRAVEL_PRESENTATION` / `AIRLINE_CHECKIN`, owner-signed consent, ZK path) is the natural next increment — the contracts already support it.
+   Government verify currently checks the three authenticity pillars (integrity + on-chain status + issuer identity) as gasless reads. Recording a **consented owner-hidden `VerificationRegistryConsent` presentation** for a government purpose (e.g. `TRAVEL_PRESENTATION` / `AIRLINE_CHECKIN`) is the natural next increment — the contracts already support it.
 6. **Central discovery.**
    The government stack is not yet registered in the `stacks/admin` business directory; adding it lets the mobile app discover a government authority the same way it discovers vets/groomers.
 7. **A three-role smoke script.** ✅ **DONE** (§8) — `scripts/e2e-roles.sh` drives the cross-role chain; `scripts/demo-up.sh` now boots government as a 4th separate stack; the `government-api` `cross_role` test codifies "vet ISSUES → government VERIFIES" deterministically.
@@ -209,4 +210,4 @@ scripts/e2e-roles.sh --live     # vet ISSUES a VACCINATION → government VERIFI
 ```
 
 `--live` needs `contracts/.env` (a funded DEPLOYER key) for the vet issue + `cast`/`jq`/`python3`.
-The **groomer** verify (an owner-consent `VerificationRegistry` presentation) is wallet/phone-driven and is exercised by `scripts/e2e-smoke.sh` step 6 (§7.5 tracks folding it into `e2e-roles.sh` once a headless consent signer is wired).
+The **groomer** verify (an owner-hidden `VerificationRegistryConsent` consent proof) is phone-driven in the demo; `scripts/e2e-zk.sh` exercises it headlessly with a real `consent.circom` proof (§7.5 tracks folding a government purpose into the same consent path).

@@ -1,4 +1,0 @@
-module dogtag_standardFFI {
-    header "dogtag_standardFFI.h"
-    export *
-}

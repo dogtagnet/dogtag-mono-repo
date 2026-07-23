@@ -1,6 +1,8 @@
 # ProtocolRegistry deploy + publish runbook (M-4)
 
-Deploying the `ProtocolRegistry` and publishing the single owner-hidden `dogtag-levelb/1` record.
+Deploying the `ProtocolRegistry` and publishing the single owner-hidden protocol version.
+That version is keyed by the internal version string `dogtag-levelb/1` (artifact axis: `dogtag-levelb-artifacts/1`) - an internal identifier, not a product label.
+Its keccak keys the on-chain registry, so the string is never renamed.
 
 **Status: NOT YET RUN.**
 `ProtocolRegistry` is absent from `contracts/deployments/roax.json`, so no anchor exists on ROAX today.
@@ -80,9 +82,9 @@ forge script contracts/script/PublishProtocolVersions.s.sol:PublishProtocolVersi
   --rpc-url $ROAX_RPC --broadcast --legacy --private-key $PUBLISHER_KEY
 ```
 
-This stages **three** records in one batch — the `dogtag-levelb/1` contract set, its artifact set, and
-their binding. Their timelocks run **concurrently**, so this is still a two-phase rollout, not three
-sequential waits.
+This stages **three** records in one batch - the `dogtag-levelb/1` contract set, its
+`dogtag-levelb-artifacts/1` artifact set, and their binding. Their timelocks run **concurrently**, so
+this is still a two-phase rollout, not three sequential waits.
 On the ROAX zero-delay deployment, every ETA equals the proposal block timestamp.
 
 The script prints each ETA. Record them; Phase 2 is invalid before the latest one elapses.
@@ -120,7 +122,10 @@ Four places must agree, or the app fails closed with `AppTooOld`:
 | `crates/dogtag-prover-rs/src/manifest.rs` | `LEVEL_B_ARTIFACT_RELEASE.min_app_version` |
 
 The last two are mirrors of each other and are what gets published here; the first two are the build
-being gated. M-4 PR4 locks all four values to **`1.4.0`**. Step 2 must publish that exact floor;
+being gated.
+(The `levelB*` / `LEVEL_B_*` code identifiers mirror the internal version key `dogtag-levelb/1` and,
+like it, are never renamed.)
+M-4 PR4 locks all four values to **`1.4.0`**. Step 2 must publish that exact floor;
 re-publishing a corrected `minAppVersion` costs a fresh propose plus the registry's immutable
 timelock (2 days on mainnet; immediate on the ROAX fast-path deployment).
 

@@ -109,9 +109,9 @@ admin signer (it is also read by `demo-bootstrap.sh`, `demo-prepare-phone.sh`, a
 harnesses). Since Governance Phase-2 (executed on-chain 2026-07-05, block 123835) the demo tooling's admin
 authority is **governance signer-1** (`0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2`) - Phase-2 removed the
 old deployer EOA `0x119F8c7F…`'s governance/admin authority, so it can no longer grant whitelists or own
-the factory. It is **not role-free**: it still holds the legacy Level-A `DogTagSBT` `ISSUER_ROLE` and
-record-type whitelists (re-verified 2026-07-16), so it can still mint and must never be treated as a
-neutral custodian. The
+the factory. It is **not role-free**: it still holds the retired owner-revealing `DogTagSBT`'s
+`ISSUER_ROLE` and record-type whitelists (re-verified 2026-07-16), so it can still mint on that retired
+SBT and must never be treated as a neutral custodian. The
 `DEPLOYER_*` key is retained only for `forge` contract deploys and the ceremony verifier-swap scripts.
 **`contracts/.env` is LOCAL-only** - REMOTE/PROD use `stacks/admin/.env`'s `ADMIN_PRIVATE_KEY`/`ADMIN_ADDRESS`
 (also governance signer-1) instead.
@@ -120,7 +120,7 @@ neutral custodian. The
 |---|---|---|---|
 | `GOVERNANCE_PRIVATE_KEY` | the demo tooling's on-chain admin signer - **governance signer-1** (whitelistFor / SBT mint / factory createIssuer) + PLASMA gas source | signer-1's private key (`0x…`, 64 hex) - must be **FUNDED with PLASMA**; its address must be `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` | **YES - never commit** |
 | `GOVERNANCE_ADDRESS` | the address of `GOVERNANCE_PRIVATE_KEY` (governance signer-1) | `0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2` (derive: `cast wallet address --private-key <GOVERNANCE_PRIVATE_KEY>`) | no |
-| `DEPLOYER_PRIVATE_KEY` | deploying EOA for `forge` contract deploys / the ceremony verifier-swap scripts only - **NOT** admin ops (Phase-2 removed its governance/admin authority; it still holds legacy Level-A `ISSUER_ROLE` + record-type whitelists, so it is not a neutral key) | a funded ROAX EOA private key (`0x…`, 64 hex) | **YES - never commit** |
+| `DEPLOYER_PRIVATE_KEY` | deploying EOA for `forge` contract deploys / the ceremony verifier-swap scripts only - **NOT** admin ops (Phase-2 removed its governance/admin authority; it still holds the retired owner-revealing SBT's `ISSUER_ROLE` + record-type whitelists, so it is not a neutral key) | a funded ROAX EOA private key (`0x…`, 64 hex) | **YES - never commit** |
 | `DEPLOYER_ADDRESS` | the address of `DEPLOYER_PRIVATE_KEY` | derive: `cast wallet address --private-key <DEPLOYER_PRIVATE_KEY>` | no |
 | `ROAX_RPC` | chain RPC | `https://devrpc.roax.net` | no |
 
@@ -172,45 +172,45 @@ human number with `cast balance "$GOVERNANCE_ADDRESS" --rpc-url https://devrpc.r
 
 ### 2.2 `circuits/build/` — the proving artifacts
 
-The prover-service (real **ArkProver**, not the chain-invalid `StubProver`) and **both mobile apps**
-need the proving key + witness graph present in `circuits/build/`:
+The prover-service and **both mobile apps** need the owner-hidden consent proving artifacts present
+in `circuits/build/`:
 
 | File | Size | Used by |
 |---|---|---|
-| `circuits/build/verification_final.zkey` | ~65 MB | prover-service (`CIRCUITS_BUILD_DIR`) **and** vendored into each app build |
-| `circuits/build/verification.graph` | ~3 MB | prover-service witness assembly **and** vendored into each app build |
+| `circuits/build/consent_final.zkey` | ~24 MB | prover-service (`CIRCUITS_BUILD_DIR`) **and** the proving asset each app needs bundled |
+| `circuits/build/consent.r1cs` + `circuits/build/consent_js/consent.wasm` | committed | prover-service witness assembly (`CIRCUITS_BUILD_DIR`) |
+| `circuits/build/consent.graph` | (built out-of-band) | the on-device witness backend each app needs bundled - **not** read by the prover-service |
 
-The zkey is **gitignored in the apps**, so it must be vendored into each app **every build** (see
-[MOBILE_BUILD.md](./MOBILE_BUILD.md)).
+The proving assets are **gitignored in the apps**, so they are vendored into each app build (see
+[MOBILE_BUILD.md](./MOBILE_BUILD.md) for what the current app builds require).
 
-> **M-4 (Level-B):** each app now *also* bundles the owner-hidden consent pair `consent_final.zkey` +
-> `consent.graph` (version `dogtag-levelb/1`). The consent zkey is **committed** under `circuits/build/`
-> (so it is present on a fresh clone); `consent.graph` is built out-of-band with iden3's `build-circuit`,
-> like `verification.graph`. Level-A stays the default, so the apps still build and prove without the
-> consent pair — see [MOBILE_BUILD.md §4](./MOBILE_BUILD.md).
-
-> **Note:** on a fresh clone the committed zkeys (`verification_final.zkey`, `consent_final.zkey`) are
-> already present; only the `.graph` files are **not** committed — build `verification.graph` /
-> `consent.graph` out-of-band with iden3's `build-circuit` (see [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)).
+> **Note:** the consent zkey is **committed** under `circuits/build/` (present on a fresh clone; sha256
+> `f83a111f…`, unconditionally pinned by the prover - `CONSENT_EXPECTED_ZKEY_SHA256` only **overrides**
+> the pin for a deployment shipping a different key; unset = enforce the pinned testnet hash); `consent.graph` is
+> **not** committed - build it out-of-band with iden3's `build-circuit` (see
+> [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)). The artifact pair carries the internal protocol version key
+> `dogtag-levelb/1` (an internal identifier, not a product label).
+> The retired verification-circuit artifacts (`verification_final.zkey`, `verification.r1cs`, …) remain
+> in `circuits/build/` only as frozen provenance for the retired owner-revealing path - nothing builds
+> or serves them.
 > Run the Verify below first to confirm what you actually have.
 
 **Verify both artifacts exist:**
 
 ```bash
-ls -la circuits/build/verification_final.zkey circuits/build/verification.graph
+ls -la circuits/build/consent_final.zkey circuits/build/consent.graph
 ```
 
-**Verify.** Both files are listed, non-empty (zkey ~65 MB, graph ~3 MB).
+**Verify.** Both files are listed, non-empty (zkey ~24 MB).
 
 **STOP if** either is missing:
 - **Symptom:** `ls: … No such file or directory`.
-- **Likely cause:** the circuit hasn't been built / the artifacts weren't checked out.
-- **Fix:** the two `*_final.zkey` are committed, so a missing zkey means a broken checkout; the `.graph`
-  files are never committed — build them out-of-band with iden3's `build-circuit` (see
-  [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)). Without these, a prover-service started **without**
-  `CIRCUITS_BUILD_DIR` silently loads the **StubProver** (proofs are NOT chain-valid); one started
-  **with** `CIRCUITS_BUILD_DIR` pointing at the empty dir is **fail-closed** and **exits on boot**.
-  Either way the apps cannot prove on-device.
+- **Likely cause:** the graph hasn't been built / the artifacts weren't checked out.
+- **Fix:** `consent_final.zkey` is committed, so a missing zkey means a broken checkout; `consent.graph`
+  is never committed - build it out-of-band with iden3's `build-circuit` (see
+  [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)). Without these, the prover-service is **fail-closed per
+  request**: `POST /prove-consent` returns unavailable (it never serves a non-chain-valid proof), and
+  the apps cannot prove on-device.
 
 ### 2.3 REMOTE / PROD — `stacks/<x>/.env`
 
@@ -285,7 +285,7 @@ cast chain-id --rpc-url https://devrpc.roax.net          # -> 135
 set -a; source contracts/.env; set +a
 cast balance "$DEPLOYER_ADDRESS" --rpc-url https://devrpc.roax.net   # -> > 0
 # proving artifacts present (§2.2):
-ls circuits/build/verification_final.zkey circuits/build/verification.graph
+ls circuits/build/consent_final.zkey circuits/build/consent.graph
 ```
 
 **Verify.** Every `--version` prints a line; `cast chain-id` → `135`; `cast balance` → a number
@@ -296,8 +296,8 @@ ls circuits/build/verification_final.zkey circuits/build/verification.graph
 - `cast chain-id` not `135` → wrong RPC; use `https://devrpc.roax.net`.
 - `cast balance` is `0` or `contracts/.env` is missing → fix [§2.1](#21-contractsenv--funded-deployer-local-only)
   (a zero-balance deployer cannot bootstrap).
-- `circuits/build/*` missing → fix [§2.2](#22-circuitsbuild--the-proving-artifacts) (else the prover
-  loads the StubProver — proofs are not chain-valid).
+- `circuits/build/*` missing → fix [§2.2](#22-circuitsbuild--the-proving-artifacts) (else consent
+  proving is unavailable - the prover fails closed rather than serving a non-chain-valid proof).
 
 ### 3.2 REMOTE / PROD — verify all
 
@@ -347,7 +347,7 @@ cmake --version
 # `cargo build --features prover`); not needed for assembleDebug:
 cargo --version
 # proving key+graph must exist before vendoring into the apps (§2.2):
-ls circuits/build/verification_final.zkey circuits/build/verification.graph
+ls circuits/build/consent_final.zkey circuits/build/consent.graph
 ```
 
 **Verify.** iOS: `xcodebuild -version` → `Xcode 15+`, `xcodegen --version` prints a version. Android:
@@ -362,8 +362,9 @@ ls circuits/build/verification_final.zkey circuits/build/verification.graph
   `~/Library/Android/sdk/platform-tools/adb`; ensure `apps/android/local.properties` `sdk.dir` is set
   ([§2.4](#24-mobile-android--appsandroidlocalproperties)).
 - `./gradlew` fails on SDK → fix `local.properties` `sdk.dir`.
-- `circuits/build/*` missing → fix [§2.2](#22-circuitsbuild--the-proving-artifacts); the zkey is
-  gitignored in the apps and must be vendored each build (see [MOBILE_BUILD.md](./MOBILE_BUILD.md)).
+- `circuits/build/*` missing → fix [§2.2](#22-circuitsbuild--the-proving-artifacts); the proving
+  assets are gitignored in the apps and are vendored at build time (see
+  [MOBILE_BUILD.md](./MOBILE_BUILD.md)).
 
 ---
 

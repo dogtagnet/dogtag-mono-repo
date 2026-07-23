@@ -478,21 +478,21 @@ mod tests {
         assert_ne!(ta.root, tb.root, "R must differ per tag");
     }
 
-    /// Drift guard: the tree MUST use the per-tag derivation. A regression to the wallet-level
-    /// key would still produce a valid-looking tree, so assert the leaf against the per-tag key
-    /// explicitly and assert it does NOT match the wallet-level one.
+    /// Drift guard: the tree MUST use the per-tag derivation. A regression to a seed-only
+    /// (per-wallet) key would still produce a valid-looking tree, so assert the leaf against the
+    /// per-tag key explicitly and assert it moves with the dogTagId.
     #[test]
-    fn the_consent_key_leaf_commits_the_per_tag_key_not_the_wallet_key() {
+    fn the_consent_key_leaf_commits_the_per_tag_key() {
         let id = tag_id();
         let tree = build_profile_tree(SEED, id, &addr(), &attrs()).unwrap();
 
         let per_tag = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, id);
         assert_eq!(tree.consent_prv, per_tag.prv, "tree must use the per-tag consent key");
 
-        let wallet_level = crate::eddsa::derive_babyjub_consent_key_from_seed(SEED);
+        let other_tag = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, Fr::from(999u64));
         assert_ne!(
-            tree.consent_prv, wallet_level.prv,
-            "tree must NOT use the seed-only wallet-level consent key"
+            tree.consent_prv, other_tag.prv,
+            "the consent key must be bound to THIS dogTagId, not seed-only"
         );
     }
 
