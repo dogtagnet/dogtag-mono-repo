@@ -39,10 +39,11 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | Contract | Address |
 |---|---|
 | IssuerRegistry | `0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21` |
-| DogTagSBT (RETIRED owner-revealing SBT; source deleted; instance kept for historical reads, pending removal at the fresh redeploy) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
+| DogTagSBT (RETIRED owner-revealing SBT; source deleted; instance kept for historical reads only) | `0x1FB8986573Ac36d532cF7d5a5352202B094D4233` |
 | DogTagSBTConsent (**the live owner-hidden SBT**; write-once `profileRoot`; custodial mint target of `POST /profiles/issue/custodial-bind`) | `0xBEbc45A838643D27004827b797b30A464b2b02c0` |
 | DogTagIssuerFactory | `0xED20269E3eBF0119739aaB5258741F3aEb49F140` |
 | DogTagIssuerImpl (clone impl) | `0xe4aC139eB257C309Ec448C116A6F657Dab5590BA` |
+| ProtocolRegistry (two-axis discovery anchor; zero-timelock testnet instance; `dogtag-levelb/1` published + active) | `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` |
 | ConsentKeyRegistry (RETIRED; the consent key now lives inside the tree as the per-tag `owner.consentKey` leaf - there is no on-chain key registry) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 | Poseidon6 (deployed with the retired owner-revealing set; historical) | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 | VerificationRegistry (RETIRED owner-revealing registry; source deleted; final instance kept for historical reads) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |
@@ -98,7 +99,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
 | `stacks/admin` | Central registry, issuer whitelisting, mobile API, appointment source-of-truth, erasure | We host |
-| `contracts` | shared base (`IssuerRegistry` · `DogTagIssuer` clones + factory/root index · `ProtocolRegistry` · `IERC5192`) + the owner-hidden set `Groth16VerifierConsent` · `DogTagSBTConsent` (write-once `profileRoot`, neutral custodial sink) · `VerificationRegistryConsent` (owner-blind `Verified`). The retired owner-revealing sources (`DogTagSBT`/`VerificationRegistry`/`ConsentKeyRegistry`/`Groth16Verifier`) are deleted from the repo; their already-deployed instances remain on-chain only for historical reads, pending removal at the fresh redeploy | ROAX |
+| `contracts` | shared base (`IssuerRegistry` · `DogTagIssuer` clones + factory/root index · `ProtocolRegistry` · `IERC5192`) + the owner-hidden set `Groth16VerifierConsent` · `DogTagSBTConsent` (write-once `profileRoot`, neutral custodial sink) · `VerificationRegistryConsent` (owner-blind `Verified`). The retired owner-revealing sources (`DogTagSBT`/`VerificationRegistry`/`ConsentKeyRegistry`/`Groth16Verifier`) are deleted from the repo; their already-deployed instances remain on-chain only for historical reads | ROAX |
 | `circuits` | Groth16 owner-hidden consent circuit `DogTagConsent(6)` (reserved-owner-leaf Merkle membership + EdDSA consent + hidden-owner nullifier; depth 6, ≤64 leaves); the retired owner-revealing `verification.circom` is gone from source, its frozen build products kept as provenance | Prover image |
 | `crates/dogtag-standard-rs`, `packages/dogtag-standard-ts` | The open data standard: canonicalization + Poseidon-Merkle + verify + consent | Shared (UniFFI → mobile) |
 | `crates/dogtag-prover-rs` | ark-circom + ark-groth16 proof builder — **test oracle** for `scripts/e2e-zk.sh` (prod proving is **on-device** via mopro) | test/e2e |
@@ -189,8 +190,9 @@ Cross-cutting CI guardrails enforce the privacy claims:
 > (`DogTagSBTConsent` + `VerificationRegistryConsent` + `Groth16VerifierConsent`).
 > The phases table above is history: the owner-revealing subsystem built in Phase 2/2.5 was later retired
 > in favor of the consent set, and its sources are gone from the repo.
-> The ROAX testnet is disposable: a fresh wipe + redeploy of the unified deployment is the upcoming step,
-> and no pre-unification records survive it.
+> The ROAX testnet is disposable: the fresh redeploy of the unified deployment executed on 2026-07-23
+> (`_r8_fresh_redeploy` in `roax.json`) - the live set starts empty-fresh, no pre-unification records
+> carry over, and the retired-generation instances remain on-chain as deployment history only.
 > The demo backends run from the in-memory store via `scripts/demo-up.sh` (Docker compose files are also
 > present and validated by syntax). The shipped consent trusted setup is a **single-operator testnet** run
 > (`docs/CEREMONY_TRANSCRIPT.consent.md`); production requires the multi-party ceremony in

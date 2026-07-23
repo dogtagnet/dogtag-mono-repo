@@ -451,8 +451,8 @@ DOM=<DOMAIN>                          # this business's real domain
    **lowercased**; the prefix is the literal `dogtag-verify=`; the checker (Cloudflare DoH,
    `accept: application/dns-json`) matches a TXT record whose value **contains** that token. See §4 and
    [`stacks/admin/api/src/dns.rs`](../stacks/admin/api/src/dns.rs) (`expected_txt`).
-   For example, a business whose clone is `0x5c70…cDb53` publishes
-   `dogtag-verify=0x5c703910111f942ee0f47e02214291b5274cdb53`.
+   For example, a business whose clone is `0x1456…edD9A` publishes
+   `dogtag-verify=0x1456f93f7376789c46408cc4616751eb853edd9a`.
 
    **Verify.** The TXT resolves with the lowercased clone before you approve:
    ```bash

@@ -4,10 +4,10 @@ Deploying the `ProtocolRegistry` and publishing the single owner-hidden protocol
 That version is keyed by the internal version string `dogtag-levelb/1` (artifact axis: `dogtag-levelb-artifacts/1`) - an internal identifier, not a product label.
 Its keccak keys the on-chain registry, so the string is never renamed.
 
-**Status: NOT YET RUN.**
-`ProtocolRegistry` is absent from `contracts/deployments/roax.json`, so no anchor exists on ROAX today.
+**Status: EXECUTED on ROAX (2026-07-23, the r8 fresh redeploy).**
+`ProtocolRegistry` is deployed at `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` (recorded in `contracts/deployments/roax.json`), with `PUBLISH_TIMELOCK = 0` (the explicit testnet opt-in below) and the single version published and **active** on both axes: `dogtag-levelb/1` + `dogtag-levelb-artifacts/1` + their binding (propose → immediate execute).
 
-This document is the prepared procedure only.
+This document remains the reproducible procedure (a future environment, or a mainnet deploy with the full 2-day timelock).
 Executing it requires the governance/publisher key and is the captain's to authorize and run.
 
 ## Why this is the long pole
