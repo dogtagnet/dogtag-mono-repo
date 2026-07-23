@@ -70,8 +70,9 @@ object CentralApi {
 
     /**
      * D1: one vet-salted identity attribute leaf the device MUST fold into R alongside the pet
-     * attributes. The salt is the VET's - it re-verifies each leaf's inclusion in R at bind and
-     * refuses the mint otherwise - and the device persists the triple as a disclosure opening.
+     * attributes. The salt is the VET's - at bind it requires the posted identity openings to
+     * EXACTLY match its own stored set while rebuilding R from the full leaf list, refusing the
+     * mint otherwise - and the device persists the triple as a disclosure opening.
      */
     data class IdentityLeaf(
         val keyPath: String,
@@ -127,37 +128,41 @@ object CentralApi {
         }
     }
 
-    /** One bind-time identity inclusion proof: the Merkle path ONLY - the vet recomputes the leaf
-     * from its own stored `{keyPath, salt, value}`, so no identity value is re-sent here. */
-    data class IdentityProof(val keyPath: String, val proof: List<String>)
-
     /**
-     * POST `{token, root, identityProofs}`. No owner address or signature crosses this boundary;
-     * `identityProofs` carries only keyPaths + Merkle paths (D1 integrity gate).
+     * POST `{token, root, leaves, reservedLeafHashes}`. No owner address or signature crosses this
+     * boundary. `leaves` opens EVERY attribute leaf of the tree (pet and identity alike) and
+     * `reservedLeafHashes` names the owner-control triple's leaf hashes OPAQUELY - the vet rebuilds
+     * `R` from them (the D1 full-leaf-list attestation-integrity gate) and refuses the mint unless
+     * it commits exactly the vet-attested identity. The reserved leaves' PREIMAGES (owner address,
+     * consent key, owner secret) never cross this boundary.
      */
     suspend fun bindCustodialIssue(
         host: String,
         token: String,
         root: String,
-        identityProofs: List<IdentityProof> = emptyList(),
+        leaves: List<BackedUpAttribute>,
+        reservedLeafHashes: List<String>,
     ): CustodialBind? {
         if (token.isBlank() || root.isBlank()) return null
-        val bodyJson = JSONObject().put("token", token).put("root", root)
-        if (identityProofs.isNotEmpty()) {
-            bodyJson.put(
-                "identityProofs",
+        val body = JSONObject()
+            .put("token", token)
+            .put("root", root)
+            .put(
+                "leaves",
                 JSONArray().apply {
-                    identityProofs.forEach { p ->
+                    leaves.forEach { l ->
                         put(
                             JSONObject()
-                                .put("keyPath", p.keyPath)
-                                .put("proof", JSONArray(p.proof)),
+                                .put("keyPath", l.keyPath)
+                                .put("saltHex", l.saltHex)
+                                .put("tag", l.tag.toInt())
+                                .put("value", l.value),
                         )
                     }
                 },
             )
-        }
-        val body = bodyJson.toString()
+            .put("reservedLeafHashes", JSONArray(reservedLeafHashes))
+            .toString()
         return try {
             val response = Http.postJson(
                 "$host/profiles/issue/custodial-bind",

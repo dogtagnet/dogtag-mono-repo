@@ -42,10 +42,10 @@ const DEVICE_SEED: &[u8] = b"DogTag custodial-bridge test seed - TEST MATERIAL O
 
 fn start_body() -> serde_json::Value {
     serde_json::json!({
-        // BLANK identity on purpose: a session with identity carries D1 identity leaves, whose
-        // bind then requires identityProofs (the attestation-integrity gate). This file tests the
-        // ANCHORING mechanics on the identity-less degrade path; the identity-full path (fold,
-        // proofs, gate refusals) lives in `custodial_bind_identity_gate.rs`.
+        // BLANK identity on purpose: a session with identity carries D1 identity leaves, which the
+        // full-leaf-list attestation-integrity gate then requires the bind to open. This file tests
+        // the ANCHORING mechanics on the identity-less degrade path; the identity-full path (fold,
+        // openings, gate refusals) lives in `custodial_bind_identity_gate.rs`.
         "ownerIdentity": {
             "countryOfIdentification": "",
             "identification": "",
@@ -65,14 +65,33 @@ fn start_body() -> serde_json::Value {
     })
 }
 
-/// Fold a profile root `R` exactly as the OWNER'S DEVICE does: the real `build_profile_tree` over a
-/// wallet seed the server never sees. Returns `R` as `0x`-hex.
+/// The device's bind payload pieces: `R`, the opening of every attribute leaf, and the three
+/// opaque reserved leaf hashes the D1 full-leaf-list gate rebuilds `R` from.
+struct DeviceWire {
+    root: String,
+    leaves: serde_json::Value,
+    reserved: serde_json::Value,
+}
+
+impl DeviceWire {
+    fn bind_body(&self, token: &str) -> serde_json::Value {
+        serde_json::json!({
+            "token": token,
+            "root": self.root,
+            "leaves": self.leaves,
+            "reservedLeafHashes": self.reserved,
+        })
+    }
+}
+
+/// Fold a profile tree exactly as the OWNER'S DEVICE does: the real `build_profile_tree` over a
+/// wallet seed the server never sees.
 ///
 /// `dog_tag_id_field` is the KDF binding input - the whole point of the canonical-field discipline is
 /// that this parameter must be `field_of_value(Integer(handle))` and not the raw handle, so it is
 /// exposed here rather than derived, letting `raw_handle_binding_breaks_the_R_binding_fail_closed`
 /// pass the WRONG one deliberately.
-fn device_root(dog_tag_id_field: Fr) -> String {
+fn device_wire(dog_tag_id_field: Fr) -> DeviceWire {
     let mut owner_address = [0u8; 20];
     owner_address[16..].copy_from_slice(&0xdead_beefu32.to_be_bytes());
     let attributes = vec![AttributeLeaf {
@@ -82,7 +101,25 @@ fn device_root(dog_tag_id_field: Fr) -> String {
     }];
     let tree = build_profile_tree(DEVICE_SEED, dog_tag_id_field, &owner_address, &attributes)
         .expect("device-side build_profile_tree");
-    to_hex32(&tree.root)
+    DeviceWire {
+        root: to_hex32(&tree.root),
+        leaves: serde_json::json!([{
+            "keyPath": "credentialSubject.name",
+            "saltHex": format!("0x{}", hex::encode([7u8; SALT_LEN])),
+            "tag": 2,
+            "value": "Rex",
+        }]),
+        reserved: serde_json::json!([
+            to_hex32(&tree.owner_address_leaf),
+            to_hex32(&tree.consent_key_leaf),
+            to_hex32(&tree.owner_secret_leaf),
+        ]),
+    }
+}
+
+/// Just `R`, for the call sites that never reach the bind route's leaf-commitment gate.
+fn device_root(dog_tag_id_field: Fr) -> String {
+    device_wire(dog_tag_id_field).root
 }
 
 /// The CANONICAL dogTagId field — what the device binds into `R` and what the SBT is minted under.
@@ -152,15 +189,17 @@ async fn device_computed_root_mints_custodially_and_is_anchored_for_verification
     let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
 
     // The device folds R locally from its wallet seed, binding the CANONICAL dogTagId field. The
-    // server never sees the seed, the owner secret, or a wallet address.
-    let root = device_root(canonical_field(&dog_tag_id));
+    // server never sees the seed, the owner secret, or a wallet address - the bind carries the
+    // attribute openings + the opaque reserved leaf hashes, never their preimages.
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let root = wire.root.clone();
 
     let (s, b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({ "token": token, "root": root })),
+        Some(wire.bind_body(&token)),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "custodial bind: {b}");
@@ -309,13 +348,13 @@ async fn raw_handle_binding_breaks_the_r_binding_fail_closed() {
     let (_admin, op, _backend) = boot_custody(&app).await;
     let (token, dog_tag_id, session_id) = start_session(&app, &op).await;
 
-    let bad_root = device_root(field_from_uint(dog_tag_id.parse::<u64>().unwrap()));
+    let bad_wire = device_wire(field_from_uint(dog_tag_id.parse::<u64>().unwrap()));
     let (s, _b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({ "token": token, "root": bad_root })),
+        Some(bad_wire.bind_body(&token)),
     )
     .await;
     assert_eq!(
@@ -569,13 +608,14 @@ async fn a_collision_opened_after_session_start_is_refused_before_anything_reach
         .expect("a concurrent instance seals the id");
 
     // 3. The device binds its own root against the now-colliding id.
-    let root = device_root(canonical_field(&dog_tag_id));
+    let wire = device_wire(canonical_field(&dog_tag_id));
+    let root = wire.root.clone();
     let (s, b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({ "token": token, "root": root })),
+        Some(wire.bind_body(&token)),
     )
     .await;
     assert_eq!(

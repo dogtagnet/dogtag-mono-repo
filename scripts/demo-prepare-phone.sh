@@ -47,8 +47,10 @@ PHONE PREPARATION
 1. On the phone, create or restore the owner's wallet/owner secret. The phone needs no gas.
 2. In the VET portal, open Register pet, enter the owner identity and pet details, then Start.
    The backend allocates a fresh dogTagId and displays a one-time /p/<token> QR.
-3. Scan that QR with the phone. The phone folds its owner secret into profile root R and submits only
-   {token, root} to POST /profiles/issue/custodial-bind. No owner address enters the request or chain.
+3. Scan that QR with the phone. The phone folds its owner secret into profile root R and submits
+   {token, root, leaves, reservedLeafHashes} to POST /profiles/issue/custodial-bind - the attribute
+   openings plus the opaque reserved leaf hashes, never their preimages. No owner address enters the
+   request or chain.
 4. Keep the portal open until the issuance session reports bound and shows its transaction proof.
 5. Issue the pet's VACCINATION record for that session's dogTagId, then scan its import QR on the phone.
 6. In the groomer portal, start a consent verification and scan its /x/<token> QR with the phone.

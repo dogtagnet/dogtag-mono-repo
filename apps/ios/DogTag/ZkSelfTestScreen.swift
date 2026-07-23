@@ -84,7 +84,7 @@ private func runZkSelfTest(_ onStatus: @escaping (String) -> Void) -> ZkSelfTest
         "7",
         "97433442488726861213578988847752201310395502865",
         "10082827006016799336744122064490401655461844512429394449644692943092461376845",
-        "17331201248350577047385658568212808264533738615016772120609589632882809234778",
+        "16272705119130550328684133240225299777651023887772779485808543219167759832756",
         "19",
         "1893456000",
     ]
@@ -100,6 +100,24 @@ private func runZkSelfTest(_ onStatus: @escaping (String) -> Void) -> ZkSelfTest
             "salt": "0x09090909090909090909090909090909",
             "tag": 2,
             "value": "Shiba Inu",
+        ],
+        [
+            "keyPath": "owner.identity.fullName",
+            "salt": "0x15151515151515151515151515151515",
+            "tag": 2,
+            "value": "Alice Owner",
+        ],
+        [
+            "keyPath": "owner.identity.country",
+            "salt": "0x16161616161616161616161616161616",
+            "tag": 2,
+            "value": "GB",
+        ],
+        [
+            "keyPath": "owner.identity.docNumber",
+            "salt": "0x17171717171717171717171717171717",
+            "tag": 2,
+            "value": "PASSPORT-123",
         ],
     ]
 

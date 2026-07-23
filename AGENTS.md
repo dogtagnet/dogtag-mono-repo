@@ -873,11 +873,21 @@ The sharp edges:
 - **Salt ownership differs by namespace.** Pet-attribute salts are device-random; identity-leaf
   salts are VET-generated at `profile_issue_session_start` and travel to the device via the
   `/p/<token>` `identityLeaves` block. That is what powers the bind-time ATTESTATION-INTEGRITY
-  GATE: custodial-bind recomputes each identity leaf from the vet's OWN stored
-  `{keyPath, salt, value}` and refuses the bind (400, before ANY chain write, token consumed)
-  unless every device-posted `identityProofs` path folds it to the posted `R`. A session whose
-  operator collected no identity carries no leaves and binds proof-less (the degrade path);
-  unexpected proofs are refused, not ignored. Tests: `custodial_bind_identity_gate.rs`.
+  GATE, a FULL-LEAF-LIST commitment check (`routes.rs::verify_leaf_commitment`): custodial-bind
+  requires the device to OPEN every attribute leaf of its tree (`leaves`) and name the reserved
+  owner-control triple's leaf hashes opaquely (`reservedLeafHashes`, exactly 3, preimages never
+  sent); the vet recomputes every opened leaf, requires the `owner.identity.*` openings to
+  EXACTLY equal its stored `{keyPath, salt, value}` set (no missing/extra/duplicate/altered
+  entry - INJECTION of an unattested identity leaf is refused, not just replacement), rebuilds
+  the Merkle root from [3 reserved hashes + attribute hashes], and refuses the bind (400, before
+  ANY chain write, token consumed) unless it equals the posted `R`. A forged identity leaf must
+  either be opened (refused by exact-set equality) or displace a reserved leaf hash - and a tree
+  missing a reserved leaf can never produce a consent proof, while disclosures are only accepted
+  alongside a consent proof for the same `R`. The bind deliberately reveals the device-random
+  pet-attribute salts to the vet - zero-cost, the vet supplied every attribute value in the
+  first place. A session whose operator collected no identity degrades to an EMPTY identity
+  subset; posted identity openings against it are refused, not ignored. Tests:
+  `custodial_bind_identity_gate.rs`.
 - **`ProfileDisclosure` wire shape is Rust-owned.** `{dogTagId, R, disclosures:[{keyPath, saltHex,
   tag, value, proof}]}` (proof steps `"promote"` | `0x..` sibling hex), produced by
   `build_profile_disclosure_json` and consumed by `disclosure::verify_profile_disclosure` - mobile

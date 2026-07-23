@@ -68,9 +68,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import io.liberalize.dogtag.profile.BackedUpAttribute
+import io.liberalize.dogtag.profile.ProfileTreeBuilder
 import androidx.compose.material3.Switch
 import uniffi.dogtag_standard.AttributeLeafFfi
 import uniffi.dogtag_standard.ConvenienceClaims
+import uniffi.dogtag_standard.ProfileTreeFfi
 import uniffi.dogtag_standard.TrustedAnchor
 import uniffi.dogtag_standard.buildProfileDisclosureJson
 import uniffi.dogtag_standard.dogTagIdFieldHex
@@ -320,14 +322,15 @@ private fun IssuePanel(
                                     val existing = withContext(Dispatchers.IO) {
                                         treeStore.load().firstOrNull { it.dogTagIdDec == resolved.dogTagId }
                                     }
-                                    // D1: identity leaves keep the VET's salts (the bind-time gate
-                                    // recomputes each leaf from the vet's own {keyPath,salt,value});
-                                    // pet attrs keep device-random salts. One combined list -
+                                    // D1: identity leaves keep the VET's salts (the bind-time
+                                    // full-leaf-list gate requires the posted identity openings to
+                                    // EXACTLY match the vet's own {keyPath,salt,value} set); pet
+                                    // attrs keep device-random salts. One combined list -
                                     // pet-then-identity - feeds the build, the retry compare, the
-                                    // persisted openings, and the inclusion proofs alike.
+                                    // persisted openings, and the bind's leaf openings alike.
                                     val identityAttrs = resolved.identityLeaves.map { it.asAttribute() }
                                     val attributes: List<BackedUpAttribute>
-                                    val root: String
+                                    val tree: ProfileTreeFfi
                                     if (existing != null) {
                                         check(existing.derivationVersion == ProfileTreeStore.DERIVATION_VERSION) {
                                             "existing owner secret uses an unsupported derivation version"
@@ -339,37 +342,45 @@ private fun IssuePanel(
                                             "issuance retry metadata differs from the persisted profile"
                                         }
                                         attributes = existing.attributes
-                                        root = withContext(Dispatchers.Default) {
+                                        tree = withContext(Dispatchers.Default) {
                                             treeStore.verifyRecoverable(seedHex, existing)
+                                            // Deterministic rebuild from the persisted record for
+                                            // the reserved leaf hashes; nothing new is persisted.
+                                            ProfileTreeBuilder.buildForIdField(
+                                                seedHex = seedHex,
+                                                dogTagIdFieldHex = existing.dogTagIdHex,
+                                                ownerAddress = existing.ownerAddress,
+                                                attributes = existing.attributes.map {
+                                                    ProfileTreeBuilder.Attribute(it.keyPath, it.saltHex, it.tag, it.value)
+                                                },
+                                            )
                                         }
                                     } else {
                                         attributes = resolved.pet.attributes(::randomSalt16) + identityAttrs
-                                        root = withContext(Dispatchers.Default) {
+                                        tree = withContext(Dispatchers.Default) {
                                             treeStore.buildAndPersist(
                                                 seedHex = seedHex,
                                                 dogTagIdDec = resolved.dogTagId,
                                                 ownerAddress = wallet.ethAddress,
                                                 attributes = attributes,
-                                            ).rootHex
-                                        }
-                                    }
-                                    // The bind's identityProofs: Merkle paths only, computed by the
-                                    // SAME Rust disclosure builder the verify flow uses.
-                                    val identityProofs = if (identityAttrs.isEmpty()) emptyList() else {
-                                        withContext(Dispatchers.Default) {
-                                            identityInclusionProofs(
-                                                seedHex = seedHex,
-                                                dogTagIdDec = resolved.dogTagId,
-                                                ownerAddress = wallet.ethAddress,
-                                                attributes = attributes,
-                                                identityKeyPaths = identityAttrs.map { it.keyPath },
                                             )
                                         }
                                     }
+                                    // The bind's full-leaf-list commitment: every attribute opening
+                                    // plus the three OPAQUE reserved leaf hashes (never their
+                                    // preimages) - the vet rebuilds R from exactly this list.
+                                    val root = tree.rootHex
+                                    val reservedLeafHashes = listOf(
+                                        tree.ownerAddressLeafHex,
+                                        tree.consentKeyLeafHex,
+                                        tree.ownerSecretLeafHex,
+                                    )
 
-                                    status = "Sending only R to the vet…"
+                                    status = "Sending the profile commitment to the vet…"
                                     val bind = withContext(Dispatchers.IO) {
-                                        CentralApi.bindCustodialIssue(qr.host, qr.token, root, identityProofs)
+                                        CentralApi.bindCustodialIssue(
+                                            qr.host, qr.token, root, attributes, reservedLeafHashes,
+                                        )
                                     }
                                     if (bind != null) {
                                         check(bind.dogTagId.isBlank() || bind.dogTagId == resolved.dogTagId) {
@@ -885,37 +896,6 @@ private fun labelFieldHex(label: String): String {
     if (label.isBlank()) return "0x" + "00".repeat(32)
     return "0x" + Keccak256.digest(label.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
-}
-
-/**
- * Compute the bind's `identityProofs` - `[{keyPath, proof}]`, Merkle paths only - through the SAME
- * Rust `buildProfileDisclosureJson` the disclosure flow uses, so the path encoding can never drift
- * between the two.
- */
-private fun identityInclusionProofs(
-    seedHex: String,
-    dogTagIdDec: String,
-    ownerAddress: String,
-    attributes: List<BackedUpAttribute>,
-    identityKeyPaths: List<String>,
-): List<CentralApi.IdentityProof> {
-    if (identityKeyPaths.isEmpty()) return emptyList()
-    val json = buildProfileDisclosureJson(
-        seedHex,
-        dogTagIdFieldHex(dogTagIdDec),
-        ownerAddress,
-        attributes.map { AttributeLeafFfi(it.keyPath, it.saltHex, it.tag, it.value) },
-        identityKeyPaths,
-    )
-    val disclosures = org.json.JSONObject(json).getJSONArray("disclosures")
-    return (0 until disclosures.length()).map { i ->
-        val entry = disclosures.getJSONObject(i)
-        val steps = entry.getJSONArray("proof")
-        CentralApi.IdentityProof(
-            keyPath = entry.getString("keyPath"),
-            proof = (0 until steps.length()).map { j -> steps.getString(j) },
-        )
-    }
 }
 
 /** The persisted `owner.identity.*` openings for a tag - the leaves the owner CAN disclose. */

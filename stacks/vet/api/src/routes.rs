@@ -1546,8 +1546,9 @@ pub const KP_IDENTITY_DOC_NUMBER: &str = "owner.identity.docNumber";
 /// one leaf per NON-BLANK field, each salted with a fresh vet-generated 16-byte salt.
 ///
 /// The VET generates the salts (not the device): that is what lets the bind-time integrity gate
-/// recompute each leaf from the vet's OWN retained `{keyPath, salt, value}` and assert it folds to
-/// the posted `R` - the property that makes the identity genuinely VET-ATTESTED rather than
+/// (`verify_leaf_commitment`) require the device's posted `owner.identity.*` openings to EXACTLY
+/// equal the vet's OWN retained `{keyPath, salt, value}` set while rebuilding the posted `R` from
+/// the full leaf list - the property that makes the identity genuinely VET-ATTESTED rather than
 /// device-asserted. High-entropy salts also keep low-entropy values (a country has ~200
 /// possibilities) unguessable behind the public root.
 fn identity_leaves_for(identity: &crate::store::OwnerIdentity) -> Vec<crate::store::IdentityLeaf> {
@@ -1745,82 +1746,161 @@ async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<Stri
 #[derive(Deserialize)]
 struct ProfileCustodialBindReq {
     token: String,
-    /// The DEVICE-computed profile root `R` (0x + 64 hex). Opaque to the server EXCEPT for the D1
-    /// identity leaves, whose inclusion the integrity gate verifies below.
+    /// The DEVICE-computed profile root `R` (0x + 64 hex). The server cannot fold it itself (the
+    /// owner's seed never leaves the phone), but the D1 gate below rebuilds it from the posted
+    /// openings + reserved hashes and refuses any `R` that commits anything else.
     root: String,
-    /// D1: one Merkle inclusion proof per identity leaf the session carries. The device supplies
-    /// ONLY the path (each step `"promote"` or a `0x..` sibling hex, leaf→root order); the vet
-    /// recomputes the leaf from its OWN stored `{keyPath, salt, value}` — a caller-supplied leaf
-    /// hash is never trusted.
-    #[serde(rename = "identityProofs", default)]
-    identity_proofs: Vec<IdentityProofReq>,
+    /// D1: the opening of EVERY attribute leaf of the tree — pet AND identity alike, in any order.
+    /// The gate recomputes each leaf hash from its opening (`hash_leaf` discipline; a supplied
+    /// hash is never trusted for an opened leaf).
+    #[serde(default)]
+    leaves: Vec<LeafOpeningReq>,
+    /// D1: exactly THREE opaque `0x..` 32-byte leaf hashes — the reserved owner-control triple
+    /// (`owner.address` / `owner.consentKey` / `owner.secret` leaf hashes). Never opened: their
+    /// preimages are the owner's private material.
+    #[serde(rename = "reservedLeafHashes", default)]
+    reserved_leaf_hashes: Vec<String>,
 }
 
+/// One posted attribute-leaf opening: `{keyPath, saltHex, tag, value}`.
 #[derive(Deserialize)]
-struct IdentityProofReq {
+struct LeafOpeningReq {
     #[serde(rename = "keyPath")]
     key_path: String,
-    proof: Vec<String>,
+    #[serde(rename = "saltHex")]
+    salt_hex: String,
+    tag: u8,
+    value: String,
 }
 
-/// D1 ATTESTATION-INTEGRITY GATE (q4 §1.2): every identity leaf the session carries must be proven
-/// included in the posted `R`, recomputed from the VET's own retained `{keyPath, salt, value}`.
+/// The depth-6 consent tree (`DogTagConsent(6)`) caps a profile at 64 leaves.
+const PROFILE_TREE_CAPACITY: usize = 64;
+
+fn decode_salt_bytes(salt_hex: &str) -> Result<Vec<u8>, String> {
+    hex::decode(salt_hex.strip_prefix("0x").unwrap_or(salt_hex))
+        .map_err(|e| format!("bad salt hex: {e}"))
+}
+
+/// D1 ATTESTATION-INTEGRITY GATE — a FULL-LEAF-LIST commitment check on the posted `R`.
 ///
-/// Without this, the vet would anchor whatever `R` the device posts, blind — a device could fold a
-/// DIFFERENT identity value, and a later disclosure of that leaf would verify against
-/// `rootIssuer[R] = trusted vet`: a forged vet attestation. Refusing here is what turns "identity
-/// in `R`" into "identity **vet-attested** in `R`".
+/// The device opens EVERY attribute leaf of its tree (`leaves`) and names the three reserved
+/// owner-control leaf hashes opaquely (`reservedLeafHashes`); the vet then:
+///   1. requires exactly 3 reserved hashes and a total leaf count within the depth-6 capacity, and
+///      RECOMPUTES every attribute leaf hash from its posted opening (the `hash_leaf` discipline —
+///      a supplied hash is never trusted for an opened leaf);
+///   2. requires the posted `owner.identity.*` openings to EXACTLY equal the session's stored
+///      identity `{keyPath, salt, value}` set — no missing, extra, duplicate, or altered entry.
+///      On the degrade path (the operator collected no identity) that subset must be EMPTY.
+///      Non-identity openings are not checked against session data — only recomputed and folded;
+///   3. rebuilds the Merkle root from [the 3 reserved hashes + all recomputed attribute hashes]
+///      and requires it to equal the posted `R` exactly.
 ///
-/// A session WITHOUT identity leaves (operator collected none) degrades to the pet-only contract:
-/// no proofs required, none accepted. Extra or unknown proofs are refused rather than ignored.
-fn verify_identity_proofs(
-    leaves: &[crate::store::IdentityLeaf],
-    proofs: &[IdentityProofReq],
+/// Soundness: a forged `owner.identity.*` leaf must either be OPENED — step 2 refuses it — or
+/// hide among the 3 opaque hashes, which displaces a reserved leaf; a tree missing a reserved
+/// leaf can never produce a consent proof, and disclosures are only ever accepted alongside a
+/// consent proof for the same `R`. INJECTION of an unattested identity leaf is therefore closed,
+/// not merely replacement of an attested one (the predecessor per-leaf inclusion-proof gate
+/// proved the vet's leaves were included in `R` but could not stop a device from ALSO committing
+/// forged identity leaves beside them).
+///
+/// The bind reveals the device-random pet-attribute salts to the vet — deliberate and zero-cost:
+/// the vet supplied every attribute value in the first place, so the openings add nothing it did
+/// not already know. See docs/DPIA.md §2.1.
+fn verify_leaf_commitment(
+    session_identity: &[crate::store::IdentityLeaf],
+    leaves: &[LeafOpeningReq],
+    reserved_leaf_hashes: &[String],
     root_hex: &str,
 ) -> Result<(), String> {
-    if leaves.is_empty() {
-        if proofs.is_empty() {
-            return Ok(());
-        }
-        return Err("identityProofs posted but this session carries no identity leaves".to_string());
-    }
-    if proofs.len() != leaves.len() {
+    // (1) the reserved triple, the capacity bound, and every opening recomputed.
+    if reserved_leaf_hashes.len() != 3 {
         return Err(format!(
-            "expected {} identity inclusion proof(s), got {}",
-            leaves.len(),
-            proofs.len()
+            "expected exactly 3 reservedLeafHashes (the owner-control triple), got {}",
+            reserved_leaf_hashes.len()
         ));
     }
+    if 3 + leaves.len() > PROFILE_TREE_CAPACITY {
+        return Err(format!(
+            "3 reserved + {} attribute leaves exceeds the depth-6 tree capacity of {PROFILE_TREE_CAPACITY}",
+            leaves.len()
+        ));
+    }
+    let mut leaf_hexes: Vec<String> = Vec::with_capacity(3 + leaves.len());
+    for h in reserved_leaf_hashes {
+        let s = h.strip_prefix("0x").unwrap_or(h);
+        if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!(
+                "reserved leaf hash {h:?} is not a 0x.. 32-byte hex word"
+            ));
+        }
+        leaf_hexes.push(h.clone());
+    }
     for leaf in leaves {
-        let proof = proofs
-            .iter()
-            .find(|p| p.key_path == leaf.key_path)
-            .ok_or_else(|| format!("missing inclusion proof for identity leaf {:?}", leaf.key_path))?;
-        // The normative disclosed-leaf discipline: recompute the leaf under DS_LEAF from the vet's
-        // stored opening, then fold the device-supplied path — `verify_inclusion` semantics.
-        let folds = dogtag_standard::ffi::verify_inclusion_proof_hex(
+        let hash = dogtag_standard::ffi::hash_leaf_hex(
             leaf.key_path.clone(),
             leaf.salt_hex.clone(),
             leaf.tag,
             leaf.value.clone(),
-            proof.proof.clone(),
-            root_hex.to_string(),
         )
-        .map_err(|e| format!("identity leaf {:?}: {e}", leaf.key_path))?;
-        if !folds {
-            return Err(format!(
-                "identity leaf {:?} does not fold to the posted R",
-                leaf.key_path
-            ));
+        .map_err(|e| format!("leaf {:?}: {e}", leaf.key_path))?;
+        leaf_hexes.push(hash);
+    }
+
+    // (2) EXACT identity-set equality against the vet's own stored openings. Classified and
+    // compared on the NFC-normalized keyPath — the same predicate `build_profile_tree` guards
+    // with, since the leaf commits `field_of_keypath(nfc(kp))`.
+    let mut expected: Vec<&crate::store::IdentityLeaf> = session_identity.iter().collect();
+    for leaf in leaves {
+        let normalized = dogtag_standard::encode::nfc(&leaf.key_path);
+        if !normalized.starts_with(dogtag_standard::profile_tree::OWNER_IDENTITY_PREFIX) {
+            continue;
         }
+        let salt = decode_salt_bytes(&leaf.salt_hex)
+            .map_err(|e| format!("identity opening {:?}: {e}", leaf.key_path))?;
+        let matched = expected.iter().position(|stored| {
+            dogtag_standard::encode::nfc(&stored.key_path) == normalized
+                && decode_salt_bytes(&stored.salt_hex)
+                    .map(|b| b == salt)
+                    .unwrap_or(false)
+                && stored.tag == leaf.tag
+                && stored.value == leaf.value
+        });
+        match matched {
+            Some(i) => {
+                expected.remove(i);
+            }
+            None => {
+                return Err(format!(
+                    "identity opening {:?} does not match any vet-attested identity leaf of this \
+                     session (forged, duplicate, or altered value/salt)",
+                    leaf.key_path
+                ));
+            }
+        }
+    }
+    if let Some(missing) = expected.first() {
+        return Err(format!(
+            "missing identity opening for vet-attested leaf {:?}",
+            missing.key_path
+        ));
+    }
+
+    // (3) the posted openings + reserved hashes must rebuild the posted R exactly.
+    let rebuilt = dogtag_standard::ffi::build_merkle_root_hex(leaf_hexes)
+        .map_err(|e| format!("rebuilding R from the posted leaves: {e}"))?;
+    if !rebuilt.eq_ignore_ascii_case(root_hex) {
+        return Err(
+            "the posted leaf openings and reserved hashes do not rebuild the posted R".to_string(),
+        );
     }
     Ok(())
 }
 
 /// Shape-check a device-supplied `R`: `0x` + 64 hex, non-zero.
 ///
-/// This is the ONLY validation the server can do on `R`. It cannot recompute it - `R` folds the
-/// owner's wallet-seed-derived secret, which the server has (and must have) no access to. The
+/// The server cannot FOLD `R` itself - it folds the owner's wallet-seed-derived secret, which the
+/// server has (and must have) no access to - but `verify_leaf_commitment` above rebuilds it from
+/// the posted openings + reserved hashes, so this shape check is only the cheap edge filter. The
 /// non-zero check mirrors `mintCustodial`'s own `root == 0 -> BadRoot` so an obviously-bad request
 /// fails at the edge instead of burning gas.
 fn valid_root_hex(root: &str) -> bool {
@@ -1905,18 +1985,24 @@ async fn profile_issue_custodial_bind(
         None => return err(StatusCode::NOT_FOUND, "session not found"),
     };
 
-    // D1 ATTESTATION-INTEGRITY GATE — BEFORE anything is persisted or reaches the chain. The vet
-    // recomputes each identity leaf from its OWN stored {keyPath, salt, value} and asserts the
-    // device-supplied path folds it into the posted R; on any mismatch the bind is REFUSED with
-    // nothing written on-chain. This is what makes the committed identity vet-ATTESTED: without it
-    // a device could fold a different value and later disclose a forged "vet-confirmed" identity.
-    // Refusal settles the session (the one-time token is already consumed, mirroring the sealed-
-    // collision refusal below) — the operator starts a fresh session.
-    if let Err(reason) = verify_identity_proofs(&session.identity_leaves, &body.identity_proofs, &root)
-    {
+    // D1 ATTESTATION-INTEGRITY GATE — BEFORE anything is persisted or reaches the chain. The
+    // device opens EVERY attribute leaf and names the reserved triple's hashes opaquely; the vet
+    // recomputes each opened leaf, requires the identity openings to EXACTLY match its own stored
+    // {keyPath, salt, value} set, and rebuilds the posted R from the full leaf list. On any
+    // mismatch the bind is REFUSED with nothing written on-chain. This is what makes the committed
+    // identity vet-ATTESTED: a device can neither REPLACE a vet-attested value nor INJECT an extra
+    // owner.identity.* leaf the vet never saw (see `verify_leaf_commitment` for the soundness
+    // argument). Refusal settles the session (the one-time token is already consumed, mirroring
+    // the sealed-collision refusal below) — the operator starts a fresh session.
+    if let Err(reason) = verify_leaf_commitment(
+        &session.identity_leaves,
+        &body.leaves,
+        &body.reserved_leaf_hashes,
+        &root,
+    ) {
         let msg = format!(
-            "identity attestation integrity failed: {reason} — the posted R does not commit the \
-             vet-collected identity; start a FRESH session"
+            "identity attestation integrity failed: {reason} — the posted R must commit exactly \
+             the vet-collected identity and nothing else in owner.identity.*; start a FRESH session"
         );
         session.status = "error".to_string();
         session.tx_hash = Some(msg.clone());

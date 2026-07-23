@@ -1474,7 +1474,9 @@ public func buildMerkleRootHex(leafHexes: [String])throws  -> String {
  * Inputs mirror [`build_profile_tree_hex`] (the SAME persisted witness issuance folded), plus the
  * chosen keyPaths. The returned JSON - `{ dogTagId, R, disclosures: [{ keyPath, saltHex, tag,
  * value, proof }] }` - is the CANONICAL wire shape; embed it verbatim in the verify submission
- * (and read `identityProofs` entries out of it at custodial-bind), never hand-re-encode it.
+ * verbatim in the verify submission, never hand-re-encode it. (Custodial-bind no longer uses
+ * inclusion proofs: the bind posts the full attribute-leaf openings + the reserved leaf hashes
+ * straight off the tree build instead.)
  *
  * Every disclosed value goes to the chosen verifier in cleartext - that is what "revealing your
  * name" means - so the callers gate this behind the owner-facing picker.
@@ -1759,7 +1761,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_build_merkle_root_hex() != 1024) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dogtag_standard_checksum_func_build_profile_disclosure_json() != 22659) {
+    if (uniffi_dogtag_standard_checksum_func_build_profile_disclosure_json() != 39777) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_build_profile_tree_hex() != 20561) {

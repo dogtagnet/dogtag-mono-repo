@@ -1,15 +1,20 @@
-//! D1 - the bind-time ATTESTATION-INTEGRITY GATE (`POST /profiles/issue/custodial-bind`).
+//! D1 - the bind-time ATTESTATION-INTEGRITY GATE (`POST /profiles/issue/custodial-bind`), the
+//! FULL-LEAF-LIST commitment check.
 //!
 //! The vet collects the owner's identity at session-start, salts one `owner.identity.*` attribute
 //! leaf per field, and hands `{keyPath, salt, value}` to the device via `GET /p/<token>`. The
-//! device folds them into `R` and posts `identityProofs` (Merkle paths only) at bind; the vet
-//! recomputes each leaf from its OWN stored triple and refuses the bind unless every one folds to
-//! the posted `R` - BEFORE anything reaches the chain.
+//! device folds them into `R` and, at bind, posts the opening of EVERY attribute leaf of its tree
+//! (`leaves`, pet and identity alike) plus the three opaque reserved owner-control leaf hashes
+//! (`reservedLeafHashes`). The vet recomputes every opened leaf, requires the identity openings to
+//! EXACTLY equal its own stored set, and rebuilds the posted `R` from the full list - BEFORE
+//! anything reaches the chain.
 //!
-//! The forged-attestation test is the load-bearing one: without the gate, a device could fold a
-//! DIFFERENT identity value and later disclose it against `rootIssuer[R] = trusted vet` - a forged
-//! vet attestation. The gate is exactly what makes "identity in `R`" mean "identity VET-ATTESTED
-//! in `R`".
+//! The two refusal tests are the load-bearing ones: without the gate, a device could fold a
+//! DIFFERENT identity value (replacement) or an EXTRA identity leaf the vet never attested
+//! (injection) and later disclose it against `rootIssuer[R] = trusted vet` - a forged vet
+//! attestation. The full-list commitment closes BOTH: a forged `owner.identity.*` leaf must either
+//! be opened (refused by exact-set equality) or hide among the 3 opaque hashes (displacing a
+//! reserved leaf, and a tree missing a reserved leaf can never produce a consent proof).
 
 mod common;
 
@@ -121,40 +126,49 @@ async fn resolve_identity_leaves(app: &axum::Router, token: &str) -> Vec<Attribu
         .collect()
 }
 
-/// Fold the device tree over pet + identity attrs and emit `(R, identityProofs)` - the exact bind
-/// payload pieces the phone computes. Proofs come from the SAME `build_profile_disclosure` the
-/// mobile FFI calls, so a change to the envelope moves this test.
-fn device_root_and_proofs(
-    dog_tag_id_field: Fr,
-    identity: &[AttributeLeaf],
-) -> (String, serde_json::Value) {
-    let mut attrs = pet_attrs();
-    attrs.extend(identity.iter().cloned());
-    let tree = build_profile_tree(DEVICE_SEED, dog_tag_id_field, &owner_address(), &attrs)
-        .expect("device build_profile_tree");
-    let reveal: Vec<String> = identity.iter().map(|a| a.key_path.clone()).collect();
-    let proofs = if reveal.is_empty() {
-        serde_json::json!([])
-    } else {
-        let disclosure = dogtag_standard::disclosure::build_profile_disclosure(
-            DEVICE_SEED,
-            dog_tag_id_field,
-            &owner_address(),
-            &attrs,
-            &reveal,
-        )
-        .expect("build_profile_disclosure");
-        serde_json::Value::Array(
-            disclosure
-                .disclosures
-                .iter()
-                .map(|entry| {
-                    serde_json::json!({ "keyPath": entry.key_path, "proof": entry.proof })
-                })
-                .collect(),
-        )
+/// The device's bind payload pieces: `R`, the opening of every attribute leaf, and the three
+/// opaque reserved owner-control leaf hashes - exactly what both mobile apps compute off the
+/// SAME `build_profile_tree` the FFI wraps.
+struct DeviceWire {
+    root: String,
+    leaves: serde_json::Value,
+    reserved: serde_json::Value,
+}
+
+fn opening_of(a: &AttributeLeaf) -> serde_json::Value {
+    let value = match &a.value {
+        TypedScalar::Str(v) => v.clone(),
+        other => panic!("v1 attrs are strings, got {other:?}"),
     };
-    (to_hex32(&tree.root), proofs)
+    serde_json::json!({
+        "keyPath": a.key_path,
+        "saltHex": format!("0x{}", hex::encode(a.salt)),
+        "tag": 2,
+        "value": value,
+    })
+}
+
+fn device_wire(dog_tag_id_field: Fr, attrs: &[AttributeLeaf]) -> DeviceWire {
+    let tree = build_profile_tree(DEVICE_SEED, dog_tag_id_field, &owner_address(), attrs)
+        .expect("device build_profile_tree");
+    DeviceWire {
+        root: to_hex32(&tree.root),
+        leaves: serde_json::Value::Array(attrs.iter().map(opening_of).collect()),
+        reserved: serde_json::json!([
+            to_hex32(&tree.owner_address_leaf),
+            to_hex32(&tree.consent_key_leaf),
+            to_hex32(&tree.owner_secret_leaf),
+        ]),
+    }
+}
+
+fn bind_body(token: &str, wire: &DeviceWire) -> serde_json::Value {
+    serde_json::json!({
+        "token": token,
+        "root": wire.root,
+        "leaves": wire.leaves,
+        "reservedLeafHashes": wire.reserved,
+    })
 }
 
 async fn await_settled(app: &axum::Router, op: &str, session_id: &str) -> serde_json::Value {
@@ -176,10 +190,30 @@ async fn await_settled(app: &axum::Router, op: &str, session_id: &str) -> serde_
     panic!("session {session_id} never left pending");
 }
 
-/// HAPPY PATH: the device folds the vet-salted identity leaves into `R`, posts the paths, the gate
-/// verifies every leaf against its OWN stored openings, and the tag mints + anchors.
+async fn assert_nothing_on_chain(chain: &MemChain, dog_tag_id: &str, root: &str) {
+    let onchain_id = vet_api::routes::onchain_dog_tag_id(dog_tag_id).unwrap();
+    assert!(
+        chain
+            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
+            .await
+            .is_err(),
+        "the refused bind must not have minted"
+    );
+    assert!(
+        chain
+            .issued_at(PROFILE_ISSUER_ADDR, root)
+            .await
+            .unwrap()
+            .is_zero(),
+        "the refused bind must not have anchored"
+    );
+}
+
+/// HAPPY PATH: the device folds the vet-salted identity leaves into `R`, opens every attribute
+/// leaf, names the reserved triple's hashes, the gate verifies the identity openings against its
+/// OWN stored set and rebuilds `R` from the full list, and the tag mints + anchors.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn identity_committed_r_with_valid_proofs_binds_and_mints() {
+async fn identity_committed_r_with_full_openings_binds_and_mints() {
     let mem = MemChain::new();
     let chain = Arc::new(mem.clone());
     let app = vet_api::router(mem_state(chain.clone()));
@@ -198,13 +232,15 @@ async fn identity_committed_r_with_valid_proofs_binds_and_mints() {
         "one leaf per non-blank identity field, in the sanctioned namespace"
     );
 
-    let (root, proofs) = device_root_and_proofs(canonical_field(&dog_tag_id), &identity);
+    let mut attrs = pet_attrs();
+    attrs.extend(identity);
+    let wire = device_wire(canonical_field(&dog_tag_id), &attrs);
     let (s, b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({ "token": token, "root": root, "identityProofs": proofs })),
+        Some(bind_body(&token, &wire)),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "custodial bind: {b}");
@@ -220,16 +256,15 @@ async fn identity_committed_r_with_valid_proofs_binds_and_mints() {
             .await
             .unwrap()
             .to_lowercase(),
-        root.to_lowercase()
+        wire.root.to_lowercase()
     );
-    assert!(chain.is_valid(PROFILE_ISSUER_ADDR, &root).await.unwrap());
+    assert!(chain.is_valid(PROFILE_ISSUER_ADDR, &wire.root).await.unwrap());
 }
 
-/// THE FORGED-ATTESTATION GUARD - the single most important new test. The device folds a DIFFERENT
-/// identity value (country US, vet stored GB) using the vet's own salt, and posts proofs for its
-/// forged leaves. The gate recomputes each leaf from the VET's stored `{keyPath, salt, value}`,
-/// the forged path cannot fold the honest leaf to the forged `R`, and the bind is REFUSED with
-/// NOTHING written on-chain - so a forged "vet-attested" identity can never anchor.
+/// THE REPLACEMENT-FORGERY GUARD. The device folds a DIFFERENT identity value (country US, vet
+/// stored GB) using the vet's own salt, and opens its forged leaves. The exact-set check refuses
+/// the opening (it matches no vet-attested entry) and the bind is REFUSED with NOTHING written
+/// on-chain - so a forged "vet-attested" identity can never anchor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_root_committing_a_forged_identity_value_is_refused_before_any_chain_write() {
     let mem = MemChain::new();
@@ -247,16 +282,15 @@ async fn a_root_committing_a_forged_identity_value_is_refused_before_any_chain_w
         .expect("country leaf");
     country.value = TypedScalar::Str("US".to_string());
 
-    let (forged_root, forged_proofs) =
-        device_root_and_proofs(canonical_field(&dog_tag_id), &forged);
+    let mut attrs = pet_attrs();
+    attrs.extend(forged);
+    let wire = device_wire(canonical_field(&dog_tag_id), &attrs);
     let (s, b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({
-            "token": token, "root": forged_root, "identityProofs": forged_proofs
-        })),
+        Some(bind_body(&token, &wire)),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "forged identity must refuse: {b}");
@@ -272,28 +306,177 @@ async fn a_root_committing_a_forged_identity_value_is_refused_before_any_chain_w
 
     // NOTHING reached the chain: not the seal, not the anchor. `issue(R)` is globally write-once,
     // so firing it before the gate would have burned the R forever.
-    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
-    assert!(
-        chain
-            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
-            .await
-            .is_err(),
-        "the forged bind must not have minted"
-    );
-    assert!(
-        chain
-            .issued_at(PROFILE_ISSUER_ADDR, &forged_root)
-            .await
-            .unwrap()
-            .is_zero(),
-        "the forged bind must not have anchored"
-    );
+    assert_nothing_on_chain(&mem, &dog_tag_id, &wire.root).await;
 }
 
-/// A session WITH identity leaves refuses a bind that posts NO proofs: skipping the fold entirely
-/// is the lazier forgery, and it must fail exactly like the active one.
+/// THE INJECTION-FORGERY GUARD, opened variant. The device commits an EXTRA `owner.identity.*`
+/// leaf the vet never attested (its own salt, its own value) beside the honest set, and opens
+/// everything. The exact-set equality refuses the extra opening - injection is closed, not just
+/// replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn missing_identity_proofs_refuse_when_the_session_carries_identity() {
+async fn an_extra_opened_identity_leaf_the_vet_never_attested_is_refused() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, _backend) = boot_custody(&app).await;
+
+    let (token, dog_tag_id, session_id) = start_session(&app, &op, true).await;
+
+    let mut attrs = pet_attrs();
+    attrs.extend(resolve_identity_leaves(&app, &token).await);
+    attrs.push(AttributeLeaf {
+        key_path: "owner.identity.email".to_string(),
+        salt: [42u8; SALT_LEN],
+        value: TypedScalar::Str("alice@example.com".to_string()),
+    });
+
+    let wire = device_wire(canonical_field(&dog_tag_id), &attrs);
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(bind_body(&token, &wire)),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "injected identity must refuse: {b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("owner.identity.email"),
+        "the refusal must name the injected leaf: {msg}"
+    );
+
+    let row = await_settled(&app, &op, &session_id).await;
+    assert_eq!(row["status"], "error");
+    assert_nothing_on_chain(&mem, &dog_tag_id, &wire.root).await;
+}
+
+/// THE INJECTION-FORGERY GUARD, unopened variant. The device commits the extra forged identity
+/// leaf into `R` but does NOT open it. Its only two hiding places are both refused: withholding
+/// the opening breaks the root rebuild, and smuggling the leaf hash through `reservedLeafHashes`
+/// either exceeds the count of 3 or displaces a real reserved hash (breaking the rebuild again -
+/// and a tree missing a reserved leaf could never produce a consent proof anyway).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unopened_forged_identity_leaf_breaks_the_commitment_and_is_refused() {
+    let mem = MemChain::new();
+    let chain = Arc::new(mem.clone());
+    let app = vet_api::router(mem_state(chain.clone()));
+    let (_admin, op, _backend) = boot_custody(&app).await;
+
+    let forged_leaf = AttributeLeaf {
+        key_path: "owner.identity.email".to_string(),
+        salt: [42u8; SALT_LEN],
+        value: TypedScalar::Str("alice@example.com".to_string()),
+    };
+    let forged_hash = to_hex32(
+        &dogtag_standard::leaf::hash_leaf(
+            &forged_leaf.key_path,
+            &forged_leaf.salt,
+            &forged_leaf.value,
+        )
+        .unwrap(),
+    );
+
+    // (a) withhold the forged leaf's opening: the posted list cannot rebuild the forged R.
+    let (token, dog_tag_id, session_id) = start_session(&app, &op, true).await;
+    let honest = {
+        let mut attrs = pet_attrs();
+        attrs.extend(resolve_identity_leaves(&app, &token).await);
+        attrs
+    };
+    let mut with_forged = honest.clone();
+    with_forged.push(forged_leaf.clone());
+    let forged_tree = device_wire(canonical_field(&dog_tag_id), &with_forged);
+    let honest_openings = device_wire(canonical_field(&dog_tag_id), &honest);
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(serde_json::json!({
+            "token": token,
+            "root": forged_tree.root,
+            "leaves": honest_openings.leaves,
+            "reservedLeafHashes": forged_tree.reserved,
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "withheld forged leaf must refuse: {b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("rebuild") && msg.contains("FRESH session"),
+        "the refusal must name the broken commitment: {msg}"
+    );
+    let row = await_settled(&app, &op, &session_id).await;
+    assert_eq!(row["status"], "error");
+    assert_nothing_on_chain(&mem, &dog_tag_id, &forged_tree.root).await;
+
+    // (b) smuggle the forged leaf hash as a FOURTH reserved hash: refused by the count of 3.
+    let (token, dog_tag_id, _sid) = start_session(&app, &op, true).await;
+    let mut with_forged = pet_attrs();
+    with_forged.extend(resolve_identity_leaves(&app, &token).await);
+    let honest_identity = with_forged.clone();
+    with_forged.push(forged_leaf.clone());
+    let forged_tree = device_wire(canonical_field(&dog_tag_id), &with_forged);
+    let honest_openings = device_wire(canonical_field(&dog_tag_id), &honest_identity);
+    let mut four_hashes = forged_tree.reserved.as_array().unwrap().clone();
+    four_hashes.push(serde_json::json!(forged_hash));
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(serde_json::json!({
+            "token": token,
+            "root": forged_tree.root,
+            "leaves": honest_openings.leaves,
+            "reservedLeafHashes": four_hashes,
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "4 reserved hashes must refuse: {b}");
+    assert!(
+        b["error"].as_str().unwrap_or_default().contains("exactly 3"),
+        "the refusal must pin the reserved-triple count: {b}"
+    );
+    assert_nothing_on_chain(&mem, &dog_tag_id, &forged_tree.root).await;
+
+    // (c) displace a real reserved hash with the forged leaf hash: the rebuild is missing a
+    // reserved leaf, so it cannot reproduce R.
+    let (token, dog_tag_id, _sid) = start_session(&app, &op, true).await;
+    let mut with_forged = pet_attrs();
+    with_forged.extend(resolve_identity_leaves(&app, &token).await);
+    let honest_identity = with_forged.clone();
+    with_forged.push(forged_leaf.clone());
+    let forged_tree = device_wire(canonical_field(&dog_tag_id), &with_forged);
+    let honest_openings = device_wire(canonical_field(&dog_tag_id), &honest_identity);
+    let mut displaced = forged_tree.reserved.as_array().unwrap().clone();
+    displaced[2] = serde_json::json!(forged_hash);
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/custodial-bind",
+        None,
+        Some(serde_json::json!({
+            "token": token,
+            "root": forged_tree.root,
+            "leaves": honest_openings.leaves,
+            "reservedLeafHashes": displaced,
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "displaced reserved hash must refuse: {b}");
+    assert!(
+        b["error"].as_str().unwrap_or_default().contains("rebuild"),
+        "the refusal must name the broken commitment: {b}"
+    );
+    assert_nothing_on_chain(&mem, &dog_tag_id, &forged_tree.root).await;
+}
+
+/// A session WITH identity leaves refuses a bind whose openings omit them: skipping the identity
+/// fold entirely is the lazier forgery, and it must fail exactly like the active one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn missing_identity_openings_refuse_when_the_session_carries_identity() {
     let mem = MemChain::new();
     let chain = Arc::new(mem.clone());
     let app = vet_api::router(mem_state(chain.clone()));
@@ -301,31 +484,32 @@ async fn missing_identity_proofs_refuse_when_the_session_carries_identity() {
 
     let (token, dog_tag_id, _session_id) = start_session(&app, &op, true).await;
 
-    // Device folds ONLY pet attrs (ignoring the identity leaves) and posts no proofs.
-    let (root, _) = device_root_and_proofs(canonical_field(&dog_tag_id), &[]);
+    // Device folds ONLY pet attrs (ignoring the identity leaves) and opens only those.
+    let wire = device_wire(canonical_field(&dog_tag_id), &pet_attrs());
     let (s, b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({ "token": token, "root": root })),
+        Some(bind_body(&token, &wire)),
     )
     .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "proof-less bind must refuse: {b}");
-
-    let onchain_id = vet_api::routes::onchain_dog_tag_id(&dog_tag_id).unwrap();
+    assert_eq!(s, StatusCode::BAD_REQUEST, "identity-less openings must refuse: {b}");
     assert!(
-        chain
-            .profile_root_of(SBT_CONSENT_ADDR, &onchain_id)
-            .await
-            .is_err(),
-        "nothing may have minted"
+        b["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("missing identity opening"),
+        "the refusal must name the missing openings: {b}"
     );
+
+    assert_nothing_on_chain(&mem, &dog_tag_id, &wire.root).await;
 }
 
 /// DEGRADE PATH (the existing #74 contract): a session whose operator collected no identity has no
-/// identity leaves; the resolve carries an empty `identityLeaves` and the bind mints without
-/// proofs - while a bind that posts UNEXPECTED proofs against it is refused rather than ignored.
+/// identity leaves; the resolve carries an empty `identityLeaves` and the bind mints with an EMPTY
+/// identity subset - while a bind that opens an UNEXPECTED `owner.identity.*` leaf against it is
+/// refused rather than ignored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_without_identity_degrades_to_the_pet_only_contract() {
     let mem = MemChain::new();
@@ -333,45 +517,52 @@ async fn a_session_without_identity_degrades_to_the_pet_only_contract() {
     let app = vet_api::router(mem_state(chain.clone()));
     let (_admin, op, _backend) = boot_custody(&app).await;
 
-    // (a) no identity -> empty leaves -> proof-less bind mints.
+    // (a) no identity -> empty leaves -> a pet-only full-list bind mints.
     let (token, dog_tag_id, session_id) = start_session(&app, &op, false).await;
     let identity = resolve_identity_leaves(&app, &token).await;
     assert!(identity.is_empty(), "blank identity fields must yield no leaves");
 
-    let (root, _) = device_root_and_proofs(canonical_field(&dog_tag_id), &[]);
+    let wire = device_wire(canonical_field(&dog_tag_id), &pet_attrs());
     let (s, b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({ "token": token, "root": root })),
+        Some(bind_body(&token, &wire)),
     )
     .await;
     assert_eq!(s, StatusCode::OK, "identity-less session must still bind: {b}");
     let settled = await_settled(&app, &op, &session_id).await;
     assert_eq!(settled["status"], "bound", "{settled}");
 
-    // (b) unexpected proofs against an identity-less session are refused, not silently dropped.
+    // (b) an opened owner.identity.* leaf against an identity-less session is refused, not
+    // silently dropped.
     let (token2, dog_tag_id2, _sid2) = start_session(&app, &op, false).await;
-    let fake_identity = vec![AttributeLeaf {
+    let mut attrs2 = pet_attrs();
+    attrs2.push(AttributeLeaf {
         key_path: "owner.identity.country".to_string(),
         salt: [9u8; SALT_LEN],
         value: TypedScalar::Str("GB".to_string()),
-    }];
-    let (root2, proofs2) = device_root_and_proofs(canonical_field(&dog_tag_id2), &fake_identity);
+    });
+    let wire2 = device_wire(canonical_field(&dog_tag_id2), &attrs2);
     let (s, b) = call(
         &app,
         "POST",
         "/profiles/issue/custodial-bind",
         None,
-        Some(serde_json::json!({
-            "token": token2, "root": root2, "identityProofs": proofs2
-        })),
+        Some(bind_body(&token2, &wire2)),
     )
     .await;
     assert_eq!(
         s,
         StatusCode::BAD_REQUEST,
-        "proofs against an identity-less session must refuse: {b}"
+        "identity openings against an identity-less session must refuse: {b}"
+    );
+    assert!(
+        b["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("owner.identity.country"),
+        "the refusal must name the unexpected leaf: {b}"
     );
 }

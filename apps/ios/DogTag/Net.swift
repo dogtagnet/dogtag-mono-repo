@@ -240,9 +240,10 @@ enum CentralApi {
     }
 
     /// D1: one vet-salted identity attribute leaf the device MUST fold into `R` alongside the pet
-    /// attributes. `{keyPath, saltHex, tag, value}` - the salt is the VET's (it re-verifies each
-    /// leaf's inclusion in `R` at bind and refuses the mint otherwise), and the device persists the
-    /// triple as a disclosure opening.
+    /// attributes. `{keyPath, saltHex, tag, value}` - the salt is the VET's (at bind it requires
+    /// the posted identity openings to EXACTLY match its own stored set while rebuilding `R` from
+    /// the full leaf list, refusing the mint otherwise), and the device persists the triple as a
+    /// disclosure opening.
     struct IdentityLeaf {
         let keyPath: String
         let saltHex: String
@@ -415,24 +416,28 @@ enum CentralApi {
             identityLeaves: identityLeaves)
     }
 
-    /// POST <host>/profiles/issue/custodial-bind {token, root, identityProofs}. The device wallet
-    /// and signature never cross this boundary; ownership is the reserved secret triple committed
-    /// inside `root`. `identityProofs` carries ONLY Merkle paths (`[{keyPath, proof}]`) - the vet
-    /// recomputes each identity leaf from its own stored `{keyPath, salt, value}`, so no identity
-    /// value or salt is re-sent here.
+    /// POST <host>/profiles/issue/custodial-bind {token, root, leaves, reservedLeafHashes}. The
+    /// device wallet and signature never cross this boundary; ownership is the reserved secret
+    /// triple committed inside `root`. `leaves` opens EVERY attribute leaf of the tree (pet and
+    /// identity alike) and `reservedLeafHashes` names the owner-control triple's leaf hashes
+    /// OPAQUELY - the vet rebuilds `R` from them (the D1 full-leaf-list attestation-integrity
+    /// gate); the reserved leaves' preimages never cross this boundary.
     static func bindDogTagIssue(
         host: String,
         token: String,
         root: String,
-        identityProofs: [[String: Any]] = []
+        leaves: [[String: Any]],
+        reservedLeafHashes: [String]
     ) async -> CustodialBindResult {
         guard !token.isEmpty, !root.isEmpty else {
             return .rejected(statusCode: -1, body: "missing token or root")
         }
-        var body: [String: Any] = ["token": token, "root": root]
-        if !identityProofs.isEmpty {
-            body["identityProofs"] = identityProofs
-        }
+        let body: [String: Any] = [
+            "token": token,
+            "root": root,
+            "leaves": leaves,
+            "reservedLeafHashes": reservedLeafHashes,
+        ]
         guard let raw = try? JSONSerialization.data(withJSONObject: body),
               let bodyStr = String(data: raw, encoding: .utf8) else {
             return .rejected(statusCode: -1, body: "could not encode request")

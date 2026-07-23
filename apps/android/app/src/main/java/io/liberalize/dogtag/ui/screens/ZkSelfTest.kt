@@ -106,13 +106,19 @@ private fun runZkSelfTest(context: Context, onStatus: (String) -> Unit): ZkSelfT
             .put("salt", "0x07070707070707070707070707070707").put("tag", 2).put("value", "Rex"))
         put(JSONObject().put("keyPath", "credentialSubject.breedLabel")
             .put("salt", "0x09090909090909090909090909090909").put("tag", 2).put("value", "Shiba Inu"))
+        put(JSONObject().put("keyPath", "owner.identity.fullName")
+            .put("salt", "0x15151515151515151515151515151515").put("tag", 2).put("value", "Alice Owner"))
+        put(JSONObject().put("keyPath", "owner.identity.country")
+            .put("salt", "0x16161616161616161616161616161616").put("tag", 2).put("value", "GB"))
+        put(JSONObject().put("keyPath", "owner.identity.docNumber")
+            .put("salt", "0x17171717171717171717171717171717").put("tag", 2).put("value", "PASSPORT-123"))
     }.toString()
     val expected = listOf(
         "19282080935305080861096842252900215298393603684181619512414474199363734335896",
         "7",
         "97433442488726861213578988847752201310395502865",
         "10082827006016799336744122064490401655461844512429394449644692943092461376845",
-        "17331201248350577047385658568212808264533738615016772120609589632882809234778",
+        "16272705119130550328684133240225299777651023887772779485808543219167759832756",
         "19",
         "1893456000",
     )

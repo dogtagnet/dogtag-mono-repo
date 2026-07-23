@@ -244,11 +244,12 @@ struct ScanScreen: View {
             status = "Building private owner profile on this device…"
             Task {
                 do {
-                    let (root, identityProofs) = try buildOrReuseIssueRoot(
+                    let (root, leaves, reservedLeafHashes) = try buildOrReuseIssueRoot(
                         session: session, seedHex: seedHex, ownerAddress: wallet.ethAddress)
-                    await MainActor.run { status = "Sending the private root to your vet…" }
+                    await MainActor.run { status = "Sending the profile commitment to your vet…" }
                     let bindResult = await CentralApi.bindDogTagIssue(
-                        host: host, token: token, root: root, identityProofs: identityProofs)
+                        host: host, token: token, root: root,
+                        leaves: leaves, reservedLeafHashes: reservedLeafHashes)
                     var accepted: CentralApi.DogTagIssue? = nil
                     switch bindResult {
                     case let .accepted(result):
@@ -329,16 +330,17 @@ struct ScanScreen: View {
     /// allocated dogTagId would create a second root that the write-once contract can never accept.
     ///
     /// D1: the vet-salted identity leaves are folded into `R` ALONGSIDE the pet attributes -
-    /// identity keeps the VET's salts (the bind-time integrity gate recomputes each leaf from the
-    /// vet's own `{keyPath, salt, value}`), pet attributes keep device-random salts. Both are
-    /// persisted as ordinary attribute openings in the owner-secret store, so the same list feeds
-    /// issuance, the consent-proof rebuild, and later disclosures. Returns `R` plus the
-    /// `identityProofs` (Merkle paths only) the bind must post.
+    /// identity keeps the VET's salts (the bind-time full-leaf-list gate requires the posted
+    /// identity openings to EXACTLY match the vet's own `{keyPath, salt, value}` set), pet
+    /// attributes keep device-random salts. Both are persisted as ordinary attribute openings in
+    /// the owner-secret store, so the same list feeds issuance, the consent-proof rebuild, and
+    /// later disclosures. Returns `R` plus the bind's full-leaf-list commitment: the opening of
+    /// every attribute leaf and the three OPAQUE reserved leaf hashes (never their preimages).
     private func buildOrReuseIssueRoot(
         session: CentralApi.DogTagIssueSession,
         seedHex: String,
         ownerAddress: String
-    ) throws -> (root: String, identityProofs: [[String: Any]]) {
+    ) throws -> (root: String, leaves: [[String: Any]], reservedLeafHashes: [String]) {
         let requested = session.pet.profileAttributeValues
         let identity = session.identityLeaves.map {
             ProfileTreeStore.BackedUpAttribute(
@@ -372,14 +374,18 @@ struct ScanScreen: View {
             guard matches else {
                 throw issueFailure("this dogTagId already has different private profile metadata")
             }
-            let root = try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
-            let proofs = try identityInclusionProofs(
+            _ = try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
+            // Deterministic rebuild from the persisted record for the reserved leaf hashes;
+            // nothing new is persisted. The record stores the CANONICAL dogTagId field.
+            let tree = try buildProfileTreeHex(
                 seedHex: seedHex,
-                dogTagIdDec: session.dogTagId,
-                ownerAddress: ownerAddress,
-                attributes: Array(existing.attributes),
-                identityKeyPaths: identity.map { $0.keyPath })
-            return (root, proofs)
+                dogTagIdHex: existing.dogTagIdHex,
+                ownerAddressHex: existing.ownerAddress,
+                attributes: existing.attributes.map {
+                    AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
+                })
+            return (tree.rootHex, bindLeafOpenings(existing.attributes),
+                    [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex])
         }
         var attributes = try requested.map { item -> ProfileTreeStore.BackedUpAttribute in
             let salted = try ProfileTreeStore.randomStringAttribute(
@@ -388,47 +394,19 @@ struct ScanScreen: View {
                 keyPath: salted.keyPath, saltHex: salted.saltHex, tag: item.tag, value: salted.value)
         }
         attributes.append(contentsOf: identity)
-        let root = try ProfileTreeStore.buildAndPersist(
+        let tree = try ProfileTreeStore.buildAndPersist(
             seedHex: seedHex,
             dogTagIdDec: session.dogTagId,
             ownerAddress: ownerAddress,
-            attributes: attributes).rootHex
-        let proofs = try identityInclusionProofs(
-            seedHex: seedHex,
-            dogTagIdDec: session.dogTagId,
-            ownerAddress: ownerAddress,
-            attributes: attributes,
-            identityKeyPaths: identity.map { $0.keyPath })
-        return (root, proofs)
+            attributes: attributes)
+        return (tree.rootHex, bindLeafOpenings(attributes),
+                [tree.ownerAddressLeafHex, tree.consentKeyLeafHex, tree.ownerSecretLeafHex])
     }
 
-    /// Compute the bind's `identityProofs` - `[{keyPath, proof}]`, Merkle paths only - through the
-    /// SAME Rust `buildProfileDisclosureJson` the disclosure flow uses, so the path encoding can
-    /// never drift between the two. Empty when the session carries no identity leaves.
-    private func identityInclusionProofs(
-        seedHex: String,
-        dogTagIdDec: String,
-        ownerAddress: String,
-        attributes: [ProfileTreeStore.BackedUpAttribute],
-        identityKeyPaths: [String]
-    ) throws -> [[String: Any]] {
-        guard !identityKeyPaths.isEmpty else { return [] }
-        let json = try buildProfileDisclosureJson(
-            seedHex: seedHex,
-            dogTagIdHex: dogTagIdFieldHex(dogTagIdDec: dogTagIdDec),
-            ownerAddressHex: ownerAddress,
-            attributes: attributes.map {
-                AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
-            },
-            revealKeyPaths: identityKeyPaths)
-        guard let data = json.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let disclosures = object["disclosures"] as? [[String: Any]] else {
-            throw issueFailure("could not decode the identity disclosure envelope")
-        }
-        return disclosures.map { entry in
-            ["keyPath": (entry["keyPath"] as? String) ?? "",
-             "proof": (entry["proof"] as? [String]) ?? []]
+    /// The bind's `leaves`: the opening of every attribute leaf, `{keyPath, saltHex, tag, value}`.
+    private func bindLeafOpenings(_ attributes: [ProfileTreeStore.BackedUpAttribute]) -> [[String: Any]] {
+        attributes.map {
+            ["keyPath": $0.keyPath, "saltHex": $0.saltHex, "tag": Int($0.tag), "value": $0.value]
         }
     }
 
