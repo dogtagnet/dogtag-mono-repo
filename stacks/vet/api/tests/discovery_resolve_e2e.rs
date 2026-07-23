@@ -374,3 +374,45 @@ async fn issuance_resolve_without_identity_data_still_emits_the_containers() {
     assert!(pet["microchip"].is_object(), "microchip container present: {meta}");
     assert_eq!(pet["microchip"]["code"], "");
 }
+
+/// A blank (or whitespace-only) pet name fails fast with 400 at session start. Both mobile parsers
+/// refuse a session whose pet name resolves blank — Android trims via `isNotBlank`, so whitespace-only
+/// counts too — meaning such a session would resolve fine yet always fail on-device, wasting the
+/// operator's one-time QR far from the cause. The server refuses it at the operator instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issuance_session_start_refuses_a_blank_pet_name() {
+    let mem = MemChain::new();
+    let state = state_with(
+        Arc::new(mem.clone()),
+        "memchain".to_string(),
+        ISSUER_REGISTRY.to_string(),
+        VACCINATION_ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let app = vet_api::router(state);
+    let (_admin, op, _relayer) = boot_custody(&app).await;
+
+    for name in ["", " ", " \t\n "] {
+        let (s, b) = call(
+            &app,
+            "POST",
+            "/profiles/issue/session/start",
+            Some(&op),
+            Some(serde_json::json!({ "ownerIdentity": {}, "pet": {"name": name} })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "pet name {name:?} must fail fast at start: {b}");
+    }
+
+    // A name that is non-blank after trimming still starts a session — the guard is trim-based only.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/profiles/issue/session/start",
+        Some(&op),
+        Some(serde_json::json!({ "ownerIdentity": {}, "pet": {"name": " Rex "} })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "non-blank name must still start a session: {b}");
+}

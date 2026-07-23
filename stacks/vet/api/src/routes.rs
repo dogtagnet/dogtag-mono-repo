@@ -1548,6 +1548,9 @@ async fn profile_issue_session_start(
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
     }
+    if body.pet.name.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "pet.name must not be blank");
+    }
     // Allocate a dogTagId whose owner-hidden SBT profileRoot is still unset. The local counter resets
     // on restart and the SBT is shared across issuers, so a fresh counter can collide with an already
     // minted id. `mintCustodial` retires an id through the write-once `profileRoot[id]`, a marker that
