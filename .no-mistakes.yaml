@@ -1,7 +1,7 @@
 # Dogtag policy starts every new run with --skip=document until no-mistakes has
 # an enforced step/file budget. These trusted controls are defense-in-depth for
 # accidental raw runs and take effect only after this file reaches the default branch.
-agent: codex
+agent: claude
 allow_repo_commands: false
 
 # Keep project settings enabled so the repository's AGENTS.md constrains gate agents.
