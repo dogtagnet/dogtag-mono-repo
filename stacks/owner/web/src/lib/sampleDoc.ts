@@ -32,7 +32,7 @@ export const SAMPLE_WRAPPED_DOC: WrappedDoc = {
   issuer: {
     name: "Seaport Vet",
     domain: "vet.local",
-    documentStore: "0x16671686a5926606aB05f5e167fC65B0f8825B85",
+    documentStore: "0xe4aC139eB257C309Ec448C116A6F657Dab5590BA",
     recordType: "VACCINATION",
   },
 };
