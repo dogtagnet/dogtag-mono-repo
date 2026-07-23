@@ -34,8 +34,12 @@ export function ConsentRow({ receipt }: { receipt: ConsentReceipt }) {
           {receipt.purposeLabel ? humanizePurpose(receipt.purposeLabel) : shortAddr(receipt.purposeHex)}
         </div>
         <div className="receipt-list-meta">
-          {who} · {receipt.recordTypeLabel ?? "—"} · to {shortAddr(receipt.relayer)} ·{" "}
-          {fmtDateTime(receipt.grantedAt)}
+          {/* Unknown-but-recovered recordType falls back to shortened hex exactly like purpose
+              (never hidden); the dash is reserved for the unreadable-tx case. */}
+          {who} ·{" "}
+          {receipt.recordTypeLabel ??
+            (receipt.recordTypeHex ? shortAddr(receipt.recordTypeHex) : "—")}{" "}
+          · to {shortAddr(receipt.relayer)} · {fmtDateTime(receipt.grantedAt)}
         </div>
       </div>
       <div className="receipt-list-side">
