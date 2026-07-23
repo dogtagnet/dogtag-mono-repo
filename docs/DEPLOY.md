@@ -134,7 +134,7 @@ forge verify-contract --rpc-url $ROAX_RPC \
    > Four VR generations in all; the entire line is retired, and its testnet trusted setup stays
    > recorded in `docs/CEREMONY_TRANSCRIPT.md` as provenance.
 
-   The live consent-circuit trusted setup (public Hermez ptau + 3 contributions + drand beacon, zkey
+   The live consent-circuit trusted setup (public Hermez ptau + a single contribution + drand beacon, zkey
    sha256 `f83a111f…`) is recorded in `docs/CEREMONY_TRANSCRIPT.consent.md`.
    The prod ceremony + timelock procedure are in `docs/CEREMONY_RUNBOOK.md` (concise version:
    `docs/CEREMONY.md`) and `docs/PRODUCTION_DEPLOYMENT.md` §3.2.

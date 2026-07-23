@@ -1941,7 +1941,7 @@ ship it in the prover image. The consent ceremony is **done** (testnet-grade):
 `docs/CEREMONY_TRANSCRIPT.consent.md` is the transcript, and the committed
 `consent_final.zkey`/`consent_verification_key.json` are its output. The pin is **ENFORCED, not just
 asserted in CI** (audit M4): each version's artifact set + hashes live in an `ArtifactDescriptor`
-(`crates/dogtag-prover-rs/src/artifact.rs`) and `Prover::load` **rejects** any artifact whose hash
+(`crates/dogtag-prover-rs/src/artifact.rs`) and `Prover::load_versioned` **rejects** any artifact whose hash
 differs (fail-closed) - a swapped or corrupt proving key never silently produces proofs against the
 wrong key. A zkey hash is NOT a VK hash: the descriptor carries the VK its proofs verify against as a
 separate identity, so the two can never be conflated. A deployment shipping a **different** zkey (a

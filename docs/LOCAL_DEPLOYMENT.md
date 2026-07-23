@@ -70,11 +70,13 @@ It all runs against the **live ROAX testnet** (chainId **135**, gas token **PLAS
 >   falling back to a retired deployment. Deployed instances are recorded in
 >   [`../contracts/deployments/roax.json`](../contracts/deployments/roax.json); the fresh unified
 >   testnet redeploy is a separate upcoming step.
-> - **a populated `circuits/build/`** - must contain `consent_final.zkey` **and** `consent.graph`
->   so the prover-service loads the real consent **ArkProver**. `demo-up.sh` sets
+> - **a populated `circuits/build/`** - the prover-service loads the committed `consent_final.zkey` +
+>   `consent.r1cs` + `consent_js/consent.wasm`. `demo-up.sh` sets
 >   `CIRCUITS_BUILD_DIR=circuits/build` on the prover; if those files are missing, consent proving is
 >   **fail-closed** - `POST /prove-consent` returns unavailable rather than serving a non-chain-valid
->   proof. Build them first (§2.2 in PREREQUISITES).
+>   proof. `consent.graph` is **not** read by the prover-service - it is the on-device witness
+>   backend vendored into each app bundle, so the phone flows need it in `circuits/build/` too.
+>   Build it first (§2.2 in PREREQUISITES).
 
 Run this single block to confirm the toolchain and inputs are present.
 
@@ -96,8 +98,9 @@ test -f circuits/build/consent_final.zkey && test -f circuits/build/consent.grap
 - *the balance is `0`* → the governance signer is unfunded → fund it with PLASMA before continuing
   (bootstrap and central whitelists will fail otherwise). See [PREREQUISITES.md](./PREREQUISITES.md).
 - *`circuits/build` files are missing* → the committed `consent_final.zkey` should be present after
-  checkout, while `consent.graph` is **not** committed and must be built out-of-band → populate
-  `circuits/build/` before boot, or consent proving will be unavailable (the prover fails closed).
+  checkout (missing → server consent proving is unavailable, the prover fails closed), while
+  `consent.graph` is **not** committed and must be built out-of-band (missing → the phone apps have
+  no on-device witness backend to vendor) → populate `circuits/build/` before boot.
 
 ---
 
@@ -403,7 +406,7 @@ you only ever override these via environment variables on the `demo-up.sh` / boo
 | `GROOMER_PUBLIC_URL` | overrides the **groomer** `DEPLOYMENT_URL` → the groomer QR host becomes this tunnel URL | unset (uses `LAN_IP`) |
 | `PROVER_PUBLIC_URL` | public URL for the prover-service (the phone's `prover_api` target; **not** in any QR) | unset (LAN-IP `:41875`) |
 | `CUSTODY_SEAL_PATH` | where each signer's custody seal is written/read (`.demo/{vet,groomer,prover}-custody.json`) | `.demo/` (set by `demo-up.sh`) |
-| `CIRCUITS_BUILD_DIR` | dir holding `consent_final.zkey` + `consent.graph`; makes the prover load the real consent **ArkProver** (else `POST /prove-consent` is unavailable - fail-closed, never a non-chain-valid proof) | `circuits/build` (set on the prover by `demo-up.sh`) |
+| `CIRCUITS_BUILD_DIR` | dir holding `consent_final.zkey` + `consent.r1cs` + `consent_js/consent.wasm`; the prover-service loads the consent prover from it (else `POST /prove-consent` is unavailable - fail-closed, never a non-chain-valid proof). `consent.graph` lives beside them but is the on-device backend the app bundles vendor, not a prover-service input | `circuits/build` (set on the prover by `demo-up.sh`) |
 | `VERIFY_PURPOSES` | `demo-bootstrap.sh` - override the `VERIFY:<purpose>` set whitelisted for a verifier's relayer | the built-in `grooming_intake boarding_intake daycare_access` |
 | `ISSUER_REGISTRY_ADDR` | **REQUIRED** - the shared `IssuerRegistry` of the deployment the demo runs against | none - `demo-up.sh` fails fast if unset (set it in `contracts/.env` or inline) |
 | `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` | **REQUIRED** - the owner-hidden `DogTagSBTConsent` + the `DOG_PROFILE` issuer clone behind `POST /profiles/issue/custodial-bind`. `PROFILE_ISSUER_ADDR` must be a **real factory-deployed clone**, never the SBT (`issue(R)` sent to the SBT reverts) - `demo-bootstrap.sh` verifies the wiring before sending any tx | none - `demo-up.sh` fails fast if unset |

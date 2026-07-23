@@ -172,19 +172,21 @@ human number with `cast balance "$GOVERNANCE_ADDRESS" --rpc-url https://devrpc.r
 
 ### 2.2 `circuits/build/` — the proving artifacts
 
-The prover-service (the real consent **ArkProver**) and **both mobile apps** need the owner-hidden
-consent proving key + witness graph present in `circuits/build/`:
+The prover-service and **both mobile apps** need the owner-hidden consent proving artifacts present
+in `circuits/build/`:
 
 | File | Size | Used by |
 |---|---|---|
 | `circuits/build/consent_final.zkey` | ~24 MB | prover-service (`CIRCUITS_BUILD_DIR`) **and** the proving asset each app needs bundled |
-| `circuits/build/consent.graph` | (built out-of-band) | prover-service witness assembly **and** the proving asset each app needs bundled |
+| `circuits/build/consent.r1cs` + `circuits/build/consent_js/consent.wasm` | committed | prover-service witness assembly (`CIRCUITS_BUILD_DIR`) |
+| `circuits/build/consent.graph` | (built out-of-band) | the on-device witness backend each app needs bundled - **not** read by the prover-service |
 
 The proving assets are **gitignored in the apps**, so they are vendored into each app build (see
 [MOBILE_BUILD.md](./MOBILE_BUILD.md) for what the current app builds require).
 
 > **Note:** the consent zkey is **committed** under `circuits/build/` (present on a fresh clone; sha256
-> `f83a111f…`, pinned by the prover when `CONSENT_EXPECTED_ZKEY_SHA256` is set); `consent.graph` is
+> `f83a111f…`, unconditionally pinned by the prover - `CONSENT_EXPECTED_ZKEY_SHA256` only **overrides**
+> the pin for a deployment shipping a different key; unset = enforce the pinned testnet hash); `consent.graph` is
 > **not** committed - build it out-of-band with iden3's `build-circuit` (see
 > [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)). The artifact pair carries the internal protocol version key
 > `dogtag-levelb/1` (an internal identifier, not a product label).

@@ -93,8 +93,9 @@ pub struct WrappedDoc {
     pub issuer: IssuerMeta,
     /// M7 provenance block (§4.2), beside `signature.merkleRoot` - NOT inside `R`. A routing hint
     /// only, never authority. May be absent on a bare wrap; the issuing stack stamps it. (The old
-    /// absent-block default that routed pre-unification records to the retired registry is gone:
-    /// the chain was wiped and redeployed fresh, so no such records exist - decision D5.)
+    /// absent-block default that routed pre-unification records to the retired registry is deleted
+    /// per decision D5: the testnet is disposable and the pending wipe + fresh redeploy leaves no
+    /// pre-unification records to route.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ProtocolMeta>,
 }

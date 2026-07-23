@@ -185,7 +185,7 @@ function withProtocol(doc: WrappedDoc, issuerSigner: string): WrappedDoc {
     protocol: {
       chainId: 135,
       version: "dogtag-levelb/1",
-      verificationRegistry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+      verificationRegistry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
       issuerClone: doc.issuer.documentStore,
       issuerSigner,
     },

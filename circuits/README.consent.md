@@ -19,7 +19,7 @@ agreed on the integer sort inside `hashNode`), NOT refactored out of the then-fr
 > testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
 > — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md).
 > The on-chain `recordVerificationZK` wiring (`VerificationRegistryConsent` paired with `DogTagSBTConsent`, first deployed + verified as M5) is now the **sole live verification path**: every shipped consumer proves against this circuit, and the retired owner-revealing registry serves nothing.
-> The current addresses live in [`../contracts/deployments/roax.json`](../contracts/deployments/roax.json) / `contracts/.env` (the disposable testnet is wiped and redeployed fresh, so treat the env-configured pair as canonical).
+> The current addresses live in [`../contracts/deployments/roax.json`](../contracts/deployments/roax.json) / `contracts/.env` (the disposable testnet will be wiped and redeployed fresh in the pending redeploy slice, so treat the env-configured pair as canonical).
 > See the "Build + test" and "M4 binding" notes below.
 
 ## What it proves
@@ -162,10 +162,10 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 
 **The M5 pair is deployed, verified, and LIVE:** `DogTagSBTConsent` (the custodial SBT with a write-once
 `profileRoot`) is paired with `VerificationRegistryConsent`, which verifies against the M3 ceremony verifier `Groth16VerifierConsent`.
-Both runtimes and constructor wiring match the compiled source; the addresses come from `contracts/deployments/roax.json` / `contracts/.env` (the disposable testnet is wiped and redeployed fresh).
+Both runtimes and constructor wiring match the compiled source; the addresses come from `contracts/deployments/roax.json` / `contracts/.env` (the disposable testnet will be wiped and redeployed fresh in the pending redeploy slice).
 Because the registry's `sbt` is immutable, this deployment superseded the earlier M4 registry deploy, which was permanently bound to the retired owner-revealing SBT and was never live (zero `Verified` events).
 `contracts/script/DeployCustodialIssuance.s.sol` deploys the canonical pair; the M4 `DeployConsentRegistry.s.sol` (now removed) is superseded.
-The cutover is complete: the retired subject-bearing registry and owner-revealing SBT are gone, and this pair serves every consumer.
+The retired subject-bearing registry and owner-revealing SBT sources are deleted from the repo, and this pair is the sole verification path in the codebase; the retired deployed instances persist on-chain until the pending wipe/fresh-redeploy slice.
 The device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) is the issuance counterpart: vet-api's `POST /profiles/issue/custodial-bind` (the **sole** issuance bind) accepts a device-built `R` and mints owner-hidden via `issue(R)` + `mintCustodial`.
 On the verification end, `POST /v1/verify/consent` carries a proof built against *this* circuit to `VerificationRegistryConsent` via the 4-arg `recordVerificationZK(a,b,c,pub[7])`, reading `recordType`/`deadline` out of `pub[5]`/`pub[6]` rather than inventing them.
 Both routes fail closed when unconfigured (issuance needs `SBT_CONSENT_ADDR` + `PROFILE_ISSUER_ADDR`, verification needs `VERIFICATION_REGISTRY_CONSENT_ADDR` - else 503).

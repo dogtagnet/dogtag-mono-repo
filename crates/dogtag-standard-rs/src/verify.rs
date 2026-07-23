@@ -629,7 +629,7 @@ mod tests {
         ProtocolMeta {
             chain_id: 135,
             version: LEVEL_B_VERSION.to_string(),
-            verification_registry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8".to_string(),
+            verification_registry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
             issuer_clone: issuer().document_store,
             issuer_signer: issuer_signer.to_string(),
         }
