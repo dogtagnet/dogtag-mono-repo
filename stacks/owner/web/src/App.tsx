@@ -7,6 +7,8 @@ import { CredentialDetail } from "./pages/CredentialDetail";
 import { Share } from "./pages/Share";
 import { Receipt } from "./pages/Receipt";
 import { Receipts } from "./pages/Receipts";
+import { Consents } from "./pages/Consents";
+import { ConsentDetail } from "./pages/ConsentDetail";
 
 function TopBar({ wallet }: { wallet: OwnerWallet | null }) {
   return (
@@ -44,12 +46,17 @@ export function App() {
         <NavLink to="/receipts" className={({ isActive }) => (isActive ? "active" : "")}>
           Receipts
         </NavLink>
+        <NavLink to="/consents" className={({ isActive }) => (isActive ? "active" : "")}>
+          Consents
+        </NavLink>
       </nav>
       <Routes>
         <Route path="/" element={<Navigate to="/wallet" replace />} />
         <Route path="/wallet" element={<Wallet />} />
         <Route path="/receive" element={<Receive />} />
         <Route path="/receipts" element={<Receipts />} />
+        <Route path="/consents" element={<Consents />} />
+        <Route path="/consents/:nullifier" element={<ConsentDetail />} />
         <Route path="/credential/:id" element={<CredentialDetail />} />
         <Route path="/receipt/:id" element={<Receipt />} />
         <Route path="/share/:id" element={<Share />} />

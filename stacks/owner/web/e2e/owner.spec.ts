@@ -1,4 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
+import {
+  CONSENT_TXS,
+  OPEN_NULLIFIER,
+  RELAYER,
+  REX_DOGTAGID_TOPIC,
+  VERIFIED_LOGS,
+} from "./consentFixture";
 
 /**
  * The pet-owner (holder) loop, end to end:
@@ -7,32 +14,64 @@ import { test, expect, type Page } from "@playwright/test";
  *   2. DISPLAY  — the wallet lists it; the detail view decodes its fields
  *   3. SHARE    — create an integrity-preserving selectively disclosed copy
  *   4. RECEIPT  — render government travel/health receipts with live validity
+ *   5. CONSENTS - render the owner's own consent history from the owner-blind Verified events
  *
  * ROAX RPC is mocked at the network layer so the live validity reads are deterministic. Owner-hidden
  * consent proving requires the private tag-profile witness held by the native wallet and is not a
  * browser-wallet surface.
  */
 
-/** Install the sole remote dependency used by this browser wallet: read-only ROAX JSON-RPC. */
-async function installMocks(page: Page) {
-  // ROAX JSON-RPC (`DogTagIssuer.isValid`) — echo the request id, return true.
-  await page.route(/devrpc\.roax\.net/, async (route) => {
-    let id: unknown = 1;
-    try {
-      id = JSON.parse(route.request().postData() || "{}").id ?? 1;
-    } catch {
-      /* keep default id */
-    }
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ jsonrpc: "2.0", id, result: "0x" + "0".repeat(63) + "1" }),
-    });
-  });
-
+interface RpcRequest {
+  method: string;
+  params: unknown[];
 }
 
+/**
+ * Install the sole remote dependency used by this browser wallet: read-only ROAX JSON-RPC,
+ * dispatched per method - `eth_call` (isValid → true), `eth_getLogs` (the owner-blind Verified
+ * history, served ONLY when the filter names Rex's tag id), `eth_getTransactionByHash` (the
+ * recordVerificationZK calldata the app reads recordType back from). Returns the captured requests
+ * so tests can assert what the wallet actually queried.
+ */
+async function installMocks(page: Page): Promise<RpcRequest[]> {
+  const captured: RpcRequest[] = [];
+  await page.route(/devrpc\.roax\.net/, async (route) => {
+    let req: { id?: unknown; method?: string; params?: unknown[] } = {};
+    try {
+      req = JSON.parse(route.request().postData() || "{}");
+    } catch {
+      /* fall through to the default reply */
+    }
+    captured.push({ method: req.method ?? "", params: req.params ?? [] });
+    const reply = (result: unknown) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ jsonrpc: "2.0", id: req.id ?? 1, result }),
+      });
+    switch (req.method) {
+      case "eth_getLogs": {
+        // Serve the Verified history iff the topic filter names Rex's canonical tag id - proving
+        // the wallet derives + queries its OWN held-tag ids, not an unscoped feed.
+        const filter = JSON.stringify(req.params?.[0] ?? {});
+        return reply(filter.includes(REX_DOGTAGID_TOPIC) ? VERIFIED_LOGS : []);
+      }
+      case "eth_getTransactionByHash": {
+        const hash = String(req.params?.[0] ?? "").toLowerCase();
+        return reply(CONSENT_TXS[hash] ?? null);
+      }
+      default:
+        // `eth_call` (DogTagIssuer.isValid) and anything else: a single true word.
+        return reply("0x" + "0".repeat(63) + "1");
+    }
+  });
+  return captured;
+}
+
+/** The RPC requests the current test's page issued (repopulated per test by the beforeEach). */
+let rpc: RpcRequest[] = [];
+
 test.beforeEach(async ({ page }) => {
-  await installMocks(page);
+  rpc = await installMocks(page);
 });
 
 test("holder loop: receive → hold → display", async ({ page }) => {
@@ -190,4 +229,60 @@ test("receive rejects a tampered credential", async ({ page }) => {
   await page.getByTestId("receive-input").fill(tampered);
   await page.getByTestId("receive-add").click();
   await expect(page.getByTestId("receive-error")).toContainText("integrity");
+});
+
+test("consent history: owner-blind Verified events render as the owner's receipts", async ({ page }) => {
+  await page.goto("/wallet");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+
+  // With no held credentials there is no tag id to look up - the page says so, without touching RPC.
+  await page.goto("/consents");
+  await expect(page.getByTestId("empty-consents-no-credentials")).toBeVisible();
+  expect(rpc.filter((r) => r.method === "eth_getLogs")).toHaveLength(0);
+
+  // Receive Rex's credential (tag handle 424242) → its consent history becomes attributable.
+  await page.goto("/receive");
+  await page.getByTestId("receive-sample").click();
+  await page.getByTestId("receive-add").click();
+  await expect(page.getByTestId("detail-name")).toHaveText("Rex");
+
+  await page.goto("/consents");
+  await expect(page.getByTestId("consent-count")).toContainText("2 granted");
+  const rows = page.getByTestId("consent-row");
+  await expect(rows).toHaveCount(2);
+
+  // The wallet queried the chain for exactly its own canonical (field-hashed) tag id.
+  const logQueries = rpc.filter((r) => r.method === "eth_getLogs");
+  expect(logQueries.length).toBeGreaterThan(0);
+  expect(JSON.stringify(logQueries[0]!.params)).toContain(REX_DOGTAGID_TOPIC);
+
+  // Newest first: the open-window boarding intake, then the closed-window travel check.
+  await expect(rows.nth(0)).toContainText("Boarding intake");
+  await expect(rows.nth(0)).toContainText("Rex");
+  await expect(rows.nth(0)).toContainText("VACCINATION");
+  await expect(rows.nth(0).getByTestId("consent-row-window")).toHaveText("Window open");
+  await expect(rows.nth(1)).toContainText("Travel check");
+  await expect(rows.nth(1).getByTestId("consent-row-window")).toHaveText("Window closed");
+
+  // Consent is a point-in-time act - history offers NOTHING to cancel, on the list or the detail.
+  await expect(page.locator("body")).not.toContainText(/revoke|cancel|withdraw/i);
+
+  // Detail: purpose, record type (recovered from the tx calldata), relayer, window, confirmation.
+  await rows.nth(0).click();
+  await expect(page.getByTestId("consent-detail")).toBeVisible();
+  await expect(page.getByTestId("consent-detail-purpose")).toHaveText("Boarding intake");
+  await expect(page.getByTestId("consent-detail-recordtype")).toHaveText("VACCINATION");
+  await expect(page.getByTestId("consent-detail-tag")).toContainText("Rex");
+  await expect(page.getByTestId("consent-detail-tag")).toContainText("424242");
+  await expect(page.getByTestId("consent-detail-relayer")).toHaveText(RELAYER);
+  await expect(page.getByTestId("consent-detail-window")).toContainText("Window open");
+  await expect(page.getByTestId("consent-detail-onchain")).toContainText("Recorded on-chain");
+  await expect(page.getByTestId("consent-detail-granted")).toContainText("block 200000");
+  await expect(page.getByTestId("consent-detail-tx")).toContainText("0xd1d1");
+  await expect(page.getByTestId("consent-detail-nullifier")).toHaveText(OPEN_NULLIFIER);
+  await expect(page.locator("body")).not.toContainText(/revoke|cancel|withdraw/i);
+  // The print affordance is the only export; there is no share path out of the private history.
+  await expect(page.getByTestId("consent-print")).toBeVisible();
+  await expect(page.getByTestId("consent-detail-loading")).toHaveCount(0);
 });
