@@ -1548,6 +1548,9 @@ async fn profile_issue_session_start(
     if !st.custody.is_unlocked() {
         return err(StatusCode::CONFLICT, "not unlocked");
     }
+    if body.pet.name.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "pet.name must not be blank");
+    }
     // Allocate a dogTagId whose owner-hidden SBT profileRoot is still unset. The local counter resets
     // on restart and the SBT is shared across issuers, so a fresh counter can collide with an already
     // minted id. `mintCustodial` retires an id through the write-once `profileRoot[id]`, a marker that
@@ -1642,8 +1645,14 @@ async fn profile_issue_session_start(
 }
 
 /// GET /p/{token} — resolve a one-time bind token to the session metadata the device needs to build
-/// its owner-hidden profile root ({ sessionId, dogTagId }). Unauthenticated
+/// its owner-hidden profile root: ids/status plus the `pet` attributes the device folds into `R` and
+/// the vet-collected `ownerIdentity` block (the later D1 hidden-leaf source; NOT folded into `R` by
+/// this slice). Both mobile parsers fail closed without the `pet` and `ownerIdentity` containers, so
+/// they are emitted unconditionally — `ownerIdentity` with empty-string fields when the operator
+/// collected none (the parsers require the container, not the fields). Unauthenticated
 /// and NON-consuming (consumed only on bind). A missing/expired token is a 404. Symmetric with `/x/`.
+/// The bind consumes the token atomically before the session can leave "pending", so a token that
+/// still resolves implies the pre-bind state — the metadata needs no extra status gating.
 async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<String>) -> Resp {
     let session_id = match st.store.peek_bind_token(&token).await {
         Some(id) => id,
@@ -1666,6 +1675,16 @@ async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<Stri
                 "sessionId": s.session_id,
                 "dogTagId": s.dog_tag_id,
                 "status": s.status,
+                // The session's pet record, in the nested-`pet` shape both mobile parsers target:
+                // scalar profile fields + weightHistory under `pet.profile`, the microchip beside it,
+                // and the name at the `pet` level — the session row's own structure. Weight values
+                // stay decimal STRINGS end to end (store::WeightEntry.value).
+                "pet": {
+                    "name": s.pet_name,
+                    "profile": serde_json::to_value(&s.profile).expect("PetProfile serializes"),
+                    "microchip": serde_json::to_value(&s.microchip).expect("Microchip serializes"),
+                },
+                "ownerIdentity": serde_json::to_value(&s.owner_identity).expect("OwnerIdentity serializes"),
                 "unverifiedClaims": serde_json::to_value(&claims).expect("ConvenienceClaims serializes"),
             }))
         }

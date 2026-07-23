@@ -63,7 +63,7 @@ ruby --disable-gems - "$config" "$agents" "$guide" <<'RUBY'
 require "yaml"
 
 config = YAML.safe_load(File.read(ARGV.fetch(0)), permitted_classes: [], aliases: false)
-raise "agent" unless config["agent"] == "codex"
+raise "agent" unless config["agent"] == "claude"
 raise "allow_repo_commands" unless config["allow_repo_commands"] == false
 raise "disable_project_settings" unless config["disable_project_settings"] == false
 raise "lint command" unless config.dig("commands", "lint").is_a?(String) &&
