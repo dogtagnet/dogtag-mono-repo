@@ -139,8 +139,7 @@ export async function loadConsentReceipts(credentials: StoredCredential[]): Prom
     const dogTagIdHex = toHex32(log.dogTagId);
     const tag = byField.get(dogTagIdHex);
     const purposeHex = log.purpose.toLowerCase();
-    const recordTypeField = recordTypes[i] ?? null;
-    const recordTypeHex = recordTypeField === null ? null : toHex32(recordTypeField);
+    const recordTypeHex = recordTypes[i] ?? null;
     return {
       nullifier: log.nullifier.toLowerCase(),
       dogTagIdHex,

@@ -3,6 +3,7 @@
 // "issuance" pillar for a held credential; VerificationRegistryConsent's owner-blind `Verified`
 // logs supply the owner's own consent history.
 import { createPublicClient, decodeFunctionData, defineChain, http } from "viem";
+import { toHex32 } from "@dogtag/standard";
 import { ROAX_CHAIN_ID, ROAX_RPC_URL, VERIFICATION_REGISTRY_CONSENT_ADDR } from "./config";
 
 export const roax = defineChain({
@@ -67,6 +68,11 @@ const RECORD_VERIFICATION_ZK_ABI = [
   },
 ] as const;
 
+/** `recordType`'s index in the frozen consent public-signal order
+ *  `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]` - signals are read via named
+ *  constants, never a literal index (repo doctrine, the E-1 transposition class). */
+const PUB_RECORD_TYPE = 5;
+
 /** One decoded owner-blind `Verified` log, plus its chain provenance. */
 export interface VerifiedLog {
   dogTagId: bigint;
@@ -107,16 +113,17 @@ export async function fetchVerifiedLogs(dogTagIds: bigint[]): Promise<VerifiedLo
 }
 
 /**
- * The proof's `recordType` public signal (`pub[5]`), recovered from the verifying transaction's
- * calldata - the owner-blind event deliberately omits it. `null` when the tx cannot be read or is
- * not a plain `recordVerificationZK` call (e.g. a future registry wraps the call differently);
- * callers render that as "unavailable", never as a failure of the whole history.
+ * The proof's `recordType` public signal (`pub[5]`) as its 0x…32-byte hex, recovered from the
+ * verifying transaction's calldata - the owner-blind event deliberately omits it. `null` when the
+ * tx cannot be read, is not a plain `recordVerificationZK` call (e.g. a future registry wraps the
+ * call differently), or carries a value outside the field; callers render that as "unavailable",
+ * never as a failure of the whole history.
  */
-export async function fetchConsentRecordType(txHash: `0x${string}`): Promise<bigint | null> {
+export async function fetchConsentRecordType(txHash: `0x${string}`): Promise<string | null> {
   try {
     const tx = await publicClient.getTransaction({ hash: txHash });
     const { args } = decodeFunctionData({ abi: RECORD_VERIFICATION_ZK_ABI, data: tx.input });
-    return args[3][5] ?? null;
+    return toHex32(args[3][PUB_RECORD_TYPE]);
   } catch {
     return null;
   }
