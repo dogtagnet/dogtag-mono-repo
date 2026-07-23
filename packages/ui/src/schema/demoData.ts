@@ -19,7 +19,7 @@ export const DEMO_OPERATOR_PASSWORD = "operator";
  * On-chain VACCINATION DogTagIssuer clone (VACCINATION_ISSUER_ADDR in scripts/demo-up.sh). This is
  * the documentStore the issuer-application must reference so the on-chain whitelist matches.
  */
-export const DEMO_VACCINATION_DOCUMENT_STORE = "0x5c703910111f942EE0f47E02214291b5274cDb53";
+export const DEMO_VACCINATION_DOCUMENT_STORE = "0x1456f93f7376789c46408CC4616751eB853edD9A";
 
 /**
  * The single record type the vet/groomer backend accepts for issuance + whitelisting. The backend

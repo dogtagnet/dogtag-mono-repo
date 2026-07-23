@@ -52,7 +52,7 @@ async fn main() {
         // Unified owner-hidden verification-registry routing key.
         verification_registry_addr: env(
             "VERIFICATION_REGISTRY_ADDR",
-            "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
+            "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
         ),
         travel_clearance_issuer_addr: env(
             "TRAVEL_CLEARANCE_ISSUER_ADDR",

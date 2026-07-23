@@ -194,15 +194,14 @@ cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
 cp circuits/build/consent.graph      apps/android/app/src/main/assets/consent.graph
 ```
 
-> **iOS resource-wiring caveat (pending the mobile-issuance slice).** The committed generated
-> `DogTag.xcodeproj` still carries resource references to the RETIRED
-> `verification_final.zkey`/`verification.graph` pair and does not yet reference the consent pair,
-> even though the app code loads only the consent pair.
+> **iOS resource wiring.** The committed generated `DogTag.xcodeproj` references the consent pair
+> (`consent_final.zkey` + `consent.graph`) as bundle resources - the retired
+> `verification_final.zkey`/`verification.graph` references are gone. Because the blobs themselves
+> are gitignored, an app build on a fresh checkout fails loudly ("Build input file cannot be found")
+> until you vendor them as above - that failure is the guard, not a project bug.
 > The §5 flow regenerates the project with `xcodegen`, which sweeps `apps/ios/DogTag/` - so vendor
 > the consent pair **before** running `xcodegen`, or the regenerated project silently omits it and
 > the installed app cannot prove.
-> Finalizing the committed wiring (dropping the retired references, adding the consent pair) lands
-> with the mobile-issuance/redeploy slice.
 > Android has no such caveat: everything present in `assets/` is bundled.
 > Stray copies of the retired verification pair in a working tree are dead weight (~68 MB) and safe
 > to delete.
@@ -227,7 +226,9 @@ ls -l apps/ios/DogTag/consent_final.zkey \
 # → consent zkey ~25 MB (≈ 24781468 bytes, sha256 f83a111f…c868)
 ls -l apps/ios/DogTag/consent.graph \
       apps/android/app/src/main/assets/consent.graph
-# → consent.graph a few MB
+# → consent.graph ~1.5 MB (the known-good build from the pinned consent.circom is 1546215 bytes,
+#   sha256 2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793 — the graph is
+#   deliberately unpinned on-chain, so this is the only integrity anchor)
 ```
 
 **STOP if** any path is missing or 0 bytes - `circuits/build/consent_final.zkey` or the graph is

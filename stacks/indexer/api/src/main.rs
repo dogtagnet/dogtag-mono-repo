@@ -16,14 +16,14 @@ use indexer_api::scope::{ScopeConfig, ScopeRegistry};
 use indexer_api::store::{MemStore, Store};
 
 // ROAX deployment (contracts/deployments/roax.json), lowercased. Overridable via env.
-const DEFAULT_FACTORY: &str = "0xd3179abbfb0274d0a5f7017d76015a93c159511d";
-const DEFAULT_REGISTRY: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
+const DEFAULT_FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
+const DEFAULT_REGISTRY: &str = "0xaee540350292e49a9aedf19dd4c3bac6abee6c21";
 // Unified owner-hidden `VerificationRegistryConsent` (roax.json canonical pairing), lowercased.
-const DEFAULT_VREG_CONSENT: &str = "0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87";
+const DEFAULT_VREG_CONSENT: &str = "0xabfd6f6e31780ebcb7abd28a2a9bcfc9c8e6a77b";
 const GOV_TRAVEL_CLONE: &str = "0x8e276bd4c57740766a7e173d05f4f02013681c6a";
 const GOV_EUHEALTH_CLONE: &str = "0xe30a17396c0fb75d3e8bfc862a49677b3dd568e2";
-const DEMO_DOGPROFILE_CLONE: &str = "0xdb8d39eb83ddfaaa7481c4af4e47d0044116db25";
-const DEMO_VACCINATION_CLONE: &str = "0x5c703910111f942ee0f47e02214291b5274cdb53";
+const DEMO_DOGPROFILE_CLONE: &str = "0x0e56ae2e1ef684d3e90d7699b981c6b76df922bf";
+const DEMO_VACCINATION_CLONE: &str = "0x1456f93f7376789c46408cc4616751eb853edd9a";
 // On testnet the government signer is the protocol admin address (roax.json government_clones note).
 const GOV_SIGNER: &str = "0x119f8c7f6d7ec10e7376983739c6f46cf9cc3e96";
 // A stand-in demo groomer signer that issues on the DOG_PROFILE clone (demo scoped-view data).

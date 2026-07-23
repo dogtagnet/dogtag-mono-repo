@@ -520,12 +520,12 @@ enum CentralApi {
             claims: claims)
     }
 
-    /// Submit the owner-hidden proof directly to the verifier host from the scanned QR. The Level-B
-    /// route is the one that accepts an `{exportToken, proof}` payload under the owner's one-time
-    /// export token; the non-`levelb` `/v1/verify/consent` requires `consent`+`sig` and refuses a
-    /// `levelb` session.
+    /// Submit the owner-hidden proof directly to the verifier host from the scanned QR.
+    /// `/v1/verify/consent` is the sole canonical route: it accepts the `{exportToken, proof}`
+    /// payload and resolves the session from the owner's one-time export token (the migration-era
+    /// `/v1/verify/consent/levelb` alias is gone and 404s).
     static func postVerifyConsentToHost(host: String, payloadJson: String) async -> Http.Response {
-        await Http.postJSON("\(host)/v1/verify/consent/levelb", body: payloadJson, timeout: 20)
+        await Http.postJSON("\(host)/v1/verify/consent", body: payloadJson, timeout: 20)
     }
 
     struct SessionStatus { let status: String; let txHash: String? }

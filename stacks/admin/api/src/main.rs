@@ -45,11 +45,11 @@ async fn main() {
         chain_id,
         verification_registry_addr: env(
             "VERIFICATION_REGISTRY_ADDR",
-            "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
+            "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
         ),
         sbt_addr: env(
             "SBT_ADDR",
-            "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
+            "0xBEbc45A838643D27004827b797b30A464b2b02c0",
         ),
         factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         // Store a real password HASH, never the plaintext (audit L4) — admin_login verifies against

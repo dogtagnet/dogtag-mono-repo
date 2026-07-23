@@ -233,12 +233,13 @@ object CentralApi {
     }
 
     /**
-     * Submit the one owner-hidden verification proof. The Level-B route is the one that accepts an
-     * `{exportToken, proof}` payload under the owner's one-time export token; the non-`levelb`
-     * `/v1/verify/consent` requires `consent`+`sig` and refuses a `levelb` session.
+     * Submit the one owner-hidden verification proof. `/v1/verify/consent` is the sole canonical
+     * route: it accepts the `{exportToken, proof}` payload and resolves the session from the
+     * owner's one-time export token (the migration-era `/v1/verify/consent/levelb` alias is gone
+     * and 404s).
      */
     suspend fun postVerifyConsentToHost(host: String, payloadJson: String): Http.Response =
-        Http.postJson("$host/v1/verify/consent/levelb", payloadJson, readTimeoutMs = 20_000)
+        Http.postJson("$host/v1/verify/consent", payloadJson, readTimeoutMs = 20_000)
 
     data class SessionStatus(val status: String, val txHash: String?)
 

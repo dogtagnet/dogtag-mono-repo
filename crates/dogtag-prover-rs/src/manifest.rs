@@ -96,17 +96,16 @@ pub struct ArtifactRelease {
     pub min_app_version: &'static str,
 }
 
-/// `dogtag-levelb/1` on-chain set — the canonical M5 consent trio (roax.json).
+/// `dogtag-levelb/1` on-chain set — the fresh owner-hidden set (r8 redeploy, roax.json).
 ///
-/// NOTE (redeploy landmine, tracked for the fresh-redeploy slice): these are hard-coded non-env
-/// constants; a fresh redeploy MUST repoint every one or discovery silently resolves to
-/// non-existent contracts.
+/// NOTE (redeploy landmine): these are hard-coded non-env constants; a fresh redeploy MUST
+/// repoint every one or discovery silently resolves to non-existent contracts.
 pub const LEVEL_B_DEPLOYMENT: VersionDeployment = VersionDeployment {
     chain_id: 135,
-    factory: "0xd3179AbBfb0274D0a5F7017d76015A93C159511D",
-    verification_registry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
-    sbt: "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
-    verifier: "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
+    factory: "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
+    verification_registry: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
+    sbt: "0xBEbc45A838643D27004827b797b30A464b2b02c0",
+    verifier: "0x1A9027986B859dc3879896B053deA78F636BE9b1",
 };
 
 /// The artifact set currently BOUND to `dogtag-levelb/1` (mirrors `activeArtifactSetOf`).
