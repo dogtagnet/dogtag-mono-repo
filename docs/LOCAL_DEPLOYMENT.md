@@ -138,7 +138,7 @@ LOCAL service + port map:
 | **vet** | http://localhost:41873 | http://localhost:41874 | `target/release/vet-api`, `PORT=41874` | issues profiles + vaccination credentials |
 | **groomer** | http://localhost:43617 | http://localhost:43618 | `target/release/vet-api` + `BUSINESS_TYPE=groomer`, `PORT=43618` | **same binary as vet** |
 | **prover-service** | — | http://localhost:41875 | `target/prover/release/vet-api` (`--features prover`) + `CIRCUITS_BUILD_DIR=circuits/build`, `PORT=41875` | `POST /prove-consent`; the owner-trusted server-prove fallback (e.g. 32-bit-only Android) |
-| **owner-wallet** (holder) | http://localhost:45931 | — (no backend) | `pnpm --filter @dogtag/owner-web dev` (Vite) | browser-only holder wallet; state in localStorage; `VITE_OWNER_PROVER_URL`→prover :41875; verifier host comes from the scanned `/x/<token>` link |
+| **owner-wallet** (holder) | http://localhost:45931 | — (no backend) | `pnpm --filter @dogtag/owner-web dev` (Vite) | browser-only holder wallet; holds/displays credentials, receipts, redacted sharing; state in localStorage; reads validity from the ROAX RPC directly (no prover) |
 
 **Verify.** Health-check each backend (admin, vet, groomer, prover):
 

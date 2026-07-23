@@ -93,7 +93,7 @@ Source of truth: [`contracts/deployments/roax.json`](contracts/deployments/roax.
 | Path | What | Runs where |
 |---|---|---|
 | `apps/android`, `apps/ios` | Pet-owner apps (Kotlin/Compose, Swift/SwiftUI), 7 themes, self-custodial MPC wallet | User devices |
-| `stacks/owner/web` | Pet-owner (**holder**) wallet - the web mirror of the native apps: **no backend**, receives/holds a wrapped credential, displays it, presents a client-side ZK proof to a verifier (delegating only Groth16 to a trusted prover), and shares a **selectively-redacted copy** of a credential - see [`stacks/owner/web/README.md`](stacks/owner/web/README.md) | Owner's browser |
+| `stacks/owner/web` | Pet-owner (**holder**) wallet - the web mirror of the native apps: **no backend**, receives/holds a wrapped credential, displays it (incl. printable travel/health **receipts**), and shares a **selectively-redacted copy** via local `obfuscate` (root unchanged). It runs no ZK prover - consent proofs are generated on-device by the native apps (backend `POST /prove-consent` is the fallback) - see [`stacks/owner/web/README.md`](stacks/owner/web/README.md) | Owner's browser |
 | `stacks/vet` | Self-hosted vet stack — React+Vite SPA + Rust `vet-api` + Mongo (issue/share/verify/calendar) | Each vet |
 | `stacks/groomer` | Self-hosted groomer stack — SPA + **the same `vet-api` binary** (`BUSINESS_TYPE=groomer`) + Mongo | Each groomer |
 | `stacks/government` | **Net-new** government credential-authority stack — SPA + **its own `government-api` binary** + Mongo (issue TRAVEL_CLEARANCE/EU_HEALTH_CERT + government-grade verify) — see [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) | Each competent authority |
@@ -120,8 +120,8 @@ Each **role** stack is `web` (nginx serving the Vite build) + `api` (Rust binary
 [`docs/ROLE_APPS.md`](docs/ROLE_APPS.md) for the three-role separation design.
 The **owner-wallet** is the odd one out: the pet-owner (holder) front has **no backend and no Mongo**
 (state lives in the browser's localStorage), so `scripts/demo-up.sh` runs it as a plain Vite dev server
-on `45931`; it talks only to a trusted prover (`VITE_OWNER_PROVER_URL`, `:41875`) and the verifier host
-from the `…/x/<token>` link it scans.
+on `45931`; its only network dependency is the public ROAX RPC for on-chain validity reads - it runs
+no prover and calls no prover service.
 
 ## Build & test
 
