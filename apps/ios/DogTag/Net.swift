@@ -230,13 +230,24 @@ enum RoaxRpc {
 /// and the export-session resolve/poll. Every host comes from a scanned QR — the device never calls a
 /// central admin base for registration or pet sync (the dog tag is issued by the vet via `/p/<token>`).
 enum CentralApi {
-    /// Human identity collected by the issuing vet. It is resolved so this response stays forwards-
-    /// compatible with the later D1 identity-leaf slice, but this mobile slice deliberately does NOT
-    /// fold these values into `R` yet.
+    /// Human identity collected by the issuing vet, shown to the owner before binding. The values
+    /// the device actually FOLDS into `R` come from `identityLeaves` (below), which carry the
+    /// vet-generated salts.
     struct OwnerIdentity {
         let countryOfIdentification: String
         let identification: String
         let name: String
+    }
+
+    /// D1: one vet-salted identity attribute leaf the device MUST fold into `R` alongside the pet
+    /// attributes. `{keyPath, saltHex, tag, value}` - the salt is the VET's (it re-verifies each
+    /// leaf's inclusion in `R` at bind and refuses the mint otherwise), and the device persists the
+    /// triple as a disclosure opening.
+    struct IdentityLeaf {
+        let keyPath: String
+        let saltHex: String
+        let tag: UInt8
+        let value: String
     }
 
     struct IssueMicrochip {
@@ -299,6 +310,9 @@ enum CentralApi {
         let status: String
         let pet: IssuePet
         let ownerIdentity: OwnerIdentity
+        /// D1: the salted identity leaves to fold into `R`. Empty when the vet collected none (the
+        /// bind then degrades to the pet-only contract).
+        let identityLeaves: [IdentityLeaf]
     }
 
     /// Final owner-hidden issuance result after the session reports `bound` with a transaction hash.
@@ -373,6 +387,21 @@ enum CentralApi {
                     implantDate: jsonString(microchip["implantDate"] ?? microchip["implant_date"]),
                     bodyLocation: jsonString(microchip["bodyLocation"] ?? microchip["body_location"])))
         guard !pet.name.isEmpty, !pet.profileAttributeValues.isEmpty else { return nil }
+        // D1: the vet-salted identity leaves the device must fold into R. Each entry needs its full
+        // {keyPath, saltHex, value} triple - a leaf missing any of them cannot be folded OR proven,
+        // so it is dropped only if empty-keyed; a malformed salt surfaces later as an FFI error.
+        let identityLeaves: [IdentityLeaf] = ((object["identityLeaves"] as? [[String: Any]]) ?? [])
+            .compactMap { leaf in
+                let keyPath = jsonString(leaf["keyPath"] ?? leaf["key_path"])
+                let saltHex = jsonString(leaf["saltHex"] ?? leaf["salt_hex"])
+                guard !keyPath.isEmpty, !saltHex.isEmpty else { return nil }
+                let tag = (leaf["tag"] as? NSNumber)?.uint8Value ?? 2
+                return IdentityLeaf(
+                    keyPath: keyPath,
+                    saltHex: saltHex,
+                    tag: tag,
+                    value: jsonString(leaf["value"]))
+            }
         return DogTagIssueSession(
             sessionId: sessionId,
             dogTagId: dogTagId,
@@ -382,16 +411,28 @@ enum CentralApi {
                 countryOfIdentification: jsonString(
                     identity["countryOfIdentification"] ?? identity["country_of_identification"]),
                 identification: jsonString(identity["identification"]),
-                name: jsonString(identity["name"])))
+                name: jsonString(identity["name"])),
+            identityLeaves: identityLeaves)
     }
 
-    /// POST <host>/profiles/issue/custodial-bind {token, root}. The device wallet and signature never
-    /// cross this boundary; ownership is the reserved secret triple committed inside `root`.
-    static func bindDogTagIssue(host: String, token: String, root: String) async -> CustodialBindResult {
+    /// POST <host>/profiles/issue/custodial-bind {token, root, identityProofs}. The device wallet
+    /// and signature never cross this boundary; ownership is the reserved secret triple committed
+    /// inside `root`. `identityProofs` carries ONLY Merkle paths (`[{keyPath, proof}]`) - the vet
+    /// recomputes each identity leaf from its own stored `{keyPath, salt, value}`, so no identity
+    /// value or salt is re-sent here.
+    static func bindDogTagIssue(
+        host: String,
+        token: String,
+        root: String,
+        identityProofs: [[String: Any]] = []
+    ) async -> CustodialBindResult {
         guard !token.isEmpty, !root.isEmpty else {
             return .rejected(statusCode: -1, body: "missing token or root")
         }
-        let body: [String: Any] = ["token": token, "root": root]
+        var body: [String: Any] = ["token": token, "root": root]
+        if !identityProofs.isEmpty {
+            body["identityProofs"] = identityProofs
+        }
         guard let raw = try? JSONSerialization.data(withJSONObject: body),
               let bodyStr = String(data: raw, encoding: .utf8) else {
             return .rejected(statusCode: -1, body: "could not encode request")

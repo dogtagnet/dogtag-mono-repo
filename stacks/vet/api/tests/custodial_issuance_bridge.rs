@@ -42,10 +42,14 @@ const DEVICE_SEED: &[u8] = b"DogTag custodial-bridge test seed - TEST MATERIAL O
 
 fn start_body() -> serde_json::Value {
     serde_json::json!({
+        // BLANK identity on purpose: a session with identity carries D1 identity leaves, whose
+        // bind then requires identityProofs (the attestation-integrity gate). This file tests the
+        // ANCHORING mechanics on the identity-less degrade path; the identity-full path (fold,
+        // proofs, gate refusals) lives in `custodial_bind_identity_gate.rs`.
         "ownerIdentity": {
-            "countryOfIdentification": "GB",
-            "identification": "PASSPORT-123",
-            "name": "Alice Owner"
+            "countryOfIdentification": "",
+            "identification": "",
+            "name": ""
         },
         "pet": {
             "name": "Rex",

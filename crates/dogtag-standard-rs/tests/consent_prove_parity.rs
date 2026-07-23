@@ -102,6 +102,10 @@ fn owner_address() -> [u8; 20] {
     a
 }
 
+/// Pet attributes PLUS the D1 `owner.identity.*` identity leaves - the exact v1 issuance tree
+/// shape. The circuit is leaf-blind (f3 §2.2), so the frozen VK must keep verifying with identity
+/// leaves present; running the one slow Groth16 pass over this combined tree is the empirical
+/// proof that D1 moved nothing.
 fn attrs() -> Vec<AttributeLeaf> {
     vec![
         AttributeLeaf {
@@ -113,6 +117,21 @@ fn attrs() -> Vec<AttributeLeaf> {
             key_path: "credentialSubject.breedLabel".to_string(),
             salt: [9u8; SALT_LEN],
             value: TypedScalar::Str("Shiba Inu".to_string()),
+        },
+        AttributeLeaf {
+            key_path: "owner.identity.fullName".to_string(),
+            salt: [21u8; SALT_LEN],
+            value: TypedScalar::Str("Alice Owner".to_string()),
+        },
+        AttributeLeaf {
+            key_path: "owner.identity.country".to_string(),
+            salt: [22u8; SALT_LEN],
+            value: TypedScalar::Str("GB".to_string()),
+        },
+        AttributeLeaf {
+            key_path: "owner.identity.docNumber".to_string(),
+            salt: [23u8; SALT_LEN],
+            value: TypedScalar::Str("PASSPORT-123".to_string()),
         },
     ]
 }
@@ -189,6 +208,9 @@ fn on_device_consent_proof_verifies_and_pub_matches() {
     let attributes_json = serde_json::to_string(&serde_json::json!([
         {"keyPath": "credentialSubject.name", "salt": format!("0x{}", hex::encode([7u8; SALT_LEN])), "tag": 2, "value": "Rex"},
         {"keyPath": "credentialSubject.breedLabel", "salt": format!("0x{}", hex::encode([9u8; SALT_LEN])), "tag": 2, "value": "Shiba Inu"},
+        {"keyPath": "owner.identity.fullName", "salt": format!("0x{}", hex::encode([21u8; SALT_LEN])), "tag": 2, "value": "Alice Owner"},
+        {"keyPath": "owner.identity.country", "salt": format!("0x{}", hex::encode([22u8; SALT_LEN])), "tag": 2, "value": "GB"},
+        {"keyPath": "owner.identity.docNumber", "salt": format!("0x{}", hex::encode([23u8; SALT_LEN])), "tag": 2, "value": "PASSPORT-123"},
     ]))
     .unwrap();
 

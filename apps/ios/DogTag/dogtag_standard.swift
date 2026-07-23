@@ -1468,6 +1468,29 @@ public func buildMerkleRootHex(leafHexes: [String])throws  -> String {
 })
 }
 /**
+ * Build a `ProfileDisclosure` envelope JSON for exactly the owner-picked `reveal_key_paths`
+ * (`disclosure::build_profile_disclosure`).
+ *
+ * Inputs mirror [`build_profile_tree_hex`] (the SAME persisted witness issuance folded), plus the
+ * chosen keyPaths. The returned JSON - `{ dogTagId, R, disclosures: [{ keyPath, saltHex, tag,
+ * value, proof }] }` - is the CANONICAL wire shape; embed it verbatim in the verify submission
+ * (and read `identityProofs` entries out of it at custodial-bind), never hand-re-encode it.
+ *
+ * Every disclosed value goes to the chosen verifier in cleartext - that is what "revealing your
+ * name" means - so the callers gate this behind the owner-facing picker.
+ */
+public func buildProfileDisclosureJson(seedHex: String, dogTagIdHex: String, ownerAddressHex: String, attributes: [AttributeLeafFfi], revealKeyPaths: [String])throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_build_profile_disclosure_json(
+        FfiConverterString.lower(seedHex),
+        FfiConverterString.lower(dogTagIdHex),
+        FfiConverterString.lower(ownerAddressHex),
+        FfiConverterSequenceTypeAttributeLeafFfi.lower(attributes),
+        FfiConverterSequenceString.lower(revealKeyPaths),$0
+    )
+})
+}
+/**
  * Build the per-tag Merkle tree ON THE DEVICE (`profile_tree::build_profile_tree`) and return `R`
  * plus the owner-private witness.
  *
@@ -1676,6 +1699,22 @@ public func verifyIntegrity(wrappedDocJson: String)throws  -> String {
 })
 }
 /**
+ * Verify the PURE half of a `ProfileDisclosure` envelope JSON
+ * (`disclosure::verify_profile_disclosure`): every entry's leaf is RECOMPUTED from its
+ * `(keyPath, salt, tag, value)` opening under `DS_LEAF` - a caller-supplied hash is never
+ * trusted - and must fold through its proof to the envelope's `R`.
+ *
+ * Callers must ADDITIONALLY bind the envelope on-chain (`R == profileRoot(dogTagId)`,
+ * `rootIssuer[R]`/`isValid(R)`) and to the consent proof it rides alongside.
+ */
+public func verifyProfileDisclosureJson(disclosureJson: String)throws  -> Bool {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError.lift) {
+    uniffi_dogtag_standard_fn_func_verify_profile_disclosure_json(
+        FfiConverterString.lower(disclosureJson),$0
+    )
+})
+}
+/**
  * The IssuerRegistry whitelist key the VerificationRegistry checks for the relayer on a given
  * purpose label: `keccak256(abi.encode("VERIFY:", purpose_key(label)))` as `0x..` hex.
  *
@@ -1720,6 +1759,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_dogtag_standard_checksum_func_build_merkle_root_hex() != 1024) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_dogtag_standard_checksum_func_build_profile_disclosure_json() != 22659) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_dogtag_standard_checksum_func_build_profile_tree_hex() != 20561) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -1754,6 +1796,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_verify_integrity() != 1032) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_dogtag_standard_checksum_func_verify_profile_disclosure_json() != 42990) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dogtag_standard_checksum_func_verify_whitelist_key_hex() != 28611) {

@@ -741,6 +741,10 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
 
@@ -757,6 +761,8 @@ internal interface UniffiLib : Library {
     }
 
     fun uniffi_dogtag_standard_fn_func_build_merkle_root_hex(`leafHexes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_build_profile_disclosure_json(`seedHex`: RustBuffer.ByValue,`dogTagIdHex`: RustBuffer.ByValue,`ownerAddressHex`: RustBuffer.ByValue,`attributes`: RustBuffer.ByValue,`revealKeyPaths`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_build_profile_tree_hex(`seedHex`: RustBuffer.ByValue,`dogTagIdHex`: RustBuffer.ByValue,`ownerAddressHex`: RustBuffer.ByValue,`attributes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -782,6 +788,8 @@ internal interface UniffiLib : Library {
     ): Byte
     fun uniffi_dogtag_standard_fn_func_verify_integrity(`wrappedDocJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    fun uniffi_dogtag_standard_fn_func_verify_profile_disclosure_json(`disclosureJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Byte
     fun uniffi_dogtag_standard_fn_func_verify_whitelist_key_hex(`purposeLabel`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     fun uniffi_dogtag_standard_fn_func_wrap_document_json(`typedCredentialJson`: RustBuffer.ByValue,`issuerJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -900,6 +908,8 @@ internal interface UniffiLib : Library {
     ): Unit
     fun uniffi_dogtag_standard_checksum_func_build_merkle_root_hex(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_build_profile_disclosure_json(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_build_profile_tree_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_bytes_to_field_hex(
@@ -924,6 +934,8 @@ internal interface UniffiLib : Library {
     ): Short
     fun uniffi_dogtag_standard_checksum_func_verify_integrity(
     ): Short
+    fun uniffi_dogtag_standard_checksum_func_verify_profile_disclosure_json(
+    ): Short
     fun uniffi_dogtag_standard_checksum_func_verify_whitelist_key_hex(
     ): Short
     fun uniffi_dogtag_standard_checksum_func_wrap_document_json(
@@ -946,6 +958,9 @@ private fun uniffiCheckContractApiVersion(lib: UniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: UniffiLib) {
     if (lib.uniffi_dogtag_standard_checksum_func_build_merkle_root_hex() != 1024.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_dogtag_standard_checksum_func_build_profile_disclosure_json() != 22659.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_build_profile_tree_hex() != 20561.toShort()) {
@@ -982,6 +997,9 @@ private fun uniffiCheckApiChecksums(lib: UniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_verify_integrity() != 1032.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_dogtag_standard_checksum_func_verify_profile_disclosure_json() != 42990.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_dogtag_standard_checksum_func_verify_whitelist_key_hex() != 28611.toShort()) {
@@ -1751,6 +1769,28 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     
 
         /**
+         * Build a `ProfileDisclosure` envelope JSON for exactly the owner-picked `reveal_key_paths`
+         * (`disclosure::build_profile_disclosure`).
+         *
+         * Inputs mirror [`build_profile_tree_hex`] (the SAME persisted witness issuance folded), plus the
+         * chosen keyPaths. The returned JSON - `{ dogTagId, R, disclosures: [{ keyPath, saltHex, tag,
+         * value, proof }] }` - is the CANONICAL wire shape; embed it verbatim in the verify submission
+         * (and read `identityProofs` entries out of it at custodial-bind), never hand-re-encode it.
+         *
+         * Every disclosed value goes to the chosen verifier in cleartext - that is what "revealing your
+         * name" means - so the callers gate this behind the owner-facing picker.
+         */
+    @Throws(FfiException::class) fun `buildProfileDisclosureJson`(`seedHex`: kotlin.String, `dogTagIdHex`: kotlin.String, `ownerAddressHex`: kotlin.String, `attributes`: List<AttributeLeafFfi>, `revealKeyPaths`: List<kotlin.String>): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_build_profile_disclosure_json(
+        FfiConverterString.lower(`seedHex`),FfiConverterString.lower(`dogTagIdHex`),FfiConverterString.lower(`ownerAddressHex`),FfiConverterSequenceTypeAttributeLeafFfi.lower(`attributes`),FfiConverterSequenceString.lower(`revealKeyPaths`),_status)
+}
+    )
+    }
+    
+
+        /**
          * Build the per-tag Merkle tree ON THE DEVICE (`profile_tree::build_profile_tree`) and return `R`
          * plus the owner-private witness.
          *
@@ -1961,6 +2001,25 @@ public object FfiConverterSequenceSequenceString: FfiConverterRustBuffer<List<Li
     uniffiRustCallWithError(FfiException) { _status ->
     UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_verify_integrity(
         FfiConverterString.lower(`wrappedDocJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Verify the PURE half of a `ProfileDisclosure` envelope JSON
+         * (`disclosure::verify_profile_disclosure`): every entry's leaf is RECOMPUTED from its
+         * `(keyPath, salt, tag, value)` opening under `DS_LEAF` - a caller-supplied hash is never
+         * trusted - and must fold through its proof to the envelope's `R`.
+         *
+         * Callers must ADDITIONALLY bind the envelope on-chain (`R == profileRoot(dogTagId)`,
+         * `rootIssuer[R]`/`isValid(R)`) and to the consent proof it rides alongside.
+         */
+    @Throws(FfiException::class) fun `verifyProfileDisclosureJson`(`disclosureJson`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_dogtag_standard_fn_func_verify_profile_disclosure_json(
+        FfiConverterString.lower(`disclosureJson`),_status)
 }
     )
     }

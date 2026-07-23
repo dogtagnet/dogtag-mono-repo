@@ -39,6 +39,9 @@ struct ScanScreen: View {
     @State private var status = ""
     @State private var working = false
     @State private var selected: Credential? = nil
+    // D1 disclosure picker: the `owner.identity.*` keyPaths the owner chose to REVEAL to this
+    // verifier. Default empty - nothing is disclosed unless the owner opts in per leaf.
+    @State private var revealKeyPaths: Set<String> = []
     // Export-session metadata resolved (non-consuming) from the QR's one-time token.
     @State private var exportSession: CentralApi.ExportSession? = nil
     @State private var exportResolveErr: String? = nil
@@ -116,7 +119,7 @@ struct ScanScreen: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button { status = ""; payload = nil; selected = nil; exportSession = nil; exportResolveErr = nil; issueSession = nil; issued = nil; issueErr = ""; scanning = true } label: {
+                    Button { status = ""; payload = nil; selected = nil; revealKeyPaths = []; exportSession = nil; exportResolveErr = nil; issueSession = nil; issued = nil; issueErr = ""; scanning = true } label: {
                         Text("Scan again").foregroundColor(c.onBackground).padding(.horizontal, 16).padding(.vertical, 10)
                             .background(Capsule().fill(c.surfaceVariant))
                     }.buttonStyle(.plain)
@@ -241,11 +244,11 @@ struct ScanScreen: View {
             status = "Building private owner profile on this device…"
             Task {
                 do {
-                    let root = try buildOrReuseIssueRoot(
+                    let (root, identityProofs) = try buildOrReuseIssueRoot(
                         session: session, seedHex: seedHex, ownerAddress: wallet.ethAddress)
                     await MainActor.run { status = "Sending the private root to your vet…" }
                     let bindResult = await CentralApi.bindDogTagIssue(
-                        host: host, token: token, root: root)
+                        host: host, token: token, root: root, identityProofs: identityProofs)
                     var accepted: CentralApi.DogTagIssue? = nil
                     switch bindResult {
                     case let .accepted(result):
@@ -324,12 +327,23 @@ struct ScanScreen: View {
 
     /// A bind retry must reuse the exact persisted salts/root. Generating fresh salts for the same
     /// allocated dogTagId would create a second root that the write-once contract can never accept.
+    ///
+    /// D1: the vet-salted identity leaves are folded into `R` ALONGSIDE the pet attributes -
+    /// identity keeps the VET's salts (the bind-time integrity gate recomputes each leaf from the
+    /// vet's own `{keyPath, salt, value}`), pet attributes keep device-random salts. Both are
+    /// persisted as ordinary attribute openings in the owner-secret store, so the same list feeds
+    /// issuance, the consent-proof rebuild, and later disclosures. Returns `R` plus the
+    /// `identityProofs` (Merkle paths only) the bind must post.
     private func buildOrReuseIssueRoot(
         session: CentralApi.DogTagIssueSession,
         seedHex: String,
         ownerAddress: String
-    ) throws -> String {
+    ) throws -> (root: String, identityProofs: [[String: Any]]) {
         let requested = session.pet.profileAttributeValues
+        let identity = session.identityLeaves.map {
+            ProfileTreeStore.BackedUpAttribute(
+                keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
+        }
         if let existing = try ProfileTreeStore.load().first(where: {
             $0.dogTagIdDec == session.dogTagId
         }) {
@@ -339,30 +353,83 @@ struct ScanScreen: View {
             guard existing.derivationVersion == ProfileTreeStore.derivationVersion else {
                 throw issueFailure("existing owner secret uses an unsupported derivation version")
             }
-            let metadataMatches = existing.attributes.count == requested.count
-                && zip(existing.attributes, requested).allSatisfy { stored, incoming in
+            // Pet attrs compare on (keyPath, value, tag) - their salts are device-random. Identity
+            // attrs ALSO compare on the salt: the vet verifies inclusion with ITS stored salt, so a
+            // divergent salt could never bind.
+            let petStored = existing.attributes.prefix(requested.count)
+            let identityStored = existing.attributes.dropFirst(requested.count)
+            let metadataMatches = existing.attributes.count == requested.count + identity.count
+                && zip(petStored, requested).allSatisfy { stored, incoming in
                     stored.keyPath == incoming.keyPath
                         && stored.value == incoming.value
                         && stored.tag == incoming.tag
+                }
+                && zip(identityStored, identity).allSatisfy { stored, incoming in
+                    stored == incoming
                 }
             let matches = existing.ownerAddress.caseInsensitiveCompare(ownerAddress) == .orderedSame
                 && metadataMatches
             guard matches else {
                 throw issueFailure("this dogTagId already has different private profile metadata")
             }
-            return try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
+            let root = try ProfileTreeStore.verifyRecoverable(seedHex: seedHex, record: existing)
+            let proofs = try identityInclusionProofs(
+                seedHex: seedHex,
+                dogTagIdDec: session.dogTagId,
+                ownerAddress: ownerAddress,
+                attributes: Array(existing.attributes),
+                identityKeyPaths: identity.map { $0.keyPath })
+            return (root, proofs)
         }
-        let attributes = try requested.map { item -> ProfileTreeStore.BackedUpAttribute in
+        var attributes = try requested.map { item -> ProfileTreeStore.BackedUpAttribute in
             let salted = try ProfileTreeStore.randomStringAttribute(
                 keyPath: item.keyPath, value: item.value)
             return ProfileTreeStore.BackedUpAttribute(
                 keyPath: salted.keyPath, saltHex: salted.saltHex, tag: item.tag, value: salted.value)
         }
-        return try ProfileTreeStore.buildAndPersist(
+        attributes.append(contentsOf: identity)
+        let root = try ProfileTreeStore.buildAndPersist(
             seedHex: seedHex,
             dogTagIdDec: session.dogTagId,
             ownerAddress: ownerAddress,
             attributes: attributes).rootHex
+        let proofs = try identityInclusionProofs(
+            seedHex: seedHex,
+            dogTagIdDec: session.dogTagId,
+            ownerAddress: ownerAddress,
+            attributes: attributes,
+            identityKeyPaths: identity.map { $0.keyPath })
+        return (root, proofs)
+    }
+
+    /// Compute the bind's `identityProofs` - `[{keyPath, proof}]`, Merkle paths only - through the
+    /// SAME Rust `buildProfileDisclosureJson` the disclosure flow uses, so the path encoding can
+    /// never drift between the two. Empty when the session carries no identity leaves.
+    private func identityInclusionProofs(
+        seedHex: String,
+        dogTagIdDec: String,
+        ownerAddress: String,
+        attributes: [ProfileTreeStore.BackedUpAttribute],
+        identityKeyPaths: [String]
+    ) throws -> [[String: Any]] {
+        guard !identityKeyPaths.isEmpty else { return [] }
+        let json = try buildProfileDisclosureJson(
+            seedHex: seedHex,
+            dogTagIdHex: dogTagIdFieldHex(dogTagIdDec: dogTagIdDec),
+            ownerAddressHex: ownerAddress,
+            attributes: attributes.map {
+                AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
+            },
+            revealKeyPaths: identityKeyPaths)
+        guard let data = json.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let disclosures = object["disclosures"] as? [[String: Any]] else {
+            throw issueFailure("could not decode the identity disclosure envelope")
+        }
+        return disclosures.map { entry in
+            ["keyPath": (entry["keyPath"] as? String) ?? "",
+             "proof": (entry["proof"] as? [String]) ?? []]
+        }
     }
 
     private func issueFailure(_ message: String) -> NSError {
@@ -408,7 +475,7 @@ struct ScanScreen: View {
                     }
                     ForEach(candidates) { cred in
                         let isSel = selected?.id == cred.id
-                        Button { selected = cred } label: {
+                        Button { selected = cred; revealKeyPaths = [] } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack(alignment: .top) {
                                     CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
@@ -422,6 +489,34 @@ struct ScanScreen: View {
                             .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSel ? c.accent : .clear, lineWidth: 1.5))
                         }
                         .buttonStyle(.plain)
+                    }
+                }
+                // D1: the owner-facing disclosure picker. Shown only when the selected tag's
+                // owner-secret record carries identity leaves; every leaf defaults to HIDDEN and
+                // each reveal is an explicit per-leaf opt-in for THIS verifier only.
+                if let cred = selected {
+                    let identityLeaves = identityAttributes(forDogTagIdDec: cred.dogTagId)
+                    if !identityLeaves.isEmpty {
+                        card {
+                            Text("Share your identity (optional)").font(.system(size: 15, weight: .bold)).foregroundColor(c.onBackground)
+                            Text("Each detail you switch on is revealed to this verifier, proven against your dog tag's sealed profile. Everything stays hidden by default.")
+                                .font(.system(size: 12)).foregroundColor(c.muted)
+                            ForEach(identityLeaves, id: \.keyPath) { leaf in
+                                Toggle(isOn: Binding(
+                                    get: { revealKeyPaths.contains(leaf.keyPath) },
+                                    set: { on in
+                                        if on { revealKeyPaths.insert(leaf.keyPath) }
+                                        else { revealKeyPaths.remove(leaf.keyPath) }
+                                    }
+                                )) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(identityLabel(for: leaf.keyPath)).font(.system(size: 13, weight: .semibold)).foregroundColor(c.onBackground)
+                                        Text(leaf.value).font(.system(size: 12, design: .monospaced)).foregroundColor(c.muted)
+                                    }
+                                }
+                                .tint(c.accent)
+                            }
+                        }
                     }
                 }
                 if working {
@@ -643,7 +738,27 @@ struct ScanScreen: View {
             let proofObject: [String: Any] = [
                 "a": proof.a, "b": proof.b, "c": proof.c, "pubSignals": proof.pubSignals,
             ]
-            let payload: [String: Any] = ["exportToken": token, "proof": proofObject]
+            var payload: [String: Any] = ["exportToken": token, "proof": proofObject]
+            // D1: the owner-picked identity disclosure rides ALONGSIDE the consent proof - same
+            // session, same `R` - so it inherits the proof's relayer/deadline anti-replay binding.
+            // The envelope is built by the SAME Rust core the verifier checks with and embedded
+            // verbatim; the consent proof itself stays leaf-blind.
+            if !revealKeyPaths.isEmpty {
+                let disclosureJson = try buildProfileDisclosureJson(
+                    seedHex: seedHex,
+                    dogTagIdHex: dogTagIdFieldHex(dogTagIdDec: owner.dogTagIdDec),
+                    ownerAddressHex: owner.ownerAddress,
+                    attributes: owner.attributes.map {
+                        AttributeLeafFfi(keyPath: $0.keyPath, saltHex: $0.saltHex, tag: $0.tag, value: $0.value)
+                    },
+                    revealKeyPaths: Array(revealKeyPaths))
+                guard let disclosureData = disclosureJson.data(using: .utf8),
+                      let disclosureObject = try? JSONSerialization.jsonObject(with: disclosureData) else {
+                    throw NSError(domain: "DogTag.OwnerHidden", code: 4,
+                                  userInfo: [NSLocalizedDescriptionKey: "could not encode the identity disclosure"])
+                }
+                payload["profileDisclosure"] = disclosureObject
+            }
             let payloadData = try JSONSerialization.data(withJSONObject: payload)
             guard let payloadJson = String(data: payloadData, encoding: .utf8) else {
                 throw NSError(domain: "DogTag.OwnerHidden", code: 3,
@@ -707,6 +822,23 @@ struct ScanScreen: View {
     }
 
     // ---- helpers ----
+
+    /// The selected tag's persisted `owner.identity.*` attribute openings - the leaves the owner
+    /// CAN disclose. Empty for tags issued before D1 (nothing to pick, the card hides).
+    private func identityAttributes(forDogTagIdDec dec: String) -> [ProfileTreeStore.BackedUpAttribute] {
+        guard let record = ProfileTreeStore.record(forDogTagIdDec: dec) else { return [] }
+        return record.attributes.filter { $0.keyPath.hasPrefix("owner.identity.") }
+    }
+
+    /// Owner-readable label for an identity keyPath (falls back to the raw suffix).
+    private func identityLabel(for keyPath: String) -> String {
+        switch keyPath {
+        case "owner.identity.fullName": return "Full name"
+        case "owner.identity.country": return "Country"
+        case "owner.identity.docNumber": return "ID number"
+        default: return String(keyPath.dropFirst("owner.identity.".count))
+        }
+    }
 
     @ViewBuilder private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6, content: content)

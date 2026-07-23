@@ -359,6 +359,19 @@ pub async fn consent_submit_levelb(
         Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("verify-wl: {e}")),
     }
 
+    // D1: an OPTIONAL, holder-initiated `ProfileDisclosure` rides alongside the consent proof.
+    // The consent proof stays frozen and leaf-blind; the disclosure is a cryptographically
+    // independent Merkle opening of owner-picked `owner.identity.*` leaves against the SAME `R`.
+    // Binding the envelope to THIS proof's `R` and `dogTagId` is the anti-replay context (q4
+    // §1.3.4): a bare envelope is a replayable bearer credential, but bound here it inherits the
+    // proof's relayer/deadline/nullifier scope. All checks run BEFORE any gas is spent; a bad
+    // disclosure rejects the whole submission. Nothing disclosed ever reaches the chain.
+    let disclosed_key_paths = match verify_profile_disclosure_submission(st, body, &pubs, &pub_u).await
+    {
+        Ok(kps) => kps,
+        Err(e) => return e,
+    };
+
     let nullifier = format!(
         "0x{}",
         hex::encode(pub_u[P::NULLIFIER].to_be_bytes::<32>())
@@ -373,6 +386,7 @@ pub async fn consent_submit_levelb(
             session.nullifier = Some(nullifier.clone());
             session.tx_hash = None;
             session.updated_at = now;
+            session.disclosed_key_paths = disclosed_key_paths.clone();
             session
         }
         None => VerifySession {
@@ -386,6 +400,7 @@ pub async fn consent_submit_levelb(
             nullifier: Some(nullifier.clone()),
             created_at: now,
             updated_at: now,
+            disclosed_key_paths: disclosed_key_paths.clone(),
         },
     };
     let session_id = audit.session_id.clone();
@@ -425,7 +440,135 @@ pub async fn consent_submit_levelb(
         "sessionId": session_id,
         "registry": st.cfg.verification_registry_consent_addr,
         "nullifier": nullifier,
+        "disclosedKeyPaths": disclosed_key_paths,
     }))
+}
+
+/// D1: validate the optional `profileDisclosure` block of an owner-hidden verify submission and
+/// return the revealed keyPaths (empty when absent).
+///
+/// Four checks, all preflight (nothing here reaches the chain as a write):
+///  1. PURE: every entry's leaf, recomputed from `(keyPath, salt, tag, value)` under `DS_LEAF`,
+///     folds through its proof to the envelope's `R` (`disclosure::verify_profile_disclosure`).
+///  2. BINDING: the envelope's `R` and `dogTagId` equal THIS consent proof's `pub[R]`/`pub[dogTagId]`
+///     — the disclosure inherits the proof's relayer/deadline/nullifier anti-replay context.
+///  3. ANCHOR: `R == profileRoot(dogTagId)` on the owner-hidden SBT.
+///  4. VALIDITY: `isValid(R)` on the DOG_PROFILE issuer clone (anchored + not revoked).
+///
+/// Checks 3-4 are defense-in-depth preflight: the registry re-runs both on-chain when the consent
+/// proof records (`VerificationRegistryConsent.sol:163,188-192`), and the binding in (2) is what
+/// extends that enforcement to the disclosure. They are therefore gated on the addresses being
+/// configured — a verify-only deployment without the issuance addresses still refuses any
+/// disclosure whose (1)/(2) fail, and the chain remains the authority.
+async fn verify_profile_disclosure_submission(
+    st: &AppState,
+    body: &Value,
+    pubs: &[String; 7],
+    pub_u: &[alloy::primitives::U256; dogtag_standard::public_signals::NUM_PUBLIC],
+) -> Result<Vec<String>, Resp> {
+    use dogtag_standard::public_signals::level_b as P;
+
+    let raw = match body.get("profileDisclosure") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(raw) => raw,
+    };
+    let disclosure: dogtag_standard::disclosure::ProfileDisclosure =
+        match serde_json::from_value(raw.clone()) {
+            Ok(d) => d,
+            Err(e) => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("profileDisclosure: {e}"),
+                ))
+            }
+        };
+
+    // (1) every disclosed leaf folds to the envelope's R.
+    match dogtag_standard::disclosure::verify_profile_disclosure(&disclosure) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "profileDisclosure: a disclosed leaf does not fold to R",
+            ))
+        }
+        Err(e) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                &format!("profileDisclosure: {e}"),
+            ))
+        }
+    }
+
+    // (2) the envelope is bound to THIS consent proof: same R, same dogTagId.
+    if !pub_signal_eq(&disclosure.root, &pubs[P::ROOT]) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "profileDisclosure.R != the consent proof's R",
+        ));
+    }
+    if !pub_signal_eq(&disclosure.dog_tag_id, &pubs[P::DOG_TAG_ID]) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "profileDisclosure.dogTagId != the consent proof's dogTagId",
+        ));
+    }
+
+    // (3) on-chain anchor: R == profileRoot(dogTagId) on the owner-hidden SBT.
+    let root_hex = format!("0x{}", hex::encode(pub_u[P::ROOT].to_be_bytes::<32>()));
+    let onchain_id = format!("0x{}", hex::encode(pub_u[P::DOG_TAG_ID].to_be_bytes::<32>()));
+    if valid_contract_addr(&st.cfg.sbt_consent_addr) {
+        match st
+            .chain
+            .profile_root_of(&st.cfg.sbt_consent_addr, &onchain_id)
+            .await
+        {
+            Ok(sealed) if pub_signal_eq(&sealed, &root_hex) => {}
+            Ok(_) | Err(crate::chain::ChainError::NotFound) => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "profileDisclosure: R != profileRoot(dogTagId) on-chain",
+                ))
+            }
+            // Fail CLOSED on an inconclusive read: a disclosure must never be recorded as revealed
+            // on the strength of an anchor that could not be confirmed.
+            Err(e) => {
+                return Err(err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("profileDisclosure: profileRoot read failed: {e}"),
+                ))
+            }
+        }
+    }
+
+    // (4) issuer validity: anchored and not revoked on the DOG_PROFILE clone.
+    if valid_contract_addr(&st.cfg.profile_issuer_addr) {
+        match st
+            .chain
+            .is_valid(&st.cfg.profile_issuer_addr, &root_hex)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "profileDisclosure: R is not valid on the DOG_PROFILE issuer (unanchored or revoked)",
+                ))
+            }
+            Err(e) => {
+                return Err(err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("profileDisclosure: isValid read failed: {e}"),
+                ))
+            }
+        }
+    }
+
+    Ok(disclosure
+        .disclosures
+        .iter()
+        .map(|entry| entry.key_path.clone())
+        .collect())
 }
 
 fn verify_key_from_purpose_word(purpose_word: &str) -> String {

@@ -31,9 +31,10 @@ object CentralApi {
         val microchip: Microchip,
     ) {
         /**
-         * The public pet-profile leaves committed into R. The owner-control triple is added by the
-         * Rust profile-tree builder; owner identity is intentionally excluded until the later D1
-         * identity-disclosure slice.
+         * The pet-profile leaves committed into R, each with a fresh device-random salt. The
+         * owner-control triple is added by the Rust profile-tree builder; the D1 identity leaves
+         * come from [ProfileIssueSession.identityLeaves] with VET-generated salts and are appended
+         * AFTER these by the issuance flow.
          */
         fun attributes(salt: () -> String): List<BackedUpAttribute> {
             val out = mutableListOf<BackedUpAttribute>()
@@ -67,13 +68,42 @@ object CentralApi {
         }
     }
 
+    /**
+     * D1: one vet-salted identity attribute leaf the device MUST fold into R alongside the pet
+     * attributes. The salt is the VET's - it re-verifies each leaf's inclusion in R at bind and
+     * refuses the mint otherwise - and the device persists the triple as a disclosure opening.
+     */
+    data class IdentityLeaf(
+        val keyPath: String,
+        val saltHex: String,
+        val tag: UByte,
+        val value: String,
+    ) {
+        fun asAttribute(): BackedUpAttribute = BackedUpAttribute(keyPath, saltHex, tag, value)
+    }
+
     data class ProfileIssueSession(
         val sessionId: String,
         val dogTagId: String,
         val pet: PetProfile,
-        /** Parsed for response-shape parity only. It is not folded into R in this slice. */
+        /** The vet-collected identity block, shown to the owner before binding. */
         val ownerIdentity: Map<String, String>,
-    )
+        /** D1: the salted identity leaves to fold into R (empty when the vet collected none). */
+        val identityLeaves: List<IdentityLeaf> = emptyList(),
+    ) {
+        /**
+         * Compare metadata on an issuance retry: pet attrs on (keyPath, tag, value) - their salts
+         * are device-random - and identity leaves INCLUDING the vet salt, which the bind-time
+         * integrity gate recomputes with. Order is pet-then-identity, matching the build path.
+         */
+        fun matchesStored(attributes: List<BackedUpAttribute>): Boolean {
+            val petExpected = pet.attributes { "ignored" }.map { Triple(it.keyPath, it.tag, it.value) }
+            if (attributes.size != petExpected.size + identityLeaves.size) return false
+            val petStored = attributes.take(petExpected.size).map { Triple(it.keyPath, it.tag, it.value) }
+            val identityStored = attributes.drop(petExpected.size)
+            return petStored == petExpected && identityStored == identityLeaves.map { it.asAttribute() }
+        }
+    }
 
     data class CustodialBind(
         val dogTagId: String,
@@ -97,10 +127,37 @@ object CentralApi {
         }
     }
 
-    /** POST only `{token, root}`. No owner address or signature crosses this boundary. */
-    suspend fun bindCustodialIssue(host: String, token: String, root: String): CustodialBind? {
+    /** One bind-time identity inclusion proof: the Merkle path ONLY - the vet recomputes the leaf
+     * from its own stored `{keyPath, salt, value}`, so no identity value is re-sent here. */
+    data class IdentityProof(val keyPath: String, val proof: List<String>)
+
+    /**
+     * POST `{token, root, identityProofs}`. No owner address or signature crosses this boundary;
+     * `identityProofs` carries only keyPaths + Merkle paths (D1 integrity gate).
+     */
+    suspend fun bindCustodialIssue(
+        host: String,
+        token: String,
+        root: String,
+        identityProofs: List<IdentityProof> = emptyList(),
+    ): CustodialBind? {
         if (token.isBlank() || root.isBlank()) return null
-        val body = JSONObject().put("token", token).put("root", root).toString()
+        val bodyJson = JSONObject().put("token", token).put("root", root)
+        if (identityProofs.isNotEmpty()) {
+            bodyJson.put(
+                "identityProofs",
+                JSONArray().apply {
+                    identityProofs.forEach { p ->
+                        put(
+                            JSONObject()
+                                .put("keyPath", p.keyPath)
+                                .put("proof", JSONArray(p.proof)),
+                        )
+                    }
+                },
+            )
+        }
+        val body = bodyJson.toString()
         return try {
             val response = Http.postJson(
                 "$host/profiles/issue/custodial-bind",
@@ -234,6 +291,22 @@ object CentralApi {
                 if (value != null && value != JSONObject.NULL) put(key, value.toString())
             }
         }
+        // D1: the vet-salted identity leaves the device must fold into R. A leaf without its
+        // keyPath or salt cannot be folded OR proven, so those are dropped at the edge.
+        val identityLeavesJson = root.optJSONArray("identityLeaves") ?: JSONArray()
+        val identityLeaves = (0 until identityLeavesJson.length()).mapNotNull { i ->
+            identityLeavesJson.optJSONObject(i)?.let { leaf ->
+                val keyPath = leaf.string("keyPath", "key_path")
+                val saltHex = leaf.string("saltHex", "salt_hex")
+                if (keyPath.isBlank() || saltHex.isBlank()) return@let null
+                IdentityLeaf(
+                    keyPath = keyPath,
+                    saltHex = saltHex,
+                    tag = leaf.optInt("tag", 2).toUByte(),
+                    value = leaf.valueString("value"),
+                )
+            }
+        }
         ProfileIssueSession(
             sessionId = root.string("sessionId", "session_id"),
             dogTagId = root.string("dogTagId", "dog_tag_id").ifBlank {
@@ -258,6 +331,7 @@ object CentralApi {
                 ),
             ),
             ownerIdentity = ownerFields,
+            identityLeaves = identityLeaves,
         ).takeIf {
             it.sessionId.isNotBlank() && it.dogTagId.isNotBlank() && it.pet.name.isNotBlank()
         }

@@ -1215,6 +1215,7 @@ async fn export_session_start(
             nullifier: None,
             created_at: now,
             updated_at: now,
+            disclosed_key_paths: Vec::new(),
         })
         .await;
     // Mint a short-lived EXPORT token (32 hex chars == 16 random bytes) so the QR is low-density
@@ -1534,6 +1535,42 @@ pub fn onchain_dog_tag_id(handle: &str) -> Result<String, String> {
     Ok(dogtag_standard::field::to_hex32(&f))
 }
 
+/// D1 identity-leaf keyPaths - the sanctioned `owner.identity.*` namespace
+/// (`profile_tree::OWNER_IDENTITY_PREFIX`; q4 §1.1). One leaf per attribute, never a blob: leaf
+/// granularity IS disclosure granularity, and `R` is write-once.
+pub const KP_IDENTITY_FULL_NAME: &str = "owner.identity.fullName";
+pub const KP_IDENTITY_COUNTRY: &str = "owner.identity.country";
+pub const KP_IDENTITY_DOC_NUMBER: &str = "owner.identity.docNumber";
+
+/// Build the session's D1 identity attribute leaves from the operator-collected identity block:
+/// one leaf per NON-BLANK field, each salted with a fresh vet-generated 16-byte salt.
+///
+/// The VET generates the salts (not the device): that is what lets the bind-time integrity gate
+/// recompute each leaf from the vet's OWN retained `{keyPath, salt, value}` and assert it folds to
+/// the posted `R` - the property that makes the identity genuinely VET-ATTESTED rather than
+/// device-asserted. High-entropy salts also keep low-entropy values (a country has ~200
+/// possibilities) unguessable behind the public root.
+fn identity_leaves_for(identity: &crate::store::OwnerIdentity) -> Vec<crate::store::IdentityLeaf> {
+    let mut leaves = Vec::new();
+    let mut push = |key_path: &str, value: &str| {
+        if value.trim().is_empty() {
+            return; // an absent leaf is unprovable; an empty one would be provably empty
+        }
+        let mut salt = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
+        leaves.push(crate::store::IdentityLeaf {
+            key_path: key_path.to_string(),
+            salt_hex: format!("0x{}", hex::encode(salt)),
+            tag: dogtag_standard::types::TypeTag::String as u8,
+            value: value.to_string(),
+        });
+    };
+    push(KP_IDENTITY_FULL_NAME, &identity.name);
+    push(KP_IDENTITY_COUNTRY, &identity.country_of_identification);
+    push(KP_IDENTITY_DOC_NUMBER, &identity.identification);
+    leaves
+}
+
 /// POST /profiles/issue/session/start — operator-session gated. Allocate a dogTagId, persist a
 /// ProfileIssueSession with a fresh 16-byte one-time bind token (180s TTL), and return the QR URL
 /// `<deployment_url>/p/<token>` the device scans. Returns `{ token, dogTagId, sessionId, qr }`.
@@ -1617,12 +1654,17 @@ async fn profile_issue_session_start(
         weight_history,
     };
 
+    // D1: one identity attribute leaf per non-blank identity field, salted fresh HERE so the vet
+    // retains the exact `{keyPath, salt, value}` triples the bind-time integrity gate recomputes.
+    let identity_leaves = identity_leaves_for(&owner_identity);
+
     let session_id = uuid::Uuid::new_v4().to_string();
     st.store
         .put_profile_session(crate::store::ProfileIssueSession {
             session_id: session_id.clone(),
             dog_tag_id: dog_tag_id.clone(),
             owner_identity,
+            identity_leaves,
             pet_name: body.pet.name,
             microchip,
             profile,
@@ -1645,11 +1687,14 @@ async fn profile_issue_session_start(
 }
 
 /// GET /p/{token} — resolve a one-time bind token to the session metadata the device needs to build
-/// its owner-hidden profile root: ids/status plus the `pet` attributes the device folds into `R` and
-/// the vet-collected `ownerIdentity` block (the later D1 hidden-leaf source; NOT folded into `R` by
-/// this slice). Both mobile parsers fail closed without the `pet` and `ownerIdentity` containers, so
+/// its owner-hidden profile root: ids/status plus the `pet` attributes the device folds into `R`,
+/// the vet-collected `ownerIdentity` block, and (D1) the `identityLeaves` — the salted
+/// `{keyPath, saltHex, tag, value}` identity attributes the device MUST fold into `R` alongside the
+/// pet attributes (the bind-time integrity gate refuses an `R` that does not commit them). Both
+/// mobile parsers fail closed without the `pet` and `ownerIdentity` containers, so
 /// they are emitted unconditionally — `ownerIdentity` with empty-string fields when the operator
-/// collected none (the parsers require the container, not the fields). Unauthenticated
+/// collected none (the parsers require the container, not the fields; `identityLeaves` is then
+/// empty and the bind degrades to the pet-only fold). Unauthenticated
 /// and NON-consuming (consumed only on bind). A missing/expired token is a 404. Symmetric with `/x/`.
 /// The bind consumes the token atomically before the session can leave "pending", so a token that
 /// still resolves implies the pre-bind state — the metadata needs no extra status gating.
@@ -1685,6 +1730,11 @@ async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<Stri
                     "microchip": serde_json::to_value(&s.microchip).expect("Microchip serializes"),
                 },
                 "ownerIdentity": serde_json::to_value(&s.owner_identity).expect("OwnerIdentity serializes"),
+                // D1: the salted identity attributes the device folds into R. Carrying the salts
+                // here is deliberate — the device must retain them as disclosure openings — and is
+                // no wider than the ownerIdentity block above: this route is already the one-time,
+                // 180s-TTL token capability that hands the vet-held identity to the owner's device.
+                "identityLeaves": serde_json::to_value(&s.identity_leaves).expect("IdentityLeaf serializes"),
                 "unverifiedClaims": serde_json::to_value(&claims).expect("ConvenienceClaims serializes"),
             }))
         }
@@ -1695,8 +1745,76 @@ async fn profile_bind_resolve(State(st): State<AppState>, Path(token): Path<Stri
 #[derive(Deserialize)]
 struct ProfileCustodialBindReq {
     token: String,
-    /// The DEVICE-computed profile root `R` (0x + 64 hex). Opaque to the server.
+    /// The DEVICE-computed profile root `R` (0x + 64 hex). Opaque to the server EXCEPT for the D1
+    /// identity leaves, whose inclusion the integrity gate verifies below.
     root: String,
+    /// D1: one Merkle inclusion proof per identity leaf the session carries. The device supplies
+    /// ONLY the path (each step `"promote"` or a `0x..` sibling hex, leaf→root order); the vet
+    /// recomputes the leaf from its OWN stored `{keyPath, salt, value}` — a caller-supplied leaf
+    /// hash is never trusted.
+    #[serde(rename = "identityProofs", default)]
+    identity_proofs: Vec<IdentityProofReq>,
+}
+
+#[derive(Deserialize)]
+struct IdentityProofReq {
+    #[serde(rename = "keyPath")]
+    key_path: String,
+    proof: Vec<String>,
+}
+
+/// D1 ATTESTATION-INTEGRITY GATE (q4 §1.2): every identity leaf the session carries must be proven
+/// included in the posted `R`, recomputed from the VET's own retained `{keyPath, salt, value}`.
+///
+/// Without this, the vet would anchor whatever `R` the device posts, blind — a device could fold a
+/// DIFFERENT identity value, and a later disclosure of that leaf would verify against
+/// `rootIssuer[R] = trusted vet`: a forged vet attestation. Refusing here is what turns "identity
+/// in `R`" into "identity **vet-attested** in `R`".
+///
+/// A session WITHOUT identity leaves (operator collected none) degrades to the pet-only contract:
+/// no proofs required, none accepted. Extra or unknown proofs are refused rather than ignored.
+fn verify_identity_proofs(
+    leaves: &[crate::store::IdentityLeaf],
+    proofs: &[IdentityProofReq],
+    root_hex: &str,
+) -> Result<(), String> {
+    if leaves.is_empty() {
+        if proofs.is_empty() {
+            return Ok(());
+        }
+        return Err("identityProofs posted but this session carries no identity leaves".to_string());
+    }
+    if proofs.len() != leaves.len() {
+        return Err(format!(
+            "expected {} identity inclusion proof(s), got {}",
+            leaves.len(),
+            proofs.len()
+        ));
+    }
+    for leaf in leaves {
+        let proof = proofs
+            .iter()
+            .find(|p| p.key_path == leaf.key_path)
+            .ok_or_else(|| format!("missing inclusion proof for identity leaf {:?}", leaf.key_path))?;
+        // The normative disclosed-leaf discipline: recompute the leaf under DS_LEAF from the vet's
+        // stored opening, then fold the device-supplied path — `verify_inclusion` semantics.
+        let folds = dogtag_standard::ffi::verify_inclusion_proof_hex(
+            leaf.key_path.clone(),
+            leaf.salt_hex.clone(),
+            leaf.tag,
+            leaf.value.clone(),
+            proof.proof.clone(),
+            root_hex.to_string(),
+        )
+        .map_err(|e| format!("identity leaf {:?}: {e}", leaf.key_path))?;
+        if !folds {
+            return Err(format!(
+                "identity leaf {:?} does not fold to the posted R",
+                leaf.key_path
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Shape-check a device-supplied `R`: `0x` + 64 hex, non-zero.
@@ -1787,6 +1905,25 @@ async fn profile_issue_custodial_bind(
         None => return err(StatusCode::NOT_FOUND, "session not found"),
     };
 
+    // D1 ATTESTATION-INTEGRITY GATE — BEFORE anything is persisted or reaches the chain. The vet
+    // recomputes each identity leaf from its OWN stored {keyPath, salt, value} and asserts the
+    // device-supplied path folds it into the posted R; on any mismatch the bind is REFUSED with
+    // nothing written on-chain. This is what makes the committed identity vet-ATTESTED: without it
+    // a device could fold a different value and later disclose a forged "vet-confirmed" identity.
+    // Refusal settles the session (the one-time token is already consumed, mirroring the sealed-
+    // collision refusal below) — the operator starts a fresh session.
+    if let Err(reason) = verify_identity_proofs(&session.identity_leaves, &body.identity_proofs, &root)
+    {
+        let msg = format!(
+            "identity attestation integrity failed: {reason} — the posted R does not commit the \
+             vet-collected identity; start a FRESH session"
+        );
+        session.status = "error".to_string();
+        session.tx_hash = Some(msg.clone());
+        st.store.update_profile_session(session).await;
+        return err(StatusCode::BAD_REQUEST, &msg);
+    }
+
     // CANONICAL-FIELD DISCIPLINE (§P-1.3). The id sealed on-chain is `field_of_value(Integer(handle))`,
     // never the raw operator handle: the device folded that SAME field into `R` as a KDF binding
     // input, so minting under the raw handle produces `R != profileRoot(id)` and every verify fails
@@ -1809,9 +1946,9 @@ async fn profile_issue_custodial_bind(
     // updates still carries the `owner_identity` block (name, country of identification,
     // identification number) collected by the operator-gated `/profiles/issue/session/start`, and that
     // is deliberate: the issuing vet legitimately holds the identity of the person it issues to.
-    // This handler builds no verifiable credential, so it does not read that block today - a property
-    // of the current stage, not surplus data: owner identity is PLANNED (not yet implemented) to be
-    // committed into `R` as a hidden, selectively-disclosable leaf. See docs/DPIA.md §2.1.
+    // D1: that identity is now COMMITTED into `R` as hidden, selectively-disclosable
+    // `owner.identity.*` attribute leaves — folded on the DEVICE (the seed never leaves the phone)
+    // and verified into `R` by the integrity gate above. See docs/DPIA.md §2.1.
     session.root = Some(root.clone());
     session.protocol_version = Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string());
     st.store.update_profile_session(session.clone()).await;

@@ -54,9 +54,13 @@ Two parties still hold or can learn owner PII, and both are off-chain:
    That collection is **deliberate and justified**: the issuing authority legitimately holds the identity of the person it issues to - it is the basis on which the credential is issued at all.
    The owner-hidden design narrows who ELSE learns it, which is the privacy gain being claimed here - not a claim that the issuer forgets it.
    The block is off-chain store data and therefore already inside the §3 encrypted store and the §4 erasure flow, which is where a data subject's rights over it are exercised.
-   The custodial-bind handler builds no verifiable credential, so it does not currently read that block.
-   That is a property of the current implementation stage, not a signal that the data is surplus: owner identity is **planned** to be committed into `R` as a hidden, selectively-disclosable Merkle leaf (identity-as-leaf), putting it on a path further INTO the design.
-   That leaf work is **planned, not implemented** - when it lands, this section must be revisited to assess the leaf itself.
+   **The identity is now COMMITTED into `R` as hidden, selectively-disclosable Merkle leaves (D1, implemented).**
+   One `owner.identity.*` attribute leaf per non-blank field (`fullName`, `country`, `docNumber`), salted with a fresh vet-generated 16-byte salt, folded into `R` **on the owner's device** (the wallet seed never leaves the phone) and verified into `R` by the vet at custodial-bind (the attestation-integrity gate) before anything is anchored.
+   The privacy properties of the leaf itself:
+   - **On-chain and to every downstream party, nothing changes.** `R` is a Poseidon root; an identity leaf is indistinguishable from any other salted attribute leaf. The consent circuit is leaf-blind and its public signals carry no attribute values. The high-entropy issuer salt keeps low-entropy values (a country has ~200 possibilities) unguessable behind the root, and testing a guess also requires the non-public Merkle path.
+   - **Disclosure is owner-initiated, per-leaf, and per-verifier.** A `ProfileDisclosure` envelope (Merkle openings of exactly the owner-picked leaves) may ride alongside a consent-proof submission; the verify handler checks each opening against the anchored `R` and the accompanying proof, records only the revealed **keyPaths** (never the values) on the audit row, and stores nothing on-chain.
+   - **A plain reveal is a reveal.** The chosen verifier learns the disclosed value in cleartext - inherent to "revealing your name"; the binding to the consent proof stops third-party replay, not the recipient's knowledge.
+   - **Who holds the openings off-chain:** the issuing vet (its session row keeps the `{keyPath, salt, value}` triples - the basis of the integrity gate) and the owner's device (its owner-secret store persists the same triples as disclosure openings, inside the mobile backup contract of `docs/MOBILE_OWNER_SECRET.md`).
 2. **The server-prove fallback prover sees the proof witness.**
    Proving is on-device by default, and the on-device path leaks nothing.
    For devices that cannot run the Groth16 prover locally, the backend `POST /prove-consent` route is a **trusted-prover fallback**: the assembled circuit input it receives carries `ownerSecret` and `ownerAddress` by construction.

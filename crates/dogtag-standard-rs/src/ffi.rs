@@ -387,6 +387,129 @@ pub fn build_profile_tree_hex(
     })
 }
 
+// ---------------------------------------------------------------------------------------------
+// D1 - ProfileDisclosure: owner-picked selective disclosure of profile-tree attribute leaves.
+// ---------------------------------------------------------------------------------------------
+
+/// Build a `ProfileDisclosure` envelope JSON for exactly the owner-picked `reveal_key_paths`
+/// (`disclosure::build_profile_disclosure`).
+///
+/// Inputs mirror [`build_profile_tree_hex`] (the SAME persisted witness issuance folded), plus the
+/// chosen keyPaths. The returned JSON - `{ dogTagId, R, disclosures: [{ keyPath, saltHex, tag,
+/// value, proof }] }` - is the CANONICAL wire shape; embed it verbatim in the verify submission
+/// (and read `identityProofs` entries out of it at custodial-bind), never hand-re-encode it.
+///
+/// Every disclosed value goes to the chosen verifier in cleartext - that is what "revealing your
+/// name" means - so the callers gate this behind the owner-facing picker.
+#[uniffi::export]
+pub fn build_profile_disclosure_json(
+    seed_hex: String,
+    dog_tag_id_hex: String,
+    owner_address_hex: String,
+    attributes: Vec<AttributeLeafFfi>,
+    reveal_key_paths: Vec<String>,
+) -> Result<String, FfiError> {
+    let s = seed_hex.strip_prefix("0x").unwrap_or(&seed_hex);
+    let seed = hex::decode(s).map_err(|e| err(format!("bad seed hex: {e}")))?;
+    let dog_tag_id = from_hex32(&dog_tag_id_hex).map_err(FfiError::from)?;
+    let owner_address = decode_word::<20>("ownerAddress", &owner_address_hex)?;
+    let attrs = attr_leaves_from_ffi(&attributes)?;
+    let d = crate::disclosure::build_profile_disclosure(
+        &seed,
+        dog_tag_id,
+        &owner_address,
+        &attrs,
+        &reveal_key_paths,
+    )?;
+    serde_json::to_string(&d).map_err(|e| err(format!("serialize: {e}")))
+}
+
+/// Verify the PURE half of a `ProfileDisclosure` envelope JSON
+/// (`disclosure::verify_profile_disclosure`): every entry's leaf is RECOMPUTED from its
+/// `(keyPath, salt, tag, value)` opening under `DS_LEAF` - a caller-supplied hash is never
+/// trusted - and must fold through its proof to the envelope's `R`.
+///
+/// Callers must ADDITIONALLY bind the envelope on-chain (`R == profileRoot(dogTagId)`,
+/// `rootIssuer[R]`/`isValid(R)`) and to the consent proof it rides alongside.
+#[uniffi::export]
+pub fn verify_profile_disclosure_json(disclosure_json: String) -> Result<bool, FfiError> {
+    let d: crate::disclosure::ProfileDisclosure = serde_json::from_str(&disclosure_json)
+        .map_err(|e| err(format!("bad disclosure json: {e}")))?;
+    Ok(crate::disclosure::verify_profile_disclosure(&d)?)
+}
+
+#[cfg(test)]
+mod disclosure_ffi_tests {
+    use super::*;
+    use crate::field::to_hex32;
+
+    const SEED_HEX: &str = "0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    const ADDR_HEX: &str = "0x00000000000000000000000000000000deadbeef";
+
+    fn tag_id_hex() -> String {
+        to_hex32(&ark_bn254::Fr::from(424242u64))
+    }
+
+    fn attrs() -> Vec<AttributeLeafFfi> {
+        vec![
+            AttributeLeafFfi {
+                key_path: "credentialSubject.name".to_string(),
+                salt_hex: "0x0102030405060708090a0b0c0d0e0f10".to_string(),
+                tag: TypeTag::String as u8,
+                value: "Rex".to_string(),
+            },
+            AttributeLeafFfi {
+                key_path: "owner.identity.country".to_string(),
+                salt_hex: "0x02030405060708090a0b0c0d0e0f1011".to_string(),
+                tag: TypeTag::String as u8,
+                value: "GB".to_string(),
+            },
+        ]
+    }
+
+    /// The mobile round-trip: build across the boundary, verify across the boundary, and the
+    /// unrevealed leaf stays out of the wire.
+    #[test]
+    fn ffi_builds_and_verifies_a_disclosure() {
+        let json = build_profile_disclosure_json(
+            SEED_HEX.to_string(),
+            tag_id_hex(),
+            ADDR_HEX.to_string(),
+            attrs(),
+            vec!["owner.identity.country".to_string()],
+        )
+        .unwrap();
+        assert!(verify_profile_disclosure_json(json.clone()).unwrap());
+        assert!(json.contains("GB"));
+        assert!(!json.contains("Rex"), "unrevealed pet name must not leak");
+
+        // A tampered value fails across the boundary too.
+        let forged = json.replace("GB", "US");
+        assert!(!verify_profile_disclosure_json(forged).unwrap());
+    }
+
+    #[test]
+    fn ffi_rejects_malformed_disclosures() {
+        assert!(verify_profile_disclosure_json("not json".to_string()).is_err());
+        assert!(build_profile_disclosure_json(
+            SEED_HEX.to_string(),
+            tag_id_hex(),
+            ADDR_HEX.to_string(),
+            attrs(),
+            vec![],
+        )
+        .is_err());
+        assert!(build_profile_disclosure_json(
+            SEED_HEX.to_string(),
+            tag_id_hex(),
+            ADDR_HEX.to_string(),
+            attrs(),
+            vec!["owner.secret".to_string()],
+        )
+        .is_err());
+    }
+}
+
 #[cfg(test)]
 mod profile_tree_ffi_tests {
     use super::*;

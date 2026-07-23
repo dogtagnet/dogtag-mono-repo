@@ -41,6 +41,11 @@ pub mod eddsa;
 // field/leaf/merkle/eddsa without modifying them.
 pub mod profile_tree;
 
+// D1 - the ProfileDisclosure envelope: additive selective disclosure of profile-tree attribute
+// leaves (identity + pet) against the anchored `R`. Pure off-circuit wire format over the existing
+// merkle primitives; the frozen consent circuit is untouched.
+pub mod disclosure;
+
 // Phase 6 — mobile UniFFI binding surface (additive; does not touch the core algorithm modules).
 pub mod ffi;
 
