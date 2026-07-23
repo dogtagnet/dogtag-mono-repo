@@ -118,6 +118,11 @@ pub struct VerifySession {
     /// Unix seconds the verification session/audit row last changed state.
     #[serde(default)]
     pub updated_at: u64,
+    /// D1: the identity-leaf keyPaths the owner chose to REVEAL alongside this consent proof
+    /// (verified against the anchored `R` before recording). KeyPaths only - the disclosed VALUES
+    /// are shown to the verifying operator, never stored. Empty when nothing was disclosed.
+    #[serde(default)]
+    pub disclosed_key_paths: Vec<String>,
 }
 
 // --------------------------------------------------------------------------------------------
@@ -137,14 +142,33 @@ pub struct Microchip {
     pub body_location: String,
 }
 
-/// The owner's official identity, entered by the vet operator at session-start and retained for the
-/// later D1 identity-leaf fold. The schema requires the keys present as strings.
+/// The owner's official identity, entered by the vet operator at session-start and committed into
+/// `R` as hidden, selectively-disclosable `owner.identity.*` attribute leaves (D1). The schema
+/// requires the keys present as strings.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnerIdentity {
     pub country_of_identification: String,
     pub identification: String,
     pub name: String,
+}
+
+/// One D1 identity attribute leaf the DEVICE must fold into `R`: `{keyPath, salt, value}` with the
+/// salt generated fresh by the VET at session-start (16 random bytes). The vet retains this triple
+/// on the session row - it is what the bind-time attestation-integrity gate recomputes the leaf
+/// from - and hands the same triple to the device via `/p/<token>` so the device can fold the leaf
+/// and later disclose it. High-entropy issuer salts are what keep low-entropy identity values
+/// (e.g. a country, ~200 possibilities) safe inside the public root.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityLeaf {
+    /// `owner.identity.*` - the sanctioned identity namespace (never a reserved keyPath).
+    pub key_path: String,
+    /// `0x` + 32 hex chars (16 bytes).
+    pub salt_hex: String,
+    /// TypeTag byte (2 = String for every v1 identity attribute).
+    pub tag: u8,
+    pub value: String,
 }
 
 /// One dated, unit-bearing weight measurement (DOG_PROFILE `weightHistory[i]`).
@@ -186,6 +210,12 @@ pub struct ProfileIssueSession {
     /// the allocated non-personal dogTagId (decimal string).
     pub dog_tag_id: String,
     pub owner_identity: OwnerIdentity,
+    /// D1: the identity attribute leaves this session commits into `R` - one per non-blank
+    /// [`OwnerIdentity`] field, salted fresh at session-start. Empty when the operator collected no
+    /// identity (the bind then runs without the integrity gate). `#[serde(default)]` keeps
+    /// pre-D1 session rows decodable.
+    #[serde(default)]
+    pub identity_leaves: Vec<IdentityLeaf>,
     /// the pet record: { name, microchip, profile fields } as posted by the operator.
     pub pet_name: String,
     pub microchip: Microchip,

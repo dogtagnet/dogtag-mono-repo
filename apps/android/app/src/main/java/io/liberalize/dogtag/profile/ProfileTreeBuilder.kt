@@ -43,6 +43,16 @@ object ProfileTreeBuilder {
      */
     val RESERVED_KEY_PATHS = listOf("owner.address", "owner.consentKey", "owner.secret")
 
+    /** The owner-control namespace, reserved wholesale (`profile_tree::OWNER_NAMESPACE_PREFIX`). */
+    const val OWNER_NAMESPACE_PREFIX = "owner."
+
+    /**
+     * The one carve-out inside `owner.`: the D1 identity-attribute namespace
+     * (`profile_tree::OWNER_IDENTITY_PREFIX`). The trailing dot is load-bearing - bare
+     * `owner.identity` (a blob leaf) and `owner.identityX` (squatting) both stay rejected.
+     */
+    const val OWNER_IDENTITY_PREFIX = "owner.identity."
+
     /** One attribute leaf, mirroring `AttributeLeafFfi` / iOS `BackedUpAttribute`. */
     data class Attribute(
         val keyPath: String,
@@ -57,8 +67,8 @@ object ProfileTreeBuilder {
      */
     class ReservedKeyPathException(val keyPath: String) : IllegalArgumentException(
         "attribute keyPath \"$keyPath\" is reserved for the owner-control leaves " +
-            "(owner.address / owner.consentKey / owner.secret); the consent circuit's soundness " +
-            "assumes exactly ONE such triple in R",
+            "(the `owner.` namespace admits only `owner.identity.*` attributes); the consent " +
+            "circuit's soundness assumes exactly ONE reserved triple in R",
     )
 
     /**
@@ -81,9 +91,16 @@ object ProfileTreeBuilder {
      * cross-FFI error into an immediate, well-named Kotlin exception at the call site.
      */
     fun assertSingleOwnerTriple(attributes: List<Attribute>) {
-        val reserved = RESERVED_KEY_PATHS.map { nfc(it) }.toSet()
         attributes.forEach { a ->
-            if (nfc(a.keyPath) in reserved) throw ReservedKeyPathException(a.keyPath)
+            val normalized = nfc(a.keyPath)
+            // The D1 PREFIX guard, mirroring `build_profile_tree`: the whole `owner.` namespace is
+            // owner-control territory, with `owner.identity.*` as the one sanctioned attribute
+            // carve-out. This subsumes the three exact reserved keyPaths.
+            if (normalized.startsWith(OWNER_NAMESPACE_PREFIX) &&
+                !normalized.startsWith(OWNER_IDENTITY_PREFIX)
+            ) {
+                throw ReservedKeyPathException(a.keyPath)
+            }
         }
     }
 

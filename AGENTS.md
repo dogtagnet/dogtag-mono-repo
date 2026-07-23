@@ -860,6 +860,54 @@ An already-installed app keeps proving against its **baked** key until you do, s
 - To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
   `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.
 
+## D1 - vet-attested identity leaves + ProfileDisclosure (selective disclosure)
+
+The owner's vet-collected identity (name/country/id) is committed into `R` as hidden,
+selectively-disclosable **attribute** leaves in the sanctioned `owner.identity.*` namespace
+(`fullName`/`country`/`docNumber`; `routes.rs` `KP_IDENTITY_*`).
+Everything is off-circuit: identity leaves are ordinary `hash_leaf` leaves, the frozen consent
+circuit is leaf-blind, and `make test-consent-parity` proves the VK did not move (its witness now
+includes identity leaves on purpose).
+The sharp edges:
+
+- **The `owner.` prefix guard has ONE carve-out.** `build_profile_tree` rejects any caller
+  attribute whose NFC keyPath starts `owner.` UNLESS it starts `owner.identity.` (trailing dots
+  load-bearing: bare `owner.identity` = a blob leaf and `owner.identityX` = squatting both stay
+  rejected). Do NOT "harden" this into a blanket `owner.` rejection - the tree is REBUILT from the
+  same attribute list at consent-prove time, so a blanket guard breaks every proof for a tag with
+  identity leaves. Android mirrors the predicate in `ProfileTreeBuilder.assertSingleOwnerTriple`.
+- **One attribute list, three consumers.** Identity openings live in the SAME persisted
+  `attributes` list (owner-secret store) that feeds (a) issuance `R`, (b) the verify-time
+  `proveConsent` rebuild, and (c) the disclosure builder - order pet-then-identity on both the
+  build and retry paths. A separate field or different order silently diverges `R` and fails every
+  proof closed.
+- **Salt ownership differs by namespace.** Pet-attribute salts are device-random; identity-leaf
+  salts are VET-generated at `profile_issue_session_start` and travel to the device via the
+  `/p/<token>` `identityLeaves` block. That is what powers the bind-time ATTESTATION-INTEGRITY
+  GATE, a FULL-LEAF-LIST commitment check (`routes.rs::verify_leaf_commitment`): custodial-bind
+  requires the device to OPEN every attribute leaf of its tree (`leaves`) and name the reserved
+  owner-control triple's leaf hashes opaquely (`reservedLeafHashes`, exactly 3, preimages never
+  sent); the vet recomputes every opened leaf, requires the `owner.identity.*` openings to
+  EXACTLY equal its stored `{keyPath, salt, value}` set (no missing/extra/duplicate/altered
+  entry - INJECTION of an unattested identity leaf is refused, not just replacement), rebuilds
+  the Merkle root from [3 reserved hashes + attribute hashes], and refuses the bind (400, before
+  ANY chain write, token consumed) unless it equals the posted `R`. A forged identity leaf must
+  either be opened (refused by exact-set equality) or displace a reserved leaf hash - and a tree
+  missing a reserved leaf can never produce a consent proof, while disclosures are only accepted
+  alongside a consent proof for the same `R`. The bind deliberately reveals the device-random
+  pet-attribute salts to the vet - zero-cost, the vet supplied every attribute value in the
+  first place. A session whose operator collected no identity degrades to an EMPTY identity
+  subset; posted identity openings against it are refused, not ignored. Tests:
+  `custodial_bind_identity_gate.rs`.
+- **`ProfileDisclosure` wire shape is Rust-owned.** `{dogTagId, R, disclosures:[{keyPath, saltHex,
+  tag, value, proof}]}` (proof steps `"promote"` | `0x..` sibling hex), produced by
+  `build_profile_disclosure_json` and consumed by `disclosure::verify_profile_disclosure` - mobile
+  embeds the JSON verbatim and never hand-re-encodes it. It rides OPTIONALLY alongside the consent
+  proof in the verify submission (`profileDisclosure` key), bound there to the proof's
+  `R`/`dogTagId` (its only anti-replay context - a bare envelope is a replayable bearer
+  credential). The verify handler records only the revealed keyPaths, never values. Tests:
+  `submit_consent_disclosure.rs`.
+
 ## DogTag standard SDK (Rust + TS + Swift/Kotlin)
 
 The credential crypto lives in three byte-for-byte-equivalent legs that MUST stay in lockstep:

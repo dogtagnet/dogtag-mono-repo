@@ -51,6 +51,20 @@ pub const KP_OWNER_SECRET: &str = "owner.secret";
 /// typeTag pinned for all three reserved leaves (`consent.circom:54-56`).
 pub const RESERVED_TYPE_TAG: TypeTag = TypeTag::Bytes;
 
+/// The `owner.` namespace is RESERVED for owner-control leaves (current and future). Caller-supplied
+/// attributes may not name into it, with ONE carve-out: [`OWNER_IDENTITY_PREFIX`], the sanctioned
+/// namespace for the vet-attested human-identity attribute leaves (D1). The prefix guard (vs the old
+/// exact-match-only guard) means no future attribute can be named into ambiguity with an
+/// owner-control leaf (f3 §3.1 rule 4).
+pub const OWNER_NAMESPACE_PREFIX: &str = "owner.";
+
+/// The sanctioned identity-attribute namespace inside `owner.` (`owner.identity.fullName`,
+/// `owner.identity.country`, `owner.identity.docNumber`, ...). These are ORDINARY attribute leaves
+/// (`hash_leaf`, disclosable via `verify_inclusion`) - never reserved leaves. The trailing dot is
+/// load-bearing twice: bare `owner.identity` (an all-or-nothing blob leaf - `R` is write-once) and
+/// `owner.identityX` (ambiguity squatting) both stay rejected.
+pub const OWNER_IDENTITY_PREFIX: &str = "owner.identity.";
+
 /// The keyPath field constants pinned in `circuits/consent.circom:50-52`, as decimal strings.
 ///
 /// These are NOT the source of truth - [`field_of_keypath`] is. They are duplicated here so a test
@@ -236,9 +250,25 @@ pub fn build_profile_tree(
 
     let mut leaves = vec![owner_address_leaf, consent_key_leaf, owner_secret_leaf];
     for a in attributes {
-        // Compared on the DERIVED field, not the raw string: the leaf commits to
-        // `field_of_keypath(kp)`, and that NFC-normalizes, so two distinct strings reaching the same
-        // field build the same leaf and a raw string compare would miss them.
+        // PREFIX guard (f3 §3.1 rule 4): the whole `owner.` namespace is owner-control territory;
+        // only the sanctioned `owner.identity.` identity-attribute namespace is carved out.
+        // Compared on the NFC-NORMALIZED keyPath, not the raw string, because the leaf commits to
+        // `field_of_keypath(kp)` = `bytes_to_field(nfc(kp))` - two distinct strings that NFC-fold
+        // to the same text build the SAME leaf, and a raw compare would wave one through.
+        // A keyPath that merely CONTAINS `owner.` (e.g. `credentialSubject.owner.x`) is untouched.
+        let normalized = crate::encode::nfc(&a.key_path);
+        if normalized.starts_with(OWNER_NAMESPACE_PREFIX)
+            && !normalized.starts_with(OWNER_IDENTITY_PREFIX)
+        {
+            return Err(DogTagError::Other(format!(
+                "attribute keyPath {:?} is reserved for the owner-control leaves \
+                 (the `owner.` namespace admits only `owner.identity.*` attributes)",
+                a.key_path
+            )));
+        }
+        // Belt-and-suspenders: ALSO compare on the DERIVED field against the three pinned reserved
+        // keyPaths. The prefix guard above already covers every NFC alias of them (both sides
+        // NFC-normalize), but this is the check the circuit's soundness argument names, so it stays.
         let key_path_field = field_of_keypath(&a.key_path);
         if RESERVED_KEY_PATH_FIELDS
             .iter()
@@ -557,6 +587,103 @@ mod tests {
                 err.to_string().contains(kp),
                 "the error must name the offending keyPath, got: {err}"
             );
+        }
+    }
+
+    /// D1 identity attributes fold into `R` and round-trip through `verify_inclusion`: for each
+    /// `owner.identity.*` leaf, its `(keyPath, salt, tag, value)` opening + the Merkle path folds
+    /// back to the SAME `R` - the property the whole selective-disclosure surface stands on.
+    #[test]
+    fn identity_attributes_fold_into_r_and_verify_inclusion_round_trips() {
+        let mut with_identity = attrs();
+        with_identity.extend(identity_attrs());
+        let t = build_profile_tree(SEED, tag_id(), &addr(), &with_identity).unwrap();
+
+        for a in identity_attrs() {
+            let leaf = hash_leaf(&a.key_path, &a.salt, &a.value).unwrap();
+            let proof = merkle_proof(&t.tree.layers, leaf);
+            assert!(
+                crate::merkle::verify_inclusion(&a.key_path, &a.salt, &a.value, &proof, t.root)
+                    .unwrap(),
+                "identity leaf {} must verify against R",
+                a.key_path
+            );
+        }
+        // ...and the tree really commits to them: a different identity value moves R.
+        let mut tampered = attrs();
+        tampered.extend(identity_attrs());
+        tampered.last_mut().unwrap().value = TypedScalar::Str("FORGED".to_string());
+        let other = build_profile_tree(SEED, tag_id(), &addr(), &tampered).unwrap();
+        assert_ne!(t.root, other.root, "identity values must be committed into R");
+    }
+
+    fn identity_attrs() -> Vec<AttributeLeaf> {
+        vec![
+            AttributeLeaf {
+                key_path: "owner.identity.fullName".to_string(),
+                salt: [21u8; SALT_LEN],
+                value: TypedScalar::Str("Alice Owner".to_string()),
+            },
+            AttributeLeaf {
+                key_path: "owner.identity.country".to_string(),
+                salt: [22u8; SALT_LEN],
+                value: TypedScalar::Str("GB".to_string()),
+            },
+            AttributeLeaf {
+                key_path: "owner.identity.docNumber".to_string(),
+                salt: [23u8; SALT_LEN],
+                value: TypedScalar::Str("PASSPORT-123".to_string()),
+            },
+        ]
+    }
+
+    /// The `owner.` PREFIX guard (f3 §3.1 rule 4): everything in the owner-control namespace is
+    /// rejected EXCEPT the sanctioned `owner.identity.*` attributes. The trailing dot in the
+    /// carve-out is load-bearing: bare `owner.identity` (a blob leaf) and `owner.identityX`
+    /// (namespace squatting) both stay rejected.
+    #[test]
+    fn the_owner_prefix_guard_rejects_collisions_and_admits_identity() {
+        // Rejected: anything under `owner.` that is not under `owner.identity.`.
+        for kp in [
+            "owner.address",     // the reserved leaves themselves, still rejected
+            "owner.consentKey",
+            "owner.secret",
+            "owner.delegateKey", // a FUTURE control leaf must not be squattable today
+            "owner.identity",    // the blob leaf - all-or-nothing forever under write-once R
+            "owner.identityX",   // trailing-dot discipline
+        ] {
+            let mut with_collision = attrs();
+            with_collision.push(AttributeLeaf {
+                key_path: kp.to_string(),
+                salt: [5u8; SALT_LEN],
+                value: TypedScalar::Str("x".to_string()),
+            });
+            let err = match build_profile_tree(SEED, tag_id(), &addr(), &with_collision) {
+                Err(e) => e,
+                Ok(_) => panic!("keyPath {kp} must not be usable as an attribute"),
+            };
+            assert!(
+                err.to_string().contains(kp),
+                "the error must name the offending keyPath, got: {err}"
+            );
+        }
+
+        // Admitted: the sanctioned identity namespace, and near-misses OUTSIDE `owner.`.
+        for kp in [
+            "owner.identity.fullName",
+            "owner.identity.country",
+            "credentialSubject.owner.secret", // contains but does not start with `owner.`
+            "credentialSubject.owner.x",
+            "ownerx.address", // `owner` without the dot boundary is a different namespace
+        ] {
+            let mut ok_attrs = attrs();
+            ok_attrs.push(AttributeLeaf {
+                key_path: kp.to_string(),
+                salt: [5u8; SALT_LEN],
+                value: TypedScalar::Str("x".to_string()),
+            });
+            build_profile_tree(SEED, tag_id(), &addr(), &ok_attrs)
+                .unwrap_or_else(|e| panic!("keyPath {kp} must be admitted: {e}"));
         }
     }
 

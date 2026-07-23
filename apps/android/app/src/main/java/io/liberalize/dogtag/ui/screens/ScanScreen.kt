@@ -67,8 +67,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import io.liberalize.dogtag.profile.BackedUpAttribute
+import io.liberalize.dogtag.profile.ProfileTreeBuilder
+import androidx.compose.material3.Switch
+import uniffi.dogtag_standard.AttributeLeafFfi
 import uniffi.dogtag_standard.ConvenienceClaims
+import uniffi.dogtag_standard.ProfileTreeFfi
 import uniffi.dogtag_standard.TrustedAnchor
+import uniffi.dogtag_standard.buildProfileDisclosureJson
 import uniffi.dogtag_standard.dogTagIdFieldHex
 import uniffi.dogtag_standard.proveConsent
 import uniffi.dogtag_standard.validateDiscovery
@@ -316,34 +322,65 @@ private fun IssuePanel(
                                     val existing = withContext(Dispatchers.IO) {
                                         treeStore.load().firstOrNull { it.dogTagIdDec == resolved.dogTagId }
                                     }
-                                    val root = if (existing != null) {
+                                    // D1: identity leaves keep the VET's salts (the bind-time
+                                    // full-leaf-list gate requires the posted identity openings to
+                                    // EXACTLY match the vet's own {keyPath,salt,value} set); pet
+                                    // attrs keep device-random salts. One combined list -
+                                    // pet-then-identity - feeds the build, the retry compare, the
+                                    // persisted openings, and the bind's leaf openings alike.
+                                    val identityAttrs = resolved.identityLeaves.map { it.asAttribute() }
+                                    val attributes: List<BackedUpAttribute>
+                                    val tree: ProfileTreeFfi
+                                    if (existing != null) {
                                         check(existing.derivationVersion == ProfileTreeStore.DERIVATION_VERSION) {
                                             "existing owner secret uses an unsupported derivation version"
                                         }
                                         check(existing.ownerAddress.equals(wallet.ethAddress, ignoreCase = true)) {
                                             "this dog tag belongs to a different wallet on this device"
                                         }
-                                        check(resolved.pet.matches(existing.attributes)) {
+                                        check(resolved.matchesStored(existing.attributes)) {
                                             "issuance retry metadata differs from the persisted profile"
                                         }
-                                        withContext(Dispatchers.Default) {
+                                        attributes = existing.attributes
+                                        tree = withContext(Dispatchers.Default) {
                                             treeStore.verifyRecoverable(seedHex, existing)
+                                            // Deterministic rebuild from the persisted record for
+                                            // the reserved leaf hashes; nothing new is persisted.
+                                            ProfileTreeBuilder.buildForIdField(
+                                                seedHex = seedHex,
+                                                dogTagIdFieldHex = existing.dogTagIdHex,
+                                                ownerAddress = existing.ownerAddress,
+                                                attributes = existing.attributes.map {
+                                                    ProfileTreeBuilder.Attribute(it.keyPath, it.saltHex, it.tag, it.value)
+                                                },
+                                            )
                                         }
                                     } else {
-                                        val attributes = resolved.pet.attributes(::randomSalt16)
-                                        withContext(Dispatchers.Default) {
+                                        attributes = resolved.pet.attributes(::randomSalt16) + identityAttrs
+                                        tree = withContext(Dispatchers.Default) {
                                             treeStore.buildAndPersist(
                                                 seedHex = seedHex,
                                                 dogTagIdDec = resolved.dogTagId,
                                                 ownerAddress = wallet.ethAddress,
                                                 attributes = attributes,
-                                            ).rootHex
+                                            )
                                         }
                                     }
+                                    // The bind's full-leaf-list commitment: every attribute opening
+                                    // plus the three OPAQUE reserved leaf hashes (never their
+                                    // preimages) - the vet rebuilds R from exactly this list.
+                                    val root = tree.rootHex
+                                    val reservedLeafHashes = listOf(
+                                        tree.ownerAddressLeafHex,
+                                        tree.consentKeyLeafHex,
+                                        tree.ownerSecretLeafHex,
+                                    )
 
-                                    status = "Sending only R to the vet…"
+                                    status = "Sending the profile commitment to the vet…"
                                     val bind = withContext(Dispatchers.IO) {
-                                        CentralApi.bindCustodialIssue(qr.host, qr.token, root)
+                                        CentralApi.bindCustodialIssue(
+                                            qr.host, qr.token, root, attributes, reservedLeafHashes,
+                                        )
                                     }
                                     if (bind != null) {
                                         check(bind.dogTagId.isBlank() || bind.dogTagId == resolved.dogTagId) {
@@ -513,6 +550,49 @@ private fun ExportPanel(
     }
 
     val sel = selected
+
+    // D1 disclosure picker: the `owner.identity.*` leaves of the SELECTED tag, each an explicit
+    // per-leaf opt-in for THIS verifier only. Defaults to nothing revealed; resets on re-selection.
+    var identityLeaves by remember { mutableStateOf<List<BackedUpAttribute>>(emptyList()) }
+    var revealKeyPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    androidx.compose.runtime.LaunchedEffect(sel?.id) {
+        revealKeyPaths = emptySet()
+        identityLeaves = if (sel == null) emptyList() else withContext(Dispatchers.IO) {
+            runCatching {
+                identityAttributesFor(
+                    ProfileTreeStore(context).load().firstOrNull { it.dogTagIdDec == sel.dogTagId },
+                )
+            }.getOrDefault(emptyList())
+        }
+    }
+    if (sel != null && identityLeaves.isNotEmpty()) {
+        Card {
+            Text("Share your identity (optional)", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+            Text(
+                "Each detail you switch on is revealed to this verifier, proven against your dog tag's " +
+                    "sealed profile. Everything stays hidden by default.",
+                fontSize = 12.sp, color = c.muted,
+            )
+            identityLeaves.forEach { leaf ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(identityLabelFor(leaf.keyPath), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
+                        Text(leaf.value, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = c.muted)
+                    }
+                    Switch(
+                        checked = leaf.keyPath in revealKeyPaths,
+                        onCheckedChange = { on ->
+                            revealKeyPaths = if (on) revealKeyPaths + leaf.keyPath else revealKeyPaths - leaf.keyPath
+                        },
+                    )
+                }
+            }
+        }
+    }
+
     var busy by remember { mutableStateOf(false) }
     if (busy) {
         ForgingAnimation(
@@ -541,6 +621,7 @@ private fun ExportPanel(
                             host = qr.host,
                             token = qr.token,
                             groomerAddr = qr.groomerAddr,
+                            revealKeyPaths = revealKeyPaths.toList(),
                             onStatus = onStatus,
                             onDone = { errMsg ->
                                 busy = false
@@ -580,6 +661,7 @@ private suspend fun runLevelBFlow(
     host: String,
     token: String,
     groomerAddr: String,
+    revealKeyPaths: List<String>,
     onStatus: (String) -> Unit,
     onDone: (String?) -> Unit,
 ) {
@@ -738,6 +820,19 @@ private suspend fun runLevelBFlow(
                 put("c", org.json.JSONArray(proof.c))
                 put("pubSignals", org.json.JSONArray(proof.pubSignals))
             })
+            // D1: the owner-picked identity disclosure rides ALONGSIDE the consent proof - same
+            // session, same R - so it inherits the proof's relayer/deadline anti-replay binding.
+            // Built by the SAME Rust core the verifier checks with; the proof stays leaf-blind.
+            if (revealKeyPaths.isNotEmpty()) {
+                val disclosure = buildProfileDisclosureJson(
+                    seedHex,
+                    dogTagIdFieldHex(owner.dogTagIdDec),
+                    owner.ownerAddress,
+                    owner.attributes.map { AttributeLeafFfi(it.keyPath, it.saltHex, it.tag, it.value) },
+                    revealKeyPaths,
+                )
+                put("profileDisclosure", org.json.JSONObject(disclosure))
+            }
         }.toString()
         onStatus("Submitting owner-hidden proof to groomer…")
         val response = withContext(Dispatchers.IO) {
@@ -801,6 +896,18 @@ private fun labelFieldHex(label: String): String {
     if (label.isBlank()) return "0x" + "00".repeat(32)
     return "0x" + Keccak256.digest(label.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
+}
+
+/** The persisted `owner.identity.*` openings for a tag - the leaves the owner CAN disclose. */
+private fun identityAttributesFor(record: io.liberalize.dogtag.profile.OwnerSecretRecord?): List<BackedUpAttribute> =
+    record?.attributes?.filter { it.keyPath.startsWith("owner.identity.") } ?: emptyList()
+
+/** Owner-readable label for an identity keyPath (falls back to the raw suffix). */
+private fun identityLabelFor(keyPath: String): String = when (keyPath) {
+    "owner.identity.fullName" -> "Full name"
+    "owner.identity.country" -> "Country"
+    "owner.identity.docNumber" -> "ID number"
+    else -> keyPath.removePrefix("owner.identity.")
 }
 
 private fun randomSalt16(): String {
