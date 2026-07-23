@@ -1,13 +1,13 @@
 {
   "ConsentKeyRegistry": "0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671",
   "ConsentKeyRegistry_preMetaTx_legacy": "0xFD277b9B33a4b299fe0b08dfA19eA0372b70745b",
-  "DogTagIssuerFactory": "0xd3179AbBfb0274D0a5F7017d76015A93C159511D",
-  "DogTagIssuerImpl": "0x16671686a5926606aB05f5e167fC65B0f8825B85",
+  "DogTagIssuerFactory": "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
+  "DogTagIssuerImpl": "0xe4aC139eB257C309Ec448C116A6F657Dab5590BA",
   "DogTagSBT": "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
-  "DogTagSBTConsent": "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
+  "DogTagSBTConsent": "0xBEbc45A838643D27004827b797b30A464b2b02c0",
   "Groth16Verifier": "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
   "Groth16Verifier_v1_legacy": "0x138b433071Ad806E841B5AD53623290a9bf21761",
-  "Groth16VerifierConsent": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
+  "Groth16VerifierConsent": "0x1A9027986B859dc3879896B053deA78F636BE9b1",
   "_m3_consent_verifier": {
     "status": "DEPLOYED (M3). The Level-B DogTagConsent verifier is deployed + validated on ROAX and wired into the canonical M5 VerificationRegistryConsent 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87. It remains separate from the live Level-A Groth16Verifier 0xEEFCf..., and the M5 pairing is additive and NOT LIVE until the M7 consumer cutover. The former M4 registry 0x53F988Ae... is superseded because it is bound to the mutable Level-A SBT.",
     "address": "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
@@ -21,10 +21,10 @@
     "vk_sha256": "27879dd7c4eabb6acea4d1be1249ba3c4212f95a27237e7e1e1220557b4e2d7f",
     "zkey_sha256": "f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868"
   },
-  "IssuerRegistry": "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c",
+  "IssuerRegistry": "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
   "Poseidon6": "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
   "VerificationRegistry": "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
-  "VerificationRegistryConsent": "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
+  "VerificationRegistryConsent": "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
   "VerificationRegistryConsent_M4_mutableRoot_legacy": "0x53F988Ae0124b96069d90CBC78E6245FeB01E125",
   "VerificationRegistryConsent_preErasureGate_legacy": "0x57A2998668B0F6332f7342016F5Df2Bb05cB900F",
   "_m4_consent_registry": {
@@ -102,7 +102,7 @@
         "docs/REMOTE_DEPLOYMENT.md",
         "docs/CEREMONY_RUNBOOK.md"
       ],
-      "docs_normative_levelA_semantics": "These carry the NORMATIVE Level-A verify semantics (the subject-bearing Verified event, the keyOf/ownerOf==subject checks, the pub=[dogTagId,purpose,relayer,subject,nullifier,keyHash,R] vector, the ECDSA path) and go STALE the moment Level-B is the live path - they are deliberately untouched by M4 (Level-A is still live and they describe it accurately), but M7 MUST revise them, not just swap addresses: docs/architecture.md (\u00a74.1 contract set + \u00a74.7 VerificationRegistry normative body), docs/implementation.md (\u00a72.6 'Three new contracts' + the \u00a711.8 normative bodies), docs/ROLE_APPS.md (the contract list + the verifier-role descriptions).",
+      "docs_normative_levelA_semantics": "These carry the NORMATIVE Level-A verify semantics (the subject-bearing Verified event, the keyOf/ownerOf==subject checks, the pub=[dogTagId,purpose,relayer,subject,nullifier,keyHash,R] vector, the ECDSA path) and go STALE the moment Level-B is the live path - they are deliberately untouched by M4 (Level-A is still live and they describe it accurately), but M7 MUST revise them, not just swap addresses: docs/architecture.md (§4.1 contract set + §4.7 VerificationRegistry normative body), docs/implementation.md (§2.6 'Three new contracts' + the §11.8 normative bodies), docs/ROLE_APPS.md (the contract list + the verifier-role descriptions).",
       "docs_dpia": "docs/DPIA.md is a self-declared LIVING document that 'MUST be refreshed whenever the on-chain data model, the verification subsystem, or the erasure flow change'. Level-B changes all three: the Verified linkage row (line ~36) is scored on `subject`+dogTagId+relayer and its mitigation is 'fresh per-pet subject' - under Level-B there IS no subject, so the row must be RE-SCORED, not just edited. The re-scoring itself needs a data-protection judgement (DPO/captain) and is deliberately NOT done while Level-B is not live - crediting the live system with a privacy improvement it does not yet have is the dangerous direction to be wrong in for a regulatory artifact. M4 instead added docs/DPIA.md section 2.1, a FORWARD-LOOKING note recording the refresh as QUEUED and naming the three rows that must be re-scored (verification-event linkage, wallet<->SBT link, and the erasure-flow burn mitigation); every current Level-A risk row/rating/mitigation is untouched and still accurate. M7 MUST perform the actual re-scoring, and GDPR Art. 35 wants it done BEFORE processing starts, i.e. before the cutover - not after."
     },
     "_levelb_ecdsa_path": "There is deliberately NO ECDSA recordVerification on this registry. That path asserts ownerOf(dogTagId) == subject, which under D1 (custodial mint) resolves to the custodian and can never match a real owner - it is structurally dead under Level-B, and its subject-revealing Verified event would undo the circuit's purpose. Legacy ECDSA verification keeps working, unchanged, on the Level-A registry 0x4E2f0996 for as long as Level-A tags exist. If Level-B ever needs a non-ZK fallback that is a NEW spec decision (the owner has no on-chain identity to sign as), not a port of the Level-A path.",
@@ -150,7 +150,7 @@
   "VerificationRegistry_4arg_legacy": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
   "VerificationRegistry_preMetaTx_legacy": "0x19C1B5f80c41EE864149500bdF998Dd18aec2a43",
   "VerificationRegistry_zk0_legacy": "0xb4FbbDb50D86c5208D9278413ca05c5eE309b1e8",
-  "_zk_ceremony": "Repo ships testnet self-run v2 (public Hermez ptau + 3 contributions + drand beacon round 6245947); zkey sha256 9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992; see docs/CEREMONY_TRANSCRIPT.md. The v2 Groth16Verifier 0xEEFCfAF026931b7325472A88fd14Ee780Da13559 is the ACTIVE on-chain verifier since executeZkVerifier() ran on 2026-07-02 (block 103419); the prior verifier 0x138b433071Ad806E841B5AD53623290a9bf21761 (sha 45d0b6fb...03e) is retired. See _zk_verifier_swap below and docs/PRODUCTION_DEPLOYMENT.md \u00a73.2.",
+  "_zk_ceremony": "Repo ships testnet self-run v2 (public Hermez ptau + 3 contributions + drand beacon round 6245947); zkey sha256 9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992; see docs/CEREMONY_TRANSCRIPT.md. The v2 Groth16Verifier 0xEEFCfAF026931b7325472A88fd14Ee780Da13559 is the ACTIVE on-chain verifier since executeZkVerifier() ran on 2026-07-02 (block 103419); the prior verifier 0x138b433071Ad806E841B5AD53623290a9bf21761 (sha 45d0b6fb...03e) is retired. See _zk_verifier_swap below and docs/PRODUCTION_DEPLOYMENT.md §3.2.",
   "_zk_verifier_swap": {
     "status": "EXECUTED - executeZkVerifier() ran after the 2-day timelock; the v2 verifier is live on the registry",
     "registry": "0x8bA836eCe9a27c43049aCcC26eB5a1579c1FcFA1",
@@ -176,7 +176,7 @@
     "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
     "components_reused": "IssuerRegistry, DogTagSBT, Groth16Verifier (v2), ConsentKeyRegistry, DogTagIssuerFactory, Poseidon6 - all unchanged; every cross-contract call in the ZK path is a view, so no role grants were needed on the components."
   },
-  "admin": "0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96",
+  "admin": "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
   "_governance": {
     "status": "HANDOVER EXECUTED (Phase-2). Governance authority moved off the original deployer EOA to governance signer 'signer-1' 0x8E27E117..., which now holds the IssuerRegistry DEFAULT_ADMIN_ROLE + WHITELIST_ADMIN and owns DogTagIssuerFactory. The historical deployer 0x119F8c7F... lost governance/admin authority but still holds legacy Level-A DogTagSBT ISSUER_ROLE and known record-type whitelists, so it is not role-free and must not be used as a neutral custodian. Migration shipped as reviewable code and merged to mainline (PR #8): contracts/script/GovernanceMigration.sol + MigrateGovernance.s.sol (two-phase Begin/Accept) + test/GovernanceMigration.t.sol; runbook docs/GOVERNANCE_MIGRATION.md.",
     "authority": "0x8E27E117...",
@@ -191,12 +191,14 @@
   },
   "chainId": 135,
   "demo_clones": {
-    "DOG_PROFILE": "0xdb8d39eb83DDFAaA7481C4Af4e47D0044116dB25",
-    "VACCINATION": "0x5c703910111f942EE0f47E02214291b5274cDb53"
+    "DOG_PROFILE": "0x0e56Ae2e1ef684d3e90d7699B981C6B76df922bf",
+    "VACCINATION": "0x1456f93f7376789c46408CC4616751eB853edD9A"
   },
   "government_clones": {
     "_note": "Per-record-type DogTagIssuer clones for the government credential authority, deployed via DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business) with business == the protocol admin 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 (single-authority topology, arch DP-3). The government signer (the same admin address on testnet) is whitelisted on IssuerRegistry for keccak256(recordType); DogTagIssuer.issue is onlyWhitelisted. Consumed by stacks/government via TRAVEL_CLEARANCE_ISSUER_ADDR / EU_HEALTH_CERT_ISSUER_ADDR.",
     "TRAVEL_CLEARANCE": "0x8e276BD4c57740766A7e173D05F4f02013681c6a",
     "EU_HEALTH_CERT": "0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2"
-  }
+  },
+  "ProtocolRegistry": "0xf5492A671E69b1A13f7Fd123C021830eB1ea8081",
+  "_r8_fresh_redeploy": "2026-07-23: the flat keys above (factory/impl/SBTConsent/VerifierConsent/IssuerRegistry/VRegConsent/ProtocolRegistry/admin/demo_clones) are the FRESH owner-hidden set deployed per data/dogtag-roaxdeploy-r8/report.md and SUPERSEDE every address named inside the historical _m3/_m4/_m5 annotation blocks in this file; those blocks are kept as deployment history only."
 }

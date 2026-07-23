@@ -573,11 +573,9 @@ Apple-Silicon Mac:
 #    - these are what the app actually proves with (consent.graph is built out-of-band; see gotchas).
 cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
 cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
-# CAVEAT: the committed project.pbxproj still lists the RETIRED verification pair as bundle
-# resources (the resource-wiring swap to the consent pair lands with the mobile-issuance/redeploy
-# slice), so a plain xcodebuild still requires those two paths to EXIST - vendor or touch them:
-cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey  # committed provenance copy
-touch apps/ios/DogTag/verification.graph   # retired graph, no longer buildable; placeholder is fine
+# The committed project.pbxproj lists exactly this consent pair as bundle resources (the retired
+# verification pair is gone from the wiring), so the two copies above are also what makes a plain
+# xcodebuild link: it fails loudly on a checkout that has not vendored them.
 
 # 2. Build the prover static lib for the arm64 iOS Simulator + a host build for bindgen.
 rustup target add aarch64-apple-ios-sim
@@ -620,10 +618,9 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
   files, and commit the regenerated `project.pbxproj`. **Trap:** `xcodegen` enumerates the `DogTag/`
   folder, so regenerating in a checkout that has NOT vendored the referenced prover resources
   (gitignored) silently DROPS their Copy-Bundle-Resources entries from the committed `pbxproj`.
-  Today the committed `pbxproj` still references the RETIRED `verification_final.zkey` +
-  `verification.graph` (not yet the consent pair - that resource swap lands with the
-  mobile-issuance/redeploy slice), so make those two paths exist (vendor or `touch`, step 1) before
-  any regen, and vendor the consent pair so the app can actually prove. A pure-UI change that
+  The committed `pbxproj` references the CONSENT pair (`consent_final.zkey` + `consent.graph`; the
+  retired verification pair is gone from the wiring), so vendor that pair (step 1) before
+  any regen - it is also what the app proves with. A pure-UI change that
   adds no source file needs no regen at all: fold new views/types into an existing `.swift` and the
   `pbxproj` stays untouched.
 - **Local pet photos are UI-only** — `PetPhotoStore` (LocalStore.swift) keeps per-`dogTagId` avatars as
@@ -844,7 +841,7 @@ An already-installed app keeps proving against its **baked** key until you do, s
   cross-file symbols (Credential, LocalStore, …) as "not found" — those are false positives; only the
   full `xcodebuild` result is authoritative.
 - Do NOT re-run xcodegen (`project.yml`) casually: it silently drops the vendored prover resources
-  (verification_final.zkey / verification.graph) from the pbxproj. Prefer editing existing `.swift`
+  (consent_final.zkey / consent.graph) from the pbxproj. Prefer editing existing `.swift`
   files over adding new ones so the pbxproj (which lists sources individually) needs no regen.
 - To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
   `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.
@@ -903,11 +900,11 @@ existing sibling: a `PBXBuildFile`, a `PBXFileReference`, a group child, and a S
 entry, using fresh 24-char hex IDs). Do NOT blindly `xcodegen generate` — regenerating the project
 silently strips the vendored prover resources (zkey / witness graph) from the pbxproj.
 
-If you genuinely need a regen (e.g. adding a target), the safe procedure is: `touch
-apps/ios/DogTag/verification_final.zkey apps/ios/DogTag/verification.graph` so xcodegen sees the
-paths (yes, still the RETIRED pair - the committed pbxproj has not yet swapped its resource wiring
-to the consent pair; that lands with the mobile-issuance/redeploy slice), `xcodegen generate`,
-delete the placeholders, then confirm with
+If you genuinely need a regen (e.g. adding a target), the safe procedure is: vendor the consent
+pair per docs/MOBILE_BUILD.md §4 (`cp circuits/build/consent_final.zkey apps/ios/DogTag/` + the
+`consent.graph` copy) - or `touch` both paths if you only need the wiring, not a proving build -
+so xcodegen sees them (the committed pbxproj references the CONSENT pair; the retired
+verification pair is gone from the wiring), `xcodegen generate`, then confirm with
 `git diff --no-color apps/ios/DogTag.xcodeproj/project.pbxproj | grep '^-'` that **no** zkey/graph
 line was removed. Both files are gitignored, so the placeholders can never be committed. Expect a
 large but harmless diff: xcodegen re-randomises every object ID, so hand-written IDs churn while

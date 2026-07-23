@@ -16,8 +16,8 @@
 		20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */; };
 		25DE54A9AD9062ED98EEC699 /* ZkeyAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */; };
 		26286860F2F0C9B67191AAF6 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E305C5EDBCBAB54068928D /* Models.swift */; };
+		2B2E22977AA4914AA56C6103 /* consent_final.zkey in Resources */ = {isa = PBXBuildFile; fileRef = 9B1231C86A044F3FAC1BDBAA /* consent_final.zkey */; };
 		2D898909BA2816F7807E1DAC /* DogTagApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */; };
-		2EACE30CA5B71E766879B375 /* verification_final.zkey in Resources */ = {isa = PBXBuildFile; fileRef = 41B690C8C0288E6D92C49B1A /* verification_final.zkey */; };
 		3195F181C655ED2791616210 /* dogtag_standard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */; };
 		3F1ED6BFE55CC539565CF5B3 /* DocumentsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC51E046B7E0F7C0F0CA79A /* DocumentsScreen.swift */; };
 		3F83B4537CA668F34B6228D2 /* AnchorResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7328FE50B1B149BAEB405B /* AnchorResolver.swift */; };
@@ -34,11 +34,11 @@
 		847729E21947C654A60BC69C /* PublicSignalIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9AFF180B3A3062BCB03AFE3 /* PublicSignalIndex.swift */; };
 		88E11CB08CC2C81AE51118FA /* Keccak256.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85DFF42E4A240519092B9764 /* Keccak256.swift */; };
 		95966E12D4F0950D42E83A0A /* Secp256k1.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */; };
-		A35B34283194640E9BFBB803 /* verification.graph in Resources */ = {isa = PBXBuildFile; fileRef = 9DE95B9868DF2B01687427E7 /* verification.graph */; };
 		B2EF85747D2E8874C509ACA5 /* AnchorResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7328FE50B1B149BAEB405B /* AnchorResolver.swift */; };
 		C809FF2627FACBA97B039929 /* ZkeyAssetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16C0807944D4980D034D65AF /* ZkeyAssetTests.swift */; };
 		D0F8DCB58714F356E47D7CBE /* VerifyScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */; };
 		D23B623773E4F1738D03833B /* ScanScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75DFD2A29A8CADFA74489995 /* ScanScreen.swift */; };
+		D34744572AFB01D90EF088A8 /* consent.graph in Resources */ = {isa = PBXBuildFile; fileRef = 77B93EB16AAEEA822BB25374 /* consent.graph */; };
 		D4C0703D456B06AF417BD96E /* QR.swift in Sources */ = {isa = PBXBuildFile; fileRef = C48A2C71E910181EB8484314 /* QR.swift */; };
 		D5B0677DB22C2B06A76051B5 /* ProfileScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */; };
 		D9732C3C315A3C5DE6D4A3BE /* QrPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = 685707046DC0696308DB5C8D /* QrPayload.swift */; };
@@ -61,7 +61,6 @@
 		3E7C0DECAD4479B4092A46E3 /* AnchorResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorResolverTests.swift; sourceTree = "<group>"; };
 		3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagApp.swift; sourceTree = "<group>"; };
 		409155A71A31BD791C0561AD /* Net.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Net.swift; sourceTree = "<group>"; };
-		41B690C8C0288E6D92C49B1A /* verification_final.zkey */ = {isa = PBXFileReference; path = verification_final.zkey; sourceTree = "<group>"; };
 		4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileScreen.swift; sourceTree = "<group>"; };
 		49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialDetailScreen.swift; sourceTree = "<group>"; };
 		4C1BA1B5F0C4C82186230D1D /* DogTagTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = DogTagTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -71,12 +70,13 @@
 		6E677AE2F3DE132622C10E9E /* PublicSignalIndexTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicSignalIndexTests.swift; sourceTree = "<group>"; };
 		6F7328FE50B1B149BAEB405B /* AnchorResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorResolver.swift; sourceTree = "<group>"; };
 		75DFD2A29A8CADFA74489995 /* ScanScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanScreen.swift; sourceTree = "<group>"; };
+		77B93EB16AAEEA822BB25374 /* consent.graph */ = {isa = PBXFileReference; path = consent.graph; sourceTree = "<group>"; };
 		78E305C5EDBCBAB54068928D /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		7DC51E046B7E0F7C0F0CA79A /* DocumentsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsScreen.swift; sourceTree = "<group>"; };
 		85DFF42E4A240519092B9764 /* Keccak256.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keccak256.swift; sourceTree = "<group>"; };
 		8EFC25577C3EDAD52BEDCE9F /* Secp256k1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secp256k1.swift; sourceTree = "<group>"; };
+		9B1231C86A044F3FAC1BDBAA /* consent_final.zkey */ = {isa = PBXFileReference; path = consent_final.zkey; sourceTree = "<group>"; };
 		9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZkeyAsset.swift; sourceTree = "<group>"; };
-		9DE95B9868DF2B01687427E7 /* verification.graph */ = {isa = PBXFileReference; path = verification.graph; sourceTree = "<group>"; };
 		A38289E086F9DD77EF41997A /* QrPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrPayloadTests.swift; sourceTree = "<group>"; };
 		A7926F506647E68F6A59FDAF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		BAA8FE871C7EFE8AAB555A6C /* zk_selftest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = zk_selftest.json; sourceTree = "<group>"; };
@@ -132,6 +132,8 @@
 			children = (
 				6F7328FE50B1B149BAEB405B /* AnchorResolver.swift */,
 				D015751D851C794DC4128BC7 /* BigUInt.swift */,
+				9B1231C86A044F3FAC1BDBAA /* consent_final.zkey */,
+				77B93EB16AAEEA822BB25374 /* consent.graph */,
 				C8AB4F26FEB853C4B49F7988 /* Consent.swift */,
 				49B169C7A34746706341B3CC /* CredentialDetailScreen.swift */,
 				7DC51E046B7E0F7C0F0CA79A /* DocumentsScreen.swift */,
@@ -156,8 +158,6 @@
 				A7926F506647E68F6A59FDAF /* Theme.swift */,
 				CEFF4BE5934863572EB85AB5 /* TravelReceiptView.swift */,
 				6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */,
-				41B690C8C0288E6D92C49B1A /* verification_final.zkey */,
-				9DE95B9868DF2B01687427E7 /* verification.graph */,
 				D798CCFF5A5C7C6A7BFFBF8A /* VerifyScreen.swift */,
 				E35FCC686C0AAD6B317376C7 /* Wallet.swift */,
 				E35067E42CB675A6C8D77F8D /* Wordlist.swift */,
@@ -270,10 +270,10 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D34744572AFB01D90EF088A8 /* consent.graph in Resources */,
+				2B2E22977AA4914AA56C6103 /* consent_final.zkey in Resources */,
 				66976D595E830B76C1B03649 /* roax.json in Resources */,
 				6C880A8C57CA3473792895CB /* testvectors.json in Resources */,
-				A35B34283194640E9BFBB803 /* verification.graph in Resources */,
-				2EACE30CA5B71E766879B375 /* verification_final.zkey in Resources */,
 				07F3701552ACB02D59CD8698 /* zk_selftest.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
