@@ -1,7 +1,7 @@
 //! UniFFI foreign-callable surface for the DogTag standard SDK (Phase 6 — mobile).
 //!
 //! This module is the ONLY binding surface; it exposes string/bytes/record wrappers over the
-//! pure core (poseidon/field/leaf/merkle/encode/wrap/verify/consent) so Kotlin (Android) and
+//! pure core (poseidon/field/leaf/merkle/encode/wrap/verify/eddsa) so Kotlin (Android) and
 //! Swift (iOS) can run the offline §11.3 integrity verify and reproduce server-side roots
 //! byte-for-byte. The core algorithm modules are NOT modified — this is additive only.
 //!
@@ -35,7 +35,7 @@ impl From<crate::types::DogTagError> for FfiError {
     }
 }
 
-fn err<E: std::fmt::Display>(e: E) -> FfiError {
+pub(crate) fn err<E: std::fmt::Display>(e: E) -> FfiError {
     FfiError::Invalid(e.to_string())
 }
 
@@ -137,10 +137,9 @@ pub fn bytes_to_field_hex(input_hex: String) -> Result<String, FfiError> {
 }
 
 /// Field-hash a numeric dogTagId EXACTLY as its credential leaf value is hashed:
-/// `field_of_value(Integer(dec))` -> 0x.. 32-byte hex. THE CANONICAL dogTagId: the §1.10 consent's
-/// dogTagId, the EdDSA consent message M, the Poseidon nullifier, AND the on-chain DOG_PROFILE SBT id
-/// must ALL be this value — it equals `leafValues[dogTagIdLeafIndex]`, which the verification circuit
-/// compares to the dogTagId input DIRECTLY (constraint §(b)), not the raw decimal id.
+/// `field_of_value(Integer(dec))` -> 0x.. 32-byte hex. THE CANONICAL dogTagId: the consent circuit's
+/// `dogTagId` input, the per-tag KDF binding, the Poseidon nullifier, AND the on-chain SBT id
+/// (`mintCustodial(id, R)`) must ALL be this value, not the raw decimal handle.
 #[uniffi::export]
 pub fn dog_tag_id_field_hex(dog_tag_id_dec: String) -> Result<String, FfiError> {
     let scalar = scalar_from_packed(TypeTag::Integer, &dog_tag_id_dec)?;
@@ -203,19 +202,6 @@ pub fn obfuscate_document_json(
     serde_json::to_string(&out).map_err(|e| err(format!("serialize: {e}")))
 }
 
-// --------------------------------------------------------------------------------------------
-// Consent commitments (mirror consent.rs) — digest / nullifier / message / keyHash for parity.
-// --------------------------------------------------------------------------------------------
-
-/// keccak256 of the EIP-712 VerificationConsent type string (0x.. 32-byte hex).
-#[uniffi::export]
-pub fn verification_consent_typehash_hex() -> String {
-    format!(
-        "0x{}",
-        hex::encode(crate::consent::verification_consent_typehash())
-    )
-}
-
 /// Decode a 0x.. hex string into exactly N bytes (big-endian word / address).
 fn decode_word<const N: usize>(label: &str, h: &str) -> Result<[u8; N], FfiError> {
     let s = h.strip_prefix("0x").unwrap_or(h);
@@ -229,303 +215,6 @@ fn decode_word<const N: usize>(label: &str, h: &str) -> Result<[u8; N], FfiError
     let mut out = [0u8; N];
     out.copy_from_slice(&bytes);
     Ok(out)
-}
-
-/// Build a VerificationConsent from hex inputs. uint256/bytes32 fields are 32-byte BE hex,
-/// addresses are 20-byte hex.
-#[allow(clippy::too_many_arguments)]
-fn consent_from_hex(
-    dog_tag_id_hex: &str,
-    record_type_hex: &str,
-    purpose_hex: &str,
-    credential_root_hex: &str,
-    challenge_hex: &str,
-    relayer_hex: &str,
-    subject_hex: &str,
-    nonce_hex: &str,
-    deadline_hex: &str,
-) -> Result<crate::consent::VerificationConsent, FfiError> {
-    Ok(crate::consent::VerificationConsent {
-        dog_tag_id: decode_word::<32>("dogTagId", dog_tag_id_hex)?,
-        record_type: decode_word::<32>("recordType", record_type_hex)?,
-        purpose: decode_word::<32>("purpose", purpose_hex)?,
-        credential_root: decode_word::<32>("credentialRoot", credential_root_hex)?,
-        challenge: decode_word::<32>("challenge", challenge_hex)?,
-        relayer: decode_word::<20>("relayer", relayer_hex)?,
-        subject: decode_word::<20>("subject", subject_hex)?,
-        nonce: decode_word::<32>("nonce", nonce_hex)?,
-        deadline: decode_word::<32>("deadline", deadline_hex)?,
-    })
-}
-
-/// The consent nullifier (impl §11.9(b)): Poseidon(DS_NULLIFIER, dogTagId, purpose, relayer,
-/// subject, nonce) -> 0x.. 32-byte hex.
-#[allow(clippy::too_many_arguments)]
-#[uniffi::export]
-pub fn consent_nullifier_hex(
-    dog_tag_id_hex: String,
-    record_type_hex: String,
-    purpose_hex: String,
-    credential_root_hex: String,
-    challenge_hex: String,
-    relayer_hex: String,
-    subject_hex: String,
-    nonce_hex: String,
-    deadline_hex: String,
-) -> Result<String, FfiError> {
-    let c = consent_from_hex(
-        &dog_tag_id_hex,
-        &record_type_hex,
-        &purpose_hex,
-        &credential_root_hex,
-        &challenge_hex,
-        &relayer_hex,
-        &subject_hex,
-        &nonce_hex,
-        &deadline_hex,
-    )?;
-    Ok(format!(
-        "0x{}",
-        hex::encode(crate::consent::consent_nullifier(&c))
-    ))
-}
-
-/// The EdDSA-BabyJubjub consent message M (impl §11.9(d)): Poseidon(dogTagId, purpose, relayer,
-/// subject, credentialRoot, nonce) -> 0x.. 32-byte hex.
-#[allow(clippy::too_many_arguments)]
-#[uniffi::export]
-pub fn eddsa_consent_message_hex(
-    dog_tag_id_hex: String,
-    record_type_hex: String,
-    purpose_hex: String,
-    credential_root_hex: String,
-    challenge_hex: String,
-    relayer_hex: String,
-    subject_hex: String,
-    nonce_hex: String,
-    deadline_hex: String,
-) -> Result<String, FfiError> {
-    let c = consent_from_hex(
-        &dog_tag_id_hex,
-        &record_type_hex,
-        &purpose_hex,
-        &credential_root_hex,
-        &challenge_hex,
-        &relayer_hex,
-        &subject_hex,
-        &nonce_hex,
-        &deadline_hex,
-    )?;
-    Ok(to_hex32(&crate::consent::eddsa_consent_message(&c)))
-}
-
-/// keyHash = Poseidon(Ax, Ay) -> 0x.. 32-byte hex. Ax/Ay are 0x.. 32-byte BE field hex.
-#[uniffi::export]
-pub fn key_hash_hex(ax_hex: String, ay_hex: String) -> Result<String, FfiError> {
-    let ax = field_from_hex(&ax_hex)?;
-    let ay = field_from_hex(&ay_hex)?;
-    Ok(format!(
-        "0x{}",
-        hex::encode(crate::consent::key_hash(ax, ay))
-    ))
-}
-
-/// The EIP-712 digest the owner's secp256k1 wallet signs to authorize a relayer-sponsored
-/// consent-key bind (`ConsentKeyRegistry.bindConsentKeyFor`). Returns 0x.. 32-byte hex of
-/// keccak256(0x1901 || domainSeparator("DogTag","1",chainId,consentKeyRegistry) ||
-/// keccak256(abi.encode(BIND_TYPEHASH, keyHash, wallet, nonce))). NOT feature-gated — mobile
-/// needs it regardless of the `prover` feature. `nonce` is `bindNonce[wallet]` (a uint256 < 2^64
-/// in practice; passed as u64 and BE-padded to 32 bytes).
-#[uniffi::export]
-pub fn bind_consent_key_digest_hex(
-    consent_key_registry_addr: String,
-    key_hash_hex: String,
-    wallet_addr: String,
-    nonce: u64,
-    chain_id: u64,
-) -> Result<String, FfiError> {
-    let registry = decode_word::<20>("consentKeyRegistryAddr", &consent_key_registry_addr)?;
-    let key_hash = decode_word::<32>("keyHash", &key_hash_hex)?;
-    let wallet = decode_word::<20>("walletAddr", &wallet_addr)?;
-    let mut nonce_word = [0u8; 32];
-    nonce_word[24..].copy_from_slice(&nonce.to_be_bytes());
-    let digest = crate::consent::bind_consent_key_digest(
-        registry,
-        &key_hash,
-        &wallet,
-        &nonce_word,
-        chain_id,
-    );
-    Ok(format!("0x{}", hex::encode(digest)))
-}
-
-/// Parse a 0x.. 32-byte hex into a field element (reduced mod r if needed, like the TS leg).
-fn field_from_hex(h: &str) -> Result<Fr, FfiError> {
-    let s = h.strip_prefix("0x").unwrap_or(h);
-    let bytes = hex::decode(s).map_err(|e| err(format!("bad field hex: {e}")))?;
-    if bytes.len() != 32 {
-        return Err(FfiError::Invalid(format!(
-            "field hex must be 32 bytes (got {})",
-            bytes.len()
-        )));
-    }
-    Ok(Fr::from_be_bytes_mod_order(&bytes))
-}
-
-// --------------------------------------------------------------------------------------------
-// EdDSA-BabyJubjub consent SIGNING (the mobile crypto) — circomlibjs-compatible. The wallet derives
-// a per-pet consent key from its seed, binds keyHash=Poseidon(Ax,Ay) on-chain via ConsentKeyRegistry,
-// then signs the §1.10 consent message for the ZK verification path.
-// --------------------------------------------------------------------------------------------
-
-/// A derived BabyJubjub consent keypair crossing the FFI boundary. `prvHex` is the 32-byte private
-/// key (keep encrypted behind the platform keystore); Ax/Ay are 0x.. 32-byte BE public-point hex;
-/// keyHashHex = Poseidon(Ax,Ay) is what the wallet binds in ConsentKeyRegistry.
-#[derive(uniffi::Record)]
-pub struct BabyjubConsentKeyFfi {
-    pub prv_hex: String,
-    pub ax_hex: String,
-    pub ay_hex: String,
-    pub key_hash_hex: String,
-}
-
-/// An EdDSA-BabyJubjub Poseidon consent signature: R8 point (0x.. 32-byte hex) + scalar S (decimal).
-#[derive(uniffi::Record)]
-pub struct EddsaSignatureFfi {
-    pub r8x_hex: String,
-    pub r8y_hex: String,
-    pub r8x_dec: String,
-    pub r8y_dec: String,
-    pub s_dec: String,
-}
-
-/// Derive the **wallet-level** BabyJubjub consent key from a hex seed (any length) - one key per
-/// wallet, NOT per tag. The seed is wrapped in a distinct domain from the secp256k1 wallet path
-/// (§6) before BLAKE-512, so the two keys are independent. Returns the 32-byte private key +
-/// public point (Ax, Ay) + keyHash.
-///
-/// # Callers: this is the Level-A key, not the profile-tree key
-///
-/// Use this ONLY for the Level-A path (`verification.circom` + the per-wallet
-/// `ConsentKeyRegistry.keyOf` bind). The Level-B `owner.consentKey` leaf uses a **per-tag** key
-/// derived from `(seed, dogTagId)`; you get it from
-/// [`build_profile_tree_hex`]'s `consentPrvHex` (or implicitly via `prove_consent`, which derives
-/// it internally from the `dogTagId` it already receives). See
-/// [`crate::eddsa::derive_babyjub_consent_key_per_tag`].
-#[uniffi::export]
-pub fn derive_babyjub_consent_key(seed_hex: String) -> Result<BabyjubConsentKeyFfi, FfiError> {
-    let s = seed_hex.strip_prefix("0x").unwrap_or(&seed_hex);
-    let seed = hex::decode(s).map_err(|e| err(format!("bad seed hex: {e}")))?;
-    if seed.is_empty() {
-        return Err(FfiError::Invalid("seed must be non-empty".to_string()));
-    }
-    let key = crate::eddsa::derive_babyjub_consent_key_from_seed(&seed);
-    Ok(consent_key_to_ffi(&key))
-}
-
-/// Build a consent key directly from a 32-byte circomlibjs private key (the raw private buffer is
-/// the key — no domain wrapping). For interop with vectors / externally-derived keys.
-#[uniffi::export]
-pub fn babyjub_consent_key_from_prv(prv_hex: String) -> Result<BabyjubConsentKeyFfi, FfiError> {
-    let prv = decode_word::<32>("prv", &prv_hex)?;
-    let key = crate::eddsa::consent_key_from_raw_prv(&prv);
-    Ok(consent_key_to_ffi(&key))
-}
-
-fn consent_key_to_ffi(key: &crate::eddsa::BabyjubConsentKey) -> BabyjubConsentKeyFfi {
-    BabyjubConsentKeyFfi {
-        prv_hex: format!("0x{}", hex::encode(key.prv)),
-        ax_hex: to_hex32(&key.ax),
-        ay_hex: to_hex32(&key.ay),
-        key_hash_hex: format!(
-            "0x{}",
-            hex::encode(crate::consent::key_hash(key.ax, key.ay))
-        ),
-    }
-}
-
-/// Sign the §1.10 consent message M = Poseidon6(dogTagId, purpose, relayer, subject, credentialRoot,
-/// nonce) with a 32-byte private key, producing the EdDSA-BabyJubjub Poseidon signature the ZK
-/// circuit's `EdDSAPoseidonVerifier` accepts. Consent fields are hex (same shape as the other
-/// consent functions); `prvHex` is the 32-byte private key.
-#[allow(clippy::too_many_arguments)]
-#[uniffi::export]
-pub fn sign_consent_eddsa(
-    prv_hex: String,
-    dog_tag_id_hex: String,
-    record_type_hex: String,
-    purpose_hex: String,
-    credential_root_hex: String,
-    challenge_hex: String,
-    relayer_hex: String,
-    subject_hex: String,
-    nonce_hex: String,
-    deadline_hex: String,
-) -> Result<EddsaSignatureFfi, FfiError> {
-    let prv = decode_word::<32>("prv", &prv_hex)?;
-    let c = consent_from_hex(
-        &dog_tag_id_hex,
-        &record_type_hex,
-        &purpose_hex,
-        &credential_root_hex,
-        &challenge_hex,
-        &relayer_hex,
-        &subject_hex,
-        &nonce_hex,
-        &deadline_hex,
-    )?;
-    let m = crate::consent::eddsa_consent_message(&c);
-    let sig = crate::eddsa::sign_poseidon(&prv, &m);
-    Ok(EddsaSignatureFfi {
-        r8x_hex: to_hex32(&sig.r8x),
-        r8y_hex: to_hex32(&sig.r8y),
-        r8x_dec: crate::eddsa::fr_to_dec(&sig.r8x),
-        r8y_dec: crate::eddsa::fr_to_dec(&sig.r8y),
-        s_dec: sig.s.to_str_radix(10),
-    })
-}
-
-/// Verify an EdDSA-BabyJubjub Poseidon consent signature against the public key (Ax,Ay) and the
-/// consent fields. Mirrors circomlibjs `verifyPoseidon`. Returns true/false (no throw).
-#[allow(clippy::too_many_arguments)]
-#[uniffi::export]
-pub fn verify_consent_eddsa(
-    ax_hex: String,
-    ay_hex: String,
-    r8x_hex: String,
-    r8y_hex: String,
-    s_dec: String,
-    dog_tag_id_hex: String,
-    record_type_hex: String,
-    purpose_hex: String,
-    credential_root_hex: String,
-    challenge_hex: String,
-    relayer_hex: String,
-    subject_hex: String,
-    nonce_hex: String,
-    deadline_hex: String,
-) -> Result<bool, FfiError> {
-    let ax = field_from_hex(&ax_hex)?;
-    let ay = field_from_hex(&ay_hex)?;
-    let r8x = field_from_hex(&r8x_hex)?;
-    let r8y = field_from_hex(&r8y_hex)?;
-    let s = num_bigint::BigUint::parse_bytes(s_dec.as_bytes(), 10)
-        .ok_or_else(|| FfiError::Invalid("bad S decimal".to_string()))?;
-    let c = consent_from_hex(
-        &dog_tag_id_hex,
-        &record_type_hex,
-        &purpose_hex,
-        &credential_root_hex,
-        &challenge_hex,
-        &relayer_hex,
-        &subject_hex,
-        &nonce_hex,
-        &deadline_hex,
-    )?;
-    let m = crate::consent::eddsa_consent_message(&c);
-    // An off-curve / small-subgroup point is malformed input -> FfiError::Invalid (no panic).
-    crate::eddsa::verify_poseidon(&ax, &ay, &r8x, &r8y, &s, &m)
-        .map_err(|e| FfiError::Invalid(e.to_string()))
 }
 
 /// NFC-normalize a string (exposed for cross-language canonicalization sanity checks).
@@ -688,7 +377,7 @@ pub fn build_profile_tree_hex(
         ax_hex: to_hex32(&t.ax),
         ay_hex: to_hex32(&t.ay),
         consent_prv_hex: format!("0x{}", hex::encode(t.consent_prv)),
-        key_hash_hex: format!("0x{}", hex::encode(crate::consent::key_hash(t.ax, t.ay))),
+        key_hash_hex: format!("0x{}", hex::encode(crate::eddsa::key_hash(t.ax, t.ay))),
         owner_salt_hex: format!("0x{}", hex::encode(t.owner_salt)),
         key_salt_hex: format!("0x{}", hex::encode(t.key_salt)),
         secret_salt_hex: format!("0x{}", hex::encode(t.secret_salt)),

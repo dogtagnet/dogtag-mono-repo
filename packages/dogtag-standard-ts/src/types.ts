@@ -30,12 +30,11 @@ export interface IssuerMeta {
  * M7 record-provenance block (§4.2), mirror of the Rust `ProtocolMeta`: which protocol/contract a
  * record was created on AND who issued it, carried BESIDE `signature.merkleRoot` - NEVER inside `R`
  * or the ZK proof. A routing hint only, never authority: `issuerSigner` is the envelope's *claim*,
- * validated against the on-chain `clone.issuedBy[R]` at verify time. Absent on pre-M7 records
- * (default it via `resolvedProtocol`, §4.4).
+ * validated against the on-chain `clone.issuedBy[R]` at verify time.
  */
 export interface ProtocolMeta {
   chainId: number;
-  version: string; // protocol level, e.g. "dogtag-levela/1" - NOT the envelope `version`
+  version: string; // internal protocol version key, e.g. "dogtag-levelb/1" - NOT the envelope `version`
   verificationRegistry: string; // THE routing key
   issuerClone: string; // == issuer.documentStore; the direct isValid target
   issuerSigner: string; // the signer that issued (claim == clone.issuedBy[R]); validated, never trusted
@@ -52,8 +51,8 @@ export interface WrappedDoc {
   };
   privacy: {obfuscated: string[]}; // leaf hashes of redacted fields
   issuer: IssuerMeta;
-  // M7 provenance block (§4.2), beside `signature.merkleRoot` - NOT inside `R`. Absent on pre-M7
-  // records; default it via `resolvedProtocol`. A routing hint only, never authority.
+  // M7 provenance block (§4.2), beside `signature.merkleRoot` - NOT inside `R`. May be absent on
+  // a bare wrap; the issuing stack stamps it. A routing hint only, never authority.
   protocol?: ProtocolMeta;
 }
 

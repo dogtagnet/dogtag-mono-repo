@@ -1,8 +1,8 @@
 # MOBILE_BUILD — build & install the DogTag apps on real phones
 
 **Goal / you'll end with:** the DogTag iOS app on a real iPhone and the DogTag Android app on a
-real Android phone, each correctly configured to talk to the right vet/groomer hosts, the right chain,
-and (for 32-bit Android only) a live prover-service.
+real Android phone, each correctly configured to talk to the right vet/groomer hosts and the right
+chain.
 
 > **Audience:** an AI agent runs the fenced blocks top-to-bottom; a human follows the same steps.
 > Run every command from the repo root (`/Users/zhenhaowu/code/dogtag-mono-repo`) unless a block
@@ -13,48 +13,40 @@ Placeholders used below (define-once):
 
 - `<DEVICE_UDID>` — the iPhone's device id. Replace: `<DEVICE_UDID>` = `xcrun xctrace list devices`
   (or Xcode → Window → Devices and Simulators), copy the UDID of the plugged-in iPhone.
-- `<PROVER_TUNNEL_URL>` — the public base URL of a running prover-service (e.g. a `cloudflared`
-  tunnel `https://<sub>.trycloudflare.com`, or your remote prover's TLS host). 32-bit Android only.
 - `<SDK_DIR>` — the Android SDK path (`/Users/zhenhaowu/Library/Android/sdk` on this machine).
 
 ---
 
 ## 0. Goal + the one diagram
 
-A phone gets its configuration from **four** distinct places. Knowing which is which is the whole
-point of this doc — most "it's talking to the wrong thing" bugs are a confusion between them.
+A phone gets its configuration from **two** distinct places. Knowing which is which is the whole
+point of this doc - most "it's talking to the wrong thing" bugs are a confusion between them.
 
 ```
                          ┌──────────────────────────────────────────────┐
-                         │                  THE PHONE APP                 │
+                         │                THE PHONE APP                 │
                          └──────────────────────────────────────────────┘
-                                 ▲           ▲            ▲           ▲
-        SCANNED QR  (per scan)   │           │            │           │   MANUAL  (in-app pref)
-   ┌─────────────────────────────┘           │            │           └─────────────────────────┐
-   │  vet host     = QR  /p/<token>           │            │            prover_api               │
-   │  groomer host = QR  /x/<token>           │            │            (32-bit Android ONLY;     │
-   │  (the app has NO field for these)        │            │             POST /prove-verification)│
-   └──────────────────────────────────────┐  │            │  ┌────────────────────────────────  ┘
-                                           │  │            │  │
-                              BAKED (bundled in the build) │  LEGACY fallback (rarely set)
-                       ┌──────────────────────────────────┘  └──────────────────────────────┐
-                       │  contract addresses = bundled roax.json                              │
-                       │  chain RPC          = baked constant (https://devrpc.roax.net)       │
-                       │  zkey + graph       = bundled assets (vendored each build)           │
-                       │                                          central_api = api.dogtag.io │
-                       └──────────────────────────────────────────────────────────────────────┘
+                                    ▲                    ▲
+               SCANNED QR (per scan)│                    │BAKED (bundled in the build)
+   ┌────────────────────────────────┘                    └────────────────────────────────────┐
+   │  vet host     = QR  /p/<token>              contract addresses = bundled roax.json       │
+   │  groomer host = QR  /x/<token>              chain RPC = baked constant                   │
+   │  (the app has NO field for these)                       (https://devrpc.roax.net)        │
+   │                                             zkey + graph = bundled assets                │
+   │                                                          (vendored each build)           │
+   └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **SCANNED QR** — the vet host (issue a dog tag) and the groomer host (export/verify) come **only**
   from the QR the operator's portal renders. The app has no UI field for either host. See §2.
-- **BAKED** — contract addresses (`roax.json`), the chain RPC constant, and the proving artifacts
-  (the Level-A `verification_final.zkey`/`verification.graph` and, since M-4, the Level-B
-  `consent_final.zkey`/`consent.graph`) are compiled/bundled into the app. To change any
-  of them you **edit + rebuild + reinstall** (§8).
-- **MANUAL** — `prover_api` is the **only** setting a user ever types in-app, and **only** on a
-  32-bit-only Android device (§3, §7).
-- **LEGACY** — `central_api` (default `https://api.dogtag.io`) is the old ECDSA fallback path. It is
-  **not** used in the QR/ZK flow. Leave it alone unless you know you need it.
+- **BAKED** - contract addresses (`roax.json`), the chain RPC constant, and the owner-hidden consent
+  proving artifacts (`consent_final.zkey` + `consent.graph`) are compiled/bundled into the app.
+  To change any of them you **edit + rebuild + reinstall** (§8).
+
+There is no in-app endpoint setting left at all.
+The former `central_api` ECDSA-fallback preference and the former 32-bit `prover_api` preference are
+retired along with the flows that used them (§3, §7); `AppConfig` in both apps now carries only the
+baked RPC constant.
 
 ---
 
@@ -139,13 +131,14 @@ not copy it.**
 | chain RPC | baked constant | rebuild to change | iOS `apps/ios/DogTag/Models.swift` `AppConfig.roaxRpc`; Android `AppConfig.ROAX_RPC` — both `https://devrpc.roax.net` |
 | vet host (issue dog tag) | scanned QR `/p/<token>` | per scan | the device calls **only** the scanned host; the app has no field for it |
 | groomer host (export / verify) | scanned QR `/x/<token>` | per scan | the device calls **only** the scanned host; the app has no field for it |
-| `central_api` | iOS `UserDefaults` / Android `SharedPrefs`, default `https://api.dogtag.io` | rarely; legacy ECDSA fallback | **not** used in the QR / ZK path |
-| `prover_api` | Android `SharedPrefs` only, default `AppConfig.DEFAULT_PROVER_API` | manually, **32-bit-only Android** | the lone manual setting; the baked default is a dead tunnel (§7) |
 
 **The vet and groomer hosts come ONLY from the scanned QR.** There is no settings field for them in
 either app — whatever host the operator's portal encodes into the `/p/` or `/x/` QR is the host the
 phone calls, and nothing else. Contract addresses and the RPC are baked; do not look for them in the
 app's settings either.
+
+That is the whole model: the retired `central_api` and `prover_api` preferences no longer exist in
+either app (§7), so there is nothing else to configure on the phone.
 
 Per-contract addresses live in `contracts/deployments/roax.json` (and a quick-reference table in
 [DEPLOYMENT — address book](./DEPLOYMENT.md)). This doc never transcribes addresses.
@@ -154,94 +147,93 @@ Per-contract addresses live in `contracts/deployments/roax.json` (and a quick-re
 
 ## 3. Proving: 64-bit vs 32-bit
 
-The Groth16 proof for a groomer verification (the privacy-preserving export, `/x/` flow) is
-generated **on the phone** wherever the hardware can run the native circom prover.
+The Groth16 consent proof for a groomer verification (the owner-hidden export, `/x/` flow) is
+generated **on the phone**, from the bundled `consent_final.zkey` + `consent.graph` (§4).
 
-- **64-bit devices** — every iPhone, and any modern **arm64** Android — prove **on-device**. They do
-  **not** use a prover URL at all; `prover_api` is irrelevant to them.
-- **32-bit-only Android** — a device whose `Build.SUPPORTED_64_BIT_ABIS` is empty (checked in
-  `apps/android/app/src/main/java/io/liberalize/dogtag/ui/screens/ScanScreen.kt`,
-  `val is32BitOnly = Build.SUPPORTED_64_BIT_ABIS.isEmpty()`) **cannot** run the on-device prover. It
-  POSTs `{wrappedDoc, consent, eddsaSig}` to a **prover-service** (`POST /prove-verification`) and
-  submits the returned proof to the groomer itself — the groomer still never sees the witness.
-
-Decision fork at export time:
-
-- If the device is **64-bit** → nothing to configure; it proves locally. Skip §7.
-- If the device is **32-bit-only Android** → you **must** set `prover_api` to a live prover-service
-  (§7) before the groomer export will work.
-
-**STOP if** a 32-bit-only Android has a **blank or stale** `prover_api` — the **Approve & present**
-step in the groomer export **fails to produce a proof** (export proof fails / "no remote prover
-configured" or a connection error). Fix: set `prover_api` to a live prover-service per §7.
+- **64-bit devices** - every iPhone, and any modern **arm64** Android - prove **on-device**.
+  Nothing to configure.
+- **32-bit-only Android** - a device with no 64-bit ABI cannot run the on-device Groth16 prover,
+  and **currently cannot complete a verification at all**.
+  The retired remote `/prove-verification` fallback (and its in-app `prover_api` setting) is gone.
+  Its replacement concept is the **consent server-prove fallback**: the backend `POST /prove-consent`
+  route exists (a trusted-prover fallback - the prover sees the proof witness, see
+  [MOBILE_OWNER_SECRET - Handling rules](./MOBILE_OWNER_SECRET.md#handling-rules)), but the app-side
+  wiring for it lands with the mobile-issuance slice.
+  Until that lands, use a 64-bit device.
 
 ---
 
 ## 4. Bundled assets (both apps)
 
-Both apps bundle their own copies of the proving artifacts and a trimmed address file. Since **M-4**
-each app bundles **two** artifact sets: the Level-A verification pair and the Level-B owner-hidden
-consent pair (`dogtag-levelb/1`). The zkeys are committed under `circuits/build/`; the witness graphs
-are never committed and must be built out-of-band, then all four are vendored into each bundle.
+Both apps bundle their own copies of the proving artifacts and a trimmed address file.
+Each app needs **one** artifact set: the owner-hidden consent pair, `consent_final.zkey` +
+`consent.graph` - the only artifacts the app code loads (`ZkeyAsset.swift` / `ZkeyAsset.kt`).
+The zkey is committed under `circuits/build/`; the witness graph is never committed and must be
+built out-of-band, then both are vendored into each bundle.
 
 | asset | iOS path | Android path | committed? |
 |---|---|---|---|
-| `verification_final.zkey` (~65 MB) | `apps/ios/DogTag/verification_final.zkey` | `apps/android/app/src/main/assets/verification_final.zkey` | zkey committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
-| `verification.graph` (~3 MB) | `apps/ios/DogTag/verification.graph` | `apps/android/app/src/main/assets/verification.graph` | **no — build out-of-band, then vendor** (untracked) |
 | `consent_final.zkey` (~25 MB) | `apps/ios/DogTag/consent_final.zkey` | `apps/android/app/src/main/assets/consent_final.zkey` | zkey committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
 | `consent.graph` | `apps/ios/DogTag/consent.graph` | `apps/android/app/src/main/assets/consent.graph` | **no — build out-of-band, then vendor** (untracked) |
 | `roax.json` (hand-maintained subset) | `apps/ios/DogTag/roax.json` | `apps/android/app/src/main/assets/roax.json` | yes |
 | `testvectors.json` | `apps/ios/DogTag/testvectors.json` | `apps/android/app/src/main/assets/testvectors.json` | yes |
 
-Each `*_final.zkey`/`*.graph` bundle copy is a 1:1 copy of the file under `circuits/build/`. The zkeys
-are committed there but their bundle copies are gitignored in `apps/.gitignore` (so the blobs are
-never double-committed); the graphs are never committed at all — see "Building the witness graphs"
-below. **A fresh checkout has none of the four bundle copies, and the apps will not prove until you
-vendor all four.** Copy them into both bundles:
+Each bundle copy is a 1:1 copy of the file under `circuits/build/`.
+The zkey is committed there but its bundle copies are gitignored in `apps/.gitignore` (so the blob is
+never double-committed); the graph is never committed at all - see "Building the witness graph"
+below.
+**A fresh checkout has none of the four bundle copies (2 files x 2 apps), and the apps will not
+prove until you vendor them.** Copy them into both bundles:
 
 ```bash
-# Vendor the proving keys into BOTH app bundles (gitignored bundle copies).
-cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
-cp circuits/build/verification_final.zkey apps/android/app/src/main/assets/verification_final.zkey
-cp circuits/build/consent_final.zkey      apps/ios/DogTag/consent_final.zkey
-cp circuits/build/consent_final.zkey      apps/android/app/src/main/assets/consent_final.zkey
-# Vendor the witness graphs into BOTH app bundles (untracked; build them first, see below).
-cp circuits/build/verification.graph apps/ios/DogTag/verification.graph
-cp circuits/build/verification.graph apps/android/app/src/main/assets/verification.graph
+# Vendor the consent proving key into BOTH app bundles (gitignored bundle copies).
+cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
+cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/consent_final.zkey
+# Vendor the consent witness graph into BOTH app bundles (untracked; build it first, see below).
 cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
 cp circuits/build/consent.graph      apps/android/app/src/main/assets/consent.graph
 ```
 
-**Building the witness graphs.** Neither graph is committed and no in-repo script emits one: the
+> **iOS resource-wiring caveat (pending the mobile-issuance slice).** The committed generated
+> `DogTag.xcodeproj` still carries resource references to the RETIRED
+> `verification_final.zkey`/`verification.graph` pair and does not yet reference the consent pair,
+> even though the app code loads only the consent pair.
+> The §5 flow regenerates the project with `xcodegen`, which sweeps `apps/ios/DogTag/` - so vendor
+> the consent pair **before** running `xcodegen`, or the regenerated project silently omits it and
+> the installed app cannot prove.
+> Finalizing the committed wiring (dropping the retired references, adding the consent pair) lands
+> with the mobile-issuance/redeploy slice.
+> Android has no such caveat: everything present in `assets/` is bundled.
+> Stray copies of the retired verification pair in a working tree are dead weight (~68 MB) and safe
+> to delete.
+
+**Building the witness graph.** The graph is not committed and no in-repo script emits one: the
 `.graph` format is produced by iden3's `build-circuit` binary (NOT the removed `npm run build-circuit`
-dev setup, and NOT in the published `circom-witnesscalc` crate). Build each from its circom source the
-same way — for Level-B:
+dev setup, and NOT in the published `circom-witnesscalc` crate). Build it from the circom source:
 
 ```bash
 # iden3 build-circuit (install per its README); consumes the circom + circomlib includes.
 build-circuit circuits/consent.circom circuits/build/consent.graph -l node_modules/circomlib/circuits -l circuits
 ```
 
-In CI the mobile workflows serve the graphs from `DOGTAG_ARTIFACTS_URL` instead; on a self-hosted
+In CI the mobile workflows serve the graph from `DOGTAG_ARTIFACTS_URL` instead; on a self-hosted
 runner they use the working-tree copy under `circuits/build/`.
 
-**Verify.** All eight bundle copies exist and are non-trivial in size.
+**Verify.** All four bundle copies exist and are non-trivial in size.
 
 ```bash
-ls -l apps/ios/DogTag/verification_final.zkey apps/ios/DogTag/consent_final.zkey \
-      apps/android/app/src/main/assets/verification_final.zkey \
+ls -l apps/ios/DogTag/consent_final.zkey \
       apps/android/app/src/main/assets/consent_final.zkey
-# → verification zkey ~65 MB (≈ 64571044 bytes, sha256 9e3636b9…d992);
-#   consent zkey ~25 MB (≈ 24781468 bytes, sha256 f83a111f…c868)
-ls -l apps/ios/DogTag/verification.graph apps/ios/DogTag/consent.graph \
-      apps/android/app/src/main/assets/verification.graph \
+# → consent zkey ~25 MB (≈ 24781468 bytes, sha256 f83a111f…c868)
+ls -l apps/ios/DogTag/consent.graph \
       apps/android/app/src/main/assets/consent.graph
-# → verification.graph ~3 MB (≈ 2991853 bytes); consent.graph a few MB
+# → consent.graph a few MB
 ```
 
-**STOP if** any path is missing or 0 bytes — a `circuits/build/*.zkey` or `*.graph` is absent, or the
-copy failed. Ensure `circuits/build/` is populated (see [PREREQUISITES — circuits/build](./PREREQUISITES.md)),
-build any missing graph as above, then re-run the copies.
+**STOP if** any path is missing or 0 bytes - `circuits/build/consent_final.zkey` or the graph is
+absent, or the copy failed. Ensure `circuits/build/` is populated (see
+[PREREQUISITES - circuits/build](./PREREQUISITES.md)), build the graph as above, then re-run the
+copies.
 
 > `roax.json` is **hand-maintained** — there is no script that syncs it from
 > `contracts/deployments/roax.json`. If you swap chains/contracts you edit it by hand in **both** apps
@@ -276,11 +268,13 @@ generated `DogTag.xcodeproj`. Source-of-truth facts from `project.yml`:
 > [`AGENTS.md` → Building the mobile (iOS) holder app](../AGENTS.md); the Simulator-only variant (and the
 > on-device ZK self-test it powers) is in [`AGENTS.md` → Mobile end-to-end testing (iOS)](../AGENTS.md).
 
-**Step 1 — vendor the proving artifacts** (all four — if you have not already, §4):
+**Step 1 - vendor the proving artifacts** (the consent pair - if you have not already, §4).
+This MUST happen **before** Step 2: `xcodegen` only wires resources that exist in the folder at
+generation time (see the §4 caveat).
 
 ```bash
-cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
-# ...plus verification.graph and the Level-B consent_final.zkey + consent.graph — see §4 for all four.
+cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
+cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
 ```
 
 **Step 2 — generate the project:**
@@ -338,11 +332,11 @@ Source-of-truth facts from `apps/android/app/build.gradle.kts`: `applicationId i
 grep '^sdk.dir=' apps/android/local.properties || echo "sdk.dir=<SDK_DIR>" > apps/android/local.properties
 ```
 
-**Step 2 — vendor the proving artifacts** (all four — if not already, §4):
+**Step 2 - vendor the proving artifacts** (the consent pair - if not already, §4):
 
 ```bash
-cp circuits/build/verification_final.zkey apps/android/app/src/main/assets/verification_final.zkey
-# ...plus verification.graph and the Level-B consent_final.zkey + consent.graph — see §4 for all four.
+cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/consent_final.zkey
+cp circuits/build/consent.graph      apps/android/app/src/main/assets/consent.graph
 ```
 
 **Step 3 — connect the phone and confirm adb sees it.** Enable **Developer options → USB debugging**
@@ -378,53 +372,35 @@ cd apps/android && ./gradlew :app:installDebug
 
 **Verify.** The app appears and launches on the phone.
 
-**Reset app state** (fresh owner wallet / clear stored prefs incl. `prover_api`, `central_api`):
+**Reset app state** (fresh owner wallet / clear all stored app state):
 
 ```bash
 ~/Library/Android/sdk/platform-tools/adb shell pm clear io.liberalize.dogtag
 ```
 
-> **DESTRUCTIVE for Level-B tags — this is not just a prefs reset.** `pm clear` wipes the package's
+> **DESTRUCTIVE for issued tags - this is not just a prefs reset.** `pm clear` wipes the package's
 > whole internal storage, which includes `noBackupFilesDir` and therefore the owner-secret store
 > `dogtag-owner-secrets.json.enc` (see [MOBILE_OWNER_SECRET](./MOBILE_OWNER_SECRET.md)). The
 > owner-secret itself is seed-derivable, but each tag's **attribute values and salts are not** — they
-> exist nowhere else on the device, and without them `R` cannot be rebuilt, so every Level-B tag on
+> exist nowhere else on the device, and without them `R` cannot be rebuilt, so every tag on
 > that phone becomes permanently unprovable. `profileRoot` is write-once on-chain, so there is no
 > repair; the remedy is a fresh issuance under a new `dogTagId` (D3), which Android does not yet
-> implement. Safe on a dev phone holding no Level-B tags. Before clearing one that does, re-obtain
+> implement. Safe on a dev phone holding no tags. Before clearing one that does, re-obtain
 > each credential from its issuer so the attribute leaves can be restored.
 
 ---
 
 ## 7. Set `prover_api` in-app (32-bit Android ONLY)
 
-Only do this on a **32-bit-only** Android device (§3). 64-bit iPhones and arm64 Android ignore
-`prover_api` entirely — leave it untouched there.
-
-- **Where:** the app's **Settings** (the in-app config screen that surfaces `central_api` /
-  `prover_api`; persisted in `SharedPrefs` under key `prover_api`, see `AppConfig.proverApiUrl`).
-- **What to set it to:** the **base URL of a running prover-service** (no trailing slash) — i.e. the
-  service exposing `POST /prove-verification`. In a LOCAL demo this is the `cloudflared` tunnel in
-  front of the prover on port `41875`; for a remote setup it is your remote prover's TLS host. Use
-  `<PROVER_TUNNEL_URL>`.
-
-> **WARNING — the baked default is dead.** `AppConfig.DEFAULT_PROVER_API` is currently
-> `https://vertical-emails-escape-speech.trycloudflare.com`, a **stale, long-dead trycloudflare
-> tunnel**. A 32-bit device that relies on the default will fail to prove. **Always override
-> `prover_api` in-app** to a live prover (or recompile `AppConfig.kt` with a current value).
-
-To stand up / tunnel a prover-service and get a live URL, see
-[TUNNELING — the prover tunnel](./TUNNELING.md) and
-[REMOTE — run a prover-service §8](./REMOTE_DEPLOYMENT.md). (REMOTE does **not** start a
-prover-service for you; a remote operator with 32-bit-Android users must run one themselves.)
-
-**Verify.** On a 32-bit device, the groomer **Approve & present** step now produces a proof and the
-verification reaches **Verified on-chain**.
-
-**STOP if** it still fails — the URL is wrong/stale or the prover-service is down. Confirm the prover
-answers (e.g. it is reachable and `POST /prove-verification` exists), re-tunnel if the URL changed
-(trycloudflare URLs are ephemeral — they rotate each run and drop overnight), and re-enter the new
-URL.
+**Retired - there is nothing to set here any more.**
+The in-app `prover_api` preference and the remote `/prove-verification` prover-service it pointed at
+are gone: `AppConfig` no longer carries a prover URL (or a `central_api`), and the app has no
+settings screen for endpoints.
+On every 64-bit device the app proves on-device with no configuration (§3).
+The replacement concept for a device that cannot prove locally is the **consent server-prove
+fallback** - the backend `POST /prove-consent` route exists, but its mobile wiring lands with the
+mobile-issuance slice.
+Until that lands, a 32-bit-only Android cannot prove; see §3.
 
 ---
 
@@ -441,10 +417,10 @@ deployment, do all of the following:
    - iOS `apps/ios/DogTag/Models.swift` → `AppConfig.roaxRpc`
    - Android `apps/android/app/src/main/java/io/liberalize/dogtag/data/AppConfig.kt` → `ROAX_RPC`
 3. **Re-vendor the production zkey** into both bundles (§4) — a chain swap normally comes with a new
-   trusted-setup `verification_final.zkey`:
+   trusted-setup `consent_final.zkey` (and, if the circuit changed, a rebuilt `consent.graph`):
    ```bash
-   cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
-   cp circuits/build/verification_final.zkey apps/android/app/src/main/assets/verification_final.zkey
+   cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
+   cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/consent_final.zkey
    ```
 4. **Rebuild + reinstall both apps** — iOS per §5, Android per §6.
 
@@ -461,9 +437,9 @@ contracts, ceremony, timelock) see
 |---|---|---|
 | iOS build fails: code-signing / "no team" / can't register bundle id | baked `DEVELOPMENT_TEAM AYDBUX9433` is not your team | set your own `DEVELOPMENT_TEAM` in `apps/ios/project.yml`, then re-run `xcodegen` (don't edit the generated project) — §5 |
 | `adb devices` shows nothing / `unauthorized` / `offline` | USB debugging off, charge-only cable, or prompt not accepted | enable USB debugging, use a data cable, accept the on-phone prompt; `adb kill-server && adb devices` — §6 |
-| 32-bit Android: groomer export fails to make a proof | `prover_api` blank or pointing at a dead tunnel | set `prover_api` to a **live** prover-service URL in-app — §7 |
-| 32-bit Android still failing after setting `prover_api` | the baked `DEFAULT_PROVER_API` is a stale trycloudflare URL, or your tunnel rotated/expired | re-tunnel, re-enter the new URL (trycloudflare URLs are ephemeral) — §7, [TUNNELING](./TUNNELING.md) |
+| 32-bit-only Android: export cannot produce a proof | the device cannot run the on-device prover, and the consent server-prove fallback is not wired into the app yet | use a 64-bit device; the mobile fallback wiring lands with the mobile-issuance slice - §3 |
 | app reaches the **wrong chain** / old contracts after a deploy | apps not rebuilt — `roax.json`/RPC are **baked** | edit both `roax.json` (+ RPC constant), re-vendor zkey, rebuild + **reinstall** — §8 |
-| proofs never validate on a fresh checkout | `verification_final.zkey` not vendored (it's gitignored) | copy it into both bundles — §4 |
+| proofs never validate on a fresh checkout | `consent_final.zkey`/`consent.graph` not vendored (gitignored/untracked) | copy both into both bundles - §4 |
+| iOS app builds but cannot prove | consent pair vendored **after** `xcodegen`, so the regenerated project never bundled it | vendor the pair, re-run `xcodegen`, rebuild - §4 caveat, §5 |
 | app talks to an unexpected vet/groomer host | the host comes **only** from the scanned QR; a stale/wrong QR was scanned | re-scan the correct `/p/` or `/x/` QR from the right portal — §2 |
-| stale wallet / stored prefs on Android | leftover app state | `adb shell pm clear io.liberalize.dogtag` — §6. **Also destroys the owner-secret store, stranding every Level-B tag on that phone**; read the warning in §6 first |
+| stale wallet / stored prefs on Android | leftover app state | `adb shell pm clear io.liberalize.dogtag` - §6. **Also destroys the owner-secret store, stranding every tag on that phone**; read the warning in §6 first |

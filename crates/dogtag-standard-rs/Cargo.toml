@@ -55,10 +55,10 @@ anyhow = { version = "1", optional = true }
 
 [features]
 # `assemble` (OFF by default) compiles the prover-independent circuit-input ASSEMBLY
-# (`prover_assemble`) WITHOUT pulling circom-prover. It only uses the SDK's own ark-bn254/ark-ff
+# (`consent_assemble`) WITHOUT pulling circom-prover. It only uses the SDK's own ark-bn254/ark-ff
 # field types + wrap/leaf/field/merkle, so the 64-bit backend (vet-api, on ark-0.6 dogtag-prover-rs)
-# can reuse the SAME 19-input assembly for the server proving API. Only decimal strings cross the
-# crate boundary, so the ark 0.5 / 0.6 majors stay disjoint (no version clash).
+# can reuse the SAME consent-input assembly for the server proving API. Only decimal strings cross
+# the crate boundary, so the ark 0.5 / 0.6 majors stay disjoint (no version clash).
 assemble = []
 # `prover` (OFF by default) is the full on-device prover: it implies `assemble` (it reuses the same
 # assembly) and additionally pulls circom-prover (graph-witness backend) + circom-witnesscalc.

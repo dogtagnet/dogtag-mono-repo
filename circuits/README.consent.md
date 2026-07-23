@@ -1,11 +1,12 @@
-# DogTag consent circuit (`consent.circom`) — Level-B, owner-unlinkable (M2)
+# DogTag consent circuit (`consent.circom`) - owner-unlinkable consent (M2)
 
 Groth16 circuit proving **owner-unlinkable consent**: that a **hidden** pet owner consented to a
-**disclosed** relayer for a **disclosed** purpose, revealing **nothing** about the owner. Redesign
-milestone **M2** of the Level-B rework (spec: `dogtag-zkverify-z2/level-b-spec.md`). Built with the
-same toolchain as the verification circuit (circom 2.1.9 + snarkjs 0.7.6 + circomlib 2.0.5).
+**disclosed** relayer for a **disclosed** purpose, revealing **nothing** about the owner.
+This is the protocol's ZK consent primitive - the one circuit every on-chain verification runs on.
+It landed as redesign milestone **M2** of the owner-hidden rework (captain-approved spec in `data/dogtag-zkverify-z2`).
+Built with circom 2.1.9 + snarkjs 0.7.6 + circomlib 2.0.5.
 
-`DogTagConsent` **superseded** the retired Level-A `verification.circom`, which
+`DogTagConsent` **superseded** the retired owner-revealing `verification.circom`, which
 exposed `subject` (the owner) + `keyHash` as public signals. That owner-revealing circuit source has
 since been retired (its build products + ceremony transcript remain as historical provenance). The
 shared `NodeHash`/`LessThanField`/`LessEqThanField` templates were **copied verbatim** into
@@ -16,19 +17,15 @@ agreed on the integer sort inside `hashNode`), NOT refactored out of the then-fr
 > (self-generated ptau, forgeable) used only by the circuit test below. The **real testnet-grade phase-2
 > ceremony + VK freeze (M3) is DONE**: `scripts/ceremony-consent.sh` (public Hermez pow-17 ptau + a single
 > testnet contribution + a public drand beacon) produced the pinned VK/zkey and `Groth16VerifierConsent.sol`
-> — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md). The on-chain
-> `recordVerificationZK` wiring is **M5 — now DEPLOYED + VERIFIED**: the canonical
-> `VerificationRegistryConsent` is `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`, paired with
-> `DogTagSBTConsent` `0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc`. It remains additive and
-> **not live until M7**; no *shipped* verification consumer was changed (M-2 later added an owner-hidden
-> *issuance* route against the paired SBT, and M-3 an owner-hidden *verification* route against this
-> registry - both off by default, and no shipped device posts to either; see the M5 note below). See the
-> "Build + test" and "M4 binding" notes below.
+> — see [`../docs/CEREMONY_TRANSCRIPT.consent.md`](../docs/CEREMONY_TRANSCRIPT.consent.md).
+> The on-chain `recordVerificationZK` wiring (`VerificationRegistryConsent` paired with `DogTagSBTConsent`, first deployed + verified as M5) is now the **sole live verification path**: every shipped consumer proves against this circuit, and the retired owner-revealing registry serves nothing.
+> The current addresses live in [`../contracts/deployments/roax.json`](../contracts/deployments/roax.json) / `contracts/.env` (the disposable testnet is wiped and redeployed fresh, so treat the env-configured pair as canonical).
+> See the "Build + test" and "M4 binding" notes below.
 
 ## What it proves
 
 `DogTagConsent(depth)` (instantiated `main = DogTagConsent(6)` — inclusion paths up to 6 siblings, so
-trees up to `2^6 = 64` leaves; the Level-B tree is 3 owner leaves + credential attributes, well under
+trees up to `2^6 = 64` leaves; the per-tag profile tree is 3 owner leaves + credential attributes, well under
 64). Unlike the retired `verification.circom`, this circuit does **NOT** re-derive the tree — it folds three
 **owner leaves** up caller-supplied M1 inclusion **paths** (private inputs) to the public root `R`:
 
@@ -57,7 +54,7 @@ pub = [dogTagId, purpose, relayer, nullifier, R, recordType, deadline]
 ```
 
 **No `subject`, no `keyHash`.** The owner never appears in the public signals — that owner-unlinkability
-is the whole point of Level-B.
+is the whole point of the owner-hidden model.
 
 ## Reserved owner-leaf schema (M5 issuance MUST match exactly)
 
@@ -163,34 +160,24 @@ profileRoot(pub[0] /*dogTagId*/)` (the **only** place `dogTagId ↔ R` is checke
 `deadline >= block.timestamp`, consumes `pub[3] /*nullifier*/`, and emits an **owner-blind**
 `Verified` event (no `subject`/`keyHash`).
 
-**M5 is deployed + verified:** `DogTagSBTConsent` `0x96Cba458…` (the custodial SBT with a write-once
-`profileRoot`) is paired with `VerificationRegistryConsent` `0xb9B313C1…`, which verifies against the M3
-verifier `0x272be146…`. Both runtimes and constructor wiring match the compiled source. Because the
-registry's `sbt` is immutable, this deployment supersedes M4's `0x53F988Ae…`, which is permanently bound
-to the mutable Level-A SBT and is **deprecated / do not use for Level-B** (it was never live and has zero
-`Verified` events). `contracts/script/DeployCustodialIssuance.s.sol` deploys the canonical pair; the M4
-`DeployConsentRegistry.s.sol` (now removed) is superseded. The pair remains **additive and not live**: the Level-A
-`VerificationRegistry` `0x4E2f0996…` still serves every consumer until the **M7** cutover. The M5 app side - the
-device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) - has landed
-too, and **M-2 has since added the issuer end of that handoff**: vet-api's
-`POST /profiles/issue/custodial-bind` accepts a device-built `R` and mints owner-hidden via
-`issue(R)` + `mintCustodial`. **M-3 then added the verification end**: `POST /verify/consent/levelb`
-carries a proof built against *this* circuit to `VerificationRegistryConsent` via the 4-arg
-`recordVerificationZK(a,b,c,pub[7])`, reading `recordType`/`deadline` out of `pub[5]`/`pub[6]` rather
-than inventing them. Both routes are **additive and off by default** (issuance needs `SBT_CONSENT_ADDR`
-+ `PROFILE_ISSUER_ADDR`, verification needs `VERIFICATION_REGISTRY_CONSENT_ADDR` - else 503; the two
-are independent) and **no shipped device posts to either yet**, so live issuance still mints to the
-owner's wallet, live verification is still Level-A, and the cutover is still **M7**. Details:
-AGENTS.md "M5 as-built" + "M5 app-side" + "Level-B custodial issuance bridge (M-2)" + "Level-B unified
-submission path (M-3)"; `roax.json` `_m5_custodial_issuance`.
+**The M5 pair is deployed, verified, and LIVE:** `DogTagSBTConsent` (the custodial SBT with a write-once
+`profileRoot`) is paired with `VerificationRegistryConsent`, which verifies against the M3 ceremony verifier `Groth16VerifierConsent`.
+Both runtimes and constructor wiring match the compiled source; the addresses come from `contracts/deployments/roax.json` / `contracts/.env` (the disposable testnet is wiped and redeployed fresh).
+Because the registry's `sbt` is immutable, this deployment superseded the earlier M4 registry deploy, which was permanently bound to the retired owner-revealing SBT and was never live (zero `Verified` events).
+`contracts/script/DeployCustodialIssuance.s.sol` deploys the canonical pair; the M4 `DeployConsentRegistry.s.sol` (now removed) is superseded.
+The cutover is complete: the retired subject-bearing registry and owner-revealing SBT are gone, and this pair serves every consumer.
+The device-side tree builder that *produces* an `R` owner-privately (`profile_tree.rs`, above) is the issuance counterpart: vet-api's `POST /profiles/issue/custodial-bind` (the **sole** issuance bind) accepts a device-built `R` and mints owner-hidden via `issue(R)` + `mintCustodial`.
+On the verification end, `POST /v1/verify/consent` carries a proof built against *this* circuit to `VerificationRegistryConsent` via the 4-arg `recordVerificationZK(a,b,c,pub[7])`, reading `recordType`/`deadline` out of `pub[5]`/`pub[6]` rather than inventing them.
+Both routes fail closed when unconfigured (issuance needs `SBT_CONSENT_ADDR` + `PROFILE_ISSUER_ADDR`, verification needs `VERIFICATION_REGISTRY_CONSENT_ADDR` - else 503).
+Details: AGENTS.md "M5 as-built" + "M5 app-side" + the M-2 custodial-issuance-bridge and M-3 unified-submission notes; `roax.json` `_m5_custodial_issuance`.
 
 `contracts/test/ConsentRegistry.t.sol` proves a REAL proof from the committed production zkey verifies
 through it, using the committed
 `contracts/test/consent-fixture.json` (regenerate with `npm run gen-consent-fixture`). The deployed
 runtime is byte-identical to this source. An earlier deploy (`0x57A2998…`, now
 `VerificationRegistryConsent_preErasureGate_legacy`) predated the `ownerOf` token-existence gate and was
-redeployed rather than left stale; it was never live. Full details: AGENTS.md "Level-B
-`VerificationRegistryConsent` (M4)"; circuit details: AGENTS.md "Level-B `DogTagConsent` circuit (M2)".
+redeployed rather than left stale; it was never live. Full details: AGENTS.md's
+`VerificationRegistryConsent` (M4) section; circuit details: AGENTS.md's `DogTagConsent` circuit (M2) section.
 
 ## M3 VK-freeze checkpoint — REVIEWED, VK FROZEN
 

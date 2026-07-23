@@ -1,28 +1,22 @@
 //! On-device Groth16 proving (Workstream A) — UniFFI surface, gated behind the `prover` feature.
 //!
-//! This module lets the mobile app generate the verification Groth16 proof **locally** (true ZK):
-//! the groomer never sees the raw record, only relays `{proof, publicSignals, consent}` on-chain.
+//! This module lets the mobile app generate the owner-hidden consent Groth16 proof **locally**
+//! (true ZK): the verifying operator never sees the witness, only relays
+//! `{proof, publicSignals}` on-chain.
 //!
 //! It MIRRORS the ark-0.6 backend prover (`crates/dogtag-prover-rs/src/lib.rs`
-//! `push_named_inputs` + `format_output`) but does NOT depend on it — the backend stays on ark 0.6,
-//! this crate stays on ark 0.5. Here we use `circom-prover` (ark 0.5 / mopro) with its
+//! `push_consent_inputs` + `format_output`) but does NOT depend on it — the backend stays on ark
+//! 0.6, this crate stays on ark 0.5. Here we use `circom-prover` (ark 0.5 / mopro) with its
 //! `circom-witnesscalc` GRAPH witness calculator (`WitnessFn::CircomWitnessCalc`) — a pure-Rust
 //! interpreter of the circuit's field ops. We deliberately do NOT use `rust-witness` (wasm2c /
 //! w2c2): it miscompiles the circuit's i64 BN254 field arithmetic on 32-bit ARM (armeabi-v7a),
-//! zeroing the last-computed output wires (nullifier/keyHash). The graph calculator is integer-
-//! width-correct on any target. The witness graph ships as a runtime asset
-//! (`verification.graph`), loaded by absolute file path exactly like the zkey.
+//! zeroing the last-computed output wires. The graph calculator is integer-width-correct on any
+//! target. The witness graph ships as a runtime asset (`consent.graph`), loaded by absolute file
+//! path exactly like the zkey.
 //!
-//! The circuit `DogTagVerification(24, 5)` takes 19 named inputs and emits 7 public outputs in the
-//! snarkjs order `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]`. We ASSEMBLE all 19
-//! inputs from this crate's own internals (wrap/leaf/field/merkle) + the passed-through EdDSA sig,
-//! prove, then format the proof with the snarkjs->Solidity b-coordinate swap so the calldata drops
-//! straight into `recordVerificationZK`.
-//!
-//! The ASSEMBLY (`assemble` / `input_map` / `EddsaSigInput`) is shared with the prover-independent
-//! `prover_assemble` module (compiled under the lighter `assemble` feature, WITHOUT circom-prover) so
-//! the 64-bit backend can reuse the SAME 19-input assembly to drive the server proving API — see
-//! `prover_assemble::assemble_circuit_input`. This module adds the circom-prover proving on top.
+//! The ASSEMBLY (`consent_assemble`) is shared with the prover-independent `assemble` feature
+//! (compiled WITHOUT circom-prover) so the 64-bit backend can reuse the SAME assembly to drive the
+//! server proving API. This module adds the circom-prover proving on top.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -38,25 +32,13 @@ use ark_bn254::Fr;
 use ark_ff::PrimeField;
 
 use crate::consent_assemble::{assemble_consent, consent_input_map, ConsentWitness};
-use crate::ffi::FfiError;
-// Reuse the prover-independent assembly (shared with the server proving path).
-use crate::prover_assemble::{assemble, consent_from_json, err, input_map};
+use crate::ffi::{err, FfiError};
 use crate::profile_tree::{AttributeLeaf, SALT_LEN};
 use crate::types::TypeTag;
-use crate::wrap::{scalar_from_packed, WrappedDoc};
+use crate::wrap::scalar_from_packed;
 
-// Re-export `EddsaSigInput` at the historical `prover_ffi::EddsaSigInput` path so existing consumers
-// (e.g. the `prove_parity` live regression test, the generated UniFFI bindings) keep working — it
-// now physically lives in `prover_assemble` (shared with the server proving path).
-pub use crate::prover_assemble::EddsaSigInput;
-
-/// Number of public signals the Level-A verification circuit exposes.
-const NUM_PUBLIC: usize = crate::public_signals::NUM_PUBLIC;
-
-/// Number of public signals the Level-B consent circuit exposes
-/// (`[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`). Same WIDTH as Level-A -
-/// which is precisely why only the differing ORDER (`public_signals::level_a` vs `level_b`) can
-/// distinguish the two - but a distinct fact, so it keeps its own name.
+/// Number of public signals the consent circuit exposes
+/// (`[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`).
 const NUM_PUBLIC_CONSENT: usize = crate::public_signals::NUM_PUBLIC;
 
 // ---------------------------------------------------------------------------------------------
@@ -66,9 +48,9 @@ const NUM_PUBLIC_CONSENT: usize = crate::public_signals::NUM_PUBLIC;
 // `WitnessFn::CircomWitnessCalc` variant — it cannot capture the graph path in a closure, and it
 // runs the fn on a freshly spawned thread (so thread-locals on the caller don't reach it). We
 // therefore stash the loaded graph bytes in a process-global cell keyed by absolute path, set by
-// `prove_verification` right before it calls `CircomProver::prove`, and read by `graph_witness`.
+// `prove_consent` right before it calls `CircomProver::prove`, and read by `graph_witness`.
 //
-// The graph (`verification.graph`, `wtns.graph.001` format) is a precompiled, target-independent
+// The graph (`consent.graph`, `wtns.graph.001` format) is a precompiled, target-independent
 // description of the circuit's field ops; loading it once and reusing it is correct because the
 // circuit is fixed. The bytes are interpreted in Rust by `circom_witnesscalc::calc_witness`, which
 // has no i64 codegen and is therefore correct on 32-bit ARM where wasm2c was not.
@@ -130,78 +112,8 @@ pub struct ProofFfi {
     pub pub_signals: Vec<String>,
 }
 
-/// Generate a Groth16 proof for the DogTag verification circuit ON DEVICE.
-///
-/// - `wrapped_doc_json` — the stored WrappedDoc (raw salted leaves; the witness source).
-/// - `consent_json`     — the signed consent (same hex shape as the POSTed consent / ffi.rs consent).
-/// - `eddsa_sig`        — the EdDSA-BabyJubjub consent signature + public key.
-/// - `zkey_path`        — filesystem path to `verification_final.zkey` (bundled app asset).
-/// - `graph_path`       — filesystem path to `verification.graph`, the precompiled witness graph
-///   (bundled app asset, loaded the same way as the zkey).
-///
-/// Returns the proof as Solidity calldata (`a`, `b` with the snarkjs->Solidity swap, `c`) plus the
-/// 7 public signals `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]` (all decimal).
-#[uniffi::export]
-pub fn prove_verification(
-    wrapped_doc_json: String,
-    consent_json: String,
-    eddsa_sig: EddsaSigInput,
-    zkey_path: String,
-    graph_path: String,
-) -> Result<ProofFfi, FfiError> {
-    let doc: WrappedDoc = serde_json::from_str(&wrapped_doc_json)
-        .map_err(|e| err(format!("bad wrapped doc json: {e}")))?;
-    let consent_v: Value =
-        serde_json::from_str(&consent_json).map_err(|e| err(format!("bad consent json: {e}")))?;
-    let consent = consent_from_json(&consent_v)?;
-
-    // Assemble the 19 named circuit inputs (shared with the server proving path).
-    let inp = assemble(&doc, &consent, &eddsa_sig)?;
-    let input_json = serde_json::to_string(&input_map(&inp))
-        .map_err(|e| err(format!("serialize circuit input: {e}")))?;
-
-    // Load the witness graph (cached per path) so the `graph_witness` fn — invoked by circom-prover
-    // on its own thread, with no graph argument — can read it through the process-global cell.
-    load_graph(&graph_path)?;
-
-    let proof = CircomProver::prove(
-        ProofLib::Arkworks,
-        WitnessFn::CircomWitnessCalc(graph_witness),
-        input_json,
-        zkey_path,
-    )
-    .map_err(|e| err(format!("circom-prover prove: {e}")))?;
-
-    // Public signals come back in circuit-output order (snarkjs order). Assert count.
-    let pub_signals: Vec<String> = proof.pub_inputs.0.iter().map(|b| b.to_string()).collect();
-    if pub_signals.len() != NUM_PUBLIC {
-        return Err(FfiError::Invalid(format!(
-            "unexpected public-signal count: got {}, expected {NUM_PUBLIC}",
-            pub_signals.len()
-        )));
-    }
-
-    // Format the proof with the snarkjs->Solidity b-coordinate swap (mirrors
-    // dogtag-prover-rs::format_output). circom-prover stores G2 as x=[c0,c1]; `as_tuple()` already
-    // emits the swapped [c1, c0] form, so we read it directly.
-    let (a_t, b_t, c_t) = proof.proof.as_tuple();
-    let a = vec![a_t.0.to_string(), a_t.1.to_string()];
-    let c = vec![c_t.0.to_string(), c_t.1.to_string()];
-    let b = vec![
-        vec![b_t.0[0].to_string(), b_t.0[1].to_string()],
-        vec![b_t.1[0].to_string(), b_t.1[1].to_string()],
-    ];
-
-    Ok(ProofFfi {
-        a,
-        b,
-        c,
-        pub_signals,
-    })
-}
-
 // ---------------------------------------------------------------------------------------------
-// Level-B CONSENT proving (M7 P0).
+// Owner-hidden CONSENT proving (M7 P0).
 // ---------------------------------------------------------------------------------------------
 
 /// Strip an optional `0x`, hex-decode, and require exactly `M` bytes.
@@ -329,11 +241,10 @@ fn parse_consent_ffi_inputs(
 /// Generate a Groth16 proof for the DogTag CONSENT circuit (`consent.circom`, `DogTagConsent(6)`) ON
 /// DEVICE (M7 P0).
 ///
-/// Mirrors [`prove_verification`] (same `circom-witnesscalc` GRAPH backend — deliberately not
-/// rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM), but for the Level-B
-/// owner-unlinkable consent circuit: it ASSEMBLES the inputs with [`assemble_consent`] (the canonical
-/// `dogTagId` field is computed once and used for both the circuit input and the `build_profile_tree`
-/// KDF binding), then proves.
+/// Uses the `circom-witnesscalc` GRAPH backend (deliberately not rust-witness/wasm2c, which
+/// miscompiles i64 field math on 32-bit ARM) for the owner-unlinkable consent circuit: it ASSEMBLES
+/// the inputs with [`assemble_consent`] (the canonical `dogTagId` field is computed once and used
+/// for both the circuit input and the `build_profile_tree` KDF binding), then proves.
 ///
 /// - `seed_hex`            — the owner wallet seed (0x..); owner-secret/consent-key/salts derive from it.
 /// - `dog_tag_id_handle`   — the off-chain decimal handle; field-hashed to the canonical `dogTagId`.
@@ -378,8 +289,8 @@ pub fn prove_consent(
     let input_json = serde_json::to_string(&consent_input_map(&inp))
         .map_err(|e| err(format!("serialize consent circuit input: {e}")))?;
 
-    // Same graph-witness plumbing as `prove_verification` (cached per path, read on circom-prover's
-    // own thread through the process-global cell).
+    // Graph-witness plumbing: cached per path, read on circom-prover's own thread through the
+    // process-global cell.
     load_graph(&graph_path)?;
 
     let proof = CircomProver::prove(

@@ -21,7 +21,7 @@ The whole model is exactly two primitives:
 
 That is it. Vets issue credentials; owners hold credentials and give consent. Vets and owners must never be shown or asked to choose or understand "Level-A" versus "Level-B", a mode, an opt-in, or a toggle.
 
-All live and forward app/server/web code, config, API design, and docs must implement this single owner-hidden model. Do **not** build or preserve a Level-A path, a dual-mode gate, an "available-not-default" opt-in, or A/B coexistence. Level-A wallet-mint still serves live traffic today and the owner-hidden device issuance call site is pending; that transition state does not license new work - the target is to retire Level-A rather than extend it, and once the cutover completes deployed Level-A contracts remain on-chain only for historical reads. The old level names are internal migration history, never product vocabulary or a user choice; later migration-era statements may accurately describe today's transition state, but every one that calls Level-A live/default or Level-B optional/additive is superseded by this rule for new work and can neither guide nor justify new A/B product design.
+All live and forward app/server/web code, config, API design, and docs must implement this single owner-hidden model. Do **not** build or preserve a Level-A path, a dual-mode gate, an "available-not-default" opt-in, or A/B coexistence. The owner-revealing code path has been fully retired from the repo (contracts PR #69, backend PR #72, mobile PR #71, SDK/FFI/docs in the final cleanup slice); the retired-generation contracts remain deployed on the disposable testnet only until the fresh wipe/redeploy, and the old level names survive ONLY as internal version-key strings (`dogtag-levelb/1`) and internal identifiers (`public_signals::level_b`), never as product vocabulary. The old level names are internal migration history, never product vocabulary or a user choice; later migration-era statements may accurately describe today's transition state, but every one that calls Level-A live/default or Level-B optional/additive is superseded by this rule for new work and can neither guide nor justify new A/B product design.
 
 ## Build & test (what actually runs offline)
 
@@ -52,7 +52,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `cd contracts && forge test` - 83 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
-  version on both registry axes; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
+  protocol version (an internal version key, not a product label) on both registry axes; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
   subject-bearing `Verified` ABI. Use `forge test`, **not** bare `forge build`: a bare full build tries
   to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
   aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project
@@ -90,7 +90,7 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - `gen-vectors.mjs` rewrites `poseidon-vectors.json` deterministically, so running `make parity` leaves the tree clean (no spurious diff).
 - `rust-analyzer` in this worktree can't find the proc-macro server and emits false `E0308`/`tokio::test` errors; trust `cargo`, not the IDE diagnostics.
 - Pre-existing harmless warning: unused import `BigInteger` in `crates/dogtag-standard-rs/src/bin/field-hash.rs`.
-- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`); `apps/android/app/src/test/.../RoaxRpcSelectorTest.kt` pins it. **Android now derives ALL seven selectors** (`isValid`, `isWhitelistedFor`, `bindNonce`, `keyOf`, `consumed`, `profileRoot`, `ownerOf`) - `RoaxRpc.kt` holds no selector literals. **iOS `Net.swift` still hard-codes the six non-`isValid` selectors**: each was reconfirmed correct via `cast sig`, so this is latent drift risk rather than a live bug, and it stays open only because `Net.swift` is not yet covered by the iOS unit-test target (which exists now - see "iOS unit tests" - but is host-less/FFI-free, and `Net.swift` would need the selector helpers extracted into an FFI-free source before it can be pinned the way `RoaxRpcSelectorTest.kt` pins Android's). Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
+- **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`); `apps/android/app/src/test/.../RoaxRpcSelectorTest.kt` pins it. **Android derives ALL of its selectors** (`isValid`, `isWhitelistedFor`, `consumed`, `profileRoot`, plus the ProtocolRegistry reads; the retired `bindNonce`/`keyOf`/`ownerOf` reads went with the owner-revealing layer) - `RoaxRpc.kt` holds no selector literals. **iOS `Net.swift` still hard-codes the non-`isValid` read selectors** (`isWhitelistedFor`, `consumed`, `profileRoot`): each was reconfirmed correct via `cast sig`, so this is latent drift risk rather than a live bug, and it stays open only because `Net.swift` is not yet covered by the iOS unit-test target (which exists now - see "iOS unit tests" - but is host-less/FFI-free, and `Net.swift` would need the selector helpers extracted into an FFI-free source before it can be pinned the way `RoaxRpcSelectorTest.kt` pins Android's). Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x5c703910111f942EE0f47E02214291b5274cDb53` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
 
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
@@ -114,11 +114,11 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY in `GOV_DEMO_MODE`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
 - **Government per-record-type fields**: each credential type has its OWN field set — backend `credentialSubject` is built per type in `government/api/src/app.rs::build_gov_vc` (`TRAVEL_CLEARANCE` = the CDC-sectioned nested subject: Section A importer/consignee + B animal + C travel + validity + public `receiptId` — see the "Government travel receipt" section above; `EU_HEALTH_CERT` = species/microchip/rabies/examining-vet/health-status), and the web Issue form (`government/web/src/pages/Issue.tsx`, `RECORD_TYPE_SECTIONS`) mirrors those leaves as a **sectioned** A/B/C+validity form. Keep the two in sync (a form field `key` must equal the flat input key `build_gov_vc` reads via `get(...)`; for `EU_HEALTH_CERT` that key equals the leaf name, while `TRAVEL_CLEARANCE` maps flat keys onto nested leaves, e.g. `importerLastName` → `importer.lastName`, `animalName` → `animal.name`). **e2e-locked field keys:** `government.spec.ts` asserts TRAVEL_CLEARANCE has `field-animalName` and NOT `field-microchipNumber`, and EU_HEALTH_CERT the reverse — do NOT add a `microchipNumber` input to the TRAVEL form (the backend defaults it under `animal`), or the per-type field test breaks. After a successful issue the portal shows the wrapped doc with a one-click **Copy** button to paste into Verify + a link to the printable receipt. The whitelist pillar is exercised because the Verify page pre-fills the signer from `/health`.
 - **Government web e2e (Playwright)**: `stacks/government/web/e2e/government.spec.ts` (config `playwright.config.ts`) drives issue→copy→verify for both record types against a LIVE portal. It is NOT in `pnpm test`/CI (needs a running portal + browsers); run it against a served instance: `GOV_URL=<portal-url> pnpm --filter @dogtag/government-web test:e2e` (one-off `pnpm exec playwright install chromium`). A same-registry live serve reuses the deployed TRAVEL_CLEARANCE clone for BOTH `*_ISSUER_ADDR` and `GOV_SIGNER_KEY=$DEPLOYER_PRIVATE_KEY` (already whitelisted for both types).
-- `stacks/owner/web` (`@dogtag/owner-web`, port **45931**) - the **pet-owner (holder) wallet**, the consumer front. Web mirror of the native `apps/android`+`apps/ios` holder: a self-custodial wallet that **receives** an issued wrapped doc (integrity-checked offline via `@dogtag/standard checkIntegrity`, held in localStorage), **displays** it (decoded leaves + `DogTagIssuer.isValid` read), and **presents** a ZK proof. It has **no backend** - it talks directly to two hosts given at runtime: the verifier's `…/x/<token>` session it scans and a **trusted prover-service** (`POST /prove-verification`, `VITE_OWNER_PROVER_URL`, default :41875). The "phone ZK" client crypto (build §1.10 consent + `signConsentEddsa` EdDSA-BabyJubjub + EIP-712 `BindConsentKey` sig via `viem`) runs **in the browser**; only the heavy Groth16 proof is delegated to the prover (the verifier never sees the witness). Present flow = `src/lib/present.ts`; wired into `scripts/demo-up.sh`.
+- `stacks/owner/web` (`@dogtag/owner-web`, port **45931**) - the **pet-owner (holder) wallet**, the consumer front. Web mirror of the native `apps/android`+`apps/ios` holder: a self-custodial wallet that **receives** an issued wrapped doc (integrity-checked offline via `@dogtag/standard checkIntegrity`, held in localStorage) and **displays** it (decoded leaves + `DogTagIssuer.isValid` read). It has **no backend** and no ZK path: the browser present/prove surface was retired with the owner-revealing layer (`src/lib/present.ts`, the `/present` route, and the `VITE_OWNER_PROVER_URL` prover hookup are gone - the e2e now asserts `/present` falls back to the wallet). ZK consent presentation is the native holder apps' on-device flow; the backend `/prove-consent` route is the server-prove fallback concept for devices that cannot prove locally. Wired into `scripts/demo-up.sh`.
   - **Sharp edge (browser Buffer)**: `@dogtag/standard`'s EdDSA path pulls in `circomlibjs`, which needs Node `Buffer`/`global` at runtime. The vite **build** tree-shakes past it but the **dev server crashes** ("Buffer is not defined") without a shim. `src/polyfills.ts` (imported first in `main.tsx`, `buffer` npm dep) provides them. Any new web app that signs consent client-side needs the same shim.
   - **Owner-web receipt renderer (`src/pages/Receipt.tsx`, `/receipt/:root`; index `/receipts`)** - govarch PR-6 holder-side receipt for `TRAVEL_CLEARANCE` and `EU_HEALTH_CERT`, derived entirely from the locally held `WrappedDoc` plus a live `DogTagIssuer.isValid(root)` read. It mirrors the government/mobile receipt anatomy: fixed-light printable sheet, Receipt ID, issuance/validity, Section A/B/C or Annex-IV rows, QR to `https://<issuer.domain>/r/<receiptId>`, root/provenance, and holder-redaction awareness (`privacy.obfuscated[]` count; redacted copies only render leaves still present). Status derivation: `isValid=false` → `REVOKED / not anchored`, else lapsed ISO `validity.validUntil`/`rabiesValidUntil` → `EXPIRED`, else `VALID`; wallet cards/detail reuse this so revoked/expired receipts are not mislabeled as merely "not anchored". No backend, no new PII, no ZK on this path.
   - **Selective disclosure / "Share a redacted copy" (`src/pages/Share.tsx` at `/share/:id`, logic in `src/lib/redact.ts`)** - the Merkle counterpart to the ZK Present flow, and the web mirror of the native apps' "Share redacted" (mobile FFI `obfuscateDocumentJson`). The holder toggles which leaves to reveal; withheld leaves run through `@dogtag/standard`'s `obfuscate` (leaf hash → `privacy.obfuscated[]`, cleartext dropped, **Merkle root R unchanged**), so the recipient still `checkIntegrity`-verifies the SAME authentic credential + can read `isValid` on-chain, seeing only revealed fields. Default = reveal-all (the holder explicitly withholds; no fragile PII classifier). `credentialSubject.dogTagId` is **locked-on** (`NON_OBFUSCATABLE_PATHS`, mirrors verify's `NON_OBFUSCATABLE` - withholding it would fail integrity), and `recordType` is **locked as public** (`PUBLIC_PATHS` - its value is also carried in the always-revealed `issuer` block, so a toggle to "withhold" it would be a lie). Output is copy-JSON + download (same paste-JSON idiom as Receive / the issuers' "Copy wrapped document"); NO ZK on this path, NO backend, no store mutation (the held full credential is untouched). Reached via a "Share a redacted copy →" button on `CredentialDetail`.
-- **Owner web e2e (Playwright)**: `stacks/owner/web/e2e/owner.spec.ts` drives the whole holder loop (receive → hold/display → generate ZK proof → present → verified) + a tamper-rejection test + a **receipt test** (receive the CDC-modeled travel sample → `/receipts` → `/receipt/:root` renders Receipt ID, Section A/B/C, QR/public URL, derived status/provenance) + a **selective-disclosure test** (open Share → withhold a field → the redacted copy still `checkIntegrity`-verifies with the SAME `merkleRoot` + the withheld cleartext gone + `privacy.obfuscated` grown; re-importing that redacted copy makes the receipt omit the withheld value and show the obfuscated-count notice). Like the government e2e it is NOT in `pnpm test`/CI. It starts its OWN vite dev server and **mocks the prover + verifier + ROAX RPC** at the network layer (deterministic), but runs the REAL client-side crypto. `pnpm --filter @dogtag/owner-web test:e2e`; `OWNER_URL=<url>` runs it against a live wallet instead (no self-server).
+- **Owner web e2e (Playwright)**: `stacks/owner/web/e2e/owner.spec.ts` drives the holder loop (receive → hold → display, plus an assertion that the retired `/present` browser proof route falls back safely to the wallet) + a tamper-rejection test + a **receipt test** (receive the CDC-modeled travel sample → `/receipts` → `/receipt/:root` renders Receipt ID, Section A/B/C, QR/public URL, derived status/provenance) + a **selective-disclosure test** (open Share → withhold a field → the redacted copy still `checkIntegrity`-verifies with the SAME `merkleRoot` + the withheld cleartext gone + `privacy.obfuscated` grown; re-importing that redacted copy makes the receipt omit the withheld value and show the obfuscated-count notice). Like the government e2e it is NOT in `pnpm test`/CI. It starts its OWN vite dev server and **mocks the ROAX RPC** at the network layer (deterministic), but runs the REAL client-side crypto. `pnpm --filter @dogtag/owner-web test:e2e`; `OWNER_URL=<url>` runs it against a live wallet instead (no self-server).
 
 ### Per-role records DB + CRUD (management layer)
 Each role platform persists the records it issues into its OWN store (separate Mongo per running instance; `MemStore` for demo/tests), bundling the credential data with its **immutable on-chain proof**: tx hash, block number, contract (DogTagIssuer clone) address, and a ready-to-click explorer link `https://explorer.roax.net/tx/<hash>`.
@@ -151,7 +151,7 @@ The government web portal (`stacks/government/web`) was migrated from the hand-r
 ### Mobile travel receipt + `obfuscate()` FFI (PR-3)
 The pet-owner HOLDER apps (iOS `apps/ios/DogTag`, Android `apps/android`) render a held `TRAVEL_CLEARANCE` credential as the same CDC receipt the web portal shows, produced LOCALLY from the stored `wrappedDocJson`. Structure + sharp edges:
 - **`obfuscate()` is now in the mobile FFI.** `crates/dogtag-standard-rs/src/ffi.rs` exposes `obfuscate_document_json(wrapped_doc_json, key_paths) -> String` (UniFFI → Swift `obfuscateDocumentJson(wrappedDocJson:keyPaths:)`, Kotlin `obfuscateDocumentJson(wrappedDocJson, keyPaths)`). It wraps `wrap::obfuscate` (already existed, just wasn't surfaced): moves each named leaf's hash into `privacy.obfuscated[]` and drops the cleartext, leaving the Merkle root == on-chain root R UNCHANGED. So the phone builds a PII-free presentation copy with ZERO new ceremony — it's the merkle selective-disclosure proof, NOT a ZK proof. `credentialSubject.dogTagId` must never be obfuscated (`verify.rs` rejects it). Key paths are the FULL dotted path incl. the `credentialSubject.` prefix.
-- **Regenerating the bindings is MANDATORY after any FFI change.** The committed `apps/ios/DogTag/dogtag_standard.swift` and `apps/android/app/src/main/java/uniffi/dogtag_standard/dogtag_standard.kt` carry UniFFI contract CHECKSUMS; if they don't match the freshly-built `.so`/`.a` the app traps at the first FFI call. Android CI rebuilds only the `.so` (cargo-ndk) and bundles the committed `.kt` as-is — it does NOT regenerate it — so you MUST regenerate + commit both. Build the host dylib WITH `--features prover` (else `proveVerification` drops out of the surface and the ABI shifts), then `cargo run --features prover,uniffi/cli --release --bin uniffi-bindgen -- generate --library target/release/libdogtag_standard.dylib --language {swift,kotlin} --out-dir <tmp>` and copy both outputs over the committed files (the generator output matches the committed style; the diff is additive).
+- **Regenerating the bindings is MANDATORY after any FFI change.** The committed `apps/ios/DogTag/dogtag_standard.swift` and `apps/android/app/src/main/java/uniffi/dogtag_standard/dogtag_standard.kt` carry UniFFI contract CHECKSUMS; if they don't match the freshly-built `.so`/`.a` the app traps at the first FFI call. Android CI rebuilds only the `.so` (cargo-ndk) and bundles the committed `.kt` as-is — it does NOT regenerate it — so you MUST regenerate + commit both. Build the host dylib WITH `--features prover` (else the consent prover surface - `proveConsent`/`ProofFfi` - drops out and the ABI shifts), then `cargo run --features prover,uniffi/cli --release --bin uniffi-bindgen -- generate --library target/release/libdogtag_standard.dylib --language {swift,kotlin} --out-dir <tmp>` and copy both outputs over the committed files (the generator output matches the committed style; the diff is additive).
 - **`TravelReceiptView.swift` / `TravelReceiptScreen.kt`** mirror `stacks/government/web/src/pages/Receipt.tsx` 1:1 (Section A/B/C labels, sex+neutered combine, humanize, empty-row omission). Reached from `CredentialDetailScreen` via a "Show travel receipt" button gated on `group == .travel`. They decode `credentialSubject` leaves into a dotted-path→value map from `WrappedDoc.decodedFields()` (strip the `credentialSubject.` prefix), render the effectiveStatus banner (live `RoaxRpc.isValid` → REVOKED wins, then lapsed `validity.validUntil` → EXPIRED, else VALID; chain-unreachable falls back to the stored integrity verdict), and a Verification block with a QR.
 - **The QR is PII-free and points at `https://<issuer.domain>/r/<receiptId>`** — the public status page PR-1 built. This is a NEW, deliberate exception to the "QR generation removed" rule in `QR.swift` (that removal was for the one-time verification-JWT presentation QR; a status-page URL leaks nothing). iOS draws it with CoreImage `CIFilter.qrCodeGenerator` (no dep); Android with `com.google.zxing:core` (added to `app/build.gradle.kts` — ML Kit only SCANS, it can't ENCODE). `receiptId` and `issuer.domain` come from the credential itself (the `receiptId` leaf + `issuer.domain`); if the gov web app is hosted somewhere other than its `did:web` domain the URL would need another source, but the receipt also prints the id as text.
 - **Selective disclosure is holder-controlled.** Section-A person-PII leaves default to WITHHELD; per-field reveal toggles flip them; `dogTagId` + Section B/C default visible. "Share redacted" runs `obfuscateDocumentJson` over the withheld leaves and hands the redacted `wrappedDoc` to the OS share sheet (iOS `UIActivityViewController`, Android `ACTION_SEND`). Withheld rows render as "— withheld by holder —". NO ZK on this path; the on-device Groth16 prover stays reserved for the separate anonymous verification-record flow.
@@ -167,8 +167,8 @@ Holder-side backup/migration rights: copy the phrase at creation, re-export it l
 ### Oversight indexer (PR-4)
 The **net-new, separately-deployable** `stacks/indexer/api` crate (`indexer-api`, port **46001**, own Mongo `indexerdata`, `stacks/indexer/docker-compose.yml`, `make`-free — run via compose) is the on-chain oversight feed the arch calls for (`dogtag-govarch-r8` Part 4; the admin portal `dogtag-adminportal-a3` is its later UNSCOPED consumer).
 It scans the ROAX (chainId 135) contract event logs into a **non-PII** queryable index and serves a **scope-enforced** query API. It is a backend service only — **no web UI in this PR** (the admin/government/vet portals are the later consumers). Design + sharp edges:
-- **What it watches (all non-PII, arch §4.3):** `DogTagIssuerFactory` `IssuerCreated(clone,recordType,name)` + `RootRegistered(root,clone)`; `IssuerRegistry` `Whitelisted`/`Delisted(recordType,signer)`; every `DogTagIssuer` clone `RootIssued`/`RootRevoked(root,by,ts)`; and **both** `Verified` shapes (M8 additive dual-decode) — Level-A `VerificationRegistry` `Verified(dogTagId,relayer,subject,purpose,nullifier,ts)` and Level-B `VerificationRegistryConsent` `Verified(dogTagId,relayer,purpose,nullifier,deadline,ts)` (**different topic0**; no `subject`, adds `deadline`). Both map to `EventType::Verified`: Level-A rows carry `subject`, Level-B rows leave it `None` and carry `deadline`. Each log is flattened into a uniform `IndexedEvent` (`src/events.rs`) keyed by `id = txHash:logIndex` (the idempotency key — re-scans upsert, never duplicate). Roots are salted commitments, `dogTagId` is the non-personal SBT id, addresses are public signers — **no PII in the index** (doctrine).
-- **Scan / decode (`src/chain.rs`, `LogSource` trait).** `AlloyLogSource` = real `eth_getLogs` filtered by event *signature* (topic0) with **no address filter**, so it catches every clone's `RootIssued`/`RootRevoked` regardless of when the clone was deployed. Each decoded log is then **anti-spoof-gated by emitting address**: factory events must come from the factory, registry events from the registry, a Level-A `Verified` from `DEFAULT_VREG` (Level-A registry) and a Level-B `Verified` from `DEFAULT_VREG_CONSENT` (Level-B `VerificationRegistryConsent`) — each shape gated to the address that actually emits it, both recognized during the M7 transition — and a `RootIssued`/`RootRevoked` only from a **known clone** (seeded from `roax.json` government + demo clones via `SEED_CLONES`, extended at runtime by `IssuerCreated`). Logs are processed in `(block,logIndex)` order so an `IssuerCreated` folds its clone into the known set before that clone's first issuance in the same range. `MemLogSource` is a scriptable in-memory source (with `chain::emit::*` alloy-encoding helpers) so the whole scan→index→query flow is testable with no node — the SAME `decode_log` runs both paths.
+- **What it watches (all non-PII, arch §4.3):** `DogTagIssuerFactory` `IssuerCreated(clone,recordType,name)` + `RootRegistered(root,clone)`; `IssuerRegistry` `Whitelisted`/`Delisted(recordType,signer)`; every `DogTagIssuer` clone `RootIssued`/`RootRevoked(root,by,ts)`; and the `Verified` event (M8 shipped an additive dual-decode of both the retired subject-bearing shape and the owner-hidden shape during the migration; since collapsed - the indexer now decodes ONLY the subject-less owner-hidden `VerificationRegistryConsent` `Verified(dogTagId,relayer,purpose,nullifier,deadline,ts)` shape, mapping to `EventType::Verified` with a `deadline` and no `subject` field at all). Each log is flattened into a uniform `IndexedEvent` (`src/events.rs`) keyed by `id = txHash:logIndex` (the idempotency key — re-scans upsert, never duplicate). Roots are salted commitments, `dogTagId` is the non-personal SBT id, addresses are public signers — **no PII in the index** (doctrine).
+- **Scan / decode (`src/chain.rs`, `LogSource` trait).** `AlloyLogSource` = real `eth_getLogs` filtered by event *signature* (topic0) with **no address filter**, so it catches every clone's `RootIssued`/`RootRevoked` regardless of when the clone was deployed. Each decoded log is then **anti-spoof-gated by emitting address**: factory events must come from the factory, registry events from the registry, a `Verified` only from `DEFAULT_VREG_CONSENT` (the owner-hidden `VerificationRegistryConsent`; the retired registry's `DEFAULT_VREG` gate went with the dual-decode) — and a `RootIssued`/`RootRevoked` only from a **known clone** (seeded from `roax.json` government + demo clones via `SEED_CLONES`, extended at runtime by `IssuerCreated`). Logs are processed in `(block,logIndex)` order so an `IssuerCreated` folds its clone into the known set before that clone's first issuance in the same range. `MemLogSource` is a scriptable in-memory source (with `chain::emit::*` alloy-encoding helpers) so the whole scan→index→query flow is testable with no node — the SAME `decode_log` runs both paths.
 - **Finality-aware ingest loop / resume (`src/indexer.rs`) — captain-directed model.** ROAX is an EVM/PoS chain **with block finality** (verified live: `devrpc.roax.net` exposes the `finalized` AND `safe` block tags — `finalized` sits ~80 blocks behind `latest`). A finalized block can never reorg, so every indexed event carries a `Finality` lifecycle (`src/events.rs`): **finalized** (block ≤ the finalized watermark — immutable, never rewound/re-scanned) vs **pending** (block > watermark — still reorg-able, the ONLY range reorg logic touches). This matters for a *government oversight* feed: it must never present a pre-finality, reorg-able issuance as authoritative. Each tick: read `head` + the `finalized` tag (`LogSource::finalized_block()`; **fallback** to a `head - CONFIRMATIONS` watermark, logged as `confirmations-fallback`, if a node ever lacks the tag); scan `[last_finalized+1 .. head]` into a buffer (stamping each event finalized/pending from the watermark), then **atomically swap** the pending range — `delete_pending()` + upsert the re-derived set — only after the whole fallible scan succeeds, so a transient RPC error on any chunk leaves the prior pending rows intact instead of blanking the feed. A pending event orphaned by a reorg simply disappears (absent from the re-derived set) and finalized rows are untouched (no rewind needed). Promotion pending→finalized happens naturally as the watermark advances and the range is re-derived. The resume cursor persists the **finalized watermark** (`last_finalized` + its hash); a defensive hash-divergence guard at the watermark only ever fires under the confirmations fallback (a deeper-than-N reorg), rewinding via `delete_from_block`. `rebuild_known_clones()` on startup re-derives the clone set from previously-indexed `IssuerCreated` rows.
 - **Finality on the query surface.** Every event JSON carries `finality`; `?finality=finalized|pending` filters; `/v1/stats` reports `finalized`/`pending` counts; `/v1/status` reports `finalizedBlock` + `finalitySource` (`finalized-tag` vs `confirmations-fallback`) + `lastFinalizedIndexed` + `lag`. The feed returns ALL events clearly annotated (not hidden), so an oversight consumer can default its authoritative view to `finality=finalized` while still seeing in-flight activity. Scope enforcement is unchanged.
 - **Scoping is server-side (`src/scope.rs`) — the load-bearing doctrine.** A bearer token resolves (via `INDEXER_SCOPES` JSON) to a `Scope`: `Unscoped` (government oversight — every event) or `Signers{signers,clones}` (a business sees ONLY events whose acting signer ∈ its signers OR whose clone ∈ its clones). `Store::query_events(&q, &scope)` enforces admission; client filters (`type`/`signer`/`issuer`/`recordType`/`root`/`dogTagId`/`since`/`until`) only ever **narrow within** the token's ceiling — a scoped token can never reach another issuer via a query param (there is an integration test for exactly this). Empty registry + not demo ⇒ every query 401s (fail-closed, mirrors the government stack).
@@ -176,17 +176,17 @@ It scans the ROAX (chainId 135) contract event logs into a **non-PII** queryable
 - **Directory join (`src/directory.rs`) — doctrine-safe naming.** Two layers: operator-authoritative static seeds (`INDEXER_DIRECTORY` JSON `{addr:name}`), and optional admin-API enrichment (`ADMIN_API_BASE`/`ADMIN_API_TOKEN`) that periodically reads the admin `/v1/businesses` (public) + `/v1/issuer-applications` (admin-token) and joins signer addresses → business names on the shared `domain`. Reads **business identity only — never any role's PII Mongo**; any admin-API failure degrades to static-only.
 - **Store (`src/store.rs`, `Store` trait).** `MemStore` (demo/tests) + `MongoStore` (feature `mongo`, `src/mongo.rs`; `events` keyed by `id` unique, `cursor` single doc). The Mongo query pushes the high-selectivity equality/range predicates then re-applies scope + `EventQuery::matches` + pagination in Rust (identical semantics to MemStore). The index is fully rebuildable from the chain, so a lost volume just triggers a re-scan from `START_BLOCK`.
 - **Demo mode** (`INDEXER_DEMO_MODE=1`): scripted `MemLogSource` history (deploy → whitelist → issue×2 → verify → revoke on the gov clone, plus a demo-groomer issuance on the DOG_PROFILE clone) + `MemStore`, and two well-known tokens — `dogtag-indexer-oversight-demo-token` (unscoped) and `dogtag-indexer-vet-demo-token` (scoped to the DOG_PROFILE clone + demo-groomer signer). The demo sets the finalized watermark to block 6, so the gov flow shows as **finalized** and the newer demo-groomer DOG_PROFILE events show as **pending** — the feed demonstrates the finality lifecycle with no node/Mongo. `MemLogSource::set_finalized(h)` scripts the `finalized` tag; tests use it (+ `reorg_from`) to drive finality/promotion/reorg cases.
-- **Tests:** unit (`scope`/`store` modules, incl. `delete_pending` keeps finalized + finality filter) + `tests/query_api.rs` drives the real ingest loop + HTTP router end-to-end (unscoped vs scoped counts, scope-cannot-be-widened, filters/stats/issuers, 401 auth, idempotent re-scan; **finalized events survive a pending-range reorg while orphaned pending events are dropped**; **promotion pending→finalized at the watermark**; **M8 dual-decode: both `Verified` shapes ingest (Level-A carries `subject`, Level-B carries `deadline` and no `subject`), and a stranger-emitted Level-B log is dropped by the anti-spoof gate**). All hermetic (MemLogSource + MemStore), in `cargo test -p indexer-api`.
+- **Tests:** unit (`scope`/`store` modules, incl. `delete_pending` keeps finalized + finality filter) + `tests/query_api.rs` drives the real ingest loop + HTTP router end-to-end (unscoped vs scoped counts, scope-cannot-be-widened, filters/stats/issuers, 401 auth, idempotent re-scan; **finalized events survive a pending-range reorg while orphaned pending events are dropped**; **promotion pending→finalized at the watermark**; **the owner-hidden `Verified` shape ingests with a `deadline` and no `subject` field, and a stranger-emitted `Verified` log is dropped by the anti-spoof gate** (the M8 dual-decode of the retired subject-bearing shape has since been collapsed)). All hermetic (MemLogSource + MemStore), in `cargo test -p indexer-api`.
 
 ### Governance / admin (audit H-3)
-- Governed contracts split admin two ways: `IssuerRegistry` (3-day), `VerificationRegistry` (2-day), and `DogTagSBT` (3-day) use OZ `AccessControlDefaultAdminRules` (two-step `begin`/`acceptDefaultAdminTransfer` + timelock); `DogTagIssuerFactory` uses `Ownable2Step`. `DogTagIssuer` clones have no own admin — they read `IssuerRegistry.hasRole(0x00)`. `ConsentKeyRegistry`/`Groth16Verifier`/`Poseidon6` have no admin.
+- Governed contracts split admin two ways: `IssuerRegistry` (3-day), `VerificationRegistry` (2-day, since retired from the repo), and `DogTagSBT` (3-day, since retired from the repo) use OZ `AccessControlDefaultAdminRules` (two-step `begin`/`acceptDefaultAdminTransfer` + timelock); `DogTagIssuerFactory` uses `Ownable2Step`. `DogTagIssuer` clones have no own admin — they read `IssuerRegistry.hasRole(0x00)`. `ConsentKeyRegistry` (since retired)/`Groth16Verifier` (since retired)/`Poseidon6` have no admin. (The retired-generation sources are gone from `contracts/`; their deployed instances remain on the disposable testnet only until the fresh wipe/redeploy.)
 - `DogTagSBT` inherits BOTH `AccessControlEnumerable` and `AccessControlDefaultAdminRules`, so it must explicitly override `grantRole`/`revokeRole`/`renounceRole`/`_setRoleAdmin` (`override(AccessControl, IAccessControl, AccessControlDefaultAdminRules)`) plus `_grantRole`/`_revokeRole`/`supportsInterface` — `super` resolves to the ACDAR rules first, then chains the enumerable bookkeeping. Do NOT `_grantRole(DEFAULT_ADMIN_ROLE,...)` in the constructor; the `AccessControlDefaultAdminRules(delay, admin)` base already does, and a second grant reverts (`AccessControlEnforcedDefaultAdminRules`).
-- **Governance handover is DONE on ROAX (Phase-2 executed).** The governance signer **signer-1 `0x8E27E117…`** now holds the registry `DEFAULT_ADMIN_ROLE` + `WHITELIST_ADMIN` AND is the `DogTagIssuerFactory` `Ownable2Step` owner; the old deployer EOA `0x119F8c7F…` (`roax.json:admin`, kept as the historical deploy record) lost those governance/admin authorities. **Do not call it role-free or neutral:** the M5 deployment preflight re-verified on 2026-07-16 that it still holds the live Level-A SBT `ISSUER_ROLE` and remains whitelisted for the four known record types. Consequence for tooling: the demo/relayer/admin `ADMIN_PRIVATE_KEY` (the control-plane / GovernanceAction signer) **must now be signer-1 `0x8E27E117…`** — with the old EOA any governance write (`createIssuer`/`whitelistFor`/`adminRevoke`) correctly downgrades to a `Disposition::Proposed` payload instead of broadcasting. The key value itself is captain-managed env, never committed. The EOA→governance migration is shipped as reviewable code (`contracts/script/GovernanceMigration.sol` library + `MigrateGovernance.s.sol` two-phase Begin/Accept scripts + `GovernanceMigration.t.sol`) and lives on mainline (merged via PR #8) — see `docs/GOVERNANCE_MIGRATION.md`. The **live** `DogTagSBT` (`0x1FB8…`) predates the two-step upgrade and is still plain `AccessControlEnumerable`; it can't be retrofitted without a state-orphaning redeploy. Never re-run the migration on live testnet without explicit captain approval.
+- **Governance handover is DONE on ROAX (Phase-2 executed).** The governance signer **signer-1 `0x8E27E117…`** now holds the registry `DEFAULT_ADMIN_ROLE` + `WHITELIST_ADMIN` AND is the `DogTagIssuerFactory` `Ownable2Step` owner; the old deployer EOA `0x119F8c7F…` (`roax.json:admin`, kept as the historical deploy record) lost those governance/admin authorities. **Do not call it role-free or neutral:** the M5 deployment preflight re-verified on 2026-07-16 that it still holds the retired-generation SBT's (still deployed) `ISSUER_ROLE` and remains whitelisted for the four known record types. Consequence for tooling: the demo/relayer/admin `ADMIN_PRIVATE_KEY` (the control-plane / GovernanceAction signer) **must now be signer-1 `0x8E27E117…`** — with the old EOA any governance write (`createIssuer`/`whitelistFor`/`adminRevoke`) correctly downgrades to a `Disposition::Proposed` payload instead of broadcasting. The key value itself is captain-managed env, never committed. The EOA→governance migration is shipped as reviewable code (`contracts/script/GovernanceMigration.sol` library + `MigrateGovernance.s.sol` two-phase Begin/Accept scripts + `GovernanceMigration.t.sol`) and lives on mainline (merged via PR #8) — see `docs/GOVERNANCE_MIGRATION.md`. The **deployed retired-generation** `DogTagSBT` (`0x1FB8…`) predates the two-step upgrade and is still plain `AccessControlEnumerable`; it can't be retrofitted without a state-orphaning redeploy (it remains on-chain only until the fresh wipe/redeploy). Never re-run the migration on live testnet without explicit captain approval.
 - Removed dead governance surface: `IssuerRegistry.PROFILE_ISSUER_ROLE` and `DogTagSBT.UPDATER_ROLE` were declared but never enforced (SBT mint = `ISSUER_ROLE`; `setProfileRoot` = originator-or-`AUTHORITY_ROLE`). Don't re-add them.
 
 ### Admin control-plane foundation (PR-A: `GovernanceAction` + factory bindings)
 The admin portal is the protocol control plane — it **extends** the existing `stacks/admin/web` (shared `@dogtag/ui` `AppShell`) + its `stacks/admin/api` AlloyChain signer; it is NOT a greenfield build (scout `dogtag-adminportal-a3`). "See on-chain activity" = the UNSCOPED consumer of the PR-4 indexer above (that UI is PR-B/PR-D). This PR-A landed only the backend **foundation**: the governance-action abstraction + factory bindings (no new web pages).
-- **Three distinct on-chain authorities (`chain.rs`, plan Part 2).** Every privileged write is gated by ONE of: the **factory `Ownable2Step` owner** (`createIssuer`), the registry **`WHITELIST_ADMIN` role** (`whitelistFor`/`delistFor`), or the registry **`DEFAULT_ADMIN_ROLE`** (`adminRevoke`/role-admin/verifier+consent-key swaps, behind the 2–3 day ACDAR timelock). Governance Phase-2 has **executed**: all three now rest with the governance signer `0x8E27E117…` (the deployer EOA `0x119F8c7F…` was stripped of these three governance authorities, but NOT of its legacy Level-A SBT `ISSUER_ROLE` + record-type whitelists, so it is not role-free; see "Governance / admin" above). **Do NOT hardcode any EOA as the authority** — the dispatcher reads the holder live, so the control plane keeps working (executing when the hosted key IS the holder, else proposing) across the handover.
+- **Three distinct on-chain authorities (`chain.rs`, plan Part 2).** Every privileged write is gated by ONE of: the **factory `Ownable2Step` owner** (`createIssuer`), the registry **`WHITELIST_ADMIN` role** (`whitelistFor`/`delistFor`), or the registry **`DEFAULT_ADMIN_ROLE`** (`adminRevoke`/role-admin/verifier+consent-key swaps, behind the 2–3 day ACDAR timelock). Governance Phase-2 has **executed**: all three now rest with the governance signer `0x8E27E117…` (the deployer EOA `0x119F8c7F…` was stripped of these three governance authorities, but NOT of the retired-generation SBT's (still deployed) `ISSUER_ROLE` + record-type whitelists, so it is not role-free; see "Governance / admin" above). **Do NOT hardcode any EOA as the authority** — the dispatcher reads the holder live, so the control plane keeps working (executing when the hosted key IS the holder, else proposing) across the handover.
 - **`GovernanceAction` (`src/governance.rs`) — the key-holder-agnostic abstraction.** A privileged write is a value `{target, calldata, authority, summary}` where `authority` is `Owner{owner_target}` or `Role{role_target, role, default_admin}`. `governance::dispatch(chain, signer_index, &action)` asks the chain WHO holds the authority (factory `owner()` / registry `hasRole()` / `defaultAdmin()`): if the hosted signer holds it → `send_action` (sign-and-broadcast, the existing legacy-gas path) returning `Disposition::Executed{txHash,holder}`; else → `Disposition::Proposed{holder,target,calldata,…}` for the governance signer / Safe to execute out-of-band. This survives the Phase-2 split BY CONSTRUCTION: an action silently flips executed→proposed the moment its role leaves the hosted key — no code path assumes which key holds which role.
 - **Factory bindings added to `chain.rs` (`ChainClient` trait, both `AlloyChain` + `MemChain`):** `predict_issuer` (deterministic clone preview, `salt = keccak256(recordType, business)` — exact BEFORE deploy), `create_issuer_calldata`, `is_clone`, `root_issuer`, plus the authority reads `ownable_owner`/`ownable_pending_owner`, `has_role`, `default_admin`, `pending_default_admin` (the Phase-2 handover surfaces here), and `signer_address(index)` (Alloy derives it from the key) so the dispatcher can test hosted-key holdership. `MemChain` gains seed setters (`set_factory_owner`, `set_role`, `set_default_admin`, `set_pending_default_admin`) + a deterministic (non-CREATE2) clone preview for hermetic tests.
 - **Endpoints (`admin_router`, admin-session gated):** `POST /v1/admin/factory/predict` (address preview), `POST /v1/admin/factory/issuers` (deploy via `GovernanceAction`; `business` defaults to the hosted signer = single-authority topology, matching the deployed government clones; returns predicted address + `Disposition`), `GET /v1/admin/governance/authority` (the live authority map: factory owner + pending, WHITELIST_ADMIN/DEFAULT_ADMIN holders, `heldByHosted` per authority, pending DEFAULT_ADMIN transfer + ETA — best-effort, unreachable target → `null`). `recordType` accepts a human label (keccak'd server-side via `record_type_key`) or a raw `0x`+64-hex key.
@@ -223,7 +223,7 @@ Promotes the read-only `stacks/admin/web` Whitelist viewer to a **direct grant/r
 - **Tests:** `tests/control_plane.rs` (7 new, MemChain): grant proposes when hosted lacks WHITELIST_ADMIN / executes all capabilities (recordType + 2 verify purposes) when it holds it; DOG_PROFILE grant also executes the ISSUER-role grant; revoke executes; requires-admin (401); missing-capability + bad-signer (400). Set the hosted role via `chain.set_role(REGISTRY, &whitelist_admin_role(), HOSTED)` / `set_role(SBT, &default_admin_role(), HOSTED)`.
 
 ### Vet/groomer verification audit history (verify2-s4)
-The shared vet/groomer verifier flow now keeps a durable operator-visible audit history for owner-consent verification sessions, using the existing `VerifySession` rows instead of a parallel table. `VerifySession` carries `created_at`/`updated_at`; the status lifecycle is `pending` -> `recording` -> `recorded` or `error`. `GET /verify/history` is operator-gated and returns most-recent-first rows with purpose, recordType, mode, relayer, status, txHash, explorerUrl, nullifier, and timestamps. It intentionally stores verifier operational proof metadata only, not credential PII. `packages/ui` exposes `verificationHistory()` plus `VerificationHistoryPanel`; both `stacks/vet/web/src/pages/Verify.tsx` and `stacks/groomer/web/src/pages/Verify.tsx` render it under the QR export flow. Hermetic coverage lives in `stacks/vet/api/tests/flow_memchain.rs::verify_session_status_polls_pending_to_recorded` and checks auth gating plus pending -> recorded history rows.
+The shared vet/groomer verifier flow now keeps a durable operator-visible audit history for owner-consent verification sessions, using the existing `VerifySession` rows instead of a parallel table. `VerifySession` carries `created_at`/`updated_at`; the status lifecycle is `pending` -> `recording` -> `recorded` or `error`. `GET /verify/history` is operator-gated and returns most-recent-first rows with purpose, recordType, relayer, status, txHash, explorerUrl, nullifier, and timestamps (the migration-era `mode` field is gone - there is one owner-hidden flow). It intentionally stores verifier operational proof metadata only, not credential PII. `packages/ui` exposes `verificationHistory()` plus `VerificationHistoryPanel`; both `stacks/vet/web/src/pages/Verify.tsx` and `stacks/groomer/web/src/pages/Verify.tsx` render it under the QR export flow. Hermetic coverage lives in `stacks/vet/api/tests/flow_memchain.rs::verify_session_status_polls_pending_to_recorded` and checks auth gating plus pending -> recorded history rows.
 
 ### Verifier direct credential status (issuer-c3)
 The vet/groomer verifier product now has a direct, operator-facing **pasted credential check** in addition to the existing owner-consent proof-export flow. It is intentionally NON-admin-nav work.
@@ -234,52 +234,38 @@ The vet/groomer verifier product now has a direct, operator-facing **pasted cred
 
 ### Public-signal indices: ALWAYS via the named constants, never a literal (e9 E-1)
 
-Both circuits emit a **7-element** public-signal vector and the two orders **disagree from index 3 on**:
+There is ONE live public-signal order - the frozen seven-signal consent vector:
 
-| index | Level-A (`verification.circom`) | Level-B (`consent.circom`) |
-|---|---|---|
-| 0-2 | dogTagId, purpose, relayer | dogTagId, purpose, relayer |
-| 3 | **subject** | **nullifier** |
-| 4 | **nullifier** | **R** |
-| 5 | keyHash | recordType |
-| 6 | R | deadline |
+`[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`
 
-Same width, same `[String; 7]` type, so a mix-up is invisible to every compiler and produces a
-plausible-looking field element instead of an error. The canonical failure: reading `pubSignals[4]` as
-the nullifier under Level-B actually yields `R`, so the phone polls `consumed(R)` - never set - and a
-verification that **succeeded on-chain** hangs until timeout.
-
-The constants live in three mirrored files, each with a `level_a`/`levelA`/`LevelA` and a
-`level_b`/`levelB`/`LevelB` set: `crates/dogtag-standard-rs/src/public_signals.rs`,
-`apps/ios/DogTag/PublicSignalIndex.swift`,
-`apps/android/app/src/main/java/io/liberalize/dogtag/zk/PublicSignalIndex.kt`. Rust
-(`public_signals::tests`), iOS (`PublicSignalIndexTests`) and Android (`PublicSignalIndexTest`) each
-guard their own Level-B constants against accidental drift.
-The values were transcribed from `VerificationRegistryConsent.sol:81-87`'s `P_*` constants, which stay
+The named constants live in three mirrored files, one per language:
+Rust `crates/dogtag-standard-rs/src/public_signals.rs` (module `public_signals::level_b` - the module name is kept because it mirrors the internal version key `dogtag-levelb/1` and the on-chain `P_*` constants; an internal identifier, not a product label),
+Swift `apps/ios/DogTag/PublicSignalIndex.swift` (`PublicSignalIndex.ownerHidden`),
+and Kotlin `apps/android/app/src/main/java/io/liberalize/dogtag/zk/PublicSignalIndex.kt` (a flat `PublicSignalIndex` object).
+Rust (`public_signals::tests`), iOS (`PublicSignalIndexTests`) and Android (`PublicSignalIndexTest`) each guard their own constants against accidental drift.
+The values were transcribed from `VerificationRegistryConsent.sol`'s `P_*` constants, which stay
 the authority - but every one of those tests asserts LITERALS and never reads the Solidity, so a
 contract-side change would not fail them; the two sides must be moved together by hand.
 
-- **Everything on the live serving path is `level_a`, deliberately.** Both apps now bundle BOTH
-  `verification_final.zkey` (Level-A, pinned `dogtag-levela/1`) and `consent_final.zkey` (Level-B,
-  `dogtag-levelb/1`, added M-4), but `current()` / the default stays Level-A - the Android
-  `ZkeyAssetTest` asserts `dogtag-levelb/1` RESOLVES yet does NOT change the default (its fail-closed
-  probe moved to `dogtag-levelc/9`). The live path calls `proveVerification`; `verify.rs`/`chain.rs`
-  read a `subject` signal and drive `ConsentKeyRegistry`, neither of which exists under Level-B. **Do
-  not "fix" these to Level-B indices** - that is the M-4 cutover, and doing it early breaks the only
-  live end-to-end path rather than repairing it.
-- `level_b` is used by the consent tests and by the Level-B submit path (`consent_submit_levelb`).
-  M-4 does NOT flip the Level-A call sites: it adds a version-aware SECOND path beside them, because
-  Level-A issuance stays the default until M-6 and a Level-B-only app would strand every new Level-A
-  owner (their first verification still needs the `ConsentKeyRegistry` bind, whose owner EIP-712 sig
-  is built from `bindNonce`). The `keyOf`/`bindNonce`/bind-flow deletion is **M-8**, not M-4.
+Historical note - why reads go through named constants at all: the retired owner-revealing circuit
+emitted a same-width `[String; 7]` vector whose order DIVERGED from index 3 on (`subject`, then
+`nullifier`, `keyHash`, `R`), so a literal-index mix-up was invisible to every compiler and produced a
+plausible-looking field element instead of an error.
+The canonical failure: reading `pubSignals[4]` as the nullifier under the consent order actually
+yields `R`, so the phone polls `consumed(R)` - never set - and a verification that **succeeded
+on-chain** hangs until timeout.
+The divergent order is gone with its circuit (the retired `level_a` constant sets have been deleted
+from all three files, and both apps bundle and resolve only the consent artifact set), but the
+constants remain the only sanctioned way to read a signal.
 
 ### Superseded M-4 dual-route migration guard (historical only)
 
 The route split below records transitional safety behavior; it is not product architecture to
-preserve. The live/forward flow is one owner-hidden consent route with no user-visible mode.
+preserve. The routes it describes have since been deleted: the sole submit route today is
+`POST /v1/verify/consent` (one owner-hidden consent flow, no user-visible mode).
 
-A verify session's `mode` (`store::VerifySession`) is `"normal" | "zk" | "levelb"`, validated at
-`POST /verify/session/start` — an unrecognised mode is a 400, because it previously fell through the
+A verify session's `mode` (`store::VerifySession`, field since deleted) was `"normal" | "zk" | "levelb"`, validated at
+`POST /verify/session/start` — an unrecognised mode was a 400, because it previously fell through the
 `if mode == "normal" { .. } else { <Level-A ZK> }` dispatch into the Level-A branch, so a typo like
 `"level-b"` silently produced a Level-A session.
 
@@ -316,20 +302,21 @@ token would be accepted by both, and an owner-hidden proof read with Level-A ind
 ### Superseded M-4 opt-in snapshot (historical only)
 
 The "available, not default" design below is forbidden by the standing product model. Never preserve
-or reintroduce it as a default, opt-in, mode, toggle, or user choice.
+or reintroduce it as a default, opt-in, mode, toggle, or user choice. The code it describes has since
+been deleted: `convenience_claims_for_mode` collapsed into the single mode-free `app::convenience_claims`
+builder, pinned to the unified internal version key (see "Discovery API + app anchor-validation").
 
-`app::convenience_claims_for_mode` stamps `dogtag-levelb/1` + the Level-B registry **only** for a
+`app::convenience_claims_for_mode` stamped `dogtag-levelb/1` + the owner-hidden registry **only** for a
 session explicitly started with `mode="levelb"`. Every other mode, and every flow with no session,
-still advertises `LEVEL_A_VERSION` + the Level-A registry. Flipping the DEFAULT is the P-3 version
-stamp flip (M-5) and is deliberately not done in M-4. The two fields move together: advertising
-`dogtag-levelb/1` beside the Level-A registry address makes every validating app fail closed with
-`RegistryMismatch`.
-- **Never add a third, level-neutral set.** It would have to pick one value and would then silently
-  contradict either the live off-chain code or the contract (whose `P_NULLIFIER = 3` is Level-B-valued).
-  Naming the level *is* the safety property.
-- `crates/dogtag-prover-rs` cannot import these (it pins ark 0.6 vs `dogtag-standard-rs`'s 0.5 and the
-  two coexist only because ark types never cross the boundary - see its `Cargo.toml`). Its
-  `Groth16Output` doc lists both orders and must be kept in step by hand.
+still advertised the since-deleted `LEVEL_A_VERSION` + the retired registry. Flipping the DEFAULT was
+the P-3 version stamp flip (M-5) and was deliberately not done in M-4. The two fields move together:
+advertising `dogtag-levelb/1` beside the retired registry address made every validating app fail
+closed with `RegistryMismatch`. (The flip has since completed and only the unified pair exists.)
+- The migration-era rule "never add a third, level-neutral constant set" is moot now that the retired
+  set is deleted: exactly one public-signal order exists (see "Public-signal indices" above).
+- `crates/dogtag-prover-rs` cannot import the standard crate's constants (it pins ark 0.6 vs
+  `dogtag-standard-rs`'s 0.5 and the two coexist only because ark types never cross the boundary -
+  see its `Cargo.toml`). Its `Groth16Output` doc lists the order and must be kept in step by hand.
 
 ### Web credential verify is permissionless direct-to-RPC (webverify-n3)
 Credential verification is permissionless + on-chain, so the web `CredentialVerifyPanel` reads the chain itself instead of the operator-gated `POST /verify/credential`. The server endpoint is retained (it may serve other callers) but the web panel no longer depends on it.
@@ -344,8 +331,8 @@ The operator-facing **handle** is a small integer. The **on-chain** dogTagId min
 ## Deployment / production guards (fail-closed)
 - Demo vs prod is gated by `DEMO_MODE` / `VITE_DEMO_MODE` (set = demo/local, unset = production).
 - Both backends call `startup::validate_production_secrets(...)` at boot: in production they **refuse to start** if `OPERATOR_PASSWORD`/`ADMIN_PASSWORD`/`CENTRAL_HMAC_SECRET` (vet) or `ADMIN_PASSWORD`/`ADMIN_PRIVATE_KEY` (admin) are unset or equal to the known dev defaults. Set `DEMO_MODE=1` to keep the convenient demo defaults.
-- vet-api: if `CIRCUITS_BUILD_DIR` is set but the real `ArkProver` fails to load, the process **exits** (it must not silently degrade to `StubProver`, which emits zeroed proofs the chain rejects). Unset `CIRCUITS_BUILD_DIR` still uses `StubProver` (demo / on-device-proof production model).
-- The prover **enforces a pinned zkey sha256** (`dogtag-prover-rs::EXPECTED_ZKEY_SHA256_HEX`, the testnet ceremony hash — now also the Level-A descriptor's pin, see "Version-keyed proving artifacts"): `Prover::load` rejects any zkey whose hash differs, so a swapped/corrupt key fails closed instead of proving against the wrong key (audit M4). The r1cs/wasm are pinned + verified the same way (before parse). A deployment shipping a **different** zkey (a production ceremony output) sets the `EXPECTED_ZKEY_SHA256` env var on vet-api (→ `load_with_expected_zkey`) — a config swap, not a code change. Leave it unset to enforce the bundled testnet hash.
+- vet-api: the consent prover behind `POST /prove-consent` is loaded **lazily on the first request** from `CIRCUITS_BUILD_DIR` and **fails closed per request** (503 on an unset dir, a missing artifact, or a hash mismatch); it never degrades to a stub or emits an unverifiable proof. (The old eager-boot `ArkProver`/`StubProver` pair was deleted with the retired prove path.)
+- The prover **enforces a pinned zkey sha256** (the consent descriptor's pin, `f83a111f…` - see "Version-keyed proving artifacts"): loading rejects any zkey whose hash differs, so a swapped/corrupt key fails closed instead of proving against the wrong key (audit M4). The r1cs/wasm are pinned + verified the same way (before parse). A deployment shipping a **different** zkey (a production ceremony output) sets the `CONSENT_EXPECTED_ZKEY_SHA256` env var on vet-api (→ `load_versioned_with_expected_zkey`) - a config swap, not a code change. Leave it unset to enforce the bundled testnet hash.
 - **Shared JWT signing key** (`SHARE_JWT_SIGNING_KEY`, 32-byte hex; vet + admin): the Ed25519 share/record JWT key. MUST be identical across restarts and horizontally-scaled instances or tokens break (audit L4). `load_jwt_keys` requires it (fail-closed) in production (same `DEMO_MODE` signal as the secret guard above), and uses an ephemeral key + warning in demo. `JwtKeys::generate()` alone is per-process/ephemeral — never the production path.
 - **Admin password hashing** (`ADMIN_PASSWORD_HASH`, `"<salt_hex>$<hash_hex>"` from `auth::hash_password`; admin): the stored hash `admin_login` verifies against with `auth::verify_password` (audit L4 — replaces the old cosmetic plaintext compare). Optional; unset → the H2-required `ADMIN_PASSWORD` plaintext is hashed once at startup.
 
@@ -354,35 +341,35 @@ The operator-facing **handle** is a small integer. The **on-chain** dogTagId min
 Which files a prover loads, and the hashes it pins them to, come from a **version-keyed table** rather than hard-coded filenames.
 This is the structure M7's fully-dynamic proving (lock C) plugs fetch into; the brick itself is additive and **fetches nothing**.
 
-- **The model** (`crates/dogtag-prover-rs/src/artifact.rs`): a version key → `ArtifactDescriptor { version, circuit_id, num_public, max_leaves, public_signal_layout, zkey, r1cs, wasm, witness_graph, vk }`.
+- **The model** (`crates/dogtag-prover-rs/src/artifact.rs`): a version key → `ArtifactDescriptor { version, circuit_id, num_public, public_signal_layout, zkey, r1cs, wasm, witness_graph, vk }`.
   `REGISTRY` holds every version this build can prove; `artifact::resolve(Option<&str>)` looks one up.
-- **Two entries**: `LEVEL_A_V1` (`"dogtag-levela/1"`) — the Level-A set — and `LEVEL_B_V1` (`"dogtag-levelb/1"`) — the Level-B consent set (added by M7 P0, see "Level-B consent proving path"). Adding a version = adding a const + a `REGISTRY` line. `max_leaves` is now `Option<usize>`: `Some(N)` for the Level-A fixed-leaf-array circuit, `None` for consent (it folds depth-6 inclusion PATHS, so the `max_leaves == N` load guard does not apply).
-- **`resolve(None)` ⇒ the current (Level-A) version.** This is the back-compat contract: every pre-M7 caller names no version, so it keeps getting exactly what it got before.
-  **A named-but-unknown version FAILS CLOSED** — never fall back to the current artifacts, since a proof built with the wrong key is rejected by that version's verifier (a confusing failure far from the cause).
+- **One entry**: `LEVEL_B_V1` (`"dogtag-levelb/1"` - the internal protocol version key, an internal identifier rather than a product label) - the owner-hidden consent set. Adding a version = adding a const + a `REGISTRY` line. (The retired `LEVEL_A_V1` entry and its `max_leaves` fixed-leaf-array machinery were deleted with the owner-revealing layer; consent folds depth-6 inclusion PATHS, so no leaf-width load guard applies.)
+- **`resolve(None)` / `current()` ⇒ the consent set** - the sole registered version is the default for every caller naming no version.
+  **A named-but-unknown version FAILS CLOSED** (including the retired `dogtag-levela/1` key, which this build no longer serves) - never fall back to the current artifacts, since a proof built with the wrong key is rejected by that version's verifier (a confusing failure far from the cause).
 - **`zkey.sha256` is NOT the VK hash.** Two different things, deliberately two fields (M7 §3.2; the ZK cross-check calls out the conflation):
   `ZkeyArtifact::sha256` = the **fetch/integrity pin** of the proving-key file (hashed BEFORE parse, fail-closed, audit M4);
   `VerifyingKeyIdentity` = **which VK the proof verifies against** (authoritatively the on-chain `Groth16Verifier`, identified by address; `verification_key.json`'s hash is its off-chain identity). The prover never reads that file — the VK it proves with is inside the zkey.
-- **Pins are checked facts, not decorative strings**: `level_a_descriptor_pins_match_the_real_artifacts` hashes the tree's actual artifacts, so a pin that rots fails the test rather than production.
-  The zkey pin is mandatory (the type makes an unpinned zkey unrepresentable); r1cs/wasm are pinned + verified before parse too. `witness_graph` is deliberately **unpinned** (`sha256: None`) — unlike the others it is NOT committed; CI fetches it from `DOGTAG_ARTIFACTS_URL`, so there is no byte-stable in-tree hash.
-- **Loader shape**: `Prover::load_versioned(build_dir, descriptor)` is the real path; `Prover::load` = it against `artifact::current()`, and `load_with_expected_zkey` still overrides just the hash. All compose from one `load_inner`, so every entry point shares the fail-closed check.
-  `load_inner` also **width-guards** the descriptor before any file I/O: this build formats a fixed `NUM_PUBLIC`-wide `pub` vector and feeds fixed `N`-wide leaf arrays, so a version whose `num_public` differs, or that declares a fixed leaf width (`max_leaves: Some(_)`) ≠ `N`, is refused at load rather than surfacing as a truncated `pub` or an obscure witness failure. A `max_leaves: None` version (consent's depth-6 inclusion paths, fed by `ConsentProveInputs`) is **exempt**. Unreachable by today's registered versions (Level-A matches `N`; the Level-B consent entry is exempt), so it is pinned directly by `load_rejects_a_version_whose_width_this_build_cannot_handle` - it exists for the multi-version state M7 builds toward.
-- **Service** (`stacks/vet/api`): `PROTOCOL_VERSION` env names the version to serve (unset ⇒ current Level-A). The prover is still **eagerly loaded at boot and still `exit(1)`s** on failure — deliberately NOT the lazy per-request map M7 §3.5 sketches, which belongs with the fetch. `POST /prove-verification` takes an **optional** `version`; absent ⇒ the loaded one (the pre-M7 body has no such field), unknown ⇒ 400.
-- **Mobile** (`apps/android/.../data/ZkeyAsset.kt`, `apps/ios/DogTag/ZkeyAsset.swift`): the same version-keyed resolver over the SAME bundled assets — Android still copies from APK assets into `filesDir` (size-matched), iOS still resolves from `Bundle.main`. Since **M-4** both registries also carry the Level-B `dogtag-levelb/1` consent set (`consent_final.zkey` + `consent.graph`, bundled the same way), but `current()` still returns the Level-A descriptor, so all existing call sites (`ensure(context)` / `ensureGraph()`) are untouched — a Level-B artifact is resolved only when a caller names that version explicitly (a later M-4 PR). Bundled artifacts carry no hash: their integrity is the package signature's, not a runtime check.
-- **The version key `"dogtag-levela/1"` is declared three times** (Rust `artifact::LEVEL_A_V1`, Kotlin `ZkeyAsset.LEVEL_A_V1`, Swift `ZkeyAsset.levelAV1`) — one protocol constant, three languages, no shared source; since **M-4** `"dogtag-levelb/1"` is likewise declared three times (Rust `artifact::LEVEL_B_V1`, Kotlin `ZkeyAsset.LEVEL_B_V1`, Swift `ZkeyAsset.levelBV1`). A typo is a runtime rejection, not a compile error; `ZkeyAssetTest.levelAVersionKeyMatchesTheProtocolConstant` pins the Kotlin side.
-- **NOT here (deliberately)**: no network fetch. The consent code path DID land (M7 P0 — see "Level-B consent proving path"), so the consent descriptor is now a real `REGISTRY` entry built from `circuits/consent.circom` with its own zkey + VK pins. The remaining gap is the fetch: every descriptor still resolves to a locally-present artifact.
+- **Pins are checked facts, not decorative strings**: the consent-prove tests (`stacks/vet/api/tests/consent_prove.rs`) load the committed `circuits/build` artifacts through the fail-closed loader and assert the descriptor's pins against the real files, so a pin that rots fails a test rather than production.
+  The zkey pin is mandatory (the type makes an unpinned zkey unrepresentable; the consent pin is `f83a111f…`); r1cs/wasm are pinned + verified before parse too. `witness_graph` is deliberately **unpinned** (`sha256: None`) — unlike the others it is NOT committed; CI fetches it from `DOGTAG_ARTIFACTS_URL`, so there is no byte-stable in-tree hash.
+- **Loader shape**: `Prover::load_versioned(build_dir, descriptor)` is the real path, and `load_versioned_with_expected_zkey` overrides just the zkey hash (the `CONSENT_EXPECTED_ZKEY_SHA256` config swap). Both compose from one `load_inner`, so every entry point shares the fail-closed check.
+  `load_inner` also **width-guards** the descriptor before any file I/O: this build formats a fixed `NUM_PUBLIC`-wide `pub` vector, so a version whose `num_public` differs is refused at load rather than surfacing as a truncated `pub` or an obscure witness failure. (The old convenience `Prover::load`/`load_with_expected_zkey` wrappers and the `max_leaves` leaf-width guard went with the retired fixed-leaf-array circuit.)
+- **Service** (`stacks/vet/api`): `POST /prove-consent` is the ONLY prover route (`/prove-verification` was deleted with the retired circuit). The consent prover is loaded **lazily per request** from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), and **fails closed per REQUEST** (503 on missing dir/artifact/hash-mismatch) - see "Consent proving path (M7 P0)".
+- **Mobile** (`apps/android/.../data/ZkeyAsset.kt`, `apps/ios/DogTag/ZkeyAsset.swift`): the same version-keyed resolver over the SAME bundled assets — Android copies from APK assets into `filesDir` (size-matched), iOS resolves from `Bundle.main`. Both registries hold exactly one descriptor: the consent set (`consent_final.zkey` + `consent.graph`), and `current()`/a nil version resolve to it; an unknown version fails closed. Bundled artifacts carry no hash: their integrity is the package signature's, not a runtime check.
+- **The version key `"dogtag-levelb/1"` is declared three times** (Rust `artifact::LEVEL_B_V1`, Kotlin `ZkeyAsset.OWNER_HIDDEN_V1`, Swift `ZkeyAsset.ownerHiddenV1`) — one internal protocol constant, three languages, no shared source. A typo is a runtime rejection, not a compile error; `ZkeyAssetTest.ownerHiddenConsentArtifactsAreTheOnlyCurrentSet` pins the Kotlin side.
+- **NOT here (deliberately)**: no network fetch. The consent descriptor is a real `REGISTRY` entry built from `circuits/consent.circom` with its own zkey + VK pins. The remaining gap is the fetch: every descriptor still resolves to a locally-present artifact.
 
-## Level-B consent proving path (M7 P0)
+## Consent proving path (M7 P0)
 
 The code path that generates a **consent** ZK proof against the frozen `consent.circom` (`DogTagConsent(6)`).
-Before this brick `prove_consent` existed **nowhere** — only Level-A `prove_verification`.
+Before this brick `prove_consent` existed **nowhere** — only the since-retired `prove_verification`.
 It touches NO circuit/VK/ceremony (all frozen) and NO contract; it is a prover-path build to the existing key.
 
-- **The assembler** (`crates/dogtag-standard-rs/src/consent_assemble.rs`, `assemble` feature): the consent analogue of `prover_assemble`. `assemble_consent(&ConsentWitness)` builds the per-tag tree (`build_profile_tree`), EdDSA-signs `M = Poseidon5(dogTagId, purpose, relayer, deadline, consentNonce)` with that tag's OWN per-tag consent key (derived from `(seed, dogTagId)` — see "M5 app-side" below), front-packs the three reserved-leaf inclusion paths into `siblings[6] + pathLen`, and emits the named inputs as `consent_input_map` (circom-prover / FFI) + `consent_circuit_input_value` (server JSON). Built from `consent.circom`, **NOT** the stale Level-A `consent.rs` (whose `M`/nullifier carry `subject`+`R` and would be rejected by the frozen VK).
+- **The assembler** (`crates/dogtag-standard-rs/src/consent_assemble.rs`, `assemble` feature): the ONLY circuit-input assembler in the crate (the retired `prover_assemble.rs` and the stale pre-consent `consent.rs` were both deleted with the owner-revealing layer; `consent_assemble` carries its own `fe_to_dec`). `assemble_consent(&ConsentWitness)` builds the per-tag tree (`build_profile_tree`), EdDSA-signs `M = Poseidon5(dogTagId, purpose, relayer, deadline, consentNonce)` with that tag's OWN per-tag consent key (derived from `(seed, dogTagId)` — see "M5 app-side" below), front-packs the three reserved-leaf inclusion paths into `siblings[6] + pathLen`, and emits the named inputs as `consent_input_map` (circom-prover / FFI) + `consent_circuit_input_value` (server JSON). Built from `consent.circom`.
 - **THE canonical `dogTagId` field (load-bearing, ZK cross-check §2).** `assemble_consent` computes `field_of_value(Integer(handle))` **once** and uses that identical field element for BOTH (a) the circuit `dogTagId` input and (b) the `build_profile_tree` KDF binding that yields `R`; the on-chain `mintCustodial(id, R)` MUST use the SAME field as `id` (`ConsentAssembledInputs::dog_tag_id_field`). A mismatch fails closed at `R != profileRoot(dogTagId)` — a maddening liveness bug, never a safety hole. **Do NOT copy the fixture/`DeviceRootFixtureWitness` raw-`424242n` shortcut into issuance** (`profile_tree.rs:279-287`); the round-trip test `canonical_field_is_used_across_circuit_input_kdf_and_mint_id` + the fail-closed `raw_handle_shortcut_breaks_the_r_binding_fail_closed` pin this.
 - **`nullifier` (`pub[3]`) and `R` (`pub[4]`) are circuit OUTPUTS** — the assembler recomputes them only for on-chain wiring / test assertions; it never feeds them in. `ownerAddress` is the **raw** reserved-leaf field (`field_from_scalar_bytes(addr)`), not `field_of_value`.
-- **FFI** (`prover_ffi::prove_consent`, `prover` feature): mirrors `prove_verification` and its **circom-witnesscalc GRAPH backend** (kept over rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM). Takes the owner seed + disclosed params + `zkey`/`graph` paths; `NUM_PUBLIC_CONSENT = 7`; returns `pub` in the FROZEN OUTPUT order `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. Param parsing is split into `parse_consent_ffi_inputs` (hermetically unit-tested).
-- **Backend** (`crates/dogtag-prover-rs`): `LEVEL_B_V1_DESCRIPTOR` in the version-keyed `REGISTRY`; `ConsentProveInputs` + `Prover::prove_consent_inputs` push the consent signal names (distinct from Level-A's `push_named_inputs`) and share the self-verify/format core with `prove`. The self-verify against the zkey's embedded VK IS a verify against the frozen consent VK (zkey sha256 `f83a111f…`, its exported VK json `27879dd7…`).
-- **Service** (`stacks/vet/api`): `POST /prove-consent` selects the version-keyed consent artifact via a **lazy per-request** `ConsentProver` (`prover.rs`): loaded on first request from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), **fail-closed per REQUEST not boot** (503 on missing/hash-mismatch) so a Level-A `/prove-verification` instance coexists without either blocking the other (M7 §3.5). The device assembles the `circuitInput` **on-device** (cheap field math) and POSTs it; only the heavy Groth16 prove runs server-side. **State the threat model when describing this route's privacy:** the wallet SEED never reaches the server (so the operator cannot reach the owner's other tags or forge future consents), and owner-unlinkability holds against a chain observer and against the relayer - but the POSTed `circuitInput` carries `ownerSecret` AND `ownerAddress` (`consent_assemble.rs:245-246`), so it does **NOT** hold against the prover operator, which can name the owner and link that tag's entire verification history. `docs/MOBILE_OWNER_SECRET.md` marks `ownerSecret` "Never transmit"; this route is the one deliberate exception, kept for devices that cannot prove locally. On-device proving leaks none of it. (The bare claim "preserves owner-unlinkability" was wrong here and in `prover.rs` - e9 E-2.)
+- **FFI** (`prover_ffi::prove_consent`, `prover` feature): the sole proving export (the retired `prove_verification` is gone), on the **circom-witnesscalc GRAPH backend** (kept over rust-witness/wasm2c, which miscompiles i64 field math on 32-bit ARM). Takes the owner seed + disclosed params + `zkey`/`graph` paths; `NUM_PUBLIC_CONSENT = 7`; returns `pub` in the FROZEN OUTPUT order `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`. Param parsing is split into `parse_consent_ffi_inputs` (hermetically unit-tested).
+- **Backend** (`crates/dogtag-prover-rs`): `LEVEL_B_V1_DESCRIPTOR` in the version-keyed `REGISTRY`; `ConsentProveInputs` + `Prover::prove_consent_inputs` push the consent signal names by name (`push_consent_inputs`) and self-verify + format the output. The self-verify against the zkey's embedded VK IS a verify against the frozen consent VK (zkey sha256 `f83a111f…`, its exported VK json `27879dd7…`). (The retired `ProveInputs`/`Prover::prove` fixed-leaf-array path and the `prove-stdin` bin were deleted with the owner-revealing circuit.)
+- **Service** (`stacks/vet/api`): `POST /prove-consent` - the ONLY prover route - selects the version-keyed consent artifact via a **lazy per-request** `ConsentProver` (`prover.rs`): loaded on first request from `CIRCUITS_BUILD_DIR`, cached (`version -> Arc<Prover>`), **fail-closed per REQUEST not boot** (503 on missing/hash-mismatch) so a misconfigured prover never blocks the rest of the backend (M7 §3.5). The device assembles the `circuitInput` **on-device** (cheap field math) and POSTs it; only the heavy Groth16 prove runs server-side. **State the threat model when describing this route's privacy:** the wallet SEED never reaches the server (so the operator cannot reach the owner's other tags or forge future consents), and owner-unlinkability holds against a chain observer and against the relayer - but the POSTed `circuitInput` carries `ownerSecret` AND `ownerAddress` (`consent_assemble.rs:245-246`), so it does **NOT** hold against the prover operator, which can name the owner and link that tag's entire verification history. `docs/MOBILE_OWNER_SECRET.md` marks `ownerSecret` "Never transmit"; this route is the one deliberate exception, kept for devices that cannot prove locally. On-device proving leaks none of it. (The bare claim "preserves owner-unlinkability" was wrong here and in `prover.rs` - e9 E-2.)
 - **The ground truth** is `stacks/vet/api/tests/consent_prove.rs` (`--features prover`): the REAL Rust assembler → `prove_consent_inputs` → verify vs frozen VK → assert the 7 signals in frozen order + `pub[0]==canonical dogTagId` + `pub[4]==R`. It runs against the committed `consent_final.zkey`/`consent.r1cs`/`consent.wasm` (~2 min real prove; self-skips if absent). `consent_prove_parity.rs` verifies the FFI GRAPH proof vs the frozen VK json — run it through `make test-consent-parity`, never the bare cargo command, and note it is **operator-invoked, not CI-run**: no workflow fetches `consent.graph` (see the entry under "Build & test"). `contracts/test/consent-fixture.json` is regenerated to bind the CANONICAL field (`gen-consent-fixture.mjs` no longer uses raw `424242n`); `forge test --match-contract ConsentRegistry` (16 tests) verifies it on-chain.
 
 ## Record provenance block (M7 brick 2 / P2)
@@ -390,12 +377,12 @@ It touches NO circuit/VK/ceremony (all frozen) and NO contract; it is a prover-p
 Every credential record is stamped with which protocol/contract it was created on AND who issued it, carried **BESIDE `R`, never inside `R` or the ZK proof** (M7 §4.2). Additive + back-compat: pre-M7 records have no block and stay verifiable via a defaulted provenance. This touches NO circuit/VK/ceremony and does NOT change `R` or `profile_tree.rs`.
 
 - **The type** (`crates/dogtag-standard-rs/src/wrap.rs`, mirror `packages/dogtag-standard-ts/src/types.ts`): `ProtocolMeta { chainId, version, verificationRegistry, issuerClone, issuerSigner }`, added as `WrappedDoc.protocol: Option<ProtocolMeta>` (`#[serde(default, skip_serializing_if)]` / TS `protocol?`). Absent-by-default so existing docs/fixtures load unchanged; there is no golden WrappedDoc JSON fixture, so an optional field breaks nothing.
-- **TWO `version` strings, do not conflate**: the block's `version` is the *protocol level* `"dogtag-levela/1"` (`LEVEL_A_VERSION` const in `dogtag-standard-rs`, mirror `LEVEL_A_VERSION` in `wrap.ts`); the envelope `WrappedDoc.version` is `"dogtag/1.0"`. Do NOT source the block version from `dogtag-prover-rs`'s `LEVEL_A_V1` (that's the artifact key - same string, different concern).
+- **TWO `version` strings, do not conflate**: the block's `version` is the internal protocol version key `"dogtag-levelb/1"` (`LEVEL_B_VERSION` const in `dogtag-standard-rs` - the SOLE version constant since the retired `LEVEL_A_VERSION` was deleted; the TS `ProtocolMeta.version` string carries the same key); the envelope `WrappedDoc.version` is `"dogtag/1.0"`. Do NOT source the block version from `dogtag-prover-rs`'s `LEVEL_B_V1` (that's the artifact key - same string, different concern). Vet and government stamp `LEVEL_B_VERSION` at issuance; the admin import path assigns the same single version when projecting an unstamped doc into columns.
 - **Provenance is a routing HINT, never authority.** `issuerSigner` is the envelope's *claim* of who issued; it is validated against the on-chain `DogTagIssuer.issuedBy[R]` (`mapping(bytes32=>address) public issuedBy`, set to `msg.sender` in `issue()`). The SDK `verify()` (Rust + TS, kept mirror-symmetric) adds an issuer-signer check via an **optional/default adapter method** (`RpcAdapter::issued_by` returns `Err` by default; TS `issuedBy?`): a present block whose claim != on-chain `issuedBy[R]` -> issuance `INVALID`; **skipped when the block is absent OR the adapter is unwired** (base validity governs). It can only make verification STRICTER - validation ALWAYS re-derives against `doc.issuer.document_store`, NEVER the untrusted block, so a forged block can neither reroute validation nor make an invalid record verify. Property pinned by `verify::tests::provenance_*` (Rust) + the TS `verify() M7 provenance` cases.
 - **Populated at issuance, mirrored to queryable columns** (persist, don't just transmit): vet `Record`, gov `IssuedCredential`, and admin `Pet`+`Credential` gain `chain_id`/`protocol_version`/`verification_registry`/`issuer_signer` (all `Option`, `#[serde(default)]`; whole-struct serde/BSON makes them a transparent Mongo migration). **Admin also gains `issuer_addr`** (the issuerClone) - it previously carried provenance ONLY inside the encrypted `sealed_doc`; this closes that gap.
 - **Where `issuerSigner` comes from per stack** (the honest claim, sourced from the issuer's OWN signer knowledge - never by reading `issuedBy[R]` and copying it, which would make the claim un-falsifiable): gov/admin backend-sign, so it's `chain.signer_address(...)` known at issue. **Vet's is POST-CONFIRM**: at prepare the block's `issuerSigner` is left `""` (wallet mode never learns the signer at build time); at confirm vet derives it from the `RootIssued(root, by)` log (the value it already stores as `signer_address`) and patches both the `issuer_signer` column AND `wrapped_doc.protocol.issuerSigner` (the block sits outside `R`, so patching never perturbs the root).
-- **Back-compat default (§4.4)**: `WrappedDoc::resolved_protocol(chain_id, level_a_registry, onchain_issued_by)` (mirror `resolvedProtocol` in `wrap.ts`) returns a stamped block as-is, else defaults to Level-A (`verificationRegistry` = Level-A registry `0x4E2f0996…`, `version` = `LEVEL_A_VERSION`, `issuerClone` = `IssuerMeta.documentStore`, `issuerSigner` = on-chain `issuedBy[R]`). The admin **import** path is the live consumer: a pre-M7 doc -> no block -> Level-A defaults projected into the columns (`issuer_signer` left absent since `issuedBy[R]` is not read off-chain here).
-- **Config**: `verification_registry_addr` (env `VERIFICATION_REGISTRY_ADDR`, default Level-A `0x4E2f0996…`) - vet already had it; added to gov + admin Config + `.env.example`. Admin also gained a `chain_id` Config field (mirrors the chain client's id).
+- **Back-compat default (§4.4) - DELETED (decision D5).** `WrappedDoc::resolved_protocol` / TS `resolvedProtocol` defaulted an absent block to the retired protocol generation; both were deleted in the final cleanup slice because the testnet is disposable and will be wiped + redeployed fresh, so no pre-unification record survives to need the default. A stamped block is read as-is; the admin import path assigns an unstamped doc the single owner-hidden version/registry inline (`stacks/admin/api/src/routes.rs` - there is no retired generation left to route to).
+- **Config**: gov + admin read `verification_registry_addr` (env `VERIFICATION_REGISTRY_ADDR`, default = the owner-hidden `VerificationRegistryConsent` `0xb9B313C1…`) for unstamped imported-document metadata; vet's routing key is `VERIFICATION_REGISTRY_CONSENT_ADDR`. Admin also gained a `chain_id` Config field (mirrors the chain client's id).
 - **Deferred to M7 P5 (noted, not built here)**: live per-backend `issuedBy` eth-calls (vet ABI/`ChainRpcAdapter`, gov/admin `chain.rs`) so the backends enforce the signer check end-to-end, and the full §4.3 resolution loop (recognized-trio validation of `verificationRegistry`/`issuerClone` against a discovery anchor - that's what makes a forged *registry/clone* safe; P3/P4). This brick ships the envelope block + columns + default + the SDK-enforced signer property only.
 
 ## ProtocolRegistry discovery anchor + signed-manifest fallback (M7 P3)
@@ -409,12 +396,12 @@ The dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B): a small read-most
   - **`minAppVersion` sits on the ARTIFACT axis** because the app gate is a property of the proving artifacts an app must be new enough to LOAD, not of the deployed contracts.
   - The registry stores data and never asserts a zkey proves against a given `verifier` (pins are byte-integrity, the verifier is VK identity) - that compatibility is a governance judgement, which is exactly why the binding is timelocked.
   - Independence is enforced by tests, not just convention: `test_artifact_rotation_leaves_the_contract_set_untouched` / `test_contract_rotation_leaves_the_artifact_set_untouched` / `test_the_two_axes_do_not_share_a_keyspace` in `ProtocolRegistry.t.sol`, mirrored in Rust by `an_artifact_rotation_conflicts_only_on_the_artifact_axis` / `a_trio_rotation_conflicts_only_on_the_contract_axis` (`manifest.rs`) and `an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched` (`stacks/vet/api/tests/discovery_validation.rs`).
-- **On-chain VK identity vs fetch pins - DO NOT conflate (§3.2).** `verifier` (an ADDRESS) is the on-chain VK identity; `zkeySha256`/`witness*Sha256` are byte-integrity FETCH pins. The `verification_key.json` file hash (`27879dd7…` Level-B / `4a4cee60…` Level-A) is the OFF-CHAIN VK identity and is DELIBERATELY NOT an on-chain field - it lives only in the signed manifest. `witnessMobileSha256` (the `.graph`) is published as `0`/unpinned: the graph is not committed (CI fetches it), matching `artifact.rs`'s `witness_graph.sha256 = None`.
+- **On-chain VK identity vs fetch pins - DO NOT conflate (§3.2).** `verifier` (an ADDRESS) is the on-chain VK identity; `zkeySha256`/`witness*Sha256` are byte-integrity FETCH pins. The `verification_key.json` file hash (`27879dd7…` for the consent set; the retired circuit's VK json is gone from the tree) is the OFF-CHAIN VK identity and is DELIBERATELY NOT an on-chain field - it lives only in the signed manifest. `witnessMobileSha256` (the `.graph`) is published as `0`/unpinned: the graph is not committed (CI fetches it), matching `artifact.rs`'s `witness_graph.sha256 = None`.
 - **Timelocked publish, immediate deprecate - on BOTH axes and on the binding.** Each write is `propose…` → (immutable, deploy-time `PUBLISH_TIMELOCK`) → `execute…`, MIRRORING `VerificationRegistryConsent.proposeZkVerifier`/`executeZkVerifier` (a fresh propose resets the ETA; execute stamps `publishedAt=block.timestamp`+`active=true` and appends to the list only on FIRST publish so a swap-republish never dups): `proposeContractSet`/`executeContractSet`, `proposeArtifactSet`/`executeArtifactSet`, and `proposeArtifactBinding`/`executeArtifactBinding`. `DEFAULT_PUBLISH_TIMELOCK` remains 2 days. `DeployProtocolRegistry.s.sol` uses that default and rejects any other value unless `TESTNET_DEPLOY=true`; ROAX deliberately pairs that opt-in with `PUBLISH_TIMELOCK_SECS=0`, while mainnet must leave the opt-in unset and use exactly 2 days. The binding is timelocked because it is the pointer an app follows to decide which bytes to fetch - a one-transaction repoint is exactly the attack the window exists to catch on production.
 - **The binding's published-ness AND active-ness are checked at EXECUTE, not propose.** Both axes must be published and `active` at the moment of execute (`unknown`/`inactive` are distinct revert reasons), which is both stricter (a set deprecated during the window cannot slip through - deprecate is the emergency lever, so a stale proposal must not be able to bind a just-retired set) and what lets the FIRST rollout run all three timelocks CONCURRENTLY - propose the sets and the binding together, wait once, then execute sets-then-binding. So publishing is still a two-phase script.
 - `deprecateContractSet`/`deprecateArtifactSet` flip `active=false` immediately (a safety lever), NEVER delete the published record - history stays pinned so old records self-route (§7.3). Each axis is an independent lever: retiring a compromised artifact set does not touch the trio, and the app still stops (both `active` bits must hold - they are carried separately to the app and required jointly by `validate`). **Deprecate ALSO cancels any in-flight proposal for that id** (`delete _pending*[id]` + the ETA), which is what makes it a true EMERGENCY HALT: without it, a swap proposed before the compromise was found - and whose configured timelock had already elapsed - could be executed afterwards and flip `active` straight back with no fresh review window. That bites hardest on the artifact axis, where `activeArtifactSetOf` still points at the retired set, so a re-activation would instantly restore compromised artifacts as live for every bound contract set. Re-publishing after a deprecate therefore costs a fresh propose + the full configured timelock. Cancelling a PENDING proposal is **not** deleting history - the published record and its `*List` entry are untouched. Pinned by `test_deprecate_{contract,artifact}_set_cancels_an_in_flight_proposal` + `test_republish_after_deprecate_requires_a_fresh_timelock`.
 - **Resolvers read the axis they belong to.** `getContractSet(id)` is for anything checking trio addresses / verifier / circuitId; `getArtifactSet(id)` and `getActiveArtifactSet(contractSetId)` (which follows the binding) are for anything fetching a zkey or enforcing `minAppVersion`; `resolve(contractSetId)` returns both halves in one call. All fail closed on an unknown id, and artifact resolution fails closed with `no artifact binding` when a contract set has no artifacts bound yet (a valid intermediate rollout state).
-- **Pins are single-sourced from `crates/dogtag-prover-rs/src/artifact.rs`** (the descriptors, file-verified against `circuits/build/*` by the crate's `level_{a,b}_descriptor_pins_match_the_real_artifacts` tests, which stream-hash even the 24-64 MB zkeys). `contracts/script/ProtocolVersions.sol` reuses the SAME hex (the DRY source both the publish script AND `ProtocolRegistry.t.sol` import). The Solidity test can only re-hash the ~4 MB `.wasm` in-EVM (`vm.readFileBinary` MemoryOOGs at the 11-30 MB r1cs / 24-64 MB zkey), so the big-file pins are verified by the Rust tests - that split is intentional, not a gap. `foundry.toml` gained a `../circuits/build` read permission for the wasm hash.
+- **Pins are single-sourced from `crates/dogtag-prover-rs/src/artifact.rs`** (the consent descriptor; file-verified against `circuits/build/*` by the fail-closed loader plus the consent-prove tests, which stream-hash even the ~25 MB zkey). `contracts/script/ProtocolVersions.sol` reuses the SAME hex (the DRY source both the publish script AND `ProtocolRegistry.t.sol` import). The Solidity test can only re-hash the ~4 MB `.wasm` in-EVM (`vm.readFileBinary` MemoryOOGs at the 11+ MB r1cs / ~25 MB zkey), so the big-file pins are verified by the Rust tests - that split is intentional, not a gap. `foundry.toml` gained a `../circuits/build` read permission for the wasm hash.
 - **Signed-manifest fallback (1B)** = `crates/dogtag-prover-rs/src/manifest.rs`: an **ed25519** dogtag-key-signed JSON of the SAME version content (§5.2 TRUST tier), built DRY from the artifact descriptor + `VersionDeployment` (the on-chain axis: trio addresses) + `ArtifactRelease` (the artifact axis: artifact-set name, base URL, `minAppVersion`; `artifact_release_for(version)` is the off-chain mirror of `activeArtifactSetOf`). The manifest carries BOTH axis identities (`version_id` and `artifact_set_id`). It is a CACHE/FALLBACK, never a second authority: `reconcile(signed, pinned_pubkey, &OnchainContractSet, &OnchainArtifactSet)` takes the two axes SEPARATELY (they are read separately on-chain, and a caller must be able to reconcile against a freshly-rotated artifact set without re-reading the contract set), verifies the sig, then returns the ALWAYS-on-chain authoritative fields of both + any `FieldConflict`s - **on conflict, on-chain wins**. `verify()` checks against the PINNED pubkey (not the envelope's advertised key), so a wrong-signer/tampered manifest fails. Real anchor is a compile-pinned `DOGTAG_MANIFEST_PUBKEY` (`None` until go-live). Served by vet-api `GET /protocol/manifest?version=…` (`stacks/vet/api/src/protocol.rs`; `version` is a query param because it contains `/`; key from env `DOGTAG_MANIFEST_SIGNING_KEY`, unset ⇒ 503; a NEW route that does NOT touch the resolve GET).
 - **Publish scripts** (`DeployProtocolRegistry.s.sol` + `PublishProtocolVersions.s.sol`): deploy is admin/publisher = governance `0x8E27E117…`; `PUBLISH_TIMELOCK_SECS` defaults to 2 days and `TESTNET_DEPLOY=true` is the mandatory loud opt-in for any non-default delay. Publish is TWO phases (`…Propose`, then `…Execute` at/after the printed ETAs), reading the registry address from `PROTOCOL_REGISTRY`. `ProtocolVersions.sol` now authors the single owner-hidden `dogtag-levelb/1` version as THREE values - `levelBContracts()`, `levelBArtifacts()`, and the binding - so the FIRST publication uses the two-axis scheme from the start (there is nothing to migrate). Only `dogtag-levelb/1` publishes (the retired owner-revealing `dogtag-levela/1` is no longer authored here), with the confirmed roax.json trio addresses + the frozen pins. The registry is NOT yet on-chain (no address in `deployments/roax.json` yet - deploy + record it at go-live).
 
@@ -427,13 +414,13 @@ The client TRUST gate on top of P3 (M7 §5.2 / §5.3): the resolve GET now also 
 - **Fail-closed checks** (each returns `Err`, the caller aborts): version-coherence, artifact-axis coherence (`ArtifactSetIncoherent` - the anchor's `artifact_set` must hash to its `artifact_set_id`; the platform never claims the artifact axis, so this is the same caller-integrity guard applied independently to the second axis), BOTH `active` bits (deprecating either axis refuses the version - anti-downgrade §8.4), `chainId`, `verificationRegistry` (case-insensitive address - THE anti-redirect trip), `purpose`, and `minAppVersion`. The two `0x`-hex FIELDS (`versionId`, `verificationRegistry`) compare **case-insensitively** so an app formatting an `eth_call` bytes32/address as uppercase hex is not hard-failed; the `protocolVersion` and `purpose` strings are semantic, not hex, so they stay exact compares. **`minAppVersion` is compared NUMERICALLY, not lexically** (`1.10.0` > `1.9.0`; hand-rolled `[u64;3]` component compare because the workspace has no semver crate), fail-closed on malformed input.
 - **`purpose` is checked against the app's OUT-OF-BAND intent (`ClientContext::expected_purpose`), NOT a chain field.** Neither on-chain struct carries a purpose (purpose is per-verification, not per-version), so there is nothing chain-derived to compare against - the anchor cannot supply it. The expected purpose is the user/app's own intent for the scan and MUST come from a source independent of the platform's claim (comparing the platform's claim against the platform's own session data would be vacuous). This is a consent-integrity check complementary to the registry/chain anti-redirect checks.
 - **The convenience tier is on BOTH resolve GETs** (`stacks/vet/api/src/routes.rs` `export_session_resolve` `/x/` + `profile_bind_resolve` `/p/`), as an additive nested `unverifiedClaims` block (the pre-existing top-level fields were unchanged - back-compat; `/p/` has since additionally gained the `pet` + `ownerIdentity` containers of the mobile issuance contract - see `profile_bind_resolve` and implementation §3.11). Built by `app::convenience_claims`. `/x/` (verify) uses `VerifySession.purpose`; `/p/` (issuance) has no stored purpose so it uses the record type `DOG_PROFILE` as the app-knowable namespace (not fabricated).
-- **The version-coherence check is a CALLER-INTEGRITY guard, NOT the downgrade defense.** The caller resolves the anchor BY `claims.protocolVersion`, so a platform that merely CLAIMS an older version resolves that version's own legitimate record and coheres with it; the check only catches "the caller resolved the wrong anchor". The app is version-AGNOSTIC **by design** (lock C: nothing bundled - it discovers the version), so there is deliberately NO `expected_version` to pin against - adding one would contradict the architecture. The version-DOWNGRADE defense is therefore **OPERATIONAL**: dogtag MUST `deprecateContractSet` superseded versions in the `ProtocolRegistry` (once `dogtag-levelb/1` is the standard, `dogtag-levela/1` MUST be marked `active=false`) so the validator's `active` check rejects them, backed by `minAppVersion` enforcement. Publishing a superseded version as still-`active` silently permits a downgrade onto it.
+- **The version-coherence check is a CALLER-INTEGRITY guard, NOT the downgrade defense.** The caller resolves the anchor BY `claims.protocolVersion`, so a platform that merely CLAIMS an older version resolves that version's own legitimate record and coheres with it; the check only catches "the caller resolved the wrong anchor". The app is version-AGNOSTIC **by design** (lock C: nothing bundled - it discovers the version), so there is deliberately NO `expected_version` to pin against - adding one would contradict the architecture. The version-DOWNGRADE defense is therefore **OPERATIONAL**: dogtag MUST `deprecateContractSet` superseded versions in the `ProtocolRegistry` so the validator's `active` check rejects them, backed by `minAppVersion` enforcement (moot for the retired generation - its `dogtag-levela/1` key was never published and is no longer authored, so only `dogtag-levelb/1` will ever be on the registry at go-live; the rule binds any FUTURE superseding version). Publishing a superseded version as still-`active` silently permits a downgrade onto it.
 That operational lever is now **WIRED, not merely documented**: `active` is a real member of BOTH `dogtag_prover::manifest::OnchainContractSet` and `OnchainArtifactSet` (mirroring the two Solidity `active` bits) and both ride through `reconcile` into `Reconciliation::contract_set`/`::artifact_set`, from which `anchor_from_reconciliation` SOURCES them into the two SEPARATE `TrustedAnchor` bits `contract_set_active`/`artifact_set_active` - passed through, NOT AND-ed there; `validate` requires both, so deprecating EITHER axis fails closed with `DeprecatedVersion` naming the axis that fired.
 `reconcile` deliberately does NOT compare `active` against the manifest (the signed manifest carries no lifecycle bit, so a disagreement is impossible by construction, not suppressed); it is a pass-through whose only attestation is the chain.
 P4 still does NOT add a live Rust `ProtocolRegistry` eth-call reader (P3 deferred that) - the app reads `getContractSet`/`getActiveArtifactSet` natively into the **two separate** `TrustedAnchor` bits `contract_set_active` (Swift/Kotlin `contractSetActive`) and `artifact_set_active` (`artifactSetActive`) - but the bits now flow end-to-end through the reconcile/mapping path, so the defense is enforceable from both the app path and the server path.
 **Wire BOTH, never one, and never pre-AND them into a single field.** `validate` requires both and is the only place the pair is enforced, so an implementer who sets `contractSetActive = contractSet.active` and leaves the artifact bit `true` silently discards the artifact-axis kill switch - `deprecateArtifactSet` on a compromised zkey would then not stop the app, defeating the headline R-5 property that each axis is an independent lever. The refusal names which lever fired (`DiscoveryError::DeprecatedVersion { axis: DeprecatedAxis::ContractSet | ArtifactSet }`, rendered into the message so it survives the FFI's flattening to a string), because the remedy differs: a retired contract set means the whole version is gone, a retired artifact set means only the artifacts were pulled and a newer set may already be published for the same version.
 End-to-end coverage: `onchain_deprecation_flows_through_reconciliation_and_fails_closed` in `stacks/vet/api/tests/discovery_validation.rs`.
-- **`convenience_claims`' hardcoded `protocolVersion` and the config `verificationRegistry` MUST move together at the M7 cutover.** `app::convenience_claims` hardcodes `LEVEL_A_VERSION` while `verificationRegistry` comes from `VERIFICATION_REGISTRY_ADDR` (mirroring the existing `protocol_meta` pattern). Pointing the env at the Level-B registry WITHOUT bumping the version constant emits an internally incoherent claim pair, and every validating client trips `RegistryMismatch`. Fail-closed (safe), but it breaks the flow - flip both in the same change.
+- **`convenience_claims`' pinned `protocolVersion` and the config `verificationRegistry` MUST move together.** `app::convenience_claims` (`stacks/vet/api/src/app.rs:123`) is a single mode-free builder pinned to the unified internal version key (`LEVEL_B_VERSION`) while `verificationRegistry` comes from `VERIFICATION_REGISTRY_CONSENT_ADDR` (mirroring the `protocol_meta` pattern). Pointing the env at a different registry WITHOUT moving the version constant emits an internally incoherent claim pair, and every validating client trips `RegistryMismatch`. Fail-closed (safe), but it breaks the flow - flip both in the same change.
 - **`minAppVersion` tolerates a prerelease/build suffix** (`1.4.0-rc1`, `1.4.0+build.5`): `parse_semver` strips everything from the first `-`/`+` and compares the numeric `major.minor.patch` core, so real mobile builds are not locked out of verifying. Still fail-closed `BadSemver` on a non-numeric/empty core (`1.x.0`, `-rc1`, `1..0`, `1.4.0.1`). Prerelease ORDERING is deliberately not modelled - a `-rc` build counts as its release core.
 - **Server-side trust-tier mapping** (`stacks/vet/api/src/discovery.rs`): `anchor_from_manifest(&Manifest, contract_set_active, artifact_set_active)` / `anchor_from_reconciliation(&Reconciliation)` map the prover-crate manifest types into `TrustedAnchor`. Note the asymmetry: the ONLINE reconcile path takes NO lifecycle params (it sources both bits from the on-chain records and passes them through SEPARATELY - it does not AND them; `validate` owns the enforcement - see the downgrade-defense note above), while the OFFLINE manifest-only path still takes them and its callers pass `true`/`true`, since a served manifest carries no lifecycle bit and is presumed active. The manifest is the source of the READABLE fields (on-chain the contract set returns `circuitId` as a keccak hash and carries no version string / no chain id); on-chain precedence is enforced by P3 `reconcile` BEFORE a manifest may feed the validator (`anchor_from_reconciliation` returns the conflicts if the manifest disagrees). This mapping lives in vet-api (which links both crates), keeping standard prover-free. The signed-manifest-fallback path is covered by `stacks/vet/api/tests/discovery_validation.rs`.
 
@@ -445,19 +432,19 @@ Delegation = an owner authorizing a **non-owner** (caretaker at the groomer) for
 - **Do NOT "add delegation" by committing a second reserved triple into `R`.** It looks nearly free (the frozen circuit would accept it - see below), and it is a trap: `profileRoot` is write-once, so delegates would be fixed at mint, permanently unrevocable, unscoped, and indistinguishable from the owner on every public signal. Rejected deliberately; `docs/DELEGATION.md` §3.2 has the full reasoning.
 - **NORMATIVE INVARIANT (P-e): exactly ONE `(owner.address, owner.consentKey, owner.secret)` reserved triple per `R`, always.** `consent.circom` verifies **three independent leaf inclusions** (`:155-157`) and its soundness argument ("pinning keyPath forces the unique real leaf") is an **assumption about the tree, not a property the circuit enforces**. It holds today because `build_profile_tree` derives all three reserved leaves internally and rejects any *attribute* at a reserved keyPath (`profile_tree.rs`, compared on the derived keyPath field). **Any future issuance entry point** - delegate-issuance API, externally-supplied leaf commitments, import/batch paths - **MUST preserve this**. A proposal needing a second triple is not a guard tweak; it changes the circuit's soundness argument.
 - **`DEPTH` is now the ONLY remaining ceremony-gated decision** before the mainnet consent re-run. `DogTagConsent(6)` caps a tree at 64 leaves and is baked into the version identity (`circuitId == keccak256("consent.circom/DogTagConsent(6)")`). Triple coherence is **not** ceremony-gated - the P-e invariant covers it.
-- **Delegation is not owner change.** Level-B recovery is a fresh custodial issuance under a new `dogTagId` + new `R` (see "M6 app-side - recovery is re-issue"). Never implement delegation as a partial owner rebind, or recovery as a delegation.
+- **Delegation is not owner change.** Recovery is a fresh custodial issuance under a new `dogTagId` + new `R` (see "M6 app-side - recovery is re-issue"). Never implement delegation as a partial owner rebind, or recovery as a delegation.
 
 ## ZK trusted-setup ceremony
 
-- This section is the **Level-A `verification.circom`** ceremony. **RETIRED / HISTORICAL:** the Level-A circuit and its ceremony scripts (`scripts/setup.sh`, `scripts/ceremony.sh`) were removed with the owner-revealing layer, so every ceremony command in this section is non-runnable provenance for the already-deployed Level-A verifier - only the frozen artifacts + on-chain addresses stay live. The **Level-B `consent.circom`** circuit has its OWN M3 ceremony - see "M3 trusted-setup ceremony" under "Level-B `DogTagConsent` circuit (M2)" and `docs/CEREMONY_TRANSCRIPT.consent.md`. The surviving ceremony scripts are the consent ones: `scripts/setup-consent.sh` (DEV consent) + `scripts/ceremony-consent.sh` (consent, testnet single-contributor).
+- This section is the **Level-A `verification.circom`** ceremony. **RETIRED / HISTORICAL:** the Level-A circuit and its ceremony scripts (`scripts/setup.sh`, `scripts/ceremony.sh`) were removed with the owner-revealing layer, so every ceremony command in this section is non-runnable provenance for the already-deployed retired-generation verifier - only the frozen artifacts remain in-tree, and the deployed addresses remain on the disposable testnet pending the fresh wipe/redeploy. The **Level-B `consent.circom`** circuit has its OWN M3 ceremony - see "M3 trusted-setup ceremony" under "Level-B `DogTagConsent` circuit (M2)" and `docs/CEREMONY_TRANSCRIPT.consent.md`. The surviving ceremony scripts are the consent ones: `scripts/setup-consent.sh` (DEV consent) + `scripts/ceremony-consent.sh` (consent, testnet single-contributor).
 - Two now-removed verification scripts (historical): `circuits/scripts/setup.sh` was the **DEV/TEST** single-contributor setup (self-generated ptau, throwaway beacon) and must never have secured production; `circuits/scripts/ceremony.sh` was the **production** multi-party ceremony (public Hermez phase-1 ptau + ≥3 independent contributors + public beacon). Subcommands were: `init` → `contribute IN OUT "name"` (×N) → `beacon LAST 0x<hex> "note"` → `finalize`.
 - Security model is **1-of-N honest, NOT majority/multisig**: the setup is sound if *any one* contributor destroys their toxic waste (entropy); broken only if *all* collude. So maximize diverse, independent contributors — adding more can only help. Do not describe it as a threshold/quorum scheme.
 - The testnet key currently on-chain is a **single-operator self-run** (`docs/CEREMONY_TRANSCRIPT.md`, audit Finding H3) → forgeable; a production Level-A key would have required re-running the now-removed `ceremony.sh` (historical runbook `docs/CEREMONY_RUNBOOK.md`). The ceremony gates only the ZK path (`recordVerificationZK`); the ECDSA path and three-pillar trust model are unaffected.
 - Circuit `DogTagVerification(24,5)` = 94,459 constraints → needs **2^17** powers of tau (`PTAU_POW=17`).
 - Final artifacts: `circuits/build/verification_final.zkey` (proving key the Rust prover loads + pins SHA-256, impl §11.8(f)), `circuits/Groth16Verifier.sol` (vkey compiled in → deployed), `circuits/build/verification_key.json` (for `snarkjs groth16 verify`). `finalize` exports all three; verify with `snarkjs zkey verify r1cs ptau zkey` → `ZKey Ok!`.
 - On-chain verifier swap has **no single-call setter**: `VerificationRegistry.proposeZkVerifier(addr)` → wait `ZK_TIMELOCK = 2 days` → `executeZkVerifier()`; confirm with `zkVerifier()`. Live registry `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` (`contracts/deployments/roax.json`; the prior `0x8bA836eCe9…` is `VerificationRegistry_4arg_legacy`).
-- **The live `VerificationRegistry` address is baked into MANY committed consumers that must move together on any redeploy** (the 4-arg→6-arg fix split-brained precisely because only 2 of them were updated). The full set: `contracts/deployments/roax.json` (canonical; keep the old address as `VerificationRegistry_4arg_legacy`), the two compile-time mobile bundles `apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json` (rebuild+reinstall both), the web/shared config `packages/ui/src/wallet/contracts.ts` + `stacks/owner/web/src/lib/config.ts`, the oversight indexer's `DEFAULT_VREG` in `stacks/indexer/api/src/main.rs` (its anti-spoof gate drops `Verified` logs from any address it does not recognize — since **M8** it recognizes BOTH `DEFAULT_VREG` and the Level-B `DEFAULT_VREG_CONSENT`, so M7's flip has no oversight blind window) + `stacks/indexer/.env.example`, the demo/e2e scripts `scripts/{e2e-zk,demo-up,e2e-smoke}.sh` (`VR=`), the `stacks/{vet,groomer,admin,indexer}/**/.env.example` files, and the live-address tables in `README.md` + `AGENTS.md` + `docs/{DEPLOY,DEPLOYMENT,DEMO,GROOMER_ZK_DEMO,REMOTE_DEPLOYMENT,CEREMONY_RUNBOOK}.md`. (The Level-A `RedeployVerificationRegistry.s.sol` that printed this checklist post-deploy was removed with the owner-revealing layer.) Do NOT rewrite the historical records (`roax.json` `_4arg_legacy`/`_zk_verifier_swap`/`_verification_registry_redeploy` fields, `docs/CEREMONY_TRANSCRIPT.md`) — those intentionally pin the old address.
-- The **v2 ceremony verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` is the LIVE on-chain verifier** since the 2026-07-02 `executeZkVerifier()` cutover (tx `0xe2e3270f…40e70`, block 103419); the v1 verifier `0x138b4330…1761` is retired and rejects v2-key proofs (and vice versa). The live verifier address is baked in several places that must move together on any future swap: `contracts/deployments/roax.json`, `README.md` (Live ROAX addresses table), `stacks/owner/web/src/lib/config.ts`, `packages/ui/src/wallet/contracts.ts`, `scripts/e2e-zk.sh` (`ZKV=`), the live-chain parity tests (`crates/dogtag-standard-rs/tests/prove_parity.rs`, `stacks/vet/api/tests/prove_verification.rs`), and the docs that quote the live address (`docs/DEPLOY.md`, `docs/DEPLOYMENT.md`, `docs/DEMO.md`, `docs/CEREMONY_RUNBOOK.md`). The **mobile apps also carry the coupling** - each bundles the verifier's paired zkey/graph plus `roax.json` addresses and must be rebuilt + reinstalled on any swap (see "Building the mobile (iOS) holder app").
+- **The retired-generation `VerificationRegistry` address (still deployed pending the fresh wipe) is baked into MANY committed consumers that must move together on any redeploy** (the 4-arg→6-arg fix split-brained precisely because only 2 of them were updated). The full set: `contracts/deployments/roax.json` (canonical; keep the old address as `VerificationRegistry_4arg_legacy`), the two compile-time mobile bundles `apps/ios/DogTag/roax.json` + `apps/android/app/src/main/assets/roax.json` (rebuild+reinstall both), the web/shared config `packages/ui/src/wallet/contracts.ts` + `stacks/owner/web/src/lib/config.ts`, the oversight indexer's registry gate in `stacks/indexer/api/src/main.rs` (its anti-spoof gate drops `Verified` logs from any address it does not recognize; the M8 dual-decode has since been collapsed and it now recognizes only `DEFAULT_VREG_CONSENT`) + `stacks/indexer/.env.example`, the demo/e2e scripts `scripts/{e2e-zk,demo-up,e2e-smoke}.sh` (`VR=`), the `stacks/{vet,groomer,admin,indexer}/**/.env.example` files, and the live-address tables in `README.md` + `AGENTS.md` + `docs/{DEPLOY,DEPLOYMENT,DEMO,REMOTE_DEPLOYMENT,CEREMONY_RUNBOOK}.md`. (The retired `RedeployVerificationRegistry.s.sol` that printed this checklist post-deploy was removed with the owner-revealing layer, and `docs/GROOMER_ZK_DEMO.md` has been deleted.) Do NOT rewrite the historical records (`roax.json` `_4arg_legacy`/`_zk_verifier_swap`/`_verification_registry_redeploy` fields, `docs/CEREMONY_TRANSCRIPT.md`) — those intentionally pin the old address.
+- The **v2 ceremony verifier `0xEEFCfAF026931b7325472A88fd14Ee780Da13559` is the verifier the deployed retired-generation registry still points at** since the 2026-07-02 `executeZkVerifier()` cutover (tx `0xe2e3270f…40e70`, block 103419); the v1 verifier `0x138b4330…1761` was retired first and rejects v2-key proofs (and vice versa). Its address was baked into several committed consumers that had to move together on a swap: `contracts/deployments/roax.json`, `README.md` (Live ROAX addresses table), `stacks/owner/web/src/lib/config.ts`, `packages/ui/src/wallet/contracts.ts`, `scripts/e2e-zk.sh` (`ZKV=`), the live-chain parity tests (`crates/dogtag-standard-rs/tests/prove_parity.rs`, `stacks/vet/api/tests/prove_verification.rs` - both since deleted with the retired circuit), and the docs that quote the address (`docs/DEPLOY.md`, `docs/DEPLOYMENT.md`, `docs/DEMO.md`, `docs/CEREMONY_RUNBOOK.md`). The **mobile apps also carry the coupling** - each bundles its verifier's paired zkey/graph plus `roax.json` addresses and must be rebuilt + reinstalled on any swap (see "Building the mobile (iOS) holder app"); that coupling now binds the consent pair to `Groth16VerifierConsent`.
 
 ## Mobile end-to-end testing (Android, on-device ZK proof)
 
@@ -468,30 +455,25 @@ native code path the privacy-preserving groomer export uses — UniFFI → Rust 
 
 ### How the e2e works (and why it's shaped this way)
 
-The production export→prove path is entangled with the camera QR scan, a biometric prompt, live
-ROAX-chain RPC calls (groomer whitelist, bind nonce, `consumed(nullifier)` polling) and a groomer
-host — none reliably automatable on an emulator. So instead of faking all of that, the e2e drives a
-**debug-only ZK self-test** on the Profile screen (`ui/screens/ZkSelfTest.kt`, gated by
-`BuildConfig.DEBUG` — never in release). It runs, on-device:
+The production scan→prove path is entangled with the camera QR scan, a biometric prompt, live
+ROAX-chain RPC calls and a verifier host — none reliably automatable on an emulator. So instead of
+faking all of that, the e2e drives a **debug-only ZK self-test** on the Profile screen
+(`ui/screens/ZkSelfTest.kt`, gated by `BuildConfig.DEBUG` — never in release). It runs, on-device:
 
-1. `signConsentEddsa` — EdDSA-BabyJubjub consent signature (the circuit re-verifies it inside the proof).
-2. `proveVerification` — the REAL on-device Groth16 proof (graph witnesscalc + bundled zkey).
-3. public-signal check — the proof's 7 `pubSignals` must equal the server-recomputed vector, plus the
-   32-bit-ARM regression guard (nullifier `pub[4]` and keyHash `pub[5]` non-zero).
-4. `keyHashHex` + `bindConsentKeyDigestHex` — the consent-key bind digest.
+1. `proveConsent` - the REAL on-device owner-hidden Groth16 consent proof (graph witnesscalc +
+   bundled `consent_final.zkey`), over a fixed seed/attribute vector.
+2. public-signal check - the proof's 7 `pubSignals` must equal the Rust consent parity vector
+   exactly, plus a non-zero nullifier (`pub[3]`) guard.
 
 It renders the stable text `ZK-SELFTEST: PASS` / `ZK-SELFTEST: FAIL` that the Maestro flow asserts on.
 The Maestro flow also asserts the Verify tab's `mobile root == server root: PASS` (the import/issuance
 trust core through the native `.so`).
 
-The fixed input vector is `apps/android/app/src/main/assets/zk_selftest.json` (committed, small). It is
-generated by, and byte-for-byte mirrors, `crates/dogtag-standard-rs/tests/prove_parity.rs`
-(`fixed_prove_inputs`), so the device proof MUST reproduce the same public signals the server SDK
-computes. Regenerate it after any change to that test/circuit:
-
-```bash
-cargo test -p dogtag-standard-rs --features prover dump_selftest_fixture -- --nocapture
-```
+The fixed input vector and the seven expected signals are embedded in `ZkSelfTest.kt` and
+byte-for-byte mirror the fixture in
+`crates/dogtag-standard-rs/tests/consent_prove_parity.rs`, so the device proof MUST reproduce the
+same public signals the host SDK computes.
+Keep the two in step by hand after any change to that test (do not invent a new local vector).
 
 ### Running the e2e locally
 
@@ -503,9 +485,9 @@ native libs, so an x86_64 emulator cannot load them. On this machine the SDK is 
 export ANDROID_HOME=~/Library/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973
 
-# 1. Vendor the gitignored proving artifacts into the app bundle (see docs/MOBILE_BUILD.md §4).
-cp circuits/build/verification_final.zkey apps/android/app/src/main/assets/
-cp circuits/build/verification.graph      apps/android/app/src/main/assets/   # see graph note below
+# 1. Vendor the gitignored consent proving artifacts into the app bundle (see docs/MOBILE_BUILD.md §4).
+cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/
+cp circuits/build/consent.graph      apps/android/app/src/main/assets/   # see graph note below
 
 # 2. Build the native prover libs into jniLibs (gitignored; Gradle does NOT run cargo-ndk).
 cargo ndk -t arm64-v8a -t armeabi-v7a -o apps/android/app/src/main/jniLibs \
@@ -524,32 +506,32 @@ maestro test apps/android/maestro/zk_e2e.yaml
 ### Sharp edges / gotchas
 
 - **Witness graph is not in the repo and not built by the published crate.**
-  `circuits/build/verification.graph` (`wtns.graph.001` format, consumed by `circom_witnesscalc::
+  `circuits/build/consent.graph` (`wtns.graph.001` format, consumed by `circom_witnesscalc::
   calc_witness`) is gitignored AND the published `circom-witnesscalc` 0.2.1 crate ships no
-  `build-circuit` binary (only `calc-witness`/`cvm-compile`). It was built from the now-retired
-  `circuits/verification.circom` (that owner-revealing source has been removed) by iden3's `build-circuit`
-  tool, so a fresh graph can no longer be generated from source — use a retained/vendored copy (below).
-  Validate any graph against the
-  zkey with `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
-  **Consequence:** a fresh clone/worktree FAILS `prove_parity` with `missing witness graph:
-  circuits/build/verification.graph` until you vendor one — that failure is environmental, not a
-  regression. Past iOS builds leave real copies under
-  `~/Library/Developer/Xcode/DerivedData/DogTag-*/Build/Products/*/DogTag.app/verification.graph`;
-  `cp` one into `circuits/build/` (gitignored) to run the test. **More than one graph is in
-  circulation** — the one that validates against the committed testnet zkey is sha256
-  `81824b2fb5ae8b22570549d572e6af0471bfc9366b2ba25019360cb8449c72b9` (~2 991 853 B); a `cf87364c…`
-  copy also exists and is NOT the one. This is also why the version-keyed descriptor leaves the graph
-  unpinned (see "Version-keyed proving artifacts").
-- **arm64 emulator only** — see above. `Build.SUPPORTED_64_BIT_ABIS` being empty (32-bit-only) routes
-  to the remote prover-service instead, which is a different (network) path the self-test does not cover.
+  `build-circuit` binary (only `calc-witness`/`cvm-compile`). Build it out-of-band from the frozen
+  `circuits/consent.circom` with iden3's `build-circuit` tool, or vendor a retained copy /
+  `DOGTAG_ARTIFACTS_URL` fetch (the CI approach). Validate any graph against the zkey with
+  `make test-consent-parity` (wraps `cargo test -p dogtag-standard-rs --features prover
+  on_device_consent_proof_verifies_and_pub_matches`).
+  **Consequence:** a fresh clone/worktree self-skips (or, wrapped, fails loudly on) the consent
+  parity gate with a missing `circuits/build/consent.graph` until you vendor/build one - that
+  failure is environmental, not a regression. This is also why the version-keyed descriptor leaves
+  the graph unpinned (see "Version-keyed proving artifacts").
+  (The retired circuit's `verification.graph` can no longer be rebuilt at all - its circom source is
+  gone; only retained copies exist, and they matter only to the not-yet-swapped iOS `pbxproj`
+  placeholders, not to proving.)
+- **arm64 emulator only** — see above. `Build.SUPPORTED_64_BIT_ABIS` being empty (32-bit-only) has no
+  on-device prover; the retired remote `/prove-verification` fallback is gone, and the consent
+  server-prove fallback (`POST /prove-consent`) is the replacement concept - the backend route
+  exists, but the mobile wiring lands in a later slice, so the self-test covers 64-bit devices only.
 - **Gradle wrapper jar gitignored** — a global `*.jar` ignore drops `gradle-wrapper.jar`. Use system
   Gradle 9.5.1, or `gradle wrapper` to regenerate it.
 - **`buildConfig = true`** is enabled in `app/build.gradle.kts` so `BuildConfig.DEBUG` gates the
   self-test card.
-- **`verifyConsentEddsa` SIGSEGVs via JNA on arm64** — calling that specific UniFFI export from Kotlin
-  crashed natively on the emulator. It is redundant here (the circuit verifies the EdDSA signature as
-  a proof constraint), so the self-test omits it; if you need on-device EdDSA verify, investigate the
-  JNA binding for that function before relying on it.
+- **JNA can SIGSEGV on individual UniFFI exports** - the (since-deleted) `verifyConsentEddsa` export
+  crashed natively on the arm64 emulator when called from Kotlin while every sibling export worked.
+  If a new export crashes the same way, suspect the JNA binding for that specific function before
+  suspecting the Rust.
 
 ### CI
 
@@ -571,16 +553,13 @@ PASS` (import/issuance trust core) and the Profile screen's `ZK-SELFTEST: PASS`.
 
 `apps/ios/DogTag/ZkSelfTestScreen.swift` (`ZkSelfTestCard`) is the Swift port of Android
 `ui/screens/ZkSelfTest.kt`, wrapped in `#if DEBUG` so it never ships in a release build. It runs, on
-the device's own arm64 code: `signConsentEddsa` → `proveVerification` (the REAL on-device Groth16
-proof) → public-signal check (7/7 == the server-recomputed vector, plus the nullifier/keyHash non-zero
-guard) → `keyHashHex` + `bindConsentKeyDigestHex`. It reads the SAME fixed vector both apps share,
-`apps/ios/DogTag/zk_selftest.json`, which is byte-for-byte identical to the Android fixture and emitted
-by the SAME test (`crates/dogtag-standard-rs/tests/prove_parity.rs::dump_selftest_fixture`, which now
-writes both apps' copies):
-
-```bash
-cargo test -p dogtag-standard-rs --features prover dump_selftest_fixture -- --nocapture
-```
+the device's own arm64 code: `proveConsent` (the REAL on-device owner-hidden Groth16 consent proof)
+→ public-signal check (7/7 == the Rust consent parity vector, plus a non-zero nullifier guard).
+The fixed inputs and the seven expected signals are embedded in the screen and mirror the fixture in
+`crates/dogtag-standard-rs/tests/consent_prove_parity.rs` exactly, matching the Android
+`ZkSelfTest.kt` vector.
+Keep all three in step by hand after any change to that test; do not replace the vector with a
+locally invented one.
 
 ### Building the on-device prover xcframework + running the e2e locally
 
@@ -590,9 +569,15 @@ committed `apps/ios/DogTag/dogtag_standard.swift` ABI-consistent), then assemble
 Apple-Silicon Mac:
 
 ```bash
-# 1. Vendor the gitignored proving artifacts into the app bundle (docs/MOBILE_BUILD.md §4).
-cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
-cp circuits/build/verification.graph      apps/ios/DogTag/verification.graph
+# 1. Vendor the gitignored CONSENT proving artifacts into the app bundle (docs/MOBILE_BUILD.md §4)
+#    - these are what the app actually proves with (consent.graph is built out-of-band; see gotchas).
+cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
+cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
+# CAVEAT: the committed project.pbxproj still lists the RETIRED verification pair as bundle
+# resources (the resource-wiring swap to the consent pair lands with the mobile-issuance/redeploy
+# slice), so a plain xcodebuild still requires those two paths to EXIST - vendor or touch them:
+cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey  # committed provenance copy
+touch apps/ios/DogTag/verification.graph   # retired graph, no longer buildable; placeholder is fine
 
 # 2. Build the prover static lib for the arm64 iOS Simulator + a host build for bindgen.
 rustup target add aarch64-apple-ios-sim
@@ -623,7 +608,7 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
 
 ### Sharp edges / gotchas (iOS)
 
-- **xcframework is built `--features prover`** — without it the FFI surface has no `proveVerification`
+- **xcframework is built `--features prover`** — without it the FFI surface has no `proveConsent`
   and the app won't link the prover symbols. The Swift binding is generated from a host dylib but MUST
   match the linked static lib's ABI; regenerate the `.swift` from the same crate build (step 3) so the
   embedded UniFFI checksums agree, otherwise the app traps at the first FFI call.
@@ -633,17 +618,21 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
 - **Generated `DogTag.xcodeproj` is committed** — it is produced by `xcodegen` from
   `apps/ios/project.yml`; re-run `xcodegen` (don't hand-edit the project) after adding/removing source
   files, and commit the regenerated `project.pbxproj`. **Trap:** `xcodegen` enumerates the `DogTag/`
-  folder, so regenerating in a checkout that has NOT vendored `verification_final.zkey` +
-  `verification.graph` (both gitignored) silently DROPS those two Copy-Bundle-Resources entries from the
-  committed `pbxproj` — vendor them first (step 1) or the prover bundle breaks. A pure-UI change that
+  folder, so regenerating in a checkout that has NOT vendored the referenced prover resources
+  (gitignored) silently DROPS their Copy-Bundle-Resources entries from the committed `pbxproj`.
+  Today the committed `pbxproj` still references the RETIRED `verification_final.zkey` +
+  `verification.graph` (not yet the consent pair - that resource swap lands with the
+  mobile-issuance/redeploy slice), so make those two paths exist (vendor or `touch`, step 1) before
+  any regen, and vendor the consent pair so the app can actually prove. A pure-UI change that
   adds no source file needs no regen at all: fold new views/types into an existing `.swift` and the
   `pbxproj` stays untouched.
 - **Local pet photos are UI-only** — `PetPhotoStore` (LocalStore.swift) keeps per-`dogTagId` avatars as
   JPEGs under `Documents/pet-photos/`; deliberately separate from `Pet` (which `mergeCentralPets`
   overwrites) so a photo survives central sync. Never uploaded, never on-chain, never in a credential.
-- **zkey + graph are gitignored** (`apps/.gitignore`) — a fresh checkout has neither; vendor them from
-  `circuits/build/` (step 1) or the e2e fails to prove. Validate the graph/zkey pair on the host with
-  `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
+- **zkey + graph are gitignored under `apps/`** (`apps/.gitignore`) — a fresh checkout has neither;
+  vendor the consent pair from `circuits/build/` (step 1) or the e2e fails to prove. Validate the
+  graph/zkey pair on the host with `make test-consent-parity` (wraps `cargo test -p
+  dogtag-standard-rs --features prover on_device_consent_proof_verifies_and_pub_matches`).
 
 ### CI (iOS)
 
@@ -672,7 +661,7 @@ git fetch origin && git rev-parse --short HEAD origin/main   # HEAD should equal
 ### 1. Build the DogTagFFI xcframework - device + simulator slices (`--features prover`)
 
 Same recipe as the sim build in the e2e section above, plus the `aarch64-apple-ios` **device** slice, combined into one xcframework.
-`--features prover` is mandatory: it compiles in the on-device Groth16 prover (`crates/dogtag-standard-rs/src/prover_ffi.rs`, gated `#[cfg(feature = "prover")]`); without it the `proveVerification` symbol is absent and the device build fails to link.
+`--features prover` is mandatory: it compiles in the on-device Groth16 consent prover (`crates/dogtag-standard-rs/src/prover_ffi.rs`, gated `#[cfg(feature = "prover")]`); without it the `proveConsent` symbol is absent and the device build fails to link.
 
 ```bash
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -697,16 +686,19 @@ The sim-only recipe above omits the first `--target aarch64-apple-ios` build and
 
 ### 2. Vendor the ZK ceremony assets into the bundle
 
-Copy the proving key + witness graph into `apps/ios/DogTag/` (both gitignored, absent on a fresh checkout; `docs/MOBILE_BUILD.md` §4):
+Copy the CONSENT proving key + witness graph into `apps/ios/DogTag/` (both gitignored under `apps/`, absent on a fresh checkout; `docs/MOBILE_BUILD.md` §4) - these are the assets the app proves with:
 
 ```bash
-cp circuits/build/verification_final.zkey apps/ios/DogTag/verification_final.zkey
-cp circuits/build/verification.graph      apps/ios/DogTag/verification.graph
+cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
+cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
 ```
 
-**The `verification.graph` is not produced by a plain checkout.**
-`circuits/build/verification.graph` is itself gitignored and was built from the now-retired `circuits/verification.circom` by iden3's `build-circuit` tool (see the graph note in the e2e "Sharp edges / gotchas"); that owner-revealing source has been removed, so a fresh graph can no longer be generated - vendor a retained copy before this step (a 26-byte `stub-graph-for-build-only` placeholder will NOT prove).
-Validate the vendored pair on the host: `cargo test -p dogtag-standard-rs --features prover on_device_proof_verifies_and_pub_matches`.
+**The `consent.graph` is not produced by a plain checkout.**
+`circuits/build/consent.graph` is gitignored and never committed; build it out-of-band from the frozen `circuits/consent.circom` with iden3's `build-circuit` tool, or vendor a retained copy (see the graph note in the e2e "Sharp edges / gotchas"; a stub placeholder will NOT prove).
+Validate the vendored pair on the host: `make test-consent-parity` (wraps `cargo test -p dogtag-standard-rs --features prover on_device_consent_proof_verifies_and_pub_matches`).
+
+**Placeholder caveat (transitional):** the committed `project.pbxproj` still lists the RETIRED `verification_final.zkey` + `verification.graph` as bundle resources and does not yet reference the consent pair - the resource-wiring swap lands with the mobile-issuance/redeploy slice.
+Until then a plain xcodebuild requires those two retired paths to EXIST (`cp circuits/build/verification_final.zkey apps/ios/DogTag/` - a committed provenance copy - and `touch apps/ios/DogTag/verification.graph`), while the consent pair above is what the app actually needs to prove.
 
 ### 3. Regenerate the Xcode project + set the signing team
 
@@ -718,7 +710,7 @@ Set it to **your** Apple Developer team, then regenerate - editing the generated
 cd apps/ios && xcodegen
 ```
 
-**Trap:** `xcodegen` enumerates `DogTag/`, so regenerating BEFORE step 2 silently drops the `verification_final.zkey`/`verification.graph` Copy-Bundle-Resources entries from the `pbxproj` (see the xcodegen traps under "Sharp edges / gotchas (iOS)" and "Building / verifying UI changes"). Vendor first, regenerate second.
+**Trap:** `xcodegen` enumerates `DogTag/`, so regenerating BEFORE step 2 silently drops the referenced prover-resource Copy-Bundle-Resources entries from the `pbxproj` - today still the retired `verification_final.zkey`/`verification.graph` placeholders (see the placeholder caveat in step 2 and the xcodegen traps under "Sharp edges / gotchas (iOS)" and "Building / verifying UI changes"). Make the referenced paths exist first, regenerate second.
 
 ### 4. Build + install (signed) on the device
 
@@ -737,22 +729,24 @@ If the build fails with **code-signing / "no team" / "failed to register bundle 
 
 ### THE CRITICAL GOTCHA - the bundled zkey/graph/FFI MUST match the on-chain verifier
 
-The bundled `verification_final.zkey` + `verification.graph` + the compiled-in FFI prover **must match the ZK verifier currently deployed on-chain** - `VerificationRegistry.zkVerifier()` for the target chain.
-Unlike the **server** prover, which fails closed on a mismatched key (it pins `EXPECTED_ZKEY_SHA256_HEX`, `crates/dogtag-prover-rs/src/lib.rs`; see "Deployment / production guards"), **the mobile bundle has no such guard** - it will happily ship any zkey and emit proofs the chain rejects.
-A stale bundled key produces a proof the on-chain verifier refuses: `VerificationRegistry.recordVerificationZK` reverts at `require(zkVerifier.verifyProof(...), "bad proof")` (in the deployed Level-A `VerificationRegistry`), surfacing to the operator as **`recordVerificationZK ... "bad proof"`** or a bare **`execution reverted, data: "0x"`**.
-This is audit finding **H-1 (no zkey<->verifier version handshake)** made concrete: nothing on-chain advertises which zkey it expects, so the match is a **manual, mobile-side responsibility**.
+The bundled `consent_final.zkey` + `consent.graph` + the compiled-in FFI prover **must match the consent verifier currently deployed on-chain** - `VerificationRegistryConsent.zkVerifier()` for the target chain.
+Unlike the **server** prover, which fails closed on a mismatched key (the consent descriptor's zkey pin; see "Deployment / production guards"), **the mobile bundle has no such guard** - it will happily ship any zkey and emit proofs the chain rejects.
+A stale bundled key produces a proof the on-chain verifier refuses: `recordVerificationZK` reverts at `require(zkVerifier.verifyProof(...), "bad proof")`, surfacing to the operator as **`recordVerificationZK ... "bad proof"`** or a bare **`execution reverted, data: "0x"`**.
+This is audit finding **H-1 (no zkey<->verifier version handshake)** made concrete: nothing on-chain advertises which zkey it expects, so the match is a **manual, mobile-side responsibility** (the M7 discovery anchor's artifact pins are the designed remedy once published).
 
 Check it on every build:
 
 ```bash
 # 1. hash the key you are bundling
-shasum -a 256 apps/ios/DogTag/verification_final.zkey
-# 2. read the LIVE on-chain verifier (ROAX; addresses in contracts/deployments/roax.json)
-cast call 0x4E2f0996e1CB4E24F1053346f3da2186906835E8 "zkVerifier()(address)" --rpc-url https://devrpc.roax.net
+shasum -a 256 apps/ios/DogTag/consent_final.zkey
+# 2. read the deployed consent verifier (ROAX; addresses in contracts/deployments/roax.json)
+cast call 0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87 "zkVerifier()(address)" --rpc-url https://devrpc.roax.net
 ```
 
 The bundled zkey's sha256 must be the ceremony output paired with whatever `zkVerifier()` returns.
-Currently (see the "ZK trusted-setup ceremony" section and `roax.json` `_zk_ceremony`/`_zk_verifier_swap`) the live verifier is the **v2** `0xEEFCfAF026931b7325472A88fd14Ee780Da13559`, paired with zkey sha256 `9e3636b9…`; the retired **v1** verifier `0x138b433071Ad806E841B5AD53623290a9bf21761` pairs with sha256 `45d0b6fb…`, and a v1-key proof reverts "bad proof" against the v2 verifier (and vice versa). Do not transcribe these values into new places - `roax.json` and the ceremony section own them.
+Currently (see "M3 trusted-setup ceremony" and `roax.json` `_m3_consent_verifier`/`_m5_custodial_issuance`) that is `Groth16VerifierConsent` `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a`, paired with the frozen consent zkey sha256 `f83a111f…`.
+Do not transcribe these values into new places - `roax.json` and the M3/M5 sections own them.
+(The retired-generation registry's v1/v2 verifier history lives in the historical "ZK trusted-setup ceremony" section; it is not a target for new bundles.)
 
 **Rebuild + reinstall the app whenever the on-chain verifier is upgraded** - a trusted-setup/ceremony cutover done via `proposeZkVerifier(addr)` -> wait `ZK_TIMELOCK` (2 days) -> `executeZkVerifier()` (there is no single-call setter).
 Re-vendor the new ceremony's zkey/graph (step 2), rebuild the xcframework (step 1), reinstall (step 4).
@@ -773,8 +767,8 @@ An already-installed app keeps proving against its **baked** key until you do, s
   is signer-1.** Governance Phase-2 executed on-chain 2026-07-05 (block 123835), moving registry
   `DEFAULT_ADMIN_ROLE` + `WHITELIST_ADMIN` and `DogTagIssuerFactory` `Ownable2Step` ownership off the old
   deployer EOA `0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96`. A 2026-07-16 audit found the old EOA still has the
-  Level-A `DogTagSBT` `ISSUER_ROLE` and known record-type whitelists, so it is **not role-free** and must
-  never be treated as a neutral custodian. Governance writes (`whitelistFor` / factory `createIssuer` /
+  retired-generation `DogTagSBT`'s (still deployed) `ISSUER_ROLE` and known record-type whitelists, so it
+  is **not role-free** and must never be treated as a neutral custodian. Governance writes (`whitelistFor` / factory `createIssuer` /
   `adminRevoke`) still require signer-1; separately retire the old EOA's legacy issuance capabilities.
 - **Demo / relayer / demo-script tooling reads signer-1 from a captain-managed env var - the private-key
   VALUE is never committed.** The `scripts/*.sh` demo + e2e harnesses (`demo-up.sh`, `demo-bootstrap.sh`,
@@ -840,16 +834,9 @@ An already-installed app keeps proving against its **baked** key until you do, s
   `credentialSubject`. Extract by keyPath suffix.
 
 ### ZK export leaf limit
-- The on-device ZK circuit (the retired Level-A `DogTagVerification(24, 5)`,
-  `crates/dogtag-prover-rs` `pub const N = 24`) proves at most 24 Merkle leaves; more aborts with
-  `too many leaves: <n> > N=24`. `ZkCircuit.maxLeaves` (Models.swift) is the display-layer mirror —
-  keep it in sync if the circuit width changes.
-- A record's leaf count == `WrappedDoc.decodedFields().count`, which flattens `data` identically to the
-  prover's `flatten_data` (both skip empty collections and count only string leaves), so the app's count
-  always matches the prover's on the same doc. DOG_PROFILE credentials are ~34 leaves (they wrap the full
-  VC envelope) → they EXCEED the limit and map to the `.health` group, so they appear as candidates for a
-  VACCINATION export request; the export picker disables them in ZK mode with a "too many fields" note.
-  VACCINATION records are ~14 leaves and prove fine.
+- **Retired.** The 24-leaf export cap belonged to the retired owner-revealing circuit (`DogTagVerification(24, 5)`), whose fixed-leaf-array prover, `pub const N = 24`, the `ZkCircuit.maxLeaves` display mirror, and the export picker's "too many fields" gating were all deleted with it.
+- The live consent circuit (`DogTagConsent(6)`) proves reserved-leaf INCLUSION PATHS in a depth-6 tree (~64 leaves max), so record size no longer gates the ZK path; note there is deliberately no leaf-count guard in `build_profile_tree` (see "Known-uncovered surfaces").
+- A record's leaf count still == `WrappedDoc.decodedFields().count`, which flattens `data` identically to the SDK's `flatten_data` (both skip empty collections and count only string leaves).
 
 ### Building / verifying UI changes
 - Build: `xcodebuild build -project apps/ios/DogTag.xcodeproj -scheme DogTag -sdk iphonesimulator
@@ -887,16 +874,17 @@ Readers ignore unknown keys, so adding a new vector section is backward-safe.
 
 ### Build / test
 
-- Rust: `cargo test -p dogtag-standard-rs` (default), and `--features assemble` for the circuit-input
-  assembly tests. `--features prover` additionally pulls the heavy on-device Groth16 prover (ark 0.5).
+- Rust: `cargo test -p dogtag-standard-rs` (default), and `--features assemble` for the consent
+  circuit-input assembly tests (`consent_assemble` is the only assembly module). `--features prover`
+  additionally pulls the heavy on-device Groth16 consent prover (ark 0.5).
 - TS: `pnpm --filter @dogtag/standard test` (vitest) and `... build` (tsc).
 - Keep `cargo clippy -p dogtag-standard-rs --lib --bins --tests` warning-clean.
 
 ### Regenerating the Swift UniFFI binding (`apps/ios/DogTag/dogtag_standard.swift`)
 
 This file is autogenerated but checked in. When you change `ffi.rs`, regenerate it — but build the
-dylib **with `--features prover` first**, otherwise the `prover`/`assemble`-gated symbols
-(`proveVerification`, `ProofFfi`, `EddsaSigInput`) are dropped and the binding regresses:
+dylib **with `--features prover` first**, otherwise the `prover`/`assemble`-gated consent prover
+surface (`proveConsent`, `ProofFfi`) is dropped and the binding regresses:
 
 ```
 cargo build -p dogtag-standard-rs --lib --features prover
@@ -917,7 +905,9 @@ silently strips the vendored prover resources (zkey / witness graph) from the pb
 
 If you genuinely need a regen (e.g. adding a target), the safe procedure is: `touch
 apps/ios/DogTag/verification_final.zkey apps/ios/DogTag/verification.graph` so xcodegen sees the
-paths, `xcodegen generate`, delete the placeholders, then confirm with
+paths (yes, still the RETIRED pair - the committed pbxproj has not yet swapped its resource wiring
+to the consent pair; that lands with the mobile-issuance/redeploy slice), `xcodegen generate`,
+delete the placeholders, then confirm with
 `git diff --no-color apps/ios/DogTag.xcodeproj/project.pbxproj | grep '^-'` that **no** zkey/graph
 line was removed. Both files are gitignored, so the placeholders can never be committed. Expect a
 large but harmless diff: xcodegen re-randomises every object ID, so hand-written IDs churn while
@@ -943,9 +933,10 @@ cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
 Adding a source here that transitively imports the FFI will break that property — extract the pure
 logic instead. `QrPayloadTests.swift` mirrors `QrPayloadTest.kt` case-for-case; keep them in step, as
 their whole point is that the two platforms cannot silently diverge on what a QR means.
-`ZkeyAssetTests.swift` (M-4) likewise mirrors the Android `ZkeyAssetTest.kt` (and the Rust
-`artifact.rs` tests), pinning the version-keyed resolver's contract (Level-A default, `dogtag-levelb/1`
-resolves, unknown fails closed); its covered source `DogTag/ZkeyAsset.swift` is pure — only
+`ZkeyAssetTests.swift` likewise mirrors the Android `ZkeyAssetTest.kt` (and the Rust
+`artifact.rs` tests), pinning the version-keyed resolver's contract (the consent set is the sole
+entry and the default; the internal version key `dogtag-levelb/1` resolves to it; an unknown version
+fails closed); its covered source `DogTag/ZkeyAsset.swift` is pure — only
 `ensure`/`ensureGraph` touch `Bundle.main`, and the tests never call them, so it stays FFI-free.
 
 ### Getting real Swift signal without the xcframework
@@ -1106,7 +1097,7 @@ public **drand** beacon (chain `8990e7a9…`, round `6286835`). Full transcript 
 - **verifier:** `circuits/Groth16Verifier.consent.sol` → `contracts/src/Groth16VerifierConsent.sol` (contract **`Groth16VerifierConsent`** — renamed so it does NOT collide with the live v2 `Groth16Verifier`). `verifyProof(a,b,c,pub[7])`.
 - This REPLACES the M2 DEV throwaway (dev VK `3f79a5ff…`, dev zkey `12df8ea4…`, both gitignored, forgeable, never deployed).
 - `node circuits/scripts/test-consent.mjs` → **33/33 green** against this production key (round-trip verify, R-parity {3,4,5,7,10,20} leaves, 6 negatives, D5 nullifier).
-- **Deployed ROAX `Groth16VerifierConsent`:** `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` (chainId 135, `--legacy`, deployer `0x119F8c…`, deploy tx `0xcd1cd5fa…`, block 190760). On-chain `cast code` == the compiled runtime (1933 bytes); `verifyProof`(valid consent proof)=`true`, (tampered `R`)=`false`. Recorded in `contracts/deployments/roax.json` (`Groth16VerifierConsent` + `_m3_consent_verifier`). This is a SEPARATE verifier — it does NOT replace the live Level-A `Groth16Verifier` `0xEEFCf…`. It is wired into the canonical M5 `VerificationRegistryConsent` `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`; the former M4 `0x53F988Ae…` instance is deprecated.
+- **Deployed ROAX `Groth16VerifierConsent`:** `0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a` (chainId 135, `--legacy`, deployer `0x119F8c…`, deploy tx `0xcd1cd5fa…`, block 190760). On-chain `cast code` == the compiled runtime (1933 bytes); `verifyProof`(valid consent proof)=`true`, (tampered `R`)=`false`. Recorded in `contracts/deployments/roax.json` (`Groth16VerifierConsent` + `_m3_consent_verifier`). This is a SEPARATE verifier — it did NOT replace the retired-generation `Groth16Verifier` `0xEEFCf…` (still deployed pending the fresh wipe). It is wired into the canonical M5 `VerificationRegistryConsent` `0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87`; the former M4 `0x53F988Ae…` instance is deprecated.
 
 **VK-freeze checkpoint (`M`-preimage) — reviewed, frozen.** `M = Poseidon5(dogTagId, purpose, relayer,
 deadline, consentNonce)` shares arity + first slot with the leaf hash `Poseidon5(DS_LEAF=1, …)` when
@@ -1172,8 +1163,9 @@ as `data/dogtag-zkfail-z9`. **Do not use `0x57A2998…`.**
 
 M4 temporarily deployed the owner-hidden registry beside the older registry. That coexistence was a
 migration step, not an architecture to preserve: the owner-hidden registry is the only live/forward
-model. The older Level-A registry it deployed beside still serves live traffic today until the
-owner-hidden cutover completes, after which it remains solely for historical reads.
+model. The cutover has since completed - the repo carries no code path to the older registry, whose
+deployed instance remains on the disposable testnet solely for historical reads until the fresh
+wipe/redeploy.
 
 ### What it does (spec §"On-chain `recordVerificationZK`")
 
@@ -1199,10 +1191,11 @@ is NOT an owner-identity check); `verifyProof` vs the consent VK; consume the nu
   Level-B does not have. Constructor is 5-arg `(ir, sbt, zk, ridx, admin)`, not 7.
 - **`Verified(dogTagId, relayer, purpose, nullifier, deadline, ts)`** — `subject` is GONE. Same event NAME as
   Level-A but a different signature ⇒ **different topic0**; the indexer decodes by `Verified::SIGNATURE_HASH`.
-  **M8 (landed) taught the oversight indexer to dual-decode BOTH shapes** — see the "Oversight indexer" note:
-  it now watches both topic0s and gates each shape to its own registry address, so the later M7 `DEFAULT_VREG`
-  flip has no blind window. The receipt-side parser in **vet-api** `chain.rs` still assumes the Level-A shape;
-  that reparse is M7 backend work, not M8.
+  **M8 (landed) taught the oversight indexer to dual-decode BOTH shapes during the migration** (since
+  collapsed - the indexer now decodes only the subject-less owner-hidden `Verified` shape; see the
+  "Oversight indexer" note). The receipt-side parser in **vet-api** `chain.rs` that assumed the retired
+  subject-bearing shape has likewise been retired: `chain.rs` now carries only the owner-blind
+  `ConsentVerifiedEvent` decode.
 
 ### ⚠ Two traps worth knowing before you touch this
 
@@ -1210,7 +1203,7 @@ is NOT an owner-identity check); `verifyProof` vs the consent VK; consume the nu
    selector** — same ABI shape, completely different `pub` semantics (Level-A `pub[3]`=subject,
    `pub[4]`=nullifier, `pub[6]`=R). A stale pre-PR#7 client aimed here DISPATCHES instead of bouncing, but
    fails closed twice (`R !profileRoot`, then a Level-A proof cannot verify against the consent VK). The
-   reverse — a Level-B client aimed at the live Level-A registry (6-arg `0x423a45b6` only) — gives the bare
+   reverse — a consent client aimed at the deployed retired-generation registry (6-arg `0x423a45b6` only) — gives the bare
    `execution reverted, data: "0x"` from `data/dogtag-zkfail-z9`. **Check the ADDRESS first when debugging.**
 2. **The Art. 9 constant MUST be reduced mod r.** `recordType` is a public signal, so it is always `< r`,
    while raw `keccak256("SERVICE_ATTESTATION")` (`0xa757…ed43`) **EXCEEDS r** — copying Level-A's raw
@@ -1244,8 +1237,8 @@ which is why the existence gate is load-bearing rather than redundant).
 structurally closed on `DogTagSBTConsent`: `profileRoot` is **write-once**, set at mint, with **no setter at
 all** and no burn/re-mint escape (`mintCustodial` rejects an id whose root is already set).
 See "M5 as-built" below for the reasoning and the redeploy cascade it forced. The description is kept
-because it is exactly why the Level-B SBT looks the way it does - and because it still applies verbatim to
-the Level-A `DogTagSBT`, which remains live and unchanged.
+because it is exactly why the owner-hidden SBT looks the way it does - and because it still applies verbatim to
+the retired-generation `DogTagSBT`, which remains deployed unchanged on the disposable testnet until the fresh wipe/redeploy.
 
 **⚠ ORIGINAL OPEN SPEC QUESTION - `setProfileRoot` hijack.** `R == profileRoot(dogTagId)` is the SOLE
 tag↔owner binding, and
@@ -1267,9 +1260,11 @@ points at this registry until M7).
 immutable values; the registry points at the new SBT, M3 verifier `0x272be146…`, IssuerRegistry
 `0x5d86e4CF…`, and root index `0xd3179AbB…`; both admins are governance `0x8E27E117…`. The SBT's immutable
 neutral custodian is `0x637A514628d06Af711e3C9A2636fdBe5AE0E5A10`, with no code, prior role, or
-whitelist history. Deployment grants no `ISSUER_ROLE` (member count zero). Level-A (`DogTagSBT`
-`0x1FB89865…`) stays FROZEN and live - the same additive pattern as M2/M3/M4. **No consumer was changed:**
-the canonical M5 pair is the M7 target, not yet live. Deploy script: `script/DeployCustodialIssuance.s.sol`.
+whitelist history. Deployment grants no `ISSUER_ROLE` (member count zero). The prior-generation `DogTagSBT`
+(`0x1FB89865…`) stayed FROZEN beside it - the same additive pattern as M2/M3/M4 - and has since been
+retired from the repo (its deployed instance remains only until the fresh wipe/redeploy). **No consumer
+was changed in M5 itself**; the canonical M5 pair has since become the sole target of every consumer.
+Deploy script: `script/DeployCustodialIssuance.s.sol`.
 
 **The issuance flow is TWO writes, both required:**
 ```solidity
@@ -1337,14 +1332,13 @@ Recorded so it is not re-derived or "simplified" back into a broken shape.
    post-mint read-back (`routes.rs:1978-1982`), which are unrelated and stay.
    `mintNext` was NOT re-implemented either: `DogTagSBTConsent` takes an issuer-supplied `id` like Level-A.
    Contract-assigned ids remain open and are orthogonal to owner-unlinkability.
-7. **The live register-pet flow still mints to the OWNER's wallet** (`routes.rs:1957`,
-   `mint_wallet = wallet`) and asserts `ownerOf == wallet` (`:1978`). That is the linkability M5 removes, and it is
-   **still live** - the contract side landing does NOT change it. **M-2 has since added the custodial
-   route BESIDE it** (`POST /profiles/issue/custodial-bind`, see "Level-B custodial issuance bridge"
-   below), so the server half no longer blocks: the route accepts a device-supplied `R` rather than
-   building the tree. What remains is the DEVICE call site (the iOS `ProfileTreeStore` -> POST wiring)
-   and the eventual cutover that retires this Level-A path. Level-A issuance is unaffected and keeps
-   working meanwhile.
+7. **The register-pet flow at the time still minted to the OWNER's wallet** (`mint_wallet = wallet`,
+   asserting `ownerOf == wallet`). That was the linkability M5 removed at the contract layer. **M-2
+   then added the custodial route BESIDE it** (`POST /profiles/issue/custodial-bind`, see "Custodial
+   issuance bridge" below), accepting a device-supplied `R` rather than building the tree (see the custodial issuance
+   bridge section below). **(Since retired:** the owner-revealing wallet-mint route was deleted in the
+   backend cutover, PR #72, and the mobile custodial-bind QR issuance call site landed in PR #71 -
+   custodial-bind is now the sole issuance path.)
 
 ### Build / test
 
@@ -1405,14 +1399,13 @@ wallet now get different `(Ax, Ay)`, closing the last cross-linking vector in th
 device). Purely an off-circuit derivation change: `consent.circom` takes `Ax`/`Ay` as plain inputs,
 so the R1CS, the frozen VK and the ceremony were all untouched.
 
-**Do NOT confuse it with `derive_babyjub_consent_key_from_seed`, which survives on `v1` and is still
-wallet-level.** That one serves the **Level-A** path (`verification.circom`) ONLY, where the consent
-key lives OUTSIDE the tree: the circuit emits `keyHash = Poseidon2(Ax,Ay)` as a public signal and
-`VerificationRegistry` checks it against `ConsentKeyRegistry.keyOf[subject]`, a
-`mapping(address => bytes32)` - per-WALLET by contract design. Making that one per-tag would force a
-`keyOf` rebind on every tag switch, i.e. an on-chain behaviour change for no gain. Level-B retires
-the path entirely (`VerificationRegistryConsent`: "the consent key moved INTO the tree, so `keyOf` is
-retired"), and this function goes with it.
+**The old wallet-level sibling `derive_babyjub_consent_key_from_seed` (`v1` domain) is DELETED.**
+That one served the retired owner-revealing path ONLY, where the consent key lived OUTSIDE the tree:
+the retired circuit emitted `keyHash = Poseidon2(Ax,Ay)` as a public signal and the retired registry
+checked it against `ConsentKeyRegistry.keyOf[subject]`, a `mapping(address => bytes32)` -
+per-WALLET by contract design. The owner-hidden model retires that path entirely (the consent key
+moved INTO the tree, so `keyOf` is retired), and the function went with it in the SDK cleanup slice;
+`derive_babyjub_consent_key_per_tag` (`v2`) is the only consent-key derivation left.
 
 **Salts had to be seed-derived too, and this is the non-obvious part.** A recoverable secret alone
 does NOT rebuild the tree: fresh random salts change every leaf hash and therefore `R`. Reserved-leaf
@@ -1457,26 +1450,27 @@ So a device-built tree is provable *because its primitives are the circuit's*, n
 root was proven. Proving a seed-derived root end-to-end needs the prover (M7); do not upgrade this
 claim without generating a proof over `R_demo`.
 
-**The owner-hidden server-side bridge is the required issuance end-state.** Today the Level-A
-wallet-mint route remains live and the owner-hidden device call site is pending. New work must target
-the owner-hidden bridge and retire the wallet-mint route, never extend it as a parallel path or fallback.
+**The owner-hidden server-side bridge is the issuance end-state, and the cutover is COMPLETE.** The
+owner-revealing wallet-mint route has been deleted from the repo (backend PR #72) and the device
+call site landed (mobile PR #71): custodial-bind is the sole issuance path.
 
 ### Level-B custodial issuance bridge (M-2) - `POST /profiles/issue/custodial-bind`
 
-The server path that mints an owner-hidden tag. Same operator-started QR session as Level-A; the
-device redeems the one-time bind token with `{ token, root }` and the server anchors + seals `R`.
+The server path that mints an owner-hidden tag - now the ONLY issuance path. Same operator-started QR
+session shape the retired wallet-mint flow used; the device redeems the one-time bind token with
+`{ token, root }` and the server anchors + seals `R`.
 
-**It inverts who computes `R`.** Level-A builds `R` server-side (`wrap_vc` over an owner-identity VC).
-Level-B cannot: `R` is folded on the DEVICE from the wallet seed (`ProfileTreeStore.swift` /
-`build_profile_tree`), which the server has and must have no access to. The handler therefore builds
-no VC - it treats `R` as opaque. **Do not "fix" this by wrapping a VC server-side**; that produces an
-owner-revealing root that `consent.circom` cannot prove against.
+**It inverts who computes `R`.** The retired wallet-mint flow built `R` server-side (`wrap_vc` over
+an owner-identity VC). The owner-hidden path cannot: `R` is folded on the DEVICE from the wallet seed
+(`ProfileTreeStore.swift` / `build_profile_tree`), which the server has and must have no access to.
+The handler therefore builds no VC - it treats `R` as opaque. **Do not "fix" this by wrapping a VC
+server-side**; that produces an owner-revealing root that `consent.circom` cannot prove against.
 
 **No wallet, no signature, by design.** `mintCustodial` has no recipient - the tag goes to the
-immutable custodian - so Level-A's EIP-191 wallet signature has nothing to attest, and accepting one
-would hand the server exactly the owner link Level-B removes. The authorization is the one-time,
-operator-minted, 180s bind token alone; whoever redeems it defines ownership via the owner-secret
-inside `R`.
+immutable custodian - so the retired flow's EIP-191 wallet signature has nothing to attest, and
+accepting one would hand the server exactly the owner link the model removes. The authorization is
+the one-time, operator-minted, 180s bind token alone; whoever redeems it defines ownership via the
+owner-secret inside `R`.
 
 **Ordering is load-bearing: `issue(R)` FIRST, then `mintCustodial(id, R)`** (the contract says so at
 `DogTagSBTConsent.sol:139-143`). The mint is the irreversible half - `profileRoot[id]` is write-once
@@ -1486,46 +1480,50 @@ NOT compared to anything**: the owner is the neutral custodian, and comparing it
 linkage. The anchor read-back uses `isValid(R)` on our own clone, which is strictly stronger than
 `rootIssuer[R] != 0` (a successful `issue` implies `registerRoot`, which is globally write-once).
 
-**Two new env vars, both required, both fail-closed when unset** (checked BEFORE the token is
+**Two env vars, both required, both fail-closed when unset** (checked BEFORE the token is
 consumed, so a half-wired stack never burns an operator's QR):
-- `SBT_CONSENT_ADDR` - the Level-B `DogTagSBTConsent`. Separate from `SBT_ADDR`, not an overload: the
-  two run side by side through the migration, mirroring the indexer's `DEFAULT_VREG` /
-  `DEFAULT_VREG_CONSENT` pair.
-- `PROFILE_ISSUER_ADDR` - a real factory-deployed `DogTagIssuer` clone. **Not
-  `PROFILE_DOCUMENT_STORE`**, which defaults to the SBT address because under Level-A the SBT doubles
-  as the document store and `issue` is never called on it; `issue(R)` sent there reverts.
+- `SBT_CONSENT_ADDR` - the `DogTagSBTConsent`. (It began life beside the retired `SBT_ADDR` during
+  the migration; the retired var is gone with the wallet-mint route.)
+- `PROFILE_ISSUER_ADDR` - a real factory-deployed `DogTagIssuer` clone. **Not a document-store /
+  SBT address**: `issue(R)` sent to the SBT reverts.
 
-Issuance stamps `LEVEL_B_VERSION` (`dogtag-levelb/1`) - the **on-chain `ContractSet` axis** of the
-two-axis registry (R-5), never the artifact axis, since a zkey rotation must not move what an
-already-minted tag claims. Level-A producers keep stamping `LEVEL_A_VERSION`.
+Issuance stamps `LEVEL_B_VERSION` (`dogtag-levelb/1`, the internal protocol version key) - the
+**on-chain `ContractSet` axis** of the two-axis registry (R-5), never the artifact axis, since a
+zkey rotation must not move what an already-minted tag claims. (The retired `LEVEL_A_VERSION`
+constant and its producers are deleted; every issuer stamps the unified key.)
 
 Coverage: `stacks/vet/api/tests/custodial_issuance_bridge.rs` (real device-built `R`, both on-chain
-conditions, raw-handle and skip-issue fail-closed cases, Level-A non-regression).
+conditions, raw-handle and skip-issue fail-closed cases, unconfigured/malformed fail-closed cases).
 
-### Level-B unified submission path (M-3) - `POST /verify/consent/levelb`
+### Level-B unified submission path (M-3) - now `POST /v1/verify/consent`
 
 The other half of M-2: the network layer that carries an owner-hidden consent proof to the chain.
-Before it, a device could prove consent but nothing could submit that proof.
+Before it, a device could prove consent but nothing could submit that proof. (M-3 landed it as
+`/verify/consent/levelb`; the migration-era route split has since collapsed and the sole submit
+route today is `POST /v1/verify/consent`, handler `crate::verify::consent_submit_levelb` - the
+internal name mirrors the internal version key, not a product mode.)
 
-**The `sol!` interface is NEW, never an edit of the Level-A one** ([e9] R-2). `chain.rs` now carries
-both `IVerificationRegistry` (Level-A, frozen) and `IVerificationRegistryConsent` (Level-B) side by
-side. Editing the Level-A one in place would yield a hybrid matching neither deployed contract, since
-Level-B deletes `subject` and retires `ConsentKeyRegistry`. Three concrete differences:
+**The `sol!` interface was built NEW, never an edit of the retired one** ([e9] R-2). During the
+migration `chain.rs` carried both `IVerificationRegistry` (retired shape, frozen) and
+`IVerificationRegistryConsent` side by side; the retired interface has since been deleted and
+`IVerificationRegistryConsent` is the only one left. Editing the old one in place would have yielded
+a hybrid matching neither deployed contract, since the owner-hidden shape deletes `subject` and
+retires `ConsentKeyRegistry`. Three concrete differences vs the retired shape:
 
-- **`recordVerificationZK` is 4-arg, a DIFFERENT SELECTOR** (`dd080593` vs Level-A's `423a45b6`).
-  `recordType`/`deadline` moved out of relayer calldata into `pub[5]`/`pub[6]`, so they are bound to
-  the proof. Both selectors are pinned in `chain.rs`'s test module, plus an explicit
-  `assert_ne!` - the two calls share the same `(a,b,c,pub)` prefix, so a mix-up is invisible at the
-  type level and surfaces on-chain only as an empty `0x` revert.
+- **`recordVerificationZK` is 4-arg, a DIFFERENT SELECTOR** (`dd080593` vs the retired 6-arg
+  `423a45b6`). `recordType`/`deadline` moved out of relayer calldata into `pub[5]`/`pub[6]`, so they
+  are bound to the proof. The consent selector is pinned in `chain.rs`'s test module - the two calls
+  shared the same `(a,b,c,pub)` prefix, so a mix-up was invisible at the type level and surfaced
+  on-chain only as an empty `0x` revert.
 - **`Verified` drops `subject`** (gains `deadline`), hence a different topic0. Decoders are
-  address-gated AND shape-gated; `ConsentVerifiedEvent` is a separate type from `VerifiedEvent`
-  rather than one with an `Option<subject>`, so there is no owner slot for a caller to fill.
+  address-gated AND shape-gated; `ConsentVerifiedEvent` carries no `subject` field at all, so there
+  is no owner slot for a caller to fill.
 - **No `ConsentKeyRegistry` leg at all** - no bind, no `keyOf`.
 
-**Route every `pub[n]` through `dogtag_standard::public_signals::level_b`.** Level-A's NULLIFIER slot
-(4) is Level-B's ROOT: keying the one-time check on `pub[4]` makes a SUCCESSFUL verification read as
-forever-unconsumed (the E-1 bug). `MemChain` has separate Level-A/Level-B submit paths for the same
-reason.
+**Route every `pub[n]` through `dogtag_standard::public_signals::level_b`** (the module name mirrors
+the internal version key). The retired order's NULLIFIER slot (4) is the consent order's ROOT:
+keying the one-time check on `pub[4]` makes a SUCCESSFUL verification read as forever-unconsumed
+(the E-1 bug).
 
 **The relayer trust model is settled by the contract, not by config.** `relayer` is bound into both
 the EdDSA consent message `M` and the nullifier, and the registry requires
@@ -1548,7 +1546,7 @@ an index that is never unlocked and asserting the submit still succeeds (`MemCha
 alone - it uses `vet_signer_index` legitimately, for minting.
 
 **The broadcast is DETACHED behind a WIDE deadline margin - and the margin is what makes detaching
-safe.** Like Level-A, the route acks `"recording"` + a `sessionId` and broadcasts from a
+safe.** The route acks `"recording"` + a `sessionId` and broadcasts from a
 `tokio::spawn`; the consumer polls `GET /verify/session/:id` for the terminal `recorded`/`error` +
 txHash. Detaching is not stylistic: Axum CANCELS a handler's future when the client disconnects, so
 awaiting the ~12-24s receipt inline lets any client timeout or proxy cutoff strand the audit row at
@@ -1556,9 +1554,10 @@ awaiting the ~12-24s receipt inline lets any client timeout or proxy cutoff stra
 verification that SUCCEEDED reads in the trail as a failure, gutting the very trail the row exists
 for.
 
-What Level-B cannot copy is `zk_record_deadline`: Level-A's relayer INVENTS a generous 1h `deadline`
-to cover its deferred broadcast, whereas Level-B's is `pub[6]` - proof-bound and device-chosen - so
-the relayer cannot widen it. **The preflight margin does that job instead.**
+What this path cannot copy from the retired flow is its `zk_record_deadline` trick: the retired
+relayer INVENTED a generous 1h `deadline` to cover its deferred broadcast, whereas the consent
+`deadline` is `pub[6]` - proof-bound and device-chosen - so the relayer cannot widen it. **The
+preflight margin does that job instead.**
 `MIN_DEADLINE_MARGIN_SECS` is therefore 120s, not 30s: wide enough to cover a deferred-plus-retried
 broadcast window. Refusing a too-near deadline up front (with an instruction to re-prove with a
 further one) is the substitute for widening it, and is why deferring no longer risks an `"expired"`
@@ -1579,31 +1578,31 @@ narrowing, deadline, art9, relayer, whitelist) but is **not** the security bound
 gates are, and they run again regardless. Its only job is to avoid paying gas for a tx that cannot
 mine.
 
-**Level-B writes a `VerifySession` audit row, into the SAME operator trail as Level-A**
-(`GET /verify/history`, `GET /verify/session/:id`) - otherwise the M-4 cutover would silently drop
-every owner-hidden verification out of the verifier's operational record. Unlike Level-A there is no
-operator-started session to update (this route is entered cold with a self-authenticating proof), so
-the row is MINTED here with `mode: "levelb"`, an empty `challenge` (replay protection is the
-proof-bound nullifier, not an operator nonce), and `purpose`/`recordType` stored as the bytes32 WORDS
-they arrive as - the labels they reduce from are one-way, so there is no honest way to recover them.
+**The submit writes a `VerifySession` audit row into the operator trail**
+(`GET /verify/history`, `GET /verify/session/:id`) - otherwise the cutover would have silently
+dropped every owner-hidden verification out of the verifier's operational record. A cold submit
+(self-authenticating proof, no operator-started session) MINTS the row here with an empty
+`challenge` (replay protection is the proof-bound nullifier, not an operator nonce) and
+`purpose`/`recordType` stored as the bytes32 WORDS they arrive as - the labels they reduce from are
+one-way, so there is no honest way to recover them. (The migration-era `mode` field is gone from
+`VerifySession`; there is one flow.)
 The row is written as `recording` BEFORE the broadcast and updated to `recorded`/`error` after, so a
 submission that spends gas is auditable even if the process dies mid-tx; a revert stashes its reason
-in `tx_hash`, mirroring Level-A. It stays **owner-blind by construction**: `VerifySession` has no
-`subject` field and Level-B has no public signal that could fill one - never add one. The response
+in `tx_hash`. It stays **owner-blind by construction**: `VerifySession` has no
+`subject` field and no public signal could fill one - never add one. The response
 echoes the new `sessionId`.
 
 **Two response surfaces, and neither carries a `consumed` field.** The ack returns
-`status` (always `"recording"`), `level`, `protocolVersion`, `sessionId`, `registry`, and
+`status` (always `"recording"`), `protocolVersion`, `sessionId`, `registry`, and
 `nullifier` - the last is safe to echo before the broadcast because it is `pub[3]`, already known,
 and it is what a caller keys its OWN `consumed` read against. The terminal result is the polled
-session row (`GET /verify/session/:id`): `status`, `mode`, `txHash`, `nullifier`. There is no
+session row (`GET /verify/session/:id`): `status`, `txHash`, `nullifier`. There is no
 server-side `consumed` read-back on either surface - see the terminal-state paragraph above for why
 one would be pure downside.
 
-New env var `VERIFICATION_REGISTRY_CONSENT_ADDR`, fail-closed when unset, separate from
-`VERIFICATION_REGISTRY_ADDR` - the two registries run side by side (same pattern as
-`SBT_CONSENT_ADDR`, and the indexer's `DEFAULT_VREG`/`DEFAULT_VREG_CONSENT`). The addresses are NOT
-interchangeable: pointing either path at the other's registry encodes the wrong selector.
+The registry address env var is `VERIFICATION_REGISTRY_CONSENT_ADDR`, fail-closed when unset. (Its
+retired sibling `VERIFICATION_REGISTRY_ADDR` is gone from vet-api with the retired path; the name
+was kept distinct during the migration because the two registries encoded different selectors.)
 
 **Test fixtures: `relayer` is bound INTO the proof, so a fixture can only ever be submitted by the
 address it names.** The committed `contracts/test/consent-fixture.json` names `0x1111…1111`, which no
@@ -1622,33 +1621,36 @@ regenerated file will always differ.
 Coverage, split by what each harness can actually prove:
 - `stacks/vet/api/tests/submit_consent_onchain.rs` - real ceremony-key proof through the new
   interface against the real registry + real verifier on anvil (all 12 gates), fail-closed on
-  mismatched root and consumed nullifier, and a test that the Level-A encoder CANNOT drive the
-  Level-B registry. Skips without Foundry.
+  mismatched root and consumed nullifier, and a test that verification records without any
+  `ConsentKeyRegistry` (the retired-encoder cross-drive test went with the deleted retired encoder).
+  Skips without Foundry.
 - `stacks/vet/api/tests/submit_consent_levelb_route.rs` - the handler preflight against `MemChain`.
   Bad-root cannot live here: `MemChain` only checks `consumed`, so a mismatched root would wrongly
   succeed.
 
 ### Superseded M-4 mobile mode gate (historical only)
 
-The `mode == "levelb"` branch below records transitional wiring. Native apps must present the single
-owner-hidden consent flow without exposing or preserving a protocol mode.
+The `mode == "levelb"` branch below records transitional wiring. The mode gate has since been
+deleted (mobile PR #71): the apps run the single owner-hidden consent flow with no protocol mode,
+and the wiring below survives as THAT flow's mechanics, not as a branch.
 
-Both native `ScanScreen` implementations keep Level-B behind the explicit stored-session
-`mode == "levelb"` branch. That branch reads the seed from `Wallet.seedHex` and the decimal tag
+Both native `ScanScreen` implementations kept the owner-hidden flow behind an explicit stored-session
+`mode == "levelb"` branch. The flow reads the seed from `Wallet.seedHex` and the decimal tag
 handle, owner address, and salted attributes from the throwing `ProfileTreeStore.load` accessor;
 an unreadable owner-secret store must fail closed. It passes those values directly to
 `proveConsent` (the stored `ownerSecretHex` never crosses the caller seam), with the attributes'
-stored `saltHex` encoded as the FFI JSON field `salt`. Level-B artifacts are always resolved by
-version (`dogtag-levelb/1`), and the device creates a fresh 32-byte consent nonce plus a 10-minute
-deadline. The latter deliberately exceeds the server's 120-second preflight floor so the detached,
-retried broadcast still has room to settle.
+stored `saltHex` encoded as the FFI JSON field `salt`. Artifacts are always resolved by
+version (the internal key `dogtag-levelb/1`), and the device creates a fresh 32-byte consent nonce
+plus a 10-minute deadline. The latter deliberately exceeds the server's 120-second preflight floor
+so the detached, retried broadcast still has room to settle.
 
-Submit the proof to `/v1/verify/consent/levelb`, then reuse the Level-A-shaped detached-broadcast
-poll primitive: query the validated Level-B `verificationRegistry` for
-`consumed(pubSignals[PublicSignalIndex.levelB.nullifier])` while polling the same export session for
-a terminal error. The Level-B nullifier is index **3**; index 4 is the public profile root `R`, and
-polling it produces the classic successful-submit hang. This branch has no EdDSA signing or consent
-key bind step. The Level-A `proveVerification` / bind / `/v1/verify/consent` path remains separate.
+Submit the proof (server-side the migration-era `/v1/verify/consent/levelb` alias has collapsed
+into the sole submit route `POST /v1/verify/consent`), then reuse the detached-broadcast
+poll primitive: query the validated `verificationRegistry` for
+`consumed(pubSignals[nullifier])` while polling the same export session for
+a terminal error. The nullifier is index **3**; index 4 is the public profile root `R`, and
+polling it produces the classic successful-submit hang. This flow has no EdDSA signing or consent
+key bind step. (The retired `proveVerification` / bind path has been deleted outright.)
 
 The first native release carrying this path is semver **1.4.0** (build/versionCode 4). Keep both app
 versions, `ProtocolVersions.sol`, `dogtag-prover-rs`'s manifest mirror, and the registry runbook at
@@ -1705,7 +1707,7 @@ contract change.
 `mintCustodial` + write-once `profileRoot` + permanent burn-retirement mean a lost owner-secret has
 no on-chain repair, and `CustodialIssuance.t.sol::test_no_recover_surface` already pins that
 `recover()` does not exist (a keyed rebind would name the new owner on-chain, which is exactly what
-Level-B removes).
+the owner-hidden model removes).
 M6 makes the re-issue path a first-class, tested device flow.
 
 Recovery has two branches, decided by whether the owner-secret can be regenerated
@@ -1731,8 +1733,9 @@ The seed-backup gate (`StoreError.seedBackupNotConfirmed`) applies to `reissue` 
 
 **Referencing credentials across issuers - accept the break (captain decision, 2026-07-16).**
 A re-issued pet gets a NEW `dogTagId`, so any credential another issuer (vet/government) previously
-anchored to the OLD id now points at the abandoned tag - Level-A preserved these across `recover()`
-via a stable `tokenId` + `issuerOf`, but Level-B re-issue deliberately does NOT.
+anchored to the OLD id now points at the abandoned tag - the retired owner-revealing generation
+preserved these across `recover()` via a stable `tokenId` + `issuerOf`, but owner-hidden re-issue
+deliberately does NOT.
 Prior attestations are **not** re-anchored or transferred to the new id: doing so would forge
 attestation applicability (a vet/gov signature applying to an id it never signed), breaking the
 cross-issuer trust model.
@@ -1749,20 +1752,19 @@ by simply issuing a new tag.
 What does NOT exist is any issuer-side notion OF a re-issue: nothing marks the abandoned tag, links
 old to new, or drives a re-issue-specific operator flow - and per the paragraph above that link must
 never reach an issuer record anyway, so the old<->new association stays device-local.
-The owner-hidden custodial route is the required end-state. Until its device call site is wired, the
-Level-A wallet-mint route remains live; new work must retire it rather than preserve it as a default,
-opt-in, or fallback.
+The owner-hidden custodial route is the end-state, and the cutover is complete: the device call site
+landed (mobile PR #71) and the owner-revealing wallet-mint route was deleted (backend PR #72) - it
+must never be rebuilt as a default, opt-in, or fallback.
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
 - **The iOS `ProfileTreeStore` has ZERO automated-test coverage.** The `DogTagTests` target (see "iOS unit tests")
   cannot reach it: that suite is deliberately FFI-free and `ProfileTreeStore` builds through the FFI,
-  so it stays out of scope until the pure logic is extracted. The M-4 PR4 present flow (`runLevelBFlow`)
-  now calls `ProfileTreeStore.load()` in production, but the WRITE side is still uncalled - M-2 built
-  the SERVER end of the issuance bridge (`POST /profiles/issue/custodial-bind`), yet the iOS call site
-  that feeds it a built `R` is a deliberate follow-up - so the Codable-encode round-trip, the
-  atomic/`.completeFileProtection` write and `verifyRecoverable` have only been typechecked, never
-  run. The first writer should exercise them.
+  so it stays out of scope until the pure logic is extracted. Both sides are now called in
+  production - the present flow calls `ProfileTreeStore.load()` and the custodial-bind QR issuance
+  flow (`ScanScreen` -> `buildAndPersist` -> `POST /profiles/issue/custodial-bind`, landed with the
+  mobile cutover) exercises the WRITE side - but the Codable-encode round-trip, the
+  atomic/`.completeFileProtection` write and `verifyRecoverable` still have no automated coverage.
   The Android namesake is a SEPARATE coverage story - see the next bullet; do not read this one as
   covering both.
 - **The Android `ProfileTreeStore`'s device-side half is uncovered too, though its pure logic is
@@ -1782,7 +1784,7 @@ opt-in, or fallback.
 - **`hash_reserved_leaf` / `build_profile_tree` are Rust-only.** `packages/dogtag-standard-ts` has no
   equivalent, so the usual "three legs in lockstep via testvectors.json" invariant does not yet cover
   the profile tree. Fine while the native holders use the Rust core; the **web holder**
-  (`stacks/owner/web`) would need the TS leg before it can build a Level-B tag.
+  (`stacks/owner/web`) would need the TS leg before it can build an owner-hidden tag.
 - **No leaf-count guard.** `consent.circom` is instantiated at `depth=6` (~64 leaves). A tree larger
   than that produces an `R` no proof can be made against, and `build_profile_tree` will not stop you.
   Realistic pet credentials are far under it.

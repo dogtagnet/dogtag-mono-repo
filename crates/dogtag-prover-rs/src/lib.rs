@@ -1,31 +1,30 @@
 //! DogTag Groth16 proving service.
 //!
-//! Generates a Groth16 proof for the DogTag verification circuit
-//! (`circuits/verification.circom`, `DogTagVerification(24, 5)`) so the vet
-//! backend's ZK path can submit `recordVerificationZK` on-chain.
+//! Generates a Groth16 proof for the owner-hidden consent circuit
+//! (`circuits/consent.circom`, `DogTagConsent(6)`) so the backend's server-prove
+//! fallback (`/prove-consent`) can hand back on-chain-submittable calldata.
 //!
 //! The circuit's public-signal vector (snarkjs order — all seven are circuit
 //! OUTPUTS declared in spec order) is:
 //!
 //! ```text
-//! [dogTagId, purpose, relayer, subject, nullifier, keyHash, R]
+//! [dogTagId, purpose, relayer, nullifier, R, recordType, deadline]
 //! ```
 //!
 //! # API
 //!
-//! - [`Prover::load`] — load the r1cs + wasm witness calculator + zkey ONCE, for the CURRENT version.
-//! - [`Prover::load_versioned`] — the same, for an explicitly named protocol version.
-//! - [`Prover::prove`] — generate a [`Groth16Output`] per request.
+//! - [`Prover::load_versioned`] — load the r1cs + wasm witness calculator + zkey ONCE, for a named
+//!   protocol version.
+//! - [`Prover::prove_consent_inputs`] — generate a [`Groth16Output`] per request.
 //! - [`Prover::zkey_hash`] — SHA-256 of the zkey file (pinned at load, impl §11.8(f)).
 //!
 //! # Version-keyed artifacts
 //!
 //! Which files a prover loads, and the hashes it pins them to, come from an
 //! [`artifact::ArtifactDescriptor`] resolved by protocol version ([`artifact::resolve`]) rather than
-//! from hard-coded filenames. The Level-A set ([`artifact::LEVEL_A_V1_DESCRIPTOR`]) is the seed entry
-//! and the default: [`Prover::load`] is [`Prover::load_versioned`] against [`artifact::current`], so
-//! callers naming no version behave exactly as before. See [`artifact`] for the model — including why
-//! the zkey hash and the VK hash are distinct fields, and why nothing is fetched here.
+//! from hard-coded filenames. The consent set ([`artifact::LEVEL_B_V1_DESCRIPTOR`]) is the sole
+//! entry and the default. See [`artifact`] for the model — including why the zkey hash and the VK
+//! hash are distinct fields, and why nothing is fetched here.
 //!
 //! # ark version isolation
 //!
@@ -39,7 +38,7 @@
 //! soliditycalldata` would emit it, i.e. with the snarkjs→Solidity **b-coordinate
 //! swap** applied (`b[0] = [bx_c1, bx_c0]`, `b[1] = [by_c1, by_c0]`), so it drops
 //! straight into the on-chain
-//! `Groth16Verifier.verifyProof(uint[2], uint[2][2], uint[2], uint[7])`.
+//! `Groth16VerifierConsent.verifyProof(uint[2], uint[2][2], uint[2], uint[7])`.
 
 use std::path::{Path, PathBuf};
 
@@ -56,32 +55,12 @@ pub mod manifest;
 
 pub use artifact::ArtifactDescriptor;
 
-/// `N` — maximum number of leaves the circuit supports (`DogTagVerification(24, 5)`).
+/// Number of public signals the consent circuit exposes:
+/// `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`.
 ///
-/// This is the CURRENT (Level-A) version's width, and the width [`ProveInputs`]' fixed-size arrays
-/// carry. Per-version it is [`ArtifactDescriptor::max_leaves`].
-pub const N: usize = 24;
-
-/// Number of public signals the circuit exposes:
-/// `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]`.
-///
-/// This is the CURRENT (Level-A) version's count, and the width of
-/// [`Groth16Output::public_signals`]. Per-version it is [`ArtifactDescriptor::num_public`], which
-/// [`Prover::load_versioned`] checks against this width.
+/// The width of [`Groth16Output::public_signals`]. Per-version it is
+/// [`ArtifactDescriptor::num_public`], which [`Prover::load_versioned`] checks against this width.
 pub const NUM_PUBLIC: usize = 7;
-
-/// Expected SHA-256 (lowercase hex) of the CURRENT (Level-A) `verification_final.zkey` — the testnet
-/// self-run ceremony output recorded in `contracts/deployments/roax.json` (`_zk_ceremony`) and
-/// `docs/CEREMONY_TRANSCRIPT.md`. [`Prover::load`] refuses any zkey whose hash differs, so a swapped
-/// or corrupt proving key fails closed instead of silently producing proofs against the wrong key
-/// (audit M4). A deployment pinning a DIFFERENT zkey (e.g. a production ceremony output) loads it via
-/// [`Prover::load_with_expected_zkey`].
-///
-/// This is the Level-A version's pin specifically, not "the" pin: it is the value of
-/// [`artifact::LEVEL_A_V1_DESCRIPTOR`]'s [`artifact::ZkeyArtifact::sha256`], and each further version
-/// pins its own. It is NOT the VK hash — see [`artifact`].
-pub const EXPECTED_ZKEY_SHA256_HEX: &str =
-    "9e3636b9c12b57b8662e34505a01e19bfc87a99189c994b0d87bc2e3dcdcd992";
 
 /// Errors that can arise while loading artifacts or proving.
 #[derive(Debug, thiserror::Error)]
@@ -116,38 +95,10 @@ pub enum ProverError {
     UnknownVersion { version: String, known: Vec<String> },
 }
 
-/// Named inputs mirroring the circuit's private signals.
-///
-/// Every value is a decimal string (a base-10 field element / integer). Fixed-width
-/// arrays carry exactly `N = 24` entries (the circuit width); only the first
-/// `numLeaves` are semantically meaningful, the rest are the padding/identity slots.
-#[derive(Debug, Clone)]
-pub struct ProveInputs {
-    pub dog_tag_id: String,
-    pub purpose: String,
-    pub relayer: String,
-    pub subject: String,
-    pub num_leaves: String,
-    pub leaf_key_path_hashes: [String; N],
-    pub leaf_type_tags: [String; N],
-    pub leaf_salts: [String; N],
-    pub leaf_values: [String; N],
-    pub dog_tag_id_leaf_index: String,
-    pub sorted_leaf_hashes: [String; N],
-    pub perm: [String; N],
-    pub dog_tag_key_path_field: String,
-    pub consent_nonce: String,
-    pub ax: String,
-    pub ay: String,
-    pub r8x: String,
-    pub r8y: String,
-    pub s: String,
-}
-
-/// Inclusion-path depth for the Level-B consent circuit — `component main = DogTagConsent(6)`.
+/// Inclusion-path depth for the consent circuit — `component main = DogTagConsent(6)`.
 pub const CONSENT_DEPTH: usize = 6;
 
-/// Named inputs mirroring the Level-B **consent** circuit's private signals (`DogTagConsent(6)`).
+/// Named inputs mirroring the **consent** circuit's private signals (`DogTagConsent(6)`).
 ///
 /// Every value is a decimal string (a base-10 field element). The three inclusion paths are
 /// front-packed: `*_siblings[0..*_path_len]` are the real siblings (leaf→root order), the tail is
@@ -184,20 +135,15 @@ pub struct ConsentProveInputs {
 /// - `a` / `c` are G1 points `[x, y]`.
 /// - `b` is a G2 point with the snarkjs→Solidity coordinate swap already applied:
 ///   `b[0] = [bx_c1, bx_c0]`, `b[1] = [by_c1, by_c0]`.
-/// - `pub` is the public-signal vector. **Its ORDER depends on which circuit produced the proof, and
-///   this struct is reused for both**, so it cannot be stated here as a single ground truth:
-///   - Level-A (`verification.circom`): `[dogTagId, purpose, relayer, subject, nullifier, keyHash, R]`
-///   - Level-B (`consent.circom`):      `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`
+/// - `pub` is the public-signal vector, in the consent circuit's frozen OUTPUT order:
+///   `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`.
 ///
-///   The two agree on the first three signals and diverge from index 3 on, and the width is identical
-///   (7) either way — so a mix-up is invisible to the type system and produces a plausible-looking
-///   field element rather than an error. Read these through the named constants in
-///   `dogtag_standard::public_signals::{level_a, level_b}` rather than by literal index. (This crate
-///   cannot import them: it pins the ark 0.6 stack while `dogtag-standard-rs` pins 0.5, and the two
-///   coexist only because ark types never cross the boundary — see the note in `Cargo.toml`. Keep the
-///   two definitions in step by hand.)
+///   Read these through the named constants in `dogtag_standard::public_signals::level_b` rather
+///   than by literal index. (This crate cannot import them: it pins the ark 0.6 stack while
+///   `dogtag-standard-rs` pins 0.5, and the two coexist only because ark types never cross the
+///   boundary — see the note in `Cargo.toml`. Keep the two definitions in step by hand.)
 ///
-/// All values are base-10 decimal strings (`Groth16Verifier.verifyProof` takes
+/// All values are base-10 decimal strings (`Groth16VerifierConsent.verifyProof` takes
 /// `uint256`s; decimal is accepted).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Groth16Output {
@@ -224,30 +170,6 @@ pub struct Prover {
 }
 
 impl Prover {
-    /// Load the CURRENT (Level-A) version's artifacts from `build_dir` (the `circuits/build`
-    /// directory), enforcing the pinned [`EXPECTED_ZKEY_SHA256_HEX`] — a zkey whose hash differs is
-    /// rejected (audit M4).
-    ///
-    /// Equivalent to [`Prover::load_versioned`] against [`artifact::current`], which is where the
-    /// filenames come from:
-    /// - `verification.r1cs`
-    /// - `verification_js/verification.wasm`
-    /// - `verification_final.zkey`
-    pub fn load(build_dir: impl AsRef<Path>) -> Result<Self, ProverError> {
-        Self::load_inner(build_dir, artifact::current(), None)
-    }
-
-    /// Like [`Prover::load`] but pins an explicit expected zkey SHA-256 (lowercase hex). Use this when
-    /// a deployment ships a different proving key (e.g. a production ceremony output) than the bundled
-    /// testnet one. The hash is checked BEFORE the (expensive) proving-key parse, so a wrong artifact
-    /// fails fast and closed.
-    pub fn load_with_expected_zkey(
-        build_dir: impl AsRef<Path>,
-        expected_zkey_sha256_hex: &str,
-    ) -> Result<Self, ProverError> {
-        Self::load_inner(build_dir, artifact::current(), Some(expected_zkey_sha256_hex))
-    }
-
     /// Load the artifacts a specific protocol version names, from `build_dir`.
     ///
     /// The descriptor supplies the filenames AND the hashes: every pinned file is verified before it
@@ -263,8 +185,8 @@ impl Prover {
     }
 
     /// [`Prover::load_versioned`] with the version's zkey pin overridden by an explicit expected
-    /// SHA-256 (the deployment-config escape hatch [`Prover::load_with_expected_zkey`] offers, for a
-    /// named version).
+    /// SHA-256 — the deployment-config escape hatch for a deployment that ships a different proving
+    /// key (e.g. a production ceremony output) than the bundled testnet one.
     pub fn load_versioned_with_expected_zkey(
         build_dir: impl AsRef<Path>,
         descriptor: &'static ArtifactDescriptor,
@@ -290,20 +212,6 @@ impl Prover {
                 "version {} exposes {} public signals, but this build formats {NUM_PUBLIC}",
                 descriptor.version, descriptor.num_public
             )));
-        }
-
-        // The Level-A `ProveInputs`' leaf arrays are a fixed N width, so a version that DECLARES a
-        // fixed leaf-array width (`max_leaves: Some(_)`) but a different one cannot be fed by that
-        // path. Refuse at load rather than let the mismatch surface as an obscure witness-generation
-        // failure far from its cause. A circuit with no fixed leaf array (`None`, e.g. the Level-B
-        // consent circuit's depth-6 inclusion paths) is exempt — it is fed by `ConsentProveInputs`.
-        if let Some(max_leaves) = descriptor.max_leaves {
-            if max_leaves != N {
-                return Err(ProverError::Load(format!(
-                    "version {} proves up to {max_leaves} leaves, but this build feeds {N}",
-                    descriptor.version
-                )));
-            }
         }
 
         let build_dir = build_dir.as_ref().to_path_buf();
@@ -369,7 +277,7 @@ impl Prover {
         self.descriptor
     }
 
-    /// The protocol version key this prover proves for (e.g. [`artifact::LEVEL_A_V1`]).
+    /// The protocol version key this prover proves for (e.g. [`artifact::LEVEL_B_V1`]).
     pub fn version(&self) -> &'static str {
         self.descriptor.version
     }
@@ -384,20 +292,13 @@ impl Prover {
         hex::encode(self.zkey_sha256)
     }
 
-    /// Generate a Groth16 proof for the Level-A verification circuit's named inputs.
-    pub fn prove(&self, inputs: ProveInputs) -> Result<Groth16Output, ProverError> {
-        self.prove_with(|builder| push_named_inputs(builder, &inputs))
-    }
-
-    /// Generate a Groth16 proof for the Level-B **consent** circuit's named inputs (M7 P0).
+    /// Generate a Groth16 proof for the **consent** circuit's named inputs (M7 P0).
     ///
-    /// The consent circuit (`DogTagConsent(6)`) has a different named-signal set from Level-A — no
-    /// `N`-wide leaf table; three depth-6 inclusion PATHS instead — so it takes [`ConsentProveInputs`]
-    /// and pushes those signals ([`push_consent_inputs`]) rather than [`ProveInputs`]. Everything else
-    /// (fresh `CircomConfig` per call, in-process self-verify, the seven-wide `pub` formatting) is
-    /// shared, because consent is also a seven-public-signal circuit. The prover MUST have been loaded
-    /// with the consent descriptor ([`artifact::LEVEL_B_V1_DESCRIPTOR`]); the pinned zkey/r1cs/wasm
-    /// are what make the self-verify a verification against the frozen consent VK.
+    /// The consent circuit (`DogTagConsent(6)`) folds three depth-6 inclusion PATHS, taken as
+    /// [`ConsentProveInputs`] and pushed by signal name ([`push_consent_inputs`]). The prover MUST
+    /// have been loaded with the consent descriptor ([`artifact::LEVEL_B_V1_DESCRIPTOR`]); the
+    /// pinned zkey/r1cs/wasm are what make the self-verify a verification against the frozen
+    /// consent VK.
     pub fn prove_consent_inputs(
         &self,
         inputs: ConsentProveInputs,
@@ -405,8 +306,8 @@ impl Prover {
         self.prove_with(|builder| push_consent_inputs(builder, &inputs))
     }
 
-    /// The shared prove core: build the witness from `push`, prove, self-verify, format. `push`
-    /// supplies the circuit's named inputs (Level-A or consent), which is the only part that differs.
+    /// The prove core: build the witness from `push`, prove, self-verify, format. `push`
+    /// supplies the circuit's named inputs.
     fn prove_with<F>(&self, push: F) -> Result<Groth16Output, ProverError>
     where
         F: FnOnce(&mut CircomBuilder<Fr>) -> Result<(), ProverError>,
@@ -528,47 +429,9 @@ fn push_scalar(
     Ok(())
 }
 
-fn push_array(
-    builder: &mut CircomBuilder<Fr>,
-    name: &str,
-    values: &[String; N],
-) -> Result<(), ProverError> {
-    for v in values.iter() {
-        builder.push_input(name, parse_bigint(name, v)?);
-    }
-    Ok(())
-}
-
-/// Push the circuit's named signals into the builder, in the circom signal names.
-fn push_named_inputs(
-    builder: &mut CircomBuilder<Fr>,
-    inputs: &ProveInputs,
-) -> Result<(), ProverError> {
-    push_scalar(builder, "dogTagId", &inputs.dog_tag_id)?;
-    push_scalar(builder, "purpose", &inputs.purpose)?;
-    push_scalar(builder, "relayer", &inputs.relayer)?;
-    push_scalar(builder, "subject", &inputs.subject)?;
-    push_scalar(builder, "numLeaves", &inputs.num_leaves)?;
-    push_array(builder, "leafKeyPathHashes", &inputs.leaf_key_path_hashes)?;
-    push_array(builder, "leafTypeTags", &inputs.leaf_type_tags)?;
-    push_array(builder, "leafSalts", &inputs.leaf_salts)?;
-    push_array(builder, "leafValues", &inputs.leaf_values)?;
-    push_scalar(builder, "dogTagIdLeafIndex", &inputs.dog_tag_id_leaf_index)?;
-    push_array(builder, "sortedLeafHashes", &inputs.sorted_leaf_hashes)?;
-    push_array(builder, "perm", &inputs.perm)?;
-    push_scalar(builder, "dogTagKeyPathField", &inputs.dog_tag_key_path_field)?;
-    push_scalar(builder, "consentNonce", &inputs.consent_nonce)?;
-    push_scalar(builder, "Ax", &inputs.ax)?;
-    push_scalar(builder, "Ay", &inputs.ay)?;
-    push_scalar(builder, "R8x", &inputs.r8x)?;
-    push_scalar(builder, "R8y", &inputs.r8y)?;
-    push_scalar(builder, "S", &inputs.s)?;
-    Ok(())
-}
-
-/// Push the Level-B **consent** circuit's named signals into the builder (M7 P0).
+/// Push the **consent** circuit's named signals into the builder (M7 P0).
 ///
-/// Distinct from [`push_named_inputs`]: the consent circuit's signal set is `dogTagId, purpose,
+/// The consent circuit's signal set is `dogTagId, purpose,
 /// relayer, recordType, deadline, consentNonce, ownerAddress, ownerSecret, Ax, Ay, R8x, R8y, S,
 /// ownerSalt, keySalt, secretSalt` plus three depth-[`CONSENT_DEPTH`] inclusion PATHS (front-packed
 /// `*Siblings` + `*PathLen`). Order does not matter to `CircomBuilder` (it maps by signal name).
@@ -607,71 +470,6 @@ fn push_consent_inputs(
     push_path(builder, "secretSiblings", &inputs.secret_siblings)?;
     push_scalar(builder, "secretPathLen", &inputs.secret_path_len)?;
     Ok(())
-}
-
-impl ProveInputs {
-    /// Build [`ProveInputs`] from the Level-A circuit-input JSON object
-    /// (all string-valued; arrays of length `N`; see [`push_named_inputs`]).
-    ///
-    /// Useful for tests / cross-checking against the snarkjs pipeline.
-    pub fn from_circuit_input_json(v: &serde_json::Value) -> Result<Self, ProverError> {
-        fn s(v: &serde_json::Value, k: &str) -> Result<String, ProverError> {
-            v.get(k)
-                .and_then(|x| x.as_str())
-                .map(|x| x.to_string())
-                .ok_or_else(|| ProverError::Input {
-                    field: k.to_string(),
-                    reason: "missing or not a string".into(),
-                })
-        }
-        fn arr(v: &serde_json::Value, k: &str) -> Result<[String; N], ProverError> {
-            let raw = v
-                .get(k)
-                .and_then(|x| x.as_array())
-                .ok_or_else(|| ProverError::Input {
-                    field: k.to_string(),
-                    reason: "missing or not an array".into(),
-                })?;
-            if raw.len() != N {
-                return Err(ProverError::Input {
-                    field: k.to_string(),
-                    reason: format!("expected {N} entries, got {}", raw.len()),
-                });
-            }
-            let mut out: [String; N] = Default::default();
-            for (i, item) in raw.iter().enumerate() {
-                out[i] = item.as_str().map(|x| x.to_string()).ok_or_else(|| {
-                    ProverError::Input {
-                        field: format!("{k}[{i}]"),
-                        reason: "not a string".into(),
-                    }
-                })?;
-            }
-            Ok(out)
-        }
-
-        Ok(ProveInputs {
-            dog_tag_id: s(v, "dogTagId")?,
-            purpose: s(v, "purpose")?,
-            relayer: s(v, "relayer")?,
-            subject: s(v, "subject")?,
-            num_leaves: s(v, "numLeaves")?,
-            leaf_key_path_hashes: arr(v, "leafKeyPathHashes")?,
-            leaf_type_tags: arr(v, "leafTypeTags")?,
-            leaf_salts: arr(v, "leafSalts")?,
-            leaf_values: arr(v, "leafValues")?,
-            dog_tag_id_leaf_index: s(v, "dogTagIdLeafIndex")?,
-            sorted_leaf_hashes: arr(v, "sortedLeafHashes")?,
-            perm: arr(v, "perm")?,
-            dog_tag_key_path_field: s(v, "dogTagKeyPathField")?,
-            consent_nonce: s(v, "consentNonce")?,
-            ax: s(v, "Ax")?,
-            ay: s(v, "Ay")?,
-            r8x: s(v, "R8x")?,
-            r8y: s(v, "R8y")?,
-            s: s(v, "S")?,
-        })
-    }
 }
 
 impl ConsentProveInputs {

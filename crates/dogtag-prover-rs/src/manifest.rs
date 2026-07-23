@@ -96,29 +96,17 @@ pub struct ArtifactRelease {
     pub min_app_version: &'static str,
 }
 
-/// `dogtag-levela/1` on-chain set — the still-live Level-A verification trio (roax.json).
-pub const LEVEL_A_DEPLOYMENT: VersionDeployment = VersionDeployment {
-    chain_id: 135,
-    factory: "0xd3179AbBfb0274D0a5F7017d76015A93C159511D",
-    verification_registry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
-    sbt: "0x1FB8986573Ac36d532cF7d5a5352202B094D4233",
-    verifier: "0xEEFCfAF026931b7325472A88fd14Ee780Da13559",
-};
-
-/// `dogtag-levelb/1` on-chain set — the canonical M5 Level-B consent trio (roax.json).
+/// `dogtag-levelb/1` on-chain set — the canonical M5 consent trio (roax.json).
+///
+/// NOTE (redeploy landmine, tracked for the fresh-redeploy slice): these are hard-coded non-env
+/// constants; a fresh redeploy MUST repoint every one or discovery silently resolves to
+/// non-existent contracts.
 pub const LEVEL_B_DEPLOYMENT: VersionDeployment = VersionDeployment {
     chain_id: 135,
     factory: "0xd3179AbBfb0274D0a5F7017d76015A93C159511D",
     verification_registry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87",
     sbt: "0x96Cba4580D79bc9b8e51Fc1B3a044A29592AfFFc",
     verifier: "0x272be146C0aEd6401000E9Aa8241201F6f0fdF1a",
-};
-
-/// The artifact set currently BOUND to `dogtag-levela/1` (mirrors `activeArtifactSetOf`).
-pub const LEVEL_A_ARTIFACT_RELEASE: ArtifactRelease = ArtifactRelease {
-    artifact_set: "dogtag-levela-artifacts/1",
-    artifact_base_url: "https://artifacts.dogtag.io/levela1",
-    min_app_version: "1.0.0",
 };
 
 /// The artifact set currently BOUND to `dogtag-levelb/1` (mirrors `activeArtifactSetOf`).
@@ -132,7 +120,6 @@ pub const LEVEL_B_ARTIFACT_RELEASE: ArtifactRelease = ArtifactRelease {
 /// (fail-closed — the serving path returns 404, never a guessed/empty manifest).
 pub fn deployment_for(version: &str) -> Option<&'static VersionDeployment> {
     match version {
-        crate::artifact::LEVEL_A_V1 => Some(&LEVEL_A_DEPLOYMENT),
         crate::artifact::LEVEL_B_V1 => Some(&LEVEL_B_DEPLOYMENT),
         _ => None,
     }
@@ -142,7 +129,6 @@ pub fn deployment_for(version: &str) -> Option<&'static VersionDeployment> {
 /// `ProtocolRegistry.activeArtifactSetOf`. Rotating artifacts changes ONLY this table.
 pub fn artifact_release_for(version: &str) -> Option<&'static ArtifactRelease> {
     match version {
-        crate::artifact::LEVEL_A_V1 => Some(&LEVEL_A_ARTIFACT_RELEASE),
         crate::artifact::LEVEL_B_V1 => Some(&LEVEL_B_ARTIFACT_RELEASE),
         _ => None,
     }

@@ -1,109 +1,109 @@
-# DogTag — ZK Trusted-Setup Ceremony (production)
+# DogTag - ZK Trusted-Setup Ceremony (production)
 
-> **RETIRED / HISTORICAL - not runnable.**
-> This documents the Level-A `verification.circom` ceremony, whose circuit, ceremony scripts
-> (`scripts/ceremony.sh`, `scripts/setup.sh`) and `npm run compile-circuit` / `npm run build-circuit`
-> were removed when the owner-revealing layer was retired. The commands below no longer resolve and are
-> kept only as provenance for the already-deployed Level-A verifier. The live owner-hidden consent
-> ceremony is `circuits/scripts/ceremony-consent.sh` (transcript `docs/CEREMONY_TRANSCRIPT.consent.md`).
+> **Live circuit: `circuits/consent.circom` (`DogTagConsent(6)`) - the owner-hidden consent circuit.**
+> This is the concise ceremony guide for the ONE circuit the protocol runs on.
+> The testnet key securing it today came from the documented single-operator self-run `circuits/scripts/ceremony-consent.sh` (transcript: [`CEREMONY_TRANSCRIPT.consent.md`](./CEREMONY_TRANSCRIPT.consent.md)); production requires the multi-party run described here.
+>
+> **History:** an earlier ceremony was run for the since-retired owner-revealing `verification.circom` (transcript: [`CEREMONY_TRANSCRIPT.md`](./CEREMONY_TRANSCRIPT.md), kept frozen as provenance).
+> That circuit, its ceremony scripts (`scripts/ceremony.sh`, `scripts/setup.sh`) and the `npm run compile-circuit` / `npm run build-circuit` package scripts were all removed with the owner-revealing layer; commands referencing them no longer resolve anywhere in this repo.
 
-> **See also** [`CEREMONY_RUNBOOK.md`](./CEREMONY_RUNBOOK.md) — the expanded, captain-fill-in production
-> runbook (participant slot table, attestation/transcript format, air-gapped step detail). This file is the
-> concise version; `ceremony.sh` points operators at the runbook for the deploy hand-off.
+> **See also** [`CEREMONY_RUNBOOK.md`](./CEREMONY_RUNBOOK.md) - the expanded, captain-fill-in production runbook (participant slot table, attestation/transcript format, air-gapped step detail).
+> This file is the concise version.
 
-The Groth16 proof-of-verification path needs a circuit-specific **proving/verifying key** produced by a
-**multi-party ceremony**. The dev key shipped in `circuits/build` (from `scripts/setup.sh`) is a
-single-contributor setup for TESTS ONLY and must NOT secure a real deployment — a sole contributor
-could forge attestations. This runbook produces a production-grade key with **≥3 independent
-contributors + a public random beacon**, then wires the resulting verifier into the live
-`VerificationRegistry` via its 2-day timelock.
+The Groth16 owner-hidden consent path needs a circuit-specific **proving/verifying key** produced by a **multi-party ceremony**.
+Two non-production setups exist and must never secure a real deployment:
 
-> The core three-pillar trust model (integrity + on-chain status + DNS) does **not** depend on this
-> ceremony at all, and the **normal/ECDSA** proof-of-verification path already works on-chain today
-> (`recordVerification`). The ceremony only gates the **ZK** path (`recordVerificationZK`). Until it
-> completes, leave `ZK_VERIFIER = 0x0` on the registry.
+- `circuits/scripts/setup-consent.sh` (`npm run build-consent`) is the throwaway **DEV** setup - a self-generated ptau with a single contributor, forgeable by construction, used only by the circuit test.
+  Running it **overwrites the committed ceremony zkey/VK** - avoid.
+- `circuits/scripts/ceremony-consent.sh` as committed performs a **single-operator testnet self-run** (public Hermez ptau + ONE contribution + a public drand beacon).
+  It is real enough for the disposable ROAX testnet, but a sole contributor could retain the toxic waste and forge consent attestations.
 
-Circuit: `DogTagVerification(24,5)`, ~94,459 constraints → **2^17** powers of tau.
+Production needs **>=3 independent contributors + a public random beacon**, then wires the resulting verifier into the live `VerificationRegistryConsent` via its 2-day timelock.
+
+> The Merkle-proof side of the protocol (issuance anchoring, integrity, selective disclosure - the three-pillar trust model) does **not** depend on this ceremony at all.
+> The ceremony gates the **ZK consent** path (`recordVerificationZK`), which is the only on-chain verification path, so the key that secures it is the key that secures verification.
+
+Circuit: `DogTagConsent(6)`, 38,501 non-linear constraints -> **2^16** needed; the ceremony uses the public Hermez **2^17** powers of tau (sha256-pinned in `ceremony-consent.sh`).
 
 ## Roles
-- **Coordinator** (you): runs `init`, collects contributions in order, applies the beacon, finalizes,
-  publishes the transcript, deploys + wires the verifier.
-- **Contributors** (≥3, independent): each adds secret entropy and **destroys it**. The more
-  independent contributors, the stronger the guarantee (1-of-N honesty suffices).
+- **Coordinator** (you): compiles the circuit, runs the setup, collects contributions in order, applies the beacon, finalizes, publishes the transcript, deploys + wires the verifier.
+- **Contributors** (>=3, independent): each adds secret entropy and **destroys it**.
+  The more independent contributors, the stronger the guarantee (1-of-N honesty suffices).
 
 ## Steps
 
-### 1. Coordinator — initialize
+The phases below are the phases `ceremony-consent.sh` automates for the testnet self-run; the production run inserts one `snarkjs zkey contribute` per independent contributor between setup and beacon (the runbook §3 has the full per-step detail).
+
+### 1. Coordinator - initialize
 ```bash
 cd circuits
-npm run compile-circuit        # COMPILE ONLY: produces build/verification.r1cs (+ wasm/sym)
-bash scripts/ceremony.sh init  # downloads Hermez ptau (2^17) + makes contribution #0
+npm ci
+circom consent.circom --r1cs --wasm --sym -l node_modules/circomlib/circuits -l . -o build
+# fetch + sha256-verify the public Hermez ptau exactly as ceremony-consent.sh does (power 17,
+# sha256 6b662a32…83ae0), then make contribution #0:
+npx snarkjs groth16 setup build/consent.r1cs ptau/powersOfTau28_hez_final_17.ptau build/consent_0000.zkey
 ```
-> Use `compile-circuit`, **not** `build-circuit`. `build-circuit` (`scripts/setup.sh`) is the DEV
-> single-contributor setup: it generates a local, insecure ptau and **overwrites**
-> `Groth16Verifier.sol` / `build/verification_final.zkey` with a forgeable dev key. The ceremony only
-> needs the r1cs; the keys come from `ceremony.sh`.
-Publish `build/ceremony_0000.zkey` and send it to contributor #1.
+> Compile only - never `npm run build-consent`.
+> That is the DEV single-contributor setup: it generates a local, insecure ptau and **overwrites** the committed `consent_final.zkey` / VK with a forgeable dev key.
+> The ceremony needs only the r1cs from compilation.
 
-### 2. Each contributor (in sequence, ≥3)
-On their OWN machine, having received `ceremony_{prev}.zkey`:
-```bash
-bash scripts/ceremony.sh contribute ceremony_prev.zkey ceremony_mine.zkey "Alice @ OrgA"
-# adds unpredictable entropy when prompted; verifies the chain first
-```
-They publish `ceremony_mine.zkey` and pass it to the next contributor, then **destroy their entropy**
-(close the terminal, wipe shell history). Each contribution is independently verifiable by anyone:
-`snarkjs zkey verify build/verification.r1cs ptau/...17.ptau ceremony_mine.zkey`.
+Publish `build/consent_0000.zkey` and send it to contributor #1.
 
-### 3. Coordinator — public random beacon
-After the LAST contribution, choose a value that was **unpredictable at contribution time** — e.g. a
-specific **future Bitcoin block hash** or a **drand** round — and apply it:
+### 2. Each contributor (in sequence, >=3)
+On their OWN machine, having received `consent_{prev}.zkey`:
 ```bash
-bash scripts/ceremony.sh beacon ceremony_lastN.zkey 0x<beaconHash> "final beacon: BTC block 9xxxxx"
+npx snarkjs zkey verify build/consent.r1cs ptau/powersOfTau28_hez_final_17.ptau consent_prev.zkey
+npx snarkjs zkey contribute consent_prev.zkey consent_mine.zkey --name="Alice @ OrgA" -v
+# adds unpredictable entropy when prompted
+```
+They publish `consent_mine.zkey` and pass it to the next contributor, then **destroy their entropy** (close the terminal, wipe shell history).
+Each contribution is independently verifiable by anyone via the same `snarkjs zkey verify` invocation.
+
+### 3. Coordinator - public random beacon
+After the LAST contribution, apply a value that was **unpredictable at contribution time** - e.g. a pre-announced **future Bitcoin block hash** or a **drand** round (the testnet self-run used the drand League-of-Entropy mainnet chain):
+```bash
+npx snarkjs zkey beacon consent_lastN.zkey build/consent_final.zkey <beaconHex> 10 -n="final beacon: <source>"
 ```
 
-### 4. Coordinator — finalize
+### 4. Coordinator - finalize
 ```bash
-bash scripts/ceremony.sh finalize build/ceremony_final.zkey
-# -> verifies (ZKey Ok!), exports circuits/Groth16Verifier.sol,
-#    exports circuits/build/verification_key.json (for independent `snarkjs groth16 verify`),
-#    copies to build/verification_final.zkey,
-#    prints the final zkey sha256 to PIN in CI + the prover image (§11.8(f)).
+npx snarkjs zkey verify build/consent.r1cs ptau/powersOfTau28_hez_final_17.ptau build/consent_final.zkey
+# must print "ZKey Ok!"
+npx snarkjs zkey export verificationkey build/consent_final.zkey build/consent_verification_key.json
+npx snarkjs zkey export solidityverifier build/consent_final.zkey Groth16Verifier.consent.sol
+# rename the emitted contract to `Groth16VerifierConsent` (ceremony-consent.sh step [7/8] does this
+# with sed) so it cannot collide with the retired verifier contract name.
+shasum -a 256 build/consent_final.zkey     # PIN this sha256
 ```
-Publish the full transcript (every `ceremony_*.zkey`, contributor names, the beacon value + source) so
-anyone can reproduce `snarkjs zkey verify`. **Pin the sha256** — the prover **enforces** it at load
-(fail-closed on mismatch, audit M4). The crate's hardcoded `EXPECTED_ZKEY_SHA256_HEX` is the testnet
-hash - it is the **Level-A** artifact version's pin (`crates/dogtag-prover-rs/src/artifact.rs`; each
-version pins its own), so a production prover-service running this ceremony key must set the
-**`EXPECTED_ZKEY_SHA256`** env var to the new sha256 (or bump the crate constant) — otherwise it FATALs
-on a hash mismatch.
+Publish the full transcript (every `consent_*.zkey`, contributor names, the beacon value + source) so anyone can reproduce `snarkjs zkey verify`.
+**Pin the sha256** - the prover **enforces** it at load (fail-closed on mismatch, audit M4).
+The pin lives in the protocol version's `ArtifactDescriptor` (`crates/dogtag-prover-rs/src/artifact.rs`, keyed by the internal protocol version key `dogtag-levelb/1` - an internal identifier, not a product label).
+A production key therefore means updating that descriptor's zkey pin (and the VK-json hash it carries) - otherwise the prover FATALs on a hash mismatch.
 
 ## Deploy & wire the verifier (on-chain)
 
-The dev `Groth16Verifier.sol` is already deployed only as part of the local/dev set; for production the
-ceremony output replaces it. Swapping the registry's ZK verifier is behind a **2-day timelock**:
-`proposeZkVerifier(addr)` → wait ≥ 2 days → `executeZkVerifier()` (there is no single `setZkVerifier`).
+The testnet self-run `Groth16VerifierConsent` is the currently wired verifier; the production ceremony output replaces it.
+Swapping the registry's ZK verifier is behind a **2-day timelock**: `proposeZkVerifier(addr)` -> wait >= 2 days -> `executeZkVerifier()` (there is no single `setZkVerifier`).
 
 ```bash
-cp circuits/Groth16Verifier.sol contracts/src/Groth16Verifier.sol
+cp circuits/Groth16Verifier.consent.sol contracts/src/Groth16VerifierConsent.sol
 cd contracts && forge build
 
 # 1. deploy the new verifier (deployer = registry DEFAULT_ADMIN)
-VERIFIER=$(forge create src/Groth16Verifier.sol:Groth16Verifier \
+VERIFIER=$(forge create src/Groth16VerifierConsent.sol:Groth16VerifierConsent \
   --rpc-url "$ROAX_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --legacy --json | jq -r .deployedTo)
 
 # 2. propose it (starts the 2-day timer)
-cast send <VerificationRegistry> "proposeZkVerifier(address)" "$VERIFIER" \
+cast send <VerificationRegistryConsent> "proposeZkVerifier(address)" "$VERIFIER" \
   --rpc-url "$ROAX_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --legacy
 
 # 3. AFTER >= 2 days, execute
-cast send <VerificationRegistry> "executeZkVerifier()" \
+cast send <VerificationRegistryConsent> "executeZkVerifier()" \
   --rpc-url "$ROAX_RPC" --private-key "$DEPLOYER_PRIVATE_KEY" --legacy
 ```
-The `VerificationRegistry` address is in `contracts/deployments/roax.json`. After `executeZkVerifier`,
-`recordVerificationZK` accepts proofs from the ceremony key. Re-run the prover's vectors against the new
-zkey hash, update CI to assert the pinned hash, and point the prover-service at the new key via
-`EXPECTED_ZKEY_SHA256` (or bump the crate's `EXPECTED_ZKEY_SHA256_HEX`) so it does not fail-close.
+The `VerificationRegistryConsent` address is in `contracts/deployments/roax.json` / `contracts/.env`.
+After `executeZkVerifier`, `recordVerificationZK` accepts proofs from the ceremony key.
+Re-run the circuit test-suite and fixture generation against the new zkey, update the pinned hashes in `crates/dogtag-prover-rs/src/artifact.rs`, and ship the new `consent_final.zkey` (+ witness graph) to every prover surface - the app bundles and the `/prove-consent` server-prove fallback - so nothing fails closed on the old pin.
 
 ## Re-run on circuit changes
-Any change to `verification.circom` (constraints) invalidates the key — a NEW ceremony is required.
+Any change to `consent.circom` (constraints) invalidates the key - a NEW ceremony is required, and the new VK is a new protocol version (the frozen VK is what the internal version key pins).

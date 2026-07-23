@@ -1,13 +1,13 @@
 //! EdDSA-BabyJubjub (Poseidon) consent SIGNING — circomlibjs-compatible (impl §1.10 / §11.9(d)).
 //!
-//! This is the crypto that was previously deferred: deterministic key derivation + signature over
-//! the §1.10 consent message `M = Poseidon6(dogTagId, purpose, relayer, subject, R, nonce)`. It is a
-//! byte-for-byte reimplementation of circomlibjs `buildEddsa().prv2pub` / `.signPoseidon`, asserted
-//! against a fixed circomlibjs vector (see tests) so the on-chain ZK circuit's `EdDSAPoseidonVerifier`
-//! and the registry's `keyHash = Poseidon(Ax,Ay)` accept what mobile produces.
+//! Deterministic per-tag consent-key derivation + Poseidon signature — the crypto the owner-hidden
+//! consent circuit's `EdDSAPoseidonVerifier` checks. It is a byte-for-byte reimplementation of
+//! circomlibjs `buildEddsa().prv2pub` / `.signPoseidon`, asserted against a fixed circomlibjs vector
+//! (see tests) so the in-circuit verifier and the `keyHash = Poseidon(Ax,Ay)` folded into the
+//! `owner.consentKey` leaf accept what mobile produces.
 //!
 //! ADDITIVE — built on the existing trusted `poseidon` (light-poseidon, circom-compatible) and
-//! `ark-bn254::Fr`; does NOT modify poseidon/field/leaf/merkle/encode/consent algorithm code.
+//! `ark-bn254::Fr`; does NOT modify poseidon/field/leaf/merkle/encode algorithm code.
 //!
 //! BabyJubjub is the twisted Edwards curve `a*x^2 + y^2 = 1 + d*x^2*y^2` with a=168700, d=168696
 //! over the BN254 scalar field. circomlibjs signs with `Base8` (the order-8-cofactor generator) and
@@ -18,22 +18,15 @@ use ark_ff::{BigInteger, Field, One, PrimeField, Zero};
 use num_bigint::BigUint;
 
 use crate::blake512::blake512;
-use crate::poseidon::poseidon;
-
-/// Domain separation tag for the **wallet-level** BabyJubjub consent key. Distinct from the
-/// secp256k1 wallet path (§6) so the two keys are independent even from the same root seed.
-///
-/// This one is deliberately NOT bound to a `dogTagId` - see
-/// [`derive_babyjub_consent_key_from_seed`] for why the Level-A path needs a per-wallet key.
-const CONSENT_KEY_DOMAIN: &[u8] = b"DogTag/consent-key/babyjubjub/v1";
+use crate::poseidon::{poseidon, to_be_bytes32};
 
 /// Domain separation tag for the **per-tag** BabyJubjub consent key - the one that feeds the
 /// `owner.consentKey` leaf and therefore `R`.
 ///
-/// `v2` because the derivation changed shape: `v1` hashed the seed alone, `v2` binds `dogTagId`
-/// through the shared `crate::kdf::kdf` preimage. Bumping rather than silently redefining `v1`
-/// is the project convention - a domain IS its derivation, so a changed derivation is a new
-/// domain. Free to do here: no Level-B tag has been minted, so nothing needs migrating.
+/// `v2` because the derivation changed shape: the retired `v1` domain hashed the seed alone
+/// (one key per wallet), `v2` binds `dogTagId` through the shared `crate::kdf::kdf` preimage.
+/// Bumping rather than silently redefining `v1` is the project convention - a domain IS its
+/// derivation, so a changed derivation is a new domain.
 const CONSENT_KEY_PER_TAG_DOMAIN: &[u8] = b"DogTag/consent-key/babyjubjub/v2";
 
 /// BabyJubjub curve constant `a` (168700).
@@ -277,34 +270,6 @@ pub fn derive_babyjub_consent_key_per_tag(seed: &[u8], dog_tag_id: Fr) -> Babyju
     BabyjubConsentKey { prv, ax: a.x, ay: a.y }
 }
 
-/// Derive the **wallet-level** BabyJubjub consent key from a hex seed - one key per wallet, NOT
-/// per tag.
-///
-/// The 32-byte circomlibjs private key is `blake512(domain || seed)[0..32]` (a distinct domain from
-/// the secp256k1 wallet path so the two keys never collide). Pass a 0x.. hex seed of any length.
-///
-/// # This is NOT the profile-tree key
-///
-/// The `owner.consentKey` leaf uses [`derive_babyjub_consent_key_per_tag`]. This wallet-level key
-/// serves the **Level-A** path only (`verification.circom`), where the consent key lives OUTSIDE
-/// the tree: the circuit emits `keyHash = Poseidon2(Ax, Ay)` as a public signal and
-/// `VerificationRegistry` checks it against `ConsentKeyRegistry.keyOf[subject]` - a
-/// `mapping(address => bytes32)`, i.e. per-WALLET by contract design. Making this one per-tag
-/// would force a `keyOf` rebind on every tag switch, changing on-chain behaviour for no benefit.
-///
-/// Level-B retires this path entirely (`VerificationRegistryConsent`: "the consent key moved INTO
-/// the tree, so `keyOf` is retired"), at which point this function goes with it.
-pub fn derive_babyjub_consent_key_from_seed(seed: &[u8]) -> BabyjubConsentKey {
-    let mut buf = Vec::with_capacity(CONSENT_KEY_DOMAIN.len() + seed.len());
-    buf.extend_from_slice(CONSENT_KEY_DOMAIN);
-    buf.extend_from_slice(seed);
-    let digest = blake512(&buf);
-    let mut prv = [0u8; 32];
-    prv.copy_from_slice(&digest[0..32]);
-    let a = prv2pub(&prv);
-    BabyjubConsentKey { prv, ax: a.x, ay: a.y }
-}
-
 /// Build a consent key directly from a 32-byte circomlibjs private key (no domain wrapping) — used
 /// for circomlibjs parity vectors where the raw seed *is* the private key.
 pub fn consent_key_from_raw_prv(prv: &[u8; 32]) -> BabyjubConsentKey {
@@ -381,6 +346,14 @@ pub fn verify_poseidon(
 /// Convenience: Fr -> decimal string (for FFI / parity output).
 pub fn fr_to_dec(f: &Fr) -> String {
     fr_to_biguint(f).to_str_radix(10)
+}
+
+/// keyHash = Poseidon(Ax, Ay) -> canonical 32-byte big-endian (impl §1.10).
+///
+/// The value the `owner.consentKey` reserved leaf commits into the profile tree `R` (mirror of the
+/// TS SDK's `keyHash`; cross-language parity is asserted by `tests/consent_parity.rs`).
+pub fn key_hash(ax: Fr, ay: Fr) -> [u8; 32] {
+    to_be_bytes32(&poseidon(&[ax, ay]))
 }
 
 #[cfg(test)]
@@ -479,16 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn domain_derivation_is_deterministic_and_distinct() {
-        let a = derive_babyjub_consent_key_from_seed(b"root-seed-material");
-        let b = derive_babyjub_consent_key_from_seed(b"root-seed-material");
-        assert_eq!(a.prv, b.prv, "derivation must be deterministic");
-        // The domain-wrapped key differs from using the raw seed as the private key.
-        let raw = consent_key_from_raw_prv(b"root-seed-material\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
-        assert_ne!(a.ax, raw.ax, "domain separation must change the key");
-    }
-
-    #[test]
     fn per_tag_derivation_is_deterministic_and_bound_to_the_dog_tag_id() {
         let seed = b"root-seed-material";
         let a = derive_babyjub_consent_key_per_tag(seed, Fr::from(1u64));
@@ -501,19 +464,13 @@ mod tests {
         assert_ne!(a.ax, other.ax, "a different dogTagId must give a different Ax");
     }
 
-    /// The `v2` per-tag domain and the `v1` wallet-level domain must never collide, and the per-tag
-    /// key must be a genuinely different derivation - not the wallet key with extra steps.
+    /// The per-tag domain wrapping must be a genuinely different derivation from using the raw
+    /// seed material as a circomlibjs private key directly.
     #[test]
-    fn the_per_tag_key_is_domain_separated_from_the_wallet_level_key() {
-        let seed = b"root-seed-material";
-        let wallet = derive_babyjub_consent_key_from_seed(seed);
-        for id in [0u64, 1, 2, 424242] {
-            let per_tag = derive_babyjub_consent_key_per_tag(seed, Fr::from(id));
-            assert_ne!(
-                wallet.prv, per_tag.prv,
-                "v1 wallet-level and v2 per-tag domains must not collide (id={id})"
-            );
-        }
+    fn the_per_tag_key_is_domain_separated_from_the_raw_seed() {
+        let per_tag = derive_babyjub_consent_key_per_tag(b"root-seed-material", Fr::from(1u64));
+        let raw = consent_key_from_raw_prv(b"root-seed-material\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        assert_ne!(per_tag.ax, raw.ax, "domain separation must change the key");
     }
 
     /// The per-tag key must be a valid BabyJubjub point in the prime-order subgroup - otherwise

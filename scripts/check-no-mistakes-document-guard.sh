@@ -26,7 +26,6 @@ is_generated_binding_or_codegen_path() {
   case "$1" in
     apps/android/app/src/main/java/uniffi/*|\
     apps/ios/DogTag/dogtag_standard.swift|\
-    crates/dogtag-standard-rs/bindings/*|\
     circuits/build/*|\
     circuits/poseidon-vectors.json|\
     apps/android/app/src/main/assets/testvectors.json|\

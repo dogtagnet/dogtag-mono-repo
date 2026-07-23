@@ -1,5 +1,13 @@
 # DogTag Ecosystem — Build-Out Prompt
 
+> **HISTORICAL ARCHIVE - do not paste this to an agent.**
+> This is the original build-out prompt that drove the system's initial construction, preserved verbatim as history.
+> Parts of the verification design it specifies have since been **retired** in favor of the one owner-hidden model:
+> the subject-bearing `VerificationRegistry`, the EIP-712 `VerificationConsent` (with its `subject` field), the `ConsentKeyRegistry` wallet-scoped BabyJubjub key bind, the normal-ECDSA-vs-ZK dual verify path, and the owner-revealing `verification.circom` public-signal set (`subject`, `keyHash`) no longer exist.
+> As built today: the owner is a **hidden leaf** of the tag's Merkle root `R` (three reserved owner leaves folded on-device), issuance is custodial (`DogTagSBTConsent.mintCustodial(dogTagId, R)` - no recipient address), and consent is a Groth16 proof over `circuits/consent.circom` (`DogTagConsent(6)`, public signals `[dogTagId, purpose, relayer, nullifier, R, recordType, deadline]`) checked by `VerificationRegistryConsent`, which emits a subject-less `Verified` event.
+> The consent key is per-tag (an in-tree leaf), not wallet-level, and consent itself is a point-in-time act - never revocable.
+> For the live model read `docs/architecture.md` and `circuits/README.consent.md`; everything below is what we asked for at the start, not what exists now.
+
 > Paste this to a coding agent (Claude Code) working in `dogtag-mono-repo/`. It sets the goal, the operating rules, the phased plan, and the first actions. The agent should **plan, then execute phase by phase**, verifying each phase before moving on.
 
 ---
