@@ -64,6 +64,18 @@ function fmtTime(secs?: number): string {
   return new Date(secs * 1000).toLocaleString();
 }
 
+/** Shorten a long opaque identifier (the field-hashed decimal dogTagId, a hashed purpose key). */
+function shortId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
+}
+
+/** Human label for the joined local row's kind. */
+function localKindLabel(kind?: string): string {
+  if (kind === "verification") return "verification";
+  if (kind === "mint") return "dog tag";
+  return "record";
+}
+
 function txLink(ev: TraceEvent): string | null {
   return ev.txUrl ?? null;
 }
@@ -167,13 +179,25 @@ export function Traceability() {
           </div>
         ) : (
           <>
-            {/* Summary strip: in-scope + join reconciliation + scoped chain counters. */}
-            <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+            {/* Summary strip: in-scope + join reconciliation + scoped chain counters. The dog-tag
+                tile only appears once this operator has actually minted (groomers never do). */}
+            <div
+              className={`mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 ${
+                (stats?.local?.dogTagsMinted ?? 0) > 0 ? "lg:grid-cols-6" : "lg:grid-cols-5"
+              }`}
+            >
               <Stat label="In scope" value={resp?.inScope ?? events.length} testId="trace-inscope" />
               <Stat label="Matched to a record" value={resp?.matched ?? 0} testId="trace-matched" />
               <Stat label="Issued" value={stats?.rootIssued ?? 0} />
               <Stat label="Revoked" value={stats?.rootRevoked ?? 0} />
               <Stat label="Verifications" value={stats?.verifications ?? 0} />
+              {(stats?.local?.dogTagsMinted ?? 0) > 0 && (
+                <Stat
+                  label="Dog tags minted"
+                  value={stats?.local?.dogTagsMinted ?? 0}
+                  testId="trace-mints"
+                />
+              )}
             </div>
 
             {scopeLabel && (
@@ -229,7 +253,7 @@ export function Traceability() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Event</TableHead>
-                      <TableHead>Record type</TableHead>
+                      <TableHead>Details</TableHead>
                       <TableHead>Your record</TableHead>
                       <TableHead>Signer</TableHead>
                       <TableHead>Block</TableHead>
@@ -246,14 +270,42 @@ export function Traceability() {
                           <TableCell>
                             <Badge variant={meta.variant}>{meta.label}</Badge>
                           </TableCell>
-                          <TableCell className="text-xs">
-                            {ev.recordType ?? <span className="text-muted">—</span>}
+                          <TableCell className="text-xs" data-testid="trace-details">
+                            <div className="flex flex-col gap-0.5">
+                              {(ev.recordType ?? ev.local?.recordType) ? (
+                                <span>{ev.recordType ?? ev.local?.recordType}</span>
+                              ) : ev.type !== "verified" ? (
+                                <span className="text-muted">—</span>
+                              ) : null}
+                              {/* Owner-blind verified payload: opaque tag id, hashed purpose key
+                                  (the joined session names it), proof-bound consent deadline. */}
+                              {ev.type === "verified" && (
+                                <>
+                                  {ev.dogTagId && (
+                                    <span
+                                      className="font-mono text-[10px] text-muted"
+                                      title={ev.dogTagId}
+                                    >
+                                      tag {shortId(ev.dogTagId)}
+                                    </span>
+                                  )}
+                                  <span className="font-mono text-[10px] text-muted" title={ev.purpose}>
+                                    purpose {ev.local?.purpose ?? (ev.purpose ? shortId(ev.purpose) : "—")}
+                                  </span>
+                                  {(ev.deadline ?? 0) > 0 && (
+                                    <span className="text-[10px] text-muted">
+                                      consent until {fmtTime(ev.deadline)}
+                                    </span>
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell data-testid="trace-local">
                             {ev.local ? (
                               <div className="flex flex-col gap-0.5">
                                 <Badge variant="success" data-testid="trace-local-matched">
-                                  {ev.local.kind === "verification" ? "verification" : "record"}
+                                  {localKindLabel(ev.local.kind)}
                                 </Badge>
                                 <span className="font-mono text-[10px] text-muted">
                                   {ev.local.recordId ?? ev.local.sessionId}

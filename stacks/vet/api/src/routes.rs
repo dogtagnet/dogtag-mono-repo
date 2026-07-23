@@ -2377,8 +2377,9 @@ async fn trace_activity(
     };
     let records = st.store.list_records().await;
     let sessions = st.store.list_sessions().await;
+    let mints = st.store.list_profile_sessions().await;
     let scope = crate::trace::build_scope(st.store.as_ref(), &st.cfg, &records, &sessions).await;
-    let idx = crate::trace::build_index(&records, &sessions);
+    let idx = crate::trace::build_index(&records, &sessions, &mints);
     let events = body
         .get("events")
         .and_then(|v| v.as_array())
@@ -2404,7 +2405,7 @@ async fn trace_activity(
 }
 
 /// `GET /trace/stats` — this operator's in-scope on-chain counters (proxied from the indexer's scoped
-/// `/v1/stats`) plus its own off-chain record/verification counts. Operator-gated.
+/// `/v1/stats`) plus its own off-chain record/verification/mint counts. Operator-gated.
 async fn trace_stats(State(st): State<AppState>, headers: HeaderMap) -> Resp {
     if let Err(e) = require_operator(&st, &headers).await {
         return e;
@@ -2415,10 +2416,16 @@ async fn trace_stats(State(st): State<AppState>, headers: HeaderMap) -> Resp {
     };
     let records = st.store.list_records().await;
     let sessions = st.store.list_sessions().await;
+    let mints = st.store.list_profile_sessions().await;
     if let Value::Object(map) = &mut body {
         map.insert(
             "local".into(),
-            json!({ "records": records.len(), "verifications": sessions.len() }),
+            json!({
+                "records": records.len(),
+                "verifications": sessions.len(),
+                // dog tags actually sealed on-chain (bound), not sessions merely started.
+                "dogTagsMinted": mints.iter().filter(|m| m.status == "bound").count(),
+            }),
         );
     }
     ok(body)

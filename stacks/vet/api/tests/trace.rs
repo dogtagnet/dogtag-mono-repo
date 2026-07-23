@@ -186,6 +186,64 @@ async fn a_different_vet_sees_none_of_this_feed() {
 }
 
 #[tokio::test]
+async fn dog_tag_mint_joins_by_profile_root_on_the_profile_clone() {
+    // The owner-hidden custodial issuance anchors `issue(R)` on the configured DOG_PROFILE clone -
+    // an address that is NOT in `issuer_addrs`. The mint's `RootIssued` must (a) pass the local
+    // scope gate via `cfg.profile_issuer_addr`, and (b) join the vet's own ProfileIssueSession by
+    // the device-computed profile root - WITHOUT leaking the vet-collected owner identity or pet
+    // record into the feed.
+    const PROFILE_ROOT: &str = "0x3333333333333333333333333333333333333333333333333333333333333333";
+    let events = json!({
+        "events": [
+            { "id": "0xmint:0", "type": "rootIssued", "actor": SIGNER_A,
+              "clone": common::PROFILE_ISSUER_ADDR, "root": PROFILE_ROOT, "txHash": "0xminttx",
+              "blockNumber": 12, "blockTimestamp": 1002, "finality": "finalized",
+              "txUrl": "https://explorer.roax.net/tx/0xminttx" }
+        ],
+        "total": 1, "limit": 100, "offset": 0,
+        "scope": { "label": "Seaport Vet", "unscoped": false }
+    });
+    let state = vet_state(events);
+    state
+        .store
+        .put_profile_session(vet_api::store::ProfileIssueSession {
+            session_id: "ps-9".to_string(),
+            dog_tag_id: "9".to_string(),
+            owner_identity: vet_api::store::OwnerIdentity {
+                country_of_identification: "SG".to_string(),
+                identification: "S1234567A".to_string(),
+                name: "Jane Tan".to_string(),
+            },
+            pet_name: "Bella".to_string(),
+            microchip: Default::default(),
+            profile: Default::default(),
+            status: "bound".to_string(),
+            created_at: 1002,
+            root: Some(PROFILE_ROOT.to_string()),
+            tx_hash: Some("0xminttx".to_string()),
+            protocol_version: Some("dogtag-levelb/1".to_string()),
+        })
+        .await;
+    let op = mint_operator(&state).await;
+    let app = vet_api::router(state);
+
+    let (s, b) = call(&app, "GET", "/trace/activity", Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["inScope"], 1, "the profile clone is in local scope: {b}");
+    assert_eq!(b["matched"], 1, "the mint joined its session: {b}");
+    let local = &b["events"][0]["local"];
+    assert_eq!(local["kind"], "mint");
+    assert_eq!(local["sessionId"], "ps-9");
+    assert_eq!(local["dogTagId"], "9");
+    assert_eq!(local["recordType"], "DOG_PROFILE");
+    // Subject-less: the vet-collected identity/pet block never reaches the activity feed.
+    let text = local.to_string();
+    for leaked in ["Jane", "S1234567A", "Bella", "ownerIdentity", "petName"] {
+        assert!(!text.contains(leaked), "mint join leaked `{leaked}`: {text}");
+    }
+}
+
+#[tokio::test]
 async fn trace_requires_operator_session() {
     let state = vet_state(feed_events());
     let app = vet_api::router(state);
@@ -237,4 +295,40 @@ async fn trace_stats_adds_local_counts() {
     // plus this operator's own off-chain record count
     assert_eq!(b["local"]["records"], 1);
     assert_eq!(b["local"]["verifications"], 0);
+    assert_eq!(
+        b["local"]["dogTagsMinted"], 0,
+        "no bound profile session yet"
+    );
+}
+
+#[tokio::test]
+async fn trace_stats_counts_only_bound_mints() {
+    let state = vet_state(feed_events());
+    for (id, status) in [("ps-a", "bound"), ("ps-b", "pending"), ("ps-c", "error")] {
+        state
+            .store
+            .put_profile_session(vet_api::store::ProfileIssueSession {
+                session_id: id.to_string(),
+                dog_tag_id: "1".to_string(),
+                owner_identity: Default::default(),
+                pet_name: String::new(),
+                microchip: Default::default(),
+                profile: Default::default(),
+                status: status.to_string(),
+                created_at: 1000,
+                root: None,
+                tx_hash: None,
+                protocol_version: None,
+            })
+            .await;
+    }
+    let op = mint_operator(&state).await;
+    let app = vet_api::router(state);
+
+    let (s, b) = call(&app, "GET", "/trace/stats", Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        b["local"]["dogTagsMinted"], 1,
+        "only sessions actually sealed on-chain count: {b}"
+    );
 }

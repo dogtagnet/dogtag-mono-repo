@@ -220,6 +220,19 @@ impl Store for MongoStore {
     async fn update_profile_session(&self, s: ProfileIssueSession) {
         self.put_profile_session(s).await;
     }
+    async fn list_profile_sessions(&self) -> Vec<ProfileIssueSession> {
+        use futures::TryStreamExt;
+        use mongodb::options::FindOptions;
+        // Most-recent first, mirroring `list_sessions`.
+        let coll: Collection<ProfileIssueSession> = self.db.collection("profile_sessions");
+        let opts = FindOptions::builder()
+            .sort(doc! { "created_at": -1, "session_id": -1 })
+            .build();
+        match coll.find(doc! {}).with_options(opts).await {
+            Ok(cur) => cur.try_collect().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    }
     async fn put_bind_token(&self, token: &str, session_id: &str, exp: u64) {
         let coll: Collection<Document> = self.db.collection("bind_tokens");
         let _ = coll

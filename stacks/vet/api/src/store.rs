@@ -339,6 +339,10 @@ pub trait Store: Send + Sync {
     /// Non-consuming lookup by `session_id` (the portal status poll).
     async fn get_profile_session(&self, session_id: &str) -> Option<ProfileIssueSession>;
     async fn update_profile_session(&self, s: ProfileIssueSession);
+    /// Every profile-issue session, newest first - the dog-tag mint half of the traceability join
+    /// (`/trace/*`): a bound session's anchored root/tx ties this vet's own mint to its on-chain
+    /// `RootIssued` event.
+    async fn list_profile_sessions(&self) -> Vec<ProfileIssueSession>;
     /// Store a one-time bind token mapping to `session_id`, expiring at unix-seconds `exp`.
     async fn put_bind_token(&self, token: &str, session_id: &str, exp: u64);
     /// NON-consuming lookup: the bind token's `session_id` iff present and unexpired (`GET /p/{token}`).
@@ -586,6 +590,22 @@ impl Store for MemStore {
             .unwrap()
             .profile_sessions
             .insert(s.session_id.clone(), s);
+    }
+    async fn list_profile_sessions(&self) -> Vec<ProfileIssueSession> {
+        let mut v: Vec<ProfileIssueSession> = self
+            .inner
+            .read()
+            .unwrap()
+            .profile_sessions
+            .values()
+            .cloned()
+            .collect();
+        v.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.session_id.cmp(&a.session_id))
+        });
+        v
     }
     async fn put_bind_token(&self, token: &str, session_id: &str, exp: u64) {
         self.inner
