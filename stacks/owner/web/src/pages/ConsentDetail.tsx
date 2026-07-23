@@ -16,7 +16,7 @@ function fmtDateTime(unixSec: number): string {
 
 export function ConsentDetail() {
   const { nullifier = "" } = useParams();
-  const decodedNullifier = decodeURIComponent(nullifier).toLowerCase();
+  const decodedNullifier = nullifier.toLowerCase();
   const credentials = useCredentials();
   const { state, receipts, reload } = useConsentReceipts(credentials);
   const receipt = receipts.find((r) => r.nullifier === decodedNullifier);
