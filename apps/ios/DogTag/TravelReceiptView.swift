@@ -469,7 +469,9 @@ struct TravelReceiptView: View {
     }
 
     /// Generate a QR code image for `value` (PII-free public status URL). CoreImage, offline.
-    private static func qrImage(_ value: String) -> UIImage? {
+    /// `nonisolated`: pure CoreImage compute (no UI/actor state), so it runs off the main actor
+    /// from `generateQR`'s `Task.detached` without hopping back - the whole point of detaching.
+    private nonisolated static func qrImage(_ value: String) -> UIImage? {
         guard !value.isEmpty else { return nil }
         let ctx = CIContext()
         let filter = CIFilter.qrCodeGenerator()
