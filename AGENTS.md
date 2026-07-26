@@ -1868,6 +1868,14 @@ clear it either.
   genesis — surfaced as "Replace wallet…" in the export sheet's no-phrase branch, deliberately placed
   **below** the private-key export, since that key is the only thing that survives. Normal wallets are
   untouched: a reconstructable phrase still requires the real "I've saved it".
+- **The rescue has TWO entry points on purpose.** Besides the export sheet, the Danger zone leads with
+  a callout whenever `Wallet.hasExportablePhrase()` is false — that is where someone who is stuck goes
+  looking. It is also the more robust route: the export-sheet hand-off works by swapping the
+  `.sheet(item:)` identity in place, which cannot be exercised in the Simulator (it needs a wallet,
+  which needs the biometric gate), whereas the callout uses the same row -> sheet path
+  `wallet_reset.yaml` covers. `hasExportablePhrase()` is a presence-only Keychain query (no
+  `kSecReturnData`), so a view can ask on every render without pulling the entropy into memory —
+  `exists()` now does the same instead of loading the 64-byte seed to check for it.
 - **`Wallet.deleteKeys()` drops the seed BEFORE the entropy.** `exists()` keys off the seed, so if the
   entropy delete fails the app is already in first-run state. The reverse order could drop the entropy
   while leaving a live seed — manufacturing exactly the phrase-less wallet this exists to escape.

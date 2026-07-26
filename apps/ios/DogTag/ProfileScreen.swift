@@ -8,6 +8,9 @@ struct ProfileScreen: View {
     private let roax = RoaxConfig.load()
 
     @State private var walletExists = Wallet.exists()
+    /// Presence-only (never pulls the entropy into memory); false marks the legacy, phrase-less wallet
+    /// whose issuance gate can only be cleared by replacing it.
+    @State private var hasExportablePhrase = Wallet.hasExportablePhrase()
     @State private var ethAddr: String? = nil
     @State private var mnemonic: String? = nil
     @State private var walletMsg = ""
@@ -63,10 +66,19 @@ struct ProfileScreen: View {
                                 do {
                                     let id = try Wallet.create()
                                     walletExists = true
+                                    // Genesis persists the entropy, so this wallet's phrase is
+                                    // exportable - it is never the legacy shape.
+                                    hasExportablePhrase = true
                                     ethAddr = id.ethAddress
                                     mnemonic = id.mnemonic
                                     walletMsg = "Wallet created. Back up your recovery phrase now."
-                                } catch { walletMsg = "create failed: \(error)" }
+                                } catch {
+                                    walletMsg = "create failed: \(error)"
+                                    // create() writes the entropy before the seed, so a partial
+                                    // failure must not leave the UI asserting either flag.
+                                    walletExists = Wallet.exists()
+                                    hasExportablePhrase = Wallet.hasExportablePhrase()
+                                }
                             }
                         }
                     } else {
@@ -189,6 +201,30 @@ struct ProfileScreen: View {
             Text("These erase data held on THIS device and cannot be undone. Nothing on-chain is deleted - your dog tag and its records stay on-chain with the custodian - but the owner-secret that proves you own them lives only here.")
                 .font(.system(size: 12)).foregroundColor(c.muted)
 
+            // A phrase-less wallet can NEVER issue a dog tag, and the reset section is where someone
+            // who is stuck comes looking for a way out - so the rescue is surfaced here as well as in
+            // the export sheet. It leads, and it is not styled as one of the destructive chores below.
+            if walletExists && !hasExportablePhrase {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("This wallet can't show you a recovery phrase", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13, weight: .bold)).foregroundColor(c.onBackground)
+                    Text("It was created before phrase export was supported, so DogTag can't ask you to confirm a backup - and issuing a dog tag needs that confirmation. Replacing it with a fresh, phrase-backed wallet is the way to get unblocked. Export your keys first.")
+                        .font(.system(size: 12)).foregroundColor(c.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button { sheet = .danger(.replaceWallet) } label: {
+                        Text("Replace wallet…").font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(c.onAccent)
+                            .padding(.vertical, 10).padding(.horizontal, 14)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(c.accent))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("dangerRow-replaceWallet")
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
+            }
+
             if walletExists {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Get your keys out first").font(.system(size: 13, weight: .semibold))
@@ -287,6 +323,7 @@ struct ProfileScreen: View {
         do {
             let id = try Wallet.replace()
             walletExists = true
+            hasExportablePhrase = true
             ethAddr = id.ethAddress
             mnemonic = id.mnemonic
             walletMsg = "New wallet created. Write the 24 words below down, then tap “I've saved it” - issuing a dog tag stays blocked until you do."
@@ -296,6 +333,7 @@ struct ProfileScreen: View {
             // states. Re-read which one rather than assuming: telling a user their wallet is intact
             // when it has already been removed is the one message that must never be wrong.
             walletExists = Wallet.exists()
+            hasExportablePhrase = Wallet.hasExportablePhrase()
             if walletExists {
                 resetMsg = "Replace failed: \(error.localizedDescription). Your existing wallet is untouched."
             } else {
@@ -312,6 +350,7 @@ struct ProfileScreen: View {
     /// than assuming the delete fully succeeded.
     private func forgetWalletUi() {
         walletExists = Wallet.exists()
+        hasExportablePhrase = Wallet.hasExportablePhrase()
         ethAddr = nil
         mnemonic = nil
         walletMsg = ""

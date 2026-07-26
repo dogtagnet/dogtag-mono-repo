@@ -31,7 +31,18 @@ enum Wallet {
     private static let keychainService = "io.liberalize.dogtag"
 
     static func exists() -> Bool {
-        loadBlob(account: seedAccount) != nil
+        blobExists(account: seedAccount)
+    }
+
+    /// Whether the 24-word phrase can be re-derived on this device — i.e. whether this is a modern
+    /// wallet or a LEGACY, phrase-less one (created before the entropy was persisted).
+    ///
+    /// Presence-only, so a view can ask on every render without pulling the entropy into memory. A
+    /// `false` here is what makes issuance permanently unreachable for that wallet: no phrase means no
+    /// honest way to satisfy `SeedBackup`, which `ProfileTreeStore.buildAndPersist` gates on. Offer
+    /// `replace()` when this is false.
+    static func hasExportablePhrase() -> Bool {
+        blobExists(account: entropyAccount)
     }
 
     /// Create a brand-new wallet: generate a 24-word mnemonic, store the BIP-39 seed (and the 32-byte
@@ -149,6 +160,18 @@ enum Wallet {
         ]
         let status = SecItemAdd(add as CFDictionary, nil)
         if status != errSecSuccess { throw WalletError.keychain(status) }
+    }
+
+    /// Presence check that does NOT return the secret: no `kSecReturnData`, so the Keychain answers
+    /// from attributes and the seed/entropy never enters this process's memory.
+    private static func blobExists(account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
     private static func deleteBlob(account: String) throws {
