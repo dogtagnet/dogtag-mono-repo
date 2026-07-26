@@ -56,6 +56,10 @@ targets:
       # AnchorResolver is Foundation-only (the two pure ABI decoders); the FFI glue
       # that builds a TrustedAnchor + calls validateDiscovery lives in ScanScreen, not here.
       - path: DogTag/AnchorResolver.swift
+      # LocalDataSweep is Foundation-only by design so the destructive reset actions' file removal
+      # (staging-sibling sweep, idempotence, partial-failure reporting) is covered here; the callers
+      # that pull in Keychain/FFI/SwiftUI live in AppReset and the stores.
+      - path: DogTag/LocalDataSweep.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.liberalize.dogtag.tests

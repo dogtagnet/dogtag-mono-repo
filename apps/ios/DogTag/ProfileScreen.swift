@@ -11,7 +11,8 @@ struct ProfileScreen: View {
     @State private var ethAddr: String? = nil
     @State private var mnemonic: String? = nil
     @State private var walletMsg = ""
-    @State private var exportPayload: ExportPayload? = nil
+    @State private var sheet: ProfileSheet? = nil
+    @State private var resetMsg = ""
 
     var body: some View {
         ScrollView {
@@ -82,14 +83,7 @@ struct ProfileScreen: View {
                         // Self-custody export: reveal + copy the recovery phrase AND the raw secp256k1
                         // private key (biometric-gated, same Face ID gate as the reveal above; the
                         // secrets are never logged or transmitted).
-                        walletButtonSecondary("Export account keys") {
-                            Biometric.authenticate(reason: "Authenticate to export your account keys") { ok, e in
-                                guard ok else { walletMsg = e ?? "auth failed"; return }
-                                exportPayload = ExportPayload(
-                                    mnemonic: Wallet.revealMnemonic(),
-                                    privateKeyHex: Wallet.revealPrivateKeyHex())
-                            }
-                        }
+                        walletButtonSecondary("Export account keys") { beginExport() }
                     }
 
                     // Tap any value to copy it (full value, not the truncated preview).
@@ -151,6 +145,8 @@ struct ProfileScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
 
+                dangerZone
+
                 Spacer(minLength: 24)
             }
             .padding(20)
@@ -158,9 +154,163 @@ struct ProfileScreen: View {
         // Deliver the revealed secrets through the sheet's item payload. A prior `.sheet(isPresented:)`
         // read sibling @State that was still nil when SwiftUI first evaluated the sheet body, so the
         // phrase/key never displayed. Dismiss nils the binding, releasing the secrets from memory.
-        .sheet(item: $exportPayload) { payload in
-            ExportAccountSheet(mnemonic: payload.mnemonic, privateKeyHex: payload.privateKeyHex)
-                .environment(\.dogTagColors, c)
+        .sheet(item: $sheet) { route in
+            Group {
+                switch route {
+                case let .export(payload):
+                    ExportAccountSheet(
+                        mnemonic: payload.mnemonic,
+                        privateKeyHex: payload.privateKeyHex,
+                        // Swapping the route re-renders this same sheet as the confirmation, so the
+                        // hand-off never crosses a dismiss/present animation.
+                        onReplaceWallet: { sheet = .danger(.replaceWallet) })
+                case let .danger(action):
+                    DestructiveConfirmationSheet(action: action) {
+                        sheet = nil
+                        // Let the sheet finish dismissing before the LAContext prompt - and, after a
+                        // replace, before the fresh-phrase card appears underneath it.
+                        DispatchQueue.main.async { perform(action) }
+                    }
+                }
+            }
+            .environment(\.dogTagColors, c)
+        }
+    }
+
+    // ---- danger zone -------------------------------------------------------------------------------
+
+    /// Destructive local-data actions, last on the screen so they are never in the way of the
+    /// read-only sections above. Export leads, because a user should always be able to get their keys
+    /// out before destroying anything.
+    @ViewBuilder
+    private var dangerZone: some View {
+        SectionTitle(text: "Danger zone")
+        VStack(alignment: .leading, spacing: 12) {
+            Text("These erase data held on THIS device and cannot be undone. Nothing on-chain is deleted - your dog tag and its records stay on-chain with the custodian - but the owner-secret that proves you own them lives only here.")
+                .font(.system(size: 12)).foregroundColor(c.muted)
+
+            if walletExists {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Get your keys out first").font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(c.onBackground)
+                    Text("Export the recovery phrase (when available) and the private key before you destroy anything.")
+                        .font(.system(size: 11)).foregroundColor(c.muted)
+                    walletButtonSecondary("Export account keys") { beginExport() }
+                }
+                Divider().overlay(c.outline)
+            }
+
+            ForEach(dangerActions) { action in
+                dangerRow(action)
+            }
+
+            if !resetMsg.isEmpty {
+                Text(resetMsg).font(.system(size: 12)).foregroundColor(c.onBackground)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16).fill(c.danger.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(c.danger.opacity(0.35), lineWidth: 1))
+    }
+
+    /// "Delete wallet" is only offered when there is a wallet to delete; the rest always apply, since
+    /// running one over already-empty state is a harmless no-op and hiding them would leave a user
+    /// wondering whether stale data is still there.
+    private var dangerActions: [DangerAction] {
+        (walletExists ? [DangerAction.deleteWallet] : []) + [.deleteDogTags, .deleteRecords, .resetEverything]
+    }
+
+    private func dangerRow(_ action: DangerAction) -> some View {
+        Button { sheet = .danger(action) } label: {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(action.title).font(.system(size: 14, weight: .semibold)).foregroundColor(c.danger)
+                    Text(action.detail).font(.system(size: 11)).foregroundColor(c.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.system(size: 12)).foregroundColor(c.muted)
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // ---- actions -----------------------------------------------------------------------------------
+
+    /// Reveal the phrase (when the wallet has one) and the private key behind the same fresh biometric
+    /// gate the wallet card has always used.
+    private func beginExport() {
+        Biometric.authenticate(reason: "Authenticate to export your account keys") { ok, e in
+            guard ok else { walletMsg = e ?? "auth failed"; return }
+            sheet = .export(ExportPayload(
+                mnemonic: Wallet.revealMnemonic(),
+                privateKeyHex: Wallet.revealPrivateKeyHex()))
+        }
+    }
+
+    /// Run a confirmed destructive action behind the same LAContext gate as the export flow.
+    private func perform(_ action: DangerAction) {
+        Biometric.authenticate(reason: action.biometricReason) { ok, e in
+            guard ok else { resetMsg = e ?? "auth failed"; return }
+            switch action {
+            case .replaceWallet:
+                replaceWallet()
+            case .deleteWallet:
+                report(AppReset.deleteWallet(), action: action,
+                       success: "Wallet deleted. Create a new one above to start over.")
+                forgetWalletUi()
+            case .deleteDogTags:
+                report(AppReset.deleteDogTags(), action: action,
+                       success: "Dog-tags deleted from this device.")
+            case .deleteRecords:
+                report(AppReset.deleteRecords(), action: action,
+                       success: "Records deleted from this device.")
+            case .resetEverything:
+                report(AppReset.resetEverything(), action: action,
+                       success: "Everything on this device was erased. Create a new wallet above to start over.")
+                forgetWalletUi()
+            }
+        }
+    }
+
+    /// The legacy-wallet rescue: destroy the phrase-less wallet and immediately surface the fresh
+    /// phrase, so the user lands on the "I've saved it" confirmation that unblocks issuance rather
+    /// than back at the dead end they started from.
+    private func replaceWallet() {
+        do {
+            let id = try Wallet.replace()
+            walletExists = true
+            ethAddr = id.ethAddress
+            mnemonic = id.mnemonic
+            walletMsg = "New wallet created. Write the 24 words below down, then tap “I've saved it” - issuing a dog tag stays blocked until you do."
+            resetMsg = "Wallet replaced. Your previous account and any dog tag bound to it are gone for good."
+        } catch {
+            resetMsg = "Replace failed: \(error.localizedDescription). Your existing wallet is untouched."
+        }
+    }
+
+    /// Drop the wallet values this screen is holding, and re-read whether a wallet still exists rather
+    /// than assuming the delete fully succeeded.
+    private func forgetWalletUi() {
+        walletExists = Wallet.exists()
+        ethAddr = nil
+        mnemonic = nil
+        walletMsg = ""
+    }
+
+    /// Report what actually happened. A partial sweep must never read as success: the leftover holds
+    /// the same secrets the action promised to destroy.
+    private func report(_ outcome: AppReset.Outcome, action: DangerAction, success: String) {
+        if let failures = outcome.failureSummary {
+            resetMsg = "\(action.title) only partly completed - could not remove \(failures). Try again."
+        } else {
+            resetMsg = success
         }
     }
 
@@ -285,6 +435,141 @@ private struct ExportPayload: Identifiable {
     let privateKeyHex: String?
 }
 
+/// Profile's single sheet route.
+///
+/// One `.sheet(item:)` rather than one modifier per destination on purpose: the legacy-wallet rescue
+/// hands off straight from the export sheet to its confirmation, and swapping this item's identity
+/// re-renders the presented sheet in place. Two sibling `.sheet` modifiers would have to dismiss one
+/// and present the other across an animation, which drops the second presentation.
+private enum ProfileSheet: Identifiable {
+    case export(ExportPayload)
+    case danger(DangerAction)
+
+    var id: String {
+        switch self {
+        case let .export(payload): return "export-\(payload.id)"
+        case let .danger(action): return "danger-\(action.id)"
+        }
+    }
+}
+
+/// The destructive actions Profile offers, each paired with the copy it must show BEFORE it runs.
+///
+/// Warning text and behaviour live in one type deliberately: these actions destroy material that no
+/// backup can restore, so the description the user confirms against must not be able to drift from
+/// what `AppReset` actually does.
+private enum DangerAction: String, Identifiable {
+    /// The legacy-wallet rescue: swap a wallet whose 24 words cannot be shown for a fresh, phrase-backed
+    /// one. Not a "danger zone" chore but the only honest way out of a wallet that can never satisfy
+    /// the seed-backup gate - and therefore can never issue a dog tag.
+    case replaceWallet
+    case deleteWallet
+    case deleteDogTags
+    case deleteRecords
+    case resetEverything
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .replaceWallet: return "Replace wallet"
+        case .deleteWallet: return "Delete wallet"
+        case .deleteDogTags: return "Delete dog-tags"
+        case .deleteRecords: return "Delete records"
+        case .resetEverything: return "Reset everything"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .replaceWallet:
+            return "Destroy this wallet and create a fresh one whose 24-word phrase you can actually write down."
+        case .deleteWallet:
+            return "Wipe the seed, the recovery entropy and the backup confirmation from this device."
+        case .deleteDogTags:
+            return "Wipe every dog tag held here - owner-secret, profile-tree salts, pet details and photo."
+        case .deleteRecords:
+            return "Wipe every credential imported on this device."
+        case .resetEverything:
+            return "Wallet, dog-tags and records - everything above, in one action."
+        }
+    }
+
+    /// Typed verbatim to confirm. Distinct per action on purpose: one shared word would let muscle
+    /// memory confirm a sheet the user did not mean to open.
+    var confirmPhrase: String {
+        switch self {
+        case .replaceWallet: return "REPLACE WALLET"
+        case .deleteWallet: return "DELETE WALLET"
+        case .deleteDogTags: return "DELETE DOG TAGS"
+        case .deleteRecords: return "DELETE RECORDS"
+        case .resetEverything: return "RESET EVERYTHING"
+        }
+    }
+
+    var biometricReason: String {
+        switch self {
+        case .replaceWallet: return "Authenticate to replace your wallet"
+        case .deleteWallet: return "Authenticate to delete your wallet"
+        case .deleteDogTags: return "Authenticate to delete your dog-tags"
+        case .deleteRecords: return "Authenticate to delete your records"
+        case .resetEverything: return "Authenticate to erase your local DogTag data"
+        }
+    }
+
+    /// Bullet by bullet, what is destroyed. Phrased as consequences, not file names.
+    var destroys: [String] {
+        let ownerSecret = "The owner-secret behind every dog tag on this device. R is written ONCE "
+            + "on-chain and every proof re-derives that secret from your seed, so those tags can NEVER "
+            + "prove consent again. Re-importing a tag will not bring it back - a working tag means a "
+            + "brand-new issuance at your vet."
+        let salts = "The profile-tree salts for every dog tag here. They are not derivable from any "
+            + "recovery phrase and exist nowhere else, so no backup can restore them."
+        switch self {
+        case .replaceWallet, .deleteWallet:
+            return [
+                "This wallet's seed and private key. Unless you exported the private key, the account "
+                    + "becomes unreachable - DogTag cannot recover it and neither can anyone else.",
+                ownerSecret,
+            ]
+        case .deleteDogTags:
+            return [ownerSecret, salts, "The pet details and photo saved for each tag."]
+        case .deleteRecords:
+            return ["Every credential and record imported on this device."]
+        case .resetEverything:
+            return [
+                "This wallet's seed and private key.",
+                ownerSecret,
+                salts,
+                "Every pet, photo and imported credential held on this device.",
+            ]
+        }
+    }
+
+    /// The counterweight to `destroys`, so the warning is not read as broader than it is.
+    var survives: String {
+        switch self {
+        case .deleteRecords:
+            return "Your records stay on-chain, issued by your vet - scan a fresh vet QR to import them "
+                + "again. Your wallet and dog-tags are untouched."
+        default:
+            return "Nothing on-chain is deleted. Your dog tag and its records stay on-chain, held by the "
+                + "custodian. What is destroyed is this device's ability to prove you own them."
+        }
+    }
+
+    /// The one thing `replaceWallet` ADDS, stated up front so it does not read as pure loss.
+    var closing: String? {
+        switch self {
+        case .replaceWallet:
+            return "You will then get a fresh 24-word recovery phrase to write down. Issuing a dog tag "
+                + "stays blocked until you confirm you have saved it."
+        default:
+            return nil
+        }
+    }
+}
+
 /// The biometric-gated account-export sheet. Shows a hard security warning, the 24-word recovery
 /// phrase in a numbered grid, and the raw secp256k1 private key, each with a copy action
 /// (auto-expiring clipboard). The secrets are only ever held in SwiftUI state for this sheet; they
@@ -294,6 +579,11 @@ private struct ExportAccountSheet: View {
     @Environment(\.dismiss) var dismiss
     let mnemonic: String?
     let privateKeyHex: String?
+    /// Offered only for a LEGACY wallet, whose 24 words cannot be reconstructed here. Routes to the
+    /// replace-wallet confirmation.
+    let onReplaceWallet: () -> Void
+
+    private var hasPhrase: Bool { !(mnemonic ?? "").isEmpty }
 
     var body: some View {
         ScrollView {
@@ -327,8 +617,17 @@ private struct ExportAccountSheet: View {
                     Text("Restores your account in DogTag (or a wallet using the same derivation). The copy clears from the clipboard automatically.")
                         .font(.system(size: 11)).foregroundColor(c.muted)
                 } else {
-                    Text("This wallet's recovery phrase isn't available on this device. It was created before phrase export was supported, so the 24 words can't be reconstructed here.")
-                        .font(.system(size: 13)).foregroundColor(c.onBackground)
+                    // The legacy dead end, stated honestly. There is deliberately NO "I've saved it"
+                    // here: the app must never invite a user to confirm they backed up a phrase it
+                    // cannot show them. The way out is the replace card at the foot of this sheet.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Recovery phrase not available").font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(c.onBackground)
+                        Text("This wallet was created before phrase export was supported, so its 24 words can't be reconstructed on this device.")
+                            .font(.system(size: 13)).foregroundColor(c.onBackground)
+                        Text("Because DogTag can't show you the phrase, it also can't ask you to confirm you've backed it up - and issuing a dog tag requires that confirmation, since the phrase is the only thing that could regenerate a tag's owner-secret on a replacement phone. Copy the private key below to keep this account, then replace this wallet with a fresh, phrase-backed one.")
+                            .font(.system(size: 12)).foregroundColor(c.muted)
+                    }
                 }
 
                 if let pk = privateKeyHex, !pk.isEmpty {
@@ -343,6 +642,28 @@ private struct ExportAccountSheet: View {
                     CopyButton(title: "Copy private key", value: pk, secret: true)
                     Text("Full control of your on-chain wallet. Import it into a compatible EVM wallet to restore this exact address (the recovery phrase alone would derive a different one).")
                         .font(.system(size: 11)).foregroundColor(c.muted)
+                }
+
+                // Deliberately LAST, below the private key: a legacy wallet's key is the only thing
+                // that survives a replace, so the export has to come first on the way down the sheet.
+                if !hasPhrase {
+                    Divider().overlay(c.outline).padding(.vertical, 2)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Get unblocked: replace this wallet")
+                            .font(.system(size: 14, weight: .bold)).foregroundColor(c.onBackground)
+                        Text("Creates a fresh wallet with a 24-word phrase you can write down, and replaces this one. Copy the private key above first if you want to keep this account.")
+                            .font(.system(size: 12)).foregroundColor(c.muted)
+                        Button { onReplaceWallet() } label: {
+                            Text("Replace wallet…").font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(c.onAccent)
+                                .padding(.vertical, 10).padding(.horizontal, 14)
+                                .background(RoundedRectangle(cornerRadius: 10).fill(c.danger))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(c.surfaceVariant))
                 }
                 Spacer(minLength: 12)
             }
@@ -368,6 +689,104 @@ private struct ExportAccountSheet: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(c.surface))
             }
         }
+    }
+}
+
+/// The typed confirmation every destructive action passes through.
+///
+/// A typed phrase rather than a two-tap alert on purpose: these actions destroy material that no
+/// backup restores, and the phrase forces the user past the warning text instead of through a button
+/// their thumb already knows the position of. The action's own words are what must be typed, so
+/// confirming the wrong sheet is not possible by muscle memory.
+private struct DestructiveConfirmationSheet: View {
+    @Environment(\.dogTagColors) var c
+    @Environment(\.dismiss) var dismiss
+    let action: DangerAction
+    let onConfirmed: () -> Void
+
+    @State private var typed = ""
+
+    private var phraseMatches: Bool {
+        typed.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == action.confirmPhrase
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(action.title).font(.system(size: 22, weight: .bold)).foregroundColor(c.onBackground)
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark").foregroundColor(c.onBackground)
+                            .frame(width: 32, height: 32).background(Circle().fill(c.surfaceVariant))
+                    }.buttonStyle(.plain)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("This cannot be undone", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13, weight: .bold)).foregroundColor(c.danger)
+                    ForEach(Array(action.destroys.enumerated()), id: \.offset) { _, line in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("•").font(.system(size: 12, weight: .bold)).foregroundColor(c.danger)
+                            Text(line).font(.system(size: 12)).foregroundColor(c.onBackground)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 14).fill(c.danger.opacity(0.12)))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("What stays").font(.system(size: 12, weight: .semibold)).foregroundColor(c.muted)
+                    Text(action.survives).font(.system(size: 12)).foregroundColor(c.onBackground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 14).fill(c.surfaceVariant))
+
+                if let closing = action.closing {
+                    Text(closing).font(.system(size: 12)).foregroundColor(c.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Type \(action.confirmPhrase) to confirm")
+                        .font(.system(size: 12, weight: .semibold)).foregroundColor(c.onBackground)
+                    TextField(action.confirmPhrase, text: $typed)
+                        .font(.system(size: 15, design: .monospaced))
+                        .foregroundColor(c.onBackground)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(c.surface))
+                        .overlay(RoundedRectangle(cornerRadius: 10)
+                            .stroke(phraseMatches ? c.danger : c.outline, lineWidth: 1.5))
+                }
+
+                Button { onConfirmed() } label: {
+                    Text(action.title).font(.system(size: 15, weight: .bold))
+                        .foregroundColor(phraseMatches ? c.onAccent : c.muted)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(RoundedRectangle(cornerRadius: 12)
+                            .fill(phraseMatches ? c.danger : c.surfaceVariant))
+                }
+                .buttonStyle(.plain)
+                .disabled(!phraseMatches)
+
+                Button { dismiss() } label: {
+                    Text("Cancel").font(.system(size: 14, weight: .semibold)).foregroundColor(c.accent)
+                        .frame(maxWidth: .infinity).padding(.vertical, 10)
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 12)
+            }
+            .padding(20)
+        }
+        .background(c.background.ignoresSafeArea())
     }
 }
 
