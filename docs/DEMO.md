@@ -206,8 +206,12 @@ Backend issues fixed while bringing the system up live on ROAX - worth knowing:
   signer-1 `0x8E27…F4A2` since Phase-2; the old deployer EOA `0x119F…` no longer has governance/admin
   authority, though it does still hold a residual legacy issuer capability - `ISSUER_ROLE` +
   record-type whitelists from the pre-unification era - so it is **not a neutral key**) to broadcast
-  `whitelistFor`. Without it, Approve no-ops. (The dog-tag `mintCustodial` is broadcast by the **vet**
-  signer, which must hold `DogTagSBTConsent.ISSUER_ROLE`.)
+  `whitelistFor`. Wired with a key that lacks `WHITELIST_ADMIN`, Approve broadcasts nothing and only
+  returns unsigned calldata - so `demo-up.sh` now refuses to boot on such a key unless you declare
+  `ADMIN_PROPOSE_ONLY=1` (out-of-band signing), and a grant that broadcast nothing says so in its
+  response instead of reading as success ([LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md) §2).
+  (The dog-tag `mintCustodial` is broadcast by the **vet** signer, which must hold
+  `DogTagSBTConsent.ISSUER_ROLE`.)
 - **`sign_and_send` waits for the receipt** before reporting success (so issue/verify reflect the real
   on-chain state, not just a submitted tx hash).
 - **The `VERIFY:` whitelist key** = `keccak256(abi.encode("VERIFY:", keccak256(label) mod r))` - the

@@ -104,7 +104,7 @@ Its own Mongo (`governmentdata`), two collections:
 
 | Route | Role | What |
 |---|---|---|
-| `GET /health` | liveness | status + chainId + demo/live + signer + configured issuer clones |
+| `GET /health` | liveness | status + the honest chain-backend report (`backend`/`simulated`/`chainId`/`canSign`/`signer`/`simulatedSigner`, see "Chain-client selection" below) + `demo` (store only) + configured issuer clones |
 | `POST /v1/travel-clearance/issue` | **issuer** 🔒 | build `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` VC (+ mint public `receiptId`) → root `R` → anchor `DogTagIssuer.issue(R)` (unless `dry_run` / no signer) → persist |
 | `POST /v1/verify` | **verifier** | integrity + `isValid` + `isWhitelistedFor` → verdict → persist audit record |
 | `GET /v1/records`, `GET /v1/records/:root` | custodian 🔒 | list / fetch issued credentials (off-chain DB, incl. the on-chain proof + explorer links + derived `effectiveStatus`) |
