@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -33,7 +33,7 @@ use crate::app::AppState;
 use crate::auth::now;
 use crate::store::{
     Appointment, AppointmentQuery, Client, ClientPet, ClientQuery, Page, Store, VerificationLog,
-    VerificationQuery, VerifySession, APPOINTMENT_STATES,
+    VerificationQuery, VerifySession, APPOINTMENT_STATES, VERIFICATION_STATES,
 };
 
 type Resp = (StatusCode, Json<Value>);
@@ -336,23 +336,29 @@ async fn update_client(
     ok(client_json(&c))
 }
 
-/// After a client edit, refresh the denormalized `clientName`/`petName` on that client's
-/// appointments (bounded to one page — a single client's booking list, not the whole collection).
+/// After a client edit, refresh the denormalized `clientName`/`petName` on EVERY row of this shop's
+/// own that carries them — the appointments the calendar renders AND the verification-history rows —
+/// rebuilding each row's search key so the client is findable under the new name.
+///
+/// Both passes are bounded to one page: a single client's bookings and checks, never the whole
+/// collection.
 async fn resync_client_labels(store: &Arc<dyn Store>, c: &Client) {
-    let page = store
+    let pet_name_of = |pet_id: Option<&String>| {
+        pet_id
+            .and_then(|pid| c.pets.iter().find(|p| &p.pet_id == pid))
+            .map(|p| p.name.clone())
+            .unwrap_or_default()
+    };
+
+    let appts = store
         .list_appointments(&AppointmentQuery {
             client_id: Some(c.client_id.clone()),
             limit: crate::store::MAX_PAGE,
             ..Default::default()
         })
         .await;
-    for mut a in page.rows {
-        let pet_name = a
-            .pet_id
-            .as_ref()
-            .and_then(|pid| c.pets.iter().find(|p| &p.pet_id == pid))
-            .map(|p| p.name.clone())
-            .unwrap_or_default();
+    for mut a in appts.rows {
+        let pet_name = pet_name_of(a.pet_id.as_ref());
         if a.client_name == c.name && a.pet_name == pet_name {
             continue;
         }
@@ -361,6 +367,25 @@ async fn resync_client_labels(store: &Arc<dyn Store>, c: &Client) {
         a.rebuild_search_key();
         a.updated_at = now();
         store.put_appointment(a).await;
+    }
+
+    let verifs = store
+        .list_verification_logs(&VerificationQuery {
+            client_id: Some(c.client_id.clone()),
+            limit: crate::store::MAX_PAGE,
+            ..Default::default()
+        })
+        .await;
+    for mut v in verifs.rows {
+        let pet_name = pet_name_of(v.pet_id.as_ref());
+        if v.client_name == c.name && v.pet_name == pet_name {
+            continue;
+        }
+        v.client_name = c.name.clone();
+        v.pet_name = pet_name;
+        v.rebuild_search_key();
+        v.updated_at = now();
+        store.put_verification_log(v).await;
     }
 }
 
@@ -614,6 +639,13 @@ async fn list_verifications(
     if let Err(e) = crate::routes::require_operator(&st, &headers).await {
         return e;
     }
+    // A typo'd status must be a request error, not a 200 with an empty page — the operator cannot
+    // tell that apart from a genuinely empty history.
+    if let Some(s) = ListQuery::opt(&q.status) {
+        if !VERIFICATION_STATES.contains(&s.as_str()) {
+            return err(StatusCode::BAD_REQUEST, "unknown status filter");
+        }
+    }
     let page = st
         .store
         .list_verification_logs(&VerificationQuery {
@@ -805,17 +837,4 @@ pub fn crm_router() -> Router<AppState> {
         )
         .route("/verifications", get(list_verifications))
         .route("/verifications/:id", get(get_verification))
-        // POST-only alias kept out of the resource paths: nothing here mutates a verification, the
-        // verify leg owns that.
-        .route("/verifications/search", post(list_verifications_post))
-}
-
-/// `POST /verifications/search` — the same filter surface as the GET, for callers that would rather
-/// send a JSON body than a query string (long free-text needles, many filters).
-async fn list_verifications_post(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-    Json(q): Json<ListQuery>,
-) -> Resp {
-    list_verifications(State(st), headers, Query(q)).await
 }

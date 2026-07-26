@@ -34,8 +34,13 @@ impl MongoStore {
         Ok(store)
     }
 
-    /// Index every field the CRM list queries filter or sort on, so search/filter stays a bounded
-    /// indexed lookup as the collections grow rather than a collection scan.
+    /// Index the fields the CRM list queries filter and sort on — the equality keys plus the
+    /// range/sort keys — so the ordinary list and calendar views stay bounded index seeks as the
+    /// collections grow rather than collection scans.
+    ///
+    /// `searchKey` is the deliberate exception: [`search_filter`] emits an UNANCHORED `$regex`, which
+    /// no B-tree index can serve as a bounded seek, so free-text search stays a scan. What the
+    /// denormalized key buys is that the scan touches ONE field per row instead of N.
     async fn ensure_crm_indexes(&self) -> Result<(), mongodb::error::Error> {
         let unique = |keys: Document| {
             IndexModel::builder()
@@ -47,7 +52,8 @@ impl MongoStore {
 
         let clients: Collection<Document> = self.db.collection("crm_clients");
         clients.create_index(unique(doc! { "clientId": 1 })).await?;
-        // searchKey is the single free-text key; updatedAt is the list sort.
+        // searchKey is the single free-text field (scanned, never seeked — see above); updatedAt is
+        // the list sort.
         clients.create_index(plain(doc! { "searchKey": 1 })).await?;
         clients.create_index(plain(doc! { "updatedAt": -1 })).await?;
 
@@ -498,6 +504,11 @@ impl Store for MongoStore {
     }
 
     // ---- shop CRM: clients ----
+    //
+    // KNOWN GAP (deliberately not fixed here). Like every other `Store` write in this file, the CRM
+    // writes below discard the driver result, so a transient Mongo failure (unreachable, expired
+    // auth, replica-set step-down) still lets the route answer 201/200. The trait returns unit
+    // repo-wide; surfacing the error means widening `Store` to `Result`, which is its own change.
     async fn put_client(&self, c: Client) {
         let _ = self
             .crm_clients()
@@ -626,6 +637,9 @@ fn merge(clauses: Vec<Option<Document>>) -> Document {
 /// Free-text search over the row's `searchKey`: EVERY whitespace-separated term must be a
 /// case-insensitive substring, so multiple terms narrow the result set (mirrors MemStore).
 /// The needle is regex-escaped — an operator typing `.` or `(` must not alter the match semantics.
+///
+/// The regex is UNANCHORED by design (an operator searching "lim" must find "Alice Lim"), so this
+/// clause is a scan over `searchKey` and the index on that field cannot bound it.
 fn search_filter(q: Option<&str>) -> Option<Document> {
     let needle = q?.trim().to_lowercase();
     if needle.is_empty() {

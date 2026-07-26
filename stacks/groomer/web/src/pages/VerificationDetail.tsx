@@ -27,9 +27,9 @@ import { formatDateTime } from "../lib/time";
  * The full evidence for one verification: what was checked, for whom, the on-chain facts, and
  * whatever the owner chose to disclose.
  *
- * On the ZK path the disclosed list is EMPTY and this page says so explicitly — that emptiness is
- * the privacy guarantee, and an operator should be able to see it stated rather than infer it from
- * a blank table.
+ * On an ordinary owner-hidden verification the disclosed list is EMPTY and this page says so
+ * explicitly — that emptiness is the privacy guarantee, and an operator should be able to see it
+ * stated rather than infer it from a blank table.
  */
 export function VerificationDetail() {
   const { id = "" } = useParams();

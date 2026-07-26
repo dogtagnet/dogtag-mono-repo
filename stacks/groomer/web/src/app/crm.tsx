@@ -157,7 +157,8 @@ export function VerificationStatusBadge({ status }: { status: CrmVerification["s
   );
 }
 
-/** ZK vs Normal, with the privacy meaning spelled out rather than left as jargon. */
+/** What the owner chose to disclose, with the privacy meaning spelled out rather than left as
+ * jargon. There is no verification mode to report — only how much the owner revealed. */
 export function DisclosureBadge({
   disclosedKeyPaths,
 }: {

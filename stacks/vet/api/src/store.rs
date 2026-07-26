@@ -381,9 +381,12 @@ pub struct Client {
     pub created_at: u64,
     #[serde(rename = "updatedAt")]
     pub updated_at: u64,
-    /// Lowercased concatenation of every searchable field (name/email/phone/pet names/tag ids). ONE
-    /// indexed key so free-text search is a single indexed substring match instead of an N-field scan
-    /// — and so the browser never has to pull the collection to filter it.
+    /// Lowercased concatenation of every searchable field (name/email/phone/pet names/tag ids), so a
+    /// free-text needle scans ONE field instead of N — and so the browser never has to pull the
+    /// collection to filter it.
+    ///
+    /// It is NOT an indexed lookup: the match is an UNANCHORED substring, which no B-tree index can
+    /// serve as a bounded seek. The denormalization narrows the scan, it does not remove it.
     #[serde(rename = "searchKey", default)]
     pub search_key: String,
 }
@@ -522,6 +525,11 @@ pub struct VerificationLog {
     #[serde(rename = "searchKey", default)]
     pub search_key: String,
 }
+
+/// The statuses a [`VerificationLog`] may hold — the verify session's own lifecycle, mirrored. The
+/// list route rejects anything else, so a typo'd `?status=` filter is a request error rather than an
+/// empty page indistinguishable from an empty history.
+pub const VERIFICATION_STATES: &[&str] = &["pending", "recording", "recorded", "error"];
 
 impl VerificationLog {
     pub fn rebuild_search_key(&mut self) {

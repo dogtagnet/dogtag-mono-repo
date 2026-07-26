@@ -49,6 +49,13 @@ export function Calendar() {
     [from, to],
   );
 
+  // The window is capped at one page, so a very busy range can hold more bookings than the grid
+  // renders. A calendar that quietly drops a booking is worse than one that admits it did — say so
+  // rather than letting the grid look complete.
+  const shown = page?.rows.length ?? 0;
+  const total = page?.total ?? 0;
+  const hidden = Math.max(0, total - shown);
+
   // bucket the window's appointments by local day so each column renders in one pass
   const byDay = useMemo(() => {
     const buckets = new Map<number, CrmAppointment[]>();
@@ -125,17 +132,34 @@ export function Calendar() {
         {error ? (
           <p className="py-8 text-center text-sm text-danger">{error}</p>
         ) : (
-          <div
-            className={
-              view === "day"
-                ? "grid grid-cols-1 gap-3"
-                : "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7"
-            }
-          >
-            {[...byDay.entries()].map(([dayStart, appts]) => (
-              <DayColumn key={dayStart} dayStart={dayStart} appointments={appts} compact={view === "week"} />
-            ))}
-          </div>
+          <>
+            {hidden > 0 && (
+              <p
+                role="status"
+                className="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+              >
+                Showing {shown} of {total} bookings in this range — {hidden} more{" "}
+                {hidden === 1 ? "is" : "are"} not on this grid. Switch to Day view or narrow the
+                range to see them all.
+              </p>
+            )}
+            <div
+              className={
+                view === "day"
+                  ? "grid grid-cols-1 gap-3"
+                  : "grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7"
+              }
+            >
+              {[...byDay.entries()].map(([dayStart, appts]) => (
+                <DayColumn
+                  key={dayStart}
+                  dayStart={dayStart}
+                  appointments={appts}
+                  compact={view === "week"}
+                />
+              ))}
+            </div>
+          </>
         )}
       </CardContent>
     </Card>

@@ -142,9 +142,10 @@ export function Dashboard() {
         </CardHeader>
         <CardContent className="text-sm text-muted">
           Open an appointment and start the check from it. The owner approves on their phone, and the
-          result is recorded against that appointment and client. In ZK mode the owner proves their
-          pet's vaccination is valid without revealing anything about themselves — you get a
-          verifiable answer, not their data.
+          result is recorded against that appointment and client. The owner proves their pet's
+          vaccination is valid without revealing anything about themselves, and chooses for
+          themselves whether to disclose any further details — you get a verifiable answer, not
+          their data.
         </CardContent>
       </Card>
     </div>

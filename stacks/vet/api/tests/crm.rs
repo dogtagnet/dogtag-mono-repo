@@ -100,7 +100,6 @@ async fn crm_routes_require_an_operator_session() {
         ("DELETE", "/appointments/some-id", None),
         ("GET", "/verifications", None),
         ("GET", "/verifications/some-id", None),
-        ("POST", "/verifications/search", Some(json!({}))),
     ];
     for (method, path, body) in cases {
         let (s, b) = call(&app, method, path, None, body).await;
@@ -554,22 +553,57 @@ async fn verification_history_filters_by_client_appointment_purpose_and_status()
     let (_, b) = call(&app, "GET", "/verifications?q=alice", Some(&op), None).await;
     assert_eq!(b["total"], 2);
 
-    // the POST search alias takes the same filters
-    let (s, b) = call(
-        &app,
-        "POST",
-        "/verifications/search",
-        Some(&op),
-        Some(json!({ "clientId": alice })),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "{b}");
-    assert_eq!(b["total"], 2);
+    // an unknown status filter is a request error, not a silently empty history — the operator
+    // cannot tell a typo'd filter apart from a shop that has verified nothing.
+    let (s, _) = call(&app, "GET", "/verifications?status=recordedd", Some(&op), None).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 
     // unfiltered still lists everything
     let (_, b) = call(&app, "GET", "/verifications", Some(&op), None).await;
     assert_eq!(b["total"], 3, "unfiltered lists every verification this shop performed");
     let _ = v1_id;
+}
+
+#[tokio::test]
+async fn renaming_a_client_refreshes_the_denormalized_name_on_their_verification_history() {
+    let (app, op) = verify_app().await;
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
+    let (s, b) = start_verify_session(&app, &op, Some(&appt)).await;
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
+    let verification_id = b["sessionId"].as_str().unwrap().to_string();
+
+    let (s, _) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{client_id}"),
+        Some(&op),
+        Some(json!({ "name": "Alice Lim", "pets": [{ "petId": pet_id, "name": "Rexy" }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (_, v) = call(
+        &app,
+        "GET",
+        &format!("/verifications/{verification_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(
+        v["clientName"], "Alice Lim",
+        "the history must not keep showing the pre-rename label"
+    );
+    assert_eq!(v["petName"], "Rexy");
+
+    // and the row is findable under the new name — the search key was rebuilt too
+    let (_, b) = call(&app, "GET", "/verifications?q=alice%20lim", Some(&op), None).await;
+    assert_eq!(b["total"], 1, "the verification search key must be rebuilt on rename");
+    assert_eq!(b["rows"][0]["verificationId"], verification_id.as_str());
+
+    let (_, b) = call(&app, "GET", "/verifications?q=alice%20tan", Some(&op), None).await;
+    assert_eq!(b["total"], 0, "the stale name must no longer match");
 }
 
 /// A whitelisted MemChain app that can actually carry a consent submit through to `recorded`, so the

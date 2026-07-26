@@ -258,7 +258,7 @@ export function ClientDetail() {
                 <TableRow>
                   <TableHead>When</TableHead>
                   <TableHead>Purpose</TableHead>
-                  <TableHead>Mode</TableHead>
+                  <TableHead>Disclosed</TableHead>
                   <TableHead>Result</TableHead>
                 </TableRow>
               </TableHeader>
