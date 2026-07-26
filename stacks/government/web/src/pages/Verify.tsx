@@ -25,9 +25,13 @@ export function Verify({ health }: { health: Health | null }) {
 
   // Prefill the issuer signer with this authority's own signer so the whitelist pillar (the third
   // authenticity pillar) is exercised by default. Users can override or clear it.
+  // On a simulated backend the address lives in `simulatedSigner` (`signer` is null by design, so a
+  // stand-in is never mistaken for a real key) - fall back to it, or the prefill silently goes empty
+  // and the whitelist pillar stops being exercised.
+  const ownSigner = health?.signer ?? health?.simulatedSigner ?? null;
   useEffect(() => {
-    if (health?.signer && !signer) setSigner(health.signer);
-  }, [health?.signer]);
+    if (ownSigner && !signer) setSigner(ownSigner);
+  }, [ownSigner]);
 
   async function submit() {
     setBusy(true);

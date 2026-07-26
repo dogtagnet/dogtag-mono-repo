@@ -126,6 +126,12 @@ async fn main() {
         );
     }
 
+    // Control-plane authority preflight: resolve, ONCE at boot, whether the hosted signer actually
+    // holds the authorities every privileged write needs. Without this a stack booted with a retired
+    // key starts clean and returns disposition:"proposed" for every grant — indistinguishable from the
+    // legitimate propose-for-external-signing flow, with nothing reaching the chain.
+    authority_preflight(&chain, &cfg).await;
+
     // DNS legitimacy check: real DoH in prod; set DNS_CHECK=skip for the local demo where the
     // business domain (e.g. vet.local) has no published TXT record.
     let dns: Arc<dyn DnsChecker> = if env("DNS_CHECK", "doh") == "skip" {
@@ -210,6 +216,94 @@ async fn main() {
         )
         .await
         .expect("serve");
+    }
+}
+
+/// Read the three control-plane authorities for the hosted signer and report what it does NOT hold.
+///
+/// A missing authority is not automatically an error — after the governance Phase-2 handover the
+/// registry `DEFAULT_ADMIN_ROLE` legitimately lives on the governance signer, and those actions are
+/// MEANT to come back as proposals for out-of-band signing. Holding *none* of them is different: it
+/// means every privileged write degrades to unsigned calldata while the stack looks healthy. That case
+/// logs at ERROR, and `ADMIN_REQUIRE_AUTHORITY=1` turns it into a refusal to boot.
+async fn authority_preflight(chain: &AlloyChain, cfg: &Config) {
+    use admin_api::chain::{default_admin_role, whitelist_admin_role};
+    use admin_api::startup::{authority_preflight_message, authority_verdict, AuthorityCheck};
+
+    const ZERO: &str = "0x0000000000000000000000000000000000000000";
+    let hosted = chain.signer_address(cfg.admin_signer_index).await;
+    let Some(hosted_addr) = hosted.clone() else {
+        tracing::warn!(
+            "control-plane authority preflight skipped: no hosted signer registered (ADMIN_PRIVATE_KEY \
+             unset) - every privileged write will fail or degrade to an unsigned proposal"
+        );
+        return;
+    };
+
+    // An unconfigured target is reported as unknown rather than as a missing authority: the zero
+    // address is a configuration gap (see FACTORY_ADDR), not evidence about the signer.
+    let is_zero = |a: &str| a.eq_ignore_ascii_case(ZERO);
+    let factory_held = if is_zero(&cfg.factory_addr) {
+        None
+    } else {
+        chain
+            .ownable_owner(&cfg.factory_addr)
+            .await
+            .ok()
+            .map(|owner| owner.eq_ignore_ascii_case(&hosted_addr))
+    };
+    let registry = &cfg.issuer_registry_addr;
+    let (wl_held, da_held) = if is_zero(registry) {
+        (None, None)
+    } else {
+        (
+            chain
+                .has_role(registry, &whitelist_admin_role(), &hosted_addr)
+                .await
+                .ok(),
+            chain
+                .has_role(registry, &default_admin_role(), &hosted_addr)
+                .await
+                .ok(),
+        )
+    };
+
+    let checks = [
+        AuthorityCheck {
+            name: "WHITELIST_ADMIN",
+            target: registry,
+            capability: "whitelistFor / delistFor - issuer + verifier grants",
+            held: wl_held,
+        },
+        AuthorityCheck {
+            name: "FACTORY_OWNER",
+            target: &cfg.factory_addr,
+            capability: "createIssuer - deploy an issuer clone",
+            held: factory_held,
+        },
+        AuthorityCheck {
+            name: "DEFAULT_ADMIN",
+            target: registry,
+            capability: "adminRevoke / role-admin / verifier swaps",
+            held: da_held,
+        },
+    ];
+
+    let verdict = authority_verdict(&checks);
+    let msg = authority_preflight_message(hosted.as_deref(), &verdict);
+    if verdict.is_unauthorized() {
+        tracing::error!("{msg}");
+        if matches!(
+            std::env::var("ADMIN_REQUIRE_AUTHORITY").unwrap_or_default().as_str(),
+            "1" | "true"
+        ) {
+            eprintln!("FATAL: ADMIN_REQUIRE_AUTHORITY=1 and the hosted signer holds no control-plane authority.");
+            std::process::exit(1);
+        }
+    } else if matches!(verdict, admin_api::startup::AuthorityVerdict::AllHeld) {
+        tracing::info!("{msg}");
+    } else {
+        tracing::warn!("{msg}");
     }
 }
 

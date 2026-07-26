@@ -88,11 +88,29 @@ pub enum Disposition {
     Proposed {
         /// The current holder if resolvable (Owner + DEFAULT_ADMIN), else `null`.
         holder: Option<String>,
+        /// The hosted signer that was CHECKED and found not to hold the authority. Without this, a
+        /// proposal caused by booting the wrong key looks identical to one caused by the authority
+        /// legitimately living on a governance signer.
+        #[serde(rename = "hostedSigner")]
+        hosted_signer: Option<String>,
         target: String,
         calldata: String,
         authority: String,
         summary: String,
     },
+}
+
+impl Disposition {
+    /// `true` when this action was actually signed and broadcast.
+    pub fn executed(&self) -> bool {
+        matches!(self, Disposition::Executed { .. })
+    }
+}
+
+/// `true` when NOT ONE of `dispositions` reached the chain. Callers surface this so a request that
+/// changed nothing on-chain cannot read as a success: the whole set came back as unsigned calldata.
+pub fn none_executed(dispositions: &[Disposition]) -> bool {
+    !dispositions.is_empty() && !dispositions.iter().any(Disposition::executed)
 }
 
 /// Resolve `action`'s authority against the chain and either broadcast (hosted key holds it) or return
@@ -145,6 +163,7 @@ pub async fn dispatch<C: ChainClient + ?Sized>(
     } else {
         Ok(Disposition::Proposed {
             holder,
+            hosted_signer: hosted,
             target: action.target.clone(),
             calldata: action.calldata.clone(),
             authority: action.authority.label(),

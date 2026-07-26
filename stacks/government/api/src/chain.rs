@@ -20,6 +20,36 @@ use async_trait::async_trait;
 
 pub const ROAX_CHAIN_ID: u64 = 135;
 
+/// Sentinel `chain_id()` for a simulated backend. A `MemChain` is NOT on any real network, so it must
+/// never answer with a real EIP-155 id — reporting `135` was the whole substance of the "simulated but
+/// indistinguishable from live" bug: an operator reading `/health` saw `chainId:135` and reasonably
+/// concluded the backend was ROAX. Callers surface `backend()`/`is_simulated()` and map this to `null`.
+pub const SIMULATED_CHAIN_ID: u64 = 0;
+
+/// Which chain surface a `ChainClient` actually talks to. This is deliberately a first-class part of
+/// the trait rather than something inferred from a `demo` config flag: the operator-facing question
+/// ("are these reads and writes REAL?") is a property of the client in use, not of how it was chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainBackend {
+    /// A real JSON-RPC node. Reads reflect chain state; writes cost gas and are irreversible.
+    Live,
+    /// In-process emulation. Nothing is broadcast, nothing is persisted beyond this process.
+    Simulated,
+}
+
+impl ChainBackend {
+    /// Stable machine-readable token for `/health` and the portal status strip.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChainBackend::Live => "live",
+            ChainBackend::Simulated => "simulated",
+        }
+    }
+    pub fn is_simulated(self) -> bool {
+        matches!(self, ChainBackend::Simulated)
+    }
+}
+
 sol! {
     #[sol(rpc)]
     contract IDogTagIssuer {
@@ -62,11 +92,28 @@ pub struct SentTx {
 #[async_trait]
 pub trait ChainClient: Send + Sync {
     /// The EIP-155 chain id this client signs against (config-driven via `CHAIN_ID`; default 135).
+    /// A simulated backend MUST return [`SIMULATED_CHAIN_ID`] rather than a real network id.
     fn chain_id(&self) -> u64 {
         ROAX_CHAIN_ID
     }
+    /// Which chain surface this client actually talks to. Required (no default) so a new
+    /// implementation cannot silently inherit "live" and misrepresent itself to operators.
+    fn backend(&self) -> ChainBackend;
+    /// `true` when this client is an in-process emulation rather than a real node.
+    fn is_simulated(&self) -> bool {
+        self.backend().is_simulated()
+    }
     /// `true` when the client can sign+broadcast (a signer key is loaded). Reads work regardless.
+    ///
+    /// NOTE: on a simulated backend this reports the EMULATED capability — it is `true` while nothing
+    /// is ever broadcast. Anything operator-facing must therefore pair it with [`Self::backend`];
+    /// see `can_broadcast_real_tx` for the "will a real tx land on a real chain?" question.
     fn can_sign(&self) -> bool;
+    /// `true` only when a real tx signed by a real key would actually land on a real chain. This is the
+    /// predicate operator-facing surfaces want: it is `false` for every simulated backend.
+    fn can_broadcast_real_tx(&self) -> bool {
+        !self.is_simulated() && self.can_sign()
+    }
     /// The government signer's `0x..` address, if a signer is loaded.
     fn signer_address(&self) -> Option<String>;
     /// `DogTagIssuer.isValid(root)` — issued && !revoked.
@@ -176,6 +223,9 @@ impl AlloyChain {
 impl ChainClient for AlloyChain {
     fn chain_id(&self) -> u64 {
         self.chain_id
+    }
+    fn backend(&self) -> ChainBackend {
+        ChainBackend::Live
     }
     fn can_sign(&self) -> bool {
         self.signer.is_some()
@@ -366,6 +416,14 @@ impl MemChain {
 
 #[async_trait]
 impl ChainClient for MemChain {
+    /// Never a real network id — see [`SIMULATED_CHAIN_ID`].
+    fn chain_id(&self) -> u64 {
+        SIMULATED_CHAIN_ID
+    }
+    fn backend(&self) -> ChainBackend {
+        ChainBackend::Simulated
+    }
+    /// `true` because the emulation accepts `issue`/`revoke`; `can_broadcast_real_tx()` stays `false`.
     fn can_sign(&self) -> bool {
         true
     }
@@ -481,6 +539,38 @@ mod tests {
         // isValid flips to false, but issuedAt (the historical anchor) stays intact.
         assert!(!c.is_valid(issuer, root).await.unwrap());
         assert!(!c.issued_at(issuer, root).await.unwrap().is_zero());
+    }
+
+    #[test]
+    fn memchain_never_claims_a_real_chain_id_or_real_signing() {
+        // The bug this pins: MemChain used the trait-default chain_id() (135) and can_sign()==true, so
+        // /health was indistinguishable from a live ROAX backend with a funded signer.
+        let c = MemChain::new();
+        assert_eq!(c.chain_id(), SIMULATED_CHAIN_ID);
+        assert_ne!(c.chain_id(), ROAX_CHAIN_ID);
+        assert_eq!(c.backend(), ChainBackend::Simulated);
+        assert!(c.is_simulated());
+        // It emulates signing, but it can never broadcast a real tx.
+        assert!(c.can_sign());
+        assert!(!c.can_broadcast_real_tx());
+    }
+
+    #[test]
+    fn alloychain_reports_live_and_gates_real_broadcast_on_a_signer() {
+        let live = AlloyChain::new("https://devrpc.roax.net".to_string()).with_chain_id(ROAX_CHAIN_ID);
+        assert_eq!(live.backend(), ChainBackend::Live);
+        assert!(!live.is_simulated());
+        assert_eq!(live.chain_id(), ROAX_CHAIN_ID);
+        // No signer loaded -> reads only, and it must not claim real broadcast capability.
+        assert!(!live.can_sign());
+        assert!(!live.can_broadcast_real_tx());
+
+        // With a signer loaded it can broadcast for real (test-only key, not a funded account).
+        let signed = AlloyChain::new("https://devrpc.roax.net".to_string())
+            .with_signer_hex("0x1111111111111111111111111111111111111111111111111111111111111111")
+            .expect("valid 32-byte key");
+        assert!(signed.can_sign());
+        assert!(signed.can_broadcast_real_tx());
     }
 
     #[test]

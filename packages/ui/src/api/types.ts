@@ -539,12 +539,20 @@ export interface WhitelistGrantResp {
    * `{ status: "alreadyHeld" }` when the signer already had it, or null for non-DOG_PROFILE grants.
    */
   issuerRole?: GovernanceDisposition | { status: "alreadyHeld" } | null;
+  /** False when NOTHING reached the chain: on-chain state is unchanged. */
+  executed?: boolean;
+  /** Set only when `executed` is false: a plain statement that nothing was broadcast. */
+  warning?: string | null;
 }
 /** POST /v1/admin/whitelist/revoke response: one disposition per delisted capability. */
 export interface WhitelistRevokeResp {
   signer: string;
   recordType?: string | null;
   actions: GovernanceDisposition[];
+  /** False when NOTHING reached the chain: on-chain state is unchanged. */
+  executed?: boolean;
+  /** Set only when `executed` is false: a plain statement that nothing was broadcast. */
+  warning?: string | null;
 }
 
 // ---- appointments (§4.4) ----
@@ -608,6 +616,12 @@ export type GovernanceDisposition =
   | {
       disposition: "proposed";
       holder: string | null;
+      /**
+       * The hosted signer that was CHECKED and found NOT to hold the authority. Distinguishes "the
+       * authority legitimately lives on the governance signer" from "this stack booted the wrong key",
+       * which are otherwise identical: both just say `proposed`.
+       */
+      hostedSigner?: string | null;
       target: string;
       calldata: string;
       authority: string;

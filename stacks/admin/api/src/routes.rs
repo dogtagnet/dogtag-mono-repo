@@ -1477,6 +1477,28 @@ fn whitelist_actions(
     actions
 }
 
+/// Annotate a grant/revoke response with whether anything actually reached the chain.
+///
+/// `disposition:"proposed"` is a legitimate outcome — post-Phase-2 the authority may live on the
+/// governance signer, and the unsigned calldata is meant to be executed out-of-band. But a request
+/// where NOTHING executed changed nothing on-chain, and used to be indistinguishable from success. The
+/// `executed` flag plus an explicit `warning` make that unmistakable without breaking the intended flow.
+fn dispatch_summary(results: &[governance::Disposition]) -> (bool, Value) {
+    if governance::none_executed(results) {
+        (
+            false,
+            json!(
+                "NOTHING WAS BROADCAST: the hosted signer does not hold the required authority, so \
+                 every action came back as unsigned calldata (see actions[].hostedSigner / .holder). \
+                 On-chain state is UNCHANGED until the authority holder executes it. If you expected \
+                 the hosted key to hold this authority, it is the wrong key."
+            ),
+        )
+    } else {
+        (true, Value::Null)
+    }
+}
+
 /// Dispatch each action in order, short-circuiting to a 502 on the first chain error. A dispatched
 /// action yields a `Disposition` (executed with a tx hash, or proposed with the calldata payload).
 async fn dispatch_all(
@@ -1566,11 +1588,14 @@ async fn whitelist_grant(
         Value::Null
     };
 
+    let (executed, warning) = dispatch_summary(&results);
     ok(json!({
         "signer": signer,
         "recordType": body.record_type,
         "actions": results,
         "issuerRole": issuer_role,
+        "executed": executed,
+        "warning": warning,
     }))
 }
 
@@ -1611,10 +1636,13 @@ async fn whitelist_revoke(
         Ok(r) => r,
         Err(e) => return e,
     };
+    let (executed, warning) = dispatch_summary(&results);
     ok(json!({
         "signer": signer,
         "recordType": body.record_type,
         "actions": results,
+        "executed": executed,
+        "warning": warning,
     }))
 }
 

@@ -189,14 +189,34 @@ fn credential_json(cred: &IssuedCredential) -> Value {
 // health
 // --------------------------------------------------------------------------------------------
 
+/// `GET /health` — liveness plus, critically, an HONEST statement of which chain surface is in use.
+///
+/// The reported `chainId` is read from the CHAIN CLIENT, never from `CHAIN_ID` config: a simulated
+/// backend used to inherit the configured `135` and pair it with `canSign:true`, so a simulated stack
+/// was indistinguishable from live ROAX in the one place an operator looks. Now:
+///   - `backend`   — "live" | "simulated" (authoritative)
+///   - `simulated` — the same fact as a boolean, for UI badges
+///   - `chainId`   — the real id when live, `null` when simulated (never a network it is not on)
+///   - `canSign`   — true only when a REAL tx from a REAL key would land on a REAL chain
+///   - `signer` / `simulatedSigner` — a real signer address is never conflated with a stand-in
+///
+/// `demo` is retained but now means only what it actually controls: the ephemeral store and the
+/// relaxed API-token fallback. It is NOT a statement about the chain.
 async fn health(State(st): State<AppState>) -> Resp {
+    let simulated = st.chain.is_simulated();
+    let signer = st.chain.signer_address();
     ok(json!({
         "status": "ok",
         "service": "government-api",
-        "chainId": st.cfg.chain_id,
+        "backend": st.chain.backend().as_str(),
+        "simulated": simulated,
+        // Null rather than a real id when simulated — this backend is on no network at all.
+        "chainId": (!simulated).then(|| st.chain.chain_id()),
         "demo": st.cfg.demo,
-        "canSign": st.chain.can_sign(),
-        "signer": st.chain.signer_address(),
+        "canSign": st.chain.can_broadcast_real_tx(),
+        "signer": (!simulated).then(|| signer.clone()).flatten(),
+        // The MemChain stand-in address, surfaced under a name that cannot be mistaken for a real key.
+        "simulatedSigner": simulated.then(|| signer).flatten(),
         "issuers": {
             app::TRAVEL_CLEARANCE: st.cfg.issuer_addr_for(app::TRAVEL_CLEARANCE),
             app::EU_HEALTH_CERT: st.cfg.issuer_addr_for(app::EU_HEALTH_CERT),

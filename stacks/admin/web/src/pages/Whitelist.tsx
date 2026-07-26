@@ -516,12 +516,20 @@ function expand(apps: IssuerApplicationListItem[]): Entry[] {
   return [...map.values()].sort((x, y) => x.recordType.localeCompare(y.recordType));
 }
 
-/** One-line summary of a dispatch: how many capabilities executed vs proposed. */
+/** One-line summary of a dispatch: how many capabilities executed vs proposed.
+ *
+ *  When NOTHING executed, say so plainly. The old wording always attributed a proposal to
+ *  "(governance)", which reads as the intended Phase-2 handover even when the real cause is that this
+ *  stack booted a key holding no authority at all - in that case nothing lands on-chain and the row
+ *  still looked like a success. */
 function summarize(actions: GovernanceDisposition[]): string {
   const executed = actions.filter((a) => a.disposition === "executed").length;
   const proposed = actions.length - executed;
-  const parts: string[] = [];
-  if (executed) parts.push(`${executed} executed`);
-  if (proposed) parts.push(`${proposed} proposed (governance)`);
-  return parts.join(" · ") || "no capabilities";
+  if (!actions.length) return "no capabilities";
+  if (!executed) {
+    return `${proposed} proposed - NOTHING broadcast, on-chain state unchanged`;
+  }
+  const parts: string[] = [`${executed} executed`];
+  if (proposed) parts.push(`${proposed} proposed (awaiting the authority holder)`);
+  return parts.join(" · ");
 }

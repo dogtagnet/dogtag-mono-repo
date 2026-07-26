@@ -456,6 +456,9 @@ mod tests {
                 identification: "S1234567A".to_string(),
                 name: "Jane Tan".to_string(),
             },
+            // Empty is the right fixture here: this test asserts the trace index joins by ROOT and
+            // stays subject-less, so no identity attribute should be reachable from it either way.
+            identity_leaves: Vec::new(),
             pet_name: "Bella".to_string(),
             microchip: Default::default(),
             profile: Default::default(),
@@ -497,6 +500,7 @@ mod tests {
             session_id: "ps-err".to_string(),
             dog_tag_id: "43".to_string(),
             owner_identity: Default::default(),
+            identity_leaves: Vec::new(),
             pet_name: String::new(),
             microchip: Default::default(),
             profile: Default::default(),

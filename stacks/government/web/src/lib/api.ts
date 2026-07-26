@@ -54,10 +54,20 @@ export async function apiPatch(path: string, body: unknown) {
 
 export interface Health {
   status?: string;
-  chainId?: number;
+  /** "live" (real RPC node) or "simulated" (in-process MemChain — nothing is broadcast). */
+  backend?: "live" | "simulated";
+  /** Same fact as `backend`, for badge logic. */
+  simulated?: boolean;
+  /** The real EIP-155 id when live; `null` when simulated (the backend is on no network). */
+  chainId?: number | null;
+  /** Ephemeral store + relaxed API token. NOT a statement about the chain — see `backend`. */
   demo?: boolean;
+  /** True only when a real tx from a real key would land on a real chain. */
   canSign?: boolean;
+  /** The real signer address; `null` when simulated. */
   signer?: string | null;
+  /** The MemChain stand-in address; only set when simulated. */
+  simulatedSigner?: string | null;
   /**
    * Per-record-type `DogTagIssuer` clone (the credential's documentStore), or `null` when this
    * deployment has none configured for that type — issuance of it fails closed with 503. Absent

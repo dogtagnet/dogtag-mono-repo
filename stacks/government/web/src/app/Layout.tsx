@@ -29,17 +29,30 @@ function Brand() {
 
 /** Ambient "who am I operating as" strip pinned to the bottom of the sidebar — promotes the buried
  *  chain identity (issuer / chainId / signer / signing capability) into constant context. */
+/** Is the backend an in-process emulation? A simulated backend must never render as "ROAX · chainId
+ *  135". Reads `simulated`, falling back to `backend`, so the two health fields cannot disagree. */
+function isChainSimulated(health: Health | null): boolean {
+  return health?.simulated ?? health?.backend === "simulated";
+}
+
 function SidebarFooter({ health }: { health: Health | null }) {
-  const signer = health?.signer;
+  const simulated = isChainSimulated(health);
+  const signer = simulated ? health?.simulatedSigner : health?.signer;
   return (
     <div className="space-y-1 text-xs text-onSidebarMuted">
       <div className="font-medium text-onSidebar">
-        ROAX · chainId {health?.chainId ?? "?"}
+        {simulated ? "SIMULATED chain · not a real network" : `ROAX · chainId ${health?.chainId ?? "?"}`}
       </div>
       <div className="truncate" title={signer ?? undefined}>
-        signer {signer ? `${signer.slice(0, 10)}…` : "none"}
+        {simulated ? "stand-in signer" : "signer"} {signer ? `${signer.slice(0, 10)}…` : "none"}
       </div>
-      <div>{health?.canSign ? "can anchor on-chain" : "read-only (no signer)"}</div>
+      <div>
+        {simulated
+          ? "emulated only - nothing is broadcast"
+          : health?.canSign
+            ? "can anchor on-chain"
+            : "read-only (no signer)"}
+      </div>
     </div>
   );
 }
@@ -54,6 +67,7 @@ export function Layout({
   health: Health | null;
 }) {
   const location = useLocation();
+  const chainSimulated = isChainSimulated(health);
   const activeKey = NAV.filter((n) => location.pathname.startsWith(n.href)).sort(
     (a, b) => b.href.length - a.href.length,
   )[0]?.key;
@@ -73,9 +87,14 @@ export function Layout({
         <>
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold text-onSurface">{title}</h1>
-            <Badge variant={health?.demo ? "warning" : "success"}>
-              {health?.demo ? "DEMO" : "LIVE"}
+            {/* Two INDEPENDENT facts, deliberately two badges. The old single DEMO/LIVE badge was
+                driven by `demo` (an ephemeral-store flag) and so read "DEMO" on a stack that was on
+                the real chain, and could read "LIVE" on a simulated one. The chain badge is the one
+                that matters for trusting a verdict, so it leads. */}
+            <Badge variant={chainSimulated ? "danger" : "success"}>
+              {chainSimulated ? "SIMULATED CHAIN" : "LIVE CHAIN"}
             </Badge>
+            {health?.demo ? <Badge variant="neutral">DEMO DATA</Badge> : null}
           </div>
           <ThemeToggle />
         </>

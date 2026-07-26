@@ -84,14 +84,33 @@ async fn call_with_token(
     (status, v)
 }
 
+/// `/health` must be HONEST that this stack is on a simulated chain.
+///
+/// This test previously asserted `canSign == true` here, which encoded the bug: with `chain_id: 135`
+/// in config, a MemChain-backed stack reported `chainId:135, canSign:true` and was indistinguishable
+/// from live ROAX with a funded signer. The contract now is that a simulated backend says so.
 #[tokio::test]
-async fn health_reports_ready() {
+async fn health_reports_ready_and_declares_the_simulated_backend() {
     let (state, _) = demo_state();
     let (status, v) = call(&state, "GET", "/health", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["status"], "ok");
     assert_eq!(v["service"], "government-api");
-    assert_eq!(v["canSign"], true);
+
+    // The backend is named explicitly, and not as a real chain.
+    assert_eq!(v["backend"], "simulated");
+    assert_eq!(v["simulated"], true);
+    // chainId is null — NOT the configured 135 — because this backend is on no network.
+    assert!(
+        v["chainId"].is_null(),
+        "a simulated backend must not report a real chainId, got {}",
+        v["chainId"]
+    );
+    // No claim of real signing capability, and no real signer address.
+    assert_eq!(v["canSign"], false);
+    assert!(v["signer"].is_null(), "no real signer on a simulated chain");
+    // The stand-in address is still visible, under an unmistakable name.
+    assert!(v["simulatedSigner"].is_string());
 }
 
 #[tokio::test]

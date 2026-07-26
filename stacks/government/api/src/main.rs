@@ -1,8 +1,15 @@
 //! government-api server entrypoint. Binds the Axum router on port 44832 (config-overridable).
 //!
-//! Production wiring: `AlloyChain` (ROAX RPC) + `MongoStore` (built with `--features mongo`). Demo/
-//! local (`GOV_DEMO_MODE=1`) uses `MemChain` + `MemStore` so the full issue/verify flow runs with no
-//! node, no gas, and no Mongo.
+//! Two independent axes, deliberately NOT collapsed into one `demo` switch:
+//!
+//!   - CHAIN  — `GOV_CHAIN_BACKEND`: `live` (default, real ROAX RPC via `AlloyChain`) or `mem`
+//!     (explicit opt-in simulation via `MemChain`). The default is ALWAYS the real node, and `/health`
+//!     reports which one is in use, so a simulated stack can never pass for live.
+//!   - STORE  — `GOV_DEMO_MODE`/`DEMO_MODE` + `MONGO_URI`: ephemeral `MemStore` for demo/local,
+//!     `MongoStore` for production (built with `--features mongo`).
+//!
+//! Collapsing them is what produced the "simulated chain reporting `chainId:135`, `canSign:true`" bug:
+//! a demo stack wanted an ephemeral STORE and silently got a simulated CHAIN as well.
 
 use std::sync::Arc;
 
@@ -13,8 +20,14 @@ use government_api::store::{MemStore, Store};
 
 #[tokio::main]
 async fn main() {
+    // Default to info for this crate (mirrors admin-api). `from_default_env()` alone defaults to ERROR,
+    // which silently swallowed the startup lines that say WHICH chain backend is in use - the operator
+    // signal this service most needs to emit. RUST_LOG still overrides.
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "government_api=info,tower_http=info".into()),
+        )
         .init();
 
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
@@ -23,8 +36,8 @@ async fn main() {
     let port: u16 = env("PORT", "44832").parse().unwrap_or(44832);
     let rpc_url = env("ROAX_RPC", "https://devrpc.roax.net");
     let chain_id: u64 = env("CHAIN_ID", "135").parse().unwrap_or(135);
-    // Demo mode: MemChain + MemStore, relaxed. Also implied when neither a signer key nor MONGO_URI
-    // is configured AND GOV_DEMO_MODE is set. Production leaves GOV_DEMO_MODE unset.
+    // Demo mode: ephemeral MemStore + the well-known API-token fallback. It does NOT choose the chain
+    // backend (that is GOV_CHAIN_BACKEND) — see the module doc. Production leaves GOV_DEMO_MODE unset.
     let demo = truthy("GOV_DEMO_MODE") || truthy("VITE_DEMO_MODE") || truthy("DEMO_MODE");
 
     // Bearer token gating the record MUTATION endpoints (PATCH + revoke). Demo mode falls back to
@@ -68,8 +81,26 @@ async fn main() {
         api_token,
     };
 
-    // Chain client selection.
-    let chain: Arc<dyn ChainClient> = if demo {
+    // Chain client selection — DELIBERATELY INDEPENDENT OF `demo`.
+    //
+    // `demo` used to select MemChain, which meant a demo stack silently ran its verify/records surfaces
+    // on a simulated chain while `CHAIN_ID=135` was still reported. Simulation is now an EXPLICIT
+    // opt-in via `GOV_CHAIN_BACKEND=mem`; the default is always the real node, so nobody gets a
+    // simulated chain by accident. `demo` continues to govern the store and the API-token fallback.
+    let backend_pref = env("GOV_CHAIN_BACKEND", "live").trim().to_lowercase();
+    let use_mem = match backend_pref.as_str() {
+        "live" | "alloy" | "rpc" => false,
+        "mem" | "memory" | "simulated" | "sim" => true,
+        other => {
+            eprintln!(
+                "FATAL: GOV_CHAIN_BACKEND={other:?} is not recognised. Use \"live\" (real RPC node, \
+                 the default) or \"mem\" (in-process simulation; nothing is broadcast)."
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let chain: Arc<dyn ChainClient> = if use_mem {
         let mem = MemChain::new();
         // Pre-whitelist the demo signer for both record types so the verify path can demonstrate the
         // issuer-identity pillar end-to-end without an admin round-trip.
@@ -85,7 +116,11 @@ async fn main() {
                 );
             }
         }
-        tracing::info!("GOV_DEMO_MODE: using in-memory MemChain (no live node, no gas)");
+        tracing::warn!(
+            "GOV_CHAIN_BACKEND=mem — SIMULATED chain (in-process MemChain). No live node, no gas, \
+             NOTHING IS BROADCAST and nothing survives this process. /health reports \
+             backend=\"simulated\" with chainId=null so this is never mistaken for {chain_id}."
+        );
         Arc::new(mem)
     } else {
         let mut alloy = AlloyChain::new(rpc_url).with_chain_id(chain_id);
@@ -110,8 +145,15 @@ async fn main() {
         }
         if !alloy.can_sign() {
             tracing::warn!(
-                "no GOV_SIGNER_KEY configured — verify (read-only) works, but /issue cannot anchor \
-                 on-chain (build+persist only via dry_run)"
+                "no GOV_SIGNER_KEY configured — LIVE chain reads work, but /issue CANNOT anchor \
+                 on-chain and will only build+persist via dry_run. On-chain issuance needs a funded \
+                 GOV_SIGNER_KEY whitelisted for the record type (scripts/demo-provision-government.sh)."
+            );
+        } else {
+            tracing::info!(
+                "LIVE chain backend: {} (chainId {chain_id}), signer {}",
+                alloy.rpc_url,
+                alloy.signer_address().unwrap_or_default()
             );
         }
         Arc::new(alloy)
