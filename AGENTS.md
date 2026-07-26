@@ -159,8 +159,8 @@ The pet-owner HOLDER apps (iOS `apps/ios/DogTag`, Android `apps/android`) render
 
 ### Self-custody export UX (iOS, `apps/ios/DogTag`)
 Holder-side backup/migration rights: copy the phrase at creation, re-export it later, and export held credentials. Single account only (no HD multi-account/derivation switcher - deliberately scoped out).
-- **The embedded wallet now persists the 32-byte BIP-39 *entropy*** (`Wallet.swift`, Keychain account `dogtag_wallet_entropy`, SAME protection as the seed: `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, no `kSecAttrSynchronizable`, so never iCloud-synced). This is a **deliberate change to the prior "mnemonic never persisted" property**: BIP-39 seed to mnemonic is one-way, so without the entropy the 24 words are unrecoverable after genesis, and "export your recovery phrase later" is impossible. `Wallet.revealMnemonic()` re-derives the exact phrase via `Bip39.entropyToMnemonic`; it returns `nil` for wallets created before this change (seed-only), whose phrase is genuinely gone. The entropy is no more sensitive than the already-stored seed (both fully control the wallet). Callers gate `revealMnemonic()` behind a fresh `Biometric.authenticate` and never log/transmit it.
-- **`ProfileScreen.swift`** owns the wallet/Profile screen (a *separate* crew owns the rest of the app UI). At creation the recovery-phrase card has a **Copy phrase** action (auto-expiring pasteboard via `SecureClipboard.copySecret`, 90s TTL) + an "I've saved it" acknowledgment that hides it. A biometric-gated **Export account keys** button opens `ExportAccountSheet` (hard security warning + numbered 24-word grid + copy). Every displayed value is **tap-to-copy with a "Copied" flash** via the reusable `CopyRow` (wallet address, Consent Ax, keyHash, dog-tag ids; copies the FULL value, not the truncated preview). **Sharp edge:** the export sheet MUST be presented with `.sheet(item: $exportPayload)` (an `Identifiable` payload carrying the revealed secrets), NOT `.sheet(isPresented:)` reading sibling `@State` set in the same handler - SwiftUI evaluates that sibling state as still-nil on the first present, so the phrase/key silently render as "unavailable" even though `revealMnemonic()`/`revealPrivateKeyHex()` returned real values. Dismissing the `.sheet(item:)` nils the binding, which also releases the secrets from memory.
+- **The embedded wallet now persists the 32-byte BIP-39 *entropy*** (`Wallet.swift`, Keychain account `dogtag_wallet_entropy`, SAME protection as the seed: `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, no `kSecAttrSynchronizable`, so never iCloud-synced). This is a **deliberate change to the prior "mnemonic never persisted" property**: BIP-39 seed to mnemonic is one-way, so without the entropy the 24 words are unrecoverable after genesis, and "export your recovery phrase later" is impossible. `Wallet.revealMnemonic()` re-derives the exact phrase via `Bip39.entropyToMnemonic`; it returns `nil` for wallets created before this change (seed-only), whose phrase is genuinely gone. **A `nil` is AMBIGUOUS, though** - `revealMnemonic()` also returns `nil` on a Keychain READ failure - so only the presence-only `Wallet.hasExportablePhrase()` may diagnose a wallet as legacy; wiring the destructive remedy to the weaker `mnemonic == nil` test would offer to destroy a healthy, phrase-backed wallet (see "Legacy-wallet rescue + the Danger zone"). The entropy is no more sensitive than the already-stored seed (both fully control the wallet). Callers gate `revealMnemonic()` behind a fresh `Biometric.authenticate` and never log/transmit it.
+- **`ProfileScreen.swift`** owns the wallet/Profile screen (a *separate* crew owns the rest of the app UI). At creation the recovery-phrase card has a **Copy phrase** action (auto-expiring pasteboard via `SecureClipboard.copySecret`, 90s TTL) + an "I've saved it" acknowledgment that hides it. A biometric-gated **Export account keys** button opens `ExportAccountSheet` (hard security warning + numbered 24-word grid + copy). Every displayed value is **tap-to-copy with a "Copied" flash** via the reusable `CopyRow` (wallet address, Consent Ax, keyHash, dog-tag ids; copies the FULL value, not the truncated preview). **Sharp edge:** the export sheet MUST be presented with `.sheet(item:)` (Profile's single `$sheet` route binding, whose `.export` case carries the revealed secrets as an `Identifiable` payload), NOT `.sheet(isPresented:)` reading sibling `@State` set in the same handler - SwiftUI evaluates that sibling state as still-nil on the first present, so the phrase/key silently render as "unavailable" even though `revealMnemonic()`/`revealPrivateKeyHex()` returned real values. Dismissing the `.sheet(item:)` nils the binding, which also releases the secrets from memory.
 - **Document export** (`DocumentsScreen.swift` + `CredentialDetailScreen.swift`) uses the app's existing `WrappedDoc` JSON as the portable form, **no new format**. `ExportedDocument: Transferable` + native SwiftUI `ShareLink`/`SharePreview`; single credential = its `wrappedDocJson` verbatim, list export = a JSON array of the shown docs (respects the pet filter). No `UIActivityViewController` bridge added; `TravelReceiptView`'s existing redacted-share `ShareSheet` is left untouched. **Sharp edge:** use `FileRepresentation(exportedContentType: .json)` + `SentTransferredFile` (both iOS 16), which carry the filename via the written temp-file URL. Do NOT use `DataRepresentation(...).suggestedFileName {...}` - `suggestedFileName` is iOS 17+ and the deployment target is 16.0, so it fails the build.
 - **Raw secp256k1 private-key export is included** (captain-approved) alongside the phrase in the same biometric-gated `ExportAccountSheet`: `Wallet.revealPrivateKeyHex()` returns the 0x-hex 32-byte key, shown with its own hard warning and tap-to-copy (auto-expiring clipboard), never logged/transmitted. It matters BECAUSE the private key is NOT a subset of the phrase for migration: this wallet derives the secp key as the **raw BIP-32 master key** (`Bip39.seedToSecp256k1Priv` = HMAC-SHA512("Bitcoin seed", seed)[:32]), **not** `m/44'/60'/0'/0/0`, so the mnemonic imported into a standard EVM wallet yields a DIFFERENT address; only the raw private key reproduces the on-chain `userWallet` elsewhere. Available even for legacy seed-only wallets (needs only the seed, not the entropy).
 
@@ -1870,18 +1870,26 @@ clear it either.
   untouched: a reconstructable phrase still requires the real "I've saved it".
 - **The rescue has TWO entry points on purpose.** Besides the export sheet, the Danger zone leads with
   a callout whenever `Wallet.hasExportablePhrase()` is false — that is where someone who is stuck goes
-  looking. It is also the more robust route: the export-sheet hand-off works by swapping the
-  `.sheet(item:)` identity in place, which cannot be exercised in the Simulator (it needs a wallet,
-  which needs the biometric gate), whereas the callout uses the same row -> sheet path
-  `wallet_reset.yaml` covers. `hasExportablePhrase()` is a presence-only Keychain query (no
+  looking. It is also the VERIFIED route: the export-sheet hand-off cannot be exercised in the
+  Simulator (it needs a wallet, which needs the biometric gate), whereas the callout uses the same
+  row -> sheet path `wallet_reset.yaml` covers. Both routes hand off through Profile's single
+  `.sheet(item:)` route binding by nil-ing it and presenting on the NEXT runloop turn. Swapping the
+  item's identity in place was tried and reversed: it relies on SwiftUI honouring a dismiss and a
+  present coalesced into one update, which it drops, leaving the button looking dead.
+  `hasExportablePhrase()` is a presence-only Keychain query (no
   `kSecReturnData`), so a view can ask on every render without pulling the entropy into memory —
   `exists()` now does the same instead of loading the 64-byte seed to check for it.
 - **`Wallet.deleteKeys()` drops the seed BEFORE the entropy.** `exists()` keys off the seed, so if the
   entropy delete fails the app is already in first-run state. The reverse order could drop the entropy
   while leaving a live seed — manufacturing exactly the phrase-less wallet this exists to escape.
 - **`AppReset`** owns delete-wallet / dog-tags / records / reset-everything. `resetEverything()` is
-  ordered data-first, wallet-last: the data sweeps carry the unrecoverable material (the attribute
-  salts), so a failure there is still actionable while the seed survives.
+  ordered data-first, wallet-last AND short-circuits - `guard outcome.isComplete` skips the wallet
+  wipe entirely once any data sweep leaves something behind. Ordering alone would not achieve this:
+  the data sweeps carry the unrecoverable material (the attribute salts), so the seed must SURVIVE a
+  partial sweep, which is what keeps the failure actionable (export the keys, then retry). Its other
+  half is mandatory - the caller MUST report that the wallet was deliberately KEPT
+  (`DangerAction.partialNote`), or a partial reset reads as "some of it silently went missing" and
+  the stated remedy looks impossible.
 - **`LocalDataSweep` also removes `ProfileTreeStore.write`'s `.<name>.<token>.tmp`/`.bak` staging
   siblings.** They hold the same owner-secret material as the destination and a crash can leave one
   behind, so a sweep that took only the canonical file would leave the secret it promised to destroy
@@ -1891,9 +1899,10 @@ clear it either.
   whose seed *or* salts are gone can never prove consent again — not by re-import, not from a backup
   (D3: re-issue under a new `dogTagId`). Every confirmation states what dies AND what survives, and
   each demands its **own** typed phrase ("DELETE DOG TAGS", not a shared word a thumb already knows).
-- Coverage: `maestro/wallet_reset.yaml` (the typed gate, incl. near-miss and cross-action phrases) +
-  `SeedBackupGateTests`. The gate's far side is device-only — see "No biometric-gated flow is
-  verifiable on a simulator".
+- Coverage: `maestro/wallet_reset.yaml` (the typed gate, incl. near-miss and cross-action phrases),
+  `SeedBackupGateTests` (the gate + `Bip39`), and `LocalDataSweepTests` (staging-sibling sweep,
+  idempotence, partial-failure reporting). The gate's far side is device-only — see "No
+  biometric-gated flow is verifiable on a simulator".
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
