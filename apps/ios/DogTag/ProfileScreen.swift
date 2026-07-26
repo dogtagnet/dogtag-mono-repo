@@ -239,6 +239,7 @@ struct ProfileScreen: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("dangerRow-\(action.rawValue)")
     }
 
     // ---- actions -----------------------------------------------------------------------------------
@@ -705,6 +706,7 @@ private struct DestructiveConfirmationSheet: View {
     let onConfirmed: () -> Void
 
     @State private var typed = ""
+    @FocusState private var fieldFocused: Bool
 
     private var phraseMatches: Bool {
         typed.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == action.confirmPhrase
@@ -759,10 +761,19 @@ private struct DestructiveConfirmationSheet: View {
                         .foregroundColor(c.onBackground)
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
+                        // The keyboard covers the confirm and Cancel buttons below, so Return has to
+                        // get out of the way - otherwise typing the phrase leaves the user with no
+                        // visible way to act on it (or to back out).
+                        .focused($fieldFocused)
+                        .submitLabel(.done)
+                        .onSubmit { fieldFocused = false }
                         .padding(12)
                         .background(RoundedRectangle(cornerRadius: 10).fill(c.surface))
                         .overlay(RoundedRectangle(cornerRadius: 10)
                             .stroke(phraseMatches ? c.danger : c.outline, lineWidth: 1.5))
+                        // The sheet title, the danger-zone row and this button all carry the action's
+                        // name, so UI tests need identifiers to address the gate unambiguously.
+                        .accessibilityIdentifier("dangerConfirmField")
                 }
 
                 Button { onConfirmed() } label: {
@@ -775,6 +786,7 @@ private struct DestructiveConfirmationSheet: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!phraseMatches)
+                .accessibilityIdentifier("dangerConfirmButton")
 
                 Button { dismiss() } label: {
                     Text("Cancel").font(.system(size: 14, weight: .semibold)).foregroundColor(c.accent)
@@ -786,6 +798,9 @@ private struct DestructiveConfirmationSheet: View {
             }
             .padding(20)
         }
+        // Dragging the sheet content also puts the keyboard away, so the confirm/Cancel buttons are
+        // reachable without hunting for the Return key.
+        .scrollDismissesKeyboard(.interactively)
         .background(c.background.ignoresSafeArea())
     }
 }

@@ -560,6 +560,11 @@ SAME native code path the privacy-preserving groomer export uses — UniFFI → 
 — with no camera, biometric, or network. It asserts the Verify tab's `mobile root == server root:
 PASS` (import/issuance trust core) and the Profile screen's `ZK-SELFTEST: PASS`.
 
+A second flow, `apps/ios/maestro/wallet_reset.yaml`, covers Profile's **Danger zone** typed-confirmation
+gate (near-miss and cross-action phrases must both leave the destructive button inert). It stops at the
+biometric gate by necessity — see "No biometric-gated flow is verifiable on a simulator" under
+"Sharp edges / gotchas (iOS)".
+
 ### The iOS ZK self-test
 
 `apps/ios/DogTag/ZkSelfTestScreen.swift` (`ZkSelfTestCard`) is the Swift port of Android
@@ -641,6 +646,20 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
   vendor the consent pair from `circuits/build/` (step 1) or the e2e fails to prove. Validate the
   graph/zkey pair on the host with `make test-consent-parity` (wraps `cargo test -p
   dogtag-standard-rs --features prover on_device_consent_proof_verifies_and_pub_matches`).
+- **No biometric-gated flow is verifiable on a simulator (iOS 26 runtimes).**
+  `Biometric.authenticate` (`Wallet.swift`) is written to fall through to success when
+  `LAContext.canEvaluatePolicy(.deviceOwnerAuthentication)` is false — "e.g. headless sim", per its
+  comment. That is **no longer true**: on iOS 26 sims `canEvaluatePolicy` returns **true** with no
+  passcode enrolled, so `evaluatePolicy` shows an "Enter iPhone Passcode" sheet that cannot be
+  satisfied headlessly. Everything behind the gate — create wallet, export account keys, replace
+  wallet, every Danger-zone delete — therefore stops dead in the Simulator. Verified dead ends, do
+  not re-walk them: a brand-new `simctl create` sim behaves the same (it is the runtime, not leftover
+  device state); `notifyutil -s com.apple.BiometricKit_Sim.enrollmentChanged 1` does not persist
+  (reads back `0`, even set+post in one process); Settings' Passcode pane renders **blank** on this
+  runtime so a known passcode cannot be set from the UI; and driving Simulator.app's
+  *Features → Face ID* menu needs an interactive Accessibility grant a headless agent cannot give.
+  Consequence: gated flows are **device-only** verification (real Face ID), and Maestro flows must
+  stop at the gate — which is what `maestro/wallet_reset.yaml` does.
 
 ### CI (iOS)
 
@@ -974,7 +993,9 @@ easy to trust by mistake.)
 
 There **is** now an XCTest target. It is deliberately **host-less and FFI-free**: it lists the
 self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift,
-DogTag/PublicSignalIndex.swift, DogTag/ZkeyAsset.swift]` in `project.yml` - keep this list in step with
+DogTag/PublicSignalIndex.swift, DogTag/ZkeyAsset.swift, DogTag/AnchorResolver.swift,
+DogTag/LocalDataSweep.swift, DogTag/Wallet.swift` + Wallet's closure
+`Secp256k1`/`BigUInt`/`Keccak256`/`Wordlist`]` in `project.yml` - keep this list in step with
 that file) rather than
 using `@testable import DogTag`, because the app module links
 `DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core. That
@@ -986,7 +1007,21 @@ cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
 ```
 
 Adding a source here that transitively imports the FFI will break that property — extract the pure
-logic instead. `QrPayloadTests.swift` mirrors `QrPayloadTest.kt` case-for-case; keep them in step, as
+logic instead.
+
+**Host-less also means NO Keychain.** A bundle with no host application has no
+keychain-access-group entitlement, so every `SecItemAdd`/`SecItemDelete` in it returns
+`errSecMissingEntitlement (-34018)` no matter how correct the logic is. `Wallet.swift` compiles into
+this target (its closure — `Secp256k1` → `BigUInt`/`Keccak256`, `Bip39` → `Wordlist` — is
+Foundation/CryptoKit only), but only its Keychain-free surface is testable there: `SeedBackupGateTests`
+covers the `SeedBackup` gate (`UserDefaults` + CryptoKit) and `Bip39` derivation against the published
+BIP-39 vector. `Wallet.create/deleteKeys/replace` are verified in the running app instead. Do **not**
+give this target a host app to get around it — that trades the plain-checkout property above for
+coverage. Note the published all-zero-entropy BIP-39 seed vector
+(`bda85446c684…`) is for passphrase **`"TREZOR"`**, not the empty passphrase `Wallet` actually uses
+(`408b285c1238…`); pairing the wrong one looks like an implementation bug and is not.
+
+`QrPayloadTests.swift` mirrors `QrPayloadTest.kt` case-for-case; keep them in step, as
 their whole point is that the two platforms cannot silently diverge on what a QR means.
 `ZkeyAssetTests.swift` likewise mirrors the Android `ZkeyAssetTest.kt` (and the Rust
 `artifact.rs` tests), pinning the version-keyed resolver's contract (the consent set is the sole
@@ -1814,6 +1849,43 @@ never reach an issuer record anyway, so the old<->new association stays device-l
 The owner-hidden custodial route is the end-state, and the cutover is complete: the device call site
 landed (mobile PR #71) and the owner-revealing wallet-mint route was deleted (backend PR #72) - it
 must never be rebuilt as a default, opt-in, or fallback.
+
+### Legacy-wallet rescue + the Danger zone (iOS Profile)
+
+A wallet stored **before the BIP-39 entropy was persisted** has a live seed but no reconstructable
+phrase (`Wallet.revealMnemonic()` → `nil`). That state used to be a **permanent dead end**, and the
+shape of it is worth remembering because every piece looked correct on its own:
+`ProfileTreeStore.buildAndPersist` gates issuance on `SeedBackup.isConfirmed`; the only thing that can
+set that flag is the "I've saved it" button; and that button renders only inside
+`if let m = mnemonic`. No mnemonic → no button → no confirmation → **no dog tag, ever**. There was no
+reset path anywhere in the app, and because both Keychain items are
+`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, they **survive app deletion** — so reinstalling did not
+clear it either.
+
+- **The gate is not the bug; do not loosen it.** Letting a user confirm they backed up a phrase the
+  app cannot show them would be a lie that costs them a tag. The resolution is
+  `Wallet.replace()` — destroy the Keychain seed + entropy and the stale confirmation, then run
+  genesis — surfaced as "Replace wallet…" in the export sheet's no-phrase branch, deliberately placed
+  **below** the private-key export, since that key is the only thing that survives. Normal wallets are
+  untouched: a reconstructable phrase still requires the real "I've saved it".
+- **`Wallet.deleteKeys()` drops the seed BEFORE the entropy.** `exists()` keys off the seed, so if the
+  entropy delete fails the app is already in first-run state. The reverse order could drop the entropy
+  while leaving a live seed — manufacturing exactly the phrase-less wallet this exists to escape.
+- **`AppReset`** owns delete-wallet / dog-tags / records / reset-everything. `resetEverything()` is
+  ordered data-first, wallet-last: the data sweeps carry the unrecoverable material (the attribute
+  salts), so a failure there is still actionable while the seed survives.
+- **`LocalDataSweep` also removes `ProfileTreeStore.write`'s `.<name>.<token>.tmp`/`.bak` staging
+  siblings.** They hold the same owner-secret material as the destination and a crash can leave one
+  behind, so a sweep that took only the canonical file would leave the secret it promised to destroy
+  readable on disk. Partial sweeps are reported as partial — never as success.
+- **The warning contract is load-bearing, not boilerplate.** Nothing on-chain is deleted, but `R` is
+  write-once and `proveConsent` re-derives the owner-secret from the seed on every proof, so a tag
+  whose seed *or* salts are gone can never prove consent again — not by re-import, not from a backup
+  (D3: re-issue under a new `dogTagId`). Every confirmation states what dies AND what survives, and
+  each demands its **own** typed phrase ("DELETE DOG TAGS", not a shared word a thumb already knows).
+- Coverage: `maestro/wallet_reset.yaml` (the typed gate, incl. near-miss and cross-action phrases) +
+  `SeedBackupGateTests`. The gate's far side is device-only — see "No biometric-gated flow is
+  verifiable on a simulator".
 
 ### Known-uncovered surfaces (deliberate, not oversights)
 
