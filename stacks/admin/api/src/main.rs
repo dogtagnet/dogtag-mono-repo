@@ -70,14 +70,10 @@ async fn main() {
         // Declared propose-for-external-signing. `ALLOW_UNAUTHORIZED_ADMIN_SIGNER` is the same
         // declaration scripts/demo-up.sh already documents as the escape hatch for this deployment
         // shape, so it is accepted as an alias rather than becoming a second, drifting concept.
-        propose_only: ["ADMIN_PROPOSE_ONLY", "ALLOW_UNAUTHORIZED_ADMIN_SIGNER"]
-            .iter()
-            .any(|k| {
-                matches!(
-                    std::env::var(k).unwrap_or_default().trim().to_ascii_lowercase().as_str(),
-                    "1" | "true"
-                )
-            }),
+        propose_only: admin_api::startup::env_flag(&[
+            "ADMIN_PROPOSE_ONLY",
+            "ALLOW_UNAUTHORIZED_ADMIN_SIGNER",
+        ]),
     };
 
     // Fail-closed (audit H2): refuse to boot in production with an unset/dev-default ADMIN_PASSWORD or
@@ -321,10 +317,7 @@ async fn authority_preflight(chain: &AlloyChain, cfg: &Config) {
     let msg = authority_preflight_message(hosted.as_deref(), &verdict);
     if verdict.is_unauthorized() {
         tracing::error!("{msg}");
-        if matches!(
-            std::env::var("ADMIN_REQUIRE_AUTHORITY").unwrap_or_default().as_str(),
-            "1" | "true"
-        ) {
+        if admin_api::startup::env_flag(&["ADMIN_REQUIRE_AUTHORITY"]) {
             eprintln!("FATAL: ADMIN_REQUIRE_AUTHORITY=1 and the hosted signer holds no control-plane authority.");
             std::process::exit(1);
         }

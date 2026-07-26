@@ -50,8 +50,117 @@ fn demo_state() -> (AppState, MemChain) {
     (state, chain)
 }
 
+/// A backend that is a real node as far as every honesty surface is concerned, but emulates the chain
+/// underneath. It exists because "live behaviour is COMPLETELY unchanged" is the load-bearing half of
+/// the simulated-provenance contract, and a real `AlloyChain` cannot be exercised without a node -
+/// `ChainBackend::Live` is the only input that drives the suppression, so overriding just that (plus
+/// the real EIP-155 id an `AlloyChain` would report) pins the live path hermetically.
+#[derive(Clone)]
+struct LiveLikeChain(MemChain);
+
+#[async_trait::async_trait]
+impl ChainClient for LiveLikeChain {
+    fn chain_id(&self) -> u64 {
+        government_api::chain::ROAX_CHAIN_ID
+    }
+    fn backend(&self) -> government_api::chain::ChainBackend {
+        government_api::chain::ChainBackend::Live
+    }
+    fn can_sign(&self) -> bool {
+        self.0.can_sign()
+    }
+    fn signer_address(&self) -> Option<String> {
+        self.0.signer_address()
+    }
+    async fn is_valid(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+    ) -> Result<bool, government_api::chain::ChainError> {
+        self.0.is_valid(issuer_addr, root).await
+    }
+    async fn issued_at(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+    ) -> Result<alloy::primitives::U256, government_api::chain::ChainError> {
+        self.0.issued_at(issuer_addr, root).await
+    }
+    async fn is_whitelisted_for(
+        &self,
+        registry_addr: &str,
+        record_type: &str,
+        signer: &str,
+    ) -> Result<bool, government_api::chain::ChainError> {
+        self.0
+            .is_whitelisted_for(registry_addr, record_type, signer)
+            .await
+    }
+    async fn issue(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+    ) -> Result<government_api::chain::SentTx, government_api::chain::ChainError> {
+        self.0.issue(issuer_addr, root).await
+    }
+    async fn revoke(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+    ) -> Result<government_api::chain::SentTx, government_api::chain::ChainError> {
+        self.0.revoke(issuer_addr, root).await
+    }
+}
+
+/// `demo_state()` with the chain client swapped for one that reports itself LIVE.
+fn live_like_state() -> (AppState, MemChain) {
+    let (state, chain) = demo_state();
+    let live = AppState {
+        chain: Arc::new(LiveLikeChain(chain.clone())),
+        ..state
+    };
+    (live, chain)
+}
+
 async fn call(state: &AppState, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
     call_with_token(state, method, uri, body, None).await
+}
+
+/// GET a surface that renders HTML rather than JSON (the public `/r/:receiptId` receipt page).
+async fn call_html(state: &AppState, uri: &str) -> (StatusCode, String) {
+    let req = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    let resp = government_api::router(state.clone())
+        .oneshot(req)
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// Issue an anchored TRAVEL_CLEARANCE and return its public receipt id.
+async fn issue_receipt(state: &AppState, dog_tag_id: &str) -> String {
+    let (status, issued) = call_auth(
+        state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({
+            "record_type": TRAVEL_CLEARANCE,
+            "dog_tag_id": dog_tag_id,
+            "fields": { "animalName": "Rex" }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    assert_eq!(issued["anchored"], true, "issue must anchor: {issued}");
+    issued["receiptId"]
+        .as_str()
+        .expect("receiptId minted")
+        .to_string()
 }
 
 /// Same as `call` but presents the government operator bearer (the issue/mutation gate).
@@ -218,6 +327,13 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
     let root = issued["root"].as_str().unwrap().to_string();
 
     // Envelope carries the block, with the routing key + the issuer's own signer as the claim.
+    //
+    // `protocol.chainId` still carries the CONFIGURED id even on this simulated backend: it is a
+    // non-optional `u64` in the shared standard crate (mirrored in the TS SDK and read by vet/admin/
+    // mobile), so it has no null representation and cannot say "no real network" without inventing a
+    // sentinel across every consumer. The honest, simulation-aware value lives on the persisted
+    // column asserted below - and on the two PUBLIC receipt surfaces, which are what an outside party
+    // reads (see `simulated_issuance_never_claims_a_real_chain_on_the_public_surfaces`).
     let block = &issued["wrappedDoc"]["protocol"];
     assert_eq!(block["chainId"], 135);
     assert_eq!(block["version"], "dogtag-levelb/1");
@@ -238,7 +354,12 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
         .get_credential(&root)
         .await
         .expect("credential persisted");
-    assert_eq!(cred.chain_id, Some(135));
+    // NOT Some(135): the column is sourced from the CHAIN CLIENT, not from `Config::chain_id`, so a
+    // simulated backend records "anchored on no real network" instead of inheriting the configured id.
+    assert_eq!(
+        cred.chain_id, None,
+        "a simulated backend must not stamp a real chain id on the credential it issued"
+    );
     assert_eq!(cred.protocol_version.as_deref(), Some("dogtag-levelb/1"));
     assert_eq!(
         cred.verification_registry.as_deref(),
@@ -250,6 +371,93 @@ async fn issue_stamps_m7_provenance_block_and_mirror_columns() {
     );
     // issuer_addr (== issuerClone) is unchanged from before M7.
     assert_eq!(cred.issuer_addr, ISSUER_ADDR);
+}
+
+/// A SIMULATED backend must not pass for ROAX on the two PUBLIC, unauthenticated receipt surfaces.
+///
+/// These are the artifacts an OUTSIDE party trusts, so they are the worst place to inherit a
+/// configured `chainId` and hand out `explorer.roax.net` links to txs that were never broadcast -
+/// exactly the dishonesty `/health` was fixed for. The stored record keeps its links (the operator's
+/// own audit trail is untouched); the suppression is on the public read.
+#[tokio::test]
+async fn simulated_issuance_never_claims_a_real_chain_on_the_public_surfaces() {
+    let (state, _) = demo_state();
+    let receipt_id = issue_receipt(&state, "11").await;
+
+    // 1) public JSON status: no chain id, no explorer links, and it SAYS it is simulated rather than
+    //    leaving a consumer to infer it from missing fields.
+    let (status, st_json) = call(
+        &state,
+        "GET",
+        &format!("/v1/receipts/{receipt_id}/status"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "public status: {st_json}");
+    assert!(st_json["chainId"].is_null(), "got {}", st_json["chainId"]);
+    assert_eq!(st_json["simulated"], true);
+    assert!(
+        st_json["explorerUrl"].is_null() && st_json["revokeExplorerUrl"].is_null(),
+        "a simulated tx must not be advertised on a real block explorer: {st_json}"
+    );
+    // The verdict itself still works - honesty about the chain must not break the status read.
+    assert_eq!(st_json["effectiveStatus"], "VALID");
+
+    // 2) public HTML page: no ROAX claim, no explorer.roax.net anchor, and an explicit marker.
+    let (status, html) = call_html(&state, &format!("/r/{receipt_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !html.contains("explorer.roax.net"),
+        "public receipt page linked a block explorer for a tx that was never broadcast:\n{html}"
+    );
+    assert!(
+        !html.contains("ROAX chainId"),
+        "public receipt page claimed ROAX on a simulated backend:\n{html}"
+    );
+    assert!(
+        html.contains("SIMULATED backend"),
+        "the page must SAY why the provenance block is absent, not silently drop it:\n{html}"
+    );
+    // Still a working receipt page, not an error surface.
+    assert!(html.contains(&receipt_id) && html.contains("VALID"));
+}
+
+/// The mirror image: on a LIVE backend every one of those surfaces is byte-for-byte what it was -
+/// the real chain id, the real `explorer.roax.net` links, the "Anchored on ROAX chainId" row.
+///
+/// `LiveLikeChain` is the emulation reporting `ChainBackend::Live`, which is the ONLY difference that
+/// drives the suppression, so this pins the live path hermetically (a real `AlloyChain` would need a node).
+#[tokio::test]
+async fn live_issuance_keeps_the_real_chain_id_and_explorer_links() {
+    let (state, _) = live_like_state();
+    let receipt_id = issue_receipt(&state, "12").await;
+
+    let (_, st_json) = call(
+        &state,
+        "GET",
+        &format!("/v1/receipts/{receipt_id}/status"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(st_json["chainId"], 135);
+    assert_eq!(st_json["simulated"], false);
+    assert!(
+        st_json["explorerUrl"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("https://explorer.roax.net/tx/0x"),
+        "live explorer link unchanged: {st_json}"
+    );
+
+    let (status, html) = call_html(&state, &format!("/r/{receipt_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("ROAX chainId 135"), "{html}");
+    assert!(html.contains("https://explorer.roax.net/tx/0x"), "{html}");
+    assert!(!html.contains("SIMULATED backend"), "{html}");
+
+    // The queryable provenance column carries the real id (it is `None` only when simulated).
+    let creds = state.store.list_credentials().await;
+    assert_eq!(creds[0].chain_id, Some(135));
 }
 
 #[tokio::test]

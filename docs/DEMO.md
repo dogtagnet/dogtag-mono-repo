@@ -206,10 +206,18 @@ Backend issues fixed while bringing the system up live on ROAX - worth knowing:
   signer-1 `0x8E27…F4A2` since Phase-2; the old deployer EOA `0x119F…` no longer has governance/admin
   authority, though it does still hold a residual legacy issuer capability - `ISSUER_ROLE` +
   record-type whitelists from the pre-unification era - so it is **not a neutral key**) to broadcast
-  `whitelistFor`. Wired with a key that lacks `WHITELIST_ADMIN`, Approve broadcasts nothing and only
-  returns unsigned calldata - so `demo-up.sh` now refuses to boot on such a key unless you declare
-  `ADMIN_PROPOSE_ONLY=1` (out-of-band signing), and a grant that broadcast nothing says so in its
-  response instead of reading as success ([LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md) §2).
+  `whitelistFor`.
+  Wired with a key that lacks `WHITELIST_ADMIN`, the two failure shapes differ and it is worth knowing
+  which one you are looking at.
+  The issuer-application **Approve** button (`POST /v1/issuer-applications/:id/approve`) calls
+  `whitelistFor` **directly**, not through the `GovernanceAction` dispatcher, so it BROADCASTS a
+  reverting tx; `sign_and_send` checks the receipt status, so the portal surfaces a **502**, not a
+  proposal - no unsigned calldata is returned on that path.
+  The tri-state `outcome`/`warning` that tells a designed proposal apart from a wrong-key one covers
+  the standalone whitelist console (`POST /v1/admin/whitelist/{grant,revoke}`), which does route through
+  the dispatcher and comes back `disposition:"proposed"` rather than broadcasting.
+  Either way `demo-up.sh` now refuses to boot on such a key unless you declare `ADMIN_PROPOSE_ONLY=1`
+  (out-of-band signing) ([LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md) §2).
   (The dog-tag `mintCustodial` is broadcast by the **vet** signer, which must hold
   `DogTagSBTConsent.ISSUER_ROLE`.)
 - **`sign_and_send` waits for the receipt** before reporting success (so issue/verify reflect the real

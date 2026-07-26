@@ -12,7 +12,7 @@
 # run scripts/demo-bootstrap.sh <thatSigner>, and click Issue -> Create QR. See docs/DEMO.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"; mkdir -p .demo; : > .demo/pids
+cd "$ROOT"; mkdir -p .demo
 if [ -f "$ROOT/contracts/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -94,8 +94,17 @@ esac
 # disposition:"proposed" with unsigned calldata and nothing landed on-chain. Fail here instead.
 WL_ADMIN_ROLE="$(cast keccak "WHITELIST_ADMIN")"
 HAS_WL="$(cast call "$IR" 'hasRole(bytes32,address)(bool)' "$WL_ADMIN_ROLE" "$ADMIN_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
-if [ "$HAS_WL" != "true" ]; then
-  MSG="admin signer $ADMIN_ADDR does NOT hold WHITELIST_ADMIN on IssuerRegistry $IR (hasRole -> ${HAS_WL:-unreadable}).
+if [ -z "$HAS_WL" ]; then
+  # UNREADABLE is not the same answer as `false`, and must never be reported as one: the read itself
+  # failed (RPC hiccup, wrong/absent contract at $IR), so we know nothing about the signer. admin-api's
+  # own authority_preflight resolves this case to Unknown and never refuses to boot on it - this script
+  # must not be stricter than the backend on the identical question, and must not accuse a correct key.
+  echo "  WARNING: could not read hasRole(WHITELIST_ADMIN, $ADMIN_ADDR) on IssuerRegistry $IR." >&2
+  echo "           The signer's authority is UNRESOLVED - this is not evidence it is the wrong key." >&2
+  echo "           Check $IR is an IssuerRegistry on this chain and that $RPC is healthy; if the key" >&2
+  echo "           really lacks WHITELIST_ADMIN, portal grants will come back disposition:\"proposed\"." >&2
+elif [ "$HAS_WL" != "true" ]; then
+  MSG="admin signer $ADMIN_ADDR does NOT hold WHITELIST_ADMIN on IssuerRegistry $IR (hasRole -> $HAS_WL).
   Every whitelist grant from the portal would come back disposition:\"proposed\" with unsigned calldata
   and NOTHING would land on-chain, while the stack looked healthy.
   Fix: set GOVERNANCE_PRIVATE_KEY in contracts/.env to the key that holds WHITELIST_ADMIN.
@@ -167,6 +176,11 @@ else
   echo "  government            GOV_CHAIN_BACKEND=$GOV_CHAIN_BACKEND -> SIMULATED chain (nothing broadcast)."
 fi
 echo
+
+# Truncate the PID list only once every preflight refusal is behind us. Doing it at the top meant a
+# re-run against an ALREADY-RUNNING stack wiped the record scripts/demo-down.sh kills by, and then
+# refused to boot - orphaning the running services with nothing left pointing at them.
+: > .demo/pids
 
 echo "Building backend binaries (release for speed)…"
 cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api

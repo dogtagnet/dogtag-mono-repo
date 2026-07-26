@@ -40,6 +40,27 @@ ledger_addr(){
 }
 lower(){ echo "$1" | tr 'A-Z' 'a-z'; }
 
+# True when the non-negative integer $1 is strictly less than $2. Both operands are normalised through
+# `cast --to-dec` first (correct on 0x-hex, a no-op on decimal), then compared by DIGIT COUNT and only
+# then lexicographically. That last part is the point: `[ -lt ]` is 64-bit shell arithmetic and aborts
+# with "integer expression expected" on anything above 2^63-1 wei (~9.22 ether), so a wei comparison
+# cannot use it. Any non-numeric operand is fatal rather than silently false.
+dec_lt(){
+  local a b
+  a="$(cast --to-dec "$1")" || die "cannot normalise '$1' to a decimal integer."
+  b="$(cast --to-dec "$2")" || die "cannot normalise '$2' to a decimal integer."
+  a="${a//[[:space:]]/}"; b="${b//[[:space:]]/}"
+  case "${a}${b}" in ''|*[!0-9]*) die "dec_lt: non-numeric operand ('$1' -> '$a', '$2' -> '$b')." ;; esac
+  # strip leading zeros so digit COUNT is a meaningful magnitude test ("0018" vs "25").
+  while [ "${#a}" -gt 1 ] && [ "${a:0:1}" = "0" ]; do a="${a:1}"; done
+  while [ "${#b}" -gt 1 ] && [ "${b:0:1}" = "0" ]; do b="${b:1}"; done
+  if [ "${#a}" -ne "${#b}" ]; then
+    [ "${#a}" -lt "${#b}" ]
+  else
+    [[ "$a" < "$b" ]]
+  fi
+}
+
 # Append or replace a KEY=value line in contracts/.env, keeping the file at mode 600.
 upsert_env(){
   local key="$1" val="$2"
@@ -100,8 +121,9 @@ fi
 # ---------------------------------------------------------------------------------------------
 GOV_BAL="$(cast balance "$GOV_ADDR" --rpc-url "$RPC")"
 WANT_WEI="$(cast to-wei "$GOV_FUND" ether)"
-# Integer compare via cast so we never rely on shell arithmetic for 256-bit values.
-if [ "$(cast --to-dec "$GOV_BAL")" -lt "$(cast --to-dec "$WANT_WEI")" ] 2>/dev/null; then
+# Wei values routinely exceed what `[ -lt ]` can hold, so the compare goes through dec_lt (above),
+# which is exact at 256 bits and DIES on a malformed operand instead of quietly reading as "funded".
+if dec_lt "$GOV_BAL" "$WANT_WEI"; then
   FUND_PK="${DEPLOYER_PRIVATE_KEY:-$GOVERNANCE_PRIVATE_KEY}"
   FUND_ADDR="$(cast wallet address --private-key "$FUND_PK")"
   echo "  funding         $FUND_ADDR -> $GOV_ADDR  ($GOV_FUND)"

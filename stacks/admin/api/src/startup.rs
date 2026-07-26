@@ -30,6 +30,28 @@ pub fn is_demo_mode() -> bool {
     })
 }
 
+/// True when any of `keys` is set to `1`/`true` (case-insensitive, surrounding whitespace ignored).
+///
+/// The ONE reader for the control-plane boolean env flags (`ADMIN_PROPOSE_ONLY` /
+/// `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`, `ADMIN_REQUIRE_AUTHORITY`). Factored out because the two were
+/// parsed differently: the fail-closed `ADMIN_REQUIRE_AUTHORITY` gate matched the raw string, so
+/// `TRUE` or a stray-space ` 1` silently left the refusal DISARMED - the same class of silent
+/// degradation the surrounding preflight exists to remove.
+///
+/// Deliberately NOT [`is_demo_mode`]'s looser "non-empty and not 0/false" rule: `scripts/demo-up.sh`
+/// mirrors this exact `1`/`true` set by hand so the script and the backend agree on whether a
+/// deployment declared propose-only. Widening it here desyncs the two.
+pub fn env_flag(keys: &[&str]) -> bool {
+    keys.iter()
+        .any(|k| flag_is_truthy(&std::env::var(k).unwrap_or_default()))
+}
+
+/// The parsing half of [`env_flag`], split out so it is unit-testable without mutating process env
+/// (which is shared across parallel tests and makes such a test flaky rather than a real guard).
+pub fn flag_is_truthy(raw: &str) -> bool {
+    matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true")
+}
+
 /// Fail-closed secret validation. In demo mode this is always `Ok`. In production every secret must be
 /// non-empty and not equal to its dev default; otherwise returns a descriptive error naming every
 /// offending secret so the operator can fix them all in one go.
@@ -171,6 +193,19 @@ mod tests {
             target: "0xreg",
             capability: "cap",
             held,
+        }
+    }
+
+    /// A control-plane flag must not be disarmed by a shape an operator would reasonably write.
+    /// `ADMIN_REQUIRE_AUTHORITY` used to be matched raw, so `TRUE` or a trailing-newline `1` (what a
+    /// shell here-doc or a copied `.env` line produces) silently left the fail-closed refusal OFF.
+    #[test]
+    fn control_plane_flags_are_trimmed_and_case_insensitive() {
+        for on in ["1", "true", "TRUE", "True", " 1", "1\n", " true \t"] {
+            assert!(flag_is_truthy(on), "{on:?} must arm the flag");
+        }
+        for off in ["", " ", "0", "false", "FALSE", "yes", "on", "2", "1 1", "truthy"] {
+            assert!(!flag_is_truthy(off), "{off:?} must NOT arm the flag");
         }
     }
 
