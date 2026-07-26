@@ -1,0 +1,99 @@
+# DogTag iOS — the Danger zone's typed-confirmation gate.
+#
+# These actions destroy material no backup can restore: the wallet seed, and the profile-tree salts
+# that are the only way to rebuild a tag's `R`. `profileRoot` is write-once on-chain, so a tag whose
+# seed or salts are gone can never prove consent again. The gate in front of them is therefore
+# load-bearing, and this flow is what keeps it honest — it asserts that a near-miss phrase, and
+# another action's phrase, both leave the destructive button inert.
+#
+# Deliberately biometric-free. Every action's `perform` sits behind `Biometric.authenticate`, and on
+# iOS 26 simulator runtimes `LAContext.canEvaluatePolicy(.deviceOwnerAuthentication)` returns true
+# with no passcode enrolled, so the prompt appears and cannot be satisfied headlessly (the
+# fall-through comment in `Wallet.swift` predates that). This flow therefore covers everything up to
+# the gate; the wallet lifecycle behind it (create / replace / the deletes) is verified on a real
+# device, where Face ID works. See apps/ios/AGENTS.md.
+#
+# Prerequisites: same as zk_e2e.yaml (DogTagFFI.xcframework + vendored zkey/graph, DEBUG build).
+#
+# Run:  maestro test apps/ios/maestro/wallet_reset.yaml
+appId: io.liberalize.dogtag
+---
+- launchApp:
+    clearState: true
+- tapOn:
+    text: "Profile"
+
+# --- first run: no wallet, so no wallet-specific destructive rows ---
+- scrollUntilVisible:
+    element:
+      text: "Danger zone"
+    direction: DOWN
+- assertVisible: "Delete dog-tags"
+- assertVisible: "Delete records"
+- assertVisible: "Reset everything"
+# Nothing to delete or export yet, so neither is offered.
+- assertNotVisible: "Delete wallet"
+- assertNotVisible: "Export account keys"
+
+# --- the warning states what dies AND what survives ---
+- scrollUntilVisible:
+    element:
+      id: "dangerRow-deleteDogTags"
+    direction: DOWN
+    centerElement: true
+- tapOn:
+    id: "dangerRow-deleteDogTags"
+- assertVisible: "This cannot be undone"
+- assertVisible: "Type DELETE DOG TAGS to confirm"
+- assertVisible:
+    text: ".*R is written ONCE.*"
+- assertVisible:
+    text: ".*not derivable from any recovery phrase.*"
+- assertVisible: "What stays"
+- assertVisible:
+    text: ".*Nothing on-chain is deleted.*"
+
+# --- one character short must leave the button inert ---
+- tapOn:
+    id: "dangerConfirmField"
+- inputText: "DELETE DOG TAG"
+# Return dismisses the keyboard, which otherwise covers the confirm and Cancel buttons.
+- pressKey: Enter
+- tapOn:
+    id: "dangerConfirmButton"
+- assertVisible: "Type DELETE DOG TAGS to confirm"
+- assertVisible: "This cannot be undone"
+- tapOn: "Cancel"
+- assertVisible: "Danger zone"
+
+# --- each action demands its OWN phrase, so muscle memory cannot confirm the wrong sheet ---
+- scrollUntilVisible:
+    element:
+      id: "dangerRow-deleteRecords"
+    direction: DOWN
+    centerElement: true
+- tapOn:
+    id: "dangerRow-deleteRecords"
+- assertVisible: "Type DELETE RECORDS to confirm"
+# Records are re-obtainable in a way owner-secrets are not; the copy has to say so.
+- assertVisible:
+    text: ".*scan a fresh vet QR to import them again.*"
+- tapOn:
+    id: "dangerConfirmField"
+- inputText: "DELETE DOG TAGS"
+- pressKey: Enter
+- tapOn:
+    id: "dangerConfirmButton"
+- assertVisible: "Type DELETE RECORDS to confirm"
+- tapOn: "Cancel"
+
+- scrollUntilVisible:
+    element:
+      id: "dangerRow-resetEverything"
+    direction: DOWN
+    centerElement: true
+- tapOn:
+    id: "dangerRow-resetEverything"
+- assertVisible: "Type RESET EVERYTHING to confirm"
+- tapOn: "Cancel"
+- assertVisible: "Danger zone"

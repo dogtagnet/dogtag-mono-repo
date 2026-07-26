@@ -14,15 +14,43 @@ final class LocalStore: ObservableObject {
     @Published private(set) var pets: [Pet] = []
     @Published private(set) var credentials: [Credential] = []
 
+    static let petsFileName = "pets.json"
+    static let credentialsFileName = "credentials.json"
+
+    private let dir: URL
     private let petsURL: URL
     private let credsURL: URL
 
     private init() {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        petsURL = dir.appendingPathComponent("pets.json")
-        credsURL = dir.appendingPathComponent("credentials.json")
+        dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        petsURL = dir.appendingPathComponent(Self.petsFileName)
+        credsURL = dir.appendingPathComponent(Self.credentialsFileName)
         pets = load([Pet].self, from: petsURL) ?? []
         credentials = load([Credential].self, from: credsURL) ?? []
+    }
+
+    // ---- destructive reset ---------------------------------------------------------------------
+
+    /// Drop every locally-held pet/dog-tag row and its file.
+    ///
+    /// The published list is cleared ONLY on a complete sweep: if the file survived, it is still the
+    /// truth, and showing an empty UI over it would misreport what was destroyed. Call on the main
+    /// thread - this mutates published state the UI observes.
+    func deleteAllPets() -> LocalDataSweep.Outcome {
+        let outcome = LocalDataSweep.remove(from: dir, files: [Self.petsFileName])
+        if outcome.isComplete { pets = [] }
+        return outcome
+    }
+
+    /// Drop every imported credential/record and its file. Same main-thread and partial-failure
+    /// contract as `deleteAllPets`.
+    ///
+    /// Records are re-obtainable in a way owner-secrets are not: the credential was issued by the
+    /// vet and stays on-chain, so it can be imported again from a fresh vet QR.
+    func deleteAllCredentials() -> LocalDataSweep.Outcome {
+        let outcome = LocalDataSweep.remove(from: dir, files: [Self.credentialsFileName])
+        if outcome.isComplete { credentials = [] }
+        return outcome
     }
 
     // ---- pets ----------------------------------------------------------------------------------
@@ -108,6 +136,7 @@ final class LocalStore: ObservableObject {
 /// re-renders when a photo is set or removed.
 final class PetPhotoStore: ObservableObject {
     static let shared = PetPhotoStore()
+    static let directoryName = "pet-photos"
 
     @Published private(set) var version = 0
 
@@ -119,8 +148,24 @@ final class PetPhotoStore: ObservableObject {
 
     private init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        dir = docs.appendingPathComponent("pet-photos", isDirectory: true)
+        dir = docs.appendingPathComponent(Self.directoryName, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    /// Drop every stored pet photo. UI-only material: nothing here was ever uploaded, written
+    /// on-chain, or part of a credential, so this is the least consequential of the reset actions.
+    ///
+    /// The directory is recreated empty so `setImage` keeps working without an app relaunch, and the
+    /// memory cache is dropped only on a complete sweep - a cache cleared over surviving files would
+    /// re-populate itself from them on the next read and contradict the reported outcome.
+    func removeAll() -> LocalDataSweep.Outcome {
+        let outcome = LocalDataSweep.remove(
+            from: dir.deletingLastPathComponent(), directories: [Self.directoryName])
+        guard outcome.isComplete else { return outcome }
+        cache.removeAll()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        version &+= 1
+        return outcome
     }
 
     /// dogTagIds are decimal token ids, but sanitize defensively so any id is a safe file name. This is

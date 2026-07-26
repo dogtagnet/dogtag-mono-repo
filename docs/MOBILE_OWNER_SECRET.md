@@ -79,7 +79,24 @@ wallet's phrase offline.
 prompt but a permanent lockout, since a tag can then never be created on that device again and there
 is no on-chain remedy.
 iOS reaches it from the wallet-genesis phrase card and again from the account export sheet
-(`ProfileScreen.swift`).
+(`ProfileScreen.swift`) - but both of those sites can only offer it for a wallet whose phrase the app
+can still show.
+
+A **LEGACY iOS wallet** - one stored before the BIP-39 entropy was persisted, so
+`Wallet.revealMnemonic()` genuinely cannot reconstruct its 24 words - has no such site, and was
+therefore a permanent lockout: no phrase meant no confirm action meant no tag, ever.
+The gate was **not** loosened to fix it: inviting an owner to confirm they backed up a phrase the app
+cannot show them would be a lie that costs them a tag.
+The requirement is satisfied instead by getting that owner to a wallet which HAS a confirmable
+phrase - `Wallet.replace()` destroys the Keychain seed + entropy and the now-meaningless
+confirmation, then runs genesis - offered from a callout at the head of Profile's Danger zone and
+from the export sheet's no-phrase branch, where it sits BELOW the private-key export because that key
+is the only thing a replace leaves reachable.
+Only the presence-only `Wallet.hasExportablePhrase()` may decide a wallet is legacy: a `nil` mnemonic
+is also what a Keychain read failure returns, and offering to destroy a wallet on that weaker test
+would destroy a healthy one.
+A phrase-backed wallet is untouched by all of this and still requires the real "I've saved it".
+
 Android instead has a STANDING "Recovery phrase backup" card on Profile
 (`ui/screens/ProfileScreen.kt`), shown for any existing wallet whose backup is not known-confirmed.
 It deliberately does NOT re-display the phrase and offers no reveal path: Android does not persist
@@ -169,6 +186,14 @@ mirrors the guarantees rather than the API; see [The Android file](#the-android-
   backup inclusion, and `Documents/` is backed up by default.
   The empty protected staging file is excluded before secret bytes are written, and the flag is
   re-asserted after replacement because metadata preservation is not a documented guarantee.
+- **Destroyed by:** the owner, from Profile's Danger zone on iOS ("Delete dog-tags" / "Reset
+  everything", `ProfileTreeStore.deleteAll()`), and by nothing else - each behind a typed
+  confirmation that states the cost. Android has no equivalent action yet.
+  The sweep takes the staging siblings too, so no readable leftover copy survives, and a partial
+  sweep is reported as partial rather than as success.
+  Deleting it is the same unrecoverable loss as losing the device with no phrase backup: the
+  attribute salts live nowhere else, so `R` can never be rebuilt and, per D3, the only remedy is a
+  fresh tag with a new id.
 - **Format:** a JSON array of records, one per tag.
 
 ```json

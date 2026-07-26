@@ -31,7 +31,18 @@ enum Wallet {
     private static let keychainService = "io.liberalize.dogtag"
 
     static func exists() -> Bool {
-        loadBlob(account: seedAccount) != nil
+        blobExists(account: seedAccount)
+    }
+
+    /// Whether the 24-word phrase can be re-derived on this device — i.e. whether this is a modern
+    /// wallet or a LEGACY, phrase-less one (created before the entropy was persisted).
+    ///
+    /// Presence-only, so a view can ask on every render without pulling the entropy into memory. A
+    /// `false` here is what makes issuance permanently unreachable for that wallet: no phrase means no
+    /// honest way to satisfy `SeedBackup`, which `ProfileTreeStore.buildAndPersist` gates on. Offer
+    /// `replace()` when this is false.
+    static func hasExportablePhrase() -> Bool {
+        blobExists(account: entropyAccount)
     }
 
     /// Create a brand-new wallet: generate a 24-word mnemonic, store the BIP-39 seed (and the 32-byte
@@ -50,6 +61,39 @@ enum Wallet {
         try storeBlob(entropy, account: entropyAccount)
         try storeBlob(seed, account: seedAccount)
         return identity(from: seed, mnemonic: mnemonic)
+    }
+
+    /// Replace this wallet with a fresh, phrase-backed one: destroy the existing Keychain material
+    /// and the now-meaningless backup confirmation, then run genesis.
+    ///
+    /// This is the honest way out of a LEGACY wallet - one stored before the entropy was persisted,
+    /// whose 24 words `revealMnemonic()` genuinely cannot reconstruct. Such a wallet can never satisfy
+    /// `SeedBackup`, because the app must never invite the user to confirm they backed up a phrase it
+    /// cannot show them, and `ProfileTreeStore.buildAndPersist` gates issuance on that confirmation.
+    /// So the resolution is not to loosen the gate but to give the user a wallet whose phrase they can
+    /// actually write down.
+    ///
+    /// IRREVERSIBLE, and the caller MUST say so first: every dog tag already bound to the outgoing
+    /// seed loses its owner-secret. `profileRoot` is write-once on-chain and `proveConsent` re-derives
+    /// the owner-secret from the seed on every proof, so those tags can never prove consent again -
+    /// re-importing them will not bring them back (D3: the remedy is a fresh issuance under a NEW
+    /// `dogTagId`). Offer the private-key export BEFORE calling this.
+    static func replace() throws -> WalletIdentity {
+        try deleteKeys()
+        SeedBackup.clear()
+        return try create()
+    }
+
+    /// Delete the wallet's Keychain material: the BIP-39 seed AND the entropy that re-derives the
+    /// recovery phrase. Idempotent - a missing item is not an error.
+    ///
+    /// The seed goes FIRST on purpose. `exists()` keys off the seed, so if the entropy delete then
+    /// fails the app is already in its first-run state (and the next `create()` overwrites the orphan
+    /// entropy). The reverse order could drop the entropy while leaving a live seed - manufacturing
+    /// exactly the legacy, phrase-less wallet this type exists to get users out of.
+    static func deleteKeys() throws {
+        try deleteBlob(account: seedAccount)
+        try deleteBlob(account: entropyAccount)
     }
 
     /// Re-derive the identity from the stored seed. The mnemonic is not returned here; use
@@ -118,6 +162,30 @@ enum Wallet {
         if status != errSecSuccess { throw WalletError.keychain(status) }
     }
 
+    /// Presence check that does NOT return the secret: no `kSecReturnData`, so the Keychain answers
+    /// from attributes and the seed/entropy never enters this process's memory.
+    private static func blobExists(account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    }
+
+    private static func deleteBlob(account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw WalletError.keychain(status)
+        }
+    }
+
     private static func loadBlob(account: String) -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -165,6 +233,16 @@ enum SeedBackup {
         guard let value = fingerprint(seedHex: seedHex) else { return false }
         UserDefaults.standard.set(value, forKey: fingerprintKey)
         return true
+    }
+
+    /// Forget the confirmation, so the gate re-prompts for whatever phrase comes next. Call whenever
+    /// the wallet the assertion was bound to is destroyed or replaced.
+    ///
+    /// Not load-bearing for safety - the fingerprint is seed-bound, so a stale value could never pass
+    /// for a different seed - but leaving a confirmation behind for a seed that no longer exists is
+    /// stored state that lies about what the user asserted.
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: fingerprintKey)
     }
 
     private static func fingerprint(seedHex: String) -> String? {

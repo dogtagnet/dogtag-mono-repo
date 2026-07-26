@@ -56,6 +56,21 @@ targets:
       # AnchorResolver is Foundation-only (the two pure ABI decoders); the FFI glue
       # that builds a TrustedAnchor + calls validateDiscovery lives in ScanScreen, not here.
       - path: DogTag/AnchorResolver.swift
+      # LocalDataSweep is Foundation-only by design so the destructive reset actions' file removal
+      # (staging-sibling sweep, idempotence, partial-failure reporting) is covered here; the callers
+      # that pull in Keychain/FFI/SwiftUI live in AppReset and the stores.
+      - path: DogTag/LocalDataSweep.swift
+      # Wallet.swift for its SeedBackup gate (UserDefaults + CryptoKit) and Bip39 (pure) - the
+      # correctness the legacy-wallet rescue turns on. Its imports are Foundation/CryptoKit/Security/
+      # LocalAuthentication, no FFI, so it compiles into this host-less bundle; Secp256k1 -> BigUInt/
+      # Keccak256 and Wordlist come along as its link-time closure. The tests never call the Keychain
+      # paths (no host app means no keychain entitlement) or evaluate LAContext - see
+      # SeedBackupGateTests for why.
+      - path: DogTag/Wallet.swift
+      - path: DogTag/Secp256k1.swift
+      - path: DogTag/BigUInt.swift
+      - path: DogTag/Keccak256.swift
+      - path: DogTag/Wordlist.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.liberalize.dogtag.tests

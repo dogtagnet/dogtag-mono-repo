@@ -117,9 +117,12 @@ enum ProfileTreeStore {
         }
     }
 
-    private static var fileURL: URL {
+    static var documentsDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(fileName)
+    }
+
+    private static var fileURL: URL {
+        documentsDirectory.appendingPathComponent(fileName)
     }
 
     private static let storeLock = NSLock()
@@ -316,6 +319,22 @@ enum ProfileTreeStore {
     /// inspect) but is no longer a live credential.
     static func activeRecords() -> [OwnerSecretRecord] {
         all().filter { $0.abandonedAt == nil }
+    }
+
+    /// Destroy the whole device-local owner-secret store, staging siblings included.
+    ///
+    /// IRREVERSIBLE in a way the wallet seed cannot undo. `proveConsent` re-derives the owner-secret
+    /// from the seed, but rebuilding a tag's tree ALSO needs the attribute salts, and those are
+    /// caller-supplied - not seed-derivable - and live nowhere else on the device (this file is
+    /// excluded from device backups). Once they are gone `R` cannot be reproduced, and `profileRoot` is
+    /// write-once on-chain, so every tag recorded here can never prove consent again. Per D3 the only
+    /// remedy is a fresh custodial issuance under a NEW `dogTagId`.
+    ///
+    /// Takes the store lock so a concurrent `upsert` cannot re-create the file behind the sweep.
+    static func deleteAll() -> LocalDataSweep.Outcome {
+        withStoreLock {
+            LocalDataSweep.remove(from: documentsDirectory, files: [fileName])
+        }
     }
 
     static func upsert(_ record: OwnerSecretRecord) throws {
