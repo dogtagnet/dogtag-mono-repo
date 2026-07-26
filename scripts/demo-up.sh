@@ -77,6 +77,18 @@ if [ "$(echo "$FACTORY_REGISTRY" | tr 'A-Z' 'a-z')" != "$(echo "$IR" | tr 'A-Z' 
 fi
 echo "  factory               $FACTORY -> registry $IR  ok"
 
+# The operator's DECLARATION that out-of-band signing is intended, resolved ONCE so the refusal below and
+# admin-api agree on it. `ADMIN_PROPOSE_ONLY` is the canonical name and `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`
+# its accepted alias: either suppresses the refusal AND reaches admin-api, which cannot otherwise tell a
+# designed proposal from a wrong-key one and reports every not-broadcast grant as the latter. Defaults
+# THROUGH the canonical name so an operator-set value (incl. one sourced from contracts/.env) survives.
+# Truthy set mirrors the reader in stacks/admin/api/src/main.rs.
+ADMIN_PROPOSE_ONLY="${ADMIN_PROPOSE_ONLY:-${ALLOW_UNAUTHORIZED_ADMIN_SIGNER:-0}}"
+case "$(echo "$ADMIN_PROPOSE_ONLY" | tr 'A-Z' 'a-z')" in
+  1|true) PROPOSE_ONLY_DECLARED=1 ;;
+  *) PROPOSE_ONLY_DECLARED=0 ;;
+esac
+
 # The hosted admin signer MUST hold WHITELIST_ADMIN. The retired deployer EOA lost it in governance
 # Phase-2, and with only DEPLOYER_PRIVATE_KEY the stack booted cleanly while every portal grant returned
 # disposition:"proposed" with unsigned calldata and nothing landed on-chain. Fail here instead.
@@ -88,8 +100,9 @@ if [ "$HAS_WL" != "true" ]; then
   and NOTHING would land on-chain, while the stack looked healthy.
   Fix: set GOVERNANCE_PRIVATE_KEY in contracts/.env to the key that holds WHITELIST_ADMIN.
   (DEPLOYER_PRIVATE_KEY is the RETIRED deployer EOA - it lost this role in governance Phase-2.)
-  To boot anyway for a genuine propose-for-external-signing setup: ALLOW_UNAUTHORIZED_ADMIN_SIGNER=1"
-  if [ "${ALLOW_UNAUTHORIZED_ADMIN_SIGNER:-}" = "1" ]; then
+  To boot anyway for a genuine propose-for-external-signing setup: ADMIN_PROPOSE_ONLY=1
+  (or its alias ALLOW_UNAUTHORIZED_ADMIN_SIGNER=1)"
+  if [ "$PROPOSE_ONLY_DECLARED" = "1" ]; then
     echo "  WARNING: $MSG" >&2
   else
     die "$MSG"
@@ -97,10 +110,6 @@ if [ "$HAS_WL" != "true" ]; then
 else
   echo "  admin signer          $ADMIN_ADDR holds WHITELIST_ADMIN  ok"
 fi
-# The same flag is the operator's DECLARATION that out-of-band signing is intended, so admin-api needs it
-# too: without it the API cannot tell a designed proposal from a wrong-key one and reports every
-# not-broadcast grant as the latter. Passed as ADMIN_PROPOSE_ONLY (the flag is its accepted alias).
-ADMIN_PROPOSE_ONLY="${ALLOW_UNAUTHORIZED_ADMIN_SIGNER:-0}"
 
 # GOVERNMENT chain backend. `live` (default) = real ROAX. The government stack used to select its
 # in-process MemChain whenever DEMO_MODE was set - which contracts/.env sets - so its verify/records
