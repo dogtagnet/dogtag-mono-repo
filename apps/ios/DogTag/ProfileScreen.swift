@@ -96,6 +96,7 @@ struct ProfileScreen: View {
                         // private key (biometric-gated, same Face ID gate as the reveal above; the
                         // secrets are never logged or transmitted).
                         walletButtonSecondary("Export account keys") { beginExport() }
+                            .accessibilityIdentifier("walletExportKeys")
                     }
 
                     // Tap any value to copy it (full value, not the truncated preview).
@@ -173,9 +174,15 @@ struct ProfileScreen: View {
                     ExportAccountSheet(
                         mnemonic: payload.mnemonic,
                         privateKeyHex: payload.privateKeyHex,
-                        // Swapping the route re-renders this same sheet as the confirmation, so the
-                        // hand-off never crosses a dismiss/present animation.
-                        onReplaceWallet: { sheet = .danger(.replaceWallet) })
+                        hasExportablePhrase: payload.hasExportablePhrase,
+                        // Dismiss first, then present on the next runloop turn - the same hand-off
+                        // the confirmation below uses. Swapping this item's identity in place would
+                        // rely on SwiftUI honouring a coalesced dismiss-and-present, which it has
+                        // historically dropped, leaving the button looking dead.
+                        onReplaceWallet: {
+                            sheet = nil
+                            DispatchQueue.main.async { sheet = .danger(.replaceWallet) }
+                        })
                 case let .danger(action):
                     DestructiveConfirmationSheet(action: action) {
                         sheet = nil
@@ -231,7 +238,10 @@ struct ProfileScreen: View {
                         .foregroundColor(c.onBackground)
                     Text("Export the recovery phrase (when available) and the private key before you destroy anything.")
                         .font(.system(size: 11)).foregroundColor(c.muted)
+                    // Same label as the wallet card's export button, so both carry an identifier -
+                    // a bare text selector would match two elements once a wallet exists.
                     walletButtonSecondary("Export account keys") { beginExport() }
+                        .accessibilityIdentifier("dangerExportKeys")
                 }
                 Divider().overlay(c.outline)
             }
@@ -242,6 +252,7 @@ struct ProfileScreen: View {
 
             if !resetMsg.isEmpty {
                 Text(resetMsg).font(.system(size: 12)).foregroundColor(c.onBackground)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(16)
@@ -285,9 +296,12 @@ struct ProfileScreen: View {
     private func beginExport() {
         Biometric.authenticate(reason: "Authenticate to export your account keys") { ok, e in
             guard ok else { walletMsg = e ?? "auth failed"; return }
+            let phraseStored = Wallet.hasExportablePhrase()
+            hasExportablePhrase = phraseStored
             sheet = .export(ExportPayload(
                 mnemonic: Wallet.revealMnemonic(),
-                privateKeyHex: Wallet.revealPrivateKeyHex()))
+                privateKeyHex: Wallet.revealPrivateKeyHex(),
+                hasExportablePhrase: phraseStored))
         }
     }
 
@@ -327,7 +341,11 @@ struct ProfileScreen: View {
             ethAddr = id.ethAddress
             mnemonic = id.mnemonic
             walletMsg = "New wallet created. Write the 24 words below down, then tap “I've saved it” - issuing a dog tag stays blocked until you do."
-            resetMsg = "Wallet replaced. Your previous account and any dog tag bound to it are gone for good."
+            // The callout route confirms from down here, so the next step has to be readable here
+            // too - not only in the wallet card the user would have to scroll back up to find.
+            resetMsg = "Wallet replaced. Your previous account and any dog tag bound to it are gone for good. "
+                + "A fresh 24-word recovery phrase is waiting in the “Embedded wallet” card above - write it "
+                + "down, then tap “I've saved it”. Issuing a dog tag stays blocked until you do."
         } catch {
             // `replace()` deletes before it creates, so a failure lands on one of two very different
             // states. Re-read which one rather than assuming: telling a user their wallet is intact
@@ -360,7 +378,9 @@ struct ProfileScreen: View {
     /// the same secrets the action promised to destroy.
     private func report(_ outcome: AppReset.Outcome, action: DangerAction, success: String) {
         if let failures = outcome.failureSummary {
-            resetMsg = "\(action.title) only partly completed - could not remove \(failures). Try again."
+            var msg = "\(action.title) only partly completed - could not remove \(failures). Try again."
+            if let kept = action.partialNote { msg += " " + kept }
+            resetMsg = msg
         } else {
             resetMsg = success
         }
@@ -485,14 +505,18 @@ private struct ExportPayload: Identifiable {
     let id = UUID()
     let mnemonic: String?
     let privateKeyHex: String?
+    /// The authoritative "this wallet has a phrase at all" answer, read presence-only alongside the
+    /// reveal. `mnemonic == nil` cannot stand in for it: `revealMnemonic()` also returns nil on a
+    /// Keychain READ failure, and diagnosing a healthy wallet as legacy would offer to destroy it.
+    let hasExportablePhrase: Bool
 }
 
 /// Profile's single sheet route.
 ///
 /// One `.sheet(item:)` rather than one modifier per destination on purpose: the legacy-wallet rescue
-/// hands off straight from the export sheet to its confirmation, and swapping this item's identity
-/// re-renders the presented sheet in place. Two sibling `.sheet` modifiers would have to dismiss one
-/// and present the other across an animation, which drops the second presentation.
+/// hands off straight from the export sheet to its confirmation, and one binding makes that hand-off
+/// an explicit nil-then-present on the next runloop turn. Two sibling `.sheet` modifiers would leave
+/// the ordering to SwiftUI, which drops a dismiss and a present coalesced into one update.
 private enum ProfileSheet: Identifiable {
     case export(ExportPayload)
     case danger(DangerAction)
@@ -610,6 +634,22 @@ private enum DangerAction: String, Identifiable {
         }
     }
 
+    /// Appended when the action only half-ran, for the one action that deliberately holds something
+    /// back on failure. `AppReset.resetEverything` skips the wallet whenever a data sweep leaves
+    /// something behind, so the user must be told the seed was KEPT on purpose - otherwise a partial
+    /// reset reads as "some of it silently went missing" and the stated remedy (export the keys, then
+    /// retry) looks impossible.
+    var partialNote: String? {
+        switch self {
+        case .resetEverything:
+            return "Your wallet was deliberately KEPT - the seed, recovery entropy and backup "
+                + "confirmation are all still on this device, so you can still export your keys "
+                + "before retrying."
+        default:
+            return nil
+        }
+    }
+
     /// The one thing `replaceWallet` ADDS, stated up front so it does not read as pure loss.
     var closing: String? {
         switch self {
@@ -631,11 +671,17 @@ private struct ExportAccountSheet: View {
     @Environment(\.dismiss) var dismiss
     let mnemonic: String?
     let privateKeyHex: String?
+    /// Presence-only, and the ONLY thing allowed to decide "this wallet is legacy". A nil `mnemonic`
+    /// is ambiguous - `revealMnemonic()` returns nil for a Keychain read error too - and wiring the
+    /// destructive remedy to the weaker test would offer to destroy a healthy, phrase-backed wallet.
+    let hasExportablePhrase: Bool
     /// Offered only for a LEGACY wallet, whose 24 words cannot be reconstructed here. Routes to the
     /// replace-wallet confirmation.
     let onReplaceWallet: () -> Void
 
-    private var hasPhrase: Bool { !(mnemonic ?? "").isEmpty }
+    private var hasPrivateKey: Bool { !(privateKeyHex ?? "").isEmpty }
+    /// A phrase this wallet was never given, as opposed to one this reveal merely failed to read.
+    private var isLegacyWallet: Bool { !hasExportablePhrase }
 
     var body: some View {
         ScrollView {
@@ -668,7 +714,7 @@ private struct ExportAccountSheet: View {
                     }
                     Text("Restores your account in DogTag (or a wallet using the same derivation). The copy clears from the clipboard automatically.")
                         .font(.system(size: 11)).foregroundColor(c.muted)
-                } else {
+                } else if isLegacyWallet {
                     // The legacy dead end, stated honestly. There is deliberately NO "I've saved it"
                     // here: the app must never invite a user to confirm they backed up a phrase it
                     // cannot show them. The way out is the replace card at the foot of this sheet.
@@ -677,7 +723,19 @@ private struct ExportAccountSheet: View {
                             .foregroundColor(c.onBackground)
                         Text("This wallet was created before phrase export was supported, so its 24 words can't be reconstructed on this device.")
                             .font(.system(size: 13)).foregroundColor(c.onBackground)
-                        Text("Because DogTag can't show you the phrase, it also can't ask you to confirm you've backed it up - and issuing a dog tag requires that confirmation, since the phrase is the only thing that could regenerate a tag's owner-secret on a replacement phone. Copy the private key below to keep this account, then replace this wallet with a fresh, phrase-backed one.")
+                        Text(legacyExplanation)
+                            .font(.system(size: 12)).foregroundColor(c.muted)
+                    }
+                } else {
+                    // The entropy IS stored - this reveal just could not read it. Saying "created
+                    // before phrase export was supported" here would be a false diagnosis, and
+                    // offering Replace on the back of it would destroy a wallet whose phrase is fine.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Recovery phrase couldn't be read").font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(c.onBackground)
+                        Text("This wallet's 24 words are still stored on this device, but DogTag couldn't read them just now.")
+                            .font(.system(size: 13)).foregroundColor(c.onBackground)
+                        Text("Nothing is wrong with your wallet and nothing has been lost. Close this sheet, make sure your device is unlocked, and tap “Export account keys” again.")
                             .font(.system(size: 12)).foregroundColor(c.muted)
                     }
                 }
@@ -698,12 +756,12 @@ private struct ExportAccountSheet: View {
 
                 // Deliberately LAST, below the private key: a legacy wallet's key is the only thing
                 // that survives a replace, so the export has to come first on the way down the sheet.
-                if !hasPhrase {
+                if isLegacyWallet {
                     Divider().overlay(c.outline).padding(.vertical, 2)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Get unblocked: replace this wallet")
                             .font(.system(size: 14, weight: .bold)).foregroundColor(c.onBackground)
-                        Text("Creates a fresh wallet with a 24-word phrase you can write down, and replaces this one. Copy the private key above first if you want to keep this account.")
+                        Text(replaceCardExplanation)
                             .font(.system(size: 12)).foregroundColor(c.muted)
                         Button { onReplaceWallet() } label: {
                             Text("Replace wallet…").font(.system(size: 14, weight: .semibold))
@@ -722,6 +780,27 @@ private struct ExportAccountSheet: View {
             .padding(20)
         }
         .background(c.background.ignoresSafeArea())
+    }
+
+    /// Both of these point the user at the private key as the thing to rescue before replacing, so
+    /// each has to check the key is actually on screen - the same reveal that lost the phrase can
+    /// lose the key, and "copy the private key above" beside no private key is an instruction the
+    /// user cannot follow.
+    private var legacyExplanation: String {
+        let why = "Because DogTag can't show you the phrase, it also can't ask you to confirm you've "
+            + "backed it up - and issuing a dog tag requires that confirmation, since the phrase is the "
+            + "only thing that could regenerate a tag's owner-secret on a replacement phone. "
+        return hasPrivateKey
+            ? why + "Copy the private key below to keep this account, then replace this wallet with a fresh, phrase-backed one."
+            : why + "Replacing this wallet with a fresh, phrase-backed one is the way out."
+    }
+
+    private var replaceCardExplanation: String {
+        let what = "Creates a fresh wallet with a 24-word phrase you can write down, and replaces this one. "
+        return hasPrivateKey
+            ? what + "Copy the private key above first if you want to keep this account."
+            : what + "This wallet's private key could not be read here, so close this sheet and export "
+                + "your keys again before replacing - once replaced, the old account is unreachable."
     }
 
     private func mnemonicGrid(_ m: String) -> some View {

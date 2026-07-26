@@ -68,10 +68,12 @@ enum AppReset {
 
     /// Everything above, in one action: wallet, dog tags, records.
     ///
-    /// Deliberately ordered data-first, wallet-last. The data sweeps are what carry the
-    /// unrecoverable material (the attribute salts), so if a sweep fails the seed is still present and
-    /// the reported failure is actionable - retry, or export the keys again. Dropping the seed first
-    /// would leave a half-reset device whose surviving records are already dead weight.
+    /// Deliberately ordered data-first, wallet-last, and the wallet is wiped ONLY once every data
+    /// sweep has fully succeeded. The data sweeps are what carry the unrecoverable material (the
+    /// attribute salts), so a sweep failure must leave the seed present: that is what keeps the
+    /// reported failure actionable - retry, or export the keys again. Wiping the seed anyway would
+    /// destroy the one remedy while leaving the leftover it failed to remove readable on disk, so a
+    /// partial sweep returns early and the caller must report that the wallet was deliberately kept.
     ///
     /// Appearance preferences (theme, brightness) are NOT touched: they hold no account or pet data,
     /// and silently resetting them would misrepresent this as a factory wipe.
@@ -79,6 +81,7 @@ enum AppReset {
         var outcome = Outcome()
         outcome.merge(deleteDogTags())
         outcome.merge(deleteRecords())
+        guard outcome.isComplete else { return outcome }
         outcome.merge(deleteWallet())
         return outcome
     }
