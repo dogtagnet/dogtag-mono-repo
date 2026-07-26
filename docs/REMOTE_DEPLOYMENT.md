@@ -359,7 +359,8 @@ Expected: `{"status":"ok"}`.
 ## 6. Custody runbook (manual — no autofill)
 
 Per **business stack (vet, groomer)** and for the **admin signer**, on the portal Setup wizard (reached
-through the TLS domain `https://<DOMAIN>/`):
+through the TLS domain `https://<DOMAIN>/`). Setup owns **genesis** (steps 1-4); **re-unlocking**
+after a restart (step 5) is a dedicated page, not a wizard step:
 
 1. **Genesis** a new **24-word BIP-39** seed. The words are shown **once** — **WRITE THEM DOWN**. There
    is **no autofill** in production (`VITE_DEMO_MODE` unset) and the seed is never stashed.
@@ -368,7 +369,14 @@ through the TLS domain `https://<DOMAIN>/`):
    **`CustodyBlob` in Mongo**.
 4. **Unlock** with that passphrase to wire the signer into the chain client.
 5. **Re-unlock after EVERY api restart** — custody is **not** auto-unlocked. Records and the encrypted
-   seed survive the restart, but the signer cannot sign until you `POST /admin/unlock` again.
+   seed survive the restart, but the signer cannot sign until you `POST /admin/unlock` again. You do
+   **not** hunt for this in Setup: the portal detects the locked seal and **redirects you to its
+   dedicated `/unlock` page**, then returns you to whatever you were doing. On this (Mongo) path the
+   operator session outlives the restart while the seal re-locks, so the redirect typically fires on
+   the **first action** that trips the lock, not only on page load. Enter the custody-admin password
+   and the passphrase; a wrong passphrase is an inline error, not a lost session. `/unlock` links to
+   Setup **only** if the instance has no seal at all - that needs genesis (steps 1-4), not a
+   passphrase.
 
 **Where custody lives.** The encrypted seed is a **`CustodyBlob` in Mongo** (in the stack's data
 volume) — **NOT on disk**. The legacy `KEYSTORE_PATH` / `seed.age` volume (`vetseed` / `adminseed` /

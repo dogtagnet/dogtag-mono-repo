@@ -18,7 +18,16 @@ pnpm --filter @dogtag/vet-web dev
 
 - **Setup** (`/setup`) — wizard: custody admin login → genesis (show 24 words → confirm
   challenge words + passphrase → unlock) → derive accounts → apply for whitelist
-  (USDA#/license# → central `POST /v1/issuer-applications`) → DNS-TXT instructions.
+  (USDA#/license# → central `POST /v1/issuer-applications`) → DNS-TXT instructions. Setup owns
+  **genesis only**: an instance that is already sealed but merely locked (e.g. after a backend
+  restart) is handed to `/unlock` instead of re-entering the wizard. The `confirm → unlock` step
+  above is genesis continuation and stays.
+- **Unlock** (`/unlock`) - the dedicated custody-unlock page. **Not a nav item**: it is a redirect
+  target. Whenever the backend reports a locked seal - on load, or on the first action refused with
+  `not unlocked` - the portal sends the operator here with `?next=` carrying where they were headed,
+  and returns them there once custody is open. Enter the custody-admin password + passphrase (both
+  prefilled in demo mode); a wrong passphrase shows an inline error and does **not** end the
+  session. It links to Setup only when the instance has no seal at all (needs genesis, not unlock).
 - **Issue a record** (`/issue`) — recordType picker → schema-driven form (§1.6 fields) with
   client-side validation → `POST /credentials/prepare`; **wallet mode** signs the `unsignedTx`
   with the connected wallet then `POST /credentials/confirm`, **backend mode** auto-confirms in

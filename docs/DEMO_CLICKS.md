@@ -16,6 +16,12 @@ Demo passwords (prefilled): operator `operator`, admin `admin`. Record type ever
 > The portal detects the 401, shows **"Session expired - please log in again"**, clears the token,
 > and routes you back to login (vet/groomer Setup re-shows the Custody admin login). Just click Sign in
 > again (password stays prefilled).
+>
+> A restart also **re-locks custody** (the seal survives in `.demo/*-custody.json`, the decrypted seed
+> does not). After signing back in, the vet/groomer portal detects the lock and drops you on its
+> dedicated **`/unlock`** page - you no longer go digging through Setup - then returns you to wherever
+> you were headed. Both fields prefill in demo mode, so it is one click: **Unlock**. A wrong passphrase
+> shows an inline error there and does **not** trigger the "Session expired" path above.
 
 ---
 

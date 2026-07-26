@@ -44,7 +44,17 @@ Nav mirrors the reference groomer dashboard:
   issuer roles).
 - **Setup** (`/setup`) — the same genesis/custody wizard as the vet portal (groomers can issue their
   own records too): custody admin login → genesis (24 words → confirm + passphrase → unlock) →
-  derive accounts → apply for whitelist (central `POST /v1/issuer-applications`) → DNS-TXT.
+  derive accounts → apply for whitelist (central `POST /v1/issuer-applications`) → DNS-TXT. Setup
+  owns **genesis only**: a sealed-but-locked instance (e.g. after a backend restart) is handed to
+  `/unlock` rather than re-entering the wizard; the `confirm → unlock` step above is genesis
+  continuation and stays.
+- **Unlock** (`/unlock`) - the dedicated custody-unlock page, same as the vet portal. **Not a nav
+  item**: it is a redirect target. Whenever the backend reports a locked seal - on load, or on the
+  first action refused with `not unlocked` - the portal sends the operator here with `?next=`
+  carrying where they were headed, and returns them there once custody is open. Enter the
+  custody-admin password + passphrase (both prefilled in demo mode); a wrong passphrase shows an
+  inline error and does **not** end the session. It links to Setup only when the instance has no
+  seal at all (needs genesis, not unlock).
 - **Settings** (`/settings`) — signing-mode toggle (`PUT /settings/signing-mode`), status panel
   (`GET /issuer/signers`), theme toggle.
 

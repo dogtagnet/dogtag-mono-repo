@@ -38,6 +38,10 @@ but **custody is sealed to `.demo/{vet,groomer,prover}-custody.json`**, so a **r
 same passphrase (same signer), NOT re-genesis** (records/sessions are simply re-created, and the signer is
 still funded + whitelisted on-chain, so no re-bootstrap is needed). A full re-genesis is required only after
 `rm -rf .demo`.
+That re-unlock is **not** buried in Setup: the vet/groomer portal detects the locked seal and redirects you
+to its dedicated **`/unlock`** page (carrying the destination you were headed for), then puts you back there
+once custody is open. Setup keeps genesis only. Both fields prefill in demo mode - see
+[DEMO_CLICKS.md](./DEMO_CLICKS.md) for the literal clicks.
 `demo-up.sh` wires the governance signer-1 admin key (`contracts/.env` → `GOVERNANCE_PRIVATE_KEY`, passed to the central stack as `ADMIN_PRIVATE_KEY`) so it can broadcast `whitelistFor` - since Governance Phase-2 (2026-07-05, block 123835) this admin authority is signer-1 `0x8E27…F4A2`, NOT the old deployer EOA `0x119F…` (now zero governance roles).
 (The dog-tag `mintCustodial` is broadcast by the **vet** signer, not central.)
 It also sets `DNS_CHECK=skip` (bypasses DNS-TXT for the `.local` demo domains), and sets the QR host to the Mac LAN IP (see [§6 phone networking](#6-phone-networking-real-gotchas)).
