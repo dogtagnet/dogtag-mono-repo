@@ -35,7 +35,7 @@ export function App() {
       {/* Standalone (no Layout): unlocking is the whole page, not a section of the portal. */}
       <Route path="/unlock" element={<Unlock />} />
       <Route path="/dashboard" element={<Layout title="Dashboard"><Dashboard /></Layout>} />
-      <Route path="/calendar" element={<Layout title="Calendar"><Calendar /></Layout>} />
+      <Route path="/calendar" element={<Layout title="Calendar" wide><Calendar /></Layout>} />
       {/* `/new` is declared before `/:id` so it is matched as the create form, not an id. */}
       <Route
         path="/appointments/new"

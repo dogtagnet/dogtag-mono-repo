@@ -17,6 +17,7 @@ import {
   DAY_SECS,
   formatDate,
   formatSlot,
+  formatTime,
   nowSec,
   startOfDay,
   startOfWeek,
@@ -175,7 +176,12 @@ function DayColumn({
                 to={`/appointments/${a.appointmentId}`}
                 className="block min-w-0 rounded-md border border-border bg-surface p-2 text-sm transition-colors hover:bg-surface-muted"
               >
-                <p className="truncate font-medium text-onSurface">{formatSlot(a.startAt, a.endAt)}</p>
+                {/* A week column is too narrow for a full range without clipping the time itself,
+                    which is the one thing that must stay legible — so week cells show the START
+                    time and the day view shows the whole slot. */}
+                <p className="font-medium text-onSurface">
+                  {compact ? formatTime(a.startAt) : formatSlot(a.startAt, a.endAt)}
+                </p>
                 <p className="truncate text-muted">{a.clientName}</p>
                 {a.petName && <p className="truncate text-xs text-muted">{a.petName}</p>}
                 {a.service && <p className="truncate text-xs text-muted">{a.service}</p>}

@@ -572,6 +572,297 @@ async fn verification_history_filters_by_client_appointment_purpose_and_status()
     let _ = v1_id;
 }
 
+/// A whitelisted MemChain app that can actually carry a consent submit through to `recorded`, so the
+/// terminal-settle seam (`crm::finish_log`) is exercised end to end and not just at session start.
+///
+/// `MemChain` does not verify Groth16, so `a/b/c` are placeholders and the public signals do the
+/// talking — exactly the surface these tests are about (see `submit_consent_levelb_route.rs`).
+async fn recordable_app() -> (axum::Router, String, String) {
+    let chain = Arc::new(MemChain::new());
+    let state = state_with(
+        chain.clone(),
+        "memchain".to_string(),
+        REGISTRY.to_string(),
+        "0x00000000000000000000000000000000000000bb".to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let app = vet_api::router(state);
+    let (_admin, op, relayer) = boot_custody(&app).await;
+    chain.whitelist(
+        REGISTRY,
+        &vet_api::verify::verify_key("grooming_intake"),
+        &relayer,
+    );
+    (app, op, relayer)
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn u256_dec_of_addr(a: &str) -> String {
+    use alloy::primitives::U256;
+    U256::from_str_radix(a.trim_start_matches("0x"), 16)
+        .expect("addr hex")
+        .to_string()
+}
+
+/// The 0x-hex32 word a decimal public signal is recorded as in the history row.
+fn word_of_dec(dec: &str) -> String {
+    use alloy::primitives::U256;
+    let u = U256::from_str_radix(dec, 10).expect("dec");
+    format!("0x{}", hex::encode(u.to_be_bytes::<32>()))
+}
+
+const PUB_DOG_TAG_ID: &str = "424242";
+const PUB_NULLIFIER: &str = "1111111111111111111111";
+
+/// A well-formed owner-hidden consent vector for the session `start_verify_session` opens, built
+/// through the NAMED indices so a reordering of the circuit's outputs moves this fixture rather than
+/// silently producing a vector that means something else.
+fn consent_pubs(relayer: &str) -> [String; 7] {
+    use dogtag_standard::public_signals::level_b as PB;
+    let mut p: [String; 7] = std::array::from_fn(|_| "0".to_string());
+    p[PB::DOG_TAG_ID] = PUB_DOG_TAG_ID.to_string();
+    p[PB::PURPOSE] = dec_field(&vet_api::verify::purpose_key("grooming_intake"));
+    p[PB::RELAYER] = u256_dec_of_addr(relayer);
+    p[PB::NULLIFIER] = PUB_NULLIFIER.to_string();
+    p[PB::ROOT] = "2222222222222222222222".to_string();
+    p[PB::RECORD_TYPE] = dec_field(&vet_api::verify::purpose_key("VACCINATION"));
+    // comfortably past the handler's MIN_DEADLINE_MARGIN_SECS preflight floor
+    p[PB::DEADLINE] = (now_secs() + 900).to_string();
+    p
+}
+
+/// `purpose_key` returns a 0x-hex word; the proof carries decimal field elements.
+fn dec_field(word_hex: &str) -> String {
+    use alloy::primitives::U256;
+    U256::from_str_radix(word_hex.trim_start_matches("0x"), 16)
+        .expect("field word")
+        .to_string()
+}
+
+/// Submit an owner-hidden proof for `session_id` and poll the audit row to its TERMINAL state.
+///
+/// The handler acks `"recording"` and broadcasts from a detached `tokio::spawn`, so the ack says
+/// nothing about the outcome — every assertion must come from the settled row, or it passes
+/// vacuously.
+async fn submit_and_settle(app: &axum::Router, op: &str, session_id: &str, relayer: &str) -> Value {
+    let (s, ack) = call(
+        app,
+        "POST",
+        "/v1/verify/consent",
+        Some(op),
+        Some(json!({
+            "sessionId": session_id,
+            "proof": {
+                "a": ["1", "2"],
+                "b": [["3", "4"], ["5", "6"]],
+                "c": ["7", "8"],
+                "pubSignals": consent_pubs(relayer),
+            }
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "consent submit: {ack}");
+    assert_eq!(ack["status"], "recording", "the ack is not terminal: {ack}");
+
+    for _ in 0..200 {
+        let (ss, row) = call(
+            app,
+            "GET",
+            &format!("/verify/session/{session_id}"),
+            Some(op),
+            None,
+        )
+        .await;
+        assert_eq!(ss, StatusCode::OK, "session lookup: {row}");
+        if row["status"] != "recording" {
+            return row;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("session {session_id} never left recording");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_completed_verification_settles_the_history_row_with_its_evidence() {
+    let (app, op, relayer) = recordable_app().await;
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
+
+    let (s, b) = start_verify_session(&app, &op, Some(&appt)).await;
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
+    let session_id = b["sessionId"].as_str().unwrap().to_string();
+
+    let session = submit_and_settle(&app, &op, &session_id, &relayer).await;
+    assert_eq!(session["status"], "recorded", "the session must settle: {session}");
+    let tx = session["txHash"].as_str().unwrap().to_string();
+
+    // the HISTORY row must now agree with the session, and carry the on-chain evidence
+    let (s, v) = call(
+        &app,
+        "GET",
+        &format!("/verifications/{session_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "recorded", "the row must settle when the session does");
+    assert_eq!(v["txHash"].as_str().unwrap(), tx, "the tx is recorded as evidence");
+    assert_eq!(
+        v["nullifier"],
+        word_of_dec(PUB_NULLIFIER),
+        "the consumed nullifier is recorded as evidence"
+    );
+    assert_eq!(
+        v["dogTagId"],
+        word_of_dec(PUB_DOG_TAG_ID),
+        "the opaque dogTagId is recorded as evidence"
+    );
+    // and the linkage survived the settle
+    assert_eq!(v["appointmentId"], appt.as_str());
+    assert_eq!(v["clientId"], client_id.as_str());
+
+    // it is now findable by status, and still by client + appointment
+    let (_, b) = call(&app, "GET", "/verifications?status=recorded", Some(&op), None).await;
+    assert_eq!(b["total"], 1, "a recorded verification is findable by status");
+    let (_, b) = call(
+        &app,
+        "GET",
+        &format!("/verifications?clientId={client_id}&status=recorded"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(b["total"], 1, "…and by client + status together");
+    let (_, b) = call(
+        &app,
+        "GET",
+        &format!("/verifications?appointmentId={appt}&status=recorded"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(b["total"], 1, "…and by appointment + status together");
+
+    // the tx hash is searchable free-text, so an operator can go from a chain explorer back to the visit
+    let (_, b) = call(&app, "GET", &format!("/verifications?q={tx}"), Some(&op), None).await;
+    assert_eq!(b["total"], 1, "the tx hash must be searchable");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_owner_hidden_verification_records_no_disclosed_leaves() {
+    // The privacy invariant, pinned: the owner reveals nothing, so the shop's row must hold an EMPTY
+    // disclosed list — never backfilled from the proof or anywhere else.
+    let (app, op, relayer) = recordable_app().await;
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
+    let (_, b) = start_verify_session(&app, &op, Some(&appt)).await;
+    let session_id = b["sessionId"].as_str().unwrap().to_string();
+
+    let session = submit_and_settle(&app, &op, &session_id, &relayer).await;
+    assert_eq!(session["status"], "recorded", "{session}");
+
+    let (_, v) = call(
+        &app,
+        "GET",
+        &format!("/verifications/{session_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(v["status"], "recorded");
+    assert!(
+        v["disclosedKeyPaths"].as_array().unwrap().is_empty(),
+        "an owner-hidden verification must record NO disclosed leaves — that emptiness is the guarantee"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_verification_row_never_stores_an_owner_wallet() {
+    // The owner-hidden path hands the verifier no `subject` at all, and the shop's row must not
+    // acquire one by any other route: persisting a wallet here would create a client -> wallet
+    // linkage the protocol goes out of its way to withhold from a verifier.
+    let (app, op, relayer) = recordable_app().await;
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
+    let (_, b) = start_verify_session(&app, &op, Some(&appt)).await;
+    let session_id = b["sessionId"].as_str().unwrap().to_string();
+
+    let session = submit_and_settle(&app, &op, &session_id, &relayer).await;
+    assert_eq!(session["status"], "recorded", "{session}");
+
+    let (_, v) = call(
+        &app,
+        "GET",
+        &format!("/verifications/{session_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert!(
+        v.get("subject").is_none(),
+        "the row must have no owner-wallet field at all: {v}"
+    );
+    let serialized = serde_json::to_string(&v).unwrap().to_lowercase();
+    assert!(
+        !serialized.contains("0x00000000000000000000000000000000000000cc"),
+        "no owner wallet may appear in the verification row: {v}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_qr_resolver_exposes_no_client_or_appointment_context() {
+    // GET /x/{token} is UNAUTHENTICATED — anyone who scans (or guesses) the QR can read it. Linking a
+    // verification to a client must not push the shop's customer records onto that surface.
+    let (app, op, _relayer) = recordable_app().await;
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
+    let (s, b) = start_verify_session(&app, &op, Some(&appt)).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let token = b["qrUrl"]
+        .as_str()
+        .unwrap()
+        .split("/x/")
+        .nth(1)
+        .unwrap()
+        .split('?')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let (s, resolved) = call(&app, "GET", &format!("/x/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK, "{resolved}");
+    // exactly the pre-existing key set — no more
+    let mut keys: Vec<&str> = resolved.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "challenge",
+            "purpose",
+            "recordType",
+            "relayer",
+            "sessionId",
+            "unverifiedClaims"
+        ],
+        "the QR resolver's response shape must be unchanged by the appointment linkage"
+    );
+    let body = serde_json::to_string(&resolved).unwrap().to_lowercase();
+    for leaked in [client_id.as_str(), appt.as_str(), pet_id.as_str(), "alice", "rex"] {
+        assert!(
+            !body.contains(&leaked.to_lowercase()),
+            "the QR resolver must not expose {leaked:?}: {resolved}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn deleting_an_appointment_that_has_verifications_is_refused() {
     let (app, op) = verify_app().await;

@@ -1,7 +1,6 @@
 import { CheckCircle2, Lock, ShieldCheck, Sparkles, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../api/client";
-import type { VerifyMode } from "../api/types";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/Card";
@@ -15,15 +14,12 @@ import {
   SelectValue,
 } from "../components/Select";
 import { Spinner } from "../components/Spinner";
-import { cn } from "../lib/cn";
 import { explorerTxUrl } from "../wallet/chain";
 
 export interface VerifyPurpose {
   value: string;
   label: string;
   recordType: string;
-  /** sensitive purposes default to ZK (no data on chain) */
-  sensitive?: boolean;
 }
 
 export interface VerifyFlowProps {
@@ -37,8 +33,8 @@ export interface VerifyFlowProps {
   pollSession?: (sessionId: string) => Promise<{ status: string; txHash?: string }>;
   pollIntervalMs?: number;
   /**
-   * When true, shows a "Fill sample" demo button that selects a sensible non-sensitive purpose +
-   * Normal mode so a non-technical operator can one-click prepare the verify session. Defaults true.
+   * When true, shows a "Fill sample" demo button that selects a purpose so a non-technical operator
+   * can one-click prepare the verify session. Defaults true.
    */
   showDemo?: boolean;
   /**
@@ -69,19 +65,12 @@ export function VerifyFlow({
 }: VerifyFlowProps) {
   const [purpose, setPurpose] = useState<string>(purposes[0]?.value ?? "");
   const selected = purposes.find((p) => p.value === purpose);
-  const [mode, setMode] = useState<VerifyMode>(selected?.sensitive === false ? "normal" : "zk");
   const [phase, setPhase] = useState<Phase>("idle");
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // keep ZK as default whenever the chosen purpose is sensitive
-  useEffect(() => {
-    if (selected?.sensitive === false) setMode((m) => m);
-    else setMode("zk");
-  }, [purpose]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stopPolling = useCallback(() => {
     if (timer.current) {
@@ -101,7 +90,6 @@ export function VerifyFlow({
       const resp = await client.verifySessionStart({
         purpose: selected.value,
         recordType: selected.recordType,
-        mode,
         appointmentId,
       });
       setQrUrl(resp.qrUrl);
@@ -141,10 +129,9 @@ export function VerifyFlow({
   }
 
   function fillSample() {
-    const preset = purposes.find((p) => p.sensitive === false) ?? purposes[0];
+    const preset = purposes[0];
     if (!preset) return;
     setPurpose(preset.value);
-    setMode(preset.sensitive === false ? "normal" : "zk");
     setError(null);
   }
 
@@ -156,8 +143,6 @@ export function VerifyFlow({
     setTxHash(null);
     setError(null);
   }
-
-  const isZk = mode === "zk";
 
   return (
     <Card>
@@ -189,34 +174,12 @@ export function VerifyFlow({
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <Label>Mode</Label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMode("zk")}
-                  className={cn(
-                    "flex flex-col items-start gap-1 rounded-md border p-3 text-left text-sm transition-colors",
-                    isZk ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:bg-surface-muted",
-                  )}
-                >
-                  <span className="flex items-center gap-1.5 font-medium">
-                    <Lock className="h-3.5 w-3.5" /> ZK (private)
-                  </span>
-                  <span className="text-xs text-muted">No credential data on chain. Default for sensitive purposes.</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("normal")}
-                  className={cn(
-                    "flex flex-col items-start gap-1 rounded-md border p-3 text-left text-sm transition-colors",
-                    !isZk ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:bg-surface-muted",
-                  )}
-                >
-                  <span className="font-medium">Normal</span>
-                  <span className="text-xs text-muted">Discloses the credential; reuses 3-pillar verify.</span>
-                </button>
-              </div>
+            <div className="flex items-start gap-2 rounded-md border border-border bg-surface-muted p-3 text-sm">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              <span className="text-muted">
+                The owner approves an owner-hidden proof. Neither their identity nor the credential's
+                contents are revealed, and no credential data is written on chain.
+              </span>
             </div>
 
             {error && <p className="text-sm text-danger">{error}</p>}
@@ -241,9 +204,8 @@ export function VerifyFlow({
             </Badge>
             <QrCode value={qrUrl} caption={qrUrl} />
             <p className="text-center text-sm text-muted">
-              {isZk
-                ? "Private — no credential data will be written on chain."
-                : "The owner scans this QR and approves disclosure in their app."}
+              The owner scans this QR and approves the private proof in their app — no credential
+              data will be written on chain.
             </p>
             {!pollSession && (
               <p className="text-center text-xs text-muted">
@@ -260,9 +222,7 @@ export function VerifyFlow({
           <div className="flex flex-col items-center gap-3 py-4 text-center">
             <CheckCircle2 className="h-10 w-10 text-success" />
             <p className="text-lg font-semibold">Verified</p>
-            {isZk && (
-              <p className="text-sm text-muted">Private — no credential data on chain.</p>
-            )}
+            <p className="text-sm text-muted">Private — no credential data on chain.</p>
             {txHash && (
               <a
                 href={explorerTxUrl(txHash)}

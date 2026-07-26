@@ -130,8 +130,8 @@ Each role platform persists the records it issues into its OWN store (separate M
   These routes are gated by `Authorization: Bearer <GOV_API_TOKEN>` — as are issue and the operator record reads (`GET /v1/records`, `GET /v1/records/:root`, which leak Section A person PII if open); health, verify, the verifications audit log, and the public PII-free receipt endpoints stay open (see the "Government travel receipt" section above for the full gating rationale). Missing/wrong token → 401; in demo mode (`GOV_DEMO_MODE` et al) an unset `GOV_API_TOKEN` defaults to `dogtag-gov-demo-token` (the portal's `VITE_GOV_API_TOKEN` falls back to the same value); in non-demo mode with no token configured, the gated routes fail closed with 503.
 - **Immutability**: `PATCH` accepts ONLY off-chain fields (`label`/`notes`, and `status` → `expired`); any on-chain-derived key in the body (tx hash, block, contract/issuer addr, root, wrapped doc, explorer url) is **rejected 400** ("… is on-chain-derived and immutable"). See the `IMMUTABLE_KEYS` list in each `routes.rs`.
 - **Soft-invalidation, never hard delete**: revoke flips status to `revoked` on-chain (isValid → false) but keeps the row + its original issuance proof AND adds a revoke-tx proof; `expired` is an off-chain-only status transition (anchor untouched). Both stay listed + explorer-verifiable. There is NO delete endpoint by design. State machine: revoke accepts `issued` OR `expired` records (a compromised-but-expired credential can still be invalidated on-chain); expire accepts ONLY `issued` — anything else, incl. a revoked record, is rejected 409 (an off-chain `expired` must never mask an on-chain revocation; `revoked` is terminal).
-- **Web**: the vet + groomer portals share `stacks/{vet,groomer}/web/src/pages/Records.tsx` (identical) which now reads `api.listRecords()` from the backend DB (NOT the old localStorage `recordsStore`) and offers edit/expire/revoke via the shared `@dogtag/ui` client (`listRecords`/`updateRecord` in `packages/ui/src/api/client.ts`). The government portal has its own `Records` page (`stacks/government/web/src/pages/Records.tsx`) using the `@dogtag/ui` `Table`/`Badge`.
-- **Tests**: hermetic Rust integration tests (`stacks/{vet,government}/api/tests/records_crud.rs`, MemChain+MemStore) prove issue→persist-proof→list→patch(reject on-chain)→revoke(soft)→expire. Playwright: `government/web/e2e/records-crud.spec.ts` runs full-stack against a demo backend started with **`GOV_DEMO_MODE=1 GOV_CHAIN_BACKEND=mem`** (real store + mem chain) — `GOV_DEMO_MODE` alone selects only the store, so without `GOV_CHAIN_BACKEND=mem` the backend runs LIVE and, with no `GOV_SIGNER_KEY`, `/issue` dry-runs and the spec's explorer-tx-link assertion fails; `stacks/{vet,groomer}/web/e2e/records.spec.ts` drive the shared Records UI against a **mocked** backend (route regex `^https?://[^/]+/api/` — a `**/api/**` glob wrongly swallows `@dogtag/ui`'s `src/api/*.ts` module scripts and breaks the mount). None are in CI (need a served portal + browsers).
+- **Web**: the VET portal's `stacks/vet/web/src/pages/Records.tsx` reads `api.listRecords()` from the backend DB (NOT the old localStorage `recordsStore`) and offers edit/expire/revoke via the shared `@dogtag/ui` client (`listRecords`/`updateRecord` in `packages/ui/src/api/client.ts`). The GROOMER has no Records page: `BUSINESS_TYPE=groomer` does not mount the records routes at all (see the role-gate note above). The government portal has its own `Records` page (`stacks/government/web/src/pages/Records.tsx`) using the `@dogtag/ui` `Table`/`Badge`.
+- **Tests**: hermetic Rust integration tests (`stacks/{vet,government}/api/tests/records_crud.rs`, MemChain+MemStore) prove issue→persist-proof→list→patch(reject on-chain)→revoke(soft)→expire. Playwright: `government/web/e2e/records-crud.spec.ts` runs full-stack against a demo backend started with **`GOV_DEMO_MODE=1 GOV_CHAIN_BACKEND=mem`** (real store + mem chain) — `GOV_DEMO_MODE` alone selects only the store, so without `GOV_CHAIN_BACKEND=mem` the backend runs LIVE and, with no `GOV_SIGNER_KEY`, `/issue` dry-runs and the spec's explorer-tx-link assertion fails; `stacks/vet/web/e2e/records.spec.ts` drives the Records UI against a **mocked** backend (route regex `^https?://[^/]+/api/` — a `**/api/**` glob wrongly swallows `@dogtag/ui`'s `src/api/*.ts` module scripts and breaks the mount). None are in CI (need a served portal + browsers).
 
 ### Government travel receipt (CDC-modeled TRAVEL_CLEARANCE)
 The government `TRAVEL_CLEARANCE` credential is a CDC-modeled travel receipt (research `dogtag-govreceipt-r7` §2.1 + arch `dogtag-govarch-r8`). Grounding rules that are easy to get wrong:
@@ -208,9 +208,9 @@ The per-role **consumers** of the PR-4 oversight indexer, one tier up from the a
 - **Two-layer server-side scoping (the load-bearing property).** (1) The INDEXER scopes by bearer token (a vet/groomer presents a SCOPED `INDEXER_SCOPES` token → `Scope::Signers`; the government presents the `unscoped:true` token). (2) The role backend RE-CHECKS every returned event against a **local scope gate** (`crate::trace::LocalScope::admits` — `actor ∈ own signers OR clone ∈ own clones`, the same rule as the indexer's `scope.rs`), built from the operator's own config issuer-clones + custody signer accounts + the signer/clone/relayer addresses on its own records+sessions (zero address never widens scope). So even a mis-scoped indexer token can never leak another operator's event into a vet's view. The government passes `scope = None` (admits everything, unscoped). This defense-in-depth makes "a vet cannot fetch another vet's activity" testable at the role layer without a live indexer.
 - **The DB-record join (`crate::trace`).** Each on-chain event is matched to the operator's own record: vet/groomer by anchored `root` (issuances/revocations) or verification `nullifier` / tx (verifications) → `Record`/`VerifySession`; government by `root` / tx → `IssuedCredential`/`VerificationRecord`. The matched record's non-PII summary is attached as the event's `local` field (`null` when on-chain activity has no local record — a drift signal that is still shown in-scope).
 - **Endpoints.** Vet/groomer (operator-session gated, `public_router`): `GET /trace/activity` (scoped + gated + joined; envelope adds `inScope`/`matched`/`droppedOutOfScope`/`localScope`), `GET /trace/stats` (indexer scoped counters + own record/session counts). Government (`GOV_API_TOKEN` gated): `GET /v1/oversight/activity` (unscoped + joined; `matched` = how many cross-issuer events are the authority's own), `GET /v1/oversight/stats`, `GET /v1/oversight/issuers`. Unconfigured indexer → 503 `{indexer:"not-configured"}` (rest of backend unaffected).
-- **Web.** New nav+route+page per app (Waypoints icon): vet/groomer `pages/Traceability.tsx` ("Traceability") share the `@dogtag/ui` client — added `traceActivity`/`traceStats` + `Trace*` types to `packages/ui/src/api/{client,types}.ts`; government `pages/Oversight.tsx` ("Oversight") uses its local `lib/api.ts` (`apiGetResult` surfaces the 503 for a first-class "indexer not connected" state) + `VITE_GOV_API_TOKEN`. Each renders the joined feed with the local record highlighted, finality badges, and explorer links.
+- **Web.** New nav+route+page per app (Waypoints icon): the vet's `pages/Traceability.tsx` ("Traceability") uses the `@dogtag/ui` client — added `traceActivity`/`traceStats` + `Trace*` types to `packages/ui/src/api/{client,types}.ts`; government `pages/Oversight.tsx` ("Oversight") uses its local `lib/api.ts` (`apiGetResult` surfaces the 503 for a first-class "indexer not connected" state) + `VITE_GOV_API_TOKEN`. Each renders the joined feed with the local record highlighted, finality badges, and explorer links.
 - **Config.** `INDEXER_API_BASE` for all three; vet/groomer add `INDEXER_SCOPED_TOKEN` (alias `INDEXER_TOKEN`), government adds `INDEXER_OVERSIGHT_TOKEN` (alias `GOV_INDEXER_TOKEN`). `scripts/demo-up.sh` starts the indexer (`INDEXER_DEMO_MODE=1`, `:46001`) and wires all three with the two well-known demo tokens. DEMO CAVEAT: the indexer's scoped demo token is bound to a FIXED stand-in signer/clone, so a freshly-genesis'd vet/groomer sees "0 in scope" (its local gate correctly rejects the demo-groomer's events) until its real signer is added to `INDEXER_SCOPES`; the government unscoped view always shows the full scripted cross-issuer feed.
-- **Tests.** `stacks/vet/api/tests/trace.rs` (scoping: foreign vet excluded; join; auth; 503) + `crate::trace`/`crate::oversight` unit tests; `stacks/government/api/tests/oversight.rs` (unscoped feed sees all issuers, own highlighted, non-PII; auth; 503). Web e2e mirror the mocked-`/api/`-regex style: `stacks/{vet,groomer}/web/e2e/traceability.spec.ts`, `stacks/government/web/e2e/oversight.spec.ts` (not in CI — need a served portal). All 4 test constructors in vet `tests/common/mod.rs` + the 3 gov test `AppState` literals gained a `feed` field (default `DisabledFeed`; trace tests override `state.feed` with a seeded `MemFeed`).
+- **Tests.** `stacks/vet/api/tests/trace.rs` (scoping: foreign vet excluded; join; auth; 503) + `crate::trace`/`crate::oversight` unit tests; `stacks/government/api/tests/oversight.rs` (unscoped feed sees all issuers, own highlighted, non-PII; auth; 503). Web e2e mirror the mocked-`/api/`-regex style: `stacks/vet/web/e2e/traceability.spec.ts`, `stacks/government/web/e2e/oversight.spec.ts` (not in CI — need a served portal). All 4 test constructors in vet `tests/common/mod.rs` + the 3 gov test `AppState` literals gained a `feed` field (default `DisabledFeed`; trace tests override `state.feed` with a seeded `MemFeed`).
 - **Post-unification alignment (the PR-5 remainder, after the owner-hidden collapse).** Three joins the original PR-5 predates:
   (1) **Dog-tag mints** - the owner-hidden custodial issuance (`issue(R)` on `cfg.profile_issuer_addr` + `mintCustodial`) joins the vet's own `ProfileIssueSession` by anchored profile root / mint tx (`kind:"mint"`, via `Store::list_profile_sessions`); the profile clone is part of the local scope; `/trace/stats` adds `local.dogTagsMinted` (bound sessions only - an errored bind stores error TEXT in `tx_hash` and must never enter the tx join).
   (2) **Owner-blind `verified` payload** - `dogTagId` (field-hashed decimal), hashed `purpose`, proof-bound `deadline` are rendered on all three portals (`TraceEvent`/`OversightEvent` types); there is NO subject anywhere downstream, `deadline` replaced it.
@@ -1964,3 +1964,119 @@ clear it either.
 > in the final cleanup slice). iOS CI regenerates and copies the live Swift binding, but Android CI
 > rebuilds only the native `.so` and consumes the committed `apps/android/.../dogtag_standard.kt`
 > unchanged. Regenerate and commit BOTH live `apps/` bindings after every FFI change.
+
+---
+
+## Groomer role gate + the shop CRM (clients / appointments / all verifications)
+
+### The groomer IS the vet binary — `BUSINESS_TYPE` is the only difference
+
+`stacks/groomer/` has no `api/src`: the groomer backend runs `target/release/vet-api` with
+`BUSINESS_TYPE=groomer` (see `scripts/demo-up.sh`, `stacks/groomer/docker-compose.yml`,
+`scripts/e2e-zk.sh`). So "remove X from the groomer" is a ROLE question, never a delete.
+
+`Config::business_type` drives `Config::issuance_enabled()`, and `routes::public_router` collects the
+issuance routes into a sub-router it does not merge when the role is `groomer`. The gated set is the
+FULL issuance surface — `/credentials/prepare`, `/credentials/confirm`, `GET /records`,
+`/records/{id}/revoke`, `/records/{id}/share`, `/records/{id}` (GET **and** PATCH), `/r/{token}`,
+`/profiles/issue/session/start`, `/profiles/issue/session/{id}`, `/profiles/issue/custodial-bind`,
+`/p/{token}`. Anything issuance-only added later must be gated too, or the groomer silently regrows
+an issuer surface. The role **fails open**: anything that is not the literal `groomer`
+(case-insensitive) keeps the full issuing surface, so a typo'd or absent `BUSINESS_TYPE` can never
+silently strip a live vet of issuance. `tests/role_gating.rs` pins both directions.
+
+The web apps are already separate (`stacks/{vet,groomer}/web`), so portal-side removals do not touch
+the vet at all — only the shared `packages/ui` and the shared API need role thinking.
+
+#### Distinguishing "route not mounted" from "handler said 404"
+
+Axum's route-miss returns 404 with an **empty body**; every handler here returns `{"error": ...}`.
+A role-gating test must assert on both, or a legitimate 404 (unknown record id, expired token) reads
+as a missing route. See `route_absent()` in `tests/role_gating.rs`.
+
+### `/v1/appointments` is already taken by the Phase-7 central replica
+
+`ApptReplica` + `/v1/appointments*` mirror CENTRAL-owned cross-business bookings (central is the sole
+`rev` allocator). The shop's OWN booking book is a different entity (`store::Appointment`) on the
+UNVERSIONED `/appointments` — matching the convention that `/v1/*` is for cross-service callers
+(central HMAC, the owner's phone) and unversioned paths are operator-facing. The CRM routes
+(`/clients`, `/appointments`, `/verifications`) are mounted for ALL roles: a booking book is not
+role-specific, and mounting them everywhere keeps the vet's behavior unchanged.
+
+### Adding a `Store` entity: four places, and `cargo test` only checks three
+
+1. the struct + trait method in `store.rs`
+2. `MemStore` impl
+3. `MongoStore` impl — **behind `#[cfg(feature = "mongo")]`, so `cargo test` does NOT compile it.**
+   Run `cargo check -p vet-api --features mongo` explicitly or the mongo build breaks silently.
+4. new fields on an EXISTING persisted struct need `#[serde(default)]`, or live Mongo rows written
+   before the field existed fail to deserialize.
+
+`Config` is built by struct literal in `main.rs`, `app.rs`'s test module, `tests/common/mod.rs`,
+`tests/gate_dual_signing_parity.rs`, `tests/submit_consent_levelb_e2e.rs` and
+`tests/role_gating.rs` — grep `Config {`, do not assume the count.
+
+### The verify session's terminal sites
+
+Anything that must observe a verification's outcome has to hook every site where the session's status
+settles. Since the owner-hidden collapse there are two, both inside the `tokio::spawn` in
+`verify::consent_submit_levelb`: the record success (`recorded`) and the record failure (`error`).
+`crm::attach_evidence` runs once before the spawn, at the `recording` write, because that is where
+the opaque `pub[dogTagId]` and the validated disclosed keyPaths are known. The spawned task clones
+`store`/`chain` out of `AppState`, so such a hook must take `&Arc<dyn Store>`, not `&AppState`.
+
+`attach_evidence` upserts rather than requiring an existing row, so a COLD submit (no
+operator-started session, hence no `crm::start_log`) still lands in "All verifications".
+
+### Privacy invariants that outrank convenience
+
+- `GET /x/{token}` is UNAUTHENTICATED — anyone who scans the QR reads it. Its response is exactly
+  `{sessionId, relayer, purpose, recordType, challenge, unverifiedClaims}`. Never add client,
+  appointment or pet context there; the linkage lives server-side only.
+- The shop's verification history deliberately does NOT store the owner's `subject` wallet. It is
+  derivable from the tx, but persisting it creates a client -> wallet linkage the protocol withholds
+  from a verifier. (There is no `subject` on the owner-hidden path to store in the first place.)
+- `VerificationLog` mirrors `VerifySession::disclosed_key_paths` — keyPaths only, never the disclosed
+  VALUES, which are shown to the operator at the time of the check and never persisted. On an
+  ordinary owner-hidden verification the list is EMPTY, and that emptiness is the guarantee, not a
+  gap: never backfill it. `tests/crm.rs` pins these.
+- There is no verification `mode` anywhere in this layer. The product is one owner-hidden flow (see
+  "Product model"), so the history has no mode column, no mode filter and no mode badge — it reports
+  what the owner chose to disclose instead.
+
+### The dogTagId a test must assert under is the FIELD-HASHED one
+
+The DOG_PROFILE SBT is minted under `field_of_value(Integer(handle))` (the circuit's `pub[0]`), not
+the raw operator-facing handle — otherwise the owner's later consent proof fails the
+`R == profileRoot(dogTagId)` binding. A test reading `ownerOf`/`profileRoot` must hash the handle the
+same way; `tests/custodial_issuance_bridge.rs` does this and additionally pins the raw-handle case
+as fail-closed.
+
+### Live-validating without disturbing a running demo stack
+
+Boot a second instance from your own worktree on a spare port (`PORT`, `CUSTODY_SEAL_PATH`) rather
+than restarting the shared one — the shared instance's custody unlock is in-memory, so a restart
+strands it until someone re-enters the passphrase.
+
+Whitelisting a fresh relayer needs the WHITELIST_ADMIN key from `contracts/.env`, which is
+**gitignored and therefore absent from every fresh worktree** — so `demo-bootstrap.sh` and
+`e2e-zk.sh` cannot run there. The fallback is the central admin API's
+`POST /v1/issuer-applications` + `/{id}/approve`, which whitelists `VERIFY:<purpose>` as the deployer.
+Caveat: approve whitelists on the registry **that running admin-api instance was started with**,
+which may not be `contracts/deployments/roax.json`'s current `IssuerRegistry` — check the tx `to`
+address before concluding the whitelist failed.
+
+### What the groomer portal no longer has
+
+`Records.tsx`, `Issue.tsx` and `Traceability.tsx` were removed from `stacks/groomer/web` (with their
+e2e specs) — a groomer verifies and does not issue, and the on-chain event console is not its business
+history. The VET keeps all three, untouched. The groomer's `Traceability` nav slot became **"All
+verifications"** (`pages/Verifications.tsx`): the shop's own searchable history, joined to appointment
+and client. Statements elsewhere in this file about the two portals SHARING a Records page, or about a
+groomer `Traceability.tsx`, describe the pre-CRM layout.
+
+The verify surface is one component, `@dogtag/ui`'s `VerifyFlow`, used by BOTH the appointment-linked
+flow (`AppointmentDetail.tsx`) and the ad-hoc one (`Verify.tsx`), so a verification means the same
+thing however it was started. It offers NO mode/disclosure choice: the retired ZK-vs-Normal selector
+was removed from `VerifyFlow` when the backend collapsed to the single owner-hidden submit route, and
+`stacks/groomer/web/e2e/verify.spec.ts` asserts neither "Mode" nor "Normal" appears.

@@ -129,7 +129,20 @@ function activeNavKey(pathname: string): string | undefined {
   return NAV.find((n) => pathname === n.href || pathname.startsWith(`${n.href}/`))?.key;
 }
 
-export function Layout({ children, title }: { children: ReactNode; title: string }) {
+export function Layout({
+  children,
+  title,
+  /**
+   * Widen the content column. The reading width that suits forms and tables (`max-w-5xl`) squeezes
+   * the calendar's seven day-columns to ~130px each, which truncates the very thing the operator is
+   * reading. Wide pages get the room instead.
+   */
+  wide = false,
+}: {
+  children: ReactNode;
+  title: string;
+  wide?: boolean;
+}) {
   const location = useLocation();
   const { logout } = useApp();
   const activeKey = activeNavKey(location.pathname);
@@ -164,7 +177,7 @@ export function Layout({ children, title }: { children: ReactNode; title: string
         </>
       }
     >
-      <div className="mx-auto max-w-5xl">
+      <div className={wide ? "mx-auto max-w-7xl" : "mx-auto max-w-5xl"}>
         <CustodyPrompt />
         {children}
       </div>
