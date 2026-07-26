@@ -13,10 +13,9 @@ import {
 import {
   CalendarDays,
   Download,
+  History,
   LayoutDashboard,
-  FileSignature,
   ListChecks,
-  FileStack,
   LogOut,
   Megaphone,
   Scissors,
@@ -25,7 +24,6 @@ import {
   BarChart3,
   Users,
   Wand2,
-  Waypoints,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -33,23 +31,23 @@ import { useApp } from "./AppContext";
 import { env } from "../lib/env";
 
 /**
- * Mirrors the reference groomer dashboard nav (impl §5.2):
- * Dashboard / Calendar / Appointments / Clients / Groomers / Reports / Marketing — plus the
- * DogTag-specific Import / Verify / Setup / Settings sections.
+ * The groomer's working nav (impl §5.2): the daily surfaces first (Calendar / Appointments /
+ * Clients), then the verification history, then the supporting DogTag sections.
+ *
+ * There is NO "Issue credential" entry: a groomer verifies, it does not issue. The backend agrees —
+ * `BUSINESS_TYPE=groomer` does not mount the issuance routes at all.
  */
 const NAV: NavItem[] = [
   { key: "dashboard", href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { key: "calendar", href: "/calendar", label: "Calendar", icon: CalendarDays },
   { key: "appointments", href: "/appointments", label: "Appointments", icon: ListChecks },
   { key: "clients", href: "/clients", label: "Clients", icon: Users },
+  { key: "verifications", href: "/verifications", label: "All verifications", icon: History },
   { key: "groomers", href: "/groomers", label: "Groomers", icon: Scissors },
   { key: "reports", href: "/reports", label: "Reports", icon: BarChart3 },
   { key: "marketing", href: "/marketing", label: "Marketing", icon: Megaphone },
   { key: "import", href: "/import", label: "Import from user", icon: Download },
-  { key: "issue", href: "/issue", label: "Issue a record", icon: FileSignature },
-  { key: "records", href: "/records", label: "Records", icon: FileStack },
-  { key: "traceability", href: "/traceability", label: "Traceability", icon: Waypoints },
-  { key: "verify", href: "/verify", label: "Verification", icon: ShieldCheck },
+  { key: "verify", href: "/verify", label: "Ad-hoc verification", icon: ShieldCheck },
   { key: "setup", href: "/setup", label: "Setup", icon: Wand2 },
   { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -123,10 +121,18 @@ function CustodyPrompt() {
   );
 }
 
+/**
+ * Which nav entry owns the current path. Matches on a full path SEGMENT, not a raw string prefix:
+ * `/verifications` must not light up `/verify` just because one is a prefix of the other.
+ */
+function activeNavKey(pathname: string): string | undefined {
+  return NAV.find((n) => pathname === n.href || pathname.startsWith(`${n.href}/`))?.key;
+}
+
 export function Layout({ children, title }: { children: ReactNode; title: string }) {
   const location = useLocation();
   const { logout } = useApp();
-  const activeKey = NAV.find((n) => location.pathname.startsWith(n.href))?.key;
+  const activeKey = activeNavKey(location.pathname);
 
   return (
     <AppShell

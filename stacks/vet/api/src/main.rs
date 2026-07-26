@@ -66,6 +66,9 @@ async fn main() {
         admin_password: env("ADMIN_PASSWORD", "admin-dev-password"),
         confirmations: env("CONFIRMATIONS", "1").parse().unwrap_or(1),
         business_id: env("BUSINESS_ID", "biz-local"),
+        // The deployment role. `groomer` runs this binary as a pure verifier (no issuance routes);
+        // anything else — including the default — keeps the full vet surface.
+        business_type: env("BUSINESS_TYPE", "vet"),
         central_hmac_secret: env("CENTRAL_HMAC_SECRET", "dev-central-hmac-secret"),
         // OPTIONAL disk seal: when set, the sealed custody (ciphertext + meta) is persisted on
         // genesis and re-loaded on startup so the signer survives a restart. Unset -> in-memory only.

@@ -9,12 +9,14 @@
 //!   prover.rs      — owner-hidden consent prover service
 //!   app.rs         — AppState/config + server-side VC build/wrap
 //!   verify.rs      — third-party verify + canonical owner-hidden consent submission
+//!   crm.rs         — the shop's clients/appointments + the verification history they link to
 //!   routes.rs      — Axum router + all handlers
 
 pub mod app;
 pub mod auth;
 pub mod calendar;
 pub mod chain;
+pub mod crm;
 pub mod custody;
 pub mod discovery;
 pub mod oversight;

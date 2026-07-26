@@ -23,6 +23,10 @@ pub const OPERATOR_PW: &str = "op-pw";
 pub const ADMIN_PW: &str = "admin-pw";
 pub const CENTRAL_HMAC_SECRET: &str = "central-shared-secret";
 pub const BUSINESS_ID: &str = "biz-test";
+/// The default deployment role for the shared test states: `vet`, i.e. issuance ON — so every
+/// pre-existing test exercises exactly the surface it did before the role gate existed. The
+/// groomer-role variants live in `tests/role_gating.rs`.
+pub const BUSINESS_TYPE: &str = "vet";
 /// Owner-hidden `DogTagSBTConsent` mint target.
 pub const SBT_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000dd";
 /// The `DogTagIssuer` clone profile roots are anchored into via `issue(R)`.
@@ -56,6 +60,7 @@ pub fn state_with(
         admin_password: ADMIN_PW.to_string(),
         confirmations,
         business_id: BUSINESS_ID.to_string(),
+        business_type: BUSINESS_TYPE.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: None,
     };
@@ -101,6 +106,7 @@ pub fn state_for_calendar(
         admin_password: ADMIN_PW.to_string(),
         confirmations: 1,
         business_id: BUSINESS_ID.to_string(),
+        business_type: BUSINESS_TYPE.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: None,
     };
@@ -141,6 +147,7 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         admin_password: ADMIN_PW.to_string(),
         confirmations: 1,
         business_id: BUSINESS_ID.to_string(),
+        business_type: BUSINESS_TYPE.to_string(),
         central_hmac_secret: CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: Some(seal_path),
     };

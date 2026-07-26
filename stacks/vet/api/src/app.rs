@@ -45,6 +45,12 @@ pub struct Config {
     pub confirmations: u64,
     /// this business's id (assigned by central registration) — used in the appointment contract.
     pub business_id: String,
+    /// The DEPLOYMENT ROLE this instance runs as (env `BUSINESS_TYPE`). The groomer stack runs the
+    /// SAME `vet-api` binary as the vet, so the role — not the binary — decides which surfaces exist:
+    /// a `groomer` VERIFIES and does not ISSUE, so `public_router` does not mount the issuance routes
+    /// for it (see [`Config::issuance_enabled`]). Unset/anything else -> `vet` (issuance ON), so every
+    /// existing vet deployment and every test is byte-for-byte unchanged.
+    pub business_type: String,
     /// shared HMAC secret with central (verifies inbound PUTs; signs outbound appointment-events).
     pub central_hmac_secret: String,
     /// OPTIONAL on-disk path where the SEALED custody (age-encrypted seed ciphertext + non-secret
@@ -57,6 +63,22 @@ pub struct Config {
 impl Config {
     pub fn issuer_addr_for(&self, record_type: &str) -> Option<String> {
         self.issuer_addrs.get(record_type).cloned()
+    }
+
+    /// True iff this deployment runs as a GROOMER (env `BUSINESS_TYPE=groomer`, case-insensitive).
+    pub fn is_groomer(&self) -> bool {
+        self.business_type.eq_ignore_ascii_case("groomer")
+    }
+
+    /// Whether the ISSUANCE surfaces (`/credentials/*`, `/records/*`, `/r/{token}`,
+    /// `/profiles/issue/*`, `/p/{token}`) are mounted on this instance.
+    ///
+    /// A groomer is a VERIFIER: it records proofs-of-verification against the `VERIFY:<purpose>`
+    /// whitelist namespace and never mints credentials, so those routes are not mounted at all (the
+    /// same "the route does not exist" posture the `prover` feature takes for `/prove-verification`).
+    /// Every other role — notably the vet — keeps them.
+    pub fn issuance_enabled(&self) -> bool {
+        !self.is_groomer()
     }
 }
 
@@ -336,6 +358,7 @@ mod tests {
             admin_password: String::new(),
             confirmations: 0,
             business_id: String::new(),
+            business_type: "vet".to_string(),
             central_hmac_secret: String::new(),
             custody_seal_path: None,
         }

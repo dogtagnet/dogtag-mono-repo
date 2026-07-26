@@ -329,6 +329,7 @@ fn state_for(rpc: &str, st: &Stack) -> AppState {
         admin_password: common::ADMIN_PW.to_string(),
         confirmations: 1,
         business_id: common::BUSINESS_ID.to_string(),
+        business_type: common::BUSINESS_TYPE.to_string(),
         central_hmac_secret: common::CENTRAL_HMAC_SECRET.to_string(),
         custody_seal_path: None,
     };

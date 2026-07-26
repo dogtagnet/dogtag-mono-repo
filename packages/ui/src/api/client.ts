@@ -2,8 +2,16 @@ import type {
   AccountsReq,
   AccountsResp,
   ApiError,
+  AppointmentInput,
+  AppointmentListQuery,
+  ClientInput,
+  ClientListQuery,
   ConfirmReq,
   ConfirmResp,
+  CrmAppointment,
+  CrmClient,
+  CrmPage,
+  CrmVerification,
   GenesisConfirmReq,
   GenesisConfirmResp,
   GenesisStartResp,
@@ -33,6 +41,7 @@ import type {
   VerifyConsentSubmitReq,
   VerifyConsentSubmitResp,
   VerificationHistoryResp,
+  VerificationListQuery,
   VerifyCredentialReq,
   VerifyCredentialResp,
   VerifySessionStartReq,
@@ -160,15 +169,24 @@ export function createApiClient(opts: ApiClientOptions) {
     }
   }
 
+  /**
+   * Serialize list filters into a `?a=b&…` query string, DROPPING absent/blank values so a cleared
+   * UI filter is genuinely "no filter" rather than a filter on the empty string. Filtering and
+   * paging are the server's job — the browser never pulls a collection to narrow it locally.
+   */
+  function queryString(params: Record<string, string | number | undefined | null>): string {
+    const sp = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null || v === "") continue;
+      sp.set(k, String(v));
+    }
+    const s = sp.toString();
+    return s ? `?${s}` : "";
+  }
+
   /** Build a `?a=b&…` query string from a TraceQuery, skipping unset/blank fields. */
   function traceQs(q?: TraceQuery): string {
-    if (!q) return "";
-    const p = new URLSearchParams();
-    for (const [k, v] of Object.entries(q)) {
-      if (v !== undefined && v !== null && `${v}` !== "") p.set(k, `${v}`);
-    }
-    const s = p.toString();
-    return s ? `?${s}` : "";
+    return q ? queryString(q as Record<string, string | number | undefined | null>) : "";
   }
 
   return {
@@ -241,6 +259,31 @@ export function createApiClient(opts: ApiClientOptions) {
     verificationHistory: () => request<VerificationHistoryResp>("GET", "/verify/history"),
     verifyConsentSubmit: (body: VerifyConsentSubmitReq) =>
       request<VerifyConsentSubmitResp>("POST", "/verify/consent/submit", body),
+
+    // ---- shop CRM: clients (operator session) ----
+    listClients: (q: ClientListQuery = {}) =>
+      request<CrmPage<CrmClient>>("GET", `/clients${queryString({ ...q })}`),
+    getClient: (id: string) => request<CrmClient>("GET", `/clients/${id}`),
+    createClient: (body: ClientInput) => request<CrmClient>("POST", "/clients", body),
+    updateClient: (id: string, body: ClientInput) => request<CrmClient>("PUT", `/clients/${id}`, body),
+    deleteClient: (id: string) => request<{ deleted: boolean }>("DELETE", `/clients/${id}`),
+
+    // ---- shop CRM: appointments ----
+    listAppointments: (q: AppointmentListQuery = {}) =>
+      request<CrmPage<CrmAppointment>>("GET", `/appointments${queryString({ ...q })}`),
+    /** the single-appointment read also carries this appointment's verifications */
+    getAppointment: (id: string) => request<CrmAppointment>("GET", `/appointments/${id}`),
+    createAppointment: (body: AppointmentInput) =>
+      request<CrmAppointment>("POST", "/appointments", body),
+    updateAppointment: (id: string, body: AppointmentInput) =>
+      request<CrmAppointment>("PUT", `/appointments/${id}`, body),
+    deleteAppointment: (id: string) =>
+      request<{ deleted: boolean }>("DELETE", `/appointments/${id}`),
+
+    // ---- shop CRM: verification history ("All verifications") ----
+    listVerifications: (q: VerificationListQuery = {}) =>
+      request<CrmPage<CrmVerification>>("GET", `/verifications${queryString({ ...q })}`),
+    getVerification: (id: string) => request<CrmVerification>("GET", `/verifications/${id}`),
 
     // ---- central: issuer-application apply (whitelist apply relays here) ----
     applyForWhitelist: (body: IssuerApplicationReq) =>

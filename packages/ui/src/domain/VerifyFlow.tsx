@@ -41,6 +41,14 @@ export interface VerifyFlowProps {
    * Normal mode so a non-technical operator can one-click prepare the verify session. Defaults true.
    */
   showDemo?: boolean;
+  /**
+   * OPTIONAL shop appointment this verification is being performed for. Passed straight through to
+   * `POST /verify/session/start`, which links the resulting verification to that appointment and its
+   * client in the shop's history. Omit for an ad-hoc verification.
+   */
+  appointmentId?: string;
+  /** Called once the verification reaches a terminal state, so the host can refresh its own view. */
+  onSettled?: (result: { sessionId: string; status: "recorded" | "error"; txHash?: string }) => void;
 }
 
 type Phase = "idle" | "starting" | "awaiting" | "verified" | "error" | "failed";
@@ -56,6 +64,8 @@ export function VerifyFlow({
   pollSession,
   pollIntervalMs = 3000,
   showDemo = true,
+  appointmentId,
+  onSettled,
 }: VerifyFlowProps) {
   const [purpose, setPurpose] = useState<string>(purposes[0]?.value ?? "");
   const selected = purposes.find((p) => p.value === purpose);
@@ -92,6 +102,7 @@ export function VerifyFlow({
         purpose: selected.value,
         recordType: selected.recordType,
         mode,
+        appointmentId,
       });
       setQrUrl(resp.qrUrl);
       setSessionId(resp.sessionId);
@@ -116,10 +127,12 @@ export function VerifyFlow({
           setTxHash(null);
           setPhase("failed");
           stopPolling();
+          onSettled?.({ sessionId: id, status: "error" });
         } else if (s.status === "recorded") {
           setTxHash(s.txHash ?? null);
           setPhase("verified");
           stopPolling();
+          onSettled?.({ sessionId: id, status: "recorded", txHash: s.txHash });
         }
       } catch {
         /* keep polling; transient errors are non-fatal */

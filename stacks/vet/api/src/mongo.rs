@@ -5,11 +5,13 @@
 use async_trait::async_trait;
 use mongodb::bson::{doc, Document};
 use mongodb::options::IndexOptions;
-use mongodb::{Client, Collection, Database, IndexModel};
+// `Client` is aliased: the CRM entity `store::Client` (a shop customer) owns that name in this file.
+use mongodb::{Client as MongoClient, Collection, Database, IndexModel};
 
 use crate::store::{
-    ApptReplica, CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, ProfileIssueSession,
-    Record, Store, VerifySession,
+    clamp_limit, Appointment, AppointmentQuery, ApptReplica, Client, ClientQuery, CustodyBlob,
+    GcalEventMap, GcalSyncState, IssuerSettings, Page, ProfileIssueSession, Record, Store,
+    VerificationLog, VerificationQuery, VerifySession,
 };
 
 pub struct MongoStore {
@@ -17,9 +19,9 @@ pub struct MongoStore {
 }
 
 impl MongoStore {
-    /// Connect and ensure the unique jti index exists.
+    /// Connect and ensure the unique jti index exists, plus the CRM query indexes.
     pub async fn connect(uri: &str, db_name: &str) -> Result<Self, mongodb::error::Error> {
-        let client = Client::with_uri_str(uri).await?;
+        let client = MongoClient::with_uri_str(uri).await?;
         let db = client.database(db_name);
         let jti: Collection<Document> = db.collection("jwt_jti");
         let idx = IndexModel::builder()
@@ -27,7 +29,56 @@ impl MongoStore {
             .options(IndexOptions::builder().unique(true).build())
             .build();
         jti.create_index(idx).await?;
-        Ok(MongoStore { db })
+        let store = MongoStore { db };
+        store.ensure_crm_indexes().await?;
+        Ok(store)
+    }
+
+    /// Index every field the CRM list queries filter or sort on, so search/filter stays a bounded
+    /// indexed lookup as the collections grow rather than a collection scan.
+    async fn ensure_crm_indexes(&self) -> Result<(), mongodb::error::Error> {
+        let unique = |keys: Document| {
+            IndexModel::builder()
+                .keys(keys)
+                .options(IndexOptions::builder().unique(true).build())
+                .build()
+        };
+        let plain = |keys: Document| IndexModel::builder().keys(keys).build();
+
+        let clients: Collection<Document> = self.db.collection("crm_clients");
+        clients.create_index(unique(doc! { "clientId": 1 })).await?;
+        // searchKey is the single free-text key; updatedAt is the list sort.
+        clients.create_index(plain(doc! { "searchKey": 1 })).await?;
+        clients.create_index(plain(doc! { "updatedAt": -1 })).await?;
+
+        let appts: Collection<Document> = self.db.collection("crm_appointments");
+        appts.create_index(unique(doc! { "appointmentId": 1 })).await?;
+        // startAt leads: it is BOTH the calendar's range filter and the list sort, so a compound
+        // index with the equality filters after it serves both without a separate sort stage.
+        appts.create_index(plain(doc! { "startAt": 1 })).await?;
+        appts.create_index(plain(doc! { "clientId": 1, "startAt": 1 })).await?;
+        appts.create_index(plain(doc! { "status": 1, "startAt": 1 })).await?;
+        appts.create_index(plain(doc! { "searchKey": 1 })).await?;
+
+        let verifs: Collection<Document> = self.db.collection("crm_verifications");
+        verifs.create_index(unique(doc! { "verificationId": 1 })).await?;
+        verifs.create_index(plain(doc! { "createdAt": -1 })).await?;
+        verifs.create_index(plain(doc! { "clientId": 1, "createdAt": -1 })).await?;
+        verifs.create_index(plain(doc! { "appointmentId": 1, "createdAt": -1 })).await?;
+        verifs.create_index(plain(doc! { "status": 1, "createdAt": -1 })).await?;
+        verifs.create_index(plain(doc! { "purpose": 1, "createdAt": -1 })).await?;
+        verifs.create_index(plain(doc! { "searchKey": 1 })).await?;
+        Ok(())
+    }
+
+    fn crm_clients(&self) -> Collection<Client> {
+        self.db.collection("crm_clients")
+    }
+    fn crm_appointments(&self) -> Collection<Appointment> {
+        self.db.collection("crm_appointments")
+    }
+    fn crm_verifications(&self) -> Collection<VerificationLog> {
+        self.db.collection("crm_verifications")
     }
 
     fn records(&self) -> Collection<Record> {
@@ -445,4 +496,202 @@ impl Store for MongoStore {
             .upsert(true)
             .await;
     }
+
+    // ---- shop CRM: clients ----
+    async fn put_client(&self, c: Client) {
+        let _ = self
+            .crm_clients()
+            .replace_one(doc! { "clientId": &c.client_id }, &c)
+            .upsert(true)
+            .await;
+    }
+    async fn get_client(&self, id: &str) -> Option<Client> {
+        self.crm_clients().find_one(doc! { "clientId": id }).await.ok().flatten()
+    }
+    async fn delete_client(&self, id: &str) -> bool {
+        self.crm_clients()
+            .delete_one(doc! { "clientId": id })
+            .await
+            .map(|r| r.deleted_count > 0)
+            .unwrap_or(false)
+    }
+    async fn list_clients(&self, q: &ClientQuery) -> Page<Client> {
+        let filter = merge(vec![search_filter(q.q.as_deref())]);
+        let coll = self.crm_clients();
+        let total = coll.count_documents(filter.clone()).await.unwrap_or(0);
+        let rows = collect_page(
+            coll.find(filter)
+                .sort(doc! { "updatedAt": -1, "clientId": 1 })
+                .skip(q.offset as u64)
+                .limit(clamp_limit(q.limit) as i64),
+        )
+        .await;
+        Page { rows, total }
+    }
+
+    // ---- shop CRM: appointments ----
+    async fn put_appointment(&self, a: Appointment) {
+        let _ = self
+            .crm_appointments()
+            .replace_one(doc! { "appointmentId": &a.appointment_id }, &a)
+            .upsert(true)
+            .await;
+    }
+    async fn get_appointment(&self, id: &str) -> Option<Appointment> {
+        self.crm_appointments()
+            .find_one(doc! { "appointmentId": id })
+            .await
+            .ok()
+            .flatten()
+    }
+    async fn delete_appointment(&self, id: &str) -> bool {
+        self.crm_appointments()
+            .delete_one(doc! { "appointmentId": id })
+            .await
+            .map(|r| r.deleted_count > 0)
+            .unwrap_or(false)
+    }
+    async fn list_appointments(&self, q: &AppointmentQuery) -> Page<Appointment> {
+        let filter = merge(vec![
+            search_filter(q.q.as_deref()),
+            eq_filter("clientId", q.client_id.as_deref()),
+            eq_filter("petId", q.pet_id.as_deref()),
+            eq_filter("status", q.status.as_deref()),
+            // [from, to): inclusive lower, exclusive upper, matching MemStore.
+            range_filter("startAt", q.from, q.to),
+        ]);
+        let coll = self.crm_appointments();
+        let total = coll.count_documents(filter.clone()).await.unwrap_or(0);
+        let rows = collect_page(
+            coll.find(filter)
+                .sort(doc! { "startAt": 1, "appointmentId": 1 })
+                .skip(q.offset as u64)
+                .limit(clamp_limit(q.limit) as i64),
+        )
+        .await;
+        Page { rows, total }
+    }
+
+    // ---- shop CRM: verification history ----
+    async fn put_verification_log(&self, v: VerificationLog) {
+        let _ = self
+            .crm_verifications()
+            .replace_one(doc! { "verificationId": &v.verification_id }, &v)
+            .upsert(true)
+            .await;
+    }
+    async fn get_verification_log(&self, id: &str) -> Option<VerificationLog> {
+        self.crm_verifications()
+            .find_one(doc! { "verificationId": id })
+            .await
+            .ok()
+            .flatten()
+    }
+    async fn list_verification_logs(&self, q: &VerificationQuery) -> Page<VerificationLog> {
+        let filter = merge(vec![
+            search_filter(q.q.as_deref()),
+            eq_filter("clientId", q.client_id.as_deref()),
+            eq_filter("appointmentId", q.appointment_id.as_deref()),
+            eq_filter("status", q.status.as_deref()),
+            eq_filter("purpose", q.purpose.as_deref()),
+            range_filter("createdAt", q.from, q.to),
+        ]);
+        let coll = self.crm_verifications();
+        let total = coll.count_documents(filter.clone()).await.unwrap_or(0);
+        let rows = collect_page(
+            coll.find(filter)
+                .sort(doc! { "createdAt": -1, "verificationId": 1 })
+                .skip(q.offset as u64)
+                .limit(clamp_limit(q.limit) as i64),
+        )
+        .await;
+        Page { rows, total }
+    }
+}
+
+// --------------------------------------------------------------------------------------------
+// CRM query helpers — build the same filter semantics MemStore implements.
+// --------------------------------------------------------------------------------------------
+
+/// Combine the non-empty filter clauses into one document (an `$and` when more than one applies).
+fn merge(clauses: Vec<Option<Document>>) -> Document {
+    let present: Vec<Document> = clauses.into_iter().flatten().collect();
+    match present.len() {
+        0 => doc! {},
+        1 => present.into_iter().next().unwrap(),
+        _ => doc! { "$and": present },
+    }
+}
+
+/// Free-text search over the row's `searchKey`: EVERY whitespace-separated term must be a
+/// case-insensitive substring, so multiple terms narrow the result set (mirrors MemStore).
+/// The needle is regex-escaped — an operator typing `.` or `(` must not alter the match semantics.
+fn search_filter(q: Option<&str>) -> Option<Document> {
+    let needle = q?.trim().to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    let clauses: Vec<Document> = needle
+        .split_whitespace()
+        .map(|term| doc! { "searchKey": { "$regex": regex_escape(term) } })
+        .collect();
+    if clauses.is_empty() {
+        None
+    } else {
+        Some(doc! { "$and": clauses })
+    }
+}
+
+/// Escape the PCRE metacharacters so a user-typed needle is matched literally.
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        if r".^$*+?()[]{}|\/-".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// An equality clause, or `None` when the filter is absent/empty.
+fn eq_filter(field: &str, value: Option<&str>) -> Option<Document> {
+    let v = value?;
+    if v.is_empty() {
+        return None;
+    }
+    Some(doc! { field: v })
+}
+
+/// A `[from, to)` half-open range clause over a numeric field, or `None` when neither bound is set.
+fn range_filter(field: &str, from: Option<u64>, to: Option<u64>) -> Option<Document> {
+    let mut bounds = Document::new();
+    if let Some(f) = from {
+        bounds.insert("$gte", f as i64);
+    }
+    if let Some(t) = to {
+        bounds.insert("$lt", t as i64);
+    }
+    if bounds.is_empty() {
+        None
+    } else {
+        Some(doc! { field: bounds })
+    }
+}
+
+/// Drain a find cursor into a Vec, dropping rows that fail to deserialize rather than failing the
+/// whole page (a single malformed legacy document must not blank the operator's list).
+async fn collect_page<T: Send + Sync + serde::de::DeserializeOwned>(
+    find: mongodb::action::Find<'_, T>,
+) -> Vec<T> {
+    let mut out = Vec::new();
+    if let Ok(mut cur) = find.await {
+        use futures::StreamExt;
+        while let Some(next) = cur.next().await {
+            if let Ok(row) = next {
+                out.push(row);
+            }
+        }
+    }
+    out
 }
