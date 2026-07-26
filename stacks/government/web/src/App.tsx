@@ -23,7 +23,7 @@ export function App() {
         path="/issue"
         element={
           <Layout title="Issue" health={health}>
-            <Issue />
+            <Issue health={health} />
           </Layout>
         }
       />

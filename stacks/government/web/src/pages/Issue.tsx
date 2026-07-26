@@ -1,14 +1,22 @@
-import { Badge, Button, Card, Input } from "@dogtag/ui";
+import { Badge, Button, Card, Input, isoDate, useToast } from "@dogtag/ui";
+import { Sparkles } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { apiPost, publicReceiptUrl } from "../lib/api";
+import { apiPost, publicReceiptUrl, type Health } from "../lib/api";
+import { env } from "../lib/env";
 
 /** One applicant field (maps 1:1 to the `credentialSubject` leaf the backend builds in build_gov_vc,
- *  e.g. `importerLastName` → credentialSubject.importer.lastName). */
+ *  e.g. `importerLastName` → credentialSubject.importer.lastName).
+ *
+ *  `placeholder` documents the backend's own fallback for a BLANK field; `demo` is what the
+ *  demo-only "Fill demo data" button types in. They coincide for everything except the dates, which
+ *  float relative to today so a filled form is always inside a sensible window (the backend's
+ *  hardcoded defaults go stale). A field with neither falls back to an empty string. */
 interface FieldSpec {
   key: string;
   label: string;
   placeholder?: string;
+  demo?: string;
 }
 
 interface FieldSection {
@@ -27,7 +35,7 @@ const RECORD_TYPE_SECTIONS: Record<string, FieldSection[]> = {
       hint: "PII (the private / obfuscatable block — committed in R as salted leaves, never on-chain in the clear).",
       fields: [
         { key: "importerFirstName", label: "First name", placeholder: "Dominic" },
-        { key: "importerMiddleName", label: "Middle name/initial", placeholder: "" },
+        { key: "importerMiddleName", label: "Middle name/initial", placeholder: "", demo: "R." },
         { key: "importerLastName", label: "Last name", placeholder: "Zagara" },
         { key: "importerRole", label: "The person listed above is the", placeholder: "owner" },
         { key: "importerIdType", label: "Identification type", placeholder: "drivers_license" },
@@ -56,7 +64,7 @@ const RECORD_TYPE_SECTIONS: Record<string, FieldSection[]> = {
       fields: [
         { key: "travelType", label: "Travel type", placeholder: "air" },
         { key: "countryOfDeparture", label: "Country/area of departure", placeholder: "CA" },
-        { key: "dateOfArrival", label: "Date of arrival", placeholder: "2026-07-08" },
+        { key: "dateOfArrival", label: "Date of arrival", placeholder: "2026-07-08", demo: isoDate(7) },
         { key: "portOfEntry", label: "Port of entry", placeholder: "JFK" },
         { key: "carrierOrFlight", label: "Carrier / flight", placeholder: "AC 8552" },
       ],
@@ -65,8 +73,8 @@ const RECORD_TYPE_SECTIONS: Record<string, FieldSection[]> = {
       title: "Validity",
       hint: "Issuance DATE is derived from the anchoring block on-chain — not entered here.",
       fields: [
-        { key: "validFrom", label: "Valid from", placeholder: "2026-07-01" },
-        { key: "validUntil", label: "Valid until", placeholder: "2027-01-01" },
+        { key: "validFrom", label: "Valid from", placeholder: "2026-07-01", demo: isoDate(0) },
+        { key: "validUntil", label: "Valid until", placeholder: "2027-01-01", demo: isoDate(180) },
         { key: "multipleEntries", label: "Multiple entries (true/false)", placeholder: "true" },
         { key: "countryOfDepartureBinding", label: "Country-of-departure binding", placeholder: "CA" },
       ],
@@ -78,11 +86,27 @@ const RECORD_TYPE_SECTIONS: Record<string, FieldSection[]> = {
       fields: [
         { key: "species", label: "Species", placeholder: "dog" },
         { key: "microchipNumber", label: "Microchip number", placeholder: "985112345678903" },
-        { key: "rabiesVaccinationDate", label: "Rabies vaccination date", placeholder: "2026-01-15" },
-        { key: "rabiesValidUntil", label: "Rabies valid until", placeholder: "2029-01-14" },
+        {
+          key: "rabiesVaccinationDate",
+          label: "Rabies vaccination date",
+          placeholder: "2026-01-15",
+          demo: isoDate(-30),
+        },
+        // A rabies primary is valid 3 years from the vaccination date (Annex IV / EU 576/2013).
+        {
+          key: "rabiesValidUntil",
+          label: "Rabies valid until",
+          placeholder: "2029-01-14",
+          demo: isoDate(-30 + 3 * 365),
+        },
         { key: "examiningVeterinarian", label: "Examining veterinarian", placeholder: "Dr. A. Meyer, DVM" },
         { key: "clinicalHealthStatus", label: "Clinical health status", placeholder: "fit_for_travel" },
-        { key: "examinationDate", label: "Examination date", placeholder: "2026-02-01" },
+        {
+          key: "examinationDate",
+          label: "Examination date",
+          placeholder: "2026-02-01",
+          demo: isoDate(-2),
+        },
       ],
     },
   ],
@@ -127,7 +151,8 @@ interface IssueResult {
   [k: string]: unknown;
 }
 
-export function Issue() {
+export function Issue({ health }: { health: Health | null }) {
+  const { toast } = useToast();
   const [recordType, setRecordType] = useState("TRAVEL_CLEARANCE");
   const [dogTagId, setDogTagId] = useState("7");
   // One value map covering every record type's fields; only the active type's fields are rendered.
@@ -138,8 +163,39 @@ export function Issue() {
 
   const sections = RECORD_TYPE_SECTIONS[recordType] ?? [];
 
+  // Does this deployment have a DogTagIssuer clone for the selected type? The backend fails closed
+  // with 503 when it doesn't (see routes::issue), so surface it up front instead of after a submit.
+  // FAIL OPEN: only block when /health actually loaded, carries the `issuers` map, and names this
+  // record type as unconfigured. An unreachable backend or an older API without the map must leave
+  // the form fully usable.
+  const issuerAddr =
+    health?.issuers != null && Object.prototype.hasOwnProperty.call(health.issuers, recordType)
+      ? health.issuers[recordType]
+      : undefined;
+  const issuerMissing = issuerAddr === null || issuerAddr === "";
+
   function setField(key: string, v: string) {
     setValues((prev) => ({ ...prev, [key]: v }));
+  }
+
+  /** Demo-only convenience: type every field of the ACTIVE record type's form for the operator.
+   *  Mirrors the vet/groomer "Fill demo data" affordance (env.demoMode-gated, Sparkles + toast).
+   *
+   *  The dog-tag id is deliberately NOT filled: it must be the handle of a DOG_PROFILE SBT this
+   *  deployment can actually see, and a fabricated one makes the owner's later ZK export revert on
+   *  `ownerOf(field_of_value(dogTagId))`. Same rule as `demoRabiesIssue()` in the vet portal. */
+  function fillDemo() {
+    const next: Record<string, string> = {};
+    for (const s of sections) {
+      for (const f of s.fields) next[f.key] = f.demo ?? f.placeholder ?? "";
+    }
+    // Only the active type's keys are replaced; the other type's values stay as the operator left them.
+    setValues((prev) => ({ ...prev, ...next }));
+    toast({
+      title: "Demo data filled",
+      description: `${recordType} fields filled. The dog tag id is left to you - it must be a tag this deployment can see.`,
+      variant: "success",
+    });
   }
 
   async function submit() {
@@ -175,11 +231,29 @@ export function Issue() {
 
   return (
     <Card className="p-6">
-      <h2 className="text-base font-semibold text-onSurface">Issue authority-endorsed credential</h2>
-      <p className="mt-1 text-sm text-muted">
-        Builds a salted Poseidon-Merkle credential (single root R) and anchors it on the ROAX
-        DogTagIssuer clone. Trust tier: accredited_authority.
-      </p>
+      <div className="flex flex-row items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-onSurface">
+            Issue authority-endorsed credential
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            Builds a salted Poseidon-Merkle credential (single root R) and anchors it on the ROAX
+            DogTagIssuer clone. Trust tier: accredited_authority.
+          </p>
+        </div>
+        {env.demoMode && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            data-testid="fill-demo"
+            onClick={fillDemo}
+          >
+            <Sparkles className="h-4 w-4" /> Fill demo data
+          </Button>
+        )}
+      </div>
 
       <label className="mt-4 block text-xs font-medium text-muted">Record type</label>
       <select
@@ -192,10 +266,32 @@ export function Issue() {
         <option value="EU_HEALTH_CERT">EU_HEALTH_CERT</option>
       </select>
 
+      {issuerMissing && (
+        <div
+          data-testid="no-issuer"
+          className="mt-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-onSurface"
+        >
+          <strong>No issuer configured for {recordType}.</strong> This deployment has no{" "}
+          <code className="receipt-mono text-xs">DogTagIssuer</code> clone for this record type, so
+          issuance cannot be anchored (the backend answers 503). Fill and inspect the form freely;
+          to actually issue, deploy a clone and set its address in the API's{" "}
+          <code className="receipt-mono whitespace-nowrap text-xs">
+            {recordType === "EU_HEALTH_CERT"
+              ? "EU_HEALTH_CERT_ISSUER_ADDR"
+              : "TRAVEL_CLEARANCE_ISSUER_ADDR"}
+          </code>
+          .
+        </div>
+      )}
+
       <label className="mt-4 block text-xs font-medium text-muted">
         Dog tag id (SBT tokenId handle)
       </label>
       <Input className="mt-1" value={dogTagId} onChange={(e) => setDogTagId(e.target.value)} />
+      <p className="mt-1 text-xs text-muted">
+        Never demo-filled: this must be the handle of a dog tag this deployment can actually see (a
+        minted DOG_PROFILE SBT). A made-up id issues a credential the owner can never export.
+      </p>
 
       {sections.map((section) => (
         <div key={section.title} className="mt-6">
@@ -223,9 +319,19 @@ export function Issue() {
       ))}
 
       <div className="mt-6">
-        <Button data-testid="issue-submit" loading={busy} disabled={busy} onClick={submit}>
+        <Button
+          data-testid="issue-submit"
+          loading={busy}
+          disabled={busy || issuerMissing}
+          onClick={submit}
+        >
           {busy ? "Issuing…" : "Issue + anchor"}
         </Button>
+        {issuerMissing && (
+          <p className="mt-2 text-xs text-muted">
+            Disabled - no issuer clone is configured for {recordType} on this deployment.
+          </p>
+        )}
       </div>
 
       {error && (
