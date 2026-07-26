@@ -292,7 +292,19 @@ struct ProfileScreen: View {
             walletMsg = "New wallet created. Write the 24 words below down, then tap “I've saved it” - issuing a dog tag stays blocked until you do."
             resetMsg = "Wallet replaced. Your previous account and any dog tag bound to it are gone for good."
         } catch {
-            resetMsg = "Replace failed: \(error.localizedDescription). Your existing wallet is untouched."
+            // `replace()` deletes before it creates, so a failure lands on one of two very different
+            // states. Re-read which one rather than assuming: telling a user their wallet is intact
+            // when it has already been removed is the one message that must never be wrong.
+            walletExists = Wallet.exists()
+            if walletExists {
+                resetMsg = "Replace failed: \(error.localizedDescription). Your existing wallet is untouched."
+            } else {
+                ethAddr = nil
+                mnemonic = nil
+                walletMsg = ""
+                resetMsg = "Replace failed after the old wallet was removed: \(error.localizedDescription). "
+                    + "There is no wallet on this device now - use “Create embedded wallet” above."
+            }
         }
     }
 
