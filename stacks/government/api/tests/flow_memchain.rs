@@ -110,6 +110,18 @@ impl ChainClient for LiveLikeChain {
     ) -> Result<government_api::chain::SentTx, government_api::chain::ChainError> {
         self.0.revoke(issuer_addr, root).await
     }
+    async fn record_verification_zk_consent(
+        &self,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<government_api::chain::SentTx, government_api::chain::ChainError> {
+        self.0
+            .record_verification_zk_consent(registry_addr, a, b, c, pub_signals)
+            .await
+    }
 }
 
 /// `demo_state()` with the chain client swapped for one that reports itself LIVE.

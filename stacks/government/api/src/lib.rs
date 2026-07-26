@@ -10,7 +10,8 @@
 //!   chain.rs  — `ChainClient` trait + `AlloyChain` (real ROAX) + `MemChain` (demo/tests)
 //!   store.rs  — `Store` trait + `MemStore` (+ optional `MongoStore` behind `mongo`)
 //!   app.rs    — AppState/config + government VC build/wrap (shared open standard)
-//!   routes.rs — Axum router + handlers (issue / verify / records)
+//!   verify.rs — owner-hidden consent-proof submission (the authority as a VERIFIER)
+//!   routes.rs — Axum router + handlers (issue / verify / records / phone-handoff QR tokens)
 
 pub mod app;
 pub mod chain;
@@ -18,6 +19,7 @@ pub mod oversight;
 pub mod routes;
 pub mod store;
 pub mod trace;
+pub mod verify;
 
 #[cfg(feature = "mongo")]
 pub mod mongo;

@@ -1,7 +1,8 @@
 import { Badge, Button, Card, Input, isoDate, useToast } from "@dogtag/ui";
-import { Sparkles } from "lucide-react";
+import { QrCode as QrIcon, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { ShareQrDialog, type ShareQrTarget } from "../components/ShareQrDialog";
 import { apiPost, publicReceiptUrl, type Health } from "../lib/api";
 import { env } from "../lib/env";
 
@@ -160,6 +161,7 @@ export function Issue({ health }: { health: Health | null }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<IssueResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [shareTarget, setShareTarget] = useState<ShareQrTarget | null>(null);
 
   const sections = RECORD_TYPE_SECTIONS[recordType] ?? [];
 
@@ -386,12 +388,31 @@ export function Issue({ health }: { health: Health | null }) {
 
           {wrappedJson && (
             <Card className="border-accent/40 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <strong className="text-sm text-onSurface">Wrapped credential document</strong>
-                <CopyButton text={wrappedJson} label="Copy wrapped document" />
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <strong className="text-sm text-onSurface">Hand the credential to the owner</strong>
+                <div className="flex flex-wrap gap-2">
+                  {result.root && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      data-testid="create-qr"
+                      onClick={() =>
+                        setShareTarget({
+                          root: String(result.root),
+                          label: receiptId ? `receipt ${receiptId}` : "this credential",
+                        })
+                      }
+                    >
+                      <QrIcon className="h-4 w-4" /> Create QR
+                    </Button>
+                  )}
+                  <CopyButton text={wrappedJson} label="Copy wrapped document" />
+                </div>
               </div>
               <p className="mt-1 text-xs text-muted">
-                Copy this and paste it into the <strong>Verify</strong> tab to check the three
+                <strong>Create QR</strong> mints a one-time, short-lived code the owner scans to import
+                this credential onto their phone — the same handoff the vet uses. Or copy the wrapped
+                document and paste it into the <strong>Verify</strong> tab to check the three
                 authenticity pillars.
               </p>
               <pre
@@ -411,6 +432,8 @@ export function Issue({ health }: { health: Health | null }) {
           </details>
         </div>
       )}
+
+      <ShareQrDialog target={shareTarget} onClose={() => setShareTarget(null)} />
     </Card>
   );
 }

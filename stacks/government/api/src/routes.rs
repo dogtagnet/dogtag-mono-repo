@@ -10,10 +10,21 @@
 //!                                         off ROAX, fold to a verdict, persist an audit record.
 //!   GET  /v1/records                     list issued credentials (off-chain DB surface).
 //!   GET  /v1/records/:root               get one issued credential by root.
+//!   POST /v1/records/:root/share         mint a one-time record-share QR token (owner's phone import).
 //!   GET  /v1/verifications               list the verification audit log.
+//!
+//! PHONE-FACING surface. These four paths are HARD-CODED in both mobile apps
+//! (`apps/android/.../CentralApi.kt`, `apps/ios/DogTag/Net.swift`) against whichever verifier host the
+//! QR names, so they are byte-identical to vet-api's and must never be renamed or `/v1`-prefixed:
+//!   GET  /r/:token                       resolve+CONSUME a share token -> the wrapped doc (import).
+//!   GET  /x/:token                       resolve a verify-session export token (non-consuming).
+//!   POST /v1/verify/consent              submit the owner-hidden consent proof.
+//!   GET  /verify/session/:id             poll a verify session (operator bearer OR ?token=).
+//! `GET /r/:id` is OVERLOADED: a 32-hex segment is a share token (JSON), anything else is a public
+//! receipt id (the PII-free HTML status page). The two id shapes cannot collide — see `is_share_token`.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -25,7 +36,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
-use crate::store::{CredentialStatus, IssuedCredential, VerificationRecord};
+use crate::store::{CredentialStatus, IssuedCredential, VerificationRecord, VerifySession};
 
 /// On-chain-derived / anchored keys that a metadata update must never mutate. Presence of any of
 /// these in a PATCH body is rejected (they reflect immutable chain state).
@@ -97,12 +108,99 @@ fn require_api_token(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
     }
 }
 
+/// The presented `Authorization: Bearer <token>`, if any.
+fn bearer(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string())
+}
+
+/// Dual gate for the two PHONE-facing session routes (`POST /v1/verify/consent`,
+/// `GET /verify/session/:id`): the government operator bearer OR a short-lived export token scoped to
+/// THIS session. Returns `true` when the caller was authed by the export token.
+///
+/// This deliberately does NOT delegate to `require_api_token`: that fails closed with 503 when
+/// `GOV_API_TOKEN` is unconfigured, and the owner's phone authenticates with its export token alone —
+/// a deployment without an operator token must still let the owner submit and poll their own proof.
+async fn require_operator_or_export_token(
+    st: &AppState,
+    headers: &HeaderMap,
+    session_id: &str,
+    body_token: Option<&str>,
+) -> Result<bool, Resp> {
+    // Operator bearer first (the portal). Only ever satisfied against a CONFIGURED token.
+    if let (Some(expected), Some(presented)) = (st.cfg.api_token.as_deref(), bearer(headers)) {
+        if presented == expected {
+            return Ok(false);
+        }
+    }
+    // Otherwise a short-lived export token (the owner's phone), from the body field or the Bearer header.
+    let token = body_token
+        .map(|s| s.to_string())
+        .or_else(|| bearer(headers))
+        .ok_or_else(|| {
+            err(
+                StatusCode::UNAUTHORIZED,
+                "missing operator session or export token",
+            )
+        })?;
+    let mapped = st
+        .store
+        .peek_export_token(&token)
+        .await
+        .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "export token missing or expired"))?;
+    if mapped != session_id {
+        return Err(err(
+            StatusCode::UNAUTHORIZED,
+            "export token does not match session",
+        ));
+    }
+    Ok(true)
+}
+
 /// Monotonic-ish wall clock (seconds). Government records are audit metadata, not consensus-critical.
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Mint a SHORT one-time QR token: 32 hex chars == 16 CSPRNG bytes. Short so the QR stays low-density
+/// and a phone camera can focus on it instantly. Same shape as vet-api's share/export/bind tokens, so
+/// the phone's URL parser (`QrPayload`) recognises it without a government-specific branch.
+fn gen_qr_token() -> String {
+    let mut bytes = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    hex::encode(bytes)
+}
+
+/// Is this `/r/:id` path segment a record-share TOKEN rather than a public receipt id?
+///
+/// Share tokens are exactly 32 lowercase hex chars (16 random bytes); receipt ids are 12 Crockford
+/// base32 chars (`gen_receipt_id`, uppercase, no I/L/O/U). The two shapes cannot collide — they differ
+/// in length — so one path can serve both the phone's JSON import and the public HTML status page.
+fn is_share_token(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// TTL of a record-share token (seconds). Matches vet-api: long enough to walk a phone over, short
+/// enough that a photographed QR is worthless by the time anyone tries it.
+const SHARE_TOKEN_TTL_SECS: u64 = 180;
+
+/// TTL of a verify-session export token (seconds). Longer than a share token because this path includes
+/// a slow on-device Groth16 proof (tens of seconds) plus the owner's own approval steps; a 180s token
+/// would expire mid-flow. Replay is bounded by the session status guard and the on-chain nullifier, not
+/// by this TTL. Matches vet-api.
+const EXPORT_TOKEN_TTL_SECS: u64 = 600;
+
+/// The QR base URL the PHONE must be able to reach — `DEPLOYMENT_URL`, never the API's own bind
+/// address. On a LAN demo it is the host's LAN IP, in production the public domain (or tunnel).
+/// A configured trailing slash is trimmed so the minted URL never contains `//r/`.
+fn qr_base(st: &AppState) -> &str {
+    st.cfg.deployment_url.trim_end_matches('/')
 }
 
 /// Civil (Y, M, D) from a days-since-Unix-epoch count (Howard Hinnant's algorithm — no date crate).
@@ -220,7 +318,15 @@ async fn health(State(st): State<AppState>) -> Resp {
         "issuers": {
             app::TRAVEL_CLEARANCE: st.cfg.issuer_addr_for(app::TRAVEL_CLEARANCE),
             app::EU_HEALTH_CERT: st.cfg.issuer_addr_for(app::EU_HEALTH_CERT),
-        }
+        },
+        // Surfaced so the two addresses the owner-hidden verify path depends on are eyeball-able. The
+        // phone independently resolves `verificationRegistry` from the on-chain ProtocolRegistry and
+        // REFUSES to prove if this deployment claims a different one, so a mismatch here is the single
+        // likeliest cause of an otherwise-opaque scan failure.
+        "issuerRegistry": st.cfg.issuer_registry_addr,
+        "verificationRegistry": st.cfg.verification_registry_addr,
+        // The host the QR codes point at — must be reachable from the OWNER'S PHONE, not just this box.
+        "deploymentUrl": st.cfg.deployment_url,
     }))
 }
 
@@ -688,6 +794,310 @@ async fn list_verifications(State(st): State<AppState>) -> Resp {
 }
 
 // --------------------------------------------------------------------------------------------
+// record share — the owner's phone imports an issued credential by scanning a one-time QR.
+// Mirror of vet-api `POST /records/:id/share` + `GET /r/:token`: same 32-hex token, same 180s TTL,
+// same consume-on-first-read guarantee, so `RecordImporter` on both phones needs no gov branch.
+// --------------------------------------------------------------------------------------------
+
+/// POST /v1/records/:root/share — mint a one-time share token for an issued credential and return the
+/// QR URL the owner scans. Operator-gated (the authority's own custodial record is not public); the
+/// RESOLVE side is unauthenticated, because the QR itself is the capability.
+///
+/// Re-minting is the refresh path: each call issues an independent token, and a previously displayed QR
+/// simply expires unused. Any lifecycle state is shareable — the owner is entitled to a copy of a
+/// revoked or expired credential they hold, and the phone re-derives the verdict from the chain.
+async fn share_record(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(root): Path<String>,
+) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
+    if st.store.get_credential(&root).await.is_none() {
+        return err(StatusCode::NOT_FOUND, "no credential for that root");
+    }
+    let token = gen_qr_token();
+    let expires_at = now() + SHARE_TOKEN_TTL_SECS;
+    st.store.put_share_token(&token, &root, expires_at).await;
+    ok(json!({
+        "qrUrl": format!("{}/r/{}", qr_base(&st), token),
+        "root": root,
+        // Both are returned so the portal can render a countdown WITHOUT trusting browser/server clock
+        // agreement: count down from `ttlSecs` at response receipt, and show `expiresAt` as the fact.
+        "ttlSecs": SHARE_TOKEN_TTL_SECS,
+        "expiresAt": expires_at,
+    }))
+}
+
+/// Resolve + CONSUME a record-share token: returns the credential's wrapped doc as raw JSON, exactly as
+/// vet-api's `GET /r/:token` does. One-time — a second read is a 404, and so is an expired token.
+///
+/// Always answers JSON (never the HTML receipt page): once the segment is known to be a share token, an
+/// HTML body would reach the phone as "bad wrapped doc" instead of an honest "expired".
+async fn get_shared(st: &AppState, token: &str) -> Resp {
+    let root = match st.store.take_share_token(token).await {
+        Some(r) => r,
+        None => return err(StatusCode::NOT_FOUND, "share token missing or expired"),
+    };
+    match st.store.get_credential(&root).await {
+        Some(c) => ok(c.wrapped_doc),
+        None => err(StatusCode::NOT_FOUND, "no credential for that root"),
+    }
+}
+
+// --------------------------------------------------------------------------------------------
+// owner-hidden verification (the authority as a VERIFIER) — QR handoff to the owner's phone.
+//
+// The government is a verifier here, so it goes through the SAME ZK consent path as a groomer: the
+// owner approves an owner-hidden proof on their device and this backend only relays it. Route paths
+// and payload shapes mirror vet-api exactly. See `crate::verify`.
+// --------------------------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SessionStartReq {
+    purpose: String,
+    #[serde(rename = "recordType", alias = "record_type")]
+    record_type: String,
+}
+
+/// POST /verify/session/start — start an owner-hidden verify session and return its QR.
+///
+/// Every precondition is checked BEFORE the QR exists, so the owner never spends tens of seconds
+/// proving into a dead end:
+///   * a signer must be loaded (`GOV_SIGNER_KEY`) — it is the relayer the QR names and the account that
+///     will submit the proof,
+///   * that signer must be whitelisted for `VERIFY:<purpose>` on the `IssuerRegistry` — else 403
+///     `relayer not whitelisted for this purpose`, the same honest failure the groomer portal shows,
+///   * the verification registry must be configured — else 503.
+async fn verify_session_start(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SessionStartReq>,
+) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
+    if body.purpose.trim().is_empty() || body.record_type.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "purpose and recordType are required");
+    }
+    let relayer = match st.chain.signer_address() {
+        Some(a) if st.chain.can_sign() && !a.is_empty() => a,
+        _ => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no government signer configured (set GOV_SIGNER_KEY) to record a verification",
+            )
+        }
+    };
+    // whitelistedFor(keccak256(abi.encode("VERIFY:", purpose)), relayer)
+    let verify_key = crate::verify::verify_key(&body.purpose);
+    match st
+        .chain
+        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &verify_key, &relayer)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return err(
+                StatusCode::FORBIDDEN,
+                "relayer not whitelisted for this purpose",
+            )
+        }
+        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("verify-wl: {e}")),
+    }
+    if !crate::verify::valid_contract_addr(&crate::verify::consent_registry(&st)) {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "verification registry not configured",
+        );
+    }
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let mut challenge = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge);
+    let ts = now();
+    st.store
+        .put_session(VerifySession {
+            session_id: session_id.clone(),
+            relayer: relayer.clone(),
+            purpose: body.purpose.clone(),
+            record_type: body.record_type.clone(),
+            challenge: format!("0x{}", hex::encode(challenge)),
+            status: "pending".to_string(),
+            tx_hash: None,
+            nullifier: None,
+            created_at: ts,
+            updated_at: ts,
+            disclosed_key_paths: Vec::new(),
+        })
+        .await;
+
+    let token = gen_qr_token();
+    let expires_at = now() + EXPORT_TOKEN_TTL_SECS;
+    st.store
+        .put_export_token(&token, &session_id, expires_at)
+        .await;
+    ok(json!({
+        "qrUrl": format!("{}/x/{}?a={}", qr_base(&st), token, relayer),
+        "sessionId": session_id,
+        "purpose": body.purpose,
+        "recordType": body.record_type,
+        "relayer": relayer,
+        "ttlSecs": EXPORT_TOKEN_TTL_SECS,
+        "expiresAt": expires_at,
+    }))
+}
+
+/// GET /x/:token — resolve a verify-session export token to the metadata the owner's phone needs.
+/// Unauthenticated (the token IS the capability) and NON-consuming: the phone re-reads it while proving
+/// and polling, and the session status is what blocks replay.
+async fn verify_session_resolve(State(st): State<AppState>, Path(token): Path<String>) -> Resp {
+    let session_id = match st.store.peek_export_token(&token).await {
+        Some(id) => id,
+        None => return err(StatusCode::NOT_FOUND, "export token missing or expired"),
+    };
+    let s = match st.store.get_session(&session_id).await {
+        Some(s) => s,
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+    // M7 P4 (§5.2) CONVENIENCE tier: platform-OWNED, UNVERIFIED claims. The app validates these against
+    // the on-chain ProtocolRegistry / signed-manifest anchor before trusting any of them — and REFUSES
+    // the whole flow if they are absent, so this block is mandatory, not decorative.
+    let issuer_clone = st
+        .cfg
+        .issuer_addr_for(&s.record_type)
+        .unwrap_or_default();
+    let claims = app::convenience_claims(&st.cfg, st.chain.chain_id(), &issuer_clone, &s.purpose);
+    ok(json!({
+        "sessionId": s.session_id,
+        "relayer": s.relayer,
+        "purpose": s.purpose,
+        "recordType": s.record_type,
+        "challenge": s.challenge,
+        "unverifiedClaims": serde_json::to_value(&claims).expect("ConvenienceClaims serializes"),
+    }))
+}
+
+/// POST /v1/verify/consent — submit an owner-hidden consent proof. The owner's phone authenticates with
+/// its export token (`exportToken` in the body); an operator bearer may submit a cold proof.
+async fn verify_consent_submit(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Resp {
+    let body_token = body
+        .get("exportToken")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let session_id = match body.get("sessionId").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => match body_token.as_deref() {
+            Some(t) => st.store.peek_export_token(t).await.unwrap_or_default(),
+            None => String::new(),
+        },
+    };
+    let authed_by_export_token =
+        match require_operator_or_export_token(&st, &headers, &session_id, body_token.as_deref())
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+    // A named session that does not load FAILS CLOSED. Falling through to `None` would silently demote
+    // the request to the cold path — skipping the purpose/relayer/recordType binding AND the status
+    // replay guard — and `MongoStore::get_session` maps driver errors to `None`, so a transient DB blip
+    // would otherwise disable every session-scoped guard on this route for that request.
+    let session = if session_id.is_empty() {
+        None
+    } else {
+        match st.store.get_session(&session_id).await {
+            Some(s) => Some(s),
+            // Token-authed: the gate already matched this token to this session id, so the row not
+            // loading is a BACKEND fault, not a bad request.
+            None if authed_by_export_token => {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    "session could not be read; retry with the same token",
+                )
+            }
+            None => return err(StatusCode::NOT_FOUND, "session not found"),
+        }
+    };
+    crate::verify::consent_submit_levelb(&st, &body, session).await
+}
+
+#[derive(Deserialize)]
+struct SessionStatusQuery {
+    /// The short-lived export token (the owner's phone polling) — a non-consuming peek. The operator
+    /// portal omits it and relies on the operator bearer instead.
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// GET /verify/session/:id — status read so BOTH the portal and the owner's phone can poll
+/// pending → recording → recorded. Dual-gated (operator bearer OR the session's export token) and
+/// non-consuming: status reads are idempotent and polled repeatedly.
+async fn verify_session_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(q): Query<SessionStatusQuery>,
+) -> Resp {
+    if let Err(e) =
+        require_operator_or_export_token(&st, &headers, &session_id, q.token.as_deref()).await
+    {
+        return e;
+    }
+    let s = match st.store.get_session(&session_id).await {
+        Some(s) => s,
+        None => return err(StatusCode::NOT_FOUND, "session not found"),
+    };
+    ok(json!({
+        "status": s.status,
+        "txHash": s.tx_hash,
+        "nullifier": s.nullifier,
+        "disclosedKeyPaths": s.disclosed_key_paths,
+    }))
+}
+
+/// GET /verify/history — operator-gated owner-hidden verification audit log. Verifier-side operational
+/// proof metadata only (purpose, relayer, tx, nullifier) — never credential PII, and never anything that
+/// identifies the owner.
+async fn verify_history(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_api_token(&st, &headers) {
+        return e;
+    }
+    let verifications: Vec<Value> = st
+        .store
+        .list_sessions()
+        .await
+        .into_iter()
+        .map(|s| {
+            let explorer_url = s
+                .tx_hash
+                .as_deref()
+                .filter(|t| t.starts_with("0x"))
+                .map(crate::chain::explorer_tx_url);
+            json!({
+                "sessionId": s.session_id,
+                "relayer": s.relayer,
+                "purpose": s.purpose,
+                "recordType": s.record_type,
+                "status": s.status,
+                "txHash": s.tx_hash,
+                "explorerUrl": explorer_url,
+                "nullifier": s.nullifier,
+                "disclosedKeyPaths": s.disclosed_key_paths,
+                "createdAt": s.created_at,
+                "updatedAt": s.updated_at,
+            })
+        })
+        .collect();
+    ok(json!({ "verifications": verifications }))
+}
+
+// --------------------------------------------------------------------------------------------
 // Government oversight console (govarch PR-5) — the UNSCOPED cross-issuer activity feed from the
 // oversight indexer, joined to the government's OWN issued credentials. See `crate::oversight` +
 // `crate::trace`. API-token-gated (the authority's own console).
@@ -935,10 +1345,26 @@ fn receipt_error_page(code: StatusCode, title: &str, message: &str) -> Response 
     (code, Html(html)).into_response()
 }
 
-/// GET /r/:receiptId — PUBLIC status page (status-only by default, arch DP-5). Renders the live
-/// verdict + validity window + on-chain provenance links. NO Section A/B/C content — the official
-/// reads the details off the paper/phone in front of them and this page confirms the receipt is
-/// genuine and current. Enumeration is bounded by the ~60-bit receiptId.
+/// GET /r/:id — the OVERLOADED public `/r/` surface, dispatched on the id's shape:
+///
+///   * a 32-hex segment is a one-time RECORD-SHARE token: resolve+consume it to the wrapped doc as JSON
+///     (what the owner's phone scans to import a credential — the vet-api `/r/:token` contract),
+///   * anything else is a public RECEIPT id: render the PII-free HTML status page below.
+///
+/// The shapes are disjoint (32 hex vs 12 Crockford base32), so neither can shadow the other. Both mobile
+/// apps treat ANY `/r/<segment>` with no query string as an import token, which is exactly why the JSON
+/// branch must own the hex shape.
+async fn public_r(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    if is_share_token(&id) {
+        return get_shared(&st, &id).await.into_response();
+    }
+    receipt_page(State(st), Path(id)).await
+}
+
+/// PUBLIC receipt status page (status-only by default, arch DP-5). Renders the live verdict + validity
+/// window + on-chain provenance links. NO Section A/B/C content — the official reads the details off the
+/// paper/phone in front of them and this page confirms the receipt is genuine and current. Enumeration
+/// is bounded by the ~60-bit receiptId.
 async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>) -> Response {
     let rs = match resolve_receipt_status(&st, &receipt_id).await {
         Ok(rs) => rs,
@@ -1052,13 +1478,24 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/records", get(list_records))
         .route("/v1/records/:root", get(get_record).patch(update_record))
         .route("/v1/records/:root/revoke", post(revoke_record))
+        // one-time record-share QR (operator mints; the owner's phone resolves it at /r/:token)
+        .route("/v1/records/:root/share", post(share_record))
         .route("/v1/verifications", get(list_verifications))
+        // OWNER-HIDDEN verify (the authority as a verifier). Paths mirror vet-api EXACTLY — the phone
+        // apps hard-code /x/:token, /v1/verify/consent and /verify/session/:id.
+        .route("/verify/session/start", post(verify_session_start))
+        .route("/verify/session/:id", get(verify_session_status))
+        .route("/verify/history", get(verify_history))
+        .route("/v1/verify/consent", post(verify_consent_submit))
+        .route("/x/:token", get(verify_session_resolve))
         // oversight console (govarch PR-5): unscoped cross-issuer activity joined to own credentials
         .route("/v1/oversight/activity", get(oversight_activity))
         .route("/v1/oversight/stats", get(oversight_stats))
         .route("/v1/oversight/issuers", get(oversight_issuers))
-        // PUBLIC (no auth): PII-free receipt status JSON + human status page (live on-chain read).
+        // PUBLIC (no auth): PII-free receipt status JSON, plus the overloaded /r/ surface — a 32-hex
+        // segment is a one-time record-share token (JSON, consumed), anything else is the human status
+        // page (live on-chain read). See `public_r`.
         .route("/v1/receipts/:receipt_id/status", get(receipt_status))
-        .route("/r/:receipt_id", get(receipt_page))
+        .route("/r/:id", get(public_r))
         .with_state(state)
 }

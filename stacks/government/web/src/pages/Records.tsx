@@ -10,8 +10,10 @@ import {
   TableHeader,
   TableRow,
 } from "@dogtag/ui";
+import { QrCode as QrIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { ShareQrDialog, type ShareQrTarget } from "../components/ShareQrDialog";
 import { apiGet, apiPatch, apiPost, statusVariant, type GovRecord } from "../lib/api";
 
 /** Is an ISO validUntil within 30 days of today (but not yet lapsed)? Drives the amber "expiring
@@ -35,6 +37,7 @@ export function Records() {
   const [editLabel, setEditLabel] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [shareTarget, setShareTarget] = useState<ShareQrTarget | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -118,7 +121,8 @@ export function Records() {
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Every credential this authority issued, from its own database — with the on-chain proof
             (tx, block, contract) and a block-explorer link. Revoked/expired credentials stay on
-            record. Only off-chain metadata is editable; on-chain state is immutable.
+            record. Only off-chain metadata is editable; on-chain state is immutable. <strong>QR</strong>{" "}
+            shows a one-time code the owner scans to import that credential onto their phone.
           </p>
         </div>
         <Button
@@ -226,6 +230,24 @@ export function Records() {
                         <Button variant="ghost" size="sm" data-testid="edit-open" onClick={() => openEdit(rec)}>
                           Edit
                         </Button>
+                        {/* Any listed credential can be handed to the owner's phone later — not just
+                            the one issued in this session. Mirrors the vet's per-row QR action. */}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          data-testid="share-qr"
+                          title="Show a one-time QR the owner scans to import this credential"
+                          onClick={() =>
+                            setShareTarget({
+                              root: rec.root,
+                              label: rec.receiptId
+                                ? `receipt ${rec.receiptId}`
+                                : `${rec.recordType} · tag ${rec.dogTagId}`,
+                            })
+                          }
+                        >
+                          <QrIcon className="h-4 w-4" /> QR
+                        </Button>
                         {rec.status === "issued" && (
                           <Button
                             variant="ghost"
@@ -289,6 +311,8 @@ export function Records() {
           </div>
         </Card>
       )}
+
+      <ShareQrDialog target={shareTarget} onClose={() => setShareTarget(null)} />
     </Card>
   );
 }

@@ -1,15 +1,18 @@
 //! Production `MongoStore` (behind the `mongo` feature). Mongo is internal to the compose network
 //! only (never published to the host) — see `stacks/government/docker-compose.yml`.
 //!
-//! Two collections mirror the `Store` trait: `credentials` (issued government credentials, keyed by
-//! the anchored root) and `verifications` (the authority's on-chain verification audit log).
+//! Collections mirror the `Store` trait: `credentials` (issued government credentials, keyed by the
+//! anchored root), `verifications` (the authority's on-chain verification audit log), `share_tokens`
+//! and `export_tokens` (the short-lived phone-handoff QR tokens) and `verify_sessions` (owner-hidden
+//! verify sessions). The token collections mirror vet-api's (`stacks/vet/api/src/mongo.rs`), including
+//! `find_one_and_delete` as the atomic one-time consume.
 
 use async_trait::async_trait;
-use mongodb::bson::doc;
+use mongodb::bson::{doc, Document};
 use mongodb::options::IndexOptions;
 use mongodb::{Client, Collection, Database, IndexModel};
 
-use crate::store::{IssuedCredential, Store, VerificationRecord};
+use crate::store::{IssuedCredential, Store, VerificationRecord, VerifySession};
 
 pub struct MongoStore {
     db: Database,
@@ -37,6 +40,9 @@ impl MongoStore {
     }
     fn verifications(&self) -> Collection<VerificationRecord> {
         self.db.collection("verifications")
+    }
+    fn sessions(&self) -> Collection<VerifySession> {
+        self.db.collection("verify_sessions")
     }
 }
 
@@ -80,4 +86,90 @@ impl Store for MongoStore {
             Err(_) => Vec::new(),
         }
     }
+
+    async fn put_share_token(&self, token: &str, root: &str, exp: u64) {
+        let coll: Collection<Document> = self.db.collection("share_tokens");
+        let _ = coll
+            .replace_one(
+                doc! { "token": token },
+                doc! { "token": token, "root": root, "exp": exp as i64 },
+            )
+            .upsert(true)
+            .await;
+    }
+    async fn take_share_token(&self, token: &str) -> Option<String> {
+        // find_one_and_delete is atomic == one-time consume; expiry is enforced on the read, so an
+        // expired token is purged and reported as missing.
+        let coll: Collection<Document> = self.db.collection("share_tokens");
+        let d = coll
+            .find_one_and_delete(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
+        if now_secs() > d.get_i64("exp").unwrap_or(0) as u64 {
+            None
+        } else {
+            d.get_str("root").ok().map(|s| s.to_string())
+        }
+    }
+
+    async fn put_export_token(&self, token: &str, session_id: &str, exp: u64) {
+        let coll: Collection<Document> = self.db.collection("export_tokens");
+        let _ = coll
+            .replace_one(
+                doc! { "token": token },
+                doc! { "token": token, "session_id": session_id, "exp": exp as i64 },
+            )
+            .upsert(true)
+            .await;
+    }
+    async fn peek_export_token(&self, token: &str) -> Option<String> {
+        let coll: Collection<Document> = self.db.collection("export_tokens");
+        let d = coll.find_one(doc! { "token": token }).await.ok().flatten()?;
+        if now_secs() > d.get_i64("exp").unwrap_or(0) as u64 {
+            None
+        } else {
+            d.get_str("session_id").ok().map(|s| s.to_string())
+        }
+    }
+
+    async fn put_session(&self, s: VerifySession) {
+        let _ = self
+            .sessions()
+            .replace_one(doc! { "sessionId": &s.session_id }, &s)
+            .upsert(true)
+            .await;
+    }
+    async fn get_session(&self, id: &str) -> Option<VerifySession> {
+        self.sessions()
+            .find_one(doc! { "sessionId": id })
+            .await
+            .ok()
+            .flatten()
+    }
+    async fn update_session(&self, s: VerifySession) {
+        self.put_session(s).await;
+    }
+    async fn list_sessions(&self) -> Vec<VerifySession> {
+        use futures::TryStreamExt;
+        let mut v: Vec<VerifySession> = match self.sessions().find(doc! {}).await {
+            Ok(cur) => cur.try_collect().await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        v.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| b.session_id.cmp(&a.session_id))
+        });
+        v
+    }
+}
+
+/// Wall-clock seconds — the expiry basis for both token collections.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

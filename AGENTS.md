@@ -151,6 +151,51 @@ The government web portal (`stacks/government/web`) was migrated from the hand-r
 - **Derived-status rendering:** the Records table shows the backend's derived `effectiveStatus` (VALID/EXPIRED/REVOKED) as the colored `Badge`, plus an amber "expires ≤30d" chip; a separate `data-testid="record-status"` span keeps the RAW lifecycle status text (`issued`/`revoked`/`expired`) that `records-crud.spec.ts` asserts exact-match on. Don't merge the two — the e2e needs the raw word.
 - **e2e test-id contract (do not rename):** the migration preserved every selector the two Playwright specs use — `record-type` MUST stay a native `<select>` (Playwright `selectOption` can't drive a radix Select); the dogTagId field MUST stay the FIRST `<input>` on `/issue`; the dogTag cell keeps class `mono` (`td.mono`); the Verify verdict keeps a literal `ok`/`bad` class token; and `issue-submit`/`wrapped-doc`/`copy-wrapped`/`verify-*`/`pillar-*`/`record-row`/`edit-*`/`expire`/`revoke`/`explorer-link`/`revoke-explorer-link`/`records-refresh` are all retained. `receipt.spec.ts` adds the new flow (issue → open receipt → sections + QR render → public `/r/:id` page shows the verdict). None of these are in CI (need a served portal + browsers).
 
+### Government phone handoff — record-share QR + owner-hidden verify QR
+The government stack gained the two QR flows the vet/groomer stacks already had. It is its OWN binary,
+so the endpoints are implemented in `government-api`, but the SEMANTICS are mirrored from vet-api
+deliberately: both mobile apps hard-code these paths and must need no government branch.
+- **The four phone-facing paths are a hard contract.** `GET /r/<token>` (import),
+  `GET /x/<token>` (verify-session resolve), `POST /v1/verify/consent`, `GET /verify/session/:id?token=`.
+  They are hard-coded in `apps/android/.../net/CentralApi.kt` and `apps/ios/DogTag/Net.swift` against
+  whatever host the QR names. Never rename them, never add a `/v1` prefix to the two that lack one, and
+  never make the operator-facing start route the one the phone hits. Token shape is 32 hex (16 CSPRNG
+  bytes) because `QrPayload.parse` keys on the URL SHAPE; TTLs are share **180s** / export **600s**
+  (export is longer because on-device Groth16 proving takes tens of seconds). Share tokens are consumed
+  on first read; export tokens are peeked, with the session `status` as the replay guard.
+- **`GET /r/:id` on government is OVERLOADED and must stay dispatched by SHAPE.** A 32-hex segment is a
+  record-share token (JSON, consumed); anything else is a public receiptId (the PII-free HTML status
+  page that shipped in PR-1). The shapes cannot collide — 32 hex vs the 12-char Crockford-base32
+  `gen_receipt_id`. Once the segment is known to be a share token the handler MUST stay in the JSON
+  world including its 404, or the phone reports "bad wrapped doc" instead of "expired".
+- **`unverifiedClaims` on `/x/<token>` is MANDATORY, not decorative.** `ScanScreen` refuses the whole
+  owner-hidden flow when the block is absent, and `validateDiscovery` refuses when the claimed
+  `verificationRegistry` disagrees with the on-chain `ProtocolRegistry` anchor. Government carries ONE
+  registry address (`VERIFICATION_REGISTRY_ADDR`, aliased `VERIFICATION_REGISTRY_CONSENT_ADDR`) which must
+  be the same unified consent registry the siblings use; `GET /health` echoes it (plus `issuerRegistry`
+  and `deploymentUrl`) so a mismatch is eyeball-able rather than an opaque phone-side refusal.
+- **The authority verifies through the same ZK consent path as anyone else** (`verify.rs`, a mirror of
+  vet-api's `consent_submit_levelb` with the relayer resolved from `GOV_SIGNER_KEY` instead of a custody
+  vault). Capability comes from the `VERIFY:<purpose>` namespace, which is SEPARATE from the issuer
+  record-type roles the authority already holds — an issuer is not implicitly a verifier. Portal purpose:
+  `travel_check` (`app::VERIFY_PURPOSES`), an existing label so owner consent receipts render it by name.
+  Without the grant `POST /verify/session/start` refuses 403 `relayer not whitelisted for this purpose`
+  BEFORE any QR is shown, and the portal names the signer + registry + how to fix it.
+- **`profileDisclosure` runs checks (1) pure fold + (2) binding-to-this-proof only.** vet-api also
+  preflights `R == profileRoot(dogTagId)` and `isValid(R)`, both gated there on addresses government does
+  not hold (it is a VERIFY-only deployment for `DOG_PROFILE`), so this takes exactly the branch vet takes
+  when they are unset. `VerificationRegistryConsent` re-runs both on-chain, and check (2) is what extends
+  that enforcement to the disclosure.
+- **The QR host comes from `DEPLOYMENT_URL`, server-side.** Never `window.location.origin` — the portal's
+  origin is routinely a laptop `localhost` no phone can reach. `/x/` is now proxied alongside `/r/` in
+  both `vite.config.ts` and `nginx.conf` so a portal-origin `DEPLOYMENT_URL` also resolves.
+- **Countdowns count from `ttlSecs` at response receipt**, not `expiresAt - Date.now()`: the two clocks
+  are the backend's and the browser's, and skew would show an expired timer over a perfectly good QR.
+- Tests: `government/api/tests/share_qr.rs` (mint/resolve/one-time/refresh/auth + the `/r/` overload) and
+  `tests/verify_session.rs` (not-whitelisted 403, QR shape, mandatory claims, dual-gated poll, the
+  preflight rejects, and that the paste-JSON fallback still works). MemChain cannot verify Groth16, so
+  the ZK soundness of this path stays the registry's — pinned in `contracts/test`, not here.
+
 ### Mobile travel receipt + `obfuscate()` FFI (PR-3)
 The pet-owner HOLDER apps (iOS `apps/ios/DogTag`, Android `apps/android`) render a held `TRAVEL_CLEARANCE` credential as the same CDC receipt the web portal shows, produced LOCALLY from the stored `wrappedDocJson`. Structure + sharp edges:
 - **`obfuscate()` is now in the mobile FFI.** `crates/dogtag-standard-rs/src/ffi.rs` exposes `obfuscate_document_json(wrapped_doc_json, key_paths) -> String` (UniFFI → Swift `obfuscateDocumentJson(wrappedDocJson:keyPaths:)`, Kotlin `obfuscateDocumentJson(wrappedDocJson, keyPaths)`). It wraps `wrap::obfuscate` (already existed, just wasn't surfaced): moves each named leaf's hash into `privacy.obfuscated[]` and drops the cleartext, leaving the Merkle root == on-chain root R UNCHANGED. So the phone builds a PII-free presentation copy with ZERO new ceremony — it's the merkle selective-disclosure proof, NOT a ZK proof. `credentialSubject.dogTagId` must never be obfuscated (`verify.rs` rejects it). Key paths are the FULL dotted path incl. the `credentialSubject.` prefix.
