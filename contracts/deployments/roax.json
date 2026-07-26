@@ -195,10 +195,23 @@
     "VACCINATION": "0x1456f93f7376789c46408CC4616751eB853edD9A"
   },
   "government_clones": {
-    "_note": "Per-record-type DogTagIssuer clones for the government credential authority, deployed via DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business) with business == the protocol admin 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 (single-authority topology, arch DP-3). The government signer (the same admin address on testnet) is whitelisted on IssuerRegistry for keccak256(recordType); DogTagIssuer.issue is onlyWhitelisted. Consumed by stacks/government via TRAVEL_CLEARANCE_ISSUER_ADDR / EU_HEALTH_CERT_ISSUER_ADDR.",
-    "TRAVEL_CLEARANCE": "0x8e276BD4c57740766A7e173D05F4f02013681c6a",
-    "EU_HEALTH_CERT": "0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2"
+    "_note": "Per-record-type DogTagIssuer clones for the government credential authority on the FRESH owner-hidden set, deployed via DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business) on factory 0xED20269E with business == the governance signer 0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2 (which is the factory Ownable owner, so createIssuer is authorised). Provisioned + re-runnable via scripts/demo-provision-government.sh. DogTagIssuer.issue is onlyWhitelisted against clone.registry(), so the GOV_SIGNER_KEY address must be whitelisted on IssuerRegistry 0xAEE54035 for keccak256(recordType) - the script does that too. Consumed by stacks/government via TRAVEL_CLEARANCE_ISSUER_ADDR / EU_HEALTH_CERT_ISSUER_ADDR.",
+    "TRAVEL_CLEARANCE": "0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F",
+    "_TRAVEL_CLEARANCE_provenance": "2026-07-26: createIssuer tx 0x589e30891c6494ad695e526b657c1f5ed90f92c5820cf875d78419bdc3b4be89 (block 276167). Verified: isClone == true on factory 0xED20269E, registry() == 0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21, recordType() == keccak256(TRAVEL_CLEARANCE). First real government issuance anchored into it: root 0x02ae43c046bf1a933d652cce654ec03fc94f13ccec82047c82ea9e2251f266e9, tx 0x50a7ca02c643cb9a33f308eede54a10d908503ddfa67f3abaed2456f0719e2d1 (block 276218), issuedBy 0xc6c0904fB8445CDBCaB76823788522586712e39D, factory.rootIssuer(root) == this clone.",
+    "EU_HEALTH_CERT": null,
+    "_EU_HEALTH_CERT_note": "NOT deployed on the fresh set. predictIssuer(keccak256(EU_HEALTH_CERT), 0x8E27E117...) gives its deterministic address; run scripts/demo-provision-government.sh (or createIssuer directly) when the EU_HEALTH_CERT flow is needed. Leave EU_HEALTH_CERT_ISSUER_ADDR unset until then - the government API reports the issuer as null and /issue falls back to dry_run rather than anchoring somewhere wrong."
   },
   "ProtocolRegistry": "0xf5492A671E69b1A13f7Fd123C021830eB1ea8081",
-  "_r8_fresh_redeploy": "2026-07-23: the flat keys above (factory/impl/SBTConsent/VerifierConsent/IssuerRegistry/VRegConsent/ProtocolRegistry/admin/demo_clones) are the FRESH owner-hidden set deployed per data/dogtag-roaxdeploy-r8/report.md and SUPERSEDE every address named inside the historical _m3/_m4/_m5 annotation blocks in this file; those blocks are kept as deployment history only."
+  "_r8_fresh_redeploy": "2026-07-23: the flat keys above (factory/impl/SBTConsent/VerifierConsent/IssuerRegistry/VRegConsent/ProtocolRegistry/admin/demo_clones) are the FRESH owner-hidden set deployed per data/dogtag-roaxdeploy-r8/report.md and SUPERSEDE every address named inside the historical _m3/_m4/_m5 annotation blocks in this file; those blocks are kept as deployment history only.",
+  "government_clones_deadRegistry_legacy": {
+    "status": "SUPERSEDED / DO NOT USE. These clones are bound to the RETIRED IssuerRegistry 0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c and are NOT clones of the fresh DogTagIssuerFactory 0xED20269E (isClone == false). Verified on-chain 2026-07-26: registry() == 0x5d86e4CF..., so their onlyWhitelisted gate reads a registry no verifier uses. Wiring TRAVEL_CLEARANCE_ISSUER_ADDR at one of these makes government issuance fail closed (NotWhitelisted) even after a correct whitelistFor on the live registry. Use the government_clones block instead.",
+    "TRAVEL_CLEARANCE": "0x8e276BD4c57740766A7e173D05F4f02013681c6a",
+    "EU_HEALTH_CERT": "0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2",
+    "_original_note": "Per-record-type DogTagIssuer clones for the government credential authority, deployed via DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business) with business == the protocol admin 0x119F8c7F6D7EC10E7376983739C6f46cF9CC3E96 (single-authority topology, arch DP-3). The government signer (the same admin address on testnet) is whitelisted on IssuerRegistry for keccak256(recordType); DogTagIssuer.issue is onlyWhitelisted. Consumed by stacks/government via TRAVEL_CLEARANCE_ISSUER_ADDR / EU_HEALTH_CERT_ISSUER_ADDR."
+  },
+  "_test_artifact_clones": {
+    "_note": "Throwaway clones deployed only to PROVE a control-plane path works end to end. Not consumed by any service, not part of any flow. Listed so a factory IssuerCreated enumeration does not turn one into a mystery.",
+    "DEMOFIX_F6_PROOF": "0xe989dbb92641674b4e78350adbf59e4ee9628845",
+    "_DEMOFIX_F6_PROOF_provenance": "2026-07-26: deployed THROUGH the admin portal's Issuers/Factory UI (POST /v1/admin/factory/issuers) to prove the FACTORY_ADDR fix - that path previously answered 'FACTORY_ADDR not configured'. createIssuer tx 0x84a68890e872f15b8bc853fb3788f8a91c3e9c6fe25691d173f185df85823e22 (block 276180), disposition executed by 0x8E27E117. No root was ever issued into it. Safe to ignore."
+  }
 }

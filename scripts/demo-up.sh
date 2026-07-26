@@ -12,7 +12,7 @@
 # run scripts/demo-bootstrap.sh <thatSigner>, and click Issue -> Create QR. See docs/DEMO.md.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"; mkdir -p .demo; : > .demo/pids
+cd "$ROOT"; mkdir -p .demo
 if [ -f "$ROOT/contracts/.env" ]; then
   set -a
   # shellcheck disable=SC1091
@@ -30,6 +30,20 @@ VACC_CLONE="${VACCINATION_ISSUER_ADDR:-}"
 : "${SBT:?set SBT_CONSENT_ADDR to the fresh owner-hidden SBT}"
 : "${PROFILE_ISSUER:?set PROFILE_ISSUER_ADDR to a fresh factory clone}"
 : "${VACC_CLONE:?set VACCINATION_ISSUER_ADDR to a fresh factory clone}"
+
+# Read a deployed address out of the canonical ledger. Dependency-free, and the 40-hex-address value
+# pattern means it only ever matches a real top-level address entry, never surrounding prose.
+ledger_addr(){
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\(0x[0-9a-fA-F]\{40\}\)\".*/\1/p" \
+    "$ROOT/contracts/deployments/roax.json" 2>/dev/null | head -1
+}
+# FACTORY — the admin portal's Issuers/Factory UI (predict + deploy a clone) needs this. It was never
+# passed, so admin-api fell back to the zero address and every factory call answered
+# "FACTORY_ADDR not configured" while governance/authority reported factoryOwner.target = 0x0.
+# Resolved from env first, then the canonical ledger, so it is never a literal pinned in this script.
+FACTORY="${FACTORY_ADDR:-${DOGTAG_ISSUER_FACTORY_ADDR:-$(ledger_addr DogTagIssuerFactory)}}"
+: "${FACTORY:?set FACTORY_ADDR, or add DogTagIssuerFactory to contracts/deployments/roax.json}"
+
 HMAC=dev-central-hmac-secret
 # LAN IP so the share/verify QR points at a host the PHONE can reach (localhost is the phone itself).
 # Override with: LAN_IP=192.168.x.x scripts/demo-up.sh
@@ -39,6 +53,135 @@ ADMIN_PK="${GOVERNANCE_PRIVATE_KEY:-${DEPLOYER_PRIVATE_KEY:-}}"
 : "${ADMIN_PK:?set GOVERNANCE_PRIVATE_KEY or DEPLOYER_PRIVATE_KEY for the fresh deployment admin}"
 ADMIN_ADDR="$(cast wallet address --private-key "$ADMIN_PK")"
 run(){ echo "  $1 -> $2 (log .demo/$1.log)"; ( "${@:3}" >".demo/$1.log" 2>&1 & echo $! >> .demo/pids ); }
+die(){ echo; echo "ERROR: $*" >&2; exit 1; }
+
+# ------------------------------------------------------------------------------------------------
+# PREFLIGHT — fail loudly here rather than boot a stack that looks healthy and silently does nothing.
+# ------------------------------------------------------------------------------------------------
+CHAIN_ID_EXPECTED="${CHAIN_ID:-135}"
+echo "Preflight (chainId $CHAIN_ID_EXPECTED, $RPC):"
+
+ACTUAL_CHAIN_ID="$(cast chain-id --rpc-url "$RPC" 2>/dev/null || true)"
+[ -n "$ACTUAL_CHAIN_ID" ] || die "cannot reach $RPC (cast chain-id failed). The demo needs the live node."
+[ "$ACTUAL_CHAIN_ID" = "$CHAIN_ID_EXPECTED" ] \
+  || die "$RPC reports chainId $ACTUAL_CHAIN_ID, expected $CHAIN_ID_EXPECTED. Refusing to boot against the wrong chain."
+echo "  chainId               $ACTUAL_CHAIN_ID  ok"
+
+# The factory must be bound to the SAME IssuerRegistry the rest of the stack uses. A stale ledger entry
+# from a superseded deployment is otherwise invisible: clones deploy, but against a registry nobody reads.
+FACTORY_REGISTRY="$(cast call "$FACTORY" 'registry()(address)' --rpc-url "$RPC" 2>/dev/null || true)"
+[ -n "$FACTORY_REGISTRY" ] || die "factory $FACTORY has no registry() - not a DogTagIssuerFactory (or wrong chain)."
+if [ "$(echo "$FACTORY_REGISTRY" | tr 'A-Z' 'a-z')" != "$(echo "$IR" | tr 'A-Z' 'a-z')" ]; then
+  die "factory $FACTORY is bound to registry $FACTORY_REGISTRY but the stack uses ISSUER_REGISTRY_ADDR=$IR.
+  Clones deployed from it would be invisible to every verifier. Fix FACTORY_ADDR or ISSUER_REGISTRY_ADDR."
+fi
+echo "  factory               $FACTORY -> registry $IR  ok"
+
+# The operator's DECLARATION that out-of-band signing is intended, resolved ONCE so the refusal below and
+# admin-api agree on it. `ADMIN_PROPOSE_ONLY` is the canonical name and `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`
+# its accepted alias: either suppresses the refusal AND reaches admin-api, which cannot otherwise tell a
+# designed proposal from a wrong-key one and reports every not-broadcast grant as the latter. Defaults
+# THROUGH the canonical name so an operator-set value (incl. one sourced from contracts/.env) survives.
+# Truthy set mirrors admin_api::startup::env_flag (trim + lowercase, "1"|"true"), the ONE reader both
+# admin-api control-plane flags now go through.
+ADMIN_PROPOSE_ONLY="${ADMIN_PROPOSE_ONLY:-${ALLOW_UNAUTHORIZED_ADMIN_SIGNER:-0}}"
+case "$(echo "$ADMIN_PROPOSE_ONLY" | tr -d '[:space:]' | tr 'A-Z' 'a-z')" in
+  1|true) PROPOSE_ONLY_DECLARED=1 ;;
+  *) PROPOSE_ONLY_DECLARED=0 ;;
+esac
+
+# The hosted admin signer MUST hold WHITELIST_ADMIN. The retired deployer EOA lost it in governance
+# Phase-2, and with only DEPLOYER_PRIVATE_KEY the stack booted cleanly while every portal grant returned
+# disposition:"proposed" with unsigned calldata and nothing landed on-chain. Fail here instead.
+WL_ADMIN_ROLE="$(cast keccak "WHITELIST_ADMIN")"
+HAS_WL="$(cast call "$IR" 'hasRole(bytes32,address)(bool)' "$WL_ADMIN_ROLE" "$ADMIN_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
+if [ -z "$HAS_WL" ]; then
+  # UNREADABLE is not the same answer as `false`, and must never be reported as one: the read itself
+  # failed (RPC hiccup, wrong/absent contract at $IR), so we know nothing about the signer. admin-api's
+  # own authority_preflight resolves this case to Unknown and never refuses to boot on it - this script
+  # must not be stricter than the backend on the identical question, and must not accuse a correct key.
+  echo "  WARNING: could not read hasRole(WHITELIST_ADMIN, $ADMIN_ADDR) on IssuerRegistry $IR." >&2
+  echo "           The signer's authority is UNRESOLVED - this is not evidence it is the wrong key." >&2
+  echo "           Check $IR is an IssuerRegistry on this chain and that $RPC is healthy; if the key" >&2
+  echo "           really lacks WHITELIST_ADMIN, portal grants will come back disposition:\"proposed\"." >&2
+elif [ "$HAS_WL" != "true" ]; then
+  MSG="admin signer $ADMIN_ADDR does NOT hold WHITELIST_ADMIN on IssuerRegistry $IR (hasRole -> $HAS_WL).
+  Every whitelist grant from the portal would come back disposition:\"proposed\" with unsigned calldata
+  and NOTHING would land on-chain, while the stack looked healthy.
+  Fix: set GOVERNANCE_PRIVATE_KEY in contracts/.env to the key that holds WHITELIST_ADMIN.
+  (DEPLOYER_PRIVATE_KEY is the RETIRED deployer EOA - it lost this role in governance Phase-2.)
+  To boot anyway for a genuine propose-for-external-signing setup: ADMIN_PROPOSE_ONLY=1
+  (or its alias ALLOW_UNAUTHORIZED_ADMIN_SIGNER=1)"
+  if [ "$PROPOSE_ONLY_DECLARED" = "1" ]; then
+    echo "  WARNING: $MSG" >&2
+  else
+    die "$MSG"
+  fi
+else
+  echo "  admin signer          $ADMIN_ADDR holds WHITELIST_ADMIN  ok"
+fi
+
+# GOVERNMENT chain backend. `live` (default) = real ROAX. The government stack used to select its
+# in-process MemChain whenever DEMO_MODE was set - which contracts/.env sets - so its verify/records
+# surfaces were simulated while /health still reported chainId 135. Simulation is now opt-in only.
+GOV_CHAIN_BACKEND="${GOV_CHAIN_BACKEND:-live}"
+GOV_SIGNER_KEY="${GOV_SIGNER_KEY:-}"
+TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}"
+# The accepted values are the match arm in stacks/government/api/src/main.rs (the source of truth), which
+# lowercases first and process::exit(1)s on anything else. Mirror BOTH halves: an alias like `rpc` is
+# genuinely live and must not be announced as simulated, and an unrecognised value must die HERE rather
+# than printing a clean boot while government-api exits inside the backgrounded run().
+GOV_BACKEND_LC="$(echo "$GOV_CHAIN_BACKEND" | tr 'A-Z' 'a-z')"
+case "$GOV_BACKEND_LC" in
+  live|alloy|rpc) GOV_SIMULATED=0 ;;
+  mem|memory|simulated|sim) GOV_SIMULATED=1 ;;
+  *) die "GOV_CHAIN_BACKEND='$GOV_CHAIN_BACKEND' is not recognised - government-api would exit(1) at boot.
+  Use 'live' (real RPC node, the default) or 'mem' (in-process simulation; nothing is broadcast).
+  See the match arm in stacks/government/api/src/main.rs for every accepted alias." ;;
+esac
+if [ "$GOV_SIMULATED" = "0" ]; then
+  TC_ROLE="$(cast keccak "TRAVEL_CLEARANCE")"
+  if [ -z "$GOV_SIGNER_KEY" ]; then
+    echo "  government            LIVE chain, NO signer -> /issue can only dry_run (no on-chain anchor)."
+    echo "                        Provision one with: scripts/demo-provision-government.sh"
+  else
+    GOV_ADDR="$(cast wallet address --private-key "$GOV_SIGNER_KEY")"
+    GOV_BAL="$(cast balance "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || echo 0)"
+    GOV_WL="$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$TC_ROLE" "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
+    echo "  government signer     $GOV_ADDR  balance ${GOV_BAL} wei  TRAVEL_CLEARANCE whitelisted=${GOV_WL:-unreadable}"
+    [ "$GOV_BAL" != "0" ] || echo "    WARNING: unfunded - on-chain issuance will fail. scripts/demo-provision-government.sh funds it." >&2
+    [ "$GOV_WL" = "true" ] || echo "    WARNING: not whitelisted for TRAVEL_CLEARANCE - DogTagIssuer.issue() reverts NotWhitelisted." >&2
+  fi
+  # A configured clone is a config error whether or not a signer exists, so this is checked either way.
+  # `DogTagIssuer.issue` is onlyWhitelisted against the clone's OWN registry(), so a clone bound to a
+  # superseded registry fails closed even after a correct whitelistFor on the one the stack uses - it
+  # passes every other preflight line and only surfaces on the first issuance. Same check the
+  # scripts/demo-provision-government.sh clone step makes.
+  if [ -z "$TRAVEL_CLEARANCE_ISSUER_ADDR" ]; then
+    echo "    WARNING: TRAVEL_CLEARANCE_ISSUER_ADDR unset - no clone to anchor into; /issue will dry_run." >&2
+  else
+    CLONE_REGISTRY="$(cast call "$TRAVEL_CLEARANCE_ISSUER_ADDR" 'registry()(address)' --rpc-url "$RPC" 2>/dev/null || true)"
+    [ -n "$CLONE_REGISTRY" ] || die "TRAVEL_CLEARANCE_ISSUER_ADDR=$TRAVEL_CLEARANCE_ISSUER_ADDR has no registry() - not a DogTagIssuer clone (or wrong chain)."
+    if [ "$(echo "$CLONE_REGISTRY" | tr 'A-Z' 'a-z')" != "$(echo "$IR" | tr 'A-Z' 'a-z')" ]; then
+      die "TRAVEL_CLEARANCE clone $TRAVEL_CLEARANCE_ISSUER_ADDR is bound to registry $CLONE_REGISTRY but the stack uses ISSUER_REGISTRY_ADDR=$IR.
+  Its onlyWhitelisted gate reads a registry nobody writes to, so issue() reverts NotWhitelisted even
+  after a correct whitelistFor. See contracts/deployments/roax.json -> government_clones (the fresh set)
+  vs government_clones_deadRegistry_legacy. Re-provision: scripts/demo-provision-government.sh"
+    fi
+    CLONE_RT="$(cast call "$TRAVEL_CLEARANCE_ISSUER_ADDR" 'recordType()(bytes32)' --rpc-url "$RPC" 2>/dev/null || true)"
+    [ "$(echo "${CLONE_RT:-}" | tr 'A-Z' 'a-z')" = "$(echo "$TC_ROLE" | tr 'A-Z' 'a-z')" ] \
+      || die "TRAVEL_CLEARANCE clone $TRAVEL_CLEARANCE_ISSUER_ADDR has recordType ${CLONE_RT:-unreadable}, expected keccak256(TRAVEL_CLEARANCE) $TC_ROLE."
+    echo "  government clone      $TRAVEL_CLEARANCE_ISSUER_ADDR -> registry $IR, TRAVEL_CLEARANCE  ok"
+  fi
+else
+  echo "  government            GOV_CHAIN_BACKEND=$GOV_CHAIN_BACKEND -> SIMULATED chain (nothing broadcast)."
+fi
+echo
+
+# Truncate the PID list only once every preflight refusal is behind us. Doing it at the top meant a
+# re-run against an ALREADY-RUNNING stack wiped the record scripts/demo-down.sh kills by, and then
+# refused to boot - orphaning the running services with nothing left pointing at them.
+: > .demo/pids
 
 echo "Building backend binaries (release for speed)…"
 cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api
@@ -59,8 +202,9 @@ INDEXER_DEMO_MODE=1 PORT=46001 VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
   run indexer-api ":46001" "$ROOT/target/release/indexer-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
-  SBT_ADDR=$SBT \
+  SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
+  ADMIN_PROPOSE_ONLY="$ADMIN_PROPOSE_ONLY" \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 # Every verifier/issuance process receives the same owner-hidden pair. PROFILE_ISSUER is a real
 # factory clone: roots are issue(R)'d there, while mintCustodial seals the same R on the SBT.
@@ -97,14 +241,19 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   run prover-api ":41875" "$ROOT/target/prover/release/vet-api"
 
 # GOVERNMENT stack — a SEPARATE deployable (its own government-api binary, own port, own DB), not a
-# vet-api re-run. In the demo it runs against LIVE ROAX for gasless reads (verify), so it can verify a
-# credential the vet stack just issued. On-chain issuance (TRAVEL_CLEARANCE) needs a funded, whitelisted
-# GOV_SIGNER_KEY + a DogTagIssuer clone (TRAVEL_CLEARANCE_ISSUER_ADDR) — an ops step; unset here means
-# /issue builds+persists via dry_run. See docs/ROLE_APPS.md §7.
+# vet-api re-run. It runs against LIVE ROAX (GOV_CHAIN_BACKEND=live, the default): reads AND on-chain
+# TRAVEL_CLEARANCE issuance are real. It used to fall onto its in-process MemChain purely because
+# contracts/.env sets DEMO_MODE, so its verify/records surfaces were simulated while /health still
+# claimed chainId 135; the chain backend is now an explicit, separate switch from the demo store.
+# On-chain issuance needs a funded, whitelisted GOV_SIGNER_KEY + a DogTagIssuer clone
+# (TRAVEL_CLEARANCE_ISSUER_ADDR) — provision both with scripts/demo-provision-government.sh. Without
+# them the stack still runs live-read-only and /issue builds+persists via dry_run.
+# GOV_CHAIN_BACKEND=mem opts INTO simulation; /health then reports backend="simulated", chainId=null.
 ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority" ISSUER_DOMAIN=gov.local \
   VERIFICATION_REGISTRY_ADDR=$VR \
-  CHAIN_ID=135 PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
-  TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}" GOV_SIGNER_KEY="${GOV_SIGNER_KEY:-}" \
+  CHAIN_ID="$CHAIN_ID_EXPECTED" PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
+  GOV_CHAIN_BACKEND="$GOV_CHAIN_BACKEND" \
+  TRAVEL_CLEARANCE_ISSUER_ADDR="$TRAVEL_CLEARANCE_ISSUER_ADDR" GOV_SIGNER_KEY="$GOV_SIGNER_KEY" \
   GOV_API_TOKEN="${GOV_API_TOKEN:-dogtag-gov-demo-token}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_OVERSIGHT_TOKEN=dogtag-indexer-oversight-demo-token \
   run government-api ":44832" "$ROOT/target/release/government-api"

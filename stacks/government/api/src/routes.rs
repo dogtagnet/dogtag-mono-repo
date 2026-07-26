@@ -189,14 +189,34 @@ fn credential_json(cred: &IssuedCredential) -> Value {
 // health
 // --------------------------------------------------------------------------------------------
 
+/// `GET /health` — liveness plus, critically, an HONEST statement of which chain surface is in use.
+///
+/// The reported `chainId` is read from the CHAIN CLIENT, never from `CHAIN_ID` config: a simulated
+/// backend used to inherit the configured `135` and pair it with `canSign:true`, so a simulated stack
+/// was indistinguishable from live ROAX in the one place an operator looks. Now:
+///   - `backend`   — "live" | "simulated" (authoritative)
+///   - `simulated` — the same fact as a boolean, for UI badges
+///   - `chainId`   — the real id when live, `null` when simulated (never a network it is not on)
+///   - `canSign`   — true only when a REAL tx from a REAL key would land on a REAL chain
+///   - `signer` / `simulatedSigner` — a real signer address is never conflated with a stand-in
+///
+/// `demo` is retained but now means only what it actually controls: the ephemeral store and the
+/// relaxed API-token fallback. It is NOT a statement about the chain.
 async fn health(State(st): State<AppState>) -> Resp {
+    let simulated = st.chain.is_simulated();
+    let signer = st.chain.signer_address();
     ok(json!({
         "status": "ok",
         "service": "government-api",
-        "chainId": st.cfg.chain_id,
+        "backend": st.chain.backend().as_str(),
+        "simulated": simulated,
+        // Null rather than a real id when simulated — this backend is on no network at all.
+        "chainId": (!simulated).then(|| st.chain.chain_id()),
         "demo": st.cfg.demo,
-        "canSign": st.chain.can_sign(),
-        "signer": st.chain.signer_address(),
+        "canSign": st.chain.can_broadcast_real_tx(),
+        "signer": (!simulated).then(|| signer.clone()).flatten(),
+        // The MemChain stand-in address, surfaced under a name that cannot be mistaken for a real key.
+        "simulatedSigner": simulated.then(|| signer).flatten(),
         "issuers": {
             app::TRAVEL_CLEARANCE: st.cfg.issuer_addr_for(app::TRAVEL_CLEARANCE),
             app::EU_HEALTH_CERT: st.cfg.issuer_addr_for(app::EU_HEALTH_CERT),
@@ -329,8 +349,15 @@ async fn issue(
         record_type: body.record_type.clone(),
         dog_tag_id: body.dog_tag_id.clone(),
         issuer_addr: issuer_addr.clone(),
-        // M7 provenance mirror (§4.2), from the `protocol` block just stamped on `doc`.
-        chain_id: Some(st.cfg.chain_id),
+        // M7 provenance mirror (§4.2). Read from the CHAIN CLIENT, never from `CHAIN_ID` config -
+        // config is what let a simulated backend stamp `135` on every record it issued. `None` on a
+        // simulated backend says "anchored on no real network", which is the truth.
+        //
+        // The envelope's `protocol.chainId` (`ProtocolMeta`) deliberately still carries the configured
+        // id: it is a non-optional `u64` in the shared standard crate with no null representation, so
+        // making it honest means inventing a sentinel in a cross-language type. This column is the
+        // queryable, honest one.
+        chain_id: (!st.chain.is_simulated()).then(|| st.chain.chain_id()),
         protocol_version: Some(dogtag_standard::wrap::LEVEL_B_VERSION.to_string()),
         verification_registry: Some(st.cfg.verification_registry_addr.clone()),
         issuer_signer: if issuer_signer.is_empty() {
@@ -794,6 +821,15 @@ struct ReceiptStatus {
     effective_status: &'static str,
     /// On-chain `issuedAt[R]` (Unix seconds), 0 when not anchored — the authoritative issuance date.
     issued_at: u64,
+    /// The real chain this receipt is anchored on; `None` on a SIMULATED backend.
+    chain_id: Option<u64>,
+    /// Issue/revoke block-explorer links, **suppressed on a simulated backend**. The stored URLs point
+    /// at `explorer.roax.net` for a tx that was never broadcast, and these two surfaces are the
+    /// unauthenticated ones an outside party checks - handing them a dead ROAX link is the same
+    /// dishonesty `/health` used to commit. Suppressed HERE, once, so both public surfaces agree; the
+    /// stored record and the operator-facing `/v1/records` surfaces keep their links unchanged.
+    issue_explorer_url: Option<String>,
+    revoke_explorer_url: Option<String>,
 }
 
 /// Shared resolver for the two public receipt surfaces: look up the receipt, read the chain live, and
@@ -836,7 +872,13 @@ async fn resolve_receipt_status(st: &AppState, receipt_id: &str) -> Result<Recei
         expired_or_valid(cred.status, cred.valid_until.as_deref(), &today)
     };
 
+    let simulated = st.chain.is_simulated();
     Ok(ReceiptStatus {
+        chain_id: (!simulated).then(|| st.chain.chain_id()),
+        issue_explorer_url: (!simulated).then(|| cred.explorer_url.clone()).flatten(),
+        revoke_explorer_url: (!simulated)
+            .then(|| cred.revoke_explorer_url.clone())
+            .flatten(),
         cred,
         effective_status,
         issued_at,
@@ -860,8 +902,12 @@ async fn receipt_status(State(st): State<AppState>, Path(receipt_id): Path<Strin
         "issuanceDate": issuance_date,
         "root": c.root,
         "issuerAddr": c.issuer_addr,
-        "explorerUrl": c.explorer_url,
-        "revokeExplorerUrl": c.revoke_explorer_url,
+        // Chain provenance, honest on a simulated backend: null id, no dead explorer links, and an
+        // explicit `simulated` flag so a consumer sees WHY they are absent rather than guessing.
+        "chainId": rs.chain_id,
+        "simulated": rs.chain_id.is_none(),
+        "explorerUrl": rs.issue_explorer_url,
+        "revokeExplorerUrl": rs.revoke_explorer_url,
         "checkedAt": now(),
     }))
 }
@@ -925,8 +971,8 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
         "—".to_string()
     };
     let valid_until = c.valid_until.clone().unwrap_or_else(|| "—".to_string());
-    let issue_link = c
-        .explorer_url
+    let issue_link = rs
+        .issue_explorer_url
         .as_deref()
         .map(|u| {
             format!(
@@ -935,7 +981,7 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
             )
         })
         .unwrap_or_default();
-    let revoke_link = c
+    let revoke_link = rs
         .revoke_explorer_url
         .as_deref()
         .map(|u| {
@@ -945,6 +991,20 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
             )
         })
         .unwrap_or_default();
+    // The provenance row is the one thing an outside party reads this page FOR. On a simulated backend
+    // it must not read "ROAX chainId 135" beside links to txs that were never broadcast - it says so,
+    // in place, rather than silently dropping the row and leaving the reader to assume the best.
+    let anchored_row = match rs.chain_id {
+        Some(chain) => format!(
+            "<dt>Anchored on</dt><dd>ROAX chainId {chain} · {issue_link}{revoke_link}</dd>"
+        ),
+        None => "<dt>Anchored on</dt>\
+                 <dd><strong>NOT a real chain - SIMULATED backend.</strong> This receipt was produced \
+                 by a demonstration stack running an in-process chain emulation. Nothing was \
+                 broadcast, no block explorer holds a record of it, and it carries no legal effect.\
+                 </dd>"
+            .to_string(),
+    };
 
     let html = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -967,14 +1027,18 @@ async fn receipt_page(State(st): State<AppState>, Path(receipt_id): Path<String>
          <dt>Date of issuance</dt><dd>{issuance}</dd>\
          <dt>Valid until</dt><dd>{valid_until}</dd>\
          <dt>Credential root</dt><dd class=\"mono\">{root}</dd>\
-         <dt>Anchored on</dt><dd>ROAX chainId {chain} · {issue_link}{revoke_link}</dd>\
+         {anchored_row}\
          </dl>\
-         <p class=\"foot\">Live on-chain status check · no personal data shown · checked {checked} (UTC epoch s).</p>\
+         <p class=\"foot\">Live {chain_note} status check · no personal data shown · checked {checked} (UTC epoch s).</p>\
          </div></body></html>",
         rid = esc(&receipt_id),
         rtype = esc(&c.record_type),
         root = esc(&c.root),
-        chain = st.cfg.chain_id,
+        chain_note = if rs.chain_id.is_some() {
+            "on-chain"
+        } else {
+            "simulated-chain"
+        },
         checked = now(),
     );
     Html(html).into_response()

@@ -159,6 +159,7 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         factory_addr: "0x0000000000000000000000000000000000000000".to_string(),
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
+        propose_only: false,
     };
     AppState {
         store: Arc::new(MemStore::new()),

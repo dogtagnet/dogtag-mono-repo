@@ -46,11 +46,14 @@ if [ "$MODE" = demo ]; then
   command -v curl >/dev/null || fail "curl required"
   command -v jq   >/dev/null || fail "jq required"
 
-  step "0. Build + boot government-api in GOV_DEMO_MODE (MemChain + MemStore, ephemeral)"
+  step "0. Build + boot government-api on the SIMULATED chain (MemChain + MemStore, ephemeral)"
   cargo build -q -p government-api
   PORT=44932
   GOV="http://localhost:$PORT"
-  GOV_DEMO_MODE=1 PORT=$PORT \
+  # GOV_CHAIN_BACKEND=mem is REQUIRED and explicit: GOV_DEMO_MODE no longer selects the simulated
+  # chain (it only picks the ephemeral store), precisely so no deployment gets a simulated chain by
+  # accident. This offline self-test genuinely wants the emulation, so it opts in.
+  GOV_DEMO_MODE=1 GOV_CHAIN_BACKEND=mem PORT=$PORT \
     TRAVEL_CLEARANCE_ISSUER_ADDR=0x1111111111111111111111111111111111111111 \
     "$ROOT/target/debug/government-api" >/tmp/e2e-roles-gov.log 2>&1 &
   GOVPID=$!
@@ -59,7 +62,10 @@ if [ "$MODE" = demo ]; then
 
   H=$(curl -fsS "$GOV/health")
   [ "$(echo "$H" | jqr .status)" = ok ] || fail "health: $H"
-  green "government-api up on :$PORT (demo=$(echo "$H" | jqr .demo), canSign=$(echo "$H" | jqr .canSign))"
+  # And assert it SAYS so: a simulated backend must never report a real chainId (the honesty contract).
+  [ "$(echo "$H" | jqr .backend)" = simulated ] || fail "expected backend=simulated, got: $H"
+  [ "$(echo "$H" | jqr .chainId)" = null ] || fail "simulated backend must report chainId=null: $H"
+  green "government-api up on :$PORT (backend=simulated, chainId=null, demo=$(echo "$H" | jqr .demo))"
 
   step "1. GOVERNMENT ISSUES a TRAVEL_CLEARANCE (build root R + anchor on the emulated chain)"
   ISS=$(curl -fsS -X POST "$GOV/v1/travel-clearance/issue" -H 'content-type: application/json' -H "authorization: Bearer $GTOK" \
@@ -71,7 +77,9 @@ if [ "$MODE" = demo ]; then
 
   step "2. GOVERNMENT VERIFIES it (integrity offline + on-chain isValid + issuer identity)"
   WD=$(echo "$ISS" | jq -c '.wrappedDoc')
-  SIGNER=$(echo "$H" | jqr .signer)
+  # On the simulated backend the stand-in address is `simulatedSigner`; `signer` is deliberately null
+  # so a stand-in can never be mistaken for a real key. Take whichever this backend actually has.
+  SIGNER=$(echo "$H" | jqr '.simulatedSigner // .signer')
   VER=$(curl -fsS -X POST "$GOV/v1/verify" -H 'content-type: application/json' \
     -d "{\"wrapped_doc\":$WD,\"signer_addr\":\"$SIGNER\"}")
   [ "$(echo "$VER" | jqr .verdict)" = true ]                    || fail "verdict not true: $VER"

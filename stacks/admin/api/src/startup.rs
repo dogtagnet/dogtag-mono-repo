@@ -30,6 +30,28 @@ pub fn is_demo_mode() -> bool {
     })
 }
 
+/// True when any of `keys` is set to `1`/`true` (case-insensitive, surrounding whitespace ignored).
+///
+/// The ONE reader for the control-plane boolean env flags (`ADMIN_PROPOSE_ONLY` /
+/// `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`, `ADMIN_REQUIRE_AUTHORITY`). Factored out because the two were
+/// parsed differently: the fail-closed `ADMIN_REQUIRE_AUTHORITY` gate matched the raw string, so
+/// `TRUE` or a stray-space ` 1` silently left the refusal DISARMED - the same class of silent
+/// degradation the surrounding preflight exists to remove.
+///
+/// Deliberately NOT [`is_demo_mode`]'s looser "non-empty and not 0/false" rule: `scripts/demo-up.sh`
+/// mirrors this exact `1`/`true` set by hand so the script and the backend agree on whether a
+/// deployment declared propose-only. Widening it here desyncs the two.
+pub fn env_flag(keys: &[&str]) -> bool {
+    keys.iter()
+        .any(|k| flag_is_truthy(&std::env::var(k).unwrap_or_default()))
+}
+
+/// The parsing half of [`env_flag`], split out so it is unit-testable without mutating process env
+/// (which is shared across parallel tests and makes such a test flaky rather than a real guard).
+pub fn flag_is_truthy(raw: &str) -> bool {
+    matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true")
+}
+
 /// Fail-closed secret validation. In demo mode this is always `Ok`. In production every secret must be
 /// non-empty and not equal to its dev default; otherwise returns a descriptive error naming every
 /// offending secret so the operator can fix them all in one go.
@@ -56,9 +78,187 @@ pub fn validate_production_secrets(demo: bool, secrets: &[SecretSpec]) -> Result
     }
 }
 
+// ------------------------------------------------------------------------------------------------
+// Control-plane authority preflight.
+//
+// Every privileged write routes through `GovernanceAction`, which flips from "executed" to
+// "proposed" when the hosted signer does not hold the required authority. That flip is CORRECT for the
+// governance Phase-2 split (DEFAULT_ADMIN legitimately lives on the governance signer, so those actions
+// are meant to be proposed for out-of-band signing) — but it is indistinguishable from booting with
+// the WRONG KEY entirely. A retired deployer EOA that lost WHITELIST_ADMIN yields a stack that starts
+// cleanly and reports success, while every grant returns disposition:"proposed" with unsigned calldata
+// and NOTHING lands on-chain.
+//
+// This preflight resolves the authorities once at boot and names what is missing, so an unintended
+// unauthorized signer is loud instead of silent. The verdict is a pure function over already-read
+// holdings so it is unit-testable without a chain.
+// ------------------------------------------------------------------------------------------------
+
+/// One control-plane authority, together with whether the hosted signer was observed to hold it.
+pub struct AuthorityCheck<'a> {
+    /// Human name of the authority, e.g. `WHITELIST_ADMIN`.
+    pub name: &'a str,
+    /// The contract the authority is read from.
+    pub target: &'a str,
+    /// What holding it lets the control plane do.
+    pub capability: &'a str,
+    /// `Some(true/false)` when resolved; `None` when unreadable (RPC failure, or target unconfigured)
+    /// — an unreadable authority is reported as unknown rather than counted as missing.
+    pub held: Option<bool>,
+}
+
+/// The outcome of the boot-time authority preflight.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AuthorityVerdict {
+    /// No authority could be resolved at all (unreachable RPC / nothing configured).
+    Unknown,
+    /// The hosted signer holds every authority that could be read.
+    AllHeld,
+    /// It holds some, not all. The rest legitimately belong elsewhere (e.g. Phase-2 DEFAULT_ADMIN) and
+    /// will be returned as proposals for out-of-band signing.
+    PartiallyHeld { missing: Vec<String> },
+    /// It holds NONE of the readable authorities. Every privileged write will degrade to an unsigned
+    /// proposal, so the stack looks healthy while nothing reaches the chain. Almost always the wrong key.
+    HoldsNothing { missing: Vec<String> },
+}
+
+impl AuthorityVerdict {
+    /// True when this verdict means "the hosted key cannot perform ANY privileged write" — the
+    /// silent-degradation case a boot should shout about.
+    pub fn is_unauthorized(&self) -> bool {
+        matches!(self, AuthorityVerdict::HoldsNothing { .. })
+    }
+}
+
+/// Resolve the preflight verdict from the observed holdings.
+pub fn authority_verdict(checks: &[AuthorityCheck]) -> AuthorityVerdict {
+    let readable: Vec<&AuthorityCheck> = checks.iter().filter(|c| c.held.is_some()).collect();
+    if readable.is_empty() {
+        return AuthorityVerdict::Unknown;
+    }
+    let missing: Vec<String> = readable
+        .iter()
+        .filter(|c| c.held == Some(false))
+        .map(|c| format!("{} on {} ({})", c.name, c.target, c.capability))
+        .collect();
+    if missing.is_empty() {
+        AuthorityVerdict::AllHeld
+    } else if missing.len() == readable.len() {
+        AuthorityVerdict::HoldsNothing { missing }
+    } else {
+        AuthorityVerdict::PartiallyHeld { missing }
+    }
+}
+
+/// The operator-facing preflight message. Names the hosted signer and every missing authority, and
+/// spells out the consequence, so a wrong-key boot cannot be mistaken for a healthy one.
+pub fn authority_preflight_message(hosted: Option<&str>, verdict: &AuthorityVerdict) -> String {
+    let who = hosted.unwrap_or("<no signer registered>");
+    match verdict {
+        AuthorityVerdict::Unknown => format!(
+            "control-plane authority preflight: could not resolve ANY authority for hosted signer \
+             {who} (RPC unreachable, or FACTORY_ADDR/ISSUER_REGISTRY_ADDR unconfigured). Privileged \
+             writes may silently degrade to unsigned proposals."
+        ),
+        AuthorityVerdict::AllHeld => format!(
+            "control-plane authority preflight: hosted signer {who} holds every configured authority"
+        ),
+        AuthorityVerdict::PartiallyHeld { missing } => format!(
+            "control-plane authority preflight: hosted signer {who} does NOT hold {}. Actions gated by \
+             {} will return disposition=\"proposed\" with unsigned calldata for the holder to execute \
+             out-of-band (expected after the governance Phase-2 handover).",
+            missing.join("; "),
+            if missing.len() == 1 { "it" } else { "them" },
+        ),
+        AuthorityVerdict::HoldsNothing { missing } => format!(
+            "control-plane authority preflight FAILED: hosted signer {who} holds NONE of the \
+             control-plane authorities - missing {}. EVERY privileged write (whitelist grants, issuer \
+             approval, factory deploys) will return disposition=\"proposed\" with unsigned calldata and \
+             NOTHING WILL LAND ON-CHAIN, while the stack otherwise looks healthy. This is almost \
+             always the wrong key: a retired deployer EOA whose roles moved to the governance signer. \
+             Set ADMIN_PRIVATE_KEY to the key that holds these authorities (for the demo stack: \
+             GOVERNANCE_PRIVATE_KEY). Set ADMIN_REQUIRE_AUTHORITY=1 to refuse to boot in this state.",
+            missing.join("; "),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check<'a>(name: &'a str, held: Option<bool>) -> AuthorityCheck<'a> {
+        AuthorityCheck {
+            name,
+            target: "0xreg",
+            capability: "cap",
+            held,
+        }
+    }
+
+    /// A control-plane flag must not be disarmed by a shape an operator would reasonably write.
+    /// `ADMIN_REQUIRE_AUTHORITY` used to be matched raw, so `TRUE` or a trailing-newline `1` (what a
+    /// shell here-doc or a copied `.env` line produces) silently left the fail-closed refusal OFF.
+    #[test]
+    fn control_plane_flags_are_trimmed_and_case_insensitive() {
+        for on in ["1", "true", "TRUE", "True", " 1", "1\n", " true \t"] {
+            assert!(flag_is_truthy(on), "{on:?} must arm the flag");
+        }
+        for off in ["", " ", "0", "false", "FALSE", "yes", "on", "2", "1 1", "truthy"] {
+            assert!(!flag_is_truthy(off), "{off:?} must NOT arm the flag");
+        }
+    }
+
+    #[test]
+    fn all_held_is_clean() {
+        let c = [check("WHITELIST_ADMIN", Some(true)), check("OWNER", Some(true))];
+        assert_eq!(authority_verdict(&c), AuthorityVerdict::AllHeld);
+        assert!(!authority_verdict(&c).is_unauthorized());
+    }
+
+    /// The Phase-2 split: WHITELIST_ADMIN stays on the hosted key, DEFAULT_ADMIN legitimately moved to
+    /// governance. That must stay a warning, NOT an error — proposing is the intended behaviour here.
+    #[test]
+    fn partial_holding_is_the_legitimate_phase2_split() {
+        let c = [
+            check("WHITELIST_ADMIN", Some(true)),
+            check("DEFAULT_ADMIN", Some(false)),
+        ];
+        let v = authority_verdict(&c);
+        assert!(matches!(v, AuthorityVerdict::PartiallyHeld { .. }));
+        assert!(!v.is_unauthorized(), "a legitimate split must not read as unauthorized");
+        let msg = authority_preflight_message(Some("0xabc"), &v);
+        assert!(msg.contains("DEFAULT_ADMIN"), "{msg}");
+        assert!(msg.contains("out-of-band"), "{msg}");
+    }
+
+    /// The bug: booting with the retired deployer EOA that holds nothing. Must be unmistakable.
+    #[test]
+    fn holding_nothing_is_flagged_unauthorized_and_names_every_authority() {
+        let c = [
+            check("WHITELIST_ADMIN", Some(false)),
+            check("DEFAULT_ADMIN", Some(false)),
+            check("FACTORY_OWNER", Some(false)),
+        ];
+        let v = authority_verdict(&c);
+        assert!(v.is_unauthorized());
+        let msg = authority_preflight_message(Some("0xdead"), &v);
+        for name in ["WHITELIST_ADMIN", "DEFAULT_ADMIN", "FACTORY_OWNER"] {
+            assert!(msg.contains(name), "message must name {name}: {msg}");
+        }
+        assert!(msg.contains("0xdead"), "must name the offending signer: {msg}");
+        assert!(msg.contains("NOTHING WILL LAND ON-CHAIN"), "{msg}");
+    }
+
+    /// An unreadable authority is unknown, never silently counted as held or missing.
+    #[test]
+    fn unreadable_authorities_do_not_manufacture_a_verdict() {
+        let c = [check("WHITELIST_ADMIN", None), check("DEFAULT_ADMIN", None)];
+        assert_eq!(authority_verdict(&c), AuthorityVerdict::Unknown);
+        // A single readable+missing authority alongside unreadable ones still reports unauthorized.
+        let c2 = [check("WHITELIST_ADMIN", Some(false)), check("DEFAULT_ADMIN", None)];
+        assert!(authority_verdict(&c2).is_unauthorized());
+    }
 
     fn spec<'a>(name: &'a str, value: &'a str, def: &'a str) -> SecretSpec<'a> {
         SecretSpec {

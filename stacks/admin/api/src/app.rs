@@ -34,6 +34,12 @@ pub struct Config {
     pub admin_password_hash: String,
     /// account index of the admin signer (WHITELIST_ADMIN + ISSUER roles).
     pub admin_signer_index: u32,
+    /// The operator's DECLARATION that this deployment signs privileged writes out-of-band, so a
+    /// `disposition:"proposed"` grant/revoke is the intended outcome rather than a wrong-key failure.
+    /// Set via `ADMIN_PROPOSE_ONLY` (or the equivalent `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`). It only
+    /// changes how an outcome is REPORTED - never whether an action is dispatched, and never who holds
+    /// an authority, which is always read live from the chain.
+    pub propose_only: bool,
 }
 
 /// The shared application state.

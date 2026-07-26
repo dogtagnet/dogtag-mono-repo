@@ -214,6 +214,8 @@ async fn dog_tag_mint_joins_by_profile_root_on_the_profile_clone() {
                 identification: "S1234567A".to_string(),
                 name: "Jane Tan".to_string(),
             },
+            // Irrelevant to this test's assertions (join by root, no subject leakage): empty is safe.
+            identity_leaves: Vec::new(),
             pet_name: "Bella".to_string(),
             microchip: Default::default(),
             profile: Default::default(),
@@ -311,6 +313,7 @@ async fn trace_stats_counts_only_bound_mints() {
                 session_id: id.to_string(),
                 dog_tag_id: "1".to_string(),
                 owner_identity: Default::default(),
+                identity_leaves: Vec::new(),
                 pet_name: String::new(),
                 microchip: Default::default(),
                 profile: Default::default(),

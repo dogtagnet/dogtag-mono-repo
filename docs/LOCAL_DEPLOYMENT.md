@@ -115,6 +115,27 @@ scripts/demo-up.sh        # builds + starts the backends + the portals (vite dev
 # stop later with: scripts/demo-down.sh
 ```
 
+**It PREFLIGHTS the chain before it starts anything**, so a stack that would look healthy while
+silently doing nothing is refused instead of booted. Each check prints an `ok` line; a failure prints
+`ERROR: …` on the terminal and exits **1** — nothing has started yet, so there is no `.demo/*.log` to
+read. It asserts: the RPC is reachable and reports the expected `chainId`; the factory's `registry()`
+matches `ISSUER_REGISTRY_ADDR` (`FACTORY_ADDR` is resolved from env, else from
+[`contracts/deployments/roax.json`](../contracts/deployments/roax.json) → `DogTagIssuerFactory`, and is
+passed to admin-api so the Issuers/Factory UI works); **the admin signer holds `WHITELIST_ADMIN`** (the
+retired deployer EOA lost it in Phase-2, so booting on `DEPLOYER_PRIVATE_KEY` made every portal grant
+come back as an unsigned proposal with nothing on-chain — set `GOVERNANCE_PRIVATE_KEY`, or declare
+`ADMIN_PROPOSE_ONLY=1` for a genuine propose-for-external-signing setup); and, for the government
+stack, that a configured `TRAVEL_CLEARANCE_ISSUER_ADDR` clone is bound to that same registry and record
+type. Government runs on the **live** chain by default (`GOV_CHAIN_BACKEND=mem` opts into simulation);
+an unfunded/unwhitelisted or absent `GOV_SIGNER_KEY` only WARNS — its `/issue` then dry-runs. See
+[ROLE_APPS.md](./ROLE_APPS.md) §3 for the government chain/store axes.
+
+Only a **definitive** answer refuses. If the `WHITELIST_ADMIN` read itself fails (RPC hiccup, or no
+`IssuerRegistry` at `ISSUER_REGISTRY_ADDR` on this chain), the signer's authority is *unresolved* — not
+wrong — so the preflight prints a WARNING and boots, matching what admin-api's own boot check does with
+the same unanswerable question. Do not read that warning as an accusation against the key; check the RPC
+and the registry address.
+
 `demo-up.sh` **builds from source**:
 
 - `cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api` → the backend
@@ -147,10 +168,14 @@ for p in 39742 41874 43618 41875; do echo -n "$p "; curl -fsS "http://localhost:
 # expect each line to end with: {"status":"ok"}
 ```
 
-**STOP if…** *a port is silent / `curl` fails for one* → that service didn't come up → read its log under
-`.demo/<svc>.log` (e.g. `.demo/vet.log`, `.demo/prover.log`) for the cause (common: a build error, the
-governance key or an `*_ADDR` missing, or - for the prover - `circuits/build` not populated). Fix and
-re-run `demo-up.sh`.
+**STOP if…**
+- *`demo-up.sh` printed `ERROR: …` and exited before any service started* → a **preflight** check failed
+  (RPC/chainId, factory↔registry, the admin signer's `WHITELIST_ADMIN`, or the government clone). The
+  message names the fix; there is no `.demo/*.log` for this, because nothing was launched.
+- *a port is silent / `curl` fails for one* → that service didn't come up → read its log under
+  `.demo/<svc>.log` (e.g. `.demo/vet.log`, `.demo/prover.log`) for the cause (common: a build error, the
+  governance key or an `*_ADDR` missing, or - for the prover - `circuits/build` not populated). Fix and
+  re-run `demo-up.sh`.
 
 > **Stopping.** `scripts/demo-down.sh` kills the backend/portal PIDs but **leaves the custody seal**
 > (`.demo/*-custody.json`) in place — that is what makes a restart a re-unlock, not a re-genesis (§8).
@@ -390,6 +415,7 @@ owner-hidden address env from §1; see the header of `scripts/e2e-zk.sh`).
 | QR resolves once but a re-scan 404s | **Stale QR / consumed one-time token** — `/r/` and `/x/` tokens are deleted after first scan (180s TTL) | Create a fresh QR in the portal and scan that |
 | 32-bit Android consent proof fails / never posts | **`prover_api` not set** (baked default is a dead tunnel) | Set the in-app `prover_api` to the live prover URL (§6, [TUNNELING.md](./TUNNELING.md)) |
 | A `/health` is silent on boot | **Port silent** — that service crashed during boot | Read `.demo/<svc>.log` for the error (build failure, missing key, prover missing `circuits/build`); fix and re-run `demo-up.sh` (§2) |
+| `demo-up.sh` exits 1 with `ERROR: …` and no service starts | **Preflight refusal** — wrong chain, a factory/clone bound to another `IssuerRegistry`, or an admin signer without `WHITELIST_ADMIN` | Apply the fix the message names (usually `GOVERNANCE_PRIVATE_KEY` in `contracts/.env`, or `ADMIN_PROPOSE_ONLY=1` if proposals really are the intended flow); no `.demo/*.log` exists for this (§2) |
 | After a restart, on-chain calls fail / I re-ran genesis | **Restart confusion** — restart is a re-unlock, not re-genesis | Don't re-genesis on a plain restart; the sealed signer returns and is already funded — do NOT re-run `demo-bootstrap.sh` (§8). Full reset is `rm -rf .demo` |
 
 ---

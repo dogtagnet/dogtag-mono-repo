@@ -27,6 +27,7 @@ import {
   type GovernanceDisposition,
   type IssuerApplicationListItem,
   type WhitelistGrantResp,
+  type WhitelistOutcome,
 } from "@dogtag/ui";
 import {
   CheckCircle2,
@@ -151,8 +152,7 @@ export function Whitelist() {
       setResults((p) => ({ ...p, [key]: { action, actions: resp.actions, issuerRole } }));
       toast({
         title: action === "grant" ? "Grant dispatched" : "Revoke dispatched",
-        description: summarize(resp.actions),
-        variant: "success",
+        ...dispatchOutcome(resp, issuerRole),
       });
       setPending(null);
       void refreshRow(recordType, address);
@@ -369,7 +369,7 @@ function GrantCapabilityDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         verifyPurposes: purposes.length ? purposes : undefined,
       });
       setResult({ action: "grant", actions: resp.actions, issuerRole: resp.issuerRole });
-      toast({ title: "Grant dispatched", description: summarize(resp.actions), variant: "success" });
+      toast({ title: "Grant dispatched", ...dispatchOutcome(resp, resp.issuerRole) });
     } catch (err) {
       toast({ title: "Grant failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -516,12 +516,67 @@ function expand(apps: IssuerApplicationListItem[]): Entry[] {
   return [...map.values()].sort((x, y) => x.recordType.localeCompare(y.recordType));
 }
 
-/** One-line summary of a dispatch: how many capabilities executed vs proposed. */
+/** One-line summary of a dispatch: how many capabilities executed vs proposed.
+ *
+ *  When NOTHING executed, say so plainly. The old wording always attributed a proposal to
+ *  "(governance)", which reads as the intended Phase-2 handover even when the real cause is that this
+ *  stack booted a key holding no authority at all - in that case nothing lands on-chain and the row
+ *  still looked like a success. */
 function summarize(actions: GovernanceDisposition[]): string {
   const executed = actions.filter((a) => a.disposition === "executed").length;
   const proposed = actions.length - executed;
-  const parts: string[] = [];
-  if (executed) parts.push(`${executed} executed`);
-  if (proposed) parts.push(`${proposed} proposed (governance)`);
-  return parts.join(" · ") || "no capabilities";
+  if (!actions.length) return "no capabilities";
+  if (!executed) {
+    return `${proposed} proposed - NOTHING broadcast, on-chain state unchanged`;
+  }
+  const parts: string[] = [`${executed} executed`];
+  if (proposed) parts.push(`${proposed} proposed (awaiting the authority holder)`);
+  return parts.join(" · ");
+}
+
+/** `issuerRole` is a real dispatched action for a DOG_PROFILE grant, but it can also be the
+ *  non-disposition `{status:"alreadyHeld"}` or null. Only an actual disposition counts toward what
+ *  reached the chain. */
+function issuerRoleDisposition(
+  issuerRole: WhitelistGrantResp["issuerRole"],
+): GovernanceDisposition | null {
+  return issuerRole && "disposition" in issuerRole ? issuerRole : null;
+}
+
+/** How a dispatch is REPORTED, driven by the backend's `outcome` - the case distinction is never
+ *  recomputed here, because only the backend knows whether propose-only was DECLARED.
+ *
+ *  A grant that reached the chain is green. One that did not is never green, but the two ways that
+ *  happens are different outcomes and get different signals: a declared out-of-band-signing deployment
+ *  is doing exactly what it is configured to do (amber, calm), while an undeclared one is the wrong-key
+ *  failure the loud-authority work exists to surface (red, loud). Collapsing them would re-create the
+ *  same misleading-report problem in the opposite direction.
+ *
+ *  `outcome` is optional, so a backend that predates it falls back to the previous behaviour:
+ *  `executed` if present, else recomputed over every disposition - including issuerRole, which
+ *  `summarize` alone cannot see. An unrecognised value takes that same path and never reads as green. */
+function dispatchOutcome(
+  resp: {
+    actions: GovernanceDisposition[];
+    outcome?: WhitelistOutcome;
+    executed?: boolean;
+    warning?: string | null;
+  },
+  issuerRole?: WhitelistGrantResp["issuerRole"],
+): { variant: "success" | "warning" | "danger"; description: string } {
+  const role = issuerRoleDisposition(issuerRole);
+  const all = role ? [...resp.actions, role] : resp.actions;
+  const description = resp.warning ?? summarize(all);
+  switch (resp.outcome) {
+    case "executed":
+      return { variant: "success", description };
+    case "proposed_by_design":
+      return { variant: "warning", description };
+    case "proposed_unauthorized":
+      return { variant: "danger", description };
+    default: {
+      const executed = resp.executed ?? all.some((a) => a.disposition === "executed");
+      return { variant: executed ? "success" : "danger", description };
+    }
+  }
 }

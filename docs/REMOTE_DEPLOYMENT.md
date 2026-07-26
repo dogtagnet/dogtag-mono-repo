@@ -175,6 +175,8 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `FACTORY_ADDR` | admin | DogTagIssuerFactory — `createIssuer`/`predictIssuer` target + the Ownable owner whose key gates deploys | (roax.json, pre-filled) | per chain |
 | `VACCINATION_ISSUER_ADDR` | vet, groomer | per-recordType clone | `0x0…0` (set to the real clone for an issuer) | `0x0…0` for pure verifiers |
 | `ADMIN_SIGNER_INDEX` | admin | HD signer index | `0` | `0` |
+| `ADMIN_PROPOSE_ONLY` (alias `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`) | admin | **declares** that privileged writes are signed out-of-band, so a grant/revoke that broadcasts nothing is the intended outcome (`outcome:"proposed_by_design"`) rather than the wrong-key one (`proposed_unauthorized`). Reporting only — it never changes what is dispatched, and holdership is always read live from the chain | unset (`demo-up.sh` forwards it, and refuses to boot without it when the signer lacks `WHITELIST_ADMIN`) | set to `1` **only** when the hosted key is deliberately not the authority holder (Safe / offline governance signer) |
+| `ADMIN_REQUIRE_AUTHORITY` | admin | turns the boot authority check from a logged ERROR into a refusal to boot when the hosted signer holds **none** of the three control-plane authorities. Best-effort: the check is time-boxed, and an unreadable chain leaves the verdict `Unknown`, which never refuses | unset | `1` for a deployment whose hosted key is meant to execute (leave unset for a propose-only one) |
 | `DNS_CHECK` | all | issuer DNS legitimacy | `skip` (local) | **`doh`** (enforced by `remote-up.sh`) |
 | `CONFIRMATIONS` | all | reorg safety | `1` | **`2`** (enforced) |
 | `ADMIN_LOOPBACK_ONLY` | all | bind `/admin/*` to `127.0.0.1:ADMIN_PORT` | unset | **`1`** (enforced) |

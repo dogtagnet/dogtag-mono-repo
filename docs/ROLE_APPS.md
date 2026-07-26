@@ -104,15 +104,15 @@ Its own Mongo (`governmentdata`), two collections:
 
 | Route | Role | What |
 |---|---|---|
-| `GET /health` | liveness | status + chainId + demo/live + signer + configured issuer clones |
+| `GET /health` | liveness | status + the honest chain-backend report (`backend`/`simulated`/`chainId`/`canSign`/`signer`/`simulatedSigner`, see "Chain-client selection" below) + `demo` (store only) + configured issuer clones |
 | `POST /v1/travel-clearance/issue` | **issuer** 🔒 | build `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` VC (+ mint public `receiptId`) → root `R` → anchor `DogTagIssuer.issue(R)` (unless `dry_run` / no signer) → persist |
 | `POST /v1/verify` | **verifier** | integrity + `isValid` + `isWhitelistedFor` → verdict → persist audit record |
 | `GET /v1/records`, `GET /v1/records/:root` | custodian 🔒 | list / fetch issued credentials (off-chain DB, incl. the on-chain proof + explorer links + derived `effectiveStatus`) |
 | `PATCH /v1/records/:root` | custodian 🔒 | update **off-chain metadata only** (`label`/`notes`, `status` → `expired`); any on-chain-derived field is rejected 400 |
 | `POST /v1/records/:root/revoke` | **issuer** 🔒 | on-chain `DogTagIssuer.revoke(R)` → soft-invalidate (row + issuance proof kept, revoke-tx proof added) |
 | `GET /v1/verifications` | audit | the verification audit log |
-| `GET /v1/receipts/:receiptId/status` | **public** | PII-free JSON status via a LIVE `isValid(R)` read (verdict + validity window + provenance links + `checkedAt`) |
-| `GET /r/:receiptId` | **public** | server-rendered, PII-free HTML status page (status-only — no Section A/B/C content) |
+| `GET /v1/receipts/:receiptId/status` | **public** | PII-free JSON status via a LIVE `isValid(R)` read (verdict + validity window + provenance + `checkedAt`), plus `chainId` and an explicit `simulated` flag — see "Chain-client selection" below |
+| `GET /r/:receiptId` | **public** | server-rendered, PII-free HTML status page (status-only — no Section A/B/C content); its provenance row states outright when the backend is simulated |
 
 🔒 = gated by `Authorization: Bearer <GOV_API_TOKEN>`. This covers issue, both record **reads** (`GET /v1/records`, `GET /v1/records/:root` — the CDC subject denormalizes Section A person PII, so an unauthenticated read would leak it) and both record **mutations** (PATCH, revoke). Health, verify, the verifications audit log, and the two **public receipt** endpoints (`GET /v1/receipts/:receiptId/status`, `GET /r/:receiptId`) stay open. Missing or wrong token → 401; in demo mode an unset `GOV_API_TOKEN` defaults to `dogtag-gov-demo-token` (the portal's `VITE_GOV_API_TOKEN` falls back to the same value); in live mode with no token configured, the gated routes fail closed with 503.
 
@@ -122,13 +122,25 @@ The receipt landed in PR-2 (see AGENTS.md "Government receipt UI + portal shell 
 **Deployment.** `stacks/government/docker-compose.yml`: `caddy` + `web` (nginx) + `api` (`government-api`, `--features mongo`) + `mongo` (internal). Host `44831`/`44832`.
 `make up-government` brings it up.
 
-**Chain-client selection (demo vs live).**
-`government-api` picks its `ChainClient` by mode:
+**Chain-client selection.**
+`government-api` picks its `ChainClient` from `GOV_CHAIN_BACKEND` alone - deliberately NOT from the demo flag:
 
-- **Live / production** (`GOV_DEMO_MODE` unset) → `AlloyChain` against ROAX RPC. Reads (verify) always work; issuance additionally needs `GOV_SIGNER_KEY` (a malformed key fails closed). Legacy gas pricing (read `eth_gasPrice`, send a legacy tx) mirrors `vet-api`'s ROAX quirk.
-- **Demo / local / CI** (`GOV_DEMO_MODE=1`) → `MemChain` + `MemStore`: the full issue→verify flow runs with no node, no gas, no Mongo. The demo signer is pre-whitelisted so the issuer-identity pillar is demoable too.
+- **`live` (the default)** → `AlloyChain` against ROAX RPC. Reads (verify) always work; issuance additionally needs `GOV_SIGNER_KEY` (a malformed key fails closed). Legacy gas pricing (read `eth_gasPrice`, send a legacy tx) mirrors `vet-api`'s ROAX quirk.
+- **`mem` (explicit opt-in)** → `MemChain`: the full issue/verify flow runs with no node and no gas. The stand-in signer is pre-whitelisted so the issuer-identity pillar is still demoable. Nothing is broadcast and nothing survives the process.
 
-This is the same two-mode split the rest of the system uses (`VITE_DEMO_MODE` set = demo, unset = production).
+The STORE is a separate axis: `GOV_DEMO_MODE`/`DEMO_MODE` selects the ephemeral `MemStore` (plus the well-known demo API token), and `MONGO_URI` selects `MongoStore`.
+
+Keeping these two axes apart matters. When one `demo` flag drove both, a demo stack that only wanted an ephemeral *store* silently got a simulated *chain* too - and because `/health` echoed the configured `CHAIN_ID`, it reported `chainId:135` with `canSign:true` while running entirely on `MemChain`. Its verify and records surfaces were simulated but indistinguishable from live.
+
+**`/health` states the backend truthfully.** `backend` is `"live"` or `"simulated"`; `simulated` is the same fact as a boolean; `chainId` carries the real id when live and is **`null`** when simulated (never a network the process is not on); `canSign` is true only when a real key would put a real tx on a real chain; a stand-in signer is reported as `simulatedSigner`, never as `signer`. The portal's sidebar and topbar badge read from these, so "SIMULATED CHAIN" vs "LIVE CHAIN" is visible on every page — with a third **unknown** state whenever `/health` has not answered (first paint, a failed poll) or answered without these fields, because collapsing "we don't know" into "live" is the same over-claim in a different place.
+
+**The two public receipt surfaces carry that contract too** — they are what an outside party checks, so they must not assert a chain the process is not on.
+`GET /v1/receipts/:receiptId/status` returns `chainId` (`null` when simulated) alongside an explicit `simulated` flag, and `GET /r/:receiptId` swaps its "Anchored on ROAX chainId …" row for a plain statement that the receipt came from a demonstration stack, was never broadcast, and carries no legal effect.
+On a simulated backend both surfaces also **suppress the stored `explorer.roax.net` links**, which would otherwise point at transactions that never existed.
+Read `simulated`/`chainId` to tell the backends apart, **not** the absence of a link: a live-but-unanchored credential (`dry_run`, no signer) has no links either.
+The record's own row and the operator-facing `/v1/records*` surfaces keep their links unchanged; the suppression is on these two public surfaces only.
+
+To provision the government for real on-chain issuance (funded signer + `TRAVEL_CLEARANCE` whitelist + a `DogTagIssuer` clone), run `scripts/demo-provision-government.sh`; it is idempotent and never prints the key.
 
 ---
 
@@ -171,11 +183,13 @@ When a real competent authority onboards, the protocol admin whitelists its sign
 
 Tracked so the next PRs can close them:
 
-1. **`DogTagIssuer` clones for the government record types.** ✅ **DONE (testnet, OPS-0).**
-   The per-record-type clones are deployed on ROAX (chainId 135) via `DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business)` with `business == the protocol admin` (single-authority topology), and their addresses are wired into `contracts/deployments/roax.json → government_clones` and `TRAVEL_CLEARANCE_ISSUER_ADDR` / `EU_HEALTH_CERT_ISSUER_ADDR` (`TRAVEL_CLEARANCE 0x8e276BD4c57740766A7e173D05F4f02013681c6a`, `EU_HEALTH_CERT 0xe30A17396c0fb75D3e8bFc862a49677B3dd568E2`).
-   Set `GOV_SIGNER_KEY` to anchor live; unset (or a zero clone address) still runs `dry_run` (build + persist, no anchor).
-2. **Government signer onboarding.** ✅ **DONE (testnet, OPS-0).**
-   The government signer (the protocol admin address on testnet) is whitelisted on `IssuerRegistry.whitelistFor(keccak256(recordType), signer)`, so `DogTagIssuer.issue` (`onlyWhitelisted`) accepts it. It still needs PLASMA gas to anchor live; demo mode side-steps this via `MemChain`.
+1. **`DogTagIssuer` clones for the government record types.** ✅ **DONE (testnet).**
+   `TRAVEL_CLEARANCE` is live on the FRESH owner-hidden set at **`0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F`** (`contracts/deployments/roax.json → government_clones`), deployed via `DogTagIssuerFactory.createIssuer(name, keccak256(recordType), business)` on factory `0xED20269E` with `business ==` the governance signer `0x8E27E117…` (the factory's `Ownable` owner, so `createIssuer` is authorised).
+   **The clone must be bound to the registry the rest of the stack reads.** The earlier `government_clones` entries (`TRAVEL_CLEARANCE 0x8e276BD4…`, `EU_HEALTH_CERT 0xe30A1739…`) are bound to the RETIRED `IssuerRegistry 0x5d86e4CF…` and are not clones of the fresh factory, so `onlyWhitelisted` reads a registry nobody uses and issuance fails closed even after a correct `whitelistFor`. They are retained only as `government_clones_deadRegistry_legacy`. `demo-up.sh` preflights BOTH sides of this to catch exactly the class: `factory.registry() == ISSUER_REGISTRY_ADDR`, and - whenever `TRAVEL_CLEARANCE_ISSUER_ADDR` is set - the configured clone's own `registry()` plus its `recordType() == keccak256("TRAVEL_CLEARANCE")` (the same pair `scripts/demo-provision-government.sh` asserts after deploying one). **A stale clone HARD-FAILS the whole boot**, deliberately: it otherwise passes every other preflight line and surfaces only as a 502 on the first issuance.
+   `EU_HEALTH_CERT` is not deployed on the fresh set; leave `EU_HEALTH_CERT_ISSUER_ADDR` unset so `/issue` reports the issuer as `null` and dry-runs rather than anchoring somewhere wrong.
+2. **Government signer onboarding.** ✅ **DONE (testnet).**
+   `scripts/demo-provision-government.sh` does all of it, idempotently and without printing the key: it generates a DEDICATED government EOA (not the governance key - the demo is meant to show the government as its own authority that governance granted rights to), funds it, `whitelistFor(keccak256(TRAVEL_CLEARANCE), gov)` on the live registry, and deploys the clone. `DogTagIssuer.issue` is `onlyWhitelisted`, so all three are required; the script verifies each on-chain afterwards.
+   Anchoring costs real PLASMA gas. Set `GOV_CHAIN_BACKEND=mem` if you deliberately want to side-step gas - never as a default, and `/health` will say `backend:"simulated"`.
 3. **Custody parity.**
    The government stack loads its signer from `GOV_SIGNER_KEY` (env). The vet/groomer age-encrypted custody genesis/unlock flow is richer; a future PR can port it to `government-api` for prod-grade key handling.
 4. **Web parity.** ✅ **DONE (PR-2).**
@@ -195,7 +209,7 @@ The three roles boot as **separate running stacks** and one credential flows acr
 ### 8.1 Hermetic (zero deps — no node, no gas, no Mongo)
 
 ```bash
-scripts/e2e-roles.sh            # boots government-api in GOV_DEMO_MODE and runs ISSUE→VERIFY→audit
+scripts/e2e-roles.sh            # boots government-api on GOV_CHAIN_BACKEND=mem, runs ISSUE→VERIFY→audit
 cargo test -p government-api    # incl. cross_role: government VERIFIES a vet-issued VACCINATION credential
 ```
 

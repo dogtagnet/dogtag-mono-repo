@@ -1,13 +1,19 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * End-to-end for the PR-2 government RECEIPT UI, against a LIVE portal (demo `GOV_DEMO_MODE`
- * MemChain+MemStore, or a real ROAX+Mongo deploy):
+ * End-to-end for the PR-2 government RECEIPT UI, against a LIVE portal (demo
+ * `GOV_DEMO_MODE=1 GOV_CHAIN_BACKEND=mem` = MemStore+MemChain, or a real ROAX+Mongo deploy with a
+ * funded, whitelisted `GOV_SIGNER_KEY`):
  *
  *   issue a TRAVEL_CLEARANCE → open its printable CDC-modeled receipt (Section A/B/C render from the
  *   authenticated custodial record, with a QR + live status chip) → follow the receipt's public,
  *   PII-free `/r/:receiptId` status page and confirm it shows the on-chain verdict with NO Section-A
  *   person PII.
+ *
+ * The status assertion needs the credential ANCHORED: `GOV_DEMO_MODE` alone selects only the STORE (the
+ * chain is the separate `GOV_CHAIN_BACKEND` switch, which defaults to `live`), so a backend started
+ * without `GOV_CHAIN_BACKEND=mem` and without a signer dry-runs /issue and the record derives DRAFT
+ * rather than VALID|EXPIRED|REVOKED.
  *
  * Intentionally NOT in `pnpm test` / CI (needs a served portal + browsers) — the captain-facing
  * harness. Run: `GOV_URL=<portal-url> pnpm --filter @dogtag/government-web test:e2e receipt`.

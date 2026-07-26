@@ -1477,6 +1477,25 @@ fn whitelist_actions(
     actions
 }
 
+/// Annotate a grant/revoke response with what the request actually did: the tri-state `outcome`, the
+/// back-compat `executed` boolean, and the matching operator note.
+///
+/// A request where NOTHING executed changed nothing on-chain and used to be indistinguishable from
+/// success. But "nothing executed" itself has two meanings - the declared out-of-band-signing flow, and
+/// a stack booted on a key that lost its authority - so the outcome distinguishes them instead of
+/// reporting both as one failure. `DispatchOutcome` owns that decision; see its doc comment.
+fn dispatch_summary(
+    st: &AppState,
+    results: &[governance::Disposition],
+) -> (&'static str, bool, Value) {
+    let outcome = governance::DispatchOutcome::classify(results, st.cfg.propose_only);
+    (
+        outcome.as_str(),
+        outcome.executed(),
+        outcome.warning().map(Value::from).unwrap_or(Value::Null),
+    )
+}
+
 /// Dispatch each action in order, short-circuiting to a 502 on the first chain error. A dispatched
 /// action yields a `Disposition` (executed with a tx hash, or proposed with the calldata payload).
 async fn dispatch_all(
@@ -1539,6 +1558,7 @@ async fn whitelist_grant(
         .as_deref()
         .map(|rt| rt.trim().eq_ignore_ascii_case(DOG_PROFILE))
         .unwrap_or(false);
+    let mut issuer_role_dispatched: Option<governance::Disposition> = None;
     let issuer_role = if is_dog_tag_issuer {
         match st.chain.has_issuer_role(&st.cfg.sbt_addr, &signer).await {
             Ok(true) => json!({ "status": "alreadyHeld" }),
@@ -1556,7 +1576,11 @@ async fn whitelist_grant(
                 match governance::dispatch(st.chain.as_ref(), st.cfg.admin_signer_index, &action)
                     .await
                 {
-                    Ok(d) => json!(d),
+                    Ok(d) => {
+                        let rendered = json!(d);
+                        issuer_role_dispatched = Some(d);
+                        rendered
+                    }
                     Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}")),
                 }
             }
@@ -1566,11 +1590,21 @@ async fn whitelist_grant(
         Value::Null
     };
 
+    // `executed`/`warning` describe the WHOLE request, so the separately dispatched ISSUER_ROLE action
+    // is folded in: it is a real broadcast when executed, and the "nothing reached the chain" warning
+    // may only be stated when NOT ONE action was. `alreadyHeld` / a non-DOG_PROFILE grant contribute
+    // nothing here - neither is a broadcast, and neither makes the warning claim true on its own.
+    let mut dispatched = results.clone();
+    dispatched.extend(issuer_role_dispatched);
+    let (outcome, executed, warning) = dispatch_summary(&st, &dispatched);
     ok(json!({
         "signer": signer,
         "recordType": body.record_type,
         "actions": results,
         "issuerRole": issuer_role,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
     }))
 }
 
@@ -1611,10 +1645,14 @@ async fn whitelist_revoke(
         Ok(r) => r,
         Err(e) => return e,
     };
+    let (outcome, executed, warning) = dispatch_summary(&st, &results);
     ok(json!({
         "signer": signer,
         "recordType": body.record_type,
         "actions": results,
+        "outcome": outcome,
+        "executed": executed,
+        "warning": warning,
     }))
 }
 

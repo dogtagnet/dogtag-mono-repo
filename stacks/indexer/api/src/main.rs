@@ -20,8 +20,11 @@ const DEFAULT_FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 const DEFAULT_REGISTRY: &str = "0xaee540350292e49a9aedf19dd4c3bac6abee6c21";
 // Unified owner-hidden `VerificationRegistryConsent` (roax.json canonical pairing), lowercased.
 const DEFAULT_VREG_CONSENT: &str = "0xabfd6f6e31780ebcb7abd28a2a9bcfc9c8e6a77b";
-const GOV_TRAVEL_CLONE: &str = "0x8e276bd4c57740766a7e173d05f4f02013681c6a";
-const GOV_EUHEALTH_CLONE: &str = "0xe30a17396c0fb75d3e8bfc862a49677b3dd568e2";
+// The government TRAVEL_CLEARANCE clone on the FRESH owner-hidden set (roax.json government_clones).
+// The earlier 0x8e276bd4… / 0xe30a1739… pair is bound to the RETIRED IssuerRegistry and quarantined as
+// government_clones_deadRegistry_legacy - seeding those would name clones no issuance flows through.
+// EU_HEALTH_CERT has no clone on the fresh set yet, so there is nothing to seed for it.
+const GOV_TRAVEL_CLONE: &str = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f";
 const DEMO_DOGPROFILE_CLONE: &str = "0x0e56ae2e1ef684d3e90d7699b981c6b76df922bf";
 const DEMO_VACCINATION_CLONE: &str = "0x1456f93f7376789c46408cc4616751eb853edd9a";
 // On testnet the government signer is the protocol admin address (roax.json government_clones note).
@@ -46,13 +49,7 @@ async fn main() {
 
     let seed_clones: Vec<String> = env(
         "SEED_CLONES",
-        &[
-            GOV_TRAVEL_CLONE,
-            GOV_EUHEALTH_CLONE,
-            DEMO_DOGPROFILE_CLONE,
-            DEMO_VACCINATION_CLONE,
-        ]
-        .join(","),
+        &[GOV_TRAVEL_CLONE, DEMO_DOGPROFILE_CLONE, DEMO_VACCINATION_CLONE].join(","),
     )
     .split(',')
     .map(|s| lc(s.to_string()))
@@ -199,9 +196,6 @@ fn build_directory(demo: bool) -> Directory {
         static_map
             .entry(GOV_TRAVEL_CLONE.into())
             .or_insert_with(|| "Government TRAVEL_CLEARANCE issuer".into());
-        static_map
-            .entry(GOV_EUHEALTH_CLONE.into())
-            .or_insert_with(|| "Government EU_HEALTH_CERT issuer".into());
         static_map
             .entry(DEMO_DOGPROFILE_CLONE.into())
             .or_insert_with(|| "Demo DOG_PROFILE issuer".into());
