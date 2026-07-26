@@ -111,6 +111,7 @@ export {
   isCustodyLockedError,
   isLockExemptPath,
   isNoSealError,
+  isWrongPassphraseError,
   sanitizeNextPath,
   type CustodyState,
 } from "./custody/lock";

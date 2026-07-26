@@ -87,6 +87,13 @@ export function CustodyUnlockPanel({
         return;
       }
       setSeal("sealed");
+      // The gate cannot tell a locked seal from a missing one, so the passphrase field is optional
+      // until the backend confirms a seal exists. Now that it has, ask for the passphrase instead of
+      // spending a rate-limiter attempt on an empty one.
+      if (!passphrase) {
+        setError("This instance has a seal — enter the unlock passphrase to decrypt it.");
+        return;
+      }
       const r = await unlock(passphrase);
       onUnlocked(r.accounts ?? []);
     } catch (err) {
@@ -165,7 +172,13 @@ export function CustodyUnlockPanel({
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="custody-passphrase" required>
+                {/*
+                  Optional until the backend confirms a seal: a first-run operator is redirected here
+                  by a gate that cannot distinguish "no seal" from "locked", and must not be made to
+                  invent a passphrase for a seal that does not exist before the admin password alone
+                  can reveal the "Custody not set up" state.
+                */}
+                <Label htmlFor="custody-passphrase" required={seal === "sealed"}>
                   Unlock passphrase
                 </Label>
                 <Input
@@ -175,7 +188,7 @@ export function CustodyUnlockPanel({
                   value={passphrase}
                   onChange={(e) => setPassphrase(e.target.value)}
                   autoFocus
-                  required
+                  required={seal === "sealed"}
                 />
                 {demoMode && (
                   <p className="text-xs text-muted">Demo defaults prefilled — just click Unlock.</p>

@@ -9,6 +9,7 @@ import {
   isCustodyLockedError,
   isLockExemptPath,
   isNoSealError,
+  isWrongPassphraseError,
   sanitizeNextPath,
   UNLOCK_PATH,
 } from "../src/custody/lock";
@@ -58,6 +59,28 @@ describe("isNoSealError", () => {
   });
 });
 
+describe("isWrongPassphraseError", () => {
+  it("matches /admin/unlock's rejected passphrase", () => {
+    expect(isWrongPassphraseError(apiError(401, "wrong passphrase"))).toBe(true);
+  });
+
+  it("does NOT match the dead-session 401s the same route raises", () => {
+    // Same route, same status - only the message separates a rejected credential from a dead
+    // session, and a dead session must still clear the stored token.
+    for (const msg of ["missing admin session", "invalid admin session"]) {
+      expect(isWrongPassphraseError(apiError(401, msg))).toBe(false);
+    }
+  });
+
+  it("does NOT match the other credential rejections", () => {
+    // /admin/login answers a bad admin password with 401 "bad password", but that call is
+    // unauthenticated (tokenKind "none"), so it never reaches the stale-session hook.
+    expect(isWrongPassphraseError(apiError(401, "bad password"))).toBe(false);
+    expect(isWrongPassphraseError(apiError(409, "not unlocked"))).toBe(false);
+    expect(isWrongPassphraseError(null)).toBe(false);
+  });
+});
+
 describe("custodyStateFromSigners", () => {
   it("reads the locked short-circuit shape", () => {
     expect(custodyStateFromSigners({ signers: [] })).toBe("locked");
@@ -75,6 +98,15 @@ describe("custodyStateFromSigners", () => {
 
   it("stays unknown for anything it does not recognise", () => {
     for (const junk of [null, undefined, "", 0, "not unlocked"]) {
+      expect(custodyStateFromSigners(junk)).toBe("unknown");
+    }
+  });
+
+  it("stays unknown for an object carrying NEITHER shape", () => {
+    // An unrecognised payload is not evidence of a lock, and reading it as one redirects to /unlock:
+    // the catch-all `route.fulfill({ json: {} })` in the vet/groomer Playwright specs is exactly this
+    // case, as is a proxy error page or a future response shape.
+    for (const junk of [{}, { error: "boom" }, { records: [] }, []]) {
       expect(custodyStateFromSigners(junk)).toBe("unknown");
     }
   });

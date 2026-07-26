@@ -39,7 +39,7 @@ import type {
   VerifySessionStartResp,
   VerifySessionStatusResp,
 } from "./types";
-import { isCustodyLockedError } from "../custody/lock";
+import { isCustodyLockedError, isWrongPassphraseError } from "../custody/lock";
 
 export interface ApiClientOptions {
   /** vet backend base URL (e.g. "/api" with a Vite proxy, or an absolute origin) */
@@ -69,11 +69,15 @@ export interface ApiClientOptions {
 type TokenKind = "operator" | "admin" | "bearer" | "none";
 
 /**
- * Paths whose 401 is a CREDENTIAL rejection, not a dead session, so `onUnauthorized` must not fire.
- * `/admin/unlock` answers a wrong passphrase with 401; clearing the just-issued admin token there
- * would replace the unlock page's inline "wrong passphrase" with a bogus "session expired".
+ * A 401 that REJECTS A SUBMITTED CREDENTIAL rather than reporting a dead session, keyed on the
+ * backend's message. `/admin/unlock` answers a wrong passphrase with 401; clearing the just-issued
+ * admin token there would replace the unlock page's inline "wrong passphrase" with a bogus "session
+ * expired". Exempting the whole path would go too far — the same route's admin gate raises `missing
+ * admin session` / `invalid admin session` with the same status, and those ARE dead sessions.
  */
-const CREDENTIAL_401_PATHS = new Set(["/admin/unlock"]);
+function isCredentialRejection(err: unknown): boolean {
+  return isWrongPassphraseError(err);
+}
 
 function makeError(status: number, body: unknown): ApiError {
   const msg =
@@ -117,6 +121,7 @@ export function createApiClient(opts: ApiClientOptions) {
     const text = await res.text();
     const parsed: unknown = text ? safeJson(text) : null;
     if (!res.ok) {
+      const e = makeError(res.status, parsed);
       // Stale-session handling: a 401 on a token-bearing call means the persisted session was
       // invalidated (e.g. the backend restarted its in-memory session store). Clear it so the UI
       // routes back to login instead of replaying a dead token.
@@ -124,11 +129,10 @@ export function createApiClient(opts: ApiClientOptions) {
         res.status === 401 &&
         (tokenKind === "operator" || tokenKind === "admin") &&
         !explicitToken &&
-        !CREDENTIAL_401_PATHS.has(path)
+        !isCredentialRejection(e)
       ) {
         opts.onUnauthorized?.(tokenKind);
       }
-      const e = makeError(res.status, parsed);
       // Locked-custody handling: a restart drops the decrypted seed, so any custody-backed call
       // starts failing with "not unlocked". Surface it once, centrally, so the host can redirect to
       // /unlock rather than every call site rendering its own dead-end toast.

@@ -47,6 +47,18 @@ export function isNoSealError(err: unknown): boolean {
   return custodyErrorMessage(err) === "not initialized";
 }
 
+/**
+ * True when `err` is `/admin/unlock`'s WRONG-PASSPHRASE refusal.
+ *
+ * That route answers a bad passphrase with 401, the same status its admin gate uses for `missing
+ * admin session` / `invalid admin session`. Only the MESSAGE separates a rejected credential from a
+ * dead session, so the shared client keys its stale-session hook on this predicate rather than on the
+ * path - a path-wide exemption would swallow the genuine dead-session 401s the same route emits.
+ */
+export function isWrongPassphraseError(err: unknown): boolean {
+  return custodyErrorMessage(err) === "wrong passphrase";
+}
+
 /** Lower-cased error text from an ApiError body (`{ error }`) or a plain Error message. */
 function custodyErrorMessage(err: unknown): string {
   if (!err || typeof err !== "object") return "";
@@ -62,17 +74,21 @@ function custodyErrorMessage(err: unknown): string {
  * Classify custody from a `GET /issuer/signers` response — the on-load probe.
  *
  * That route is operator-gated, read-only, and already exists, so the portal learns the custody state
- * without a new endpoint and without an admin session. When locked the handler short-circuits to
- * `{ signers: [] }`; when unlocked it returns `{ activeSigner, matrix }`.
+ * without a new endpoint and without an admin session. It emits exactly two shapes: `{ signers: [] }`
+ * from the locked short-circuit, and `{ activeSigner, matrix }` when unlocked.
  *
- * Locked is inferred ONLY from the `activeSigner` key being absent — an unlocked backend with an
- * empty address string still reports the key, and a false "locked" would trap the operator in a
- * redirect loop, whereas a false "unlocked" costs nothing (the first real request 409s and corrects
- * the state).
+ * BOTH shapes are recognised positively and everything else stays `unknown`, because the gate never
+ * redirects on `unknown`: an unrecognised payload (a stubbed test double, a proxy error page, a shape
+ * a later backend adds) must not be read as a lock. `activeSigner` is keyed on PRESENCE rather than
+ * truthiness — `active_address()` falls back to `""` — since a false "locked" would trap the operator
+ * in a redirect loop, whereas a false "unlocked" costs nothing (the first real request 409s and
+ * corrects the state).
  */
 export function custodyStateFromSigners(resp: unknown): CustodyState {
   if (!resp || typeof resp !== "object") return "unknown";
-  return "activeSigner" in resp ? "unlocked" : "locked";
+  if ("signers" in resp) return "locked";
+  if ("activeSigner" in resp) return "unlocked";
+  return "unknown";
 }
 
 /**
