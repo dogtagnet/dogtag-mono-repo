@@ -299,6 +299,84 @@ async fn whitelist_grant_dog_profile_grants_issuer_role() {
     // the ISSUER-role grant is a governance action too (executed here, holder holds SBT DEFAULT_ADMIN).
     assert_eq!(b["issuerRole"]["disposition"], "executed");
     assert!(b["issuerRole"]["txHash"].as_str().unwrap().starts_with("0x"));
+    assert_eq!(b["executed"], true);
+    assert!(b["warning"].is_null());
+}
+
+/// The Phase-2 SPLIT case: the hosted key holds the SBT DEFAULT_ADMIN but NOT registry WHITELIST_ADMIN,
+/// so the whitelistFor action is proposed while the ISSUER_ROLE grant really is broadcast. `executed`
+/// must describe the whole request, and the "on-chain state is UNCHANGED" warning must NOT be stated -
+/// a tx landed.
+#[tokio::test]
+async fn whitelist_grant_reports_executed_when_only_the_issuer_role_reached_the_chain() {
+    let (state, chain, _v, _b) = hermetic_state();
+    chain.set_role(SBT, &default_admin_role(), HOSTED);
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": "DOG_PROFILE" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["actions"][0]["disposition"], "proposed", "no WHITELIST_ADMIN");
+    assert_eq!(b["issuerRole"]["disposition"], "executed", "holds SBT DEFAULT_ADMIN");
+    assert_eq!(b["executed"], true, "the ISSUER_ROLE grant DID reach the chain: {b}");
+    assert!(
+        b["warning"].is_null(),
+        "must not claim on-chain state is unchanged when a tx landed: {b}"
+    );
+}
+
+/// The inverse: the whitelistFor actions execute but the ISSUER_ROLE grant is proposed. Still
+/// `executed` (something landed), still no "nothing was broadcast" claim.
+#[tokio::test]
+async fn whitelist_grant_reports_executed_when_only_the_whitelist_reached_the_chain() {
+    let (state, chain, _v, _b) = hermetic_state();
+    chain.set_role(REGISTRY, &whitelist_admin_role(), HOSTED);
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": "DOG_PROFILE" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["actions"][0]["disposition"], "executed");
+    assert_eq!(b["issuerRole"]["disposition"], "proposed", "no SBT DEFAULT_ADMIN");
+    assert_eq!(b["executed"], true);
+    assert!(b["warning"].is_null());
+}
+
+/// Nothing at all reached the chain (neither authority held): only THEN may the response state that
+/// on-chain state is unchanged.
+#[tokio::test]
+async fn whitelist_grant_warns_only_when_not_one_action_was_broadcast() {
+    let (state, _chain, _v, _b) = hermetic_state();
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": "DOG_PROFILE" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["actions"][0]["disposition"], "proposed");
+    assert_eq!(b["issuerRole"]["disposition"], "proposed");
+    assert_eq!(b["executed"], false);
+    assert!(
+        b["warning"].as_str().unwrap().contains("UNCHANGED"),
+        "must state nothing landed: {b}"
+    );
 }
 
 /// Revoke delists the record type (delistFor) and is EXECUTED when the hosted key holds WHITELIST_ADMIN.

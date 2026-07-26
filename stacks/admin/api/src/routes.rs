@@ -1561,6 +1561,7 @@ async fn whitelist_grant(
         .as_deref()
         .map(|rt| rt.trim().eq_ignore_ascii_case(DOG_PROFILE))
         .unwrap_or(false);
+    let mut issuer_role_dispatched: Option<governance::Disposition> = None;
     let issuer_role = if is_dog_tag_issuer {
         match st.chain.has_issuer_role(&st.cfg.sbt_addr, &signer).await {
             Ok(true) => json!({ "status": "alreadyHeld" }),
@@ -1578,7 +1579,11 @@ async fn whitelist_grant(
                 match governance::dispatch(st.chain.as_ref(), st.cfg.admin_signer_index, &action)
                     .await
                 {
-                    Ok(d) => json!(d),
+                    Ok(d) => {
+                        let rendered = json!(d);
+                        issuer_role_dispatched = Some(d);
+                        rendered
+                    }
                     Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}")),
                 }
             }
@@ -1588,7 +1593,13 @@ async fn whitelist_grant(
         Value::Null
     };
 
-    let (executed, warning) = dispatch_summary(&results);
+    // `executed`/`warning` describe the WHOLE request, so the separately dispatched ISSUER_ROLE action
+    // is folded in: it is a real broadcast when executed, and the "nothing reached the chain" warning
+    // may only be stated when NOT ONE action was. `alreadyHeld` / a non-DOG_PROFILE grant contribute
+    // nothing here - neither is a broadcast, and neither makes the warning claim true on its own.
+    let mut dispatched = results.clone();
+    dispatched.extend(issuer_role_dispatched);
+    let (executed, warning) = dispatch_summary(&dispatched);
     ok(json!({
         "signer": signer,
         "recordType": body.record_type,

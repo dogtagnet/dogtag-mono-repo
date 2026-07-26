@@ -2,12 +2,18 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 
 /**
  * End-to-end re-test of the per-role DB / records-management layer, against a LIVE government portal
- * backed by its own store (demo `GOV_DEMO_MODE` = MemChain + MemStore, or a real ROAX + Mongo deploy):
+ * backed by its own store (demo `GOV_DEMO_MODE=1 GOV_CHAIN_BACKEND=mem` = MemStore + MemChain, or a real
+ * ROAX + Mongo deploy with a funded, whitelisted `GOV_SIGNER_KEY`):
  *
  *   issue → the credential is persisted with its on-chain proof (tx hash + block + a working
  *   `https://explorer.roax.net/tx/<hash>` link) → EDIT updates off-chain metadata while the on-chain
  *   proof is untouched → REVOKE is a soft-invalidation: the record STAYS listed as `revoked`, keeps
  *   its original explorer link, gains a revoke-tx link, and is still verifiable on-chain.
+ *
+ * The assertions below need the credential ANCHORED, so the backend must actually be able to write:
+ * `GOV_DEMO_MODE` alone selects only the STORE (the chain is the separate `GOV_CHAIN_BACKEND` switch,
+ * which defaults to `live`). Started without `GOV_CHAIN_BACKEND=mem` and without a funded signer, /issue
+ * dry-runs and the explorer-tx-link assertion fails.
  *
  * Intentionally NOT in `pnpm test` / CI (needs a live portal + browsers) — the captain-facing harness.
  */

@@ -151,8 +151,7 @@ export function Whitelist() {
       setResults((p) => ({ ...p, [key]: { action, actions: resp.actions, issuerRole } }));
       toast({
         title: action === "grant" ? "Grant dispatched" : "Revoke dispatched",
-        description: summarize(resp.actions),
-        variant: "success",
+        ...dispatchOutcome(resp, issuerRole),
       });
       setPending(null);
       void refreshRow(recordType, address);
@@ -369,7 +368,7 @@ function GrantCapabilityDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         verifyPurposes: purposes.length ? purposes : undefined,
       });
       setResult({ action: "grant", actions: resp.actions, issuerRole: resp.issuerRole });
-      toast({ title: "Grant dispatched", description: summarize(resp.actions), variant: "success" });
+      toast({ title: "Grant dispatched", ...dispatchOutcome(resp, resp.issuerRole) });
     } catch (err) {
       toast({ title: "Grant failed", description: (err as Error).message, variant: "danger" });
     } finally {
@@ -532,4 +531,31 @@ function summarize(actions: GovernanceDisposition[]): string {
   const parts: string[] = [`${executed} executed`];
   if (proposed) parts.push(`${proposed} proposed (awaiting the authority holder)`);
   return parts.join(" · ");
+}
+
+/** `issuerRole` is a real dispatched action for a DOG_PROFILE grant, but it can also be the
+ *  non-disposition `{status:"alreadyHeld"}` or null. Only an actual disposition counts toward what
+ *  reached the chain. */
+function issuerRoleDisposition(
+  issuerRole: WhitelistGrantResp["issuerRole"],
+): GovernanceDisposition | null {
+  return issuerRole && "disposition" in issuerRole ? issuerRole : null;
+}
+
+/** How a dispatch is REPORTED. A grant/revoke where nothing reached the chain must never render green:
+ *  a success toast around "NOTHING broadcast" is exactly the indistinguishable-from-success signal the
+ *  loud-authority work removes. The backend's `executed`/`warning` are authoritative (they account for
+ *  the separately dispatched ISSUER_ROLE action); `executed` is optional, so an older backend falls back
+ *  to recomputing over every disposition - including issuerRole, which `summarize` alone cannot see. */
+function dispatchOutcome(
+  resp: { actions: GovernanceDisposition[]; executed?: boolean; warning?: string | null },
+  issuerRole?: WhitelistGrantResp["issuerRole"],
+): { variant: "success" | "danger"; description: string } {
+  const role = issuerRoleDisposition(issuerRole);
+  const all = role ? [...resp.actions, role] : resp.actions;
+  const executed = resp.executed ?? all.some((a) => a.disposition === "executed");
+  return {
+    variant: executed ? "success" : "danger",
+    description: resp.warning ?? summarize(all),
+  };
 }

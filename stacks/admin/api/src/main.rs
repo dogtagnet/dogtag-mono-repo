@@ -130,7 +130,24 @@ async fn main() {
     // holds the authorities every privileged write needs. Without this a stack booted with a retired
     // key starts clean and returns disposition:"proposed" for every grant — indistinguishable from the
     // legitimate propose-for-external-signing flow, with nothing reaching the chain.
-    authority_preflight(&chain, &cfg).await;
+    //
+    // It is a DIAGNOSTIC and must never gate liveness: it runs before `axum::serve` binds, and the
+    // alloy provider has no timeout of its own, so an endpoint that accepts TCP but never answers
+    // would otherwise stall the boot and /health would never come up. On elapse the authorities are
+    // simply UNRESOLVED, which is exactly the existing `AuthorityVerdict::Unknown` state - a warning,
+    // never fatal, so ADMIN_REQUIRE_AUTHORITY does not fire on an unreadable chain either.
+    const AUTHORITY_PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    if tokio::time::timeout(AUTHORITY_PREFLIGHT_TIMEOUT, authority_preflight(&chain, &cfg))
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            "control-plane authority preflight did not complete within {:?} (RPC accepted the \
+             connection but did not answer): authorities UNRESOLVED, continuing boot. Privileged \
+             writes may silently degrade to unsigned proposals - check GET /v1/admin/governance/authority.",
+            AUTHORITY_PREFLIGHT_TIMEOUT
+        );
+    }
 
     // DNS legitimacy check: real DoH in prod; set DNS_CHECK=skip for the local demo where the
     // business domain (e.g. vet.local) has no published TXT record.

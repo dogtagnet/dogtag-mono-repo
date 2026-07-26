@@ -104,19 +104,51 @@ fi
 GOV_CHAIN_BACKEND="${GOV_CHAIN_BACKEND:-live}"
 GOV_SIGNER_KEY="${GOV_SIGNER_KEY:-}"
 TRAVEL_CLEARANCE_ISSUER_ADDR="${TRAVEL_CLEARANCE_ISSUER_ADDR:-}"
-if [ "$GOV_CHAIN_BACKEND" = "live" ]; then
+# The accepted values are the match arm in stacks/government/api/src/main.rs (the source of truth), which
+# lowercases first and process::exit(1)s on anything else. Mirror BOTH halves: an alias like `rpc` is
+# genuinely live and must not be announced as simulated, and an unrecognised value must die HERE rather
+# than printing a clean boot while government-api exits inside the backgrounded run().
+GOV_BACKEND_LC="$(echo "$GOV_CHAIN_BACKEND" | tr 'A-Z' 'a-z')"
+case "$GOV_BACKEND_LC" in
+  live|alloy|rpc) GOV_SIMULATED=0 ;;
+  mem|memory|simulated|sim) GOV_SIMULATED=1 ;;
+  *) die "GOV_CHAIN_BACKEND='$GOV_CHAIN_BACKEND' is not recognised - government-api would exit(1) at boot.
+  Use 'live' (real RPC node, the default) or 'mem' (in-process simulation; nothing is broadcast).
+  See the match arm in stacks/government/api/src/main.rs for every accepted alias." ;;
+esac
+if [ "$GOV_SIMULATED" = "0" ]; then
+  TC_ROLE="$(cast keccak "TRAVEL_CLEARANCE")"
   if [ -z "$GOV_SIGNER_KEY" ]; then
     echo "  government            LIVE chain, NO signer -> /issue can only dry_run (no on-chain anchor)."
     echo "                        Provision one with: scripts/demo-provision-government.sh"
   else
     GOV_ADDR="$(cast wallet address --private-key "$GOV_SIGNER_KEY")"
     GOV_BAL="$(cast balance "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || echo 0)"
-    TC_ROLE="$(cast keccak "TRAVEL_CLEARANCE")"
     GOV_WL="$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$TC_ROLE" "$GOV_ADDR" --rpc-url "$RPC" 2>/dev/null || true)"
     echo "  government signer     $GOV_ADDR  balance ${GOV_BAL} wei  TRAVEL_CLEARANCE whitelisted=${GOV_WL:-unreadable}"
     [ "$GOV_BAL" != "0" ] || echo "    WARNING: unfunded - on-chain issuance will fail. scripts/demo-provision-government.sh funds it." >&2
     [ "$GOV_WL" = "true" ] || echo "    WARNING: not whitelisted for TRAVEL_CLEARANCE - DogTagIssuer.issue() reverts NotWhitelisted." >&2
-    [ -n "$TRAVEL_CLEARANCE_ISSUER_ADDR" ] || echo "    WARNING: TRAVEL_CLEARANCE_ISSUER_ADDR unset - no clone to anchor into; /issue will dry_run." >&2
+  fi
+  # A configured clone is a config error whether or not a signer exists, so this is checked either way.
+  # `DogTagIssuer.issue` is onlyWhitelisted against the clone's OWN registry(), so a clone bound to a
+  # superseded registry fails closed even after a correct whitelistFor on the one the stack uses - it
+  # passes every other preflight line and only surfaces on the first issuance. Same check the
+  # scripts/demo-provision-government.sh clone step makes.
+  if [ -z "$TRAVEL_CLEARANCE_ISSUER_ADDR" ]; then
+    echo "    WARNING: TRAVEL_CLEARANCE_ISSUER_ADDR unset - no clone to anchor into; /issue will dry_run." >&2
+  else
+    CLONE_REGISTRY="$(cast call "$TRAVEL_CLEARANCE_ISSUER_ADDR" 'registry()(address)' --rpc-url "$RPC" 2>/dev/null || true)"
+    [ -n "$CLONE_REGISTRY" ] || die "TRAVEL_CLEARANCE_ISSUER_ADDR=$TRAVEL_CLEARANCE_ISSUER_ADDR has no registry() - not a DogTagIssuer clone (or wrong chain)."
+    if [ "$(echo "$CLONE_REGISTRY" | tr 'A-Z' 'a-z')" != "$(echo "$IR" | tr 'A-Z' 'a-z')" ]; then
+      die "TRAVEL_CLEARANCE clone $TRAVEL_CLEARANCE_ISSUER_ADDR is bound to registry $CLONE_REGISTRY but the stack uses ISSUER_REGISTRY_ADDR=$IR.
+  Its onlyWhitelisted gate reads a registry nobody writes to, so issue() reverts NotWhitelisted even
+  after a correct whitelistFor. See contracts/deployments/roax.json -> government_clones (the fresh set)
+  vs government_clones_deadRegistry_legacy. Re-provision: scripts/demo-provision-government.sh"
+    fi
+    CLONE_RT="$(cast call "$TRAVEL_CLEARANCE_ISSUER_ADDR" 'recordType()(bytes32)' --rpc-url "$RPC" 2>/dev/null || true)"
+    [ "$(echo "${CLONE_RT:-}" | tr 'A-Z' 'a-z')" = "$(echo "$TC_ROLE" | tr 'A-Z' 'a-z')" ] \
+      || die "TRAVEL_CLEARANCE clone $TRAVEL_CLEARANCE_ISSUER_ADDR has recordType ${CLONE_RT:-unreadable}, expected keccak256(TRAVEL_CLEARANCE) $TC_ROLE."
+    echo "  government clone      $TRAVEL_CLEARANCE_ISSUER_ADDR -> registry $IR, TRAVEL_CLEARANCE  ok"
   fi
 else
   echo "  government            GOV_CHAIN_BACKEND=$GOV_CHAIN_BACKEND -> SIMULATED chain (nothing broadcast)."
