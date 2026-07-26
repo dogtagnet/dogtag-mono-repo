@@ -31,6 +31,16 @@ const CASES: TypeCase[] = [
   },
 ];
 
+/** Does this deployment have a DogTagIssuer clone for `recordType`? `/health` reports the map; a
+ *  `null` entry means issuance of that type fails closed (503) and the portal disables submit. */
+async function hasIssuer(page: Page, recordType: string): Promise<boolean> {
+  const health = await (await page.request.get("/api/health")).json();
+  const issuers = health?.issuers;
+  // Fail OPEN, exactly like the portal: an older API without the map is treated as issuable.
+  if (issuers == null || !(recordType in issuers)) return true;
+  return Boolean(issuers[recordType]);
+}
+
 async function issueAndCopy(page: Page, c: TypeCase, dogTagId: string): Promise<string> {
   await page.goto("/issue");
   await page.getByTestId("record-type").selectOption(c.recordType);
@@ -81,9 +91,50 @@ for (const c of CASES) {
   test(`${c.recordType}: own fields → issue → copy → verify VALID (3 pillars)`, async ({
     page,
   }) => {
+    // A record type with no issuer clone configured can never anchor: the portal must SAY so and
+    // disable submit rather than let the operator submit into a confusing 503.
+    if (!(await hasIssuer(page, c.recordType))) {
+      await page.goto("/issue");
+      await page.getByTestId("record-type").selectOption(c.recordType);
+      await expect(page.getByTestId("no-issuer")).toContainText("No issuer configured");
+      await expect(page.getByTestId("issue-submit")).toBeDisabled();
+      test.skip(true, `no DogTagIssuer clone configured for ${c.recordType} on this deployment`);
+      return;
+    }
     // Unique-ish dogTagId per type so records stay distinguishable (roots are salted-random anyway).
     const dogTagId = c.recordType === "EU_HEALTH_CERT" ? "4242" : "7373";
     const wrapped = await issueAndCopy(page, c, dogTagId);
     await verifyValid(page, wrapped);
+  });
+}
+
+/** The demo-only one-click fill: every field of the ACTIVE record type's form gets a value, and the
+ *  dog-tag id is deliberately left to the operator (a fabricated one issues an unexportable
+ *  credential). Requires the portal to be served with VITE_DEMO_MODE=1 (scripts/demo-up.sh does). */
+for (const c of CASES) {
+  test(`${c.recordType}: "Fill demo data" fills every field but not the dog tag id`, async ({
+    page,
+  }) => {
+    await page.goto("/issue");
+    await page.getByTestId("record-type").selectOption(c.recordType);
+
+    const fill = page.getByTestId("fill-demo");
+    if ((await fill.count()) === 0) {
+      test.skip(true, "portal not served with VITE_DEMO_MODE=1");
+      return;
+    }
+
+    const dogTagInput = page.locator("input").first();
+    await dogTagInput.fill("");
+    await fill.click();
+
+    // Every per-type field input is non-empty…
+    const fields = page.locator('[data-testid^="field-"]');
+    const n = await fields.count();
+    expect(n).toBeGreaterThan(0);
+    for (let i = 0; i < n; i++) await expect(fields.nth(i)).not.toHaveValue("");
+
+    // …and the dog tag id is untouched.
+    await expect(dogTagInput).toHaveValue("");
   });
 }

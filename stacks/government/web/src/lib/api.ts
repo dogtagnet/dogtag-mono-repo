@@ -58,6 +58,12 @@ export interface Health {
   demo?: boolean;
   canSign?: boolean;
   signer?: string | null;
+  /**
+   * Per-record-type `DogTagIssuer` clone (the credential's documentStore), or `null` when this
+   * deployment has none configured for that type — issuance of it fails closed with 503. Absent
+   * entirely on older backends, so consumers must fail OPEN when a key is missing.
+   */
+  issuers?: Record<string, string | null>;
 }
 
 /** A persisted government credential as returned by GET /v1/records (serde camelCase). */
