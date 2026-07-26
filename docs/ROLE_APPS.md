@@ -111,8 +111,8 @@ Its own Mongo (`governmentdata`), two collections:
 | `PATCH /v1/records/:root` | custodian 🔒 | update **off-chain metadata only** (`label`/`notes`, `status` → `expired`); any on-chain-derived field is rejected 400 |
 | `POST /v1/records/:root/revoke` | **issuer** 🔒 | on-chain `DogTagIssuer.revoke(R)` → soft-invalidate (row + issuance proof kept, revoke-tx proof added) |
 | `GET /v1/verifications` | audit | the verification audit log |
-| `GET /v1/receipts/:receiptId/status` | **public** | PII-free JSON status via a LIVE `isValid(R)` read (verdict + validity window + provenance links + `checkedAt`) |
-| `GET /r/:receiptId` | **public** | server-rendered, PII-free HTML status page (status-only — no Section A/B/C content) |
+| `GET /v1/receipts/:receiptId/status` | **public** | PII-free JSON status via a LIVE `isValid(R)` read (verdict + validity window + provenance + `checkedAt`), plus `chainId` and an explicit `simulated` flag — see "Chain-client selection" below |
+| `GET /r/:receiptId` | **public** | server-rendered, PII-free HTML status page (status-only — no Section A/B/C content); its provenance row states outright when the backend is simulated |
 
 🔒 = gated by `Authorization: Bearer <GOV_API_TOKEN>`. This covers issue, both record **reads** (`GET /v1/records`, `GET /v1/records/:root` — the CDC subject denormalizes Section A person PII, so an unauthenticated read would leak it) and both record **mutations** (PATCH, revoke). Health, verify, the verifications audit log, and the two **public receipt** endpoints (`GET /v1/receipts/:receiptId/status`, `GET /r/:receiptId`) stay open. Missing or wrong token → 401; in demo mode an unset `GOV_API_TOKEN` defaults to `dogtag-gov-demo-token` (the portal's `VITE_GOV_API_TOKEN` falls back to the same value); in live mode with no token configured, the gated routes fail closed with 503.
 
@@ -132,7 +132,13 @@ The STORE is a separate axis: `GOV_DEMO_MODE`/`DEMO_MODE` selects the ephemeral 
 
 Keeping these two axes apart matters. When one `demo` flag drove both, a demo stack that only wanted an ephemeral *store* silently got a simulated *chain* too - and because `/health` echoed the configured `CHAIN_ID`, it reported `chainId:135` with `canSign:true` while running entirely on `MemChain`. Its verify and records surfaces were simulated but indistinguishable from live.
 
-**`/health` states the backend truthfully.** `backend` is `"live"` or `"simulated"`; `simulated` is the same fact as a boolean; `chainId` carries the real id when live and is **`null`** when simulated (never a network the process is not on); `canSign` is true only when a real key would put a real tx on a real chain; a stand-in signer is reported as `simulatedSigner`, never as `signer`. The portal's sidebar and topbar badge read from these, so "SIMULATED CHAIN" vs "LIVE CHAIN" is visible on every page.
+**`/health` states the backend truthfully.** `backend` is `"live"` or `"simulated"`; `simulated` is the same fact as a boolean; `chainId` carries the real id when live and is **`null`** when simulated (never a network the process is not on); `canSign` is true only when a real key would put a real tx on a real chain; a stand-in signer is reported as `simulatedSigner`, never as `signer`. The portal's sidebar and topbar badge read from these, so "SIMULATED CHAIN" vs "LIVE CHAIN" is visible on every page — with a third **unknown** state whenever `/health` has not answered (first paint, a failed poll) or answered without these fields, because collapsing "we don't know" into "live" is the same over-claim in a different place.
+
+**The two public receipt surfaces carry that contract too** — they are what an outside party checks, so they must not assert a chain the process is not on.
+`GET /v1/receipts/:receiptId/status` returns `chainId` (`null` when simulated) alongside an explicit `simulated` flag, and `GET /r/:receiptId` swaps its "Anchored on ROAX chainId …" row for a plain statement that the receipt came from a demonstration stack, was never broadcast, and carries no legal effect.
+On a simulated backend both surfaces also **suppress the stored `explorer.roax.net` links**, which would otherwise point at transactions that never existed.
+Read `simulated`/`chainId` to tell the backends apart, **not** the absence of a link: a live-but-unanchored credential (`dry_run`, no signer) has no links either.
+The record's own row and the operator-facing `/v1/records*` surfaces keep their links unchanged; the suppression is on these two public surfaces only.
 
 To provision the government for real on-chain issuance (funded signer + `TRAVEL_CLEARANCE` whitelist + a `DogTagIssuer` clone), run `scripts/demo-provision-government.sh`; it is idempotent and never prints the key.
 

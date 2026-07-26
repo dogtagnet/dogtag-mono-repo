@@ -130,6 +130,12 @@ type. Government runs on the **live** chain by default (`GOV_CHAIN_BACKEND=mem` 
 an unfunded/unwhitelisted or absent `GOV_SIGNER_KEY` only WARNS — its `/issue` then dry-runs. See
 [ROLE_APPS.md](./ROLE_APPS.md) §3 for the government chain/store axes.
 
+Only a **definitive** answer refuses. If the `WHITELIST_ADMIN` read itself fails (RPC hiccup, or no
+`IssuerRegistry` at `ISSUER_REGISTRY_ADDR` on this chain), the signer's authority is *unresolved* — not
+wrong — so the preflight prints a WARNING and boots, matching what admin-api's own boot check does with
+the same unanswerable question. Do not read that warning as an accusation against the key; check the RPC
+and the registry address.
+
 `demo-up.sh` **builds from source**:
 
 - `cargo build -q --release -p admin-api -p vet-api -p government-api -p indexer-api` → the backend
