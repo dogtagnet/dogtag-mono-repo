@@ -531,7 +531,18 @@ pub struct VerificationLog {
 /// empty page indistinguishable from an empty history.
 pub const VERIFICATION_STATES: &[&str] = &["pending", "recording", "recorded", "error"];
 
+/// The subset of [`VERIFICATION_STATES`] a row can never leave again. This is the OWNERSHIP boundary
+/// for the row: while a verification is in flight the verify leg is its sole writer, and only once it
+/// has settled may anything else (a client rename resyncing labels) rewrite it. Every write is a
+/// whole-document replace, so two writers on one row is a lost update.
+pub const VERIFICATION_TERMINAL_STATES: &[&str] = &["recorded", "error"];
+
 impl VerificationLog {
+    /// True once the verify leg has settled this row and will never write it again.
+    pub fn is_terminal(&self) -> bool {
+        VERIFICATION_TERMINAL_STATES.contains(&self.status.as_str())
+    }
+
     pub fn rebuild_search_key(&mut self) {
         let mut parts = vec![
             self.purpose.clone(),

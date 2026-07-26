@@ -564,46 +564,17 @@ async fn verification_history_filters_by_client_appointment_purpose_and_status()
     let _ = v1_id;
 }
 
-#[tokio::test]
-async fn renaming_a_client_refreshes_the_denormalized_name_on_their_verification_history() {
-    let (app, op) = verify_app().await;
-    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
-    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
-    let (s, b) = start_verify_session(&app, &op, Some(&appt)).await;
-    assert_eq!(s, StatusCode::OK, "session start: {b}");
-    let verification_id = b["sessionId"].as_str().unwrap().to_string();
-
-    let (s, _) = call(
-        &app,
+/// Rename a client, echoing their one pet under a new name.
+async fn rename_to_alice_lim(app: &axum::Router, op: &str, client_id: &str, pet_id: &str) {
+    let (s, b) = call(
+        app,
         "PUT",
         &format!("/clients/{client_id}"),
-        Some(&op),
+        Some(op),
         Some(json!({ "name": "Alice Lim", "pets": [{ "petId": pet_id, "name": "Rexy" }] })),
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
-
-    let (_, v) = call(
-        &app,
-        "GET",
-        &format!("/verifications/{verification_id}"),
-        Some(&op),
-        None,
-    )
-    .await;
-    assert_eq!(
-        v["clientName"], "Alice Lim",
-        "the history must not keep showing the pre-rename label"
-    );
-    assert_eq!(v["petName"], "Rexy");
-
-    // and the row is findable under the new name — the search key was rebuilt too
-    let (_, b) = call(&app, "GET", "/verifications?q=alice%20lim", Some(&op), None).await;
-    assert_eq!(b["total"], 1, "the verification search key must be rebuilt on rename");
-    assert_eq!(b["rows"][0]["verificationId"], verification_id.as_str());
-
-    let (_, b) = call(&app, "GET", "/verifications?q=alice%20tan", Some(&op), None).await;
-    assert_eq!(b["total"], 0, "the stale name must no longer match");
+    assert_eq!(s, StatusCode::OK, "rename client: {b}");
 }
 
 /// A whitelisted MemChain app that can actually carry a consent submit through to `recorded`, so the
@@ -721,6 +692,121 @@ async fn submit_and_settle(app: &axum::Router, op: &str, session_id: &str, relay
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("session {session_id} never left recording");
+}
+
+/// Poll the SHOP's history row until the verify leg has settled it.
+///
+/// The session settles one write before the history row does (`crm::finish_log` runs after
+/// `update_session` in the same detached task), so a test that means to act on a TERMINAL row has to
+/// wait for the row itself — waiting on the session would leave it racing that last write, and would
+/// silently exercise the in-flight path instead.
+async fn settled_history_row(app: &axum::Router, op: &str, verification_id: &str) -> Value {
+    for _ in 0..200 {
+        let (s, v) = call(
+            app,
+            "GET",
+            &format!("/verifications/{verification_id}"),
+            Some(op),
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "verification lookup: {v}");
+        if v["status"] != "pending" && v["status"] != "recording" {
+            return v;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("verification {verification_id} never settled");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn renaming_a_client_refreshes_the_denormalized_name_on_their_verification_history() {
+    let (app, op, relayer) = recordable_app().await;
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
+    let (s, b) = start_verify_session(&app, &op, Some(&appt)).await;
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
+    let verification_id = b["sessionId"].as_str().unwrap().to_string();
+
+    // Settle FIRST: a terminal row is the one a rename is allowed to rewrite at all.
+    submit_and_settle(&app, &op, &verification_id, &relayer).await;
+    let settled = settled_history_row(&app, &op, &verification_id).await;
+    assert_eq!(settled["status"], "recorded", "the row must settle: {settled}");
+    let tx = settled["txHash"].as_str().unwrap().to_string();
+
+    rename_to_alice_lim(&app, &op, &client_id, &pet_id).await;
+
+    let (_, v) = call(
+        &app,
+        "GET",
+        &format!("/verifications/{verification_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(
+        v["clientName"], "Alice Lim",
+        "the history must not keep showing the pre-rename label"
+    );
+    assert_eq!(v["petName"], "Rexy");
+    // …and the rename must cost the row none of its permanent evidence
+    assert_eq!(v["status"], "recorded", "a rename must not disturb the settled outcome");
+    assert_eq!(v["txHash"].as_str().unwrap(), tx, "the tx evidence must survive a rename");
+    assert_eq!(v["nullifier"], word_of_dec(PUB_NULLIFIER));
+
+    // and the row is findable under the new name — the search key was rebuilt too
+    let (_, b) = call(&app, "GET", "/verifications?q=alice%20lim", Some(&op), None).await;
+    assert_eq!(b["total"], 1, "the verification search key must be rebuilt on rename");
+    assert_eq!(b["rows"][0]["verificationId"], verification_id.as_str());
+
+    let (_, b) = call(&app, "GET", "/verifications?q=alice%20tan", Some(&op), None).await;
+    assert_eq!(b["total"], 0, "the stale name must no longer match");
+}
+
+/// The other half of the writer split: an IN-FLIGHT row is the verify leg's alone, so a concurrent
+/// rename must not touch it — and the settle must then adopt the new name itself, or the rename
+/// would simply be lost for that verification.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rename_during_an_in_flight_verification_lands_when_the_row_settles() {
+    let (app, op, relayer) = recordable_app().await;
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let appt = make_appointment(&app, &op, &client_id, &pet_id, 1_800_000_000, "Full groom").await;
+    let (s, b) = start_verify_session(&app, &op, Some(&appt)).await;
+    assert_eq!(s, StatusCode::OK, "session start: {b}");
+    let verification_id = b["sessionId"].as_str().unwrap().to_string();
+
+    rename_to_alice_lim(&app, &op, &client_id, &pet_id).await;
+
+    let (_, v) = call(
+        &app,
+        "GET",
+        &format!("/verifications/{verification_id}"),
+        Some(&op),
+        None,
+    )
+    .await;
+    assert_eq!(v["status"], "pending", "the row must still be in flight: {v}");
+    assert_eq!(
+        v["clientName"], "Alice Tan",
+        "an in-flight row belongs to the verify leg — a rename must not write it"
+    );
+
+    submit_and_settle(&app, &op, &verification_id, &relayer).await;
+    let settled = settled_history_row(&app, &op, &verification_id).await;
+    assert_eq!(settled["status"], "recorded", "the row must settle: {settled}");
+    assert_eq!(
+        settled["clientName"], "Alice Lim",
+        "the settle must adopt the rename that landed mid-flight"
+    );
+    assert_eq!(settled["petName"], "Rexy");
+    // the handoff must not have cost the settle its evidence
+    let tx = settled["txHash"].as_str().unwrap_or_default();
+    assert!(tx.starts_with("0x"), "the settled row keeps its tx: {settled}");
+    assert_eq!(settled["nullifier"], word_of_dec(PUB_NULLIFIER));
+
+    let (_, b) = call(&app, "GET", "/verifications?q=alice%20lim", Some(&op), None).await;
+    assert_eq!(b["total"], 1, "the settled row is findable under the new name");
+    assert_eq!(b["rows"][0]["verificationId"], verification_id.as_str());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

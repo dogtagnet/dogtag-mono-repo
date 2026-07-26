@@ -336,9 +336,16 @@ async fn update_client(
     ok(client_json(&c))
 }
 
-/// After a client edit, refresh the denormalized `clientName`/`petName` on EVERY row of this shop's
-/// own that carries them — the appointments the calendar renders AND the verification-history rows —
-/// rebuilding each row's search key so the client is findable under the new name.
+/// After a client edit, refresh the denormalized `clientName`/`petName` the shop's own rows carry —
+/// the appointments the calendar renders and the SETTLED verification-history rows — rebuilding each
+/// row's search key so the client is findable under the new name.
+///
+/// An IN-FLIGHT verification is deliberately left alone. Every store write is a whole-document
+/// replace, so a rename racing the verify leg's detached settle would write a stale copy back and
+/// lose the row's `recorded` status, txHash and nullifier — permanently, since nothing re-runs the
+/// settle. The two writers are therefore split by row state rather than by a lock: while a row is
+/// non-terminal the verify leg owns it outright, and [`finish_log`] re-reads the client at settle so
+/// a rename that landed mid-flight still lands on the row.
 ///
 /// Both passes are bounded to one page: a single client's bookings and checks, never the whole
 /// collection.
@@ -377,6 +384,9 @@ async fn resync_client_labels(store: &Arc<dyn Store>, c: &Client) {
         })
         .await;
     for mut v in verifs.rows {
+        if !v.is_terminal() {
+            continue;
+        }
         let pet_name = pet_name_of(v.pet_id.as_ref());
         if v.client_name == c.name && v.pet_name == pet_name {
             continue;
@@ -784,6 +794,10 @@ pub async fn attach_evidence(
 /// `tx_hash` follows the session's own convention: on `error` the session's `tx_hash` field holds
 /// the failure message rather than a hash, and this row mirrors that verbatim so the operator sees
 /// the same diagnostic the portal shows.
+///
+/// This is also the HANDOFF point for the row's denormalized client labels: [`resync_client_labels`]
+/// refuses to touch a row while it is in flight, so a rename that landed mid-verification is picked
+/// up here instead, by re-reading the client as the row settles.
 pub async fn finish_log(
     store: &Arc<dyn Store>,
     s: &VerifySession,
@@ -812,9 +826,34 @@ pub async fn finish_log(
     if nullifier.is_some() {
         v.nullifier = nullifier;
     }
+    refresh_client_labels(store, &mut v).await;
     v.updated_at = ts;
     v.rebuild_search_key();
     store.put_verification_log(v).await;
+}
+
+/// Re-read the client a history row points at and refresh its denormalized labels from the CURRENT
+/// record.
+///
+/// An ad-hoc verification (no client) and a client that can no longer be read both leave the row's
+/// existing labels untouched: an unreadable client is not evidence that the names were wrong, so
+/// blanking them would destroy context rather than correct it.
+async fn refresh_client_labels(store: &Arc<dyn Store>, v: &mut VerificationLog) {
+    let client_id = match v.client_id.as_deref() {
+        Some(id) => id,
+        None => return,
+    };
+    let c = match store.get_client(client_id).await {
+        Some(c) => c,
+        None => return,
+    };
+    v.pet_name = v
+        .pet_id
+        .as_ref()
+        .and_then(|pid| c.pets.iter().find(|p| &p.pet_id == pid))
+        .map(|p| p.name.clone())
+        .unwrap_or_default();
+    v.client_name = c.name;
 }
 
 // ============================================================================================
