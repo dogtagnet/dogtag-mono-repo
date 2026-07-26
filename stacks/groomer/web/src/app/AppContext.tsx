@@ -1,4 +1,11 @@
-import { createApiClient, useToast, type ApiClient, type SigningMode } from "@dogtag/ui";
+import {
+  createApiClient,
+  custodyStateFromSigners,
+  useToast,
+  type ApiClient,
+  type CustodyState,
+  type SigningMode,
+} from "@dogtag/ui";
 import {
   createContext,
   useCallback,
@@ -26,6 +33,13 @@ interface AppContextValue {
   setSignerAddress: (a: string | null) => void;
   signingMode: SigningMode;
   setSigningMode: (m: SigningMode) => void;
+  /**
+   * What we currently believe about the backend's custody seal. `unknown` until the probe (or a
+   * failing call) tells us otherwise — CustodyGate must never redirect on `unknown`, or a backend
+   * that is merely down would strand the operator on /unlock.
+   */
+  custodyState: CustodyState;
+  setCustodyState: (s: CustodyState) => void;
   /** in-memory unlock flag — the backend keeps the real state; this gates optimistic UI */
   unlocked: boolean;
   setUnlocked: (v: boolean) => void;
@@ -48,7 +62,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [adminToken, setAdminTokenState] = useState<string | null>(() => read(ADMIN_KEY));
   const [signerAddress, setSignerAddressState] = useState<string | null>(() => read(SIGNER_KEY));
   const [signingMode, setSigningMode] = useState<SigningMode>("backend");
-  const [unlocked, setUnlocked] = useState(false);
+  const [custodyState, setCustodyState] = useState<CustodyState>("unknown");
+  const unlocked = custodyState === "unlocked";
+  const setUnlocked = useCallback((v: boolean) => setCustodyState(v ? "unlocked" : "locked"), []);
 
   const persist = (key: string, t: string | null) => {
     try {
@@ -80,7 +96,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   onUnauthorizedRef.current = (kind) => {
     if (kind === "operator") setOpToken(null);
     setAdminToken(null);
-    setUnlocked(false);
+    // The session died, but that says nothing about the seal — go back to "unknown" so the probe
+    // re-runs after the next login instead of asserting a lock we did not observe.
+    setCustodyState("unknown");
     toast({
       title: "Session expired",
       description: "Your session is no longer valid — please log in again.",
@@ -96,6 +114,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         getOperatorToken: () => read(OP_KEY),
         getAdminToken: () => read(ADMIN_KEY),
         onUnauthorized: (kind) => onUnauthorizedRef.current(kind),
+        // Any "not unlocked" refusal flips the state; CustodyGate then routes to /unlock, so an
+        // action that trips the lock lands the operator on the fix instead of an error toast.
+        onCustodyLocked: () => setCustodyState("locked"),
       }),
     [],
   );
@@ -103,8 +124,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     setOpToken(null);
     setAdminToken(null);
-    setUnlocked(false);
+    setCustodyState("unknown");
   }, [setOpToken, setAdminToken]);
+
+  // Custody probe: once an operator session exists and we have no opinion yet, ask the existing
+  // read-only GET /issuer/signers whether the seal is unlocked. A restart re-locks custody silently,
+  // so this is what turns "the portal loads" into "the portal lands you on /unlock". Any failure
+  // leaves the state `unknown` — a backend that is down must not look like a locked one.
+  useEffect(() => {
+    if (!opToken || custodyState !== "unknown") return;
+    let cancelled = false;
+    api
+      .issuerSigners()
+      .then((r) => {
+        if (!cancelled) setCustodyState(custodyStateFromSigners(r));
+      })
+      .catch(() => {
+        /* unauthenticated or backend down — stay `unknown` and do not redirect */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [opToken, custodyState, api]);
 
   // best-effort: load persisted signing mode once an operator session exists.
   useEffect(() => {
@@ -134,6 +175,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSignerAddress,
       signingMode,
       setSigningMode,
+      custodyState,
+      setCustodyState,
       unlocked,
       setUnlocked,
       logout,
@@ -147,7 +190,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       signerAddress,
       setSignerAddress,
       signingMode,
+      custodyState,
       unlocked,
+      setUnlocked,
       logout,
     ],
   );

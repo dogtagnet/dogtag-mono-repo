@@ -16,6 +16,13 @@ export const DEMO_ADMIN_PASSWORD = "admin";
 export const DEMO_OPERATOR_PASSWORD = "operator";
 
 /**
+ * Demo custody passphrase — prefilled into the genesis-confirm step AND the /unlock page so the
+ * local click-through never asks anyone to remember a seed passphrase. TESTNET DEMO ONLY; a
+ * production build (VITE_DEMO_MODE unset) never prefills it and the operator must type the real one.
+ */
+export const DEMO_CUSTODY_PASSPHRASE = "demo-pass-0000";
+
+/**
  * On-chain VACCINATION DogTagIssuer clone (VACCINATION_ISSUER_ADDR in scripts/demo-up.sh). This is
  * the documentStore the issuer-application must reference so the on-chain whitelist matches.
  */

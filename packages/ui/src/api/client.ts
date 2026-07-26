@@ -39,6 +39,7 @@ import type {
   VerifySessionStartResp,
   VerifySessionStatusResp,
 } from "./types";
+import { isCustodyLockedError } from "../custody/lock";
 
 export interface ApiClientOptions {
   /** vet backend base URL (e.g. "/api" with a Vite proxy, or an absolute origin) */
@@ -56,9 +57,23 @@ export interface ApiClientOptions {
    * "operator"/"admin" token kinds (not record-JWT bearer or unauthenticated calls).
    */
   onUnauthorized?: (kind: "operator" | "admin") => void;
+  /**
+   * Invoked when ANY call is refused because the backend's custody seal is locked (see
+   * `isCustodyLockedError`). Hosts use this to flip their custody state and route the operator to
+   * the dedicated /unlock page instead of surfacing a dead-end error toast. Purely a client-side
+   * signal — the backend's locked state and its gates are untouched.
+   */
+  onCustodyLocked?: () => void;
 }
 
 type TokenKind = "operator" | "admin" | "bearer" | "none";
+
+/**
+ * Paths whose 401 is a CREDENTIAL rejection, not a dead session, so `onUnauthorized` must not fire.
+ * `/admin/unlock` answers a wrong passphrase with 401; clearing the just-issued admin token there
+ * would replace the unlock page's inline "wrong passphrase" with a bogus "session expired".
+ */
+const CREDENTIAL_401_PATHS = new Set(["/admin/unlock"]);
 
 function makeError(status: number, body: unknown): ApiError {
   const msg =
@@ -105,10 +120,20 @@ export function createApiClient(opts: ApiClientOptions) {
       // Stale-session handling: a 401 on a token-bearing call means the persisted session was
       // invalidated (e.g. the backend restarted its in-memory session store). Clear it so the UI
       // routes back to login instead of replaying a dead token.
-      if (res.status === 401 && (tokenKind === "operator" || tokenKind === "admin") && !explicitToken) {
+      if (
+        res.status === 401 &&
+        (tokenKind === "operator" || tokenKind === "admin") &&
+        !explicitToken &&
+        !CREDENTIAL_401_PATHS.has(path)
+      ) {
         opts.onUnauthorized?.(tokenKind);
       }
-      throw makeError(res.status, parsed);
+      const e = makeError(res.status, parsed);
+      // Locked-custody handling: a restart drops the decrypted seed, so any custody-backed call
+      // starts failing with "not unlocked". Surface it once, centrally, so the host can redirect to
+      // /unlock rather than every call site rendering its own dead-end toast.
+      if (isCustodyLockedError(e)) opts.onCustodyLocked?.();
+      throw e;
     }
     return parsed as T;
   }

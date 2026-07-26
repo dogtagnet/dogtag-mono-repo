@@ -30,7 +30,7 @@ const QUICK_LINKS: {
   {
     href: "/setup",
     label: "Custody setup",
-    blurb: "Genesis + unlock the server key so the shop can issue its own records.",
+    blurb: "Genesis the server key so the shop can issue its own records. Unlocking has its own page.",
     icon: Wand2,
   },
 ];
