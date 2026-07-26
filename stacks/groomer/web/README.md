@@ -49,12 +49,16 @@ Nav mirrors the reference groomer dashboard:
   `/unlock` rather than re-entering the wizard; the `confirm → unlock` step above is genesis
   continuation and stays.
 - **Unlock** (`/unlock`) - the dedicated custody-unlock page, same as the vet portal. **Not a nav
-  item**: it is a redirect target. Whenever the backend reports a locked seal - on load, or on the
-  first action refused with `not unlocked` - the portal sends the operator here with `?next=`
-  carrying where they were headed, and returns them there once custody is open. Enter the
-  custody-admin password + passphrase (both prefilled in demo mode); a wrong passphrase shows an
-  inline error and does **not** end the session. It links to Setup only when the instance has no
-  seal at all (needs genesis, not unlock).
+  item**: it is reached from the Setup admin-login hand-off or a direct link, and it is the FALLBACK
+  surface, not the primary one. Nothing redirects. An action refused with `not unlocked` raises an
+  unlock prompt **in place** over the page the operator is already on, and the shared api client
+  replays the refused request once the seal opens, so a half-filled form is never discarded;
+  arriving at an already-locked backend shows a non-blocking banner instead, and read-only pages
+  stay reachable (the operator password and the custody-admin password are separate credentials).
+  This page restores `?next=` when it carries one. Enter the custody-admin password + passphrase
+  (both prefilled in demo mode); a wrong passphrase shows an inline error and does **not** end the
+  session. Both surfaces point at Setup only when the instance has no seal at all (needs genesis,
+  not unlock).
 - **Settings** (`/settings`) — signing-mode toggle (`PUT /settings/signing-mode`), status panel
   (`GET /issuer/signers`), theme toggle.
 

@@ -163,8 +163,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Custody probe: once an operator session exists and we have no opinion yet, ask the existing
   // read-only GET /issuer/signers whether the seal is unlocked. A restart re-locks custody silently,
-  // so this is what turns "the portal loads" into "the portal lands you on /unlock". Any failure
-  // leaves the state `unknown` — a backend that is down must not look like a locked one.
+  // so this is what turns "the portal loads" into a visible locked banner. It routes nowhere - it
+  // only sets `custodyState` - because read-only work must stay reachable while locked. Any failure
+  // leaves the state `unknown`: a backend that is down must not look like a locked one.
   useEffect(() => {
     if (!opToken || custodyState !== "unknown") return;
     let cancelled = false;

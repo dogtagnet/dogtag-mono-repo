@@ -44,7 +44,11 @@ export interface CustodyUnlockFormProps {
   onAlreadyUnlocked: () => void;
   /** The passphrase decrypted the seal; `accounts` is the backend's derived signer list. */
   onUnlocked: (accounts: AccountInfo[]) => void;
-  /** Rendered in the no-seal state — the host supplies its own router link to /setup. */
+  /**
+   * The router link to /setup, rendered UNDER the form's own no-seal explanation. The host supplies
+   * only the link: the explanation itself lives in this component so the dialog and the dedicated
+   * /unlock page cannot drift into saying different things about a seal-less instance.
+   */
   setupLink: ReactNode;
   /** Label on the submit button. */
   submitLabel?: string;
@@ -153,7 +157,16 @@ export function CustodyUnlockForm({
     }
   }
 
-  if (seal === "none") return <>{setupLink}</>;
+  if (seal === "none")
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-muted">
+          This instance has no seal yet, so there is nothing to unlock. Run genesis in Setup to
+          create the signing key first.
+        </p>
+        {setupLink}
+      </div>
+    );
 
   return (
     <form onSubmit={submit} className="space-y-4">
@@ -221,11 +234,21 @@ export interface CustodyUnlockDialogProps extends CustodyUnlockFormProps {
  * the page the operator is already on. Nothing unmounts, so a half-filled form keeps every typed
  * value, and the host retries the refused request once the seal opens. That is the whole point:
  * unlocking should interrupt the work for one passphrase, not discard it.
+ *
+ * EVERY exit settles the host's pending action exactly once. Esc, the overlay and the close button
+ * all reach `onDismiss` through Radix's `onOpenChange`; unlocking (or discovering custody was
+ * already open) settles through the form's own callbacks. The no-seal state is the exception Radix
+ * cannot see: following the Setup link is a plain in-app navigation, which leaves this controlled
+ * dialog `open` and the host's promise pending forever - the awaited refusal would never reject and
+ * the originating page would stay busy. So the link is wrapped in a capture-phase click handler that
+ * dismisses BEFORE the navigation runs. Settling twice is harmless by contract, so hosts may treat
+ * `onDismiss` as idempotent.
  */
 export function CustodyUnlockDialog({
   open,
   onDismiss,
   pendingLabel,
+  setupLink,
   ...form
 }: CustodyUnlockDialogProps) {
   return (
@@ -237,11 +260,15 @@ export function CustodyUnlockDialog({
           </DialogTitle>
           <DialogDescription>
             {pendingLabel
-              ? `${pendingLabel} needs the backend signer. Enter the passphrase to unlock and continue — nothing you have entered is lost.`
-              : "This action needs the backend signer. Enter the passphrase to unlock and continue — nothing you have entered is lost."}
+              ? `${pendingLabel} needs the backend signer. Enter the passphrase to unlock and continue - nothing you have entered is lost.`
+              : "This action needs the backend signer. Enter the passphrase to unlock and continue - nothing you have entered is lost."}
           </DialogDescription>
         </DialogHeader>
-        <CustodyUnlockForm {...form} submitLabel="Unlock and continue" />
+        <CustodyUnlockForm
+          {...form}
+          setupLink={<div onClickCapture={onDismiss}>{setupLink}</div>}
+          submitLabel="Unlock and continue"
+        />
       </DialogContent>
     </Dialog>
   );

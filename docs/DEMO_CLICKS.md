@@ -18,10 +18,12 @@ Demo passwords (prefilled): operator `operator`, admin `admin`. Record type ever
 > again (password stays prefilled).
 >
 > A restart also **re-locks custody** (the seal survives in `.demo/*-custody.json`, the decrypted seed
-> does not). After signing back in, the vet/groomer portal detects the lock and drops you on its
-> dedicated **`/unlock`** page - you no longer go digging through Setup - then returns you to wherever
-> you were headed. Both fields prefill in demo mode, so it is one click: **Unlock**. A wrong passphrase
-> shows an inline error there and does **not** trigger the "Session expired" path above.
+> does not). After signing back in, the vet/groomer portal shows a **non-blocking banner** saying custody
+> is locked - read-only pages stay reachable - and the first action that needs custody raises an
+> **unlock prompt in place**, over the page you are on, then replays the refused request. You no longer
+> go digging through Setup, and nothing you typed is discarded. The dedicated **`/unlock`** page is still
+> there as a direct link. Both fields prefill in demo mode, so it is one click: **Unlock**. A wrong
+> passphrase shows an inline error and does **not** trigger the "Session expired" path above.
 
 ---
 

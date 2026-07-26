@@ -98,24 +98,13 @@ function CustodyPrompt() {
           toast({ title: "Custody unlocked", variant: "success" });
           resolveUnlockPrompt(true);
         }}
-        setupLink={<SetupPointer />}
+        setupLink={
+          <Button asChild className="w-full">
+            <Link to="/setup">Go to Setup</Link>
+          </Button>
+        }
       />
     </>
-  );
-}
-
-/** Shown when the backend has NO seal: a passphrase cannot help, only genesis in Setup can. */
-function SetupPointer() {
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-muted">
-        This instance has no seal yet, so there is nothing to unlock. Run genesis in Setup to create
-        the signing key first.
-      </p>
-      <Button asChild className="w-full">
-        <Link to="/setup">Go to Setup</Link>
-      </Button>
-    </div>
   );
 }
 
