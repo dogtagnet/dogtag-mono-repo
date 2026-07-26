@@ -82,9 +82,10 @@ echo "  factory               $FACTORY -> registry $IR  ok"
 # its accepted alias: either suppresses the refusal AND reaches admin-api, which cannot otherwise tell a
 # designed proposal from a wrong-key one and reports every not-broadcast grant as the latter. Defaults
 # THROUGH the canonical name so an operator-set value (incl. one sourced from contracts/.env) survives.
-# Truthy set mirrors the reader in stacks/admin/api/src/main.rs.
+# Truthy set mirrors admin_api::startup::env_flag (trim + lowercase, "1"|"true"), the ONE reader both
+# admin-api control-plane flags now go through.
 ADMIN_PROPOSE_ONLY="${ADMIN_PROPOSE_ONLY:-${ALLOW_UNAUTHORIZED_ADMIN_SIGNER:-0}}"
-case "$(echo "$ADMIN_PROPOSE_ONLY" | tr 'A-Z' 'a-z')" in
+case "$(echo "$ADMIN_PROPOSE_ONLY" | tr -d '[:space:]' | tr 'A-Z' 'a-z')" in
   1|true) PROPOSE_ONLY_DECLARED=1 ;;
   *) PROPOSE_ONLY_DECLARED=0 ;;
 esac
