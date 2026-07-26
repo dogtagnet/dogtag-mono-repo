@@ -529,6 +529,20 @@ export interface WhitelistActionReq {
   recordType?: string;
   verifyPurposes?: string[];
 }
+/**
+ * What a grant/revoke request actually did. `disposition:"proposed"` is BOTH the legitimate
+ * out-of-band-signing flow and what a stack booted on a key that lost its authority produces, so the
+ * backend separates them rather than reporting one signal for two very different situations:
+ *   - `executed`               at least one action was broadcast; on-chain state changed.
+ *   - `proposed_by_design`     nothing broadcast, and the deployment DECLARES propose-only
+ *                              (`ADMIN_PROPOSE_ONLY` / `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`) — a correct
+ *                              outcome; hand the calldata to the holder.
+ *   - `proposed_unauthorized`  nothing broadcast and propose-only was NOT declared — the hosted signer
+ *                              was expected to hold the authority and does not.
+ * Only the backend decides which it is; never infer it client-side. Optional so an older backend that
+ * sends only `executed` still parses.
+ */
+export type WhitelistOutcome = "executed" | "proposed_by_design" | "proposed_unauthorized";
 /** POST /v1/admin/whitelist/grant response: one disposition per whitelisted capability. */
 export interface WhitelistGrantResp {
   signer: string;
@@ -539,9 +553,11 @@ export interface WhitelistGrantResp {
    * `{ status: "alreadyHeld" }` when the signer already had it, or null for non-DOG_PROFILE grants.
    */
   issuerRole?: GovernanceDisposition | { status: "alreadyHeld" } | null;
+  /** Which of the three outcomes this was — drive the UI off this, not off `actions`. */
+  outcome?: WhitelistOutcome;
   /** False when NOTHING reached the chain: on-chain state is unchanged. */
   executed?: boolean;
-  /** Set only when `executed` is false: a plain statement that nothing was broadcast. */
+  /** Set only when `executed` is false; its wording differs per `outcome`. */
   warning?: string | null;
 }
 /** POST /v1/admin/whitelist/revoke response: one disposition per delisted capability. */
@@ -549,9 +565,11 @@ export interface WhitelistRevokeResp {
   signer: string;
   recordType?: string | null;
   actions: GovernanceDisposition[];
+  /** Which of the three outcomes this was — drive the UI off this, not off `actions`. */
+  outcome?: WhitelistOutcome;
   /** False when NOTHING reached the chain: on-chain state is unchanged. */
   executed?: boolean;
-  /** Set only when `executed` is false: a plain statement that nothing was broadcast. */
+  /** Set only when `executed` is false; its wording differs per `outcome`. */
   warning?: string | null;
 }
 

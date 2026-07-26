@@ -325,10 +325,83 @@ async fn whitelist_grant_reports_executed_when_only_the_issuer_role_reached_the_
     assert_eq!(b["actions"][0]["disposition"], "proposed", "no WHITELIST_ADMIN");
     assert_eq!(b["issuerRole"]["disposition"], "executed", "holds SBT DEFAULT_ADMIN");
     assert_eq!(b["executed"], true, "the ISSUER_ROLE grant DID reach the chain: {b}");
+    assert_eq!(b["outcome"], "executed");
     assert!(
         b["warning"].is_null(),
         "must not claim on-chain state is unchanged when a tx landed: {b}"
     );
+}
+
+/// A landed tx outranks the propose-only DECLARATION: the same split as above, but on a stack that
+/// declares propose-only, must still report `executed` rather than `proposed_by_design`. Catches an
+/// implementation that consults the declaration before checking whether anything was broadcast.
+#[tokio::test]
+async fn declared_propose_only_still_reports_executed_when_a_tx_landed() {
+    let (state, chain, _v, _b) = common::hermetic_state_propose_only();
+    chain.set_role(SBT, &default_admin_role(), HOSTED);
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": "DOG_PROFILE" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["issuerRole"]["disposition"], "executed");
+    assert_eq!(b["outcome"], "executed", "a real tx landed: {b}");
+    assert_eq!(b["executed"], true);
+    assert!(b["warning"].is_null());
+}
+
+/// Propose-only is DECLARED, so a grant that broadcasts nothing is the CORRECT outcome. It must be
+/// reported calmly and must never say the hosted key is wrong - that text belongs to the undeclared
+/// case only.
+#[tokio::test]
+async fn declared_propose_only_reports_a_by_design_proposal() {
+    let (state, _chain, _v, _b) = common::hermetic_state_propose_only();
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/grant",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": "DOG_PROFILE" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["actions"][0]["disposition"], "proposed");
+    assert_eq!(b["outcome"], "proposed_by_design", "{b}");
+    assert_eq!(b["executed"], false, "still nothing on-chain");
+    let w = b["warning"].as_str().unwrap();
+    assert!(
+        !w.contains("wrong key"),
+        "a declared propose-only deployment must not be told its key is wrong: {w}"
+    );
+    assert!(w.contains("EXTERNAL SIGNING"), "{w}");
+}
+
+/// Revoke carries the same tri-state (it has no issuerRole leg, so `results` alone decides).
+#[tokio::test]
+async fn whitelist_revoke_reports_the_declared_propose_only_outcome() {
+    let (state, _chain, _v, _b) = common::hermetic_state_propose_only();
+    let app = admin_api::router(state);
+    let tok = admin_token(&app).await;
+    let (s, b) = common::call(
+        &app,
+        "POST",
+        "/v1/admin/whitelist/revoke",
+        Some(&tok),
+        Some(serde_json::json!({ "signer": SIGNER, "recordType": RT })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["outcome"], "proposed_by_design", "{b}");
+    assert_eq!(b["executed"], false);
+    assert!(!b["warning"].as_str().unwrap().contains("wrong key"));
 }
 
 /// The inverse: the whitelistFor actions execute but the ISSUER_ROLE grant is proposed. Still
@@ -351,6 +424,7 @@ async fn whitelist_grant_reports_executed_when_only_the_whitelist_reached_the_ch
     assert_eq!(b["actions"][0]["disposition"], "executed");
     assert_eq!(b["issuerRole"]["disposition"], "proposed", "no SBT DEFAULT_ADMIN");
     assert_eq!(b["executed"], true);
+    assert_eq!(b["outcome"], "executed");
     assert!(b["warning"].is_null());
 }
 
@@ -373,10 +447,15 @@ async fn whitelist_grant_warns_only_when_not_one_action_was_broadcast() {
     assert_eq!(b["actions"][0]["disposition"], "proposed");
     assert_eq!(b["issuerRole"]["disposition"], "proposed");
     assert_eq!(b["executed"], false);
+    assert_eq!(
+        b["outcome"], "proposed_unauthorized",
+        "propose-only was NOT declared, so this is the wrong-key case: {b}"
+    );
     assert!(
         b["warning"].as_str().unwrap().contains("UNCHANGED"),
         "must state nothing landed: {b}"
     );
+    assert!(b["warning"].as_str().unwrap().contains("wrong key"), "{b}");
 }
 
 /// Revoke delists the record type (delistFor) and is EXECUTED when the hosted key holds WHITELIST_ADMIN.

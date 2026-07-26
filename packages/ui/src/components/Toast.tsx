@@ -21,6 +21,7 @@ const toastVariants = cva(
       variant: {
         default: "border-border bg-surface text-onSurface",
         success: "border-success/40 bg-surface text-onSurface",
+        warning: "border-warning/40 bg-surface text-onSurface",
         danger: "border-danger/40 bg-surface text-onSurface",
       },
     },
@@ -46,6 +47,7 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 const accent: Record<string, string> = {
   default: "bg-primary",
   success: "bg-success",
+  warning: "bg-warning",
   danger: "bg-danger",
 };
 

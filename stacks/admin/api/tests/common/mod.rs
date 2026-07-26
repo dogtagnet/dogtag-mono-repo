@@ -42,6 +42,7 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         factory_addr: FACTORY.to_string(),
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
+        propose_only: false,
     };
     let state = AppState {
         store: Arc::new(MemStore::new()),
@@ -67,6 +68,18 @@ pub fn hermetic_state_with_feed(feed: Arc<dyn OversightFeed>) -> AppState {
     let (mut state, _chain, _vault, _business) = hermetic_state();
     state.feed = feed;
     state
+}
+
+/// `hermetic_state()` with the operator's propose-for-external-signing DECLARATION set, i.e. what
+/// `ADMIN_PROPOSE_ONLY=1` / `ALLOW_UNAUTHORIZED_ADMIN_SIGNER=1` produces at boot. Only the reporting of
+/// an outcome changes; dispatch and live authority reads are untouched.
+#[allow(dead_code)]
+pub fn hermetic_state_propose_only() -> (AppState, MemChain, MemVault, MockBusinessClient) {
+    let (mut state, chain, vault, business) = hermetic_state();
+    let mut cfg = (*state.cfg).clone();
+    cfg.propose_only = true;
+    state.cfg = Arc::new(cfg);
+    (state, chain, vault, business)
 }
 
 /// Issue a request and return (status, json body).

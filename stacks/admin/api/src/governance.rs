@@ -107,10 +107,75 @@ impl Disposition {
     }
 }
 
-/// `true` when NOT ONE of `dispositions` reached the chain. Callers surface this so a request that
-/// changed nothing on-chain cannot read as a success: the whole set came back as unsigned calldata.
-pub fn none_executed(dispositions: &[Disposition]) -> bool {
-    !dispositions.is_empty() && !dispositions.iter().any(Disposition::executed)
+/// What a whole grant/revoke request actually did, as three distinct outcomes rather than one boolean.
+///
+/// `disposition:"proposed"` is a LEGITIMATE designed flow: post-Phase-2 the registry authority genuinely
+/// lives on the governance signer, and the unsigned calldata is meant to be executed out-of-band. It is
+/// ALSO what a stack booted on the wrong key produces. Those are different outcomes with different
+/// remedies - "hand this to the holder" versus "you booted a retired key" - so collapsing them into one
+/// signal reintroduces exactly the misleading-report class this reporting exists to remove. The
+/// deployment DECLARES which one it is (`Config::propose_only`); it is never inferred from an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchOutcome {
+    /// At least one action was signed and broadcast: on-chain state changed.
+    Executed,
+    /// Nothing was broadcast, and propose-for-external-signing is the declared deployment mode. A
+    /// correct outcome, not a failure.
+    ProposedByDesign,
+    /// Nothing was broadcast and propose-only was NOT declared, so the hosted signer was expected to
+    /// hold the authority and does not. Almost always a retired key.
+    ProposedUnauthorized,
+}
+
+impl DispatchOutcome {
+    /// Classify over EVERY action the request dispatched (whitelist capabilities AND, for a DOG_PROFILE
+    /// grant, the separate ISSUER_ROLE action) - the "nothing was broadcast" claim is only true when not
+    /// one of them landed. Whether anything executed is decided FIRST: a real tx makes the declaration
+    /// irrelevant.
+    pub fn classify(dispositions: &[Disposition], propose_only_declared: bool) -> Self {
+        if dispositions.iter().any(Disposition::executed) {
+            Self::Executed
+        } else if propose_only_declared {
+            Self::ProposedByDesign
+        } else {
+            Self::ProposedUnauthorized
+        }
+    }
+
+    /// The wire value of the response's `outcome` field.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Executed => "executed",
+            Self::ProposedByDesign => "proposed_by_design",
+            Self::ProposedUnauthorized => "proposed_unauthorized",
+        }
+    }
+
+    /// The pre-existing `executed` boolean, kept for back-compat with older clients.
+    pub fn executed(&self) -> bool {
+        matches!(self, Self::Executed)
+    }
+
+    /// The operator-facing note. `None` when a tx landed. The by-design text is deliberately calm and
+    /// must never suggest the key is wrong - that is the whole point of separating the two cases.
+    pub fn warning(&self) -> Option<&'static str> {
+        match self {
+            Self::Executed => None,
+            Self::ProposedByDesign => Some(
+                "PROPOSED FOR EXTERNAL SIGNING: nothing was broadcast, which is the expected outcome \
+                 here - this deployment declares propose-only (ADMIN_PROPOSE_ONLY / \
+                 ALLOW_UNAUTHORIZED_ADMIN_SIGNER), so the hosted signer is not meant to hold this \
+                 authority. Hand the unsigned calldata in actions[] to the holder (see \
+                 actions[].holder); on-chain state changes when they execute it.",
+            ),
+            Self::ProposedUnauthorized => Some(
+                "NOTHING WAS BROADCAST: the hosted signer does not hold the required authority, so \
+                 every action came back as unsigned calldata (see actions[].hostedSigner / .holder). \
+                 On-chain state is UNCHANGED until the authority holder executes it. If you expected \
+                 the hosted key to hold this authority, it is the wrong key.",
+            ),
+        }
+    }
 }
 
 /// Resolve `action`'s authority against the chain and either broadcast (hosted key holds it) or return

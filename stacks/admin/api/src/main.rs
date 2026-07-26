@@ -67,6 +67,17 @@ async fn main() {
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0),
+        // Declared propose-for-external-signing. `ALLOW_UNAUTHORIZED_ADMIN_SIGNER` is the same
+        // declaration scripts/demo-up.sh already documents as the escape hatch for this deployment
+        // shape, so it is accepted as an alias rather than becoming a second, drifting concept.
+        propose_only: ["ADMIN_PROPOSE_ONLY", "ALLOW_UNAUTHORIZED_ADMIN_SIGNER"]
+            .iter()
+            .any(|k| {
+                matches!(
+                    std::env::var(k).unwrap_or_default().trim().to_ascii_lowercase().as_str(),
+                    "1" | "true"
+                )
+            }),
     };
 
     // Fail-closed (audit H2): refuse to boot in production with an unset/dev-default ADMIN_PASSWORD or

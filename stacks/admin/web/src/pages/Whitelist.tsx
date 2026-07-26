@@ -27,6 +27,7 @@ import {
   type GovernanceDisposition,
   type IssuerApplicationListItem,
   type WhitelistGrantResp,
+  type WhitelistOutcome,
 } from "@dogtag/ui";
 import {
   CheckCircle2,
@@ -542,20 +543,40 @@ function issuerRoleDisposition(
   return issuerRole && "disposition" in issuerRole ? issuerRole : null;
 }
 
-/** How a dispatch is REPORTED. A grant/revoke where nothing reached the chain must never render green:
- *  a success toast around "NOTHING broadcast" is exactly the indistinguishable-from-success signal the
- *  loud-authority work removes. The backend's `executed`/`warning` are authoritative (they account for
- *  the separately dispatched ISSUER_ROLE action); `executed` is optional, so an older backend falls back
- *  to recomputing over every disposition - including issuerRole, which `summarize` alone cannot see. */
+/** How a dispatch is REPORTED, driven by the backend's `outcome` - the case distinction is never
+ *  recomputed here, because only the backend knows whether propose-only was DECLARED.
+ *
+ *  A grant that reached the chain is green. One that did not is never green, but the two ways that
+ *  happens are different outcomes and get different signals: a declared out-of-band-signing deployment
+ *  is doing exactly what it is configured to do (amber, calm), while an undeclared one is the wrong-key
+ *  failure the loud-authority work exists to surface (red, loud). Collapsing them would re-create the
+ *  same misleading-report problem in the opposite direction.
+ *
+ *  `outcome` is optional, so a backend that predates it falls back to the previous behaviour:
+ *  `executed` if present, else recomputed over every disposition - including issuerRole, which
+ *  `summarize` alone cannot see. An unrecognised value takes that same path and never reads as green. */
 function dispatchOutcome(
-  resp: { actions: GovernanceDisposition[]; executed?: boolean; warning?: string | null },
+  resp: {
+    actions: GovernanceDisposition[];
+    outcome?: WhitelistOutcome;
+    executed?: boolean;
+    warning?: string | null;
+  },
   issuerRole?: WhitelistGrantResp["issuerRole"],
-): { variant: "success" | "danger"; description: string } {
+): { variant: "success" | "warning" | "danger"; description: string } {
   const role = issuerRoleDisposition(issuerRole);
   const all = role ? [...resp.actions, role] : resp.actions;
-  const executed = resp.executed ?? all.some((a) => a.disposition === "executed");
-  return {
-    variant: executed ? "success" : "danger",
-    description: resp.warning ?? summarize(all),
-  };
+  const description = resp.warning ?? summarize(all);
+  switch (resp.outcome) {
+    case "executed":
+      return { variant: "success", description };
+    case "proposed_by_design":
+      return { variant: "warning", description };
+    case "proposed_unauthorized":
+      return { variant: "danger", description };
+    default: {
+      const executed = resp.executed ?? all.some((a) => a.disposition === "executed");
+      return { variant: executed ? "success" : "danger", description };
+    }
+  }
 }

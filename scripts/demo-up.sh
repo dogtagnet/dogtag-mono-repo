@@ -97,6 +97,10 @@ if [ "$HAS_WL" != "true" ]; then
 else
   echo "  admin signer          $ADMIN_ADDR holds WHITELIST_ADMIN  ok"
 fi
+# The same flag is the operator's DECLARATION that out-of-band signing is intended, so admin-api needs it
+# too: without it the API cannot tell a designed proposal from a wrong-key one and reports every
+# not-broadcast grant as the latter. Passed as ADMIN_PROPOSE_ONLY (the flag is its accepted alias).
+ADMIN_PROPOSE_ONLY="${ALLOW_UNAUTHORIZED_ADMIN_SIGNER:-0}"
 
 # GOVERNMENT chain backend. `live` (default) = real ROAX. The government stack used to select its
 # in-process MemChain whenever DEMO_MODE was set - which contracts/.env sets - so its verify/records
@@ -176,6 +180,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
   SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY \
   ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
+  ADMIN_PROPOSE_ONLY="$ADMIN_PROPOSE_ONLY" \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 # Every verifier/issuance process receives the same owner-hidden pair. PROFILE_ISSUER is a real
 # factory clone: roots are issue(R)'d there, while mintCustodial seals the same R on the SBT.
