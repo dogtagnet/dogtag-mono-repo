@@ -22,12 +22,18 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  * Like the other portal e2e suites this is NOT part of `pnpm test` / CI (it needs a served portal +
  * browsers):
  *
- *   pnpm --filter @dogtag/groomer-web dev            # one shell (port 43617)
- *   pnpm --filter @dogtag/groomer-web test:e2e       # another (GROOMER_URL overrides the base)
+ *   VITE_DEMO_MODE=1 pnpm --filter @dogtag/groomer-web dev   # one shell (port 43617)
+ *   pnpm --filter @dogtag/groomer-web test:e2e              # another (GROOMER_URL overrides the base)
+ *
+ * `VITE_DEMO_MODE=1` is required: the Issue form's every schema field is mandatory, so the suite
+ * populates it with the demo-only "Fill demo data" button rather than typing a rabies certificate.
  */
 
 const OP_TOKEN_KEY = "groomer.opToken";
-const ADMIN_PASSWORD = "admin";
+// Deliberately NOT the demo password "admin": the "neither secret is persisted" scan substring-matches
+// each stored entry, and the persisted admin-SESSION key is literally `groomer.adminToken`, so "admin"
+// would always self-match the key name and fail on a leak that is not there.
+const ADMIN_PASSWORD = "e2e-custody-admin-pw";
 const PASSPHRASE = "demo-pass-0000";
 const SIGNER = "0x00000000000000000000000000000000000000a1";
 
@@ -105,11 +111,19 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+/**
+ * The Issue form's dog-tag input. Located by placeholder rather than by label: the portal's `<Label>`
+ * carries no `htmlFor` and does not wrap its `<Input>` (a pre-existing pattern across every portal
+ * form), so `getByLabel` cannot resolve it. The unlock form's own fields DO carry ids, which is why
+ * they are still addressed by label below.
+ */
+const dogTagField = (page: Page) => page.getByPlaceholder(/^dtag:/);
+
 /** Fill the Issue form enough to submit, returning the value that must survive the unlock. */
 async function fillIssueForm(page: Page): Promise<string> {
   const dogTagId = "dtag:e2e-preserved-99";
   await page.getByRole("button", { name: /Fill demo data/i }).click();
-  await page.getByLabel("Dog tag id").fill(dogTagId);
+  await dogTagField(page).fill(dogTagId);
   return dogTagId;
 }
 
@@ -134,17 +148,22 @@ test.describe("point-of-need unlock", () => {
     await expect(page.getByText("Custody is locked")).toBeVisible();
     await expect(page).toHaveURL(/\/issue$/);
     // The captain's actual complaint: the typed record must still be there.
-    await expect(page.getByLabel("Dog tag id")).toHaveValue(dogTagId);
+    await expect(dogTagField(page)).toHaveValue(dogTagId);
 
     await page.getByLabel("Custody admin password").fill(ADMIN_PASSWORD);
     await page.getByLabel("Unlock passphrase").fill(PASSPHRASE);
     await page.getByRole("button", { name: "Unlock and continue" }).click();
 
-    // The refused request is replayed, so the action the operator started actually completes.
+    // The refused request is replayed, so the action the operator started actually COMPLETES - the
+    // typed record is carried into the issuance rather than handed back to be re-typed. The form is
+    // legitimately replaced by the success view here precisely BECAUSE the replay succeeded; the
+    // "nothing you entered is lost" property is the assertion above, taken while the prompt is up.
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect.poll(() => custody.prepares).toBeGreaterThan(0);
+    await expect(page.getByText("Credential issued").first()).toBeVisible();
     await expect(page).toHaveURL(/\/issue$/);
-    await expect(page.getByLabel("Dog tag id")).toHaveValue(dogTagId);
+    // Exactly once: the client replays a refused request a single time, so unlocking can never
+    // double-submit the operator's issuance.
+    await expect.poll(() => custody.prepares).toBe(1);
   });
 
   test("a wrong passphrase shows an inline error and never reports a dead session", async ({
@@ -192,6 +211,31 @@ test.describe("point-of-need unlock", () => {
     await expect(page.getByRole("alert")).toContainText("Wrong passphrase");
 
     expect(custody.adminLogins).toBe(afterFirst);
+  });
+
+  test("dismissing the prompt surfaces the original refusal and replays nothing", async ({
+    page,
+  }) => {
+    // The other half of the replay contract: `onCustodyLocked` resolving FALSE must rethrow the
+    // original refusal rather than retry, so a dismissed prompt cannot loop the operator or fire the
+    // action behind their back. The client replays at most once, and only on a successful unlock.
+    const custody = newCustody();
+    await mockBackend(page, custody);
+
+    await page.goto("/issue");
+    await fillIssueForm(page);
+    await submitIssue(page);
+    await expect(page.getByRole("dialog")).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    // The refusal reaches the page it came from, and the form is still there to retry from.
+    await expect(page.getByText("Issue failed").first()).toBeVisible();
+    await expect(page).toHaveURL(/\/issue$/);
+    await expect(dogTagField(page)).toHaveValue("dtag:e2e-preserved-99");
+    expect(custody.prepares).toBe(0);
+    // Still locked, so the banner takes over as the standing way back in.
+    await expect(page.getByText(/Custody is locked/)).toBeVisible();
   });
 
   test("a locked backend never blocks read-only pages; it shows a banner instead", async ({
@@ -259,7 +303,7 @@ test.describe("dedicated /unlock route (fallback surface)", () => {
     await page.getByLabel("Custody admin password").fill(ADMIN_PASSWORD);
     await page.getByLabel("Unlock passphrase").fill(PASSPHRASE);
     await page.getByRole("button", { name: "Unlock" }).click();
-    await expect(page.getByText("Custody unlocked")).toBeVisible();
+    await expect(page.getByText("Custody unlocked").first()).toBeVisible();
 
     for (const secret of [PASSPHRASE, ADMIN_PASSWORD]) {
       const leaked = await page.evaluate((s) => {
