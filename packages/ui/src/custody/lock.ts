@@ -5,7 +5,8 @@
  * The backends expose exactly three custody states and the portal must never conflate them:
  *   - NO SEAL      — genesis has never run. Only the Setup wizard can fix this.
  *   - SEALED+LOCKED— a seal exists (hydrated from CUSTODY_SEAL_PATH after a restart) but the seed is
- *                    not decrypted. The passphrase fixes this, on the dedicated /unlock page.
+ *                    not decrypted. The passphrase fixes this, in the point-of-need unlock dialog or
+ *                    on the dedicated /unlock page.
  *   - UNLOCKED     — normal operation.
  *
  * Everything here is pure so it can be unit-tested without a DOM or a backend.
@@ -20,9 +21,9 @@ export const NEXT_PARAM = "next";
 /**
  * Tri-state view of the backend custody, as the portal currently understands it.
  *
- * `unknown` is the important one: it means "we have not been told otherwise". The portal must NEVER
- * redirect on `unknown` — a backend that is merely down or slow would otherwise trap the operator on
- * the unlock page with a passphrase that cannot help.
+ * `unknown` is the important one: it means "we have not been told otherwise". The portal must never
+ * announce a lock on `unknown` — a backend that is merely down or slow is not a locked one, and no
+ * passphrase can fix it.
  */
 export type CustodyState = "unknown" | "locked" | "unlocked";
 
@@ -77,12 +78,11 @@ function custodyErrorMessage(err: unknown): string {
  * without a new endpoint and without an admin session. It emits exactly two shapes: `{ signers: [] }`
  * from the locked short-circuit, and `{ activeSigner, matrix }` when unlocked.
  *
- * BOTH shapes are recognised positively and everything else stays `unknown`, because the gate never
- * redirects on `unknown`: an unrecognised payload (a stubbed test double, a proxy error page, a shape
- * a later backend adds) must not be read as a lock. `activeSigner` is keyed on PRESENCE rather than
- * truthiness — `active_address()` falls back to `""` — since a false "locked" would trap the operator
- * in a redirect loop, whereas a false "unlocked" costs nothing (the first real request 409s and
- * corrects the state).
+ * BOTH shapes are recognised positively and everything else stays `unknown`: an unrecognised payload
+ * (a stubbed test double, a proxy error page, a shape a later backend adds) must not be read as a
+ * lock. `activeSigner` is keyed on PRESENCE rather than truthiness — `active_address()` falls back to
+ * `""` — since a false "locked" would nag the operator about a lock that is not there, whereas a false
+ * "unlocked" costs nothing (the first real request 409s and corrects the state).
  */
 export function custodyStateFromSigners(resp: unknown): CustodyState {
   if (!resp || typeof resp !== "object") return "unknown";
@@ -100,12 +100,11 @@ export function custodyStateFromSigners(resp: unknown): CustodyState {
  */
 export function sanitizeNextPath(raw: string | null | undefined, fallback: string): string {
   if (!raw) return fallback;
-  let candidate = raw;
-  try {
-    candidate = decodeURIComponent(raw);
-  } catch {
-    /* already decoded, or malformed escapes — fall through and validate as-is */
-  }
+  // Deliberately NOT decoded here: both call sites already hand over a decoded string (buildUnlockPath
+  // takes a live `pathname + search`, and the unlock page reads the param through URLSearchParams,
+  // which decodes). Decoding again would turn a destination's own escapes into structure — `%2B`
+  // becoming a literal `+`, `%26` splitting off a second query parameter.
+  const candidate = raw;
   if (!candidate.startsWith("/")) return fallback;
   // "//host" and "/\host" are protocol-relative URLs, not paths.
   if (candidate.startsWith("//") || candidate.startsWith("/\\")) return fallback;
@@ -118,17 +117,4 @@ export function sanitizeNextPath(raw: string | null | undefined, fallback: strin
 export function buildUnlockPath(from: string): string {
   const next = sanitizeNextPath(from, "");
   return next ? `${UNLOCK_PATH}?${NEXT_PARAM}=${encodeURIComponent(next)}` : UNLOCK_PATH;
-}
-
-/**
- * Routes that stay reachable while custody is locked: the unlock page itself, and Setup — which owns
- * genesis, the only cure for a seal-less instance.
- */
-export function isLockExemptPath(pathname: string): boolean {
-  return (
-    pathname === UNLOCK_PATH ||
-    pathname.startsWith(`${UNLOCK_PATH}/`) ||
-    pathname === "/setup" ||
-    pathname.startsWith("/setup/")
-  );
 }

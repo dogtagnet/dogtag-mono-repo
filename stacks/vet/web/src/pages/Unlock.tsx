@@ -15,20 +15,20 @@ import { env } from "../lib/env";
 const HOME = "/issue-dog-tag";
 
 /**
- * The dedicated unlock route (§11.4). CustodyGate sends the operator here the moment the backend
- * reports a locked seal — after a restart, or on the first action that trips the lock — and this
- * page returns them to exactly where they were headed. Genesis stays in Setup; this page only ever
- * points at Setup when the instance has no seal at all.
+ * The dedicated unlock route: the FALLBACK surface, for arriving at an already-locked backend or
+ * following a direct link. The primary path is the point-of-need dialog raised over whatever page
+ * the operator is on (see Layout's CustodyPrompt), which preserves their work; this page exists so
+ * "unlock" is also a place you can simply go. It restores `?next=` on success. Genesis stays in
+ * Setup; this page points there only when the instance has no seal at all.
  */
 export function Unlock() {
-  const { api, setAdminToken, setCustodyState, setSignerAddress } = useApp();
+  const { api, adminToken, setAdminToken, setCustodyState, setSignerAddress } = useApp();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const next = sanitizeNextPath(params.get(NEXT_PARAM), HOME);
 
   function resume() {
-    // Clear the lock BEFORE navigating, or CustodyGate bounces the destination straight back here.
     setCustodyState("unlocked");
     navigate(next, { replace: true });
   }
@@ -40,6 +40,7 @@ export function Unlock() {
       demoAdminPassword={DEMO_ADMIN_PASSWORD}
       demoPassphrase={DEMO_CUSTODY_PASSPHRASE}
       adminLogin={api.adminLogin}
+      adminToken={adminToken}
       unlock={(passphrase) => api.unlock({ passphrase })}
       onAdminToken={setAdminToken}
       onAlreadyUnlocked={resume}

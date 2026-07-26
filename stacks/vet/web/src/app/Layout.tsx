@@ -1,4 +1,15 @@
-import { AppShell, ThemeToggle, WalletButton, type NavItem } from "@dogtag/ui";
+import {
+  AppShell,
+  Button,
+  CustodyLockedBanner,
+  CustodyUnlockDialog,
+  ThemeToggle,
+  WalletButton,
+  useToast,
+  DEMO_ADMIN_PASSWORD,
+  DEMO_CUSTODY_PASSPHRASE,
+  type NavItem,
+} from "@dogtag/ui";
 import {
   Dog,
   FilePlus2,
@@ -13,6 +24,7 @@ import {
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useApp } from "./AppContext";
+import { env } from "../lib/env";
 
 // REGISTER-FIRST (audit §7, re-implemented in M5): "Register pet" is listed BEFORE "Issue a record"
 // because that is the actual order of operations - a record can only attach to a pet that already has a
@@ -40,6 +52,70 @@ function Brand() {
         <span className="block text-xs uppercase tracking-wide text-onSidebarMuted">Vet Portal</span>
       </span>
     </Link>
+  );
+}
+
+
+/**
+ * Hosts the point-of-need unlock prompt and the locked banner for every page inside the shell.
+ *
+ * The prompt is raised by the api client the moment a request is refused with "not unlocked", so the
+ * operator unlocks WITHOUT leaving the page they are on: the refused request is replayed on success
+ * and a half-filled form keeps every value. The banner covers the other case - arriving at an
+ * already-locked backend - without redirecting anyone, because a front-desk operator who holds the
+ * operator password but not the custody-admin password must still reach the read-only pages.
+ */
+function CustodyPrompt() {
+  const {
+    api,
+    adminToken,
+    setAdminToken,
+    custodyState,
+    unlockPromptOpen,
+    resolveUnlockPrompt,
+    openUnlockPrompt,
+    setSignerAddress,
+  } = useApp();
+  const { toast } = useToast();
+  return (
+    <>
+      {custodyState === "locked" && !unlockPromptOpen && (
+        <CustodyLockedBanner onUnlock={openUnlockPrompt} />
+      )}
+      <CustodyUnlockDialog
+        open={unlockPromptOpen}
+        onDismiss={() => resolveUnlockPrompt(false)}
+        demoMode={env.demoMode}
+        demoAdminPassword={DEMO_ADMIN_PASSWORD}
+        demoPassphrase={DEMO_CUSTODY_PASSPHRASE}
+        adminLogin={api.adminLogin}
+        unlock={(passphrase) => api.unlock({ passphrase })}
+        adminToken={adminToken}
+        onAdminToken={setAdminToken}
+        onAlreadyUnlocked={() => resolveUnlockPrompt(true)}
+        onUnlocked={(accounts) => {
+          if (accounts[0]?.address) setSignerAddress(accounts[0].address);
+          toast({ title: "Custody unlocked", variant: "success" });
+          resolveUnlockPrompt(true);
+        }}
+        setupLink={<SetupPointer />}
+      />
+    </>
+  );
+}
+
+/** Shown when the backend has NO seal: a passphrase cannot help, only genesis in Setup can. */
+function SetupPointer() {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted">
+        This instance has no seal yet, so there is nothing to unlock. Run genesis in Setup to create
+        the signing key first.
+      </p>
+      <Button asChild className="w-full">
+        <Link to="/setup">Go to Setup</Link>
+      </Button>
+    </div>
   );
 }
 
@@ -81,7 +157,10 @@ export function Layout({ children, title }: { children: ReactNode; title: string
         </>
       }
     >
-      <div className="mx-auto max-w-5xl">{children}</div>
+      <div className="mx-auto max-w-5xl">
+        <CustodyPrompt />
+        {children}
+      </div>
     </AppShell>
   );
 }

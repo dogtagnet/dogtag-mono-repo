@@ -7,7 +7,6 @@ import {
   buildUnlockPath,
   custodyStateFromSigners,
   isCustodyLockedError,
-  isLockExemptPath,
   isNoSealError,
   isWrongPassphraseError,
   sanitizeNextPath,
@@ -119,10 +118,16 @@ describe("sanitizeNextPath", () => {
     expect(sanitizeNextPath("/records?status=issued", FALLBACK)).toBe("/records?status=issued");
   });
 
-  it("decodes an encoded destination", () => {
-    expect(sanitizeNextPath("%2Frecords%3Fstatus%3Dissued", FALLBACK)).toBe(
-      "/records?status=issued",
-    );
+  it("does NOT decode: callers already hand over a decoded path", () => {
+    // buildUnlockPath takes a live pathname+search and the unlock page reads the param through
+    // URLSearchParams, which has already decoded it. A second decode here would turn a
+    // destination's own escapes into structure.
+    expect(sanitizeNextPath("%2Frecords%3Fstatus%3Dissued", FALLBACK)).toBe(FALLBACK);
+  });
+
+  it("preserves percent-escapes inside a query value", () => {
+    expect(sanitizeNextPath("/records?q=a%2Bb", FALLBACK)).toBe("/records?q=a%2Bb");
+    expect(sanitizeNextPath("/records?q=a%26b", FALLBACK)).toBe("/records?q=a%26b");
   });
 
   it("rejects off-origin destinations", () => {
@@ -150,26 +155,17 @@ describe("buildUnlockPath", () => {
     expect(sanitizeNextPath(next, "/issue")).toBe("/records?status=issued");
   });
 
+  it("round-trips a destination whose query value contains its own escapes", () => {
+    // The exact case the double decode corrupted: %2B used to come back as a literal "+", and %26
+    // used to split off a second query parameter.
+    const url = buildUnlockPath("/records?q=a%2Bb&r=c%26d");
+    const next = new URLSearchParams(url.split("?")[1]).get("next");
+    expect(sanitizeNextPath(next, "/issue")).toBe("/records?q=a%2Bb&r=c%26d");
+  });
+
   it("omits the param when the origin is not restorable", () => {
     expect(buildUnlockPath("https://evil.example")).toBe(UNLOCK_PATH);
     expect(buildUnlockPath(UNLOCK_PATH)).toBe(UNLOCK_PATH);
   });
 });
 
-describe("isLockExemptPath", () => {
-  it("exempts the unlock page and Setup (which owns genesis)", () => {
-    expect(isLockExemptPath("/unlock")).toBe(true);
-    expect(isLockExemptPath("/setup")).toBe(true);
-  });
-
-  it("gates everything else", () => {
-    for (const p of ["/issue", "/records", "/settings", "/dashboard", "/"]) {
-      expect(isLockExemptPath(p)).toBe(false);
-    }
-  });
-
-  it("does not exempt by prefix accident", () => {
-    expect(isLockExemptPath("/setup-wizard")).toBe(false);
-    expect(isLockExemptPath("/unlocked")).toBe(false);
-  });
-});

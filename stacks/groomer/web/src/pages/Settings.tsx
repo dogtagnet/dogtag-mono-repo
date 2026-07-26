@@ -15,7 +15,7 @@ import { useEffect, useState } from "react";
 import { useApp } from "../app/AppContext";
 
 export function Settings() {
-  const { api, signingMode, setSigningMode, custodyState, unlocked } = useApp();
+  const { api, signingMode, setSigningMode, custodyState } = useApp();
   const { toast } = useToast();
   const [whitelist, setWhitelist] = useState<WhitelistRow[]>([]);
   const [backendSigner, setBackendSigner] = useState<string>();
@@ -36,7 +36,7 @@ export function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [api, unlocked]);
+  }, [api, custodyState]);
 
   async function changeMode(mode: SigningMode) {
     try {

@@ -35,14 +35,17 @@ interface AppContextValue {
   setSigningMode: (m: SigningMode) => void;
   /**
    * What we currently believe about the backend's custody seal. `unknown` until the probe (or a
-   * failing call) tells us otherwise — CustodyGate must never redirect on `unknown`, or a backend
-   * that is merely down would strand the operator on /unlock.
+   * failing call) tells us otherwise; nothing may announce a lock on `unknown`, since a backend that
+   * is merely down is not a locked one.
    */
   custodyState: CustodyState;
   setCustodyState: (s: CustodyState) => void;
-  /** in-memory unlock flag — the backend keeps the real state; this gates optimistic UI */
-  unlocked: boolean;
-  setUnlocked: (v: boolean) => void;
+  /** True while the point-of-need unlock prompt is raised. */
+  unlockPromptOpen: boolean;
+  /** Resolve the pending unlock prompt: true once the seal is open, false if it was dismissed. */
+  resolveUnlockPrompt: (unlocked: boolean) => void;
+  /** Raise the unlock prompt by hand (the locked banner) rather than via a refused request. */
+  openUnlockPrompt: () => void;
   logout: () => void;
 }
 
@@ -63,8 +66,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [signerAddress, setSignerAddressState] = useState<string | null>(() => read(SIGNER_KEY));
   const [signingMode, setSigningMode] = useState<SigningMode>("backend");
   const [custodyState, setCustodyState] = useState<CustodyState>("unknown");
-  const unlocked = custodyState === "unlocked";
-  const setUnlocked = useCallback((v: boolean) => setCustodyState(v ? "unlocked" : "locked"), []);
+  const [unlockPromptOpen, setUnlockPromptOpen] = useState(false);
+  // A single in-flight prompt shared by every request that trips the lock at once, so two concurrent
+  // 409s raise ONE dialog and both replay on the same answer.
+  const pendingUnlock = useRef<{ promise: Promise<boolean>; resolve: (v: boolean) => void } | null>(null);
+
+  const requestUnlock = useCallback((): Promise<boolean> => {
+    setCustodyState("locked");
+    if (pendingUnlock.current) return pendingUnlock.current.promise;
+    let resolve!: (v: boolean) => void;
+    const promise = new Promise<boolean>((r) => {
+      resolve = r;
+    });
+    pendingUnlock.current = { promise, resolve };
+    setUnlockPromptOpen(true);
+    return promise;
+  }, []);
+
+  const resolveUnlockPrompt = useCallback((didUnlock: boolean) => {
+    setUnlockPromptOpen(false);
+    if (didUnlock) setCustodyState("unlocked");
+    const pending = pendingUnlock.current;
+    pendingUnlock.current = null;
+    pending?.resolve(didUnlock);
+  }, []);
+
+  const openUnlockPrompt = useCallback(() => {
+    void requestUnlock();
+  }, [requestUnlock]);
 
   const persist = (key: string, t: string | null) => {
     try {
@@ -106,6 +135,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  // Routed through a ref so the once-created client always sees the latest resolver.
+  const onCustodyLockedRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  onCustodyLockedRef.current = () => requestUnlock();
+
   const api = useMemo(
     () =>
       createApiClient({
@@ -114,9 +147,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         getOperatorToken: () => read(OP_KEY),
         getAdminToken: () => read(ADMIN_KEY),
         onUnauthorized: (kind) => onUnauthorizedRef.current(kind),
-        // Any "not unlocked" refusal flips the state; CustodyGate then routes to /unlock, so an
-        // action that trips the lock lands the operator on the fix instead of an error toast.
-        onCustodyLocked: () => setCustodyState("locked"),
+        // Any "not unlocked" refusal raises the in-place prompt and, once the seal opens, the client
+        // replays the refused request. The page never unmounts, so a half-filled form is preserved
+        // and the operator's action simply continues.
+        onCustodyLocked: () => onCustodyLockedRef.current(),
       }),
     [],
   );
@@ -177,8 +211,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSigningMode,
       custodyState,
       setCustodyState,
-      unlocked,
-      setUnlocked,
+      unlockPromptOpen,
+      resolveUnlockPrompt,
+      openUnlockPrompt,
       logout,
     }),
     [
@@ -191,8 +226,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSignerAddress,
       signingMode,
       custodyState,
-      unlocked,
-      setUnlocked,
+      unlockPromptOpen,
+      resolveUnlockPrompt,
+      openUnlockPrompt,
       logout,
     ],
   );

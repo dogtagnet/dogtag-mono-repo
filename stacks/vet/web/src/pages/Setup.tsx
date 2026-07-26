@@ -25,7 +25,7 @@ import { env } from "../lib/env";
 type Step = "admin" | "genesis" | "confirm" | "unlock" | "accounts" | "apply" | "dns" | "done";
 
 export function Setup() {
-  const { api, adminToken, setAdminToken, setUnlocked, setSignerAddress } = useApp();
+  const { api, adminToken, setAdminToken, setCustodyState, setSignerAddress } = useApp();
   const { toast } = useToast();
   // Always start at the admin login: it is the only endpoint that reports the custody state, which
   // decides between Genesis (no seal) and the dedicated /unlock page (sealed but locked). A stale
@@ -51,7 +51,7 @@ export function Setup() {
             // /unlock page, which returns here once custody is open. Re-entering the wizard's own
             // unlock step is what made unlocking a scavenger hunt.
             if (unlocked) {
-              setUnlocked(true);
+              setCustodyState("unlocked");
               setStep("accounts");
             } else if (initialized) {
               navigate(buildUnlockPath("/setup"));
@@ -75,7 +75,7 @@ export function Setup() {
       {step === "unlock" && (
         <Unlock
           onNext={(addr) => {
-            setUnlocked(true);
+            setCustodyState("unlocked");
             if (addr) setSignerAddress(addr);
             setStep("accounts");
           }}

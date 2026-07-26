@@ -98,9 +98,15 @@ export {
   type IssuanceStatusPanelProps,
 } from "./domain/IssuanceStatusPanel";
 export {
+  CustodyUnlockForm,
+  CustodyUnlockDialog,
   CustodyUnlockPanel,
+  CustodyLockedBanner,
+  type CustodyUnlockFormProps,
+  type CustodyUnlockDialogProps,
   type CustodyUnlockPanelProps,
-} from "./domain/CustodyUnlockPanel";
+  type CustodyLockedBannerProps,
+} from "./domain/CustodyUnlock";
 
 // custody lock / unlock routing
 export {
@@ -109,7 +115,6 @@ export {
   buildUnlockPath,
   custodyStateFromSigners,
   isCustodyLockedError,
-  isLockExemptPath,
   isNoSealError,
   isWrongPassphraseError,
   sanitizeNextPath,

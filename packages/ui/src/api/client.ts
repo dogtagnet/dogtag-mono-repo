@@ -59,11 +59,16 @@ export interface ApiClientOptions {
   onUnauthorized?: (kind: "operator" | "admin") => void;
   /**
    * Invoked when ANY call is refused because the backend's custody seal is locked (see
-   * `isCustodyLockedError`). Hosts use this to flip their custody state and route the operator to
-   * the dedicated /unlock page instead of surfacing a dead-end error toast. Purely a client-side
+   * `isCustodyLockedError`). The host raises its point-of-need unlock prompt and resolves TRUE once
+   * the seal is open, at which point this client REPLAYS the refused request exactly once, so the
+   * operator's action continues instead of dying in an error toast. Resolving false (or omitting the
+   * handler) rethrows the original refusal.
+   *
+   * Replay is safe because the backends check `is_unlocked()` at the TOP of each handler, before any
+   * store or chain write, so a "not unlocked" refusal means nothing happened. Purely a client-side
    * signal — the backend's locked state and its gates are untouched.
    */
-  onCustodyLocked?: () => void;
+  onCustodyLocked?: () => boolean | Promise<boolean>;
 }
 
 type TokenKind = "operator" | "admin" | "bearer" | "none";
@@ -101,6 +106,8 @@ export function createApiClient(opts: ApiClientOptions) {
     tokenKind: TokenKind = "operator",
     explicitToken?: string,
     rootBase: "vet" | "central" = "vet",
+    /** Internal: set on the single post-unlock replay so a still-locked backend cannot loop. */
+    isRetry = false,
   ): Promise<T> {
     const root = rootBase === "central" ? central : base;
     if (!root) throw new Error(`No base URL configured for ${rootBase} API`);
@@ -134,9 +141,12 @@ export function createApiClient(opts: ApiClientOptions) {
         opts.onUnauthorized?.(tokenKind);
       }
       // Locked-custody handling: a restart drops the decrypted seed, so any custody-backed call
-      // starts failing with "not unlocked". Surface it once, centrally, so the host can redirect to
-      // /unlock rather than every call site rendering its own dead-end toast.
-      if (isCustodyLockedError(e)) opts.onCustodyLocked?.();
+      // starts failing with "not unlocked". Surface it centrally, let the host unlock in place, then
+      // replay the request ONCE so the operator's action completes and their form survives.
+      if (isCustodyLockedError(e) && !isRetry && opts.onCustodyLocked) {
+        const unlocked = await opts.onCustodyLocked();
+        if (unlocked) return request<T>(method, path, body, tokenKind, explicitToken, rootBase, true);
+      }
       throw e;
     }
     return parsed as T;
