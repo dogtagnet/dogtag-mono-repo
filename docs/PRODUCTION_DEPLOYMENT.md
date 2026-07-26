@@ -100,10 +100,12 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 #                                       #   relay target for POST /v1/verify/consent. The relayer -
 #                                       #   custody account 0 - must be whitelisted for the purpose it
 #                                       #   submits. Unset/malformed -> only that route 503s, fail-closed)
-#   SBT_CONSENT_ADDR=...                # vet, groomer  (DogTagSBTConsent - the owner-blind mintCustodial
+#   SBT_CONSENT_ADDR=...                # vet only  (DogTagSBTConsent - the owner-blind mintCustodial
 #                                       #   target for POST /profiles/issue/custodial-bind, the sole
-#                                       #   profile issuance path. The signer must hold ISSUER_ROLE on it)
-#   PROFILE_ISSUER_ADDR=...             # vet, groomer  (a real factory-deployed DogTagIssuer clone that
+#                                       #   profile issuance path. The signer must hold ISSUER_ROLE on
+#                                       #   it. Inert on a groomer: BUSINESS_TYPE=groomer mounts no
+#                                       #   issuance routes at all)
+#   PROFILE_ISSUER_ADDR=...             # vet only  (a real factory-deployed DogTagIssuer clone that
 #                                       #   profile roots are anchored into via issue(R), so rootIssuer[R]
 #                                       #   resolves. NEVER the SBT - issue(R) sent to the SBT reverts.
 #                                       #   Signer must be whitelisted for the clone's recordType)
@@ -116,7 +118,7 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 #   SBT_ADDR=...                        # admin  (DogTagSBTConsent as the governance target -
 #                                       #   ISSUER_ROLE administration only; admin does not issue tags)
 #   FACTORY_ADDR=...                    # admin  (DogTagIssuerFactory — createIssuer/predictIssuer + Ownable owner)
-#   VACCINATION_ISSUER_ADDR=...         # vet, groomer  (per-recordType clone; 0x0…0 for pure verifiers)
+#   VACCINATION_ISSUER_ADDR=...         # vet only  (per-recordType clone; 0x0…0 for pure verifiers)
 # Leave VITE_DEMO_MODE UNSET (remote-up.sh rejects it).
 ```
 

@@ -149,14 +149,17 @@ Setup is a linear wizard; each step auto-advances on success.
 
 ---
 
-## E. (Optional) Owner-hidden proof-of-verification on-chain - vet or groomer portal Verification tab
+## E. (Optional) Owner-hidden proof-of-verification on-chain - vet or groomer portal
 
 The owner proves consent to the groomer without revealing who they are (symmetric counterpart of the §C-D import).
 There is **no mode picker** - owner-hidden ZK consent is the only verify flow.
 
-1. Go to **Verification**.
+1. Open the verify surface: in the **vet** portal the **Verification** tab; in the **groomer** portal
+   **Appointments** → open the booking → **Start verification** (the result is then filed against that
+   visit and its client, and is searchable under **All verifications**), or **Ad-hoc verification**
+   for a walk-in with no booking.
 2. Pick a **Purpose** from the dropdown (e.g. boarding intake).
-3. **Start verification** → the session QR renders. It carries the groomer's wallet address + a
+3. **Start export** → the session QR renders. It carries the groomer's wallet address + a
    one-time token + host: `http://<host>/x/<token>?a=<groomerAddr>`.
 4. On the phone: scan → the app resolves `GET /x/<token>` (purpose, recordType, relayer), confirms the
    groomer is whitelisted on-chain for that `VERIFY:<purpose>` (prod/remote also DNS-verifies the
@@ -190,3 +193,8 @@ Same as B + E, but the groomer onboards as a **verifier** via apply→approve:
 
 The groomer is then an authorized verifier for those purposes (gated separately from issuer roles), and
 the §E owner-hidden consent-proof flow works against it.
+
+For the shop-application demo, create a **Client** (with a pet) → book an **Appointment** → run §E
+**from that appointment**, then find the result under **All verifications**, filtered by that client
+or appointment. The groomer portal has no issuance surface at all: no "Issue a record" entry, no
+Records page, and `BUSINESS_TYPE=groomer` does not mount the issuance routes on its backend either.

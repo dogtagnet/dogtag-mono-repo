@@ -559,7 +559,7 @@ Groth16 path).
 
 ## 3. Business backend (vet & groomer) — Rust API
 
-Axum + MongoDB + `dogtag-standard-rs`. Vet and groomer share most of this (separate folders, diverge later). Port: vet `41874`, groomer `43618`.
+Axum + MongoDB + `dogtag-standard-rs`. Vet and groomer are the **same binary**, separated by the deployment role `BUSINESS_TYPE`: a `groomer` verifies and does not issue, so `public_router` does **not** mount the issuance surfaces (`/credentials/*`, `/records/*`, `/r/{token}`, `/profiles/issue/*`, `/p/{token}`) for it — they do not exist rather than existing-and-refusing. The role fails open: anything that is not the literal `groomer` keeps the full issuing surface. So the issuance sections below (§3.3, §3.4, §3.11) describe the issuing role only; every other section, including the shop CRM of §3.12, is mounted for every role. Port: vet `41874`, groomer `43618`.
 
 ### 3.1 Genesis & custody endpoints
 ```
@@ -1115,6 +1115,41 @@ The owner's wallet enters the tree only as the hidden `owner.address` leaf the d
 > adding or changing disclosable pet-attribute leaves never changes the circuit's public signals or
 > the proof shape.
 
+### 3.12 Shop CRM — the business's own clients, appointments & verification history
+
+The business's OWN customer book (`stacks/vet/api/src/crm.rs`), operator-session gated and mounted
+for **every** role (a booking book is not role-specific; the groomer portal is its first consumer).
+These paths are **unversioned** on purpose: `/v1/*` is for cross-service callers (central HMAC, the
+owner's phone), unversioned paths are operator-facing — and `/v1/appointments` is already the
+Phase-7 central-owned appointment **replica** (§3.7), which is a different entity from this
+system-of-record.
+
+```
+GET|POST        /clients                # list (q/limit/offset) | create
+GET|PUT|DELETE  /clients/{id}           # a client + its embedded pets (each pet may carry a dogTagId)
+GET|POST        /appointments           # list (q/clientId/petId/status/from/to/limit/offset) | create
+GET|PUT|DELETE  /appointments/{id}      # the single read also returns this appointment's verifications
+GET             /verifications          # list (q/clientId/appointmentId/status/purpose/from/to/…)
+GET             /verifications/{id}
+```
+
+- **Search + paging are the SERVER's job.** Each row carries a denormalized lowercased `searchKey`
+  (an unanchored substring scan, narrowed not indexed) alongside indexed `startAt`/`createdAt`;
+  `from`/`to` are a half-open `[from, to)` window in **unix seconds**, and `limit` is clamped. The
+  browser never pulls a collection to filter it.
+- **Verification linkage.** `POST /verify/session/start` (§3.9) takes an optional `appointmentId`;
+  supplying it resolves the appointment's client + pet and files the resulting verification against
+  both. An id that does not resolve is a **400**, never a silent downgrade to an unlinked
+  verification. An ad-hoc (or cold) verification still lands in the history as an unlinked row.
+- **Privacy boundary of a verification row.** It holds only the public on-chain facts (purpose,
+  recordType, status, txHash, the consumed nullifier, the opaque `dogTagId`) plus the keyPaths the
+  owner chose to disclose — never their values, and never the owner's `subject` wallet: though
+  derivable from the tx, persisting it would create a client→wallet linkage the protocol withholds
+  from a verifier. On an owner-hidden verification the disclosed list is **empty**, and that
+  emptiness is the guarantee, not a gap.
+- **`GET /x/{token}` is unchanged.** It is unauthenticated (anyone who scans the QR reads it), so the
+  appointment/client linkage stays server-side and never enters that response.
+
 ---
 
 ## 4. Central / admin backend — Rust API (port `39742`)
@@ -1287,10 +1322,13 @@ Shared across vet, groomer, and admin portals (lives in `packages/ui`):
 - **Calendar + Appointments**: connect Google, calendar grid, approve/decline/reschedule (mirrors reference groomer UI).
 
 ### 5.2 Groomer portal (`stacks/groomer/web`, port 43617)
-- Mirrors the reference dashboard (Dashboard/Calendar/Appointments/Clients/Groomers/Reports/Marketing/Settings).
+A grooming business's working application, not a bare verification tool. **A groomer verifies and does not issue**, so there is no "Issue a record" entry and no Records page - and the backend agrees, since `BUSINESS_TYPE=groomer` does not mount the issuance routes at all (§3).
+- **Dashboard / Calendar / Appointments / Clients / All verifications** - the shop's own surfaces over the §3.12 CRM: today's bookings, day+week calendar grids, the booking book (client + pet, service, slot, notes, status), the customer directory (owner particulars + their pets, each optionally carrying a `dogTagId`), and the complete verification history - all searched, filtered and paged **server-side**.
+- **Verification is started FROM an appointment** (appointment detail → `VerifyFlow` with `appointmentId`), so the session, its result and its evidence are filed against both that visit and its client and stay searchable in **All verifications** (filterable by client, appointment, purpose, status, date). The **ad-hoc** `/verify` page is deliberately kept for walk-ins with no booking: identical machinery, no business context, lands as an unlinked row.
 - Import pet **profile** + **vaccination status** via QR (`/import/*`), verify on chain+DNS before accepting.
-- **Export (on-chain proof-of-verification)**: same **Export** UI as §5.1 - pick purpose, show the export QR, on-chain verification status. A groomer can verify a vet-issued vaccination **without being an issuer** (`VERIFY:` whitelist namespace, distinct from issuer roles). Decoupled from `/import/*`.
-- Same genesis/custody setup (groomers can issue their own records too) + the same DB-backed **Records list** as §5.1 (list / edit off-chain metadata / expire / revoke).
+- **Export (on-chain proof-of-verification)**: the same `@dogtag/ui` `VerifyFlow` as §5.1 - pick purpose, show the export QR, on-chain verification status, with no disclosure-mode choice. A groomer can verify a vet-issued vaccination **without being an issuer** (`VERIFY:` whitelist namespace, distinct from issuer roles). Decoupled from `/import/*`.
+- Same genesis/custody setup as §5.1 - the shop still needs its own signer, the relayer that pays gas for the on-chain verification - and it applies for whitelisting with `verifyPurposes`.
+- **Groomers / Reports / Marketing** remain placeholders mirroring the reference UI.
 
 ### 5.3 Admin portal (`stacks/admin/web`, port 39741)
 - Business registry CRUD + map.

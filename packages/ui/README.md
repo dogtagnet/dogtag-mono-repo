@@ -24,8 +24,13 @@ transpiles the `.ts`/`.tsx` in place. `pnpm --filter @dogtag/ui build` runs `tsc
   and `useRoaxChain()` — `wallet_switchEthereumChain` → on 4902 `wallet_addEthereumChain`.
 - **Domain components**: `SigningModeToggle` (wallet ⟷ server key), `StatusPanel`
   (wallet: address + ROAX + whitelist badges / backend: genesis + signer + PLASMA balance),
-  `VerifyFlow` (purpose + Normal/ZK toggle → session QR → poll → on-chain status).
-- **API client** (`createApiClient`): typed factory covering the vet backend + central
+  `VerifyFlow` (purpose → session QR → poll → on-chain status). There is **one owner-hidden consent
+  flow and no mode/disclosure choice**; an optional `appointmentId` links the resulting verification
+  to a shop appointment + client, and `onSettled` lets the host refresh when it reaches a terminal
+  state.
+- **API client** (`createApiClient`): typed factory covering the vet/groomer backend (incl. the shop
+  CRM — `/clients`, `/appointments`, `/verifications`; list filters are serialized into the query
+  string with blank values dropped, so searching and paging stay the server's job) + central
   issuer-application endpoints; wire types in `src/api/types.ts` mirror the Rust serde contracts.
 - **Schema** (`src/schema/recordTypes.ts`): schema-driven issue-form descriptors per impl §1.6
   (RabiesVaccinationCertificate, DOG_PROFILE), with client-side validators.

@@ -70,8 +70,9 @@ It holds **no** issuer role; verifier capability is granted via the separate `VE
 Its own Mongo (`groomerdata`): verification sessions/records, operator sessions, its own custody seed (the relayer wallet that pays gas for the on-chain `recordVerificationZK`), appointment replicas.
 
 **API + web surface.**
-Runs the **same `vet-api` binary** with `BUSINESS_TYPE=groomer` + groomer env/port — this is a deliberate reuse (the business-backend surface is identical), but it is still a **separate deployable** (own compose, own DB, own keys, own domain).
-`groomer-web`: the groomer portal SPA.
+Runs the **same `vet-api` binary** with `BUSINESS_TYPE=groomer` + groomer env/port — a deliberate reuse, and still a **separate deployable** (own compose, own DB, own keys, own domain).
+`BUSINESS_TYPE` is the ROLE, and the role decides which surfaces exist: a groomer verifies and does not issue, so `public_router` does **not** mount the issuance routes (`/credentials/*`, `/records/*`, `/r/{token}`, `/profiles/issue/*`, `/p/{token}`) — they do not exist rather than existing-and-refusing. It fails open, so anything that is not the literal `groomer` keeps the full issuing surface. Everything else (genesis/custody, import/pull, `/verify/*`, `/trace/*`, settings, and the shop CRM `/clients` · `/appointments` · `/verifications`) is mounted for every role.
+`groomer-web`: the groomer portal SPA — the shop's working application (calendar, appointments, clients, and the verification history, with verification started FROM an appointment); see [`stacks/groomer/web/README.md`](../stacks/groomer/web/README.md).
 
 **Deployment.** `stacks/groomer/docker-compose.yml`: `caddy` + `web` + `api` (`vet-api`, `BUSINESS_TYPE=groomer`, `PORT=43618`) + `mongo`. Host `43617`/`43618`.
 
