@@ -197,6 +197,36 @@ enum CredentialRefresher {
     static func refreshed(
         _ cred: Credential, roax: RoaxConfig, rpcUrl: String = AppConfig.roaxRpc
     ) async -> Credential {
+        keepingEstablishedNegative(previous: cred, fresh: await derived(cred, roax: roax, rpcUrl: rpcUrl))
+    }
+
+    /// A refresh may LOWER a verdict freely - that is the whole point, and an unreachable chain must
+    /// stop a stale VALID being claimed. But a NON-ANSWER must never make a credential look BETTER.
+    ///
+    /// Order the verdicts by severity: INVALID < UNVERIFIED < VALID. Re-deriving from scratch meant
+    /// airplane mode plus one refresh tap replaced an established INVALID (revoked, or an unauthorised
+    /// issuer) with UNVERIFIED and overwrote its reason - laundering a known-bad credential into
+    /// "could not check". That is this branch's own defect class pointed backwards: a non-answer
+    /// collapsing into a neighbouring state.
+    ///
+    /// Only non-answers are constrained. A DEFINITE outcome still sets the verdict freely, including
+    /// INVALID -> VALID: a not-yet-anchored root can later anchor and a signer can later be
+    /// whitelisted, so the guard must not freeze INVALID forever. `lastCheckedAt` is taken from the
+    /// fresh result either way, so a kept verdict still shows that the check ran and how old it is.
+    ///
+    /// Applied ONCE to the final result rather than at each return site, so a future early return
+    /// cannot bypass it.
+    static func keepingEstablishedNegative(previous: Credential, fresh: Credential) -> Credential {
+        guard fresh.verdict == "UNVERIFIED", previous.verdict == "INVALID" else { return fresh }
+        var kept = fresh
+        kept.verdict = previous.verdict
+        kept.verdictReason = previous.verdictReason
+        return kept
+    }
+
+    private static func derived(
+        _ cred: Credential, roax: RoaxConfig, rpcUrl: String = AppConfig.roaxRpc
+    ) async -> Credential {
         var out = cred
         out.lastCheckedAt = Stamp.now()
 
