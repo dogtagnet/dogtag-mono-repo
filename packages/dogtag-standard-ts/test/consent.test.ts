@@ -16,6 +16,10 @@ describe("keyHash vectors", () => {
 });
 
 describe("BabyJubjub consent-key derivation (circomlibjs)", () => {
+  // Explicit timeout: `deriveBabyjubConsentKey` rebuilds the circomlibjs BabyJubjub/EdDSA WASM
+  // curve on every call, and this case calls it three times (six curve builds). That lands at
+  // ~5s alone and well past it when the rest of the suite is competing for CPU, so vitest's
+  // 5000ms default is a coin flip here. The bound only exists to catch a genuine hang.
   it("derives a deterministic keypair with a stable keyHash", async () => {
     const seed = new Uint8Array(32).fill(7);
     const key = await deriveBabyjubConsentKey(seed);
@@ -31,5 +35,5 @@ describe("BabyJubjub consent-key derivation (circomlibjs)", () => {
     // A different seed derives a different point.
     const other = await deriveBabyjubConsentKey(new Uint8Array(32).fill(8));
     expect(other.Ax).not.toBe(key.Ax);
-  });
+  }, 30_000);
 });
