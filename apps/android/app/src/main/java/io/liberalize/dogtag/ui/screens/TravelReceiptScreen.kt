@@ -51,16 +51,14 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Credential
+import io.liberalize.dogtag.data.VerdictDisplay
 import io.liberalize.dogtag.data.WrappedDoc
 import io.liberalize.dogtag.net.RoaxRpc
 import io.liberalize.dogtag.ui.DogTagTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uniffi.dogtag_standard.obfuscateDocumentJson
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
+import java.time.Instant
 
 /**
  * The pet-owner's mobile TRAVEL_CLEARANCE receipt — the CDC-modeled "show this on your phone" surface
@@ -148,15 +146,29 @@ fun TravelReceiptScreen(cred: Credential, onBack: () -> Unit) {
     }
 
     // effectiveStatus: a live revoke wins, then a lapsed validity window, else VALID; chain-unreachable
-    // falls back to the stored integrity verdict.
-    val today = remember { dateOnlyUtc(Date()) }
-    val lapsed = validUntil.length >= 10 && validUntil.substring(0, 10) < today
+    // falls back to the stored verdict — but ONLY while that stored verdict is still fresh.
+    //
+    // The lapse test is `VerdictDisplay.lapsed`, the same one the list badges use. It lived here as a
+    // private inline comparison, which is how this sheet came to be the only mobile surface that
+    // enforced expiry at all: one rule with one implementation cannot be half-adopted.
+    //
+    // The freshness gate on the Unknown arm closes the other half. This pill previously read a green
+    // VALID off `cred.verdict` whenever the chain was unreachable, no matter how old that stored
+    // answer was, while the sub-line underneath said "On-chain status unconfirmed" — two contradictory
+    // claims on one screen with the loud one wrong. An unreachable chain plus a stale stored answer is
+    // exactly "I could not check", and UNCONFIRMED is what that looks like.
+    val now = remember { Instant.now() }
+    val lapsed = VerdictDisplay.lapsed(validUntil, now)
     val (effLabel, effColor) = when (live) {
         is RoaxRpc.Result.Invalid -> "REVOKED" to c.danger
         is RoaxRpc.Result.Valid -> if (lapsed) "EXPIRED" to amber else "VALID" to c.success
         is RoaxRpc.Result.Unknown ->
             if (lapsed) "EXPIRED" to amber
-            else if (cred.verdict == "VALID") "VALID" to c.success else "UNCONFIRMED" to c.muted
+            else if (cred.verdict == "VALID" && VerdictDisplay.isFresh(cred.lastCheckedAt, now)) {
+                "VALID" to c.success
+            } else {
+                "UNCONFIRMED" to c.muted
+            }
     }
 
     fun shareRedacted() {
@@ -443,13 +455,6 @@ private fun humanize(v: String): String = when {
     v == "false" -> "No"
     !v.contains('_') -> v
     else -> v.split('_').joinToString(" ") { it.replaceFirstChar { ch -> ch.uppercase() } }
-}
-
-/** ISO date-only (UTC, yyyy-MM-dd) for the validity-window comparison. */
-private fun dateOnlyUtc(date: Date): String {
-    val f = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-    f.timeZone = TimeZone.getTimeZone("UTC")
-    return f.format(date)
 }
 
 /** Encode a QR code (PII-free public status URL) to an ImageBitmap. zxing-core, offline. */

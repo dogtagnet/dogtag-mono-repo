@@ -458,7 +458,7 @@ struct ScanScreen: View {
                                 HStack(alignment: .top) {
                                     CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
                                     Spacer()
-                                    VerdictBadge(verdict: cred.verdict)
+                                    VerdictBadge(cred: cred)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

@@ -756,8 +756,10 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
   building for a *device* destination fails until you add an `aarch64-apple-ios` slice (+ signing). The
   e2e runs on the Simulator, which needs no Apple team.
 - **Generated `DogTag.xcodeproj` is committed** — it is produced by `xcodegen` from
-  `apps/ios/project.yml`; re-run `xcodegen` (don't hand-edit the project) after adding/removing source
-  files, and commit the regenerated `project.pbxproj`. **Trap:** `xcodegen` enumerates the `DogTag/`
+  `apps/ios/project.yml`; after adding/removing source files, either re-run `xcodegen` (having vendored
+  the prover pair first, see the trap below) or apply the reviewed hand-edit recipe under "Building /
+  verifying UI changes", and commit the result together with the matching `project.yml` change.
+  **Trap:** `xcodegen` enumerates the `DogTag/`
   folder, so regenerating in a checkout that has NOT vendored the referenced prover resources
   (gitignored) silently DROPS their Copy-Bundle-Resources entries from the committed `pbxproj`.
   The committed `pbxproj` references the CONSENT pair (`consent_final.zkey` + `consent.graph`; the
@@ -989,14 +991,54 @@ An already-installed app keeps proving against its **baked** key until you do, s
 - The live consent circuit (`DogTagConsent(6)`) proves reserved-leaf INCLUSION PATHS in a depth-6 tree (~64 leaves max), so record size no longer gates the ZK path; note there is deliberately no leaf-count guard in `build_profile_tree` (see "Known-uncovered surfaces").
 - A record's leaf count still == `WrappedDoc.decodedFields().count`, which flattens `data` identically to the SDK's `flatten_data` (both skip empty collections and count only string leaves).
 
+### What a credential badge is allowed to claim (mobile)
+
+`VerdictDisplay` (`data/VerdictDisplay.kt`, `DogTag/VerdictDisplay.swift`) is the ONE decision behind
+every mobile badge, and it is a pure function with an injected clock so both platforms' tests can drive
+every branch.
+The ordering is INVALID, then EXPIRED, then a VALID older than `FRESH_FOR`/`freshFor` (1 hour) shown as
+`VALID · STALE` in the neutral chip, then VALID, then anything else as-is.
+
+Two invariants, both of which this repo has broken before, in opposite directions:
+
+- **Age may only weaken a claim.** An established INVALID is never softened by staleness. That is
+  #94's "a non-answer may not raise severity" rule pointed at the badge instead of the fold, and it is
+  what a future "just grey out anything stale" simplification would silently undo.
+- **A stale answer never renders as INVALID.** "I have not looked recently" is its own state and must
+  not borrow either neighbour's colour, which is why the label keeps the prior answer and the tone goes
+  neutral rather than the label collapsing to a bare `STALE`.
+
+`validUntil` is DERIVED from the stored `wrappedDocJson` (`WrappedDoc.validUntil`), never persisted
+beside the verdict.
+A persisted column would be absent on every record imported before it shipped, so the expiry rule would
+skip exactly the oldest records, and it would be a second source of truth able to drift from the
+Merkle-covered leaf that is the only tamper-evident one.
+
+**Known gap, deliberately out of scope of the mobile work:** the WEB surfaces still split on expiry.
+`stacks/owner/web/src/lib/receipt.ts:86-93` enforces it, but `packages/ui/src/domain/CredentialVerifyPanel.tsx`
+does not read `validity.validUntil` at all and reports an expired-but-unrevoked root as valid (audit rec 7's
+web half).
+
 ### Building / verifying UI changes
 - Build: `xcodebuild build -project apps/ios/DogTag.xcodeproj -scheme DogTag -sdk iphonesimulator
   -destination 'id=<sim-udid>' CODE_SIGNING_ALLOWED=NO`. SourceKit single-file diagnostics report
   cross-file symbols (Credential, LocalStore, …) as "not found" — those are false positives; only the
   full `xcodebuild` result is authoritative.
 - Do NOT re-run xcodegen (`project.yml`) casually: it silently drops the vendored prover resources
-  (consent_final.zkey / consent.graph) from the pbxproj. Prefer editing existing `.swift`
-  files over adding new ones so the pbxproj (which lists sources individually) needs no regen.
+  (consent_final.zkey / consent.graph) from the pbxproj.
+  Folding a new view or type into an existing `.swift` avoids the question entirely and is still the
+  cheapest option for a pure-UI change.
+- **When a new source file IS the right call, hand-edit the pbxproj rather than regenerating.**
+  Extracting pure logic into its own file is often worth it precisely because the host-less test target
+  can then cover it (see "iOS unit tests"), and that must not be blocked by the xcodegen trap.
+  The generated pbxproj is regular enough to patch safely: for one source, add a `PBXFileReference`, a
+  `PBXBuildFile` per target that compiles it, an entry in the owning `PBXGroup`'s `children`, and an
+  entry in each target's `Sources` build phase, with fresh 24-hex ids that do not already appear in the
+  file.
+  Then make the same change in `project.yml` so a later regeneration agrees.
+  Verify with `plutil -lint apps/ios/DogTag.xcodeproj/project.pbxproj`, confirm
+  `grep -c 'consent_final.zkey\|consent.graph'` is unchanged (that count is the trap's canary), and
+  build + test both schemes.
 - To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
   `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.
 
@@ -1117,14 +1159,11 @@ easy to trust by mistake.)
 ### iOS unit tests (`apps/ios/DogTagTests`)
 
 There **is** now an XCTest target. It is deliberately **host-less and FFI-free**: it lists the
-self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift,
-DogTag/PublicSignalIndex.swift, DogTag/ZkeyAsset.swift, DogTag/AnchorResolver.swift,
-DogTag/LocalDataSweep.swift, DogTag/Wallet.swift` + Wallet's closure
-`Secp256k1`/`BigUInt`/`Keccak256`/`Wordlist`]` in `project.yml` - keep this list in step with
-that file) rather than
-using `@testable import DogTag`, because the app module links
-`DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core. That
-keeps the suite runnable on a plain checkout:
+self-contained sources it covers directly, rather than using `@testable import DogTag`, because the app
+module links `DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core.
+`apps/ios/project.yml`'s `DogTagTests.sources` is the authority for that list, with a comment per entry
+explaining why it is FFI-free; do not restate it here, because a second copy only drifts.
+That keeps the suite runnable on a plain checkout:
 
 ```
 cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
@@ -1133,6 +1172,22 @@ cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
 
 Adding a source here that transitively imports the FFI will break that property — extract the pure
 logic instead.
+
+**Extracting pure logic so it lands here is the standard move, not a last resort.** `VerdictDisplay.swift`
+is the worked example: the badge decision (verdict + staleness + expiry ordering) is a pure function of
+its inputs with an injected clock, no SwiftUI and no JSON, so `VerdictDisplayTests` pins all of it and
+the same case list runs on both platforms. Before that extraction the iOS half of every verdict change
+shipped on a written "it mirrors Android" argument (see #94's PR body). Anything that decides what a
+user is told is worth this treatment; the cost is one new file plus the pbxproj hand-edit recipe under
+"Building / verifying UI changes".
+
+**A full iOS app build IS reachable locally**, contrary to what earlier PR bodies recorded. Copy
+`circuits/build/consent_final.zkey` and `circuits/build/consent.graph` into `apps/ios/DogTag/` (both
+gitignored, so nothing is committed), then
+`xcodebuild build -scheme DogTag -destination 'platform=iOS Simulator,name=<device>,OS=latest' ARCHS=arm64
+ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO`. Without them the build fails with `lstat(...consent_final.zkey):
+No such file or directory` and nothing else, which reads as "the app cannot be built here" but is only
+the two missing artifacts. `ARCHS=arm64` matters: the xcframework carries no x86_64 slice.
 
 **Host-less also means NO Keychain.** A bundle with no host application has no
 keychain-access-group entitlement, so every `SecItemAdd`/`SecItemDelete` in it returns

@@ -136,13 +136,41 @@ data class Credential(
     val lastCheckedLabel: String
         get() = Stamp.parse(lastCheckedAt)?.let { "Checked ${Stamp.relative(it)}" } ?: "Not checked on-chain yet"
 
-    /** The freshness line, plus the reason whenever the verdict is anything other than VALID. */
-    val statusLine: String
-        get() = if (verdict != "VALID" && !verdictReason.isNullOrBlank()) {
-            "$lastCheckedLabel · $verdictReason"
-        } else {
-            lastCheckedLabel
-        }
+    /**
+     * The document's own `credentialSubject.validity.validUntil` leaf, or null when it makes no
+     * expiry claim.
+     *
+     * DERIVED from the stored document rather than persisted alongside [verdict], deliberately. A
+     * persisted copy would be absent on every record imported before this shipped, so the expiry rule
+     * would silently not apply to exactly the old records most likely to have lapsed. Deriving also
+     * keeps a single source of truth: the leaf is inside the Merkle root, so it is the tamper-evident
+     * value, and a second stored copy could only ever drift from it.
+     *
+     * `by lazy` so a list render parses each document at most once. It is not a constructor property,
+     * so it stays out of the generated `equals`/`hashCode` and cannot affect Compose recomposition.
+     */
+    val validUntil: String? by lazy {
+        runCatching { WrappedDoc(wrappedDocJson).validUntil }.getOrNull()?.ifBlank { null }
+    }
+
+    /** What the badge may claim right now - see [VerdictDisplay]. */
+    fun badge(now: java.time.Instant = java.time.Instant.now()): VerdictDisplay.Badge =
+        VerdictDisplay.badge(verdict, lastCheckedAt, validUntil, now)
+
+    /**
+     * The freshness line, then the expiry whenever the validity window has closed, then the reason
+     * whenever the verdict is anything other than VALID.
+     *
+     * Expiry is named here as well as on the badge because `EXPIRED` alone does not say WHEN, and an
+     * owner looking at a lapsed record is usually about to ask exactly that.
+     */
+    fun statusLine(now: java.time.Instant = java.time.Instant.now()): String {
+        val parts = ArrayList<String>(3)
+        parts += lastCheckedLabel
+        if (VerdictDisplay.lapsed(validUntil, now)) parts += "expired ${validUntil!!.trim().take(10)}"
+        if (verdict != "VALID" && !verdictReason.isNullOrBlank()) parts += verdictReason
+        return parts.joinToString(" · ")
+    }
 
     /**
      * Body of the delete confirmation. It leads with the details that tell two same-type records
@@ -267,6 +295,24 @@ class WrappedDoc(val json: String) {
      * the other — a QR built from the identity is a dead link wearing a verification affordance.
      */
     val statusBaseUrl: String get() = protocolObj.optString("statusBaseUrl", "").trim().trimEnd('/')
+
+    /**
+     * `credentialSubject.validity.validUntil` — the last day this credential claims to be good for.
+     *
+     * ROOT-COVERED, so it is tamper-evident: an owner cannot extend their own credential without
+     * breaking integrity. It is also the ONLY expiry the protocol has — `DogTagIssuer.sol` carries no
+     * expiry concept at all — so every surface that renders a validity claim has to read this leaf or
+     * silently ignore expiry, which is what all four list badges used to do.
+     *
+     * Blank when the document carries no validity window. Leaves are packed `"<salt>:<tag>:<value>"`.
+     */
+    val validUntil: String
+        get() = data.optJSONObject("credentialSubject")
+            ?.optJSONObject("validity")
+            ?.optString("validUntil", "")
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { WrappedDoc.parseLeaf("validity.validUntil", it).value }
+            ?: ""
 
     /** Best-effort dogTagId extraction from the data tree (data.credentialSubject.dogTagId leaf). */
     val dogTagId: String

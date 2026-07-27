@@ -60,6 +60,9 @@ struct DogTagColors {
     let muted: Color
     let outline: Color
     let success: Color
+    /// A definite but non-fatal negative: an EXPIRED credential is not revoked, and must not wear the
+    /// same colour as one. Mirrors the amber the travel receipt already uses for its EXPIRED pill.
+    let warning: Color
     let danger: Color
     let healthTint: Color
     let serviceTint: Color
@@ -80,6 +83,7 @@ struct DogTagColors {
                 muted: Color(hex: 0x9AA0AC),
                 outline: Color(hex: 0x2C313C),
                 success: Color(hex: 0x45C97B),
+                warning: Color(hex: 0xF59E0B),
                 danger: Color(hex: 0xFF6B6B),
                 healthTint: Color(hex: 0x3A1F22),
                 serviceTint: Color(hex: 0x15301F),
@@ -98,6 +102,7 @@ struct DogTagColors {
                 muted: Color(hex: 0x6B7180),
                 outline: Color(hex: 0xE2E5EE),
                 success: Color(hex: 0x1B7F3B),
+                warning: Color(hex: 0xB45309),
                 danger: Color(hex: 0xD23B3B),
                 healthTint: Color(hex: 0xFDECEC),
                 serviceTint: Color(hex: 0xE7F6EE),
