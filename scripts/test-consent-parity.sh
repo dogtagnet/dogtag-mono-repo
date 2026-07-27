@@ -10,10 +10,13 @@
 #   1. The test file is `#![cfg(feature = "prover")]`, so `cargo test -p dogtag-standard-rs` (no
 #      feature flag) compiles it away and prints `running 0 tests`. This script always passes
 #      `--features prover`.
-#   2. The test self-skips when the proving artifacts are absent, and libtest CAPTURES stdout for
-#      PASSING tests - so a print from inside the test cannot annotate anything. This script checks
-#      the artifacts FIRST, from the shell, where a `::error::` line is parsed by GitHub and an
-#      exit code is a real failure.
+#   2. The test used to SELF-SKIP when the proving artifacts were absent, because the graph was an
+#      uncommitted out-of-band build. Both artifacts are committed now, so absence means an
+#      incomplete checkout and the test PANICS instead. The wrapper still owns the diagnosis: a
+#      panic from inside libtest names one path, whereas this script checks BOTH artifacts FIRST,
+#      from the shell, where a `::error::` line is parsed by GitHub, an exit code is a real failure,
+#      and the message can say how to restore them. (libtest also CAPTURES stdout for PASSING tests,
+#      so a print from inside the test could never have annotated anything either way.)
 #
 # Usage: scripts/test-consent-parity.sh   (or: make test-consent-parity)
 set -euo pipefail
@@ -29,11 +32,11 @@ missing=()
 
 if [ ${#missing[@]} -gt 0 ]; then
   echo "::error::consent prove<->VK parity NOT run - missing proving artifact(s): ${missing[*]}"
-  echo "consent_final.zkey is committed (force-added past the build/ ignore); if it is missing, your" >&2
-  echo "checkout is incomplete. consent.graph is gitignored, is NOT committed, and nothing fetches it" >&2
-  echo "automatically - the mobile workflows fetch verification.graph only. Build it locally from" >&2
-  echo "circuits/consent.circom with iden3's build-circuit tool, the same way verification.graph is" >&2
-  echo "produced (see AGENTS.md \"Sharp edges / gotchas\")." >&2
+  echo "BOTH consent_final.zkey and consent.graph are committed (force-added past the build/ ignore)," >&2
+  echo "so a missing one means your checkout is incomplete, not that you skipped an out-of-band build." >&2
+  echo "Restore them with 'git checkout -- circuits/build'." >&2
+  echo "The graph no longer needs iden3's build-circuit: its bytes are committed and attested by" >&2
+  echo "dogtag_prover::artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256 (see docs/ARTIFACT_PIN_RUNBOOK.md)." >&2
   exit 1
 fi
 

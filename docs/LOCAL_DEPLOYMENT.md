@@ -76,7 +76,8 @@ It all runs against the **live ROAX testnet** (chainId **135**, gas token **PLAS
 >   **fail-closed** - `POST /prove-consent` returns unavailable rather than serving a non-chain-valid
 >   proof. `consent.graph` is **not** read by the prover-service - it is the on-device witness
 >   backend vendored into each app bundle, so the phone flows need it in `circuits/build/` too.
->   Build it first (§2.2 in PREREQUISITES).
+>   It is committed like the zkey, so nothing needs building - a missing file is an incomplete
+>   checkout (§2.2 in PREREQUISITES).
 
 Run this single block to confirm the toolchain and inputs are present.
 
@@ -97,10 +98,10 @@ test -f circuits/build/consent_final.zkey && test -f circuits/build/consent.grap
   install it via **[PREREQUISITES.md](./PREREQUISITES.md)** and confirm network access, then re-run.
 - *the balance is `0`* → the governance signer is unfunded → fund it with PLASMA before continuing
   (bootstrap and central whitelists will fail otherwise). See [PREREQUISITES.md](./PREREQUISITES.md).
-- *`circuits/build` files are missing* → the committed `consent_final.zkey` should be present after
-  checkout (missing → server consent proving is unavailable, the prover fails closed), while
-  `consent.graph` is **not** committed and must be built out-of-band (missing → the phone apps have
-  no on-device witness backend to vendor) → populate `circuits/build/` before boot.
+- *`circuits/build` files are missing* → both `consent_final.zkey` and `consent.graph` are committed
+  and should be present after checkout (missing zkey → server consent proving is unavailable and the
+  prover fails closed; missing graph → the phone apps have no on-device witness backend to vendor) →
+  an absent file means an incomplete checkout: `git checkout -- circuits/build` before boot.
 
 ---
 

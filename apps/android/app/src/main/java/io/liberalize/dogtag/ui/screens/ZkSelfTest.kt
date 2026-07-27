@@ -125,8 +125,18 @@ private fun runZkSelfTest(context: Context, onStatus: (String) -> Unit): ZkSelfT
     val word = { value: String -> "0x" + value.padStart(64, '0') }
     onStatus("Materialising consent artifacts…")
     val descriptor = ZkeyAsset.current()
-    val zkeyPath = ZkeyAsset.ensure(context, descriptor)
-    val graphPath = ZkeyAsset.ensureGraph(context, descriptor)
+    // A missing bundle asset is a PACKAGING fault, not a proving one. Left to the outer catch it
+    // renders as "exception: FileNotFoundException: consent.graph" on a screen titled ZK self-test,
+    // which reads as the prover failing and sends the reader hunting a ZK bug that isn't there.
+    val (zkeyPath, graphPath) = try {
+        ZkeyAsset.ensure(context, descriptor) to ZkeyAsset.ensureGraph(context, descriptor)
+    } catch (e: java.io.IOException) {
+        return ZkSelfTestResult(
+            false,
+            "proving artifact missing from bundle (${e.message}) - not a prover fault; " +
+                "vendor circuits/build into app assets (docs/MOBILE_BUILD.md §4)"
+        )
+    }
     onStatus("Generating owner-hidden proof on-device…")
     val proof = proveConsent(
         seedHex = seedHex,

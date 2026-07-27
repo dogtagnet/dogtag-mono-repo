@@ -115,13 +115,39 @@ pub struct ArtifactDescriptor {
     pub vk: VerifyingKeyIdentity,
 }
 
+/// SHA-256 of the committed `circuits/build/consent.graph` — the witness graph the MOBILE prover
+/// interprets, and the value the on-chain `ArtifactSet.witnessMobileSha256` must carry once pinned.
+///
+/// # Why this is a constant and not (yet) the descriptor's pin
+///
+/// The graph used to be an out-of-band local build that no checkout was guaranteed to have, so
+/// nothing could attest which graph an app proved with (audit M9 rec 10). It is now **committed**,
+/// which makes its bytes fixed and this hash checkable — `graph_file_matches_attested_sha256`
+/// enforces that on every test run.
+///
+/// The descriptor's [`ArtifactDescriptor::witness_graph`] pin stays `None` regardless, because that
+/// field is in deliberate lockstep with the on-chain record: it feeds
+/// [`crate::manifest::Manifest::witness_mobile_sha256`], and
+/// [`crate::manifest::reconcile`] treats a manifest `Some` against an on-chain `0`/`None` as a
+/// CONFLICT. The published `ArtifactSet` still carries `witnessMobileSha256 = 0`, so flipping this
+/// side alone would make every reconcile report a disagreement that is really just a half-applied
+/// rollout.
+///
+/// Flipping the pin and publishing on-chain is therefore ONE atomic step, and it is the operator's
+/// to run: see `docs/ARTIFACT_PIN_RUNBOOK.md`. When it happens, `witness_graph.sha256` becomes
+/// `Some(LEVEL_B_V1_WITNESS_GRAPH_SHA256)` and `descriptor_graph_pin_agrees_with_the_file` starts
+/// enforcing descriptor↔file agreement automatically.
+pub const LEVEL_B_V1_WITNESS_GRAPH_SHA256: &str =
+    "2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793";
+
 /// The owner-hidden consent artifact set (M7 P0) — the sole entry, and the default for every caller
 /// naming no version.
 ///
 /// The zkey/VK are the frozen M3 testnet-grade ceremony output (`docs/CEREMONY_TRANSCRIPT.consent.md`,
 /// committed under `circuits/build`). `DogTagConsent(6)` feeds depth-6 inclusion PATHS via
 /// [`crate::ConsentProveInputs`]. Its public-signal layout is the frozen seven-OUTPUT order; the
-/// graph is not committed (fetched in CI).
+/// witness graph is committed too, and its bytes are attested by
+/// [`LEVEL_B_V1_WITNESS_GRAPH_SHA256`].
 pub const LEVEL_B_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     version: LEVEL_B_V1,
     circuit_id: "consent.circom/DogTagConsent(6)",
@@ -149,8 +175,10 @@ pub const LEVEL_B_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     },
     witness_graph: ArtifactFile {
         rel_path: "consent.graph",
-        // Unpinned: the graph is not committed (CI fetches it from DOGTAG_ARTIFACTS_URL). The
-        // mobile resolver pins it from the discovery anchor at fetch time.
+        // Unpinned HERE, but no longer unattested: the graph is committed and its bytes are
+        // `LEVEL_B_V1_WITNESS_GRAPH_SHA256` (enforced by this module's tests). This field stays
+        // `None` only to match the published `witnessMobileSha256 == 0`; pinning it is one atomic
+        // step with the on-chain publish (see the constant's docs + docs/ARTIFACT_PIN_RUNBOOK.md).
         sha256: None,
     },
     vk: VerifyingKeyIdentity {
@@ -270,6 +298,70 @@ mod tests {
                 "{}: registered but not resolvable",
                 d.version
             );
+        }
+    }
+
+    /// `circuits/build/`, relative to this crate.
+    fn build_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../circuits/build")
+    }
+
+    /// The committed witness graph IS the attested one.
+    ///
+    /// This is the provenance check the audit (M9 rec 10) asked for. Before the graph was committed
+    /// it was an out-of-band local build that differed per machine, so nothing anywhere attested
+    /// which graph an app had proved with. Committing it fixes the bytes; THIS test is what makes
+    /// that a checked fact rather than an assumption, and what turns a silent regraph into a red
+    /// test.
+    ///
+    /// Absence is a FAILURE, not a skip: the graph is committed, so a checkout without it is
+    /// incomplete, and skipping would restore exactly the "green without checking" hole the
+    /// consent-parity wrapper exists to close.
+    #[test]
+    fn graph_file_matches_attested_sha256() {
+        use sha2::{Digest, Sha256};
+
+        let path = build_dir().join(LEVEL_B_V1_DESCRIPTOR.witness_graph.rel_path);
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "consent.graph is COMMITTED under circuits/build - a checkout without it is \
+                 incomplete, not a normal local state. Failed to read {}: {e}",
+                path.display()
+            )
+        });
+        let got = hex::encode::<[u8; 32]>(Sha256::digest(&bytes).into());
+        assert_eq!(
+            got,
+            LEVEL_B_V1_WITNESS_GRAPH_SHA256,
+            "committed consent.graph does not match its attested hash. If the graph was rebuilt on \
+             purpose, the on-chain witnessMobileSha256 and this constant must be rotated TOGETHER - \
+             see docs/ARTIFACT_PIN_RUNBOOK.md."
+        );
+    }
+
+    /// The descriptor's graph pin, once set, must be the attested hash.
+    ///
+    /// Today the pin is deliberately `None` (it is in lockstep with the published
+    /// `witnessMobileSha256 == 0`; see [`LEVEL_B_V1_WITNESS_GRAPH_SHA256`]). This test does not
+    /// require it to stay `None` — it makes the operator's eventual flip self-checking, so pinning a
+    /// stale or hand-typed hash fails here instead of surfacing as a reconcile conflict in the field.
+    #[test]
+    fn descriptor_graph_pin_agrees_with_the_file() {
+        match LEVEL_B_V1_DESCRIPTOR.witness_graph.sha256 {
+            None => {
+                // Unpinned is the current, intended state — assert the reason still holds, so this
+                // arm cannot quietly become "nobody ever pinned it".
+                assert_eq!(
+                    LEVEL_B_V1_WITNESS_GRAPH_SHA256.len(),
+                    64,
+                    "the attested hash must remain a full SHA-256 the operator can publish"
+                );
+            }
+            Some(pin) => assert_eq!(
+                pin, LEVEL_B_V1_WITNESS_GRAPH_SHA256,
+                "the descriptor pins a different graph than the committed/attested one"
+            ),
         }
     }
 }

@@ -16,12 +16,13 @@
 #     2. An *arm64* iOS Simulator slice of the prover. DogTagFFI.xcframework here is built for
 #        `aarch64-apple-ios-sim` only; an Apple-Silicon host runs that slice natively. (Add an
 #        `aarch64-apple-ios` device slice + signing if you target a physical device.)
-#     3. The proving artifacts, for both the Level-A verification and Level-B consent circuits. The
-#        zkeys (`verification_final.zkey` ~65 MB, `consent_final.zkey` ~25 MB) are committed under
-#        `circuits/build/` (force-added past the build/ ignore). The witness graphs
-#        (`verification.graph` ~3 MB, `consent.graph`) are NOT committed — build them out-of-band with
-#        iden3's build-circuit (or serve them from `DOGTAG_ARTIFACTS_URL`). Either way the bundle
-#        copies under `apps/` are gitignored, so the vendor step re-copies all four each build.
+#     3. The owner-hidden consent proving artifacts — `consent_final.zkey` (~25 MB) and
+#        `consent.graph` (~1.5 MB). BOTH are committed under `circuits/build/` (force-added past the
+#        build/ ignore), so this needs no `DOGTAG_ARTIFACTS_URL` and no out-of-band build. Their
+#        bundle copies under `apps/` are gitignored, so the vendor step re-copies both each build.
+#        The retired Level-A pair (`verification_final.zkey` / `verification.graph`) is NOT vendored:
+#        the committed pbxproj references only the consent pair, so copying it into `DogTag/` left
+#        ~68 MB of stray files for `xcodegen` to sweep and made the build need an uncommitted graph.
 #
 #   On a runner that meets all three, this workflow goes green exactly as the local run does.
 name: ios-mobile-e2e
@@ -56,38 +57,30 @@ jobs:
           brew install xcodegen || true
           curl -Ls "https://get.maestro.mobile.dev" | bash
 
-      # Each witness graph is built from its circom source by iden3's build-circuit (it is NOT in the
-      # published circom-witnesscalc crate). Skipped if already vendored (self-hosted). M-4 adds the
-      # Level-B consent pair (`consent_final.zkey` + `consent.graph`) alongside the Level-A pair, so
-      # the app can prove owner-hidden consent; both sets are bundled, Level-A stays the default.
+      # Vendors the consent pair from the COMMITTED sources under circuits/build into the app bundle
+      # (gitignored copies, exactly like docs/MOBILE_BUILD.md §4). Both are committed, so the fetch
+      # fallback exists only for a checkout that somehow lacks them. The shared script also verifies
+      # the graph against its attested SHA-256, so an unattested graph is refused rather than signed
+      # into the app. It MUST run before the xcodegen step below, which sweeps apps/ios/DogTag/.
       - name: Ensure proving artifacts (zkey + witness graph)
         env:
-          # Optional: a base URL / cache that holds the gitignored blobs for this circuit commit.
+          # Optional fallback: a base URL / cache holding the blobs for this circuit commit.
           DOGTAG_ARTIFACTS_URL: ${{ secrets.DOGTAG_ARTIFACTS_URL }}
         run: |
           set -euo pipefail
-          # (bundle basename, circuits/build source stem) for every artifact set the app bundles.
-          # Level-A verification + Level-B consent; add a row to bundle another version.
-          ensure_artifact() {
-            local file="$1"
-            local src="circuits/build/$file"
+          for file in consent_final.zkey consent.graph; do
+            src="circuits/build/$file"
             if [ -s "$src" ]; then
-              echo "  $file present (self-hosted working tree)."
+              echo "  $file present (committed under circuits/build)."
             elif [ -n "${DOGTAG_ARTIFACTS_URL:-}" ]; then
-              mkdir -p circuits/build
               curl -fsSL "$DOGTAG_ARTIFACTS_URL/$file" -o "$src"
             else
-              echo "::error::Missing $src. It is gitignored; provide it on a self-hosted runner's" \
-                   "working tree or set the DOGTAG_ARTIFACTS_URL secret. See docs/MOBILE_BUILD.md §4."
+              echo "::error::Missing $src. It is COMMITTED, so this checkout is incomplete." \
+                   "Restore it with 'git checkout -- circuits/build'. See docs/MOBILE_BUILD.md §4."
               exit 1
             fi
-            # Vendor into the app bundle (gitignored copy, exactly like docs/MOBILE_BUILD.md §4).
-            cp "$src" "apps/ios/DogTag/$file"
-          }
-          ensure_artifact verification_final.zkey
-          ensure_artifact verification.graph
-          ensure_artifact consent_final.zkey
-          ensure_artifact consent.graph
+          done
+          scripts/vendor-mobile-artifacts.sh
 
       - name: Build the on-device prover xcframework (cargo → UniFFI → DogTagFFI.xcframework)
         run: |

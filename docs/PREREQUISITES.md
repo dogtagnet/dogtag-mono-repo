@@ -179,16 +179,22 @@ in `circuits/build/`:
 |---|---|---|
 | `circuits/build/consent_final.zkey` | ~24 MB | prover-service (`CIRCUITS_BUILD_DIR`) **and** the proving asset each app needs bundled |
 | `circuits/build/consent.r1cs` + `circuits/build/consent_js/consent.wasm` | committed | prover-service witness assembly (`CIRCUITS_BUILD_DIR`) |
-| `circuits/build/consent.graph` | (built out-of-band) | the on-device witness backend each app needs bundled - **not** read by the prover-service |
+| `circuits/build/consent.graph` | ~1.5 MB, committed | the on-device witness backend each app needs bundled - **not** read by the prover-service |
 
-The proving assets are **gitignored in the apps**, so they are vendored into each app build (see
+The proving assets are **gitignored in the apps** (not at their `circuits/build/` sources, which are
+committed), so they are vendored into each app build with `make vendor-mobile-artifacts` (see
 [MOBILE_BUILD.md](./MOBILE_BUILD.md) for what the current app builds require).
 
-> **Note:** the consent zkey is **committed** under `circuits/build/` (present on a fresh clone; sha256
-> `f83a111f…`, unconditionally pinned by the prover - `CONSENT_EXPECTED_ZKEY_SHA256` only **overrides**
-> the pin for a deployment shipping a different key; unset = enforce the pinned testnet hash); `consent.graph` is
-> **not** committed - build it out-of-band with iden3's `build-circuit` (see
-> [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)). The artifact pair carries the internal protocol version key
+> **Note:** BOTH consent artifacts are **committed** under `circuits/build/` (present on a fresh clone,
+> force-added past the `build/` ignore), so neither needs an out-of-band build. The zkey's sha256
+> `f83a111f…` is unconditionally pinned by the prover - `CONSENT_EXPECTED_ZKEY_SHA256` only
+> **overrides** the pin for a deployment shipping a different key; unset = enforce the pinned testnet
+> hash. The graph's bytes are attested in-repo by
+> `dogtag_prover::artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256`, and `make vendor-mobile-artifacts` refuses
+> to bundle either file if its hash disagrees. Rebuilding the graph is **not** a normal build step: it
+> is an artifact **rotation** (the attested hash and the on-chain `witnessMobileSha256` move together) -
+> follow [ARTIFACT_PIN_RUNBOOK.md](./ARTIFACT_PIN_RUNBOOK.md), never a bare
+> `build-circuit` overwrite. The artifact pair carries the internal protocol version key
 > `dogtag-levelb/1` (an internal identifier, not a product label).
 > The retired verification-circuit artifacts (`verification_final.zkey`, `verification.r1cs`, …) remain
 > in `circuits/build/` only as frozen provenance for the retired owner-revealing path - nothing builds
@@ -205,10 +211,12 @@ ls -la circuits/build/consent_final.zkey circuits/build/consent.graph
 
 **STOP if** either is missing:
 - **Symptom:** `ls: … No such file or directory`.
-- **Likely cause:** the graph hasn't been built / the artifacts weren't checked out.
-- **Fix:** `consent_final.zkey` is committed, so a missing zkey means a broken checkout; `consent.graph`
-  is never committed - build it out-of-band with iden3's `build-circuit` (see
-  [MOBILE_BUILD.md §4](./MOBILE_BUILD.md)). Without these, the prover-service is **fail-closed per
+- **Likely cause:** the artifacts weren't checked out.
+- **Fix:** both `consent_final.zkey` and `consent.graph` are committed, so a missing file means a broken
+  checkout, not a skipped build - restore it with `git checkout -- circuits/build`. Do **not** rebuild
+  the graph to fill the gap: that is a rotation, not a repair
+  ([ARTIFACT_PIN_RUNBOOK.md](./ARTIFACT_PIN_RUNBOOK.md)), and the vendoring script would refuse the
+  unattested bytes anyway. Without these, the prover-service is **fail-closed per
   request**: `POST /prove-consent` returns unavailable (it never serves a non-chain-valid proof), and
   the apps cannot prove on-device.
 

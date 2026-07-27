@@ -168,28 +168,32 @@ generated **on the phone**, from the bundled `consent_final.zkey` + `consent.gra
 Both apps bundle their own copies of the proving artifacts and a trimmed address file.
 Each app needs **one** artifact set: the owner-hidden consent pair, `consent_final.zkey` +
 `consent.graph` - the only artifacts the app code loads (`ZkeyAsset.swift` / `ZkeyAsset.kt`).
-The zkey is committed under `circuits/build/`; the witness graph is never committed and must be
-built out-of-band, then both are vendored into each bundle.
+**Both are committed under `circuits/build/`** and are vendored into each bundle; the bundle copies
+stay gitignored so the blobs are never double-committed.
 
 | asset | iOS path | Android path | committed? |
 |---|---|---|---|
 | `consent_final.zkey` (~25 MB) | `apps/ios/DogTag/consent_final.zkey` | `apps/android/app/src/main/assets/consent_final.zkey` | zkey committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
-| `consent.graph` | `apps/ios/DogTag/consent.graph` | `apps/android/app/src/main/assets/consent.graph` | **no — build out-of-band, then vendor** (untracked) |
+| `consent.graph` (~1.5 MB) | `apps/ios/DogTag/consent.graph` | `apps/android/app/src/main/assets/consent.graph` | graph committed under `circuits/build/`; the bundle copy is gitignored — vendor it |
 | `roax.json` (hand-maintained subset) | `apps/ios/DogTag/roax.json` | `apps/android/app/src/main/assets/roax.json` | yes |
 | `testvectors.json` | `apps/ios/DogTag/testvectors.json` | `apps/android/app/src/main/assets/testvectors.json` | yes |
 
 Each bundle copy is a 1:1 copy of the file under `circuits/build/`.
-The zkey is committed there but its bundle copies are gitignored in `apps/.gitignore` (so the blob is
-never double-committed); the graph is never committed at all - see "Building the witness graph"
-below.
+Both sources are committed there, but their bundle copies are gitignored in `apps/.gitignore` (so the
+blobs are never double-committed).
 **A fresh checkout has none of the four bundle copies (2 files x 2 apps), and the apps will not
-prove until you vendor them.** Copy them into both bundles:
+prove until you vendor them.** One command does all four:
 
 ```bash
-# Vendor the consent proving key into BOTH app bundles (gitignored bundle copies).
+make vendor-mobile-artifacts
+```
+
+It verifies `consent.graph` against its attested SHA-256 before copying, so an unattested graph is
+refused rather than silently signed into a bundle. The equivalent by hand:
+
+```bash
 cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
 cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/consent_final.zkey
-# Vendor the consent witness graph into BOTH app bundles (untracked; build it first, see below).
 cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
 cp circuits/build/consent.graph      apps/android/app/src/main/assets/consent.graph
 ```
@@ -206,17 +210,24 @@ cp circuits/build/consent.graph      apps/android/app/src/main/assets/consent.gr
 > Stray copies of the retired verification pair in a working tree are dead weight (~68 MB) and safe
 > to delete.
 
-**Building the witness graph.** The graph is not committed and no in-repo script emits one: the
-`.graph` format is produced by iden3's `build-circuit` binary (NOT the removed `npm run build-circuit`
-dev setup, and NOT in the published `circom-witnesscalc` crate). Build it from the circom source:
+**Rebuilding the witness graph (rarely needed).** `circuits/build/consent.graph` is committed, so a
+normal build never rebuilds it - vendor the committed bytes and move on.
+
+It matters only if the frozen `circuits/consent.circom` ever changes. The `.graph` format is produced
+by iden3's `build-circuit` binary (NOT the removed `npm run build-circuit` dev setup, and NOT in the
+published `circom-witnesscalc` crate):
 
 ```bash
 # iden3 build-circuit (install per its README); consumes the circom + circomlib includes.
 build-circuit circuits/consent.circom circuits/build/consent.graph -l node_modules/circomlib/circuits -l circuits
 ```
 
-In CI the mobile workflows serve the graph from `DOGTAG_ARTIFACTS_URL` instead; on a self-hosted
-runner they use the working-tree copy under `circuits/build/`.
+The tool is **not byte-deterministic**, so a rebuild produces a different file even from identical
+sources. That is precisely why the graph is committed rather than rebuilt per machine: the committed
+bytes are the artifact, and `dogtag_prover::artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256` attests them.
+A deliberate rebuild is an artifact **rotation** - the attested hash and the on-chain
+`witnessMobileSha256` must move together. Follow
+[ARTIFACT_PIN_RUNBOOK.md](./ARTIFACT_PIN_RUNBOOK.md); do not just overwrite the file.
 
 **Verify.** All four bundle copies exist and are non-trivial in size.
 
@@ -226,15 +237,15 @@ ls -l apps/ios/DogTag/consent_final.zkey \
 # → consent zkey ~25 MB (≈ 24781468 bytes, sha256 f83a111f…c868)
 ls -l apps/ios/DogTag/consent.graph \
       apps/android/app/src/main/assets/consent.graph
-# → consent.graph ~1.5 MB (the known-good build from the pinned consent.circom is 1546215 bytes,
-#   sha256 2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793 — the graph is
-#   deliberately unpinned on-chain, so this is the only integrity anchor)
+# → consent.graph ~1.5 MB (the committed graph is 1546215 bytes,
+#   sha256 2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793 — attested in-repo by
+#   dogtag_prover::artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256. It is still unpinned ON-CHAIN
+#   (witnessMobileSha256 == 0); see ARTIFACT_PIN_RUNBOOK.md for publishing it)
 ```
 
 **STOP if** any path is missing or 0 bytes - `circuits/build/consent_final.zkey` or the graph is
-absent, or the copy failed. Ensure `circuits/build/` is populated (see
-[PREREQUISITES - circuits/build](./PREREQUISITES.md)), build the graph as above, then re-run the
-copies.
+absent, or the copy failed. Both sources are committed, so an absent one means an incomplete
+checkout: restore with `git checkout -- circuits/build`, then re-run `make vendor-mobile-artifacts`.
 
 > `roax.json` is **hand-maintained** — there is no script that syncs it from
 > `contracts/deployments/roax.json`. If you swap chains/contracts you edit it by hand in **both** apps
@@ -440,7 +451,7 @@ contracts, ceremony, timelock) see
 | `adb devices` shows nothing / `unauthorized` / `offline` | USB debugging off, charge-only cable, or prompt not accepted | enable USB debugging, use a data cable, accept the on-phone prompt; `adb kill-server && adb devices` — §6 |
 | 32-bit-only Android: export cannot produce a proof | the device cannot run the on-device prover, and the consent server-prove fallback is not wired into the app yet | use a 64-bit device; the mobile fallback wiring lands with the mobile-issuance slice - §3 |
 | app reaches the **wrong chain** / old contracts after a deploy | apps not rebuilt — `roax.json`/RPC are **baked** | edit both `roax.json` (+ RPC constant), re-vendor zkey, rebuild + **reinstall** — §8 |
-| proofs never validate on a fresh checkout | `consent_final.zkey`/`consent.graph` not vendored (gitignored/untracked) | copy both into both bundles - §4 |
+| proofs never validate on a fresh checkout | `consent_final.zkey`/`consent.graph` not vendored (the bundle copies are gitignored) | `make vendor-mobile-artifacts` - §4 |
 | iOS app builds but cannot prove | consent pair vendored **after** `xcodegen`, so the regenerated project never bundled it | vendor the pair, re-run `xcodegen`, rebuild - §4 caveat, §5 |
 | app talks to an unexpected vet/groomer host | the host comes **only** from the scanned QR; a stale/wrong QR was scanned | re-scan the correct `/p/` or `/x/` QR from the right portal — §2 |
 | stale wallet / stored prefs on Android | leftover app state | `adb shell pm clear io.liberalize.dogtag` - §6. **Also destroys the owner-secret store, stranding every tag on that phone**; read the warning in §6 first |

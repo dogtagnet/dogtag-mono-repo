@@ -133,8 +133,11 @@ make test      # Poseidon 4-language parity gate + TS/Rust SDK + Foundry
 make parity    # the NORMATIVE Poseidon anchor gate (t=2/3/6/7) — blocks downstream
 
 make test-consent-parity   # consent prove <-> frozen VK agreement — LOUD gate, deliberately NOT in
-                           # `make test`: it fails closed when the (gitignored, never-committed)
-                           # circuits/build/consent.graph is absent, which a plain checkout lacks.
+                           # `make test` (real Groth16, slow). Both proving artifacts are committed,
+                           # so a plain checkout runs it; it fails closed if either is absent.
+
+make vendor-mobile-artifacts  # copy the consent zkey+graph into both app bundles (needed before
+                              # either mobile app can prove — see docs/MOBILE_BUILD.md §4)
 ```
 
 **Per stack:**
