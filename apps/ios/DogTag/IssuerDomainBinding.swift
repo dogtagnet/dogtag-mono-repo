@@ -95,8 +95,11 @@ enum IssuerBindingResolver {
         let dom = domain.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        // Strict ASCII hex, not `isHexDigit`: that also accepts fullwidth forms, while Kotlin's
+        // `Char.isDigit()` accepts non-ASCII digits — two ports loose in DIFFERENT directions on a name
+        // the three legs must agree on byte for byte.
         guard addr.count == 42, addr.hasPrefix("0x"),
-              addr.dropFirst(2).allSatisfy({ $0.isHexDigit }) else { return nil }
+              addr.dropFirst(2).allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
         guard dom.contains("."), !dom.contains("/"), !dom.contains(":"),
               !dom.contains(where: { $0.isWhitespace }) else { return nil }
         return "\(addr).\(label).\(dom)"
@@ -254,7 +257,7 @@ enum IssuerBindingResolver {
     /// says a consumer CONCATENATES them, so `"abc" "def"` is `abcdef`, not `abc def`. Getting this wrong
     /// would corrupt any description over 255 bytes.
     static func unquoteTxt(_ raw: String) -> String {
-        let s = raw.trimmingCharacters(in: .whitespaces)
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard s.contains("\"") else { return s }
         var out = ""
         var inQuotes = false
@@ -338,6 +341,40 @@ extension IssuerBinding {
         case .pending: return .pending
         case .couldNotCheck, .noDomainClaimed, .unavailable: return .neutral
         }
+    }
+
+    /// Did this answer actually involve a DNS query? Only these three states reach link 3 — the resolver
+    /// returns before it for a provenance failure, an unreadable claim, or no claim at all.
+    ///
+    /// Mirror of the TS `hasDnsHalf`; the three legs must agree or one surface claims a lookup another
+    /// knows never happened.
+    var hasDnsHalf: Bool {
+        switch state {
+        case .verified, .notListed, .couldNotCheck: return true
+        case .notADogTagIssuer, .noDomainClaimed, .unavailable, .pending: return false
+        }
+    }
+
+    /// Which block the chain half came from, and — ONLY when a DNS query really ran — when DNS was
+    /// observed. `nil` when there is nothing honest to say.
+    ///
+    /// Saying "DNS checked just now" in a state that never queried DNS is precisely the fabrication the
+    /// three-state design exists to prevent, so the DNS clause is gated on [`hasDnsHalf`] AND on having
+    /// a real `checkedAt`. Answers are cached, keeping their ORIGINAL timestamp, so a stale one says
+    /// "as recorded earlier" rather than claiming a fresh look.
+    ///
+    /// Mirror of the TS `bindingProvenanceLine`.
+    func provenanceLine(now: Date = Date()) -> String? {
+        var parts: [String] = []
+        if let block = blockNumber { parts.append("chain read at block \(String(block))") }
+        if hasDnsHalf, let seen = checkedAt {
+            parts.append(
+                now.timeIntervalSince(seen) < 60
+                    ? "DNS checked just now (DNS has no history, so it cannot be re-checked for the past)"
+                    : "DNS as recorded earlier (DNS has no history, so it cannot be re-checked for the past)"
+            )
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 

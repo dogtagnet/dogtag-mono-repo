@@ -5,6 +5,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -229,6 +230,132 @@ class IssuerDomainBindingTest {
             "0000000000000000000000000000000000000000000000000000000000000020" +
                 "00000000000000000000000000000000000000000000000000000000000000ff"
         assertNull(RoaxRpc.decodeAbiString(bad))
+    }
+
+    /**
+     * An offset/length word with a HIGH byte set must be REJECTED, not throw. `Int` is 32 bits here, so
+     * the old `offset + 32 > bytes.size` guard WRAPPED negative near `Int.MAX_VALUE`, passed, and the
+     * decoder threw `ArrayIndexOutOfBounds` / `StringIndexOutOfBounds` instead of returning null as its
+     * doc promises. Swift's `Int` is 64-bit and cannot wrap — which is exactly how the two ports drifted
+     * while the Swift test claimed Kotlin already enforced this band. Mirror of
+     * `test_decode_rejects_an_oversized_offset_or_length_without_trapping`.
+     */
+    @Test
+    fun decode_rejects_an_oversized_offset_or_length_without_throwing() {
+        val payload = "00".repeat(32)
+        // offset with bit 63 set
+        assertNull(
+            RoaxRpc.decodeAbiString(
+                "0000000000000000000000000000000000000000000000008000000000000000" + payload,
+            ),
+        )
+        // offset with a byte set above the low 4 (the reject band `beInt` enforces)
+        assertNull(
+            RoaxRpc.decodeAbiString(
+                "0000000000000000000000000000000000000000000000000000010000000000" + payload,
+            ),
+        )
+        // THE wrap case: an offset just below Int.MAX_VALUE, where `offset + 32` goes negative.
+        assertNull(
+            RoaxRpc.decodeAbiString(
+                "000000000000000000000000000000000000000000000000000000007ffffff0" + payload,
+            ),
+        )
+        // a sane offset, but a length word in the same wrap band
+        assertNull(
+            RoaxRpc.decodeAbiString(
+                "0000000000000000000000000000000000000000000000000000000000000020" +
+                    "000000000000000000000000000000000000000000000000000000007ffffff0",
+            ),
+        )
+        // and the full-width word
+        assertNull(RoaxRpc.decodeAbiString("ff".repeat(32) + payload))
+    }
+
+    // ---- provenance line ---------------------------------------------------------------------------
+
+    private fun bound(
+        state: IssuerBindingState,
+        block: Long? = 283207L,
+        checkedAt: Long? = 1_000_000_000L,
+        now: Long = 1_000_000_000L,
+    ) = IssuerBinding(
+        state = state,
+        domain = "moh.gov.sg",
+        blockNumber = block,
+        checkedAt = checkedAt,
+    ).provenanceLine(now)
+
+    /**
+     * THE fabrication guard. The resolver returns for these three states BEFORE link 3, so no DNS query
+     * was ever fired — a line claiming DNS was checked is exactly the "we did not look rendered as we
+     * looked" the three-state design exists to prevent. The chain clause still renders: that read DID
+     * happen. Mirror of the Swift and TS equivalents.
+     */
+    @Test
+    fun no_dns_clause_for_states_that_never_queried_dns() {
+        val noDns = listOf(
+            IssuerBindingState.NotADogTagIssuer,
+            IssuerBindingState.Unavailable,
+            IssuerBindingState.NoDomainClaimed,
+        )
+        for (state in noDns) {
+            // `checkedAt` is deliberately supplied: even a stray timestamp must not license the claim.
+            val line = bound(state)
+            assertNotNull("$state", line)
+            assertFalse("$state: $line", line!!.contains("DNS"))
+            assertTrue("$state: $line", line.contains("chain read at block 283207"))
+        }
+    }
+
+    @Test
+    fun dns_bearing_states_do_report_the_dns_observation() {
+        val withDns = listOf(
+            IssuerBindingState.Verified("Travel clearance issuance"),
+            IssuerBindingState.NotListed,
+            IssuerBindingState.CouldNotCheck,
+        )
+        for (state in withDns) {
+            val line = bound(state)
+            assertNotNull("$state", line)
+            assertTrue("$state: $line", line!!.contains("DNS checked just now"))
+            assertTrue("$state: $line", line.contains("DNS has no history"))
+        }
+    }
+
+    /**
+     * Answers are cached for 15 minutes keeping their ORIGINAL timestamp, so "just now" would be a false
+     * claim on a re-render.
+     */
+    @Test
+    fun a_cached_observation_is_not_described_as_just_now() {
+        val line = bound(IssuerBindingState.NotListed, checkedAt = 1_000_000_000L, now = 1_000_600_000L)!!
+        assertTrue(line, line.contains("DNS as recorded earlier"))
+        assertFalse(line, line.contains("just now"))
+    }
+
+    /** A DNS-bearing state with no timestamp cannot say WHEN, so it says nothing about DNS at all. */
+    @Test
+    fun a_dns_state_without_a_timestamp_makes_no_dns_claim() {
+        val line = bound(IssuerBindingState.NotListed, checkedAt = null)!!
+        assertFalse(line, line.contains("DNS"))
+    }
+
+    /** Nothing to anchor and nothing observed: say nothing rather than imply either. */
+    @Test
+    fun says_nothing_rather_than_implying_an_anchor_it_does_not_have() {
+        assertNull(bound(IssuerBindingState.Pending, block = null, checkedAt = null))
+        assertNull(IssuerBinding().provenanceLine())
+    }
+
+    @Test
+    fun provenance_line_uses_no_verdict_or_alarm_words() {
+        for (state in allStates) {
+            val line = (bound(state) ?: "").lowercase()
+            for (word in listOf("failed", "invalid", "untrusted", "warning", "error")) {
+                assertFalse("$state: $line", line.contains(word))
+            }
+        }
     }
 
     // ---- copy discipline ------------------------------------------------------------------------

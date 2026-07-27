@@ -299,7 +299,7 @@ pub async fn consent_submit_levelb(
     let verify_key = verify_key_from_purpose_word(&purpose_word);
     match st
         .chain
-        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &verify_key, &relayer)
+        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &verify_key, &relayer, None)
         .await
     {
         Ok(true) => {}

@@ -291,10 +291,14 @@ object RoaxRpc {
         if (bytes.size < 64) return null
         // Read the offset rather than assuming 0x20, so a tuple-wrapped return still decodes.
         val offset = beInt(bytes, 0) ?: return null
-        if (offset < 0 || offset + 32 > bytes.size) return null
+        // Compare by SUBTRACTION, never `offset + 32`: an Int is 32 bits here, so the addition wraps
+        // negative for an offset near Int.MAX_VALUE, the guard passes, and the decoder throws instead of
+        // returning null as documented. Swift's Int is 64-bit and cannot wrap, which is exactly how the
+        // two ports drifted.
+        if (offset < 0 || offset > bytes.size - 32) return null
         val len = beInt(bytes, offset) ?: return null
         val start = offset + 32
-        if (len < 0 || start + len > bytes.size) return null
+        if (len < 0 || len > bytes.size - start) return null
         return String(bytes, start, len, Charsets.UTF_8)
     }
 
@@ -315,7 +319,7 @@ object RoaxRpc {
      * would wrap.
      */
     private fun beInt(bytes: ByteArray, at: Int): Int? {
-        if (at + 32 > bytes.size) return null
+        if (at < 0 || at > bytes.size - 32) return null
         for (i in at until at + 28) if (bytes[i] != 0.toByte()) return null
         var v = 0L
         for (i in at + 28 until at + 32) v = (v shl 8) or (bytes[i].toLong() and 0xff)

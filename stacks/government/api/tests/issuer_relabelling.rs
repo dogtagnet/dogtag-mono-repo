@@ -704,3 +704,201 @@ async fn an_unread_provenance_also_withholds_the_on_chain_name() {
         "{b}"
     );
 }
+
+// -------------------------------------------------------------------------------------------------
+// (9) the block anchor is true — EVERY on-chain read in a verification is pinned to the same block
+// -------------------------------------------------------------------------------------------------
+
+/// Records the `at_block` every pinned read was asked for, delegating the answer to `MemChain`.
+///
+/// This proves the HANDLER threads one anchor through every read; it cannot prove `AlloyChain` attaches
+/// `.block(...)` to the eth_call, because `MemChain` ignores the parameter. That is the ceiling of a
+/// hermetic test here, and it is the half that regresses: a new read added without the parameter, or a
+/// caller passing `None`, is exactly what makes the response's stated anchor a false claim.
+#[derive(Clone)]
+struct PinRecordingChain {
+    inner: MemChain,
+    asked: Arc<std::sync::Mutex<Vec<(&'static str, Option<u64>)>>>,
+}
+
+impl PinRecordingChain {
+    fn new(inner: MemChain) -> Self {
+        PinRecordingChain {
+            inner,
+            asked: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
+    fn record(&self, what: &'static str, at_block: Option<u64>) {
+        self.asked.lock().unwrap().push((what, at_block));
+    }
+    fn reads(&self) -> Vec<(&'static str, Option<u64>)> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl ChainClient for PinRecordingChain {
+    fn chain_id(&self) -> u64 {
+        self.inner.chain_id()
+    }
+    fn backend(&self) -> government_api::chain::ChainBackend {
+        self.inner.backend()
+    }
+    fn can_sign(&self) -> bool {
+        self.inner.can_sign()
+    }
+    fn signer_address(&self) -> Option<String> {
+        self.inner.signer_address()
+    }
+    async fn is_valid(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<bool, government_api::chain::ChainError> {
+        self.record("isValid", at_block);
+        self.inner.is_valid(issuer_addr, root, at_block).await
+    }
+    async fn issued_at(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<alloy::primitives::U256, government_api::chain::ChainError> {
+        self.record("issuedAt", at_block);
+        self.inner.issued_at(issuer_addr, root, at_block).await
+    }
+    async fn block_number(&self) -> Result<u64, government_api::chain::ChainError> {
+        self.inner.block_number().await
+    }
+    async fn root_issuer(
+        &self,
+        factory_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        self.record("rootIssuer", at_block);
+        self.inner.root_issuer(factory_addr, root, at_block).await
+    }
+    async fn is_factory_clone(
+        &self,
+        factory_addr: &str,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<bool, government_api::chain::ChainError> {
+        self.record("isClone", at_block);
+        self.inner
+            .is_factory_clone(factory_addr, clone_addr, at_block)
+            .await
+    }
+    async fn issuer_onchain_name(
+        &self,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<String, government_api::chain::ChainError> {
+        self.record("name", at_block);
+        self.inner.issuer_onchain_name(clone_addr, at_block).await
+    }
+    async fn issuer_claimed_domain(
+        &self,
+        domain_registry_addr: &str,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<government_api::chain::DomainClaim>, government_api::chain::ChainError> {
+        self.record("domainOf", at_block);
+        self.inner
+            .issuer_claimed_domain(domain_registry_addr, clone_addr, at_block)
+            .await
+    }
+    async fn is_whitelisted_for(
+        &self,
+        registry_addr: &str,
+        record_type: &str,
+        signer: &str,
+        at_block: Option<u64>,
+    ) -> Result<bool, government_api::chain::ChainError> {
+        self.record("isWhitelistedFor", at_block);
+        self.inner
+            .is_whitelisted_for(registry_addr, record_type, signer, at_block)
+            .await
+    }
+    async fn issue(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+    ) -> Result<government_api::chain::SentTx, government_api::chain::ChainError> {
+        self.inner.issue(issuer_addr, root).await
+    }
+    async fn revoke(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+    ) -> Result<government_api::chain::SentTx, government_api::chain::ChainError> {
+        self.inner.revoke(issuer_addr, root).await
+    }
+    async fn record_verification_zk_consent(
+        &self,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<government_api::chain::SentTx, government_api::chain::ChainError> {
+        self.inner
+            .record_verification_zk_consent(registry_addr, a, b, c, pub_signals)
+            .await
+    }
+}
+
+/// A verdict reported under `blockNumber: N` must be reproducible at N. Anchoring the identity reads
+/// while the two reads that DECIDE the answer run at `latest` is anchoring in name only: a revoke
+/// landing between the head read and `isValid` yields a verdict that re-running at N contradicts, while
+/// the response prints N beside it.
+#[tokio::test]
+async fn every_on_chain_read_in_a_verification_is_pinned_to_the_reported_block() {
+    let (mut st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap();
+    chain.set_root_issuer(FACTORY, root, CLONE);
+
+    let recorder = PinRecordingChain::new(chain.clone());
+    st.chain = Arc::new(recorder.clone());
+    let app = government_api::router(st);
+
+    // A signer is supplied so the whitelist pillar — the other verdict-deciding read — actually runs.
+    let signer = chain.signer_address().unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/verify")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "wrapped_doc": doc, "signer_addr": signer })).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let b: Value = serde_json::from_slice(&bytes).unwrap();
+
+    let anchor = b["blockNumber"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the response must carry the anchor it claims: {b}"));
+
+    let reads = recorder.reads();
+    assert!(
+        !reads.is_empty(),
+        "the verification must actually read the chain"
+    );
+    for (what, at) in &reads {
+        assert_eq!(
+            *at,
+            Some(anchor),
+            "`{what}` was not pinned to the reported anchor {anchor}; reads were {reads:?}"
+        );
+    }
+    // The two that decide the verdict are the ones this test exists for.
+    let names: Vec<&str> = reads.iter().map(|(w, _)| *w).collect();
+    assert!(names.contains(&"isValid"), "reads were {reads:?}");
+    assert!(names.contains(&"isWhitelistedFor"), "reads were {reads:?}");
+}

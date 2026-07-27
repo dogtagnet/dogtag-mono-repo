@@ -171,9 +171,25 @@ pub trait ChainClient: Send + Sync {
     /// The government signer's `0x..` address, if a signer is loaded.
     fn signer_address(&self) -> Option<String>;
     /// `DogTagIssuer.isValid(root)` — issued && !revoked.
-    async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError>;
-    /// `DogTagIssuer.issuedAt(root)` (0 == not issued).
-    async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError>;
+    ///
+    /// Takes `at_block` because this is a VERDICT-DECIDING read: a response that reports a block anchor
+    /// while answering this one at `latest` is anchored in name only — a revoke landing between the head
+    /// read and this call yields a verdict that cannot be reproduced at the block printed beside it.
+    /// `None` means the caller has no anchor and the answer is reported as unanchored.
+    async fn is_valid(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<bool, ChainError>;
+    /// `DogTagIssuer.issuedAt(root)` (0 == not issued). Pinned for the same reason as `is_valid`, so a
+    /// caller that has an anchor cannot silently read this one at a different height.
+    async fn issued_at(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<U256, ChainError>;
     /// `DogTagIssuerFactory.isClone(clone)` — LINK 1 of the issuer↔domain chain.
     ///
     /// Re-checked at every verification rather than inherited from the fact that the domain registry
@@ -227,11 +243,17 @@ pub trait ChainClient: Send + Sync {
         at_block: Option<u64>,
     ) -> Result<Option<DomainClaim>, ChainError>;
     /// `IssuerRegistry.isWhitelistedFor(recordType, signer)`.
+    ///
+    /// Pinned like the other verdict-deciding reads: when this pillar is reported under a block anchor it
+    /// must be reproducible at that block, or a delist landing mid-verification makes the printed anchor
+    /// a false claim. `None` for the live preflights, which gate a broadcast rather than report a
+    /// verdict and therefore want `latest`.
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
         record_type: &str,
         signer: &str,
+        at_block: Option<u64>,
     ) -> Result<bool, ChainError>;
     /// Sign+broadcast `issue(root)` FROM the government signer to the `issuer_addr` clone. Awaits the
     /// receipt so a subsequent `is_valid` read reflects the anchor. Returns the tx hash.
@@ -389,29 +411,45 @@ impl ChainClient for AlloyChain {
     fn signer_address(&self) -> Option<String> {
         self.signer.as_ref().map(|s| format!("{:#x}", s.address()))
     }
-    async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
+    async fn is_valid(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<bool, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
             .on_builtin(&self.rpc_url)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
-        let r = c
-            .isValid(parse_b256(root))
+        let mut call = c.isValid(parse_b256(root));
+        if let Some(b) = at_block {
+            call = call.block(b.into());
+        }
+        let r = call
             .call()
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
-    async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError> {
+    async fn issued_at(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<U256, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
             .on_builtin(&self.rpc_url)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
-        let r = c
-            .issuedAt(parse_b256(root))
+        let mut call = c.issuedAt(parse_b256(root));
+        if let Some(b) = at_block {
+            call = call.block(b.into());
+        }
+        let r = call
             .call()
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
@@ -533,6 +571,7 @@ impl ChainClient for AlloyChain {
         registry_addr: &str,
         record_type: &str,
         signer: &str,
+        at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
@@ -540,8 +579,11 @@ impl ChainClient for AlloyChain {
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         let c = IIssuerRegistry::new(parse_addr(registry_addr), provider);
-        let r = c
-            .isWhitelistedFor(parse_b256(record_type), parse_addr(signer))
+        let mut call = c.isWhitelistedFor(parse_b256(record_type), parse_addr(signer));
+        if let Some(b) = at_block {
+            call = call.block(b.into());
+        }
+        let r = call
             .call()
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
@@ -776,14 +818,24 @@ impl ChainClient for MemChain {
     fn signer_address(&self) -> Option<String> {
         Some(self.signer.clone())
     }
-    async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
+    async fn is_valid(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        _at_block: Option<u64>,
+    ) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
         let key = (issuer_addr.to_lowercase(), root.to_lowercase());
         let issued = g.issued.get(&key).copied().unwrap_or(0) != 0;
         let revoked = g.revoked.get(&key).copied().unwrap_or(0) != 0;
         Ok(issued && !revoked)
     }
-    async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError> {
+    async fn issued_at(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        _at_block: Option<u64>,
+    ) -> Result<U256, ChainError> {
         let g = self.inner.lock().unwrap();
         let v = g
             .issued
@@ -849,6 +901,7 @@ impl ChainClient for MemChain {
         registry_addr: &str,
         record_type: &str,
         signer: &str,
+        _at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
         Ok(g.whitelist
@@ -942,11 +995,11 @@ mod tests {
         let c = MemChain::new();
         let issuer = "0x1111111111111111111111111111111111111111";
         let root = "0x2222222222222222222222222222222222222222222222222222222222222222";
-        assert!(!c.is_valid(issuer, root).await.unwrap());
+        assert!(!c.is_valid(issuer, root, None).await.unwrap());
         let tx = c.issue(issuer, root).await.unwrap();
         assert!(tx.tx_hash.starts_with("0x"));
         assert!(tx.block_number.is_some(), "issue surfaces a block number");
-        assert!(c.is_valid(issuer, root).await.unwrap());
+        assert!(c.is_valid(issuer, root, None).await.unwrap());
         // double-issue rejected
         assert!(c.issue(issuer, root).await.is_err());
     }
@@ -959,13 +1012,13 @@ mod tests {
         // can't revoke an unissued root.
         assert!(c.revoke(issuer, root).await.is_err());
         c.issue(issuer, root).await.unwrap();
-        assert!(c.is_valid(issuer, root).await.unwrap());
+        assert!(c.is_valid(issuer, root, None).await.unwrap());
         let tx = c.revoke(issuer, root).await.unwrap();
         assert!(tx.tx_hash.starts_with("0x"));
         assert!(tx.block_number.is_some());
         // isValid flips to false, but issuedAt (the historical anchor) stays intact.
-        assert!(!c.is_valid(issuer, root).await.unwrap());
-        assert!(!c.issued_at(issuer, root).await.unwrap().is_zero());
+        assert!(!c.is_valid(issuer, root, None).await.unwrap());
+        assert!(!c.issued_at(issuer, root, None).await.unwrap().is_zero());
     }
 
     /// The selector the vet/groomer stacks send for the same registry call. Pinned literally: if the
