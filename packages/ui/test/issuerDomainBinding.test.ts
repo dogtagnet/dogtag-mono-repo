@@ -24,6 +24,29 @@ const ALL_STATES: IssuerDomainBindingState[] = [
 const b = (state: IssuerDomainBindingState, extra: Partial<IssuerDomainBinding> = {}) =>
   ({ state, domain: "moh.gov.sg", ...extra }) as IssuerDomainBinding;
 
+// The load-bearing guard, shared by every copy surface in this module. The copy must state the
+// OBSERVATION, never a verdict: a missing DNS record does not mean the credential is bad, and the
+// credential's validity is separately proven on-chain. Telling a user their perfectly valid credential
+// "FAILED" is worse than showing nothing.
+const FORBIDDEN = [
+  "verification failed",
+  "verification fail",
+  "failed",
+  "failure",
+  "invalid",
+  "untrusted",
+  "not trusted",
+  "warning",
+  "danger",
+  "insecure",
+  "fraud",
+  "fake",
+  "suspicious",
+  "unsafe",
+  "error",
+  "rejected",
+];
+
 describe("tone", () => {
   it("makes only verified positive and only notListed negative", () => {
     expect(bindingTone("verified")).toBe("positive");
@@ -57,28 +80,6 @@ describe("tone", () => {
 });
 
 describe("copy discipline", () => {
-  // The load-bearing guard. The copy must state the OBSERVATION, never a verdict: a missing DNS record
-  // does not mean the credential is bad, and the credential's validity is separately proven on-chain.
-  // Telling a user their perfectly valid credential "FAILED" is worse than showing nothing.
-  const FORBIDDEN = [
-    "verification failed",
-    "verification fail",
-    "failed",
-    "failure",
-    "invalid",
-    "untrusted",
-    "not trusted",
-    "warning",
-    "danger",
-    "insecure",
-    "fraud",
-    "fake",
-    "suspicious",
-    "unsafe",
-    "error",
-    "rejected",
-  ];
-
   it("uses no verdict or alarm words in any state's line", () => {
     for (const s of ALL_STATES) {
       const line = bindingLine(b(s, { description: "Travel clearance issuance" })).toLowerCase();
@@ -183,9 +184,10 @@ describe("displayIssuerName", () => {
       displayIssuerName({
         onchainName: "DogTag Government Authority",
         onchainNameAvailable: true,
+        provenance: "factoryDeployed",
         documentName: "Ministry of Health of Singapore",
       }),
-    ).toEqual({ name: "DogTag Government Authority", authoritative: true });
+    ).toMatchObject({ name: "DogTag Government Authority", authoritative: true });
   });
 
   it("marks a document-name fallback as NOT authoritative", () => {
@@ -195,7 +197,7 @@ describe("displayIssuerName", () => {
         onchainNameAvailable: false,
         documentName: "Ministry of Health of Singapore",
       }),
-    ).toEqual({ name: "Ministry of Health of Singapore", authoritative: false });
+    ).toMatchObject({ name: "Ministry of Health of Singapore", authoritative: false });
   });
 
   it("never claims authority for an empty on-chain name", () => {
@@ -204,7 +206,40 @@ describe("displayIssuerName", () => {
   });
 
   it("degrades to a neutral placeholder rather than an empty string", () => {
-    expect(displayIssuerName(null)).toEqual({ name: "Unknown issuer", authoritative: false });
+    expect(displayIssuerName(null)).toMatchObject({ name: "Unknown issuer", authoritative: false });
+  });
+
+  // The withheld-name cases are NOT interchangeable. `notFactoryDeployed` means the contract WAS read
+  // and the chain says it is not factory-descended; `unknown` means nothing was read. Describing the
+  // first as "could not be read" states something that did not happen — the same conflation the API
+  // avoids by emitting `provenance` at all.
+  const SOURCE_CASES = [
+    { provenance: "factoryDeployed", onchainNameAvailable: true, onchainName: "DogTag Government Authority" },
+    { provenance: "notFactoryDeployed", onchainNameAvailable: false, onchainName: null },
+    { provenance: "unknown", onchainNameAvailable: false, onchainName: null },
+  ] as const;
+
+  it("says where the name came from, differently for each provenance", () => {
+    const labels = SOURCE_CASES.map(
+      (c) => displayIssuerName({ ...c, documentName: "Ministry of Health of Singapore" }).sourceLabel,
+    );
+    expect(new Set(labels).size, labels.join(" | ")).toBe(3);
+    expect(labels[0]).toBe("(from the issuing contract)");
+    expect(labels[1]).toContain("not deployed by the DogTag factory");
+    expect(labels[2]).toContain("could not be read");
+    // A contract the chain positively answered about must never be described as unread.
+    expect(labels[1]).not.toContain("could not be read");
+  });
+
+  it("uses no verdict or alarm words in any source label", () => {
+    for (const c of SOURCE_CASES) {
+      const label = displayIssuerName({ ...c, documentName: "X" }).sourceLabel.toLowerCase();
+      for (const word of FORBIDDEN) {
+        expect(label, `${c.provenance}: ${label}`).not.toContain(word);
+      }
+    }
+    // An absent provenance still gets a label rather than an empty parenthetical.
+    expect(displayIssuerName(null).sourceLabel.length).toBeGreaterThan(0);
   });
 });
 

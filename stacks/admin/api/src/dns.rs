@@ -24,9 +24,12 @@
 //!
 //! Historically `DNS_CHECK=skip` installed a checker that returned an unconditional `Ok(true)`: a
 //! FABRICATED pass on the very gate that decides whether an organisation is legitimate enough to be
-//! whitelisted. Enforcement is now a policy flag (`Config::dns_enforce`) and the lookup itself is
-//! always real, so a non-enforcing deployment reports what DNS actually said instead of inventing a
-//! pass. Test doubles live in the test crates, not here.
+//! whitelisted. That is why this module is shaped the way it is. `DNS_CHECK` is retired (accepted only
+//! so `main` can warn an operator who still sets it), and there is no enforce-vs-observe switch to
+//! replace it: the gate is ADVISORY for every deployment. The lookup always runs for real, a
+//! non-verified observation does not block whitelisting but requires the admin's explicit
+//! `proceedWithoutDns` and is recorded on the application, and this module never invents a pass. Test
+//! doubles live in the test crates, not here.
 
 use async_trait::async_trait;
 use dogtag_dns_rs::{BindingResolver, CouldNotCheckReason};

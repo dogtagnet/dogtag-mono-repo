@@ -155,13 +155,15 @@ async fn main() {
     }
 
     // DNS legitimacy check. The resolution is ALWAYS real — there is no fixture, stub or demo shortcut
-    // on this path. `DNS_CHECK` selects POLICY (enforce vs observe), never truth.
+    // on this path, and no flag selects a different behaviour: the gate is ADVISORY for every
+    // deployment (see the `DNS_CHECK` note below).
     //
     // This deliberately replaces the previous `DNS_CHECK=skip` behaviour, which installed a checker
     // returning an unconditional `Ok(true)`: a fabricated PASS on the gate that decides whether an
     // organisation is legitimate enough to be whitelisted. A local demo whose business domain (e.g.
-    // `vet.local`) publishes no TXT now gets the truthful "not published" / "could not resolve" outcome
-    // and, in observe mode, proceeds with that outcome recorded rather than inverted.
+    // `vet.local`) publishes no TXT now gets the truthful "not published" / "could not resolve"
+    // outcome, and proceeds only on the admin's explicit `proceedWithoutDns`, with that outcome
+    // recorded rather than inverted.
     let dns: Arc<dyn DnsChecker> = Arc::new(DohDnsChecker::new(env(
         "DNS_DOH_ENDPOINT",
         "https://cloudflare-dns.com/dns-query",
