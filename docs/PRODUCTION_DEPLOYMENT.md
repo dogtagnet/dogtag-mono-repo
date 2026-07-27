@@ -185,9 +185,13 @@ assets, then rebuild and reinstall. Full mobile build steps are in **[MOBILE_BUI
 #    consent_final.zkey + consent.graph):
 cp circuits/build/consent_final.zkey apps/ios/DogTag/
 cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/
-#    (consent.graph is built out-of-band and vendored the same way - MOBILE_BUILD.md documents the
-#    graph build and the current per-platform bundle wiring; the iOS project wiring for the consent
-#    pair is finalized in the mobile-issuance slice.)
+cp circuits/build/consent.graph      apps/ios/DogTag/
+cp circuits/build/consent.graph      apps/android/app/src/main/assets/
+#    Deliberately explicit copies rather than `make vendor-mobile-artifacts`: that target verifies
+#    the graph against the TESTNET attested hash and would refuse a production ceremony's graph.
+#    Rotate the attested hash FIRST (docs/ARTIFACT_PIN_RUNBOOK.md), after which the make target is
+#    the better command because it re-checks the hash. Until then these copies are unverified - it
+#    is on you to confirm the pair matches the deployed production verifier (AGENTS.md).
 #
 # 4. Rebuild + reinstall both apps (see MOBILE_BUILD.md for the full commands):
 #      iOS:     cd apps/ios && xcodegen && <Xcode Run / xcodebuild ...>

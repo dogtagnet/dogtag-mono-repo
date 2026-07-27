@@ -776,8 +776,19 @@ private suspend fun runLevelBFlow(
         // minutes leaves ample room for proving plus deferred settlement.
         val deadlineDec = ((System.currentTimeMillis() / 1000) + 600).toString()
         val descriptor = ZkeyAsset.resolve(AnchorResolver.PROTOCOL_VERSION)
-        val zkeyPath = withContext(Dispatchers.IO) { ZkeyAsset.ensure(context, descriptor) }
-        val graphPath = withContext(Dispatchers.IO) { ZkeyAsset.ensureGraph(context, descriptor) }
+        // Resolve the proving artifacts under their OWN catch, so a missing bundle asset is reported
+        // as what it is. The outer catch would render it "Owner-hidden verification refused:
+        // consent.graph" — a filename with no fault, which reads like a proving error. Mirrors the
+        // explicit refusal iOS gives (`ScanScreen.swift`, "missing from bundle"); naming the asset
+        // says which one, rather than implying both were checked.
+        val (zkeyPath, graphPath) = try {
+            withContext(Dispatchers.IO) {
+                ZkeyAsset.ensure(context, descriptor) to ZkeyAsset.ensureGraph(context, descriptor)
+            }
+        } catch (e: java.io.IOException) {
+            onDone("Owner-hidden proving artifact missing from bundle (${e.message}).")
+            return
+        }
 
         onStatus("Generating owner-hidden proof…")
         val proof = withContext(Dispatchers.Default) {

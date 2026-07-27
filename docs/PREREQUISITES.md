@@ -179,9 +179,10 @@ in `circuits/build/`:
 |---|---|---|
 | `circuits/build/consent_final.zkey` | ~24 MB | prover-service (`CIRCUITS_BUILD_DIR`) **and** the proving asset each app needs bundled |
 | `circuits/build/consent.r1cs` + `circuits/build/consent_js/consent.wasm` | committed | prover-service witness assembly (`CIRCUITS_BUILD_DIR`) |
-| `circuits/build/consent.graph` | (built out-of-band) | the on-device witness backend each app needs bundled - **not** read by the prover-service |
+| `circuits/build/consent.graph` | ~1.5 MB, committed | the on-device witness backend each app needs bundled - **not** read by the prover-service |
 
-The proving assets are **gitignored in the apps**, so they are vendored into each app build (see
+The proving assets are **gitignored in the apps** (not at their `circuits/build/` sources, which are
+committed), so they are vendored into each app build with `make vendor-mobile-artifacts` (see
 [MOBILE_BUILD.md](./MOBILE_BUILD.md) for what the current app builds require).
 
 > **Note:** the consent zkey is **committed** under `circuits/build/` (present on a fresh clone; sha256

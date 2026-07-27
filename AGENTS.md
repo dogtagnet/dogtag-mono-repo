@@ -35,18 +35,16 @@ Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, 
   it instead of the bare cargo invocation, because that invocation can report green in TWO ways without
   running the check, neither of them visible: the test is `#![cfg(feature = "prover")]`, so a plain
   `cargo test -p dogtag-standard-rs` compiles it away and prints `running 0 tests`; and even with the
-  feature it self-skips when `circuits/build/consent.graph` is absent (gitignored, never committed, and
-  **nothing fetches it automatically for a local run** - the mobile workflows (M-4) now vendor
-  `consent.graph` too, but only from `DOGTAG_ARTIFACTS_URL` / a self-hosted working tree and they never
-  run this parity test; build it locally from `circuits/consent.circom` with iden3's `build-circuit`). The wrapper closes both: it
-  always passes `--features prover`, and it checks the artifacts from the SHELL - where a `::error::`
-  line is actually parsed and a non-zero exit is a real failure - naming the missing artifact. An
-  annotation printed from inside the test could not work: libtest captures stdout for PASSING tests.
-  It is deliberately **not** in `make test` (like `test-consent`), since a normal
-  checkout has no `consent.graph` and the gate fails closed. The complementary in-test leg stays:
-  **`DOGTAG_REQUIRE_ZK_ARTIFACTS=1`** turns the skip into a panic - set it wherever artifacts are
-  expected, since libtest DOES print captured output for failing tests. Note no GitHub workflow runs
-  `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
+  feature it used to self-skip when `circuits/build/consent.graph` was absent. **`consent.graph` is now
+  COMMITTED** (alongside `consent_final.zkey`), so that skip is gone: an absent artifact means an
+  incomplete checkout and the test panics. The wrapper still closes the feature-flag hole: it always
+  passes `--features prover`, and it checks the artifacts from the SHELL - where a `::error::` line is
+  actually parsed and a non-zero exit is a real failure - naming the missing artifact. An annotation
+  printed from inside the test could not work: libtest captures stdout for PASSING tests.
+  It is deliberately **not** in `make test` (like `test-consent`) because it is slow (real Groth16),
+  no longer because a normal checkout lacks artifacts. `DOGTAG_REQUIRE_ZK_ARTIFACTS` is retired - it
+  existed only to turn the skip into a panic, and the skip no longer exists. Note no GitHub workflow
+  runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
 - `cd contracts && forge test` - 83 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
@@ -491,7 +489,7 @@ The dogtag-governed discovery TRUST ANCHOR (M7 §5.1, lock B): a small read-most
   - **`minAppVersion` sits on the ARTIFACT axis** because the app gate is a property of the proving artifacts an app must be new enough to LOAD, not of the deployed contracts.
   - The registry stores data and never asserts a zkey proves against a given `verifier` (pins are byte-integrity, the verifier is VK identity) - that compatibility is a governance judgement, which is exactly why the binding is timelocked.
   - Independence is enforced by tests, not just convention: `test_artifact_rotation_leaves_the_contract_set_untouched` / `test_contract_rotation_leaves_the_artifact_set_untouched` / `test_the_two_axes_do_not_share_a_keyspace` in `ProtocolRegistry.t.sol`, mirrored in Rust by `an_artifact_rotation_conflicts_only_on_the_artifact_axis` / `a_trio_rotation_conflicts_only_on_the_contract_axis` (`manifest.rs`) and `an_artifact_rotation_leaves_the_onchain_axis_of_the_anchor_untouched` (`stacks/vet/api/tests/discovery_validation.rs`).
-- **On-chain VK identity vs fetch pins - DO NOT conflate (§3.2).** `verifier` (an ADDRESS) is the on-chain VK identity; `zkeySha256`/`witness*Sha256` are byte-integrity FETCH pins. The `verification_key.json` file hash (`27879dd7…` for the consent set; the retired circuit's VK json is gone from the tree) is the OFF-CHAIN VK identity and is DELIBERATELY NOT an on-chain field - it lives only in the signed manifest. `witnessMobileSha256` (the `.graph`) is published as `0`/unpinned: the graph is not committed (CI fetches it), matching `artifact.rs`'s `witness_graph.sha256 = None`.
+- **On-chain VK identity vs fetch pins - DO NOT conflate (§3.2).** `verifier` (an ADDRESS) is the on-chain VK identity; `zkeySha256`/`witness*Sha256` are byte-integrity FETCH pins. The `verification_key.json` file hash (`27879dd7…` for the consent set; the retired circuit's VK json is gone from the tree) is the OFF-CHAIN VK identity and is DELIBERATELY NOT an on-chain field - it lives only in the signed manifest. `witnessMobileSha256` (the `.graph`) is published as `0`/unpinned, matching `artifact.rs`'s `witness_graph.sha256 = None`. The two are in DELIBERATE LOCKSTEP: the descriptor field feeds `Manifest.witness_mobile_sha256`, and `manifest::reconcile`'s `cmp_opt` treats manifest-`Some` against on-chain-`None` as a CONFLICT, so flipping one side alone makes every reconcile report a phantom disagreement. The graph IS now committed and its bytes are attested in-repo by `artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256`; publishing that hash on-chain is a single atomic step (descriptor + chain together) documented in `docs/ARTIFACT_PIN_RUNBOOK.md` and is the operator's to run.
 - **Timelocked publish, immediate deprecate - on BOTH axes and on the binding.** Each write is `propose…` → (immutable, deploy-time `PUBLISH_TIMELOCK`) → `execute…`, MIRRORING `VerificationRegistryConsent.proposeZkVerifier`/`executeZkVerifier` (a fresh propose resets the ETA; execute stamps `publishedAt=block.timestamp`+`active=true` and appends to the list only on FIRST publish so a swap-republish never dups): `proposeContractSet`/`executeContractSet`, `proposeArtifactSet`/`executeArtifactSet`, and `proposeArtifactBinding`/`executeArtifactBinding`. `DEFAULT_PUBLISH_TIMELOCK` remains 2 days. `DeployProtocolRegistry.s.sol` uses that default and rejects any other value unless `TESTNET_DEPLOY=true`; ROAX deliberately pairs that opt-in with `PUBLISH_TIMELOCK_SECS=0`, while mainnet must leave the opt-in unset and use exactly 2 days. The binding is timelocked because it is the pointer an app follows to decide which bytes to fetch - a one-transaction repoint is exactly the attack the window exists to catch on production.
 - **The binding's published-ness AND active-ness are checked at EXECUTE, not propose.** Both axes must be published and `active` at the moment of execute (`unknown`/`inactive` are distinct revert reasons), which is both stricter (a set deprecated during the window cannot slip through - deprecate is the emergency lever, so a stale proposal must not be able to bind a just-retired set) and what lets the FIRST rollout run all three timelocks CONCURRENTLY - propose the sets and the binding together, wait once, then execute sets-then-binding. So publishing is still a two-phase script.
 - `deprecateContractSet`/`deprecateArtifactSet` flip `active=false` immediately (a safety lever), NEVER delete the published record - history stays pinned so old records self-route (§7.3). Each axis is an independent lever: retiring a compromised artifact set does not touch the trio, and the app still stops (both `active` bits must hold - they are carried separately to the app and required jointly by `validate`). **Deprecate ALSO cancels any in-flight proposal for that id** (`delete _pending*[id]` + the ETA), which is what makes it a true EMERGENCY HALT: without it, a swap proposed before the compromise was found - and whose configured timelock had already elapsed - could be executed afterwards and flip `active` straight back with no fresh review window. That bites hardest on the artifact axis, where `activeArtifactSetOf` still points at the retired set, so a re-activation would instantly restore compromised artifacts as live for every bound contract set. Re-publishing after a deprecate therefore costs a fresh propose + the full configured timelock. Cancelling a PENDING proposal is **not** deleting history - the published record and its `*List` entry are untouched. Pinned by `test_deprecate_{contract,artifact}_set_cancels_an_in_flight_proposal` + `test_republish_after_deprecate_requires_a_fresh_timelock`.
@@ -580,9 +578,9 @@ native libs, so an x86_64 emulator cannot load them. On this machine the SDK is 
 export ANDROID_HOME=~/Library/Android/sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973
 
-# 1. Vendor the gitignored consent proving artifacts into the app bundle (see docs/MOBILE_BUILD.md §4).
-cp circuits/build/consent_final.zkey apps/android/app/src/main/assets/
-cp circuits/build/consent.graph      apps/android/app/src/main/assets/   # see graph note below
+# 1. Vendor the consent proving artifacts into the app bundles (see docs/MOBILE_BUILD.md §4). Both
+#    sources are committed; the bundle copies are gitignored. Verifies the graph's attested hash.
+make vendor-mobile-artifacts
 
 # 2. Build the native prover libs into jniLibs (gitignored; Gradle does NOT run cargo-ndk).
 cargo ndk -t arm64-v8a -t armeabi-v7a -o apps/android/app/src/main/jniLibs \
@@ -600,21 +598,24 @@ maestro test apps/android/maestro/zk_e2e.yaml
 
 ### Sharp edges / gotchas
 
-- **Witness graph is not in the repo and not built by the published crate.**
+- **Witness graph IS committed now; it is not rebuildable by the published crate.**
   `circuits/build/consent.graph` (`wtns.graph.001` format, consumed by `circom_witnesscalc::
-  calc_witness`) is gitignored AND the published `circom-witnesscalc` 0.2.1 crate ships no
-  `build-circuit` binary (only `calc-witness`/`cvm-compile`). Build it out-of-band from the frozen
-  `circuits/consent.circom` with iden3's `build-circuit` tool, or vendor a retained copy /
-  `DOGTAG_ARTIFACTS_URL` fetch (the CI approach). Validate any graph against the zkey with
-  `make test-consent-parity` (wraps `cargo test -p dogtag-standard-rs --features prover
-  on_device_consent_proof_verifies_and_pub_matches`).
-  **Consequence:** a fresh clone/worktree self-skips (or, wrapped, fails loudly on) the consent
-  parity gate with a missing `circuits/build/consent.graph` until you vendor/build one - that
-  failure is environmental, not a regression. This is also why the version-keyed descriptor leaves
-  the graph unpinned (see "Version-keyed proving artifacts").
+  calc_witness`) is **committed** (force-added past the `circuits/build/` ignore, like the zkey), so a
+  fresh clone has it and the consent parity gate RUNS - it no longer skips, and an absent artifact is
+  an incomplete checkout rather than an unbuilt one.
+  It is committed precisely BECAUSE it cannot be reproduced on demand: the published
+  `circom-witnesscalc` 0.2.1 crate ships no `build-circuit` binary (only `calc-witness`/`cvm-compile`),
+  iden3's `build-circuit` must be installed out-of-band, and it is **not byte-deterministic** - so a
+  per-machine rebuild made "which graph did this app prove with?" unanswerable (audit M9 rec 10).
+  The committed bytes are attested by `artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256` and checked by
+  `graph_file_matches_attested_sha256`; `scripts/vendor-mobile-artifacts.sh` re-verifies before
+  copying into a bundle.
+  A deliberate rebuild is a **rotation**: the attested constant and the on-chain `witnessMobileSha256`
+  move together - see `docs/ARTIFACT_PIN_RUNBOOK.md`. Validate any graph against the zkey with
+  `make test-consent-parity`.
   (The retired circuit's `verification.graph` can no longer be rebuilt at all - its circom source is
-  gone; only retained copies exist, and nothing consumes them anymore - the iOS `pbxproj` now
-  references the consent pair.)
+  gone; nothing consumes it anymore, so the mobile workflows no longer vendor it and the iOS `pbxproj`
+  references only the consent pair.)
 - **arm64 emulator only** — see above. `Build.SUPPORTED_64_BIT_ABIS` being empty (32-bit-only) has no
   on-device prover; the retired remote `/prove-verification` fallback is gone, and the consent
   server-prove fallback (`POST /prove-consent`) is the replacement concept - the backend route
@@ -669,10 +670,10 @@ committed `apps/ios/DogTag/dogtag_standard.swift` ABI-consistent), then assemble
 Apple-Silicon Mac:
 
 ```bash
-# 1. Vendor the gitignored CONSENT proving artifacts into the app bundle (docs/MOBILE_BUILD.md §4)
-#    - these are what the app actually proves with (consent.graph is built out-of-band; see gotchas).
-cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
-cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
+# 1. Vendor the CONSENT proving artifacts into the app bundles (docs/MOBILE_BUILD.md §4) - these are
+#    what the app actually proves with. Both sources are committed; bundle copies are gitignored.
+#    MUST run before xcodegen below, which sweeps DogTag/.
+make vendor-mobile-artifacts
 # The committed project.pbxproj lists exactly this consent pair as bundle resources (the retired
 # verification pair is gone from the wiring), so the two copies above are also what makes a plain
 # xcodebuild link: it fails loudly on a checkout that has not vendored them.
@@ -804,8 +805,7 @@ cp circuits/build/consent_final.zkey apps/ios/DogTag/consent_final.zkey
 cp circuits/build/consent.graph      apps/ios/DogTag/consent.graph
 ```
 
-**The `consent.graph` is not produced by a plain checkout.**
-`circuits/build/consent.graph` is gitignored and never committed; build it out-of-band from the frozen `circuits/consent.circom` with iden3's `build-circuit` tool, or vendor a retained copy (see the graph note in the e2e "Sharp edges / gotchas"; a stub placeholder will NOT prove).
+**The `consent.graph` IS produced by a plain checkout** - it is committed under `circuits/build/`, so `make vendor-mobile-artifacts` is all a fresh clone needs (see the graph note in the e2e "Sharp edges / gotchas"; a stub placeholder will NOT prove).
 Validate the vendored pair on the host: `make test-consent-parity` (wraps `cargo test -p dogtag-standard-rs --features prover on_device_consent_proof_verifies_and_pub_matches`).
 
 The committed `project.pbxproj` references exactly this CONSENT pair as bundle resources (the retired `verification_final.zkey`/`verification.graph` references are gone from the wiring), so the two copies above are also what makes a plain xcodebuild link: a checkout that has not vendored them fails loudly ("Build input file cannot be found") - that failure is the guard, not a project bug.
@@ -2547,17 +2547,27 @@ not your code.
 ### Regenerating `apps/ios/DogTag.xcodeproj` without dropping the prover artifacts
 
 `project.yml` globs `sources: - path: DogTag`, so xcodegen picks up new Swift files automatically — but
-`consent_final.zkey` and `consent.graph` are **gitignored** and absent from a fresh worktree, while the
+the BUNDLE copies `DogTag/consent_final.zkey` and `DogTag/consent.graph` are **gitignored** and absent from a
+fresh worktree (their sources under `circuits/build/` are committed), while the
 committed `project.pbxproj` references both. Running `xcodegen generate` on a checkout that lacks them
 silently strips those resource references, and the app then builds without its proving artifacts.
 
 Vendor them (or `touch` placeholders) BEFORE generating, then verify the diff is purely additive:
 
 ```sh
-cd apps/ios && touch DogTag/consent_final.zkey DogTag/consent.graph
-xcodegen generate
+# Real vendoring (what a proving build needs) - the copies STAY:
+make vendor-mobile-artifacts
+cd apps/ios && xcodegen generate
 grep -o 'consent_final.zkey\|consent.graph' DogTag.xcodeproj/project.pbxproj | sort -u   # both present
 git diff --stat DogTag.xcodeproj/project.pbxproj                                          # insertions only
+```
+
+If you only need the pbxproj wiring and not a proving build, empty placeholders are enough - and
+those you do remove afterwards (do NOT run this `rm` after a real vendor, it deletes the artifacts):
+
+```sh
+cd apps/ios && touch DogTag/consent_final.zkey DogTag/consent.graph
+xcodegen generate && grep -o 'consent_final.zkey\|consent.graph' DogTag.xcodeproj/project.pbxproj | sort -u
 rm DogTag/consent_final.zkey DogTag/consent.graph
 ```
 
