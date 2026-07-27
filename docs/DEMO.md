@@ -30,7 +30,7 @@ scripts/demo-up.sh        # builds + starts admin/vet/groomer/government backend
 # owner wallet (holder, no backend): http://localhost:45931   (Receive a wrapped doc → inspect receipts / share selected fields)
 # backends: admin :39742 · vet :41874 · groomer :43618 · government :44832   (ROAX chainId 135)
 # also boots the prover-service :41875 (POST /prove-consent - the trusted server-prove fallback; see §5)
-# also boots the oversight indexer :46001 (demo mode) - the data layer for the vet/groomer Traceability + government Oversight pages
+# also boots the oversight indexer :46001 (demo mode) - the data layer for the vet Traceability + government Oversight pages
 # stop with: scripts/demo-down.sh
 ```
 Backends keep records/sessions in an in-memory store (no Mongo needed) - those are **lost on restart** -
@@ -142,7 +142,8 @@ See [§6](#6-phone-networking-real-gotchas) for getting the phone to actually re
 
 ## 5. (Optional) EXPORT - proof-of-verification on-chain
 The owner proves consent to the groomer, revealing nothing about themselves (the symmetric counterpart of the §3–4 import).
-In the vet/groomer portal **Verification** tab → pick a purpose → **Start verification** → QR.
+The verify surface is the **Verification** tab in the vet portal; in the **groomer** portal the primary path is an appointment (**Appointments** → open the booking → **Start verification**, which files the result against that visit and its client), with **Ad-hoc verification** for a walk-in with no booking.
+Either way you land on the same flow: pick a purpose → **Start export** → QR.
 There is **no mode picker** - owner-hidden ZK consent is the only path.
 The QR is a one-time token carrying the groomer's wallet address + host (`http://<host>/x/<token>?a=<groomerAddr>`).
 On the phone, scan it → the app resolves `GET /x/<token>` (purpose, recordType, relayer), asserts the groomer is whitelisted on-chain for that `VERIFY:<purpose>` (and, on prod/remote, DNS-verifies the groomer - skipped for the `.local` demo) → review → the app signs the consent with the tag's **in-tree consent key** and **generates the `DogTagConsent` Groth16 proof ON-DEVICE** → POSTs `{ exportToken, proof: {a, b, c, pubSignals} }` to `/v1/verify/consent`.

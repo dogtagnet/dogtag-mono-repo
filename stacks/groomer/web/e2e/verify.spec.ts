@@ -46,18 +46,18 @@ test("starts only the owner-hidden verification flow and sends no mode", async (
   await mockBackend(page, state);
 
   await page.goto("/verify");
-  await expect(page.getByText("Request owner consent")).toBeVisible();
+  await expect(page.getByText("Ad-hoc verification")).toBeVisible();
+  // There is ONE owner-hidden flow: the operator is never offered a mode/disclosure choice.
   await expect(page.getByText("Mode", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Normal", { exact: true })).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Start verification" }).click();
+  await page.getByRole("button", { name: "Start export" }).click();
   await expect(page.getByText("Awaiting owner consent")).toBeVisible();
+  // No appointment on the ad-hoc path, so no business context is sent either.
   expect(state.sessionStarts).toEqual([
     { purpose: "grooming_intake", recordType: "VACCINATION" },
   ]);
   expect(state.sessionStarts[0]).not.toHaveProperty("mode");
 
-  await expect(page.getByText("The owner-hidden consent proof was recorded on ROAX.")).toBeVisible({
-    timeout: 10_000,
-  });
+  await expect(page.getByText("Verified")).toBeVisible({ timeout: 10_000 });
 });

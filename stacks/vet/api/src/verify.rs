@@ -401,10 +401,31 @@ pub async fn consent_submit_levelb(
             created_at: now,
             updated_at: now,
             disclosed_key_paths: disclosed_key_paths.clone(),
+            // A cold submit carries no operator-started session, so there is no appointment to
+            // link it to; it lands in the history as an ad-hoc verification.
+            appointment_id: None,
+            client_id: None,
+            pet_id: None,
         },
     };
     let session_id = audit.session_id.clone();
     st.store.put_session(audit.clone()).await;
+    // Business-history evidence, recorded against the shop's own row: the OPAQUE on-chain dogTagId
+    // this consent is bound to (`pub[0]`, already a public verification fact) plus the keyPaths the
+    // owner CHOSE to reveal. The owner's `subject` wallet is deliberately never stored, and the
+    // disclosed list is EMPTY on an ordinary owner-hidden verification — that emptiness IS the
+    // privacy guarantee, never something to backfill from another source.
+    let evidence_dog_tag_id = format!(
+        "0x{}",
+        hex::encode(pub_u[P::DOG_TAG_ID].to_be_bytes::<32>())
+    );
+    crate::crm::attach_evidence(
+        &st.store,
+        &audit,
+        Some(evidence_dog_tag_id),
+        disclosed_key_paths.clone(),
+    )
+    .await;
 
     let chain = st.chain.clone();
     let store = st.store.clone();
@@ -431,7 +452,13 @@ pub async fn consent_submit_levelb(
             }
         }
         background_session.updated_at = crate::auth::now();
-        store.update_session(background_session).await;
+        store.update_session(background_session.clone()).await;
+        // Settle the shop's history row at the SAME terminal point the session settles — both arms,
+        // so the two can never disagree. A failed write here can never fail the verification.
+        let status = background_session.status.clone();
+        let tx_hash = background_session.tx_hash.clone();
+        let nullifier = background_session.nullifier.clone();
+        crate::crm::finish_log(&store, &background_session, &status, tx_hash, nullifier).await;
     });
 
     ok(json!({

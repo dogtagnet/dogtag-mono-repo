@@ -80,8 +80,9 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Require a valid operator session bearer token.
-async fn require_operator(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
+/// Require a valid operator session bearer token. `pub(crate)` so the CRM handlers in `crm.rs`
+/// gate on the exact same operator session as every route here.
+pub(crate) async fn require_operator(st: &AppState, headers: &HeaderMap) -> Result<(), Resp> {
     let token =
         bearer(headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "missing operator session"))?;
     if st.store.has_op_session(&token).await {
@@ -1158,6 +1159,12 @@ struct SessionStartReq {
     purpose: String,
     #[serde(rename = "recordType")]
     record_type: String,
+    /// OPTIONAL: the shop appointment this verification is being performed FOR. Supplying it links
+    /// the resulting verification to that appointment and its client in the shop's history — the
+    /// primary flow in the groomer portal. Omitting it yields an ad-hoc, unlinked verification, which
+    /// is exactly what this endpoint did before and still does.
+    #[serde(rename = "appointmentId", default)]
+    appointment_id: Option<String>,
 }
 
 async fn export_session_start(
@@ -1198,26 +1205,41 @@ async fn export_session_start(
             "verification registry not configured",
         );
     }
+    // Resolve the OPTIONAL appointment this verification belongs to. An id that does not resolve is
+    // a 400, not a silent downgrade to an unlinked verification: the operator asked for the linked
+    // flow and must not be told it succeeded when the linkage was dropped.
+    let ctx = match body.appointment_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(id) => match crate::crm::resolve_session_context(&st.store, id).await {
+            Ok(c) => Some(c),
+            Err(e) => return err(StatusCode::BAD_REQUEST, &e),
+        },
+        None => None,
+    };
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut challenge = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut challenge);
     let challenge_hex = format!("0x{}", hex::encode(challenge));
     let now = auth::now();
-    st.store
-        .put_session(VerifySession {
-            session_id: session_id.clone(),
-            relayer: relayer.clone(),
-            purpose: body.purpose,
-            record_type: body.record_type,
-            challenge: challenge_hex,
-            status: "pending".to_string(),
-            tx_hash: None,
-            nullifier: None,
-            created_at: now,
-            updated_at: now,
-            disclosed_key_paths: Vec::new(),
-        })
-        .await;
+    let session = VerifySession {
+        session_id: session_id.clone(),
+        relayer: relayer.clone(),
+        purpose: body.purpose,
+        record_type: body.record_type,
+        challenge: challenge_hex,
+        status: "pending".to_string(),
+        tx_hash: None,
+        nullifier: None,
+        created_at: now,
+        updated_at: now,
+        disclosed_key_paths: Vec::new(),
+        appointment_id: ctx.as_ref().map(|c| c.appointment_id.clone()),
+        client_id: ctx.as_ref().and_then(|c| c.client_id.clone()),
+        pet_id: ctx.as_ref().and_then(|c| c.pet_id.clone()),
+    };
+    st.store.put_session(session.clone()).await;
+    // Open the history row now, so an in-flight (and an abandoned) verification is still visible in
+    // "All verifications" rather than only appearing if it completes.
+    crate::crm::start_log(&st.store, &session, ctx.as_ref()).await;
     // Mint a short-lived EXPORT token (32 hex chars == 16 random bytes) so the QR is low-density
     // and symmetric with the import `/r/<token>` flow. The server maps token -> export session
     // as a session-scoped capability. The QR carries {host, token, relayer address}; the phone resolves session
@@ -2675,8 +2697,48 @@ pub fn public_router(state: AppState) -> Router {
     #[cfg(not(feature = "prover"))]
     let prove_route = Router::<AppState>::new();
 
+    // ISSUANCE SURFACES — mounted only for a role that issues (see `Config::issuance_enabled`). A
+    // groomer runs this same binary as a pure VERIFIER: it records proofs-of-verification against the
+    // `VERIFY:<purpose>` whitelist and never mints credentials, so for `BUSINESS_TYPE=groomer` these
+    // routes do not exist at all rather than existing-and-refusing. Every other role (the vet) is
+    // completely unaffected.
+    let issuance = if state.cfg.issuance_enabled() {
+        Router::new()
+            // credentials
+            .route("/credentials/prepare", post(prepare))
+            .route("/credentials/confirm", post(confirm))
+            // records — list (own DB), metadata update (off-chain only), revoke (soft-invalidate), share
+            .route("/records", get(list_records))
+            .route("/records/:id/revoke", post(revoke))
+            .route("/records/:id/share", post(share))
+            .route("/records/:id", get(get_record).patch(update_record_meta))
+            // short one-time share token resolver (unauthenticated; consumed on first read)
+            .route("/r/:token", get(get_shared))
+            // DOG_PROFILE (SBT) issuance — vet issues dog tags
+            .route(
+                "/profiles/issue/session/start",
+                post(profile_issue_session_start),
+            )
+            .route(
+                "/profiles/issue/session/:id",
+                get(profile_issue_session_status),
+            )
+            // owner-hidden issuance is the sole bind path.
+            .route(
+                "/profiles/issue/custodial-bind",
+                post(profile_issue_custodial_bind),
+            )
+            // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
+            .route("/p/:token", get(profile_bind_resolve))
+    } else {
+        Router::<AppState>::new()
+    };
+
     Router::new()
         .merge(prove_route)
+        .merge(issuance)
+        // the shop's own clients / appointments / verification history (operator-gated)
+        .merge(crate::crm::crm_router())
         // health (no auth) — used by compose healthchecks
         .route("/health", get(health))
         // login
@@ -2686,34 +2748,8 @@ pub fn public_router(state: AppState) -> Router {
             "/settings/signing-mode",
             get(get_signing_mode).put(put_signing_mode),
         )
-        // credentials
-        .route("/credentials/prepare", post(prepare))
-        .route("/credentials/confirm", post(confirm))
-        // records — list (own DB), metadata update (off-chain only), revoke (soft-invalidate), share
-        .route("/records", get(list_records))
-        .route("/records/:id/revoke", post(revoke))
-        .route("/records/:id/share", post(share))
-        .route("/records/:id", get(get_record).patch(update_record_meta))
-        // short one-time share token resolver (unauthenticated; consumed on first read)
-        .route("/r/:token", get(get_shared))
         // short-lived EXPORT token resolver (unauthenticated; non-consuming; session-scoped)
         .route("/x/:token", get(export_session_resolve))
-        // DOG_PROFILE (SBT) issuance — vet issues dog tags
-        .route(
-            "/profiles/issue/session/start",
-            post(profile_issue_session_start),
-        )
-        .route(
-            "/profiles/issue/session/:id",
-            get(profile_issue_session_status),
-        )
-        // owner-hidden issuance is the sole bind path.
-        .route(
-            "/profiles/issue/custodial-bind",
-            post(profile_issue_custodial_bind),
-        )
-        // short one-time bind token resolver (unauthenticated; NON-consuming — consume on bind)
-        .route("/p/:token", get(profile_bind_resolve))
         // discovery signed-manifest fallback (M7 §5.1 1B) — the dogtag-signed version manifest an app
         // verifies OFFLINE. A NEW route, distinct from the resolve GET (`/p/`, `/x/`); on any conflict
         // the on-chain ProtocolRegistry (1C) wins. UNAUTHENTICATED (public discovery data).

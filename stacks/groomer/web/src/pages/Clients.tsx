@@ -1,12 +1,373 @@
-import { Users } from "lucide-react";
-import { Placeholder } from "./Placeholder";
+import {
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Input,
+  Label,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@dogtag/ui";
+import type { ClientInput, ClientPetInput, CrmClient } from "@dogtag/ui";
+import { Plus, Search, Trash2, Users } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
+import { useApp } from "../app/AppContext";
+import { ListPlaceholder, PAGE_SIZE, Pager, useAction, useDebounced, useList } from "../app/crm";
 
+/**
+ * The customer directory (impl §5.2). Owner particulars + their pets, searchable across owner name,
+ * email, phone, pet name and DogTag id.
+ *
+ * Search and paging run on the BACKEND — the page holds one bounded page at a time and re-queries as
+ * the operator types, so the directory stays usable at realistic customer volumes.
+ */
 export function Clients() {
+  const { api } = useApp();
+  const [search, setSearch] = useState("");
+  const [offset, setOffset] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const q = useDebounced(search);
+
+  const { page, loading, error, reload } = useList<CrmClient>(
+    () => api.listClients({ q, limit: PAGE_SIZE, offset }),
+    [q, offset],
+  );
+
+  // a new needle restarts paging — page 3 of the previous query is meaningless for a new one
+  function onSearch(value: string) {
+    setSearch(value);
+    setOffset(0);
+  }
+
+  const rows = page?.rows ?? [];
+
   return (
-    <Placeholder
-      icon={Users}
-      title="Clients"
-      description="Customer directory and pet profiles imported via the Import flow."
-    />
+    <div className="space-y-4">
+      <Card>
+        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Users className="h-5 w-5 text-primary" /> Clients
+            </CardTitle>
+            <CardDescription>
+              Your customers and their pets. Book an appointment from a client, then run the
+              vaccination check from that appointment.
+            </CardDescription>
+          </div>
+          <Button onClick={() => setCreating(true)}>
+            <Plus className="h-4 w-4" /> New client
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+            <Input
+              className="pl-9"
+              placeholder="Search name, email, phone, pet or DogTag id…"
+              value={search}
+              onChange={(e) => onSearch(e.target.value)}
+              aria-label="Search clients"
+            />
+          </div>
+
+          <ListPlaceholder
+            loading={loading}
+            error={error}
+            empty={rows.length === 0}
+            emptyMessage={
+              q ? `No clients match "${q}".` : "No clients yet — add your first one to get started."
+            }
+          >
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Contact</TableHead>
+                  <TableHead>Pets</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((c) => (
+                  <TableRow key={c.clientId}>
+                    <TableCell>
+                      <Link
+                        to={`/clients/${c.clientId}`}
+                        className="font-medium text-primary hover:underline"
+                      >
+                        {c.name}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-sm text-muted">
+                      <div>{c.email || "—"}</div>
+                      <div>{c.phone}</div>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {c.pets.length === 0 ? (
+                        <span className="text-muted">No pets</span>
+                      ) : (
+                        c.pets.map((p) => p.name).join(", ")
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </ListPlaceholder>
+
+          <Pager
+            total={page?.total ?? 0}
+            offset={offset}
+            limit={page?.limit ?? PAGE_SIZE}
+            onOffset={setOffset}
+          />
+        </CardContent>
+      </Card>
+
+      {creating && (
+        <ClientForm
+          title="New client"
+          onCancel={() => setCreating(false)}
+          onSubmit={async (body) => {
+            await api.createClient(body);
+            setCreating(false);
+            reload();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** A pet row in the form. `petId` is carried through an edit so its appointment links survive. */
+type PetDraft = ClientPetInput & { key: string };
+
+function petDraft(seed?: ClientPetInput): PetDraft {
+  return {
+    key: Math.random().toString(36).slice(2),
+    petId: seed?.petId,
+    name: seed?.name ?? "",
+    species: seed?.species ?? "dog",
+    breed: seed?.breed ?? "",
+    sex: seed?.sex ?? "",
+    dateOfBirth: seed?.dateOfBirth ?? "",
+    notes: seed?.notes ?? "",
+    dogTagId: seed?.dogTagId ?? "",
+  };
+}
+
+/**
+ * Create/edit form for a client and their pets. Shared by the directory (create) and the client
+ * detail page (edit) so the two can never drift apart.
+ */
+export function ClientForm({
+  title,
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  title: string;
+  initial?: CrmClient;
+  onSubmit: (body: ClientInput) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const { run, busy } = useAction();
+  const [name, setName] = useState(initial?.name ?? "");
+  const [email, setEmail] = useState(initial?.email ?? "");
+  const [phone, setPhone] = useState(initial?.phone ?? "");
+  const [address, setAddress] = useState(initial?.address ?? "");
+  const [notes, setNotes] = useState(initial?.notes ?? "");
+  const [pets, setPets] = useState<PetDraft[]>(() =>
+    initial?.pets.length ? initial.pets.map((p) => petDraft(p)) : [petDraft()],
+  );
+
+  const nameInvalid = name.trim() === "";
+
+  function updatePet(key: string, patch: Partial<PetDraft>) {
+    setPets((prev) => prev.map((p) => (p.key === key ? { ...p, ...patch } : p)));
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (nameInvalid) return;
+    const body: ClientInput = {
+      name: name.trim(),
+      email: email.trim(),
+      phone: phone.trim(),
+      address: address.trim(),
+      notes,
+      // a blank pet row is a not-yet-filled-in row, not an unnamed pet
+      pets: pets
+        .filter((p) => p.name.trim() !== "")
+        .map((p) => ({
+          petId: p.petId,
+          name: p.name,
+          species: p.species,
+          breed: p.breed,
+          sex: p.sex,
+          dateOfBirth: p.dateOfBirth,
+          notes: p.notes,
+          dogTagId: p.dogTagId?.trim() ? p.dogTagId.trim() : null,
+        })),
+    };
+    await run(() => onSubmit(body), {
+      success: initial ? "Client updated" : "Client created",
+      failure: initial ? "Could not update the client" : "Could not create the client",
+    });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form className="space-y-6" onSubmit={submit}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="client-name">Name</Label>
+              <Input
+                id="client-name"
+                value={name}
+                invalid={nameInvalid && name !== ""}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Alice Tan"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="client-phone">Phone</Label>
+              <Input
+                id="client-phone"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+65 9123 4567"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="client-email">Email</Label>
+              <Input
+                id="client-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="alice@example.com"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="client-address">Address</Label>
+              <Input
+                id="client-address"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="client-notes">Notes</Label>
+            <textarea
+              id="client-notes"
+              className="min-h-20 w-full rounded-md border border-input bg-surface px-3 py-2 text-sm text-onSurface placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Preferences, handling notes, allergies…"
+            />
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label>Pets</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPets((p) => [...p, petDraft()])}
+              >
+                <Plus className="h-4 w-4" /> Add pet
+              </Button>
+            </div>
+            {pets.map((p) => (
+              <div key={p.key} className="space-y-3 rounded-md border border-border p-3">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor={`pet-name-${p.key}`}>Pet name</Label>
+                    <Input
+                      id={`pet-name-${p.key}`}
+                      value={p.name}
+                      onChange={(e) => updatePet(p.key, { name: e.target.value })}
+                      placeholder="Rex"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`pet-breed-${p.key}`}>Breed</Label>
+                    <Input
+                      id={`pet-breed-${p.key}`}
+                      value={p.breed}
+                      onChange={(e) => updatePet(p.key, { breed: e.target.value })}
+                      placeholder="Standard Poodle"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor={`pet-dob-${p.key}`}>Date of birth</Label>
+                    <Input
+                      id={`pet-dob-${p.key}`}
+                      type="date"
+                      value={p.dateOfBirth}
+                      onChange={(e) => updatePet(p.key, { dateOfBirth: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor={`pet-sex-${p.key}`}>Sex</Label>
+                    <Input
+                      id={`pet-sex-${p.key}`}
+                      value={p.sex}
+                      onChange={(e) => updatePet(p.key, { sex: e.target.value })}
+                      placeholder="male / female"
+                    />
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <Label htmlFor={`pet-tag-${p.key}`}>DogTag id (optional)</Label>
+                    <Input
+                      id={`pet-tag-${p.key}`}
+                      value={p.dogTagId ?? ""}
+                      onChange={(e) => updatePet(p.key, { dogTagId: e.target.value })}
+                      placeholder="Leave blank if the owner has no DogTag"
+                    />
+                  </div>
+                </div>
+                {pets.length > 1 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setPets((prev) => prev.filter((x) => x.key !== p.key))}
+                  >
+                    <Trash2 className="h-4 w-4" /> Remove pet
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" loading={busy} disabled={nameInvalid}>
+              {initial ? "Save changes" : "Create client"}
+            </Button>
+            <Button type="button" variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
   );
 }

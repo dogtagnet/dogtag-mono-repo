@@ -123,6 +123,17 @@ pub struct VerifySession {
     /// are shown to the verifying operator, never stored. Empty when nothing was disclosed.
     #[serde(default)]
     pub disclosed_key_paths: Vec<String>,
+    /// OPTIONAL business context: the shop [`Appointment`] this verification was started FROM, plus
+    /// the client/pet it resolved to. Set at session start when the operator starts the verification
+    /// from an appointment; `None` for an ad-hoc verification. These NEVER reach the owner's phone —
+    /// `GET /x/{token}` deliberately does not expose them (they are the shop's own customer records).
+    /// `#[serde(default)]` so rows written before this field existed still deserialize.
+    #[serde(default)]
+    pub appointment_id: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub pet_id: Option<String>,
 }
 
 // --------------------------------------------------------------------------------------------
@@ -318,6 +329,294 @@ pub struct GcalSyncState {
     pub refresh_token: Option<String>,
 }
 
+// --------------------------------------------------------------------------------------------
+// SHOP CRM — the business's OWN customer/booking records (clients, appointments) plus the central
+// verification history. Distinct from the Phase-7 [`ApptReplica`], which mirrors CENTRAL-owned
+// cross-business bookings and is rev-allocated by central; these rows are the shop's own
+// system-of-record and are created/edited by the operator in the portal.
+// --------------------------------------------------------------------------------------------
+
+/// One pet belonging to a [`Client`]. Embedded in the client document (a pet has no life of its own —
+/// it is always reached through its owner), so a client read is a single lookup.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ClientPet {
+    #[serde(rename = "petId")]
+    pub pet_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub species: String,
+    #[serde(default)]
+    pub breed: String,
+    #[serde(default)]
+    pub sex: String,
+    #[serde(rename = "dateOfBirth", default)]
+    pub date_of_birth: String,
+    #[serde(default)]
+    pub notes: String,
+    /// OPTIONAL DogTag id the owner's pet holds (the opaque on-chain id), recorded by the operator so
+    /// the shop can tell WHICH pet a verification was about. Not required — a client may have no tag.
+    #[serde(rename = "dogTagId", default)]
+    pub dog_tag_id: Option<String>,
+}
+
+/// A CUSTOMER of the shop: the owner's contact particulars plus their pets. This is business contact
+/// data the customer gave the shop directly — it is NOT, and must never be populated from, the
+/// owner identity the DogTag protocol deliberately withholds from a verifier.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Client {
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub phone: String,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub pets: Vec<ClientPet>,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: u64,
+    /// Lowercased concatenation of every searchable field (name/email/phone/pet names/tag ids), so a
+    /// free-text needle scans ONE field instead of N — and so the browser never has to pull the
+    /// collection to filter it.
+    ///
+    /// It is NOT an indexed lookup: the match is an UNANCHORED substring, which no B-tree index can
+    /// serve as a bounded seek. The denormalization narrows the scan, it does not remove it.
+    #[serde(rename = "searchKey", default)]
+    pub search_key: String,
+}
+
+impl Client {
+    /// Recompute [`Client::search_key`] from the current field values. Call after every mutation.
+    pub fn rebuild_search_key(&mut self) {
+        let mut parts = vec![
+            self.name.clone(),
+            self.email.clone(),
+            self.phone.clone(),
+            self.address.clone(),
+        ];
+        for p in &self.pets {
+            parts.push(p.name.clone());
+            parts.push(p.breed.clone());
+            if let Some(d) = &p.dog_tag_id {
+                parts.push(d.clone());
+            }
+        }
+        self.search_key = parts.join(" ").to_lowercase();
+    }
+}
+
+/// A booking in the shop's calendar: which client + pet, what service, when, and its lifecycle state.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Appointment {
+    #[serde(rename = "appointmentId")]
+    pub appointment_id: String,
+    #[serde(rename = "clientId")]
+    pub client_id: String,
+    #[serde(rename = "petId", default)]
+    pub pet_id: Option<String>,
+    /// free-text service label (e.g. "Full groom", "Bath & brush").
+    #[serde(default)]
+    pub service: String,
+    /// UNIX SECONDS, not an ISO string: the calendar's day/week queries are range scans over this
+    /// field, so it has to be numerically ordered and indexable.
+    #[serde(rename = "startAt")]
+    pub start_at: u64,
+    #[serde(rename = "endAt")]
+    pub end_at: u64,
+    /// scheduled | confirmed | in_progress | completed | cancelled | no_show
+    pub status: String,
+    #[serde(default)]
+    pub notes: String,
+    /// the staff member assigned (free text; the shop's own roster is out of scope).
+    #[serde(default)]
+    pub groomer: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: u64,
+    /// denormalized client name so the list/calendar renders without an N+1 client join.
+    #[serde(rename = "clientName", default)]
+    pub client_name: String,
+    #[serde(rename = "petName", default)]
+    pub pet_name: String,
+    /// see [`Client::search_key`].
+    #[serde(rename = "searchKey", default)]
+    pub search_key: String,
+}
+
+/// The lifecycle states an [`Appointment`] may hold. Anything else is rejected at the route.
+pub const APPOINTMENT_STATES: &[&str] = &[
+    "scheduled",
+    "confirmed",
+    "in_progress",
+    "completed",
+    "cancelled",
+    "no_show",
+];
+
+impl Appointment {
+    pub fn rebuild_search_key(&mut self) {
+        self.search_key = [
+            self.client_name.as_str(),
+            self.pet_name.as_str(),
+            self.service.as_str(),
+            self.groomer.as_str(),
+            self.notes.as_str(),
+        ]
+        .join(" ")
+        .to_lowercase();
+    }
+}
+
+/// The shop's CENTRAL, permanent record of a verification it performed — the searchable history
+/// behind "All verifications", joined to the appointment + client when the operator started it from
+/// one.
+///
+/// PRIVACY BOUNDARY. This row holds only (a) the PUBLIC verification facts that are already on chain
+/// (purpose, recordType, txHash, the consumed nullifier, the opaque dogTagId) and (b) the keyPaths
+/// the owner explicitly chose to disclose — never their VALUES, mirroring
+/// [`VerifySession::disclosed_key_paths`]. It deliberately does NOT store the owner's `subject`
+/// wallet: though derivable from the tx, persisting it here would create a client -> wallet linkage
+/// inside the shop's own database that the protocol goes out of its way not to hand a verifier.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct VerificationLog {
+    /// == the verify session id (one session == one verification).
+    #[serde(rename = "verificationId")]
+    pub verification_id: String,
+    #[serde(rename = "appointmentId", default)]
+    pub appointment_id: Option<String>,
+    #[serde(rename = "clientId", default)]
+    pub client_id: Option<String>,
+    #[serde(rename = "petId", default)]
+    pub pet_id: Option<String>,
+    pub purpose: String,
+    #[serde(rename = "recordType")]
+    pub record_type: String,
+    /// pending | recording | recorded | error — mirrors the verify session's own status.
+    pub status: String,
+    #[serde(rename = "txHash", default)]
+    pub tx_hash: Option<String>,
+    #[serde(default)]
+    pub nullifier: Option<String>,
+    /// the opaque on-chain dogTagId the consent was bound to (a public verification fact).
+    #[serde(rename = "dogTagId", default)]
+    pub dog_tag_id: Option<String>,
+    /// D1: the identity-leaf keyPaths the owner chose to REVEAL for this verification, mirrored from
+    /// [`VerifySession::disclosed_key_paths`]. EMPTY when the owner disclosed nothing, which is the
+    /// ordinary owner-hidden case — that emptiness IS the privacy guarantee and is never backfilled.
+    #[serde(rename = "disclosedKeyPaths", default)]
+    pub disclosed_key_paths: Vec<String>,
+    /// denormalized for the list view (avoids an N+1 join per row).
+    #[serde(rename = "clientName", default)]
+    pub client_name: String,
+    #[serde(rename = "petName", default)]
+    pub pet_name: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: u64,
+    /// see [`Client::search_key`].
+    #[serde(rename = "searchKey", default)]
+    pub search_key: String,
+}
+
+/// The statuses a [`VerificationLog`] may hold — the verify session's own lifecycle, mirrored. The
+/// list route rejects anything else, so a typo'd `?status=` filter is a request error rather than an
+/// empty page indistinguishable from an empty history.
+pub const VERIFICATION_STATES: &[&str] = &["pending", "recording", "recorded", "error"];
+
+/// The subset of [`VERIFICATION_STATES`] a row can never leave again. This is the OWNERSHIP boundary
+/// for the row: while a verification is in flight the verify leg is its sole writer, and only once it
+/// has settled may anything else (a client rename resyncing labels) rewrite it. Every write is a
+/// whole-document replace, so two writers on one row is a lost update.
+pub const VERIFICATION_TERMINAL_STATES: &[&str] = &["recorded", "error"];
+
+impl VerificationLog {
+    /// True once the verify leg has settled this row and will never write it again.
+    pub fn is_terminal(&self) -> bool {
+        VERIFICATION_TERMINAL_STATES.contains(&self.status.as_str())
+    }
+
+    pub fn rebuild_search_key(&mut self) {
+        let mut parts = vec![
+            self.purpose.clone(),
+            self.record_type.clone(),
+            self.status.clone(),
+            self.client_name.clone(),
+            self.pet_name.clone(),
+        ];
+        if let Some(t) = &self.tx_hash {
+            parts.push(t.clone());
+        }
+        if let Some(d) = &self.dog_tag_id {
+            parts.push(d.clone());
+        }
+        self.search_key = parts.join(" ").to_lowercase();
+    }
+}
+
+/// How many rows a list query may return at most, whatever the caller asks for. Bounds the response
+/// so a large collection can never be shipped to the browser in one page.
+pub const MAX_PAGE: usize = 200;
+pub const DEFAULT_PAGE: usize = 50;
+
+/// A page of results plus the TOTAL number of matches (for the pager), as every list query returns.
+#[derive(Clone, Debug)]
+pub struct Page<T> {
+    pub rows: Vec<T>,
+    pub total: u64,
+}
+
+/// Free-text + paging shared by every list query.
+#[derive(Clone, Debug, Default)]
+pub struct ClientQuery {
+    /// free-text needle, matched (lowercased) against [`Client::search_key`].
+    pub q: Option<String>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AppointmentQuery {
+    pub q: Option<String>,
+    pub client_id: Option<String>,
+    pub pet_id: Option<String>,
+    pub status: Option<String>,
+    /// inclusive lower / exclusive upper bound on `start_at` (unix seconds) — the calendar's window.
+    pub from: Option<u64>,
+    pub to: Option<u64>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct VerificationQuery {
+    pub q: Option<String>,
+    pub client_id: Option<String>,
+    pub appointment_id: Option<String>,
+    pub status: Option<String>,
+    pub purpose: Option<String>,
+    pub from: Option<u64>,
+    pub to: Option<u64>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+/// Clamp a caller-supplied limit into `1..=MAX_PAGE`, defaulting a 0/absent limit to [`DEFAULT_PAGE`].
+pub fn clamp_limit(limit: usize) -> usize {
+    if limit == 0 {
+        DEFAULT_PAGE
+    } else {
+        limit.min(MAX_PAGE)
+    }
+}
+
 /// The persistence trait. All methods async so MongoStore is a drop-in.
 #[async_trait]
 pub trait Store: Send + Sync {
@@ -414,6 +713,29 @@ pub trait Store: Send + Sync {
     async fn wipe_gcal_mirror(&self);
     async fn get_sync_state(&self) -> GcalSyncState;
     async fn put_sync_state(&self, s: GcalSyncState);
+
+    // ---- shop CRM: clients ----
+    /// Insert or replace a client (keyed by `client_id`).
+    async fn put_client(&self, c: Client);
+    async fn get_client(&self, id: &str) -> Option<Client>;
+    /// Remove a client; `true` iff a row existed.
+    async fn delete_client(&self, id: &str) -> bool;
+    /// Search/paginate clients, newest-updated first. Filtering happens HERE (indexed), never in the
+    /// browser: the caller gets one bounded page plus the total match count.
+    async fn list_clients(&self, q: &ClientQuery) -> Page<Client>;
+
+    // ---- shop CRM: appointments ----
+    async fn put_appointment(&self, a: Appointment);
+    async fn get_appointment(&self, id: &str) -> Option<Appointment>;
+    async fn delete_appointment(&self, id: &str) -> bool;
+    /// Search/filter/paginate appointments ordered by `start_at` ASC (calendar order).
+    async fn list_appointments(&self, q: &AppointmentQuery) -> Page<Appointment>;
+
+    // ---- shop CRM: verification history ----
+    async fn put_verification_log(&self, v: VerificationLog);
+    async fn get_verification_log(&self, id: &str) -> Option<VerificationLog>;
+    /// Search/filter/paginate the verification history, newest-created first.
+    async fn list_verification_logs(&self, q: &VerificationQuery) -> Page<VerificationLog>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -444,6 +766,61 @@ struct MemInner {
     idempotency_keys: std::collections::HashSet<String>,
     gcal_maps: HashMap<String, GcalEventMap>, // keyed by google_event_id
     sync_state: GcalSyncState,
+    // shop CRM
+    clients: HashMap<String, Client>,
+    appointments: HashMap<String, Appointment>,
+    verification_logs: HashMap<String, VerificationLog>,
+}
+
+/// Apply a free-text needle to a `search_key`: an empty/whitespace needle matches everything;
+/// otherwise EVERY whitespace-separated term must appear, so "rex smith" narrows rather than widens.
+fn search_matches(search_key: &str, needle: Option<&String>) -> bool {
+    match needle.map(|s| s.trim().to_lowercase()) {
+        None => true,
+        Some(n) if n.is_empty() => true,
+        Some(n) => n.split_whitespace().all(|term| search_key.contains(term)),
+    }
+}
+
+/// Take one bounded page out of an already-sorted match set, returning it with the total count.
+fn paginate<T: Clone>(matched: Vec<T>, limit: usize, offset: usize) -> Page<T> {
+    let total = matched.len() as u64;
+    let rows = matched.into_iter().skip(offset).take(clamp_limit(limit)).collect();
+    Page { rows, total }
+}
+
+/// An equality filter: an absent filter matches everything, a present one must equal the row's value.
+/// (Spelled out rather than `Option::is_none_or`, which postdates the workspace MSRV of 1.80.)
+fn opt_eq<T: PartialEq>(want: &Option<T>, got: &T) -> bool {
+    match want {
+        None => true,
+        Some(w) => w == got,
+    }
+}
+
+/// Same, for a nullable column: a present filter never matches a row whose value is absent.
+fn opt_eq_nullable<T: PartialEq>(want: &Option<T>, got: &Option<T>) -> bool {
+    match (want, got) {
+        (None, _) => true,
+        (Some(w), Some(x)) => w == x,
+        (Some(_), None) => false,
+    }
+}
+
+/// A `>=` lower bound that an absent filter always satisfies.
+fn at_least(bound: Option<u64>, value: u64) -> bool {
+    match bound {
+        None => true,
+        Some(b) => value >= b,
+    }
+}
+
+/// A `<` upper bound (exclusive) that an absent filter always satisfies.
+fn below(bound: Option<u64>, value: u64) -> bool {
+    match bound {
+        None => true,
+        Some(b) => value < b,
+    }
 }
 
 #[derive(Clone, Default)]
@@ -796,5 +1173,96 @@ impl Store for MemStore {
     }
     async fn put_sync_state(&self, s: GcalSyncState) {
         self.inner.write().unwrap().sync_state = s;
+    }
+
+    // ---- shop CRM: clients ----
+    async fn put_client(&self, c: Client) {
+        self.inner.write().unwrap().clients.insert(c.client_id.clone(), c);
+    }
+    async fn get_client(&self, id: &str) -> Option<Client> {
+        self.inner.read().unwrap().clients.get(id).cloned()
+    }
+    async fn delete_client(&self, id: &str) -> bool {
+        self.inner.write().unwrap().clients.remove(id).is_some()
+    }
+    async fn list_clients(&self, q: &ClientQuery) -> Page<Client> {
+        let g = self.inner.read().unwrap();
+        let mut matched: Vec<Client> = g
+            .clients
+            .values()
+            .filter(|c| search_matches(&c.search_key, q.q.as_ref()))
+            .cloned()
+            .collect();
+        // newest-updated first; client_id breaks ties so paging is stable.
+        matched.sort_by(|a, b| {
+            b.updated_at.cmp(&a.updated_at).then_with(|| a.client_id.cmp(&b.client_id))
+        });
+        paginate(matched, q.limit, q.offset)
+    }
+
+    // ---- shop CRM: appointments ----
+    async fn put_appointment(&self, a: Appointment) {
+        self.inner.write().unwrap().appointments.insert(a.appointment_id.clone(), a);
+    }
+    async fn get_appointment(&self, id: &str) -> Option<Appointment> {
+        self.inner.read().unwrap().appointments.get(id).cloned()
+    }
+    async fn delete_appointment(&self, id: &str) -> bool {
+        self.inner.write().unwrap().appointments.remove(id).is_some()
+    }
+    async fn list_appointments(&self, q: &AppointmentQuery) -> Page<Appointment> {
+        let g = self.inner.read().unwrap();
+        let mut matched: Vec<Appointment> = g
+            .appointments
+            .values()
+            .filter(|a| search_matches(&a.search_key, q.q.as_ref()))
+            .filter(|a| opt_eq(&q.client_id, &a.client_id))
+            .filter(|a| opt_eq_nullable(&q.pet_id, &a.pet_id))
+            .filter(|a| opt_eq(&q.status, &a.status))
+            // [from, to): inclusive lower, exclusive upper — adjacent calendar windows never
+            // double-count an appointment that starts exactly on the boundary.
+            .filter(|a| at_least(q.from, a.start_at))
+            .filter(|a| below(q.to, a.start_at))
+            .cloned()
+            .collect();
+        // calendar order: earliest first.
+        matched.sort_by(|a, b| {
+            a.start_at.cmp(&b.start_at).then_with(|| a.appointment_id.cmp(&b.appointment_id))
+        });
+        paginate(matched, q.limit, q.offset)
+    }
+
+    // ---- shop CRM: verification history ----
+    async fn put_verification_log(&self, v: VerificationLog) {
+        self.inner
+            .write()
+            .unwrap()
+            .verification_logs
+            .insert(v.verification_id.clone(), v);
+    }
+    async fn get_verification_log(&self, id: &str) -> Option<VerificationLog> {
+        self.inner.read().unwrap().verification_logs.get(id).cloned()
+    }
+    async fn list_verification_logs(&self, q: &VerificationQuery) -> Page<VerificationLog> {
+        let g = self.inner.read().unwrap();
+        let mut matched: Vec<VerificationLog> = g
+            .verification_logs
+            .values()
+            .filter(|v| search_matches(&v.search_key, q.q.as_ref()))
+            .filter(|v| opt_eq_nullable(&q.client_id, &v.client_id))
+            .filter(|v| opt_eq_nullable(&q.appointment_id, &v.appointment_id))
+            .filter(|v| opt_eq(&q.status, &v.status))
+            .filter(|v| opt_eq(&q.purpose, &v.purpose))
+            .filter(|v| at_least(q.from, v.created_at))
+            .filter(|v| below(q.to, v.created_at))
+            .cloned()
+            .collect();
+        // newest first.
+        matched.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| a.verification_id.cmp(&b.verification_id))
+        });
+        paginate(matched, q.limit, q.offset)
     }
 }

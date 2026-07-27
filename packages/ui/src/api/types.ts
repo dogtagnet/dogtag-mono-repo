@@ -289,6 +289,12 @@ export interface VerifySessionStartReq {
   purpose: string;
   recordType: string;
   mode?: VerifyMode;
+  /**
+   * OPTIONAL shop appointment this verification is being performed for. Supplying it links the
+   * resulting verification to that appointment and its client in the shop's verification history.
+   * Omit for an ad-hoc verification.
+   */
+  appointmentId?: string;
 }
 export interface VerifySessionStartResp {
   qrUrl: string;
@@ -851,4 +857,151 @@ export interface ImportVerdict {
   issuance: FragmentState;
   identity: FragmentState;
   ownership: FragmentState;
+}
+
+// --------------------------------------------------------------------------------------------
+// Shop CRM — clients / appointments / verification history (`stacks/vet/api/src/crm.rs`).
+// --------------------------------------------------------------------------------------------
+
+/** One page of a CRM list query. `total` is the FULL match count, for the pager. */
+export interface CrmPage<T> {
+  rows: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface ClientPet {
+  petId: string;
+  name: string;
+  species: string;
+  breed: string;
+  sex: string;
+  dateOfBirth: string;
+  notes: string;
+  /** the pet's DogTag id, if the owner holds one */
+  dogTagId: string | null;
+}
+
+export interface CrmClient {
+  clientId: string;
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+  notes: string;
+  pets: ClientPet[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Pet fields on write. Echo `petId` on an edit to keep the pet's identity (and its links). */
+export interface ClientPetInput {
+  petId?: string;
+  name: string;
+  species?: string;
+  breed?: string;
+  sex?: string;
+  dateOfBirth?: string;
+  notes?: string;
+  dogTagId?: string | null;
+}
+
+export interface ClientInput {
+  name: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  notes?: string;
+  pets?: ClientPetInput[];
+}
+
+export const APPOINTMENT_STATES = [
+  "scheduled",
+  "confirmed",
+  "in_progress",
+  "completed",
+  "cancelled",
+  "no_show",
+] as const;
+export type AppointmentStatus = (typeof APPOINTMENT_STATES)[number];
+
+export interface CrmAppointment {
+  appointmentId: string;
+  clientId: string;
+  /** denormalized so a list renders without a per-row client fetch */
+  clientName: string;
+  petId: string | null;
+  petName: string;
+  service: string;
+  /** UNIX SECONDS (the calendar range-queries this) */
+  startAt: number;
+  endAt: number;
+  status: AppointmentStatus;
+  notes: string;
+  groomer: string;
+  createdAt: number;
+  updatedAt: number;
+  /** present on the single-appointment read only */
+  verifications?: CrmVerification[];
+}
+
+export interface AppointmentInput {
+  clientId: string;
+  petId?: string | null;
+  service?: string;
+  startAt: number;
+  /** omit for a default one-hour slot */
+  endAt?: number;
+  status?: AppointmentStatus;
+  notes?: string;
+  groomer?: string;
+}
+
+/**
+ * A verification the shop performed. Holds the public on-chain facts plus the keyPaths the owner
+ * chose to disclose — never their values, and never the owner's identity or wallet, which the
+ * protocol withholds from a verifier.
+ */
+export interface CrmVerification {
+  verificationId: string;
+  appointmentId: string | null;
+  clientId: string | null;
+  clientName: string;
+  petId: string | null;
+  petName: string;
+  purpose: string;
+  recordType: string;
+  status: "pending" | "recording" | "recorded" | "error";
+  /** on `error` this carries the failure message, mirroring the verify session */
+  txHash: string | null;
+  nullifier: string | null;
+  dogTagId: string | null;
+  /** EMPTY on an ordinary owner-hidden verification — that emptiness IS the privacy guarantee. */
+  disclosedKeyPaths: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Filters accepted by the list queries. Absent/blank fields are not applied. */
+export interface ClientListQuery {
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+export interface AppointmentListQuery extends ClientListQuery {
+  clientId?: string;
+  petId?: string;
+  status?: AppointmentStatus;
+  /** inclusive lower / exclusive upper bound on startAt (unix seconds) */
+  from?: number;
+  to?: number;
+}
+export interface VerificationListQuery extends ClientListQuery {
+  clientId?: string;
+  appointmentId?: string;
+  status?: CrmVerification["status"];
+  purpose?: string;
+  from?: number;
+  to?: number;
 }
