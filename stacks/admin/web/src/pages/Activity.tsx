@@ -6,7 +6,10 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  ChainTime,
+  ChainValue,
   Input,
+  ProvenanceBadge,
   Select,
   SelectContent,
   SelectItem,
@@ -19,17 +22,23 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  explorerAddressUrl,
-  explorerTxUrl,
+  TxRef,
+  addressExplorerHref,
+  chainProvenance,
+  emittingCloneName,
+  emittingContractRole,
+  eventDetailFields,
+  formatChainTime,
+  txExplorerHref,
   useToast,
   type ActivityEvent,
   type ActivityQuery,
   type ApiError,
 } from "@dogtag/ui";
-import { Activity as ActivityIcon, ExternalLink, Filter, RefreshCw, X } from "lucide-react";
+import { Activity as ActivityIcon, Filter, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useApp } from "../app/AppContext";
-import { absoluteTime, eventMeta, EVENT_TYPES, relativeTime } from "../lib/activity";
+import { eventMeta, EVENT_TYPES } from "../lib/activity";
 import { shortAddr } from "../lib/format";
 
 const PAGE_SIZE = 100;
@@ -67,9 +76,18 @@ const EMPTY: Filters = {
  * Activity - the UNSCOPED cross-issuer on-chain oversight feed (plan §3.2, the captain's "see on-chain
  * activity"). Renders the PR-B `/v1/admin/activity` proxy of the oversight indexer: every
  * IssuerCreated / RootRegistered / Whitelisted / Delisted / RootIssued / RootRevoked / Verified event,
- * newest-first, each with block/tx/timestamp, an explorer link, and the signer's BUSINESS NAME resolved
- * from the admin directory (`actorName`/`cloneName`). Filterable by issuer, signer, record type, event
- * type, finality, and time range. Non-PII throughout.
+ * newest-first, each with the on-chain time, the emitting contract, the block, the transaction, and the
+ * signer's BUSINESS NAME resolved from the admin directory (`actorName`/`cloneName`). Filterable by
+ * issuer, signer, record type, event type, finality, and time range. Non-PII throughout.
+ *
+ * This is an AUDIT surface, so it uses the shared `@dogtag/ui` `chain/` primitives that the government
+ * Oversight and vet Traceability tables were migrated onto in PR #88 - one implementation, so the three
+ * consoles cannot drift into separate dialects of "here is the transaction". The rule those primitives
+ * carry, and the reason this page was in scope at all: a row may claim an explorer link ONLY when its
+ * transaction hash is a well-formed 32-byte value. This table previously linked EVERY row to
+ * `explorer.roax.net`, so a scripted indexer feed's `0x0800` rendered as a working on-chain reference
+ * to a transaction that cannot exist. See `chain/provenance.ts` for why the test is arithmetic rather
+ * than a demo-mode flag: it also catches ONE synthetic row inside an otherwise-real feed.
  */
 export function Activity() {
   const { central } = useApp();
@@ -80,7 +98,10 @@ export function Activity() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [unavailable, setUnavailable] = useState<string | null>(null);
-  const now = useMemo(() => Date.now(), [events]);
+  const syntheticCount = useMemo(
+    () => (events ?? []).filter((ev) => chainProvenance(ev) !== "onchain").length,
+    [events],
+  );
 
   const load = useCallback(
     async (f: Filters) => {
@@ -150,10 +171,16 @@ export function Activity() {
             <CardTitle className="flex items-center gap-2">
               <ActivityIcon className="h-5 w-5 text-primary" /> On-chain activity
             </CardTitle>
+            {/* "every row links to the ROAX explorer" used to be stated here, and it was the defect
+                written down as a promise: the link was emitted whether or not the transaction could
+                exist. State the condition instead of the blanket claim. */}
             <CardDescription>
               The unscoped, cross-issuer oversight feed - every issuance, revocation, whitelist change,
               and verification across all issuers, newest first. Signers are named from the business
-              directory; every row links to the ROAX explorer. No client PII.
+              directory. A row links to the ROAX explorer only when its transaction hash is a
+              well-formed 32-byte value; rows that carry anything else are marked{" "}
+              <span className="font-medium">not chain-addressable</span> and their links are withheld.
+              No client PII.
             </CardDescription>
           </div>
           <Button variant="outline" loading={loading} onClick={() => load(applied)}>
@@ -270,22 +297,51 @@ export function Activity() {
                 </span>
                 {total > events.length && <span>Narrow the filters to see older events.</span>}
               </div>
+
+              {/* Feed-level provenance, as government Oversight and vet Traceability both carry. The
+                  per-row badge is what makes a single bad row visible; this line is what makes a
+                  WHOLLY scripted feed visible without reading every row. It states only what the data
+                  shows - a malformed hash - and names the demo feed as the likely cause, not an
+                  asserted one. */}
+              {syntheticCount > 0 && (
+                <div
+                  className="mb-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+                  data-testid="activity-synthetic-banner"
+                >
+                  <span className="font-semibold">
+                    {syntheticCount} of {events.length}
+                  </span>{" "}
+                  events below carr{syntheticCount === 1 ? "ies" : "y"} a transaction hash that is not
+                  a well-formed 32-byte value, so it addresses no transaction on any chain - most
+                  often a scripted indexer feed (<code>INDEXER_DEMO_MODE</code>). Th
+                  {syntheticCount === 1 ? "at row is" : "ose rows are"} marked{" "}
+                  <span className="font-semibold">not chain-addressable</span> and{" "}
+                  {syntheticCount === 1 ? "its" : "their"} explorer link
+                  {syntheticCount === 1 ? " is" : "s are"} withheld.
+                </div>
+              )}
+
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      {/* What an auditor must read WITHOUT scrolling leads the table: when, whether
+                          the transaction is real, and which contract emitted it. The directory joins
+                          (actor, clone) scroll. `Record type` folded into `Details`, where it is
+                          labelled alongside the event's other identifiers - the filter input above is
+                          a query param and is unaffected. */}
                       <TableHead>Event</TableHead>
+                      <TableHead>When</TableHead>
+                      <TableHead>On chain</TableHead>
+                      <TableHead>Contract</TableHead>
+                      <TableHead>Details</TableHead>
                       <TableHead>Actor</TableHead>
                       <TableHead>Issuer clone</TableHead>
-                      <TableHead>Record type</TableHead>
-                      <TableHead>Block</TableHead>
-                      <TableHead>When</TableHead>
-                      <TableHead>Tx</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {events.map((ev) => (
-                      <EventRow key={ev.id} ev={ev} now={now} />
+                      <EventRow key={ev.id} ev={ev} />
                     ))}
                   </TableBody>
                 </Table>
@@ -307,69 +363,132 @@ function FilterField({ label, children }: { label: string; children: ReactNode }
   );
 }
 
-/** One address rendered as a business name (when known) over a monospace explorer link. */
+/**
+ * One address rendered as a business name (when known) over its monospace address.
+ *
+ * The address links to the explorer only when it is a well-formed 20-byte EVM address. This is the
+ * same rule the transaction reference follows and it is here for the same reason: this cell used to
+ * call `explorerAddressUrl` unconditionally, so a malformed `actor`/`clone` on the very feed that can
+ * carry a synthetic row rendered a real-looking address link that leads nowhere. An unlinkable address
+ * is still shown - the value is what the indexer reported and hiding it would lose an auditor a fact -
+ * it simply is not dressed as something that resolves.
+ */
 function ActorCell({ address, name }: { address?: string | null; name?: string | null }) {
   if (!address) return <span className="text-xs text-muted">-</span>;
+  const href = addressExplorerHref(address);
   return (
     <div className="flex flex-col">
       {name && <span className="text-sm font-medium text-onSurface">{name}</span>}
-      <a
-        href={explorerAddressUrl(address)}
-        target="_blank"
-        rel="noreferrer"
-        className="font-mono text-xs text-primary hover:underline"
-      >
-        {shortAddr(address)}
-      </a>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="font-mono text-xs text-primary hover:underline"
+          title={address}
+        >
+          {shortAddr(address)}
+        </a>
+      ) : (
+        <span
+          className="font-mono text-xs text-muted"
+          title={`${address} - not a well-formed 20-byte address, so it has no explorer page`}
+        >
+          {shortAddr(address)}
+        </span>
+      )}
     </div>
   );
 }
 
-function EventRow({ ev, now }: { ev: ActivityEvent; now: number }) {
+function EventRow({ ev }: { ev: ActivityEvent }) {
   const meta = eventMeta(ev.type);
-  const txUrl = ev.txUrl || (ev.txHash ? explorerTxUrl(ev.txHash) : undefined);
+  const provenance = chainProvenance(ev);
+  const contractHref = addressExplorerHref(ev.contract);
+  const emittedCloneName = emittingCloneName(ev);
   return (
-    <TableRow>
+    <TableRow
+      data-testid="activity-event-row"
+      data-type={ev.type}
+      data-provenance={provenance}
+    >
       <TableCell>
         <Badge variant={meta.variant}>{meta.label}</Badge>
       </TableCell>
-      <TableCell>
-        <ActorCell address={ev.actor} name={ev.actorName} />
+      {/* Absolute time WITH a timezone, plus a relative hint. "3 min ago" alone is not something an
+          auditor can cite, and the tooltip that used to carry the absolute form survives neither a
+          screenshot nor a touch device. */}
+      <TableCell data-testid="activity-when">
+        <ChainTime seconds={ev.blockTimestamp} />
       </TableCell>
-      <TableCell>
-        <ActorCell address={ev.clone} name={ev.cloneName} />
-      </TableCell>
-      <TableCell className="text-sm">
-        {ev.recordType ? (
-          <span className="font-medium">{ev.recordType}</span>
-        ) : (
-          <span className="text-xs text-muted">-</span>
-        )}
-      </TableCell>
-      <TableCell className="font-mono text-xs">
-        <div className="flex flex-col">
-          <span>#{ev.blockNumber}</span>
-          <Badge variant={ev.finality === "finalized" ? "neutral" : "warning"} className="mt-1 w-fit">
-            {ev.finality}
-          </Badge>
+      {/* Block + finality + transaction + the per-row provenance verdict, together: the block and the
+          transaction are one claim about where this event sits on chain, and the verdict says whether
+          that claim can be checked. `TxRef` renders the hash INERT rather than linked when it cannot
+          address a transaction - a struck-through value, never a dead anchor. */}
+      <TableCell className="text-xs">
+        <div className="flex flex-col gap-1">
+          <span className="whitespace-nowrap font-mono">
+            #{ev.blockNumber ?? "?"}
+            {ev.finality && (
+              <Badge
+                variant={ev.finality === "finalized" ? "neutral" : "warning"}
+                className="ml-1.5"
+              >
+                {ev.finality}
+              </Badge>
+            )}
+          </span>
+          <TxRef event={ev} href={txExplorerHref(ev)} testId="activity-tx-link" />
+          <ProvenanceBadge provenance={provenance} className="w-fit" />
         </div>
       </TableCell>
-      <TableCell className="text-xs" title={absoluteTime(ev.blockTimestamp)}>
-        {relativeTime(ev.blockTimestamp, now)}
+      {/* WHICH smart contract emitted this - a question the table could not answer before, and one an
+          unscoped cross-issuer feed needs most. `contract` is not always the issuer clone:
+          `issuerCreated`/`rootRegistered` come from the factory, `whitelisted`/`delisted` from the
+          issuer registry, `verified` from the verification registry. The clone's NAME appears here
+          only when the clone is what emitted, else the factory would read as the named clone; the
+          clone keeps its own column. */}
+      <TableCell className="text-xs" data-testid="activity-contract">
+        <div className="flex max-w-[10rem] flex-col gap-0.5">
+          <ChainValue
+            label={emittingContractRole(ev.type)}
+            value={ev.contract}
+            href={contractHref}
+            head={8}
+            stacked
+            testId="activity-contract-value"
+          />
+          {emittedCloneName && (
+            <span className="truncate text-[10px] text-muted" title={emittedCloneName}>
+              {emittedCloneName}
+            </span>
+          )}
+        </div>
       </TableCell>
-      <TableCell>
-        {txUrl ? (
-          <a
-            href={txUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
-          >
-            {shortAddr(ev.txHash)} <ExternalLink className="h-3 w-3" />
-          </a>
-        ) : (
-          <span className="text-xs text-muted">-</span>
-        )}
+      {/* Every identifier labelled and copyable. Truncated 32-byte hex is otherwise indistinguishable
+          between a credential root, a hashed record-type key, a purpose key and a nullifier - and this
+          feed is unscoped, so there is no local join to fall back on: these identifiers are all the
+          reader gets. `eventDetailFields` follows the SHAPE of `recordType`, which arrives either as a
+          human label or as its keccak key depending on whether the indexer could reverse it. */}
+      <TableCell className="text-xs" data-testid="activity-details">
+        <div className="flex max-w-[10rem] flex-col gap-0.5">
+          {eventDetailFields(ev)
+            .filter((f) => f.value)
+            .map((f) => (
+              <ChainValue key={f.label} label={f.label} value={f.value} head={8} stacked />
+            ))}
+          {(ev.deadline ?? 0) > 0 && (
+            <span className="text-[10px] text-muted">
+              consent until {formatChainTime(ev.deadline)}
+            </span>
+          )}
+        </div>
+      </TableCell>
+      <TableCell data-testid="activity-actor">
+        <ActorCell address={ev.actor} name={ev.actorName} />
+      </TableCell>
+      <TableCell data-testid="activity-clone">
+        <ActorCell address={ev.clone} name={ev.cloneName} />
       </TableCell>
     </TableRow>
   );
