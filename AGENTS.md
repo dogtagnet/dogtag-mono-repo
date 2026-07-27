@@ -10,6 +10,25 @@ Start every new Dogtag run with `no-mistakes axi run --skip=document --intent "<
 
 When acting as the no-mistakes Test or evidence agent, use the configured targeted command plus at most the smallest checks directly relevant to the submitted diff. Never run `cargo test --workspace` or another full monorepo suite locally, and do not expand into browsers or screenshots unless the diff changes that UI. Treat 15 minutes as a prompt/supervision budget, not a hard enforced timeout; park with a finding instead of broadening beyond it.
 
+### NEVER kill processes by path or name fragment - kill by recorded PID
+
+**This applies to every agent in this repo, and it has already destroyed a live service three separate times.**
+
+`pkill -f "target/release/government-api"` (or any `pkill -f`, `killall`, or `kill $(pgrep -f …)` over a path or binary name) does **not** match only the process you started. This monorepo is checked out many times at once - the primary checkout, `~/.treehouse/…` task worktrees, and the no-mistakes pipeline worktrees - and **every one of them builds the same binary to the same relative path**, so `target/release/government-api` matches your throwaway instance *and* the captain's live demo stack he is testing on. The one that dies is whichever the pattern happens to hit.
+
+The damage is not symmetrical with the inconvenience: a killed `government-api` cannot simply be restarted by whoever killed it, because it boots from that checkout's own `GOV_SIGNER_KEY`/env, and a mis-configured one **comes up looking healthy while silently doing nothing** - strictly worse than being down, because it then lies to whoever checks `/health`.
+
+So:
+
+- **Record the PID when you start something** (`echo $! > …`) and kill *that* PID, nothing else.
+- Bind your own services to **your own ports**; never assume a port is yours because the binary name matches.
+- If you believe a process you did not start must die, **stop and ask** - do not pattern-match.
+- Probing whether a service is alive: check `lsof -nP -iTCP -sTCP:LISTEN` for the port, and remember the **vite dev servers bind IPv6-only (`[::1]`)**, so a `127.0.0.1` health probe reports a perfectly healthy server as dead. Confirm with `http://[::1]:<port>/` before reporting anything as down.
+
+### zsh eats `:r` in a refspec (and backticks in a quoted argument)
+
+The default shell here is zsh, which applies **parameter modifiers** inside expansions: `"$SHA:refs/heads/foo"` silently becomes `<sha>efs/heads/foo`, because `:r` is "remove extension". A preservation push written that way fails with a confusing `src refspec … does not match any`. Always brace it: `"${SHA}:refs/heads/foo"`. Related: backticks inside a double-quoted `--instructions`/`--intent` argument are executed as command substitution and silently strip identifiers - write long arguments to a file with a quoted heredoc and pass `"$(cat file)"`.
+
 ## Product model (non-negotiable)
 
 **dogtag is ONE owner-hidden model. There is no Level-A/Level-B split, mode, or vocabulary in the product.**
