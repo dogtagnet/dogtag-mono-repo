@@ -129,12 +129,15 @@ A credential, once issued, is a **wrapped document**:
     "version": "dogtag-levelb/1",            // the internal protocol version key (an internal identifier, not a product label)
     "verificationRegistry": "0x…",           // routing key: which verification registry this record targets
     "issuerClone": "0x…",                    // == issuer.documentStore
-    "issuerSigner": "0x…"                     // CLAIM of who issued; validated vs on-chain issuedBy[R], never treated as authority
+    "issuerSigner": "0x…",                    // CLAIM of who issued; validated vs on-chain issuedBy[R], never treated as authority
+    "statusBaseUrl": "https://…"              // OPTIONAL: reachable origin serving <base>/r/<receiptId>; omitted (not null) when the issuer publishes no status page
   }
 }
 ```
 
 > **The optional `protocol` block (M7 provenance, M7 §4.2)** records which protocol/contract the credential was created on and who issued it, carried **BESIDE `merkleRoot` - never inside `R` or the ZK proof** - so a receiver can route to the right registry/clone. Pre-M7 docs omit it and stay verifiable. The `version` string is the internal protocol version key whose keccak keys the on-chain `ProtocolRegistry`; it is a load-bearing identifier and is never renamed. `issuerSigner` is a routing **hint** (the issuer's claim), never authority: `verify()` may validate it against on-chain `issuedBy[R]` and always re-derives issuance against `issuer.documentStore`, never the untrusted block.
+
+> **`statusBaseUrl` is the receipt QR's only base**, stamped at issuance from the issuing stack's own `DEPLOYMENT_URL` - and only by an issuer that actually publishes a durable PII-free status page (today the government stack's `GET /r/:receiptId`; the vet/groomer `/r/<token>` is a one-time share handoff that 404s once consumed, so those stacks stamp nothing). It is **not** `issuer.domain`: that is a `did:web` **identity**, a stable name that need not resolve or serve anything, so a QR built from it is a dead link wearing a verification affordance. A renderer MUST use this field and MUST NOT fall back to `issuer.domain`; with no value there is no status page, and saying so is the honest degradation. Like the rest of the block it sits outside `R`, so an issuer can start stamping it without disturbing a single already-anchored credential.
 
 > **Single-record now, batch later** (your decision): `proof` is empty and `merkleRoot == targetHash` today. When batching is added, `targetHash` stays the per-document root, `proof` carries batch siblings, and `merkleRoot` becomes the batch root. **The anchored value is always a `bytes32` root and verification always calls `isValid(root)` — no format break.**
 

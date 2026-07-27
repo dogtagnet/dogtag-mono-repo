@@ -87,8 +87,11 @@ It realizes the architecture's **future-government** notes (§3.6 record-type ta
   A 12-char Crockford-base32 `receiptId` (CSPRNG, ~60 bits) is minted per issue, committed into `R` as a public salted leaf, and kept as the off-chain `/r/:receiptId` lookup handle; the issuance **date** is derived from the on-chain `issuedAt[R]` timestamp, never a leaf.
   The issue endpoint is **gated by the operator bearer** (`GOV_API_TOKEN`) — an authority portal anyone could issue from would undermine the receipt's credibility.
   The government signer must hold that record type's issuance whitelist (`IssuerRegistry.whitelistFor`, granted by the protocol admin) and be funded with PLASMA — exactly the vet issuer model, one trust tier up.
-- **Verify** — perform government-grade verification of any DogTag credential: recompute **integrity** offline (salted-leaf root), read **on-chain status** (`DogTagIssuer.isValid(R)`), and read **issuer identity** (`IssuerRegistry.isWhitelistedFor(keccak(recordType), signer)`).
+- **Verify** — perform government-grade verification of any DogTag credential: recompute **integrity** offline (salted-leaf root), then anchor every on-chain read to the issuing clone **this deployment's own `DogTagIssuerFactory` names for the root** (`rootIssuer[R]`, `DOGTAG_ISSUER_FACTORY_ADDR`) - never the document's own `issuer.documentStore`, which sits outside `R` and is therefore chosen by whoever built the document. Against that clone: **on-chain status** (`DogTagIssuer.isValid(R)`) and **issuer identity** - `issuedBy(R)` for the originating signer, `recordType()` for the key to ask about, then `IssuerRegistry.isWhitelistedFor(cloneRecordType, thatSigner)`.
   All three are the authenticity pillars of architecture §5; all chain reads are **gasless**.
+  **All three must PASS**: the verdict is `integrity && onchain && issuerWhitelisted == true`, and the issuer pillar is tri-state - `false` when resolved-but-unauthorized or when the envelope misrepresents the clone/record type, `null` when nothing resolves - because an unanswered pillar is never a passed pillar.
+  Two consequences are wider than the forgery they close and are **not** regressions: a credential that used to verify `true` because no signer was supplied now fails, and a root issued by a clone of a **superseded** factory resolves to zero → indeterminate → no longer verifies.
+  The pillar no longer depends on a caller-supplied signer at all; the optional request overrides can only **tighten** it, never select which contract answers (`POST /v1/verify` is unauthenticated).
 - **Govern** — intentionally **out of scope** for the government app: protocol governance (whitelisting, role grants, timelock) remains centralized in `stacks/admin` (§6). The government app is a credential authority, not the protocol admin.
 
 **Centralized DB (what it stores off-chain and why).**
@@ -107,7 +110,7 @@ Its own Mongo (`governmentdata`), two collections:
 |---|---|---|
 | `GET /health` | liveness | status + the honest chain-backend report (`backend`/`simulated`/`chainId`/`canSign`/`signer`/`simulatedSigner`, see "Chain-client selection" below) + `demo` (store only) + configured issuer clones |
 | `POST /v1/travel-clearance/issue` | **issuer** 🔒 | build `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` VC (+ mint public `receiptId`) → root `R` → anchor `DogTagIssuer.issue(R)` (unless `dry_run` / no signer) → persist |
-| `POST /v1/verify` | **verifier** | integrity + `isValid` + `isWhitelistedFor` → verdict → persist audit record |
+| `POST /v1/verify` | **verifier** | integrity + factory-resolved `isValid` + the mandatory issuer-whitelist pillar (all three must pass) → verdict → persist audit record |
 | `GET /v1/records`, `GET /v1/records/:root` | custodian 🔒 | list / fetch issued credentials (off-chain DB, incl. the on-chain proof + explorer links + derived `effectiveStatus`) |
 | `PATCH /v1/records/:root` | custodian 🔒 | update **off-chain metadata only** (`label`/`notes`, `status` → `expired`); any on-chain-derived field is rejected 400 |
 | `POST /v1/records/:root/revoke` | **issuer** 🔒 | on-chain `DogTagIssuer.revoke(R)` → soft-invalidate (row + issuance proof kept, revoke-tx proof added) |
@@ -127,6 +130,10 @@ TTLs (share 180s, export 600s), same consumption rules (share consumed on first 
 the session status as the replay guard). Both mobile apps hard-code these paths, so they must never be
 renamed or `/v1`-prefixed. The QR always encodes **`DEPLOYMENT_URL`** — the host the PHONE can reach — never
 the API's bind address.
+`DEPLOYMENT_URL` has a **second, permanent** consumer here: it is also stamped into every issued credential as `protocol.statusBaseUrl`, the base the holder's receipt QR points at forever (architecture §3.1).
+Because that copy outlives the 180s share token, issuance **refuses to stamp a base no phone could resolve** - RFC-2606/6761 placeholders (`*.example`, `example.com/net/org`, `*.invalid`, `*.test`) and `localhost`/loopback literals - and the credential simply carries no status page.
+So a `localhost`-configured stack still mints working share/verify QRs while issuing credentials with **no receipt QR at all**; that asymmetry is the honest degradation, not a bug.
+Set a real reachable host - a LAN IP or a tunnel hostname both pass.
 
 **The authority verifies through the same ZK consent path as anyone else.** `POST /verify/session/start` →
 QR → the owner proves on-device → `POST /v1/verify/consent` → `VerificationRegistryConsent.recordVerificationZK`,
@@ -147,7 +154,7 @@ The receipt landed in PR-2 (see AGENTS.md "Government receipt UI + portal shell 
 `government-api` picks its `ChainClient` from `GOV_CHAIN_BACKEND` alone - deliberately NOT from the demo flag:
 
 - **`live` (the default)** → `AlloyChain` against ROAX RPC. Reads (verify) always work; issuance additionally needs `GOV_SIGNER_KEY` (a malformed key fails closed). Legacy gas pricing (read `eth_gasPrice`, send a legacy tx) mirrors `vet-api`'s ROAX quirk.
-- **`mem` (explicit opt-in)** → `MemChain`: the full issue/verify flow runs with no node and no gas. The stand-in signer is pre-whitelisted so the issuer-identity pillar is still demoable. Nothing is broadcast and nothing survives the process.
+- **`mem` (explicit opt-in)** → `MemChain`: the full issue/verify flow runs with no node and no gas. The stand-in signer is pre-whitelisted **and each configured clone's `recordType()` is declared** (mirroring what `createIssuer` fixes on a real clone) so the now-mandatory issuer-identity pillar still resolves - without the declaration it would read indeterminate and every demo verdict would be `false`. Nothing is broadcast and nothing survives the process.
 
 The STORE is a separate axis: `GOV_DEMO_MODE`/`DEMO_MODE` selects the ephemeral `MemStore` (plus the well-known demo API token), and `MONGO_URI` selects `MongoStore`.
 

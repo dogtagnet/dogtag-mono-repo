@@ -2224,6 +2224,11 @@ written together so they describe the same check. Two anchor shapes exist: an or
 anchored in a DogTagIssuer clone (`isValid(root)`), while a `DOG_PROFILE` is anchored in the
 DogTagSBT (`profileRoot(dogTagId)`), so any re-check has to branch on `issuer.documentStore`.
 
+**A refresh may LOWER a verdict, and may raise one only as far as the pillars actually establish - never past them.**
+So the clone branch is not `isValid` alone: it folds the same mandatory issuer-whitelist pillar import runs, through the same shared fold (`IssuerWhitelist`, in both ports' `RecordImporter.{swift,kt}`) - see "The issuer-whitelist pillar is MANDATORY, and anchors the clone to the FACTORY" above, pinned by the Android JVM suites `RefreshCannotUpgradeVerdictTest` / `IssuerWhitelistPillarTest`.
+Two parallel implementations of one verdict rule is how the two paths came to disagree, so there is now exactly one.
+The SBT branch deliberately does NOT fold it: the tag is anchored in the SBT, where `rootIssuer`/`issuedBy` do not exist, so the pillar would resolve indeterminate and turn every profile refresh into UNVERIFIED - the same over-claim inverted.
+
 The SBT branch checks the profile root ONLY. There is deliberately no owner comparison: the tag is
 custodial under the owner-hidden model, so `ownerOf` is the neutral custodian and says nothing about
 the holder - the retired mobile `RoaxRpc.ownerOf`/`Net.swift` reads went with the owner-revealing
