@@ -311,7 +311,7 @@ fn build_pet(p: &PetBody) -> ClientPet {
         date_of_birth: p.date_of_birth.trim().to_string(),
         notes: p.notes.clone(),
         // TRIMMED, like every other field here and like `link_pet_dogtag`. The tag is compared as an
-        // exact string by both `find_pets_by_dog_tag` and the held-document cache lookup, so storing
+        // exact string by both `try_find_pets_by_dog_tag` and the held-document cache lookup, so storing
         // a pasted " 4" would silently defeat the one-pet-per-tag guard AND miss the credential
         // filed under "4" - one stray character reintroducing two separate bugs.
         dog_tag_id: p

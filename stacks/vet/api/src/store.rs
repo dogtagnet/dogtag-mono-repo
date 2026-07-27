@@ -871,11 +871,6 @@ pub trait Store: Send + Sync {
     async fn get_pet(&self, pet_id: &str) -> Option<PetRow> {
         self.try_get_pet(pet_id).await.ok().flatten()
     }
-    /// [`Store::try_find_pets_by_dog_tag`] for read-only callers. Never use this in a guard: an
-    /// unreadable store would present as an unclaimed tag.
-    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow> {
-        self.try_find_pets_by_dog_tag(dog_tag_id).await.unwrap_or_default()
-    }
 
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment);
