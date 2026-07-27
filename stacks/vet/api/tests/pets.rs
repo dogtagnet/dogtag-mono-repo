@@ -575,6 +575,173 @@ async fn a_conflicting_tag_on_an_unknown_pet_is_still_a_404() {
 }
 
 #[tokio::test]
+async fn creating_a_client_cannot_seat_a_tag_another_clients_pet_already_holds() {
+    let (app, op) = pets_app().await;
+    make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }])).await;
+
+    // The client form carries a DogTag field, so this is the likeliest place an operator types one -
+    // a guard the pet routes enforce and this one does not would read as an invariant while the main
+    // way in stayed open.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({ "name": "Bob Lim", "pets": [{ "name": "Milo", "dogTagId": "4" }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert!(b["error"].as_str().unwrap_or_default().contains("Rex"), "{b}");
+
+    // Validation runs before any write, so the refused client must not exist even partly.
+    let (_, found) = call(&app, "GET", "/clients?q=Bob", Some(&op), None).await;
+    assert_eq!(found["total"], 0, "a refused create must not half-apply: {found}");
+}
+
+#[tokio::test]
+async fn editing_a_client_cannot_steal_a_tag_from_another_clients_pet() {
+    let (app, op) = pets_app().await;
+    make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }])).await;
+    let (bob, bob_pets) =
+        make_client_with_pets(&app, &op, "Bob Lim", json!([{ "name": "Milo" }])).await;
+
+    // The exact click-path the pet page's 409 would otherwise push an operator towards: refused
+    // there, then typed into the client edit form instead.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "pets": [{ "petId": bob_pets[0], "name": "Milo", "dogTagId": "4" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert!(b["error"].as_str().unwrap_or_default().contains("Rex"), "{b}");
+    assert!(
+        get_pet(&app, &op, &bob_pets[0]).await["dogTagId"].is_null(),
+        "a refused edit must not half-apply"
+    );
+}
+
+#[tokio::test]
+async fn one_request_cannot_put_the_same_tag_on_two_of_its_own_pets() {
+    let (app, op) = pets_app().await;
+
+    // Neither pet is stored yet, so no lookup against the store could catch this - the payload has
+    // to be checked against itself.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({
+            "name": "Alice Tan",
+            "pets": [{ "name": "Rex", "dogTagId": "4" }, { "name": "Milo", "dogTagId": "4" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(msg.contains("Rex") && msg.contains("Milo"), "both pets must be named: {b}");
+}
+
+#[tokio::test]
+async fn resaving_a_client_with_its_own_tags_is_not_a_conflict_with_itself() {
+    let (app, op) = pets_app().await;
+    let (client_id, pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "dogTagId": "4" }, { "name": "Milo", "dogTagId": "3" }]),
+    )
+    .await;
+
+    // A whole-document replace re-sends pets that are already stored, so the guard has to read the
+    // payload as this client's NEW pet list rather than as additions to the old one. Getting this
+    // wrong would 409 every ordinary edit of an already-tagged client.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{client_id}"),
+        Some(&op),
+        Some(json!({
+            "name": "Alice Tan-Lim",
+            "pets": [
+                { "petId": pets[0], "name": "Rex", "dogTagId": "4" },
+                { "petId": pets[1], "name": "Milo", "dogTagId": "3" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "an ordinary edit must not 409: {b}");
+    assert_eq!(b["pets"][0]["dogTagId"], "4");
+
+    // Same reason, the other way round: the owner may move a tag BETWEEN their own pets in one save,
+    // because after the write only one pet holds it.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{client_id}"),
+        Some(&op),
+        Some(json!({
+            "name": "Alice Tan-Lim",
+            "pets": [
+                { "petId": pets[0], "name": "Rex" },
+                { "petId": pets[1], "name": "Milo", "dogTagId": "4" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "moving a tag between the owner's own pets: {b}");
+    assert!(get_pet(&app, &op, &pets[0]).await["dogTagId"].is_null());
+    assert_eq!(get_pet(&app, &op, &pets[1]).await["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn a_pasted_tag_is_trimmed_on_every_write_route_so_whitespace_cannot_defeat_the_guard() {
+    let (app, op, state) = pets_app_with_state().await;
+
+    // Route 1 - the client form's inline dogTagId.
+    let (_, alice) = make_client_with_pets(
+        &app,
+        &op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "dogTagId": "  4  " }]),
+    )
+    .await;
+    assert_eq!(
+        get_pet(&app, &op, &alice[0]).await["dogTagId"],
+        "4",
+        "the client route must store the tag trimmed, like the pet route does"
+    );
+
+    // ...so the held-document lookup, an exact-string match, still finds what import filed under the
+    // bare handle. Untrimmed, one pasted space would silently report the shop holds nothing.
+    state
+        .store
+        .upsert_client_cache("4".to_string(), json!({ "version": "dogtag/1.0" }))
+        .await;
+    let (s, b) = call(&app, "GET", &format!("/pets/{}/credentials", alice[0]), Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["credentials"].as_array().unwrap().len(), 1, "{b}");
+
+    // Route 2 - POST /pets. A padded copy of a taken tag is the same tag, so it must still collide.
+    let (bob, _) = make_client_with_pets(&app, &op, "Bob Lim", json!([])).await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/pets",
+        Some(&op),
+        Some(json!({ "clientId": bob, "name": "Milo", "dogTagId": " 4 " })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "whitespace must not defeat the guard: {b}");
+}
+
+#[tokio::test]
 async fn unlinking_a_dogtag_clears_only_this_shops_note_of_it() {
     let (app, op) = pets_app().await;
     let (client_id, pets) = make_client_with_pets(
