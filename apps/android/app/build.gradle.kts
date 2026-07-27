@@ -102,6 +102,11 @@ dependencies {
     // JVM unit tests (pure-JVM, no Android runtime): pins the on-chain `isValid` selector derivation
     // (RoaxRpcSelectorTest) so it can never drift back to a reverting value. Run: `./gradlew test`.
     testImplementation("junit:junit:4.13.2")
+    // The REAL org.json on the JVM unit-test classpath. `android.jar` ships org.json as a stub whose
+    // every method throws "not mocked", so any pure test over a JSON-parsing code path fails for a
+    // toolchain reason rather than a code one. This is the same library Android provides at runtime, not
+    // a fake: the tests exercise the actual parsing behaviour the device will see.
+    testImplementation("org.json:json:20240303")
 
     // Robolectric supplies the Android runtime classes that a few units genuinely cannot be tested
     // without: `QrPayload.parse` is built on `android.net.Uri`, and QR content is fully attacker-
