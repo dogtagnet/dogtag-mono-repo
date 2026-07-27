@@ -133,8 +133,8 @@ impl SignerDirectory {
                 };
                 match by_signer.get(&key) {
                     // An existing approved mapping is not overwritten by a non-approved one.
-                    Some(existing)
-                        if existing.status == "approved" && app.status != "approved" => {}
+                    Some(existing) if existing.status == "approved" && app.status != "approved" => {
+                    }
                     _ => {
                         by_signer.insert(key, candidate);
                     }
@@ -219,6 +219,10 @@ mod tests {
             document_store: "0xstore".to_string(),
             status: status.to_string(),
             whitelist_txs: vec![],
+            dns_state: String::new(),
+            dns_checked_at: 0,
+            dns_state_at_approval: String::new(),
+            dns_proceeded_unverified: false,
         }
     }
 
@@ -249,9 +253,23 @@ mod tests {
         // no business_id match, but the domain matches a business row.
         let biz = vec![business("biz-9", "Domain Match Vet", "vet.example")];
         let apps = vec![
-            application("app-d", "unknown-entity", "vet.example", &["0x01"], &["X"], "pending"),
+            application(
+                "app-d",
+                "unknown-entity",
+                "vet.example",
+                &["0x01"],
+                &["X"],
+                "pending",
+            ),
             // neither entity nor domain matches any business row → bare domain label.
-            application("app-b", "no-biz", "orphan.example", &["0x02"], &["Y"], "pending"),
+            application(
+                "app-b",
+                "no-biz",
+                "orphan.example",
+                &["0x02"],
+                &["Y"],
+                "pending",
+            ),
         ];
         let dir = SignerDirectory::build(&biz, &apps);
         assert_eq!(dir.name("0x01").as_deref(), Some("Domain Match Vet"));
@@ -266,8 +284,22 @@ mod tests {
             business("biz-p", "Pending Co", "p.example"),
         ];
         let apps = vec![
-            application("app-p", "biz-p", "p.example", &["0xdead"], &["P"], "pending"),
-            application("app-a", "biz-a", "a.example", &["0xDEAD"], &["A"], "approved"),
+            application(
+                "app-p",
+                "biz-p",
+                "p.example",
+                &["0xdead"],
+                &["P"],
+                "pending",
+            ),
+            application(
+                "app-a",
+                "biz-a",
+                "a.example",
+                &["0xDEAD"],
+                &["A"],
+                "approved",
+            ),
         ];
         let dir = SignerDirectory::build(&biz, &apps);
         let e = dir.resolve("0xdead").unwrap();

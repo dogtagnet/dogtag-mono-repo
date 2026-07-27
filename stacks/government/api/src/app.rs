@@ -41,6 +41,17 @@ pub struct Config {
     pub chain_id: u64,
     /// IssuerRegistry (the whitelist gate) — used to read issuer-identity of a credential's signer.
     pub issuer_registry_addr: String,
+    /// `DogTagIssuerFactory` address — LINK 1 of the issuer↔domain chain (`isClone`). Zero/empty means
+    /// provenance cannot be checked, in which case the binding reports `unavailable` rather than
+    /// claiming anything.
+    pub factory_addr: String,
+    /// `IssuerDomainRegistry` address — the ADDITIVE contract holding each clone's on-chain domain
+    /// claim. Zero/empty when this deployment has not been pointed at one, in which case the binding is
+    /// reported as unavailable rather than as absent.
+    pub issuer_domain_registry_addr: String,
+    /// DoH JSON endpoint used for the SERVER-SIDE issuer↔domain lookup. Empty disables resolution, and
+    /// every binding then reports "could not check" rather than a verdict.
+    pub dns_doh_endpoint: String,
     /// VerificationRegistry address - THE routing key stamped in the M7 `protocol` block (§4.2).
     /// Defaults to the unified owner-hidden registry.
     pub verification_registry_addr: String,
@@ -78,6 +89,14 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub chain: Arc<dyn ChainClient>,
     pub cfg: Arc<Config>,
+    /// Server-side issuer↔domain DNS resolver, with its own TTL cache.
+    ///
+    /// The lookup happens HERE, not in the operator's browser: a portal cannot do raw DNS, and a
+    /// client-side DoH call would hand a public resolver the operator's IP plus which issuer they are
+    /// inspecting. This backend already holds the whole document, so resolving here adds no party to
+    /// the trust set. The cache lives on this shared instance so a table of rows costs one lookup per
+    /// (address, domain), not one per render.
+    pub dns: Arc<dogtag_dns_rs::BindingResolver>,
     /// UNSCOPED consumer of the PR-4 oversight indexer — the data layer behind the government
     /// oversight console (govarch PR-5). `DisabledFeed` when `INDEXER_API_BASE` is unset; the real
     /// `HttpOversightFeed` (presenting the unscoped bearer) otherwise. See `crate::oversight` /
@@ -91,6 +110,7 @@ impl Clone for AppState {
             store: self.store.clone(),
             chain: self.chain.clone(),
             cfg: self.cfg.clone(),
+            dns: self.dns.clone(),
             feed: self.feed.clone(),
         }
     }
@@ -358,6 +378,9 @@ mod tests {
             rpc_url: "https://devrpc.roax.net".into(),
             chain_id: 135,
             issuer_registry_addr: "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c".into(),
+            factory_addr: "0x0000000000000000000000000000000000000000".into(),
+            issuer_domain_registry_addr: "0x0000000000000000000000000000000000000000".into(),
+            dns_doh_endpoint: "https://cloudflare-dns.com/dns-query".into(),
             verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
             travel_clearance_issuer_addr: "0x1111111111111111111111111111111111111111".into(),
             eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),

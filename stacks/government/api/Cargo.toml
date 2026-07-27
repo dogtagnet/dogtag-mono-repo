@@ -16,6 +16,8 @@ path = "src/lib.rs"
 
 [dependencies]
 dogtag-standard-rs = { path = "../../../crates/dogtag-standard-rs" }
+# Issuer↔domain DNS TXT binding: the normative convention + the three-state resolver.
+dogtag-dns-rs = { path = "../../../crates/dogtag-dns-rs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -57,6 +59,9 @@ default = []
 mongo = ["dep:mongodb"]
 
 [dev-dependencies]
+# Used by the relabelling suite to compute a REAL Merkle root, so the attack is exercised against a
+# document whose integrity genuinely passes rather than a conveniently broken one.
+dogtag-standard-rs = { path = "../../../crates/dogtag-standard-rs" }
 serde_json = { workspace = true }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

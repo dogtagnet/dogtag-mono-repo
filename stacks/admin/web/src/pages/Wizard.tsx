@@ -17,6 +17,7 @@ import {
   DEMO_ISSUER_APPLICATION_VET,
   type DemoBusiness,
   type DemoIssuerApplication,
+  type DnsConfirmationRequired,
   type RegisterBusinessResp,
 } from "@dogtag/ui";
 import {
@@ -31,6 +32,7 @@ import {
 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { DnsConfirmDialog, type DnsPrompt } from "../components/DnsConfirmDialog";
 import { env } from "../lib/env";
 
 // Empty initial state for production (VITE_DEMO_MODE unset) — the operator keys every field in.
@@ -87,6 +89,8 @@ export function Wizard() {
   // step 3 — approve
   const [whitelistTxs, setWhitelistTxs] = useState<string[] | null>(null);
   const [approveBusy, setApproveBusy] = useState(false);
+  /** A pending confirmation: the live DNS observation was not verified, and the admin must decide. */
+  const [dnsPrompt, setDnsPrompt] = useState<DnsPrompt | null>(null);
 
   function applyPreset(p: Preset) {
     setPreset(p);
@@ -140,19 +144,35 @@ export function Wizard() {
     }
   }
 
-  async function approve() {
+  /**
+   * Approve. The DNS legitimacy check is ADVISORY: it never blocks, but a non-verified observation is
+   * answered with a 409 carrying what was OBSERVED, and the admin must deliberately confirm.
+   *
+   * The wizard handles that 409 exactly as the applications queue does, and must: an organisation is
+   * routinely KYC-approved before its DNS team publishes anything (and a `.local` demo domain can never
+   * publish at all), so this is the ROUTINE path through step 3, not an edge case. Surfacing it as a
+   * bare "Approve failed" would strand the operator on the last step of the guided flow.
+   */
+  async function approve(proceedWithoutDns = false) {
     if (!appId) return;
     setApproveBusy(true);
     try {
-      const r = await central.approveApplication(appId);
+      const r = await central.approveApplication(appId, { proceedWithoutDns });
       setWhitelistTxs(r.whitelistTxs);
       toast({
         title: "Approved — whitelisted on-chain",
         description: `${r.whitelistTxs.length} whitelistFor tx(s) sent`,
         variant: "success",
       });
+      setDnsPrompt(null);
     } catch (err) {
-      toast({ title: "Approve failed", description: (err as Error).message, variant: "danger" });
+      // The advisory-DNS confirmation is not an error condition — surface it as a decision to make.
+      const payload = (err as { body?: DnsConfirmationRequired }).body;
+      if (payload?.error === "dnsConfirmationRequired") {
+        setDnsPrompt({ ...payload, applicationId: appId });
+      } else {
+        toast({ title: "Approve failed", description: (err as Error).message, variant: "danger" });
+      }
     } finally {
       setApproveBusy(false);
     }
@@ -162,6 +182,7 @@ export function Wizard() {
     setBizResult(null);
     setAppId(null);
     setWhitelistTxs(null);
+    setDnsPrompt(null);
     if (env.demoMode) {
       applyPreset(preset);
     } else {
@@ -176,6 +197,12 @@ export function Wizard() {
 
   return (
     <div className="space-y-6">
+      <DnsConfirmDialog
+        prompt={dnsPrompt}
+        busy={approveBusy}
+        onCancel={() => setDnsPrompt(null)}
+        onProceed={() => void approve(true)}
+      />
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
@@ -319,10 +346,12 @@ export function Wizard() {
         ) : (
           <div className="space-y-3">
             <p className="text-sm text-muted">
-              Approving runs DNS-TXT + accreditation checks then calls on-chain whitelistFor for every
-              (address × recordType) pair. The resulting tx hashes appear here.
+              Approving looks up the domain&rsquo;s DNS record, runs the accreditation checks, then calls
+              on-chain whitelistFor for every (address × recordType) pair. The resulting tx hashes appear
+              here. If the domain has not published its record yet you can still whitelist — the
+              observation is recorded either way.
             </p>
-            <Button onClick={approve} loading={approveBusy} disabled={!step2Done}>
+            <Button onClick={() => void approve()} loading={approveBusy} disabled={!step2Done}>
               {approveBusy ? <Spinner className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />} Approve &amp; whitelist
             </Button>
           </div>

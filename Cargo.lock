@@ -26,6 +26,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "dogtag-dns-rs",
  "dogtag-standard-rs",
  "ed25519-dalek",
  "futures",
@@ -2967,6 +2968,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
+name = "dogtag-dns-rs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "dogtag-prover-rs"
 version = "0.0.0"
 dependencies = [
@@ -3586,6 +3599,7 @@ dependencies = [
  "alloy",
  "async-trait",
  "axum",
+ "dogtag-dns-rs",
  "dogtag-standard-rs",
  "futures",
  "hex",

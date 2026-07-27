@@ -14,8 +14,8 @@
 #   - Strong secrets             (OPERATOR_PASSWORD, ADMIN_PASSWORD, CENTRAL_HMAC_SECRET;
 #                                 admin also ADMIN_PRIVATE_KEY + ADMIN_ADDRESS) — `openssl rand -hex 32`
 #   - ROAX_RPC + CHAIN_ID + the *_ADDR contract addresses (config-only chain swap)
-# Hardening knobs (DNS_CHECK=doh, CONFIRMATIONS=2, ADMIN_LOOPBACK_ONLY=1) are set in compose; this
-# script enforces them as a sanity check.
+# Hardening knobs (CONFIRMATIONS=2, ADMIN_LOOPBACK_ONLY=1) are set in compose; this script enforces
+# them as a sanity check. There is no DNS knob: the issuer DNS lookup is always a real resolution.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -54,7 +54,6 @@ done
 
 # ---- Build + start each stack ----------------------------------------------------------------------
 # Hardening defaults the api expects (compose also sets these; we export so any ${VAR} resolves).
-export DNS_CHECK="${DNS_CHECK:-doh}"
 export CONFIRMATIONS="${CONFIRMATIONS:-2}"
 export ADMIN_LOOPBACK_ONLY="${ADMIN_LOOPBACK_ONLY:-1}"
 export FEATURES=mongo

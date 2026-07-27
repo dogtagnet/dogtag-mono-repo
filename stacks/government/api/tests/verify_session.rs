@@ -34,6 +34,9 @@ fn cfg() -> Config {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
+        issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
+        dns_doh_endpoint: String::new(),
         verification_registry_addr: CONSENT_REGISTRY.into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -47,6 +50,10 @@ fn cfg() -> Config {
 /// A state whose signer is (or is not) whitelisted for `VERIFY:travel_check`.
 fn state_with(whitelisted: bool) -> (AppState, String) {
     let chain = MemChain::new();
+    // The authority's own clone really was deployed by the DogTag factory. Seeded because link-1
+    // provenance is a verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed` and
+    // fails the verdict.
+    chain.set_factory_clone("0x00000000000000000000000000000000000000fa", ISSUER_ADDR, true);
     let signer = chain.signer_address().unwrap();
     let c = cfg();
     if whitelisted {
@@ -60,6 +67,7 @@ fn state_with(whitelisted: bool) -> (AppState, String) {
         store: Arc::new(MemStore::new()) as Arc<dyn Store>,
         chain: Arc::new(chain),
         cfg: Arc::new(c),
+        dns: Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
         feed: Arc::new(government_api::oversight::DisabledFeed),
     };
     (state, signer)
@@ -86,7 +94,10 @@ async fn call(
         .unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 async fn start(state: &AppState) -> Value {
@@ -157,7 +168,10 @@ async fn start_refuses_honestly_when_the_signer_is_not_whitelisted_for_the_purpo
     // The same honest failure the groomer portal surfaces — refused BEFORE any QR is shown, so the
     // owner never spends time proving into a dead end.
     assert_eq!(status, StatusCode::FORBIDDEN, "{v}");
-    assert_eq!(v["error"], json!("relayer not whitelisted for this purpose"));
+    assert_eq!(
+        v["error"],
+        json!("relayer not whitelisted for this purpose")
+    );
 }
 
 #[tokio::test]
@@ -184,7 +198,10 @@ async fn start_mints_the_groomer_shaped_export_qr() {
         qr.starts_with(&format!("{DEPLOYMENT_URL}/x/")),
         "qrUrl must be <DEPLOYMENT_URL>/x/<token>: {qr}"
     );
-    assert!(qr.ends_with(&format!("?a={signer}")), "qr must carry the relayer: {qr}");
+    assert!(
+        qr.ends_with(&format!("?a={signer}")),
+        "qr must carry the relayer: {qr}"
+    );
     let token = token_of(qr);
     assert_eq!(token.len(), 32, "token must be 32 hex chars: {token}");
     assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
@@ -223,7 +240,10 @@ async fn export_token_resolves_the_session_with_the_mandatory_discovery_claims()
         json!(government_api::chain::SIMULATED_CHAIN_ID)
     );
     assert_eq!(claims["purpose"], json!(PURPOSE));
-    assert_eq!(claims["protocolVersion"], json!(dogtag_standard::wrap::LEVEL_B_VERSION));
+    assert_eq!(
+        claims["protocolVersion"],
+        json!(dogtag_standard::wrap::LEVEL_B_VERSION)
+    );
 
     // NON-consuming: the phone re-reads it while proving and polling.
     let (status, again) = call(&state, "GET", &format!("/x/{token}"), Value::Null, None).await;
@@ -344,7 +364,14 @@ async fn consent_submit_records_and_the_session_reaches_recorded() {
     assert!(settled["txHash"].as_str().unwrap().starts_with("0x"));
 
     // The operator-facing history shows the recorded verification (metadata only — no owner, no leaf).
-    let (status, h) = call(&state, "GET", "/verify/history", Value::Null, Some(API_TOKEN)).await;
+    let (status, h) = call(
+        &state,
+        "GET",
+        "/verify/history",
+        Value::Null,
+        Some(API_TOKEN),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{h}");
     let rows = h["verifications"].as_array().unwrap();
     let row = rows
@@ -409,7 +436,10 @@ async fn consent_preflight_refuses_before_spending_gas() {
     }))
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{v}");
-    assert_eq!(v["error"], json!("pubSignals[relayer] does not name this relayer"));
+    assert_eq!(
+        v["error"],
+        json!("pubSignals[relayer] does not name this relayer")
+    );
 
     // A proof for a different purpose does not satisfy this session's binding.
     let (status, v) = submit(json!({
@@ -506,7 +536,10 @@ async fn a_cold_operator_submit_still_faces_the_verify_whitelist() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{v}");
-    assert_eq!(v["error"], json!("relayer not whitelisted for this purpose"));
+    assert_eq!(
+        v["error"],
+        json!("relayer not whitelisted for this purpose")
+    );
 }
 
 /// The existing paste-a-wrappedDoc verify path is a FALLBACK that must survive alongside the QR flow.

@@ -58,7 +58,6 @@ services:
       MONGO_DB: ${MONGO_DB:-dogtag}
       CHAIN_ID: ${CHAIN_ID:-135}
       PORT: "39742"
-      DNS_CHECK: "doh"
       CONFIRMATIONS: "2"
       ADMIN_LOOPBACK_ONLY: "1"
       ADMIN_PRIVATE_KEY: ${ADMIN_PRIVATE_KEY}

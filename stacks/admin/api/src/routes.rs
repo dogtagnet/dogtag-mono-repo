@@ -62,6 +62,11 @@ fn ok(v: Value) -> Resp {
 fn err(code: StatusCode, msg: &str) -> Resp {
     (code, Json(json!({ "error": msg })))
 }
+/// A structured error body, for cases where the client needs the OBSERVED facts (not just a message)
+/// to render an honest prompt — e.g. the advisory DNS confirmation.
+fn err_json(code: StatusCode, body: Value) -> Resp {
+    (code, Json(body))
+}
 
 fn bearer(headers: &HeaderMap) -> Option<String> {
     headers
@@ -650,6 +655,10 @@ async fn create_application(
             document_store: body.document_store.to_lowercase(),
             status: "pending".to_string(),
             whitelist_txs: Vec::new(),
+            dns_state: String::new(),
+            dns_checked_at: 0,
+            dns_state_at_approval: String::new(),
+            dns_proceeded_unverified: false,
         })
         .await;
     ok(json!({ "applicationId": application_id, "status": "pending" }))
@@ -670,6 +679,13 @@ async fn list_applications(State(st): State<AppState>, headers: HeaderMap) -> Re
                 "addresses": a.addresses, "recordTypes": a.record_types,
                 "verifyPurposes": a.verify_purposes,
                 "domain": a.domain, "status": a.status,
+                // The DNS legitimacy trace. `dnsState` is the LATEST observation (the future daily
+                // re-check job overwrites it, so a binding can turn verified with no admin action);
+                // `dnsStateAtApproval` + `dnsProceededUnverified` are immutable history, so an issuer
+                // whitelisted on an override is never rendered identically to one that passed cleanly.
+                "dnsState": a.dns_state, "dnsCheckedAt": a.dns_checked_at,
+                "dnsStateAtApproval": a.dns_state_at_approval,
+                "dnsProceededUnverified": a.dns_proceeded_unverified,
             })
         })
         .collect();
@@ -681,14 +697,30 @@ fn usda_nan_valid(nan: &str) -> bool {
     nan.len() == 6 && nan.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Body of `POST /v1/issuer-applications/:id/approve`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ApproveBody {
+    /// The admin's EXPLICIT confirmation that they have seen a non-verified DNS observation and choose
+    /// to whitelist anyway.
+    ///
+    /// Required only when the live check does NOT come back verified. It is deliberately an explicit
+    /// act rather than a warning the UI can ignore: proceeding is recorded as a decision
+    /// (`dns_proceeded_unverified`), and a decision needs someone to have made it.
+    #[serde(default)]
+    proceed_without_dns: bool,
+}
+
 async fn approve_application(
     State(st): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    body: Option<Json<ApproveBody>>,
 ) -> Resp {
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
     }
+    let body = body.map(|Json(b)| b).unwrap_or_default();
     let mut app_rec = match st.store.get_application(&id).await {
         Some(a) => a,
         None => return err(StatusCode::NOT_FOUND, "application not found"),
@@ -710,12 +742,53 @@ async fn approve_application(
             );
         }
     }
-    // verify the business's DNS TXT BEFORE whitelisting (architecture §13.3 H).
+    // The DNS legitimacy observation (architecture §13.3 H) — ADVISORY, never blocking.
+    //
+    // The lookup ALWAYS runs against the real domain and its real outcome is always what gets recorded
+    // and reported. The three outcomes stay distinct: verified, definitively not listed, and
+    // did-not-resolve. Nothing here synthesizes a state.
+    //
+    // It does not block, because an organisation is routinely KYC-approved before its DNS team
+    // publishes anything, and a hard block is what drives operators to a bypass. What keeps that from
+    // being fail-open is the trace: a non-verified observation requires the admin's EXPLICIT
+    // `proceedWithoutDns`, and both the observation and the fact that they proceeded are persisted.
     let token = crate::dns::expected_txt(&app_rec.document_store);
-    match st.dns.txt_contains(&app_rec.domain, &token).await {
-        Ok(true) => {}
-        Ok(false) => return err(StatusCode::FORBIDDEN, "DNS TXT verification failed"),
-        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("dns: {e}")),
+    let dns_state = match st.dns.txt_contains(&app_rec.domain, &token).await {
+        Ok(true) => "verified",
+        Ok(false) => "notListed",
+        Err(e) => {
+            tracing::info!(
+                domain = %app_rec.domain,
+                error = %format!("{e}"),
+                "DNS legitimacy lookup did not resolve"
+            );
+            "couldNotCheck"
+        }
+    };
+    let dns_checked_at = crate::auth::now();
+
+    // A non-verified observation needs a deliberate confirmation, not a dismissable warning. The 409
+    // carries exactly what was OBSERVED so the UI can state the observation rather than a verdict.
+    if dns_state != "verified" && !body.proceed_without_dns {
+        return err_json(
+            StatusCode::CONFLICT,
+            json!({
+                "error": "dnsConfirmationRequired",
+                "dnsState": dns_state,
+                "domain": app_rec.domain,
+                "documentStore": app_rec.document_store,
+                "expectedTxt": token,
+                // Retry the same call with this set to record the decision and proceed.
+                "retryWith": { "proceedWithoutDns": true },
+            }),
+        );
+    }
+    if dns_state != "verified" {
+        tracing::warn!(
+            domain = %app_rec.domain,
+            dns_state,
+            "whitelisting an issuer while its DNS legitimacy record is unverified (admin confirmed)"
+        );
     }
     // for EACH (address, recordType): admin signer calls whitelistFor(keccak256(recordType), address).
     let mut txs = Vec::new();
@@ -801,12 +874,28 @@ async fn approve_application(
 
     app_rec.status = "approved".to_string();
     app_rec.whitelist_txs = txs.clone();
+    // Latest observation — the future daily re-check job overwrites this pair when a record appears.
+    app_rec.dns_state = dns_state.to_string();
+    app_rec.dns_checked_at = dns_checked_at;
+    // Immutable history — what we knew at the moment of granting, and whether we knowingly proceeded.
+    // Written only here, never by the re-check job, so "whitelisted while DNS was unverified" stays
+    // visible even after the binding later turns verified.
+    app_rec.dns_state_at_approval = dns_state.to_string();
+    app_rec.dns_proceeded_unverified = dns_state != "verified";
+    let proceeded_unverified = app_rec.dns_proceeded_unverified;
     st.store.put_application(app_rec).await;
     ok(json!({
         "status": "approved",
         "whitelistTxs": txs,
         "issuerRoleGranted": issuer_role_granted,
         "issuerRoleTxHash": issuer_role_txs.first().cloned(),
+        // The REAL outcome of the legitimacy lookup, always reported: "verified" | "notListed" |
+        // "couldNotCheck". Never synthesized, never collapsed to a boolean.
+        "dnsState": dns_state,
+        "dnsCheckedAt": dns_checked_at,
+        // True when this issuer was whitelisted on an explicit admin override rather than a clean pass.
+        // The dashboard reads this so such an issuer is never rendered identically to one that passed.
+        "dnsProceededUnverified": proceeded_unverified,
     }))
 }
 
@@ -1581,7 +1670,9 @@ async fn whitelist_grant(
                         issuer_role_dispatched = Some(d);
                         rendered
                     }
-                    Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}")),
+                    Err(e) => {
+                        return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}"))
+                    }
                 }
             }
             Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("hasRole(ISSUER): {e}")),
@@ -1722,13 +1813,23 @@ fn enrich_events(dir: &crate::directory::SignerDirectory, body: &mut Value) {
         return;
     };
     for ev in events.iter_mut() {
-        let Some(obj) = ev.as_object_mut() else { continue };
-        if let Some(actor) = obj.get("actor").and_then(|v| v.as_str()).map(str::to_string) {
+        let Some(obj) = ev.as_object_mut() else {
+            continue;
+        };
+        if let Some(actor) = obj
+            .get("actor")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        {
             if let Some(name) = dir.name(&actor) {
                 obj.insert("actorName".into(), json!(name));
             }
         }
-        if let Some(clone) = obj.get("clone").and_then(|v| v.as_str()).map(str::to_string) {
+        if let Some(clone) = obj
+            .get("clone")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        {
             if let Some(name) = dir.name(&clone) {
                 obj.insert("cloneName".into(), json!(name));
             }
@@ -1800,9 +1901,13 @@ async fn admin_activity_issuers(State(st): State<AppState>, headers: HeaderMap) 
             let dir = crate::directory::SignerDirectory::from_store(st.store.as_ref()).await;
             if let Some(list) = body.get_mut("issuers").and_then(|v| v.as_array_mut()) {
                 for it in list.iter_mut() {
-                    let Some(obj) = it.as_object_mut() else { continue };
-                    if let Some(clone) =
-                        obj.get("clone").and_then(|v| v.as_str()).map(str::to_string)
+                    let Some(obj) = it.as_object_mut() else {
+                        continue;
+                    };
+                    if let Some(clone) = obj
+                        .get("clone")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
                     {
                         if let Some(name) = dir.name(&clone) {
                             obj.insert("cloneName".into(), json!(name));

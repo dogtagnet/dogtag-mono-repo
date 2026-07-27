@@ -37,6 +37,12 @@ object RoaxRpc {
     private val CONSUMED_SELECTOR = functionSelector("consumed(bytes32)")
     private val PROFILE_ROOT_SELECTOR = functionSelector("profileRoot(uint256)")
 
+    // ---- the issuer↔domain binding chain ------------------------------------------------------
+    private val IS_CLONE_SELECTOR = functionSelector("isClone(address)")
+    private val DOMAIN_OF_SELECTOR = functionSelector("domainOf(address)")
+    private val ISSUER_NAME_SELECTOR = functionSelector("name()")
+    private val ROOT_ISSUER_SELECTOR = functionSelector("rootIssuer(bytes32)")
+
     sealed class Result {
         object Valid : Result()
         object Invalid : Result()
@@ -188,15 +194,210 @@ object RoaxRpc {
         }
     }
 
+    /**
+     * Reading a dynamic `string` return has THREE outcomes, and collapsing any two of them is how a
+     * fail-open gets reintroduced:
+     *  - [Value] the call returned ABI-encoded bytes (possibly an EMPTY string, which is a real answer
+     *    meaning "no claim published");
+     *  - [NoContract] an EMPTY `eth_call` result, which is what a call to an address with no code
+     *    returns, i.e. the contract is not deployed for this config. Emphatically NOT an empty string,
+     *    and it must surface as "we could not check", never as "no claim";
+     *  - [Failure] the RPC did not answer.
+     */
+    sealed class StringRead {
+        data class Value(val value: String) : StringRead()
+        object NoContract : StringRead()
+        data class Failure(val reason: String) : StringRead()
+    }
+
+    /**
+     * Reading an `address` return has the same three outcomes, kept apart for the same reason:
+     *  - [Value] a real, non-zero address;
+     *  - [NoRecord] the mapping answered with the zero address, i.e. "no entry for this key" — a
+     *    DEFINITE answer, not a failure;
+     *  - [Failure] the RPC did not answer, or the body was not an address word (an empty result, which
+     *    is what a call to an address with no code returns, lands here). Emphatically NOT "no record":
+     *    a read we could not make is evidence of nothing.
+     */
+    sealed class AddressRead {
+        data class Value(val address: String) : AddressRead()
+        object NoRecord : AddressRead()
+        data class Failure(val reason: String) : AddressRead()
+    }
+
+    /**
+     * `DogTagIssuerFactory.rootIssuer(root)` — the clone that ISSUED this root, write-once on-chain.
+     *
+     * THE authoritative answer to "which contract issued this credential". The document's
+     * `issuer.documentStore` is only a claim, and pointing it at ANOTHER authority's genuine clone is the
+     * sharper form of the relabelling attack: link 1 (`isClone`) passes because the target really is a
+     * factory clone, so without this read the phone renders that other authority's on-chain identity.
+     */
+    suspend fun rootIssuer(rpcUrl: String, factory: String, root: String, atBlock: Long?): AddressRead {
+        if (factory.isBlank() || root.isBlank()) return AddressRead.Failure("missing factory/root")
+        val data = ROOT_ISSUER_SELECTOR + pad32(root)
+        return when (val r = ethCall(rpcUrl, factory, data, atBlock)) {
+            is CallResult.Err -> AddressRead.Failure(r.reason)
+            is CallResult.Ok -> {
+                val addr = decodeAbiAddress(r.hex) ?: return AddressRead.Failure("not an address word")
+                if (isZeroAddress(addr)) AddressRead.NoRecord else AddressRead.Value(addr)
+            }
+        }
+    }
+
+    /**
+     * Decode a right-aligned 32-byte `address` word to lowercase `0x..`. Returns null rather than
+     * guessing for anything that is not one — including an EMPTY result (no contract at that address)
+     * and a word with dirty high bytes.
+     */
+    fun decodeAbiAddress(hex: String): String? {
+        val h = hex.removePrefix("0x").lowercase()
+        if (h.length != 64) return null
+        if (!h.all { it in '0'..'9' || it in 'a'..'f' }) return null
+        if (!h.take(24).all { it == '0' }) return null
+        return "0x" + h.takeLast(40)
+    }
+
+    /** The zero address, i.e. an unset mapping slot. */
+    fun isZeroAddress(addr: String): Boolean {
+        val h = addr.removePrefix("0x")
+        return h.isNotEmpty() && h.all { it == '0' }
+    }
+
+    /**
+     * The current chain head, so every read in one verification pins to ONE block. Against a world where
+     * DNS changes and clones are superseded, an unanchored answer is not auditable.
+     */
+    suspend fun blockNumber(rpcUrl: String): Long? {
+        val payload = JSONObject().apply {
+            put("jsonrpc", "2.0"); put("id", 1); put("method", "eth_blockNumber"); put("params", JSONArray())
+        }.toString()
+        return try {
+            val resp = Http.postJson(rpcUrl, payload)
+            if (!resp.ok) return null
+            val hex = JSONObject(resp.body).optString("result", "").removePrefix("0x")
+            if (hex.isEmpty()) null else hex.toLong(16)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * `DogTagIssuerFactory.isClone(candidate)` — LINK 1 of the issuer↔domain chain. Proves the contract
+     * came from the DogTag factory, i.e. passed through KYC-gated `createIssuer`. Without it a domain
+     * binding shows only that whoever deployed some contract also controls a domain.
+     */
+    suspend fun isClone(rpcUrl: String, factory: String, candidate: String, atBlock: Long?): Result {
+        if (factory.isBlank() || candidate.isBlank()) return Result.Unknown("missing factory/candidate")
+        val data = IS_CLONE_SELECTOR + padAddr(candidate)
+        return when (val r = ethCall(rpcUrl, factory, data, atBlock)) {
+            is CallResult.Err -> Result.Unknown(r.reason)
+            is CallResult.Ok ->
+                // A call to a non-contract returns empty. That is not `false` — it is "no answer".
+                if (r.hex.isEmpty()) Result.Unknown("empty result")
+                else if (r.hex.any { it != '0' }) Result.Valid
+                else Result.Invalid
+        }
+    }
+
+    /**
+     * `IssuerDomainRegistry.domainOf(clone)` — LINK 2. The domain the CONTRACT claims. Never the
+     * document's `issuer.domain`, which is outside the Merkle root and can be relabelled at will.
+     */
+    suspend fun issuerClaimedDomain(
+        rpcUrl: String,
+        domainRegistry: String,
+        clone: String,
+        atBlock: Long?,
+    ): StringRead {
+        if (domainRegistry.isBlank() || clone.isBlank()) return StringRead.Failure("missing registry/clone")
+        return ethCallString(rpcUrl, domainRegistry, DOMAIN_OF_SELECTOR + padAddr(clone), atBlock)
+    }
+
+    /**
+     * `DogTagIssuer.name()` — the clone's own name, written by the factory's `onlyOwner` `createIssuer`
+     * at KYC time. The only issuer name a surface may present: the document's `issuer.name` is outside
+     * the Merkle root, so relabelling it alone passes integrity AND the `data.issuer` DID check (the DID
+     * carries a domain, not a name).
+     */
+    suspend fun issuerOnchainName(rpcUrl: String, clone: String, atBlock: Long?): StringRead {
+        if (clone.isBlank()) return StringRead.Failure("missing clone")
+        return ethCallString(rpcUrl, clone, ISSUER_NAME_SELECTOR, atBlock)
+    }
+
+    private suspend fun ethCallString(
+        rpcUrl: String,
+        to: String,
+        data: String,
+        atBlock: Long?,
+    ): StringRead = when (val r = ethCall(rpcUrl, to, data, atBlock)) {
+        is CallResult.Err -> StringRead.Failure(r.reason)
+        is CallResult.Ok ->
+            if (r.hex.isEmpty()) StringRead.NoContract
+            else StringRead.Value(decodeAbiString(r.hex) ?: "")
+    }
+
+    /**
+     * Decode a single ABI-encoded dynamic `string` return: `[32-byte offset][32-byte length][bytes]`.
+     * Returns null on a malformed body rather than guessing.
+     */
+    fun decodeAbiString(hex: String): String? {
+        val bytes = hexToBytes(hex)
+        if (bytes.size < 64) return null
+        // Read the offset rather than assuming 0x20, so a tuple-wrapped return still decodes.
+        val offset = beInt(bytes, 0) ?: return null
+        // Compare by SUBTRACTION, never `offset + 32`: an Int is 32 bits here, so the addition wraps
+        // negative for an offset near Int.MAX_VALUE, the guard passes, and the decoder throws instead of
+        // returning null as documented. Swift's Int is 64-bit and cannot wrap, which is exactly how the
+        // two ports drifted.
+        if (offset < 0 || offset > bytes.size - 32) return null
+        val len = beInt(bytes, offset) ?: return null
+        val start = offset + 32
+        if (len < 0 || len > bytes.size - start) return null
+        return String(bytes, start, len, Charsets.UTF_8)
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        val h = hex.removePrefix("0x")
+        val n = h.length / 2
+        val out = ByteArray(n)
+        for (i in 0 until n) {
+            out[i] = ((h[2 * i].digitToIntOrNull(16) ?: return out.copyOf(i)) shl 4 or
+                (h[2 * i + 1].digitToIntOrNull(16) ?: return out.copyOf(i))).toByte()
+        }
+        return out
+    }
+
+    /**
+     * Big-endian read of a 32-byte word as an Int. Returns null when anything is set above the low 4
+     * bytes — a length or offset that large is not a value we will honour, and treating it as an Int
+     * would wrap.
+     */
+    private fun beInt(bytes: ByteArray, at: Int): Int? {
+        if (at < 0 || at > bytes.size - 32) return null
+        for (i in at until at + 28) if (bytes[i] != 0.toByte()) return null
+        var v = 0L
+        for (i in at + 28 until at + 32) v = (v shl 8) or (bytes[i].toLong() and 0xff)
+        return if (v > Int.MAX_VALUE) null else v.toInt()
+    }
+
     private sealed class CallResult {
         data class Ok(val hex: String) : CallResult()
         data class Err(val reason: String) : CallResult()
     }
 
-    private suspend fun ethCall(rpcUrl: String, to: String, data: String): CallResult {
+    private suspend fun ethCall(
+        rpcUrl: String,
+        to: String,
+        data: String,
+        atBlock: Long? = null,
+    ): CallResult {
+        // Pin to a block when we have one so a whole verification is a consistent, reproducible
+        // snapshot; `latest` otherwise, and the caller reports the answer as unanchored.
+        val blockTag = atBlock?.let { "0x" + it.toString(16) } ?: "latest"
         val params = JSONArray().apply {
             put(JSONObject().apply { put("to", to); put("data", data) })
-            put("latest")
+            put(blockTag)
         }
         val payload = JSONObject().apply {
             put("jsonrpc", "2.0"); put("id", 1); put("method", "eth_call"); put("params", params)

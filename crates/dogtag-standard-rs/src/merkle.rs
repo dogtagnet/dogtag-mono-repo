@@ -39,7 +39,10 @@ pub fn build_merkle(leaf_hashes: &[Fr]) -> MerkleTree {
         level = next;
         layers.push(level.clone());
     }
-    MerkleTree {root: level[0], layers}
+    MerkleTree {
+        root: level[0],
+        layers,
+    }
 }
 
 /// One root-ward step of a `Sibling | Promote` inclusion proof (DSDP plan §2.3).
@@ -130,7 +133,11 @@ mod tests {
 
     /// The canonical (keyPath, salt, tag=Integer) leaf identity used by the shared vectors.
     fn int_leaf(i: usize) -> (String, Vec<u8>, TypedScalar) {
-        (format!("leaf{i}"), vec![(100 + i) as u8; 16], TypedScalar::Integer(i.to_string()))
+        (
+            format!("leaf{i}"),
+            vec![(100 + i) as u8; 16],
+            TypedScalar::Integer(i.to_string()),
+        )
     }
 
     fn hash_of(rec: &(String, Vec<u8>, TypedScalar)) -> Fr {
@@ -146,7 +153,11 @@ mod tests {
             for (idx, rec) in recs.iter().enumerate() {
                 let proof = merkle_proof(&tree.layers, hashes[idx]);
                 // one step per level: the proof depth is the tree depth.
-                assert_eq!(proof.len(), tree.layers.len() - 1, "size {k} leaf {idx} proof depth");
+                assert_eq!(
+                    proof.len(),
+                    tree.layers.len() - 1,
+                    "size {k} leaf {idx} proof depth"
+                );
                 assert!(
                     verify_inclusion(&rec.0, &rec.1, &rec.2, &proof, tree.root).unwrap(),
                     "size {k} leaf {idx} must verify"
@@ -165,12 +176,20 @@ mod tests {
         let mut saw_multi = false;
         for (idx, rec) in recs.iter().enumerate() {
             let proof = merkle_proof(&tree.layers, hashes[idx]);
-            if proof.iter().filter(|s| matches!(s, ProofStep::Promote)).count() >= 2 {
+            if proof
+                .iter()
+                .filter(|s| matches!(s, ProofStep::Promote))
+                .count()
+                >= 2
+            {
                 saw_multi = true;
             }
             assert!(verify_inclusion(&rec.0, &rec.1, &rec.2, &proof, tree.root).unwrap());
         }
-        assert!(saw_multi, "a size-5 tree must exercise >= 2-level promotion");
+        assert!(
+            saw_multi,
+            "a size-5 tree must exercise >= 2-level promotion"
+        );
     }
 
     #[test]
@@ -183,14 +202,28 @@ mod tests {
         let sibling = tree.layers[1][1];
         // The permissive fold folds the internal node straight to the root — this is exactly the
         // opaque-leaf hole the audit flagged: `process_proof` alone proves nothing.
-        assert_eq!(process_proof(&[ProofStep::Sibling(sibling)], node), tree.root);
+        assert_eq!(
+            process_proof(&[ProofStep::Sibling(sibling)], node),
+            tree.root
+        );
         // But `verify_inclusion` RECOMPUTES the leaf under DS_LEAF (Poseidon5). No credential fields
         // can equal an internal node (the arity/domain split), so presenting the node's proof with
         // any concrete leaf fields is rejected.
         let atk = int_leaf(99);
-        assert_ne!(hash_of(&atk), node, "a Poseidon5 leaf can never equal a Poseidon3 node");
+        assert_ne!(
+            hash_of(&atk),
+            node,
+            "a Poseidon5 leaf can never equal a Poseidon3 node"
+        );
         assert!(
-            !verify_inclusion(&atk.0, &atk.1, &atk.2, &[ProofStep::Sibling(sibling)], tree.root).unwrap(),
+            !verify_inclusion(
+                &atk.0,
+                &atk.1,
+                &atk.2,
+                &[ProofStep::Sibling(sibling)],
+                tree.root
+            )
+            .unwrap(),
             "recompute-from-fields + arity split must reject an internal-node-as-leaf forgery"
         );
     }
@@ -207,7 +240,13 @@ mod tests {
         let tampered = TypedScalar::Integer("12345".to_string());
         assert!(!verify_inclusion(&recs[0].0, &recs[0].1, &tampered, &proof, tree.root).unwrap());
         // wrong root -> rejected
-        let other = build_merkle(&(0..8).map(int_leaf).map(|r| hash_of(&r)).collect::<Vec<_>>()).root;
+        let other = build_merkle(
+            &(0..8)
+                .map(int_leaf)
+                .map(|r| hash_of(&r))
+                .collect::<Vec<_>>(),
+        )
+        .root;
         assert!(!verify_inclusion(&recs[0].0, &recs[0].1, &recs[0].2, &proof, other).unwrap());
     }
 }

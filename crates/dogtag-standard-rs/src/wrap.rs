@@ -105,7 +105,10 @@ pub fn from_hex32(h: &str) -> Result<Fr, DogTagError> {
     let s = h.strip_prefix("0x").unwrap_or(h);
     let bytes = hex::decode(s).map_err(|e| DogTagError::Other(format!("bad hex32: {e}")))?;
     if bytes.len() != 32 {
-        return Err(DogTagError::Other(format!("hex32 must be 32 bytes (got {})", bytes.len())));
+        return Err(DogTagError::Other(format!(
+            "hex32 must be 32 bytes (got {})",
+            bytes.len()
+        )));
     }
     // Hashes are always < p; reject anything >= p to mirror the TS guard.
     let v = Fr::from_be_bytes_mod_order(&bytes);
@@ -144,7 +147,8 @@ pub fn scalar_from_packed(tag: TypeTag, value_rest: &str) -> Result<TypedScalar,
         TypeTag::Integer => TypedScalar::Integer(value_rest.to_string()),
         TypeTag::Decimal => TypedScalar::Decimal(value_rest.to_string()),
         TypeTag::Bytes => TypedScalar::Bytes(
-            hex::decode(value_rest).map_err(|e| DogTagError::Other(format!("bad bytes hex: {e}")))?,
+            hex::decode(value_rest)
+                .map_err(|e| DogTagError::Other(format!("bad bytes hex: {e}")))?,
         ),
     })
 }
@@ -152,7 +156,8 @@ pub fn scalar_from_packed(tag: TypeTag, value_rest: &str) -> Result<TypedScalar,
 /// Recompute the leaf hash for one packed entry (used by verify + obfuscate).
 pub fn leaf_from_packed(key_path: &str, packed: &str) -> Result<Fr, DogTagError> {
     let (salt_hex, tag, value_rest) = parse_packed(packed)?;
-    let salt = hex::decode(&salt_hex).map_err(|e| DogTagError::Other(format!("bad salt hex: {e}")))?;
+    let salt =
+        hex::decode(&salt_hex).map_err(|e| DogTagError::Other(format!("bad salt hex: {e}")))?;
     hash_leaf(key_path, &salt, &scalar_from_packed(tag, &value_rest)?)
 }
 
@@ -222,7 +227,9 @@ pub fn wrap_document(
             proof: Vec::new(),
             merkle_root: r,
         },
-        privacy: Privacy { obfuscated: Vec::new() },
+        privacy: Privacy {
+            obfuscated: Vec::new(),
+        },
         issuer,
         // The pure wrap knows the leaves, not the deployment: the issuing stack attaches the
         // `protocol` block (§4.2) after wrapping, from its chain/registry/signer config.
@@ -291,12 +298,17 @@ mod tests {
         let doc = wrap_document(&sample_credential(), issuer(), &mut sp).unwrap();
         // data must contain the packed cleartext for dogTagId
         let flat = flatten_data(&doc.data);
-        let dog = flat.iter().find(|(k, _)| k == "credentialSubject.dogTagId").unwrap();
+        let dog = flat
+            .iter()
+            .find(|(k, _)| k == "credentialSubject.dogTagId")
+            .unwrap();
         let (_, tag, val) = parse_packed(&dog.1).unwrap();
         assert_eq!(tag, TypeTag::Integer);
         assert_eq!(val, "42");
         // name present
-        assert!(flat.iter().any(|(k, v)| k == "credentialSubject.name" && v.ends_with(":Rex")));
+        assert!(flat
+            .iter()
+            .any(|(k, v)| k == "credentialSubject.name" && v.ends_with(":Rex")));
         assert_eq!(doc.signature.target_hash, doc.signature.merkle_root);
     }
 

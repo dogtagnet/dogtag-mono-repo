@@ -299,7 +299,7 @@ pub async fn consent_submit_levelb(
     let verify_key = verify_key_from_purpose_word(&purpose_word);
     match st
         .chain
-        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &verify_key, &relayer)
+        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &verify_key, &relayer, None)
         .await
     {
         Ok(true) => {}
@@ -321,7 +321,10 @@ pub async fn consent_submit_levelb(
     };
 
     let nullifier = format!("0x{}", hex::encode(pub_u[P::NULLIFIER].to_be_bytes::<32>()));
-    let record_type_word = format!("0x{}", hex::encode(pub_u[P::RECORD_TYPE].to_be_bytes::<32>()));
+    let record_type_word = format!(
+        "0x{}",
+        hex::encode(pub_u[P::RECORD_TYPE].to_be_bytes::<32>())
+    );
     let audit = match session {
         Some(mut session) => {
             session.status = "recording".to_string();

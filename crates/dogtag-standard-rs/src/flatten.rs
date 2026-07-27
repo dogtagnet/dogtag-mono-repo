@@ -22,7 +22,9 @@ fn has_reserved(key: &str) -> bool {
 /// Detect the `{tag, value}` leaf shape (mirror of TS `isTypedScalar`).
 fn is_typed_scalar(v: &Value) -> bool {
     match v {
-        Value::Object(m) => m.contains_key("value") && matches!(m.get("tag"), Some(Value::Number(_))),
+        Value::Object(m) => {
+            m.contains_key("value") && matches!(m.get("tag"), Some(Value::Number(_)))
+        }
         _ => false,
     }
 }
@@ -44,27 +46,31 @@ fn scalar_of(m: &Map<String, Value>) -> Result<TypedScalar, DogTagError> {
         TypeTag::String => TypedScalar::Str(
             value
                 .as_str()
-                .ok_or_else(|| DogTagError::Other("string scalar: value must be a string".to_string()))?
+                .ok_or_else(|| {
+                    DogTagError::Other("string scalar: value must be a string".to_string())
+                })?
                 .to_string(),
         ),
         TypeTag::Integer => TypedScalar::Integer(
             value
                 .as_str()
-                .ok_or_else(|| DogTagError::Other("integer scalar: value must be a string".to_string()))?
+                .ok_or_else(|| {
+                    DogTagError::Other("integer scalar: value must be a string".to_string())
+                })?
                 .to_string(),
         ),
         TypeTag::Decimal => TypedScalar::Decimal(
             value
                 .as_str()
-                .ok_or_else(|| DogTagError::Other("decimal scalar: value must be a string".to_string()))?
+                .ok_or_else(|| {
+                    DogTagError::Other("decimal scalar: value must be a string".to_string())
+                })?
                 .to_string(),
         ),
         TypeTag::Bytes => TypedScalar::Bytes(
-            hex::decode(
-                value
-                    .as_str()
-                    .ok_or_else(|| DogTagError::Other("bytes scalar: value must be hex string".to_string()))?,
-            )
+            hex::decode(value.as_str().ok_or_else(|| {
+                DogTagError::Other("bytes scalar: value must be hex string".to_string())
+            })?)
             .map_err(|e| DogTagError::Other(format!("bytes scalar: bad hex: {e}")))?,
         ),
     })
@@ -113,7 +119,9 @@ fn walk(node: &Value, path: &str, out: &mut Vec<FlatEntry>) -> Result<(), DogTag
         for (k, v) in m.iter() {
             let key = nfc(k);
             if has_reserved(&key) {
-                return Err(DogTagError::Other(format!("reserved char in object key: {key:?}")));
+                return Err(DogTagError::Other(format!(
+                    "reserved char in object key: {key:?}"
+                )));
             }
             let child_path = if path.is_empty() {
                 key.clone()
@@ -262,8 +270,14 @@ mod tests {
     fn flatten_then_unflatten_preserves_keypaths() {
         // packed-string entries keyed by pinned keyPaths
         let entries: Vec<(String, String)> = vec![
-            ("credentialSubject.dogTagId".to_string(), "aabb:3:42".to_string()),
-            ("credentialSubject.name".to_string(), "ccdd:2:Rex".to_string()),
+            (
+                "credentialSubject.dogTagId".to_string(),
+                "aabb:3:42".to_string(),
+            ),
+            (
+                "credentialSubject.name".to_string(),
+                "ccdd:2:Rex".to_string(),
+            ),
             (
                 "credentialSubject.microchip.code".to_string(),
                 "eeff:2:985141006580311".to_string(),

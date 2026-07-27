@@ -23,6 +23,9 @@ fn demo_state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
+        issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
+        dns_doh_endpoint: String::new(),
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -32,6 +35,10 @@ fn demo_state() -> (AppState, MemChain) {
         api_token: Some("dogtag-gov-demo-token".into()),
     };
     let chain = MemChain::new();
+    // The demo clone really was deployed by the DogTag factory. Seeded because link-1 provenance is a
+    // verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed`, which fails the verdict
+    // — correctly, but it would make this suite about provenance rather than about the flow.
+    chain.set_factory_clone("0x00000000000000000000000000000000000000fa", ISSUER_ADDR, true);
     // whitelist the demo signer for TRAVEL_CLEARANCE so the issuer-identity pillar can be exercised.
     if let Some(signer) = chain.signer_address() {
         chain.whitelist(
@@ -45,6 +52,7 @@ fn demo_state() -> (AppState, MemChain) {
         store,
         chain: Arc::new(chain.clone()),
         cfg: Arc::new(cfg),
+        dns: std::sync::Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
         feed: Arc::new(government_api::oversight::DisabledFeed),
     };
     (state, chain)
@@ -76,24 +84,63 @@ impl ChainClient for LiveLikeChain {
         &self,
         issuer_addr: &str,
         root: &str,
+        at_block: Option<u64>,
     ) -> Result<bool, government_api::chain::ChainError> {
-        self.0.is_valid(issuer_addr, root).await
+        self.0.is_valid(issuer_addr, root, at_block).await
     }
     async fn issued_at(
         &self,
         issuer_addr: &str,
         root: &str,
+        at_block: Option<u64>,
     ) -> Result<alloy::primitives::U256, government_api::chain::ChainError> {
-        self.0.issued_at(issuer_addr, root).await
+        self.0.issued_at(issuer_addr, root, at_block).await
     }
+    async fn block_number(&self) -> Result<u64, government_api::chain::ChainError> {
+        Ok(1)
+    }
+    async fn root_issuer(
+        &self,
+        _factory_addr: &str,
+        _root: &str,
+        _at_block: Option<u64>,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        Ok(None)
+    }
+    async fn is_factory_clone(
+        &self,
+        _factory_addr: &str,
+        _clone_addr: &str,
+        _at_block: Option<u64>,
+    ) -> Result<bool, government_api::chain::ChainError> {
+        Ok(true)
+    }
+    async fn issuer_onchain_name(
+        &self,
+        _clone_addr: &str,
+        _at_block: Option<u64>,
+    ) -> Result<String, government_api::chain::ChainError> {
+        Ok(String::new())
+    }
+    /// This harness's issuer claims no on-chain domain, which is the normal day-one state.
+    async fn issuer_claimed_domain(
+        &self,
+        _domain_registry_addr: &str,
+        _clone_addr: &str,
+        _at_block: Option<u64>,
+    ) -> Result<Option<government_api::chain::DomainClaim>, government_api::chain::ChainError> {
+        Ok(None)
+    }
+
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
         record_type: &str,
         signer: &str,
+        at_block: Option<u64>,
     ) -> Result<bool, government_api::chain::ChainError> {
         self.0
-            .is_whitelisted_for(registry_addr, record_type, signer)
+            .is_whitelisted_for(registry_addr, record_type, signer, at_block)
             .await
     }
     async fn issue(

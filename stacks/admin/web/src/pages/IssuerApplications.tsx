@@ -19,12 +19,16 @@ import {
   DEMO_ISSUER_APPLICATION_GROOMER,
   DEMO_ISSUER_APPLICATION_VET,
   type DemoIssuerApplication,
+  DomainBindingBadge,
+  type DnsConfirmationRequired,
   type IssuerApplicationListItem,
   type IssuerApplicationStatus,
+  type IssuerDomainBindingState,
 } from "@dogtag/ui";
 import { Check, ListChecks, Plus, Slash, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { DnsConfirmDialog, type DnsPrompt } from "../components/DnsConfirmDialog";
 import { env } from "../lib/env";
 import { shortAddr } from "../lib/format";
 
@@ -68,10 +72,18 @@ export function IssuerApplications() {
     void load();
   }, [load]);
 
-  async function approve(id: string) {
+  /** A pending confirmation: the live DNS observation was not verified, and the admin must decide. */
+  const [dnsPrompt, setDnsPrompt] = useState<DnsPrompt | null>(null);
+
+  /**
+   * Approve. The DNS legitimacy check is ADVISORY: it never blocks, but a non-verified observation is
+   * answered with a 409 carrying what was OBSERVED, and the admin must deliberately confirm. Proceeding
+   * is recorded on the application, so an override never looks like a clean pass.
+   */
+  async function approve(id: string, proceedWithoutDns = false) {
     setBusyId(id);
     try {
-      const r = await central.approveApplication(id);
+      const r = await central.approveApplication(id, { proceedWithoutDns });
       setTxs((p) => ({ ...p, [id]: r.whitelistTxs }));
       setIssuerRole((p) => ({ ...p, [id]: r.issuerRoleGranted }));
       toast({
@@ -82,8 +94,15 @@ export function IssuerApplications() {
         variant: "success",
       });
       await load();
+      setDnsPrompt(null);
     } catch (err) {
-      toast({ title: "Approve failed", description: (err as Error).message, variant: "danger" });
+      // The advisory-DNS confirmation is not an error condition — surface it as a decision to make.
+      const payload = (err as { body?: DnsConfirmationRequired }).body;
+      if (payload?.error === "dnsConfirmationRequired") {
+        setDnsPrompt({ ...payload, applicationId: id });
+      } else {
+        toast({ title: "Approve failed", description: (err as Error).message, variant: "danger" });
+      }
     } finally {
       setBusyId(null);
     }
@@ -137,6 +156,14 @@ export function IssuerApplications() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={() => void load()}
+      />
+      <DnsConfirmDialog
+        prompt={dnsPrompt}
+        busy={busyId !== null}
+        onCancel={() => setDnsPrompt(null)}
+        onProceed={() => {
+          if (dnsPrompt) void approve(dnsPrompt.applicationId, true);
+        }}
       />
       <CardContent className="space-y-4">
         {apps === null ? (
@@ -230,6 +257,8 @@ export function IssuerApplications() {
                   ))}
                 </div>
               ) : null}
+
+              <DnsTraceRow app={a} />
 
               <div className="flex flex-wrap gap-2">
                 {a.status === "pending" && (
@@ -365,4 +394,53 @@ function AppField({
       <Input value={value} onChange={(e) => onChange(e.target.value)} required={required} placeholder={placeholder} />
     </div>
   );
+}
+
+/**
+ * The DNS legitimacy trace for one application.
+ *
+ * Two things are shown and they answer different questions:
+ *
+ *  - the LATEST observation (`dnsState`), which the future daily re-check job overwrites, so a binding
+ *    can turn verified with no admin redoing anything;
+ *  - whether this issuer was whitelisted on an explicit override (`dnsProceededUnverified`), which is
+ *    immutable history. Without it an override would be indistinguishable from a clean pass, and an
+ *    override that leaves no trace is fail-open with extra steps.
+ *
+ * Copy states the observation, never a verdict about the organisation.
+ */
+function DnsTraceRow({ app }: { app: IssuerApplicationListItem }) {
+  const state = (app.dnsState || "").trim();
+  if (!state && !app.dnsProceededUnverified) return null;
+
+  return (
+    <div data-testid="dns-trace" className="mt-1 flex flex-col gap-1">
+      {state && (
+        <DomainBindingBadge
+          data-testid="dns-trace-state"
+          binding={{
+            state: state as IssuerDomainBindingState,
+            domain: app.domain,
+            checkedAt: app.dnsCheckedAt,
+          }}
+        />
+      )}
+      {app.dnsProceededUnverified && (
+        // Factual, and deliberately about US rather than about them: we granted the whitelist before the
+        // record existed. The organisation is not accused of anything.
+        <span data-testid="dns-trace-override" className="text-xs text-warning">
+          Whitelisted before this domain published the record
+          {app.dnsStateAtApproval ? ` (at approval: ${observationPhrase(app.dnsStateAtApproval)})` : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** A short factual phrase for a recorded observation. */
+function observationPhrase(state: string): string {
+  if (state === "notListed") return "address not listed in DNS";
+  if (state === "couldNotCheck") return "DNS could not be reached";
+  if (state === "verified") return "address listed in DNS";
+  return state;
 }

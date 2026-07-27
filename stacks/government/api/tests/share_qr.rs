@@ -30,6 +30,9 @@ fn demo_state() -> AppState {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
+        issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
+        dns_doh_endpoint: String::new(),
         verification_registry_addr: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -50,17 +53,31 @@ fn demo_state() -> AppState {
         store: Arc::new(MemStore::new()) as Arc<dyn Store>,
         chain: Arc::new(chain),
         cfg: Arc::new(cfg),
+        dns: std::sync::Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
         feed: Arc::new(government_api::oversight::DisabledFeed),
     }
 }
 
-async fn call(state: &AppState, method: &str, uri: &str, token: Option<&str>) -> (StatusCode, Value) {
+async fn call(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+) -> (StatusCode, Value) {
     let (status, bytes) = raw(state, method, uri, token).await;
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// Raw call — the `/r/` surface serves BOTH JSON and HTML, so some assertions need the bytes.
-async fn raw(state: &AppState, method: &str, uri: &str, token: Option<&str>) -> (StatusCode, Vec<u8>) {
+async fn raw(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -74,7 +91,13 @@ async fn raw(state: &AppState, method: &str, uri: &str, token: Option<&str>) -> 
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     (status, bytes)
 }
 
@@ -87,7 +110,8 @@ async fn issue(state: &AppState) -> (String, String) {
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {API_TOKEN}"))
             .body(Body::from(
-                json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7", "fields": {} }).to_string(),
+                json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "7", "fields": {} })
+                    .to_string(),
             ))
             .unwrap();
         let resp = government_api::router(state.clone())
@@ -222,7 +246,10 @@ async fn the_public_r_surface_still_serves_receipt_ids_as_html() {
     assert!(html.starts_with("<!doctype html>"), "receipt page is HTML");
     assert!(html.contains(&receipt_id));
     // The public page stays PII-free — no Section A applicant leaf leaks onto it.
-    assert!(!html.contains("Zagara"), "no applicant PII on the status page");
+    assert!(
+        !html.contains("Zagara"),
+        "no applicant PII on the status page"
+    );
 
     // An unknown share-token-shaped id answers JSON, never the receipt page's HTML 404.
     let (status, bytes) = raw(&state, "GET", &format!("/r/{}", "ab".repeat(16)), None).await;

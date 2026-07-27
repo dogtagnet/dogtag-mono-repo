@@ -18,8 +18,9 @@ use admin_api::auth::JwtKeys;
 use admin_api::business::{BusinessClient, ReqwestBusinessClient};
 use admin_api::chain::{record_type_key, AlloyChain, ChainClient};
 use admin_api::crypto::{KeyVault, MemVault};
-use admin_api::dns::{DnsChecker, MockDnsChecker};
+use admin_api::dns::DnsChecker;
 use admin_api::store::MemStore;
+use common::MockDnsChecker;
 
 const CONTRACTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../contracts");
 // anvil default account 0 (admin/deployer == WHITELIST_ADMIN).
@@ -167,7 +168,8 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         dns: Arc::new(MockDnsChecker::ok()) as Arc<dyn DnsChecker>,
         business: Arc::new(ReqwestBusinessClient::new()) as Arc<dyn BusinessClient>,
         vault: Arc::new(MemVault::new()) as Arc<dyn KeyVault>,
-        feed: Arc::new(admin_api::indexer::DisabledFeed) as Arc<dyn admin_api::indexer::OversightFeed>,
+        feed: Arc::new(admin_api::indexer::DisabledFeed)
+            as Arc<dyn admin_api::indexer::OversightFeed>,
         jwt: JwtKeys::generate(),
         cfg: Arc::new(cfg),
         ratelimit: Arc::new(admin_api::auth::RateLimiter::new()),
@@ -187,7 +189,11 @@ async fn anvil_whitelist_multi_address() {
 
     // deploy the contract set (IssuerRegistry with ACC0 as admin multisig -> WHITELIST_ADMIN).
     let registry = forge_create(&rpc, "src/IssuerRegistry.sol:IssuerRegistry", &[ACC0]);
-    let sbt = forge_create(&rpc, "src/DogTagSBTConsent.sol:DogTagSBTConsent", &[ACC0, CUSTODIAN]);
+    let sbt = forge_create(
+        &rpc,
+        "src/DogTagSBTConsent.sol:DogTagSBTConsent",
+        &[ACC0, CUSTODIAN],
+    );
     // (factory/impl are part of the issuance set; not needed for the whitelist assertions.)
 
     let rt_vacc = record_type_key("VACCINATION");

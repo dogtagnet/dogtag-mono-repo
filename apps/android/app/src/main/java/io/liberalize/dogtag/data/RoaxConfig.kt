@@ -12,6 +12,17 @@ data class RoaxConfig(
     val chainId: Long,
     val dogTagSbt: String,
     val issuerRegistry: String,
+    /**
+     * `DogTagIssuerFactory` — LINK 1 of the issuer↔domain chain (`isClone`). Blank means clone
+     * provenance cannot be checked, and the binding reports "could not read" rather than claiming
+     * anything.
+     */
+    val issuerFactory: String,
+    /**
+     * `IssuerDomainRegistry` — the clone's on-chain domain claim. Blank until deployed; the binding then
+     * reports "could not read", never "no domain claimed".
+     */
+    val issuerDomainRegistry: String,
     /** Protocol discovery trust anchor. Blank fails closed until the registry is deployed. */
     val protocolRegistry: String,
 ) {
@@ -23,6 +34,8 @@ data class RoaxConfig(
                 chainId = o.optLong("chainId", 135),
                 dogTagSbt = o.optString("DogTagSBT"),
                 issuerRegistry = o.optString("IssuerRegistry"),
+                issuerFactory = o.optString("DogTagIssuerFactory"),
+                issuerDomainRegistry = o.optString("IssuerDomainRegistry"),
                 protocolRegistry = o.optString("ProtocolRegistry"),
             )
         }

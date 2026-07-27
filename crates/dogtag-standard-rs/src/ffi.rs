@@ -112,8 +112,8 @@ pub fn verify_inclusion_proof_hex(
     root_hex: String,
 ) -> Result<bool, FfiError> {
     let salt = decode_salt(&salt_hex)?;
-    let type_tag = TypeTag::from_u8(tag)
-        .ok_or_else(|| FfiError::Invalid(format!("unknown tag {tag}")))?;
+    let type_tag =
+        TypeTag::from_u8(tag).ok_or_else(|| FfiError::Invalid(format!("unknown tag {tag}")))?;
     let scalar: TypedScalar = scalar_from_packed(type_tag, &value)?;
     let mut steps: Vec<ProofStep> = Vec::with_capacity(proof_steps.len());
     for s in &proof_steps {
@@ -341,7 +341,10 @@ fn attr_leaves_from_ffi(
 /// The result is owner-private and MUST NOT be transmitted: a server that learned it could link
 /// nullifiers back to the owner, defeating the owner-unlinkable model.
 #[uniffi::export]
-pub fn derive_owner_secret_hex(seed_hex: String, dog_tag_id_hex: String) -> Result<String, FfiError> {
+pub fn derive_owner_secret_hex(
+    seed_hex: String,
+    dog_tag_id_hex: String,
+) -> Result<String, FfiError> {
     let s = seed_hex.strip_prefix("0x").unwrap_or(&seed_hex);
     let seed = hex::decode(s).map_err(|e| err(format!("bad seed hex: {e}")))?;
     let dog_tag_id = from_hex32(&dog_tag_id_hex).map_err(FfiError::from)?;

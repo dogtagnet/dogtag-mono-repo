@@ -16,8 +16,75 @@ struct CredentialDetailScreen: View {
     private var cred: Credential { store.credentials.first { $0.id == opened.id } ?? opened }
 
     @State private var showReceipt = false
+    /// The issuer↔domain binding. Starts `.pending` and is filled by a real resolution — never
+    /// pre-filled with a guess, because flashing "no domain claimed" and then flipping would show a
+    /// state that was never observed.
+    @State private var binding: IssuerBinding = .pending
 
     private var doc: WrappedDoc? { WrappedDoc(json: cred.wrappedDocJson) }
+    private var roax: RoaxConfig { RoaxConfig.load() }
+
+    /// The issuer as it may honestly be shown.
+    ///
+    /// The ON-CHAIN name and the ON-CHAIN domain are what get rendered. The credential's own `issuer`
+    /// block is outside the Merkle root, so it is never presented as the issuer — only as a stated
+    /// disagreement. That is what stops a relabelled document from displaying a fabricated authority.
+    @ViewBuilder
+    private var issuerIdentityRows: some View {
+        let docName = (doc?.issuerName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let docDomain = (doc?.issuerDomain ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let chainName = binding.onchainName.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !chainName.isEmpty {
+            KeyValueRow(label: "Issuer", value: chainName)
+            if !docName.isEmpty, normalised(docName) != normalised(chainName) {
+                // Factual, and about the document rather than the organisation. Deliberately MUTED, not
+                // red: free-form labels drift between what an issuing stack stamps and what the clone was
+                // created with, so a red line here would fire on legitimate credentials and train people
+                // to ignore it. The authoritative name is already displayed above; this is a footnote.
+                // The DOMAIN discrepancy below stays red — that one is a structured comparison against a
+                // root-covered value.
+                Text("The document names a different issuer: “\(docName)”")
+                    .font(.system(size: 11)).foregroundColor(c.muted)
+            }
+        } else if !docName.isEmpty {
+            // A fallback is never presented as authoritative.
+            KeyValueRow(label: "Issuer (from document)", value: docName)
+        }
+
+        if !binding.domain.isEmpty {
+            KeyValueRow(label: "Issuer domain", value: binding.domain)
+            if !docDomain.isEmpty, docDomain.lowercased() != binding.domain.lowercased() {
+                Text("The document claims the domain “\(docDomain)”")
+                    .font(.system(size: 11)).foregroundColor(c.danger)
+            }
+        } else if !docDomain.isEmpty {
+            KeyValueRow(label: "Issuer domain (from document)", value: docDomain)
+        }
+
+        // The DID assertion — the OTHER half of issuer identity, required alongside the DNS binding.
+        // DNS proves the domain owner vouches for the address; this proves the document has not been
+        // relabelled since issuance. It works even when the binding is unavailable, because it needs
+        // nothing but the document itself — and with no IssuerDomainRegistry bundled yet, it is the only
+        // issuer cross-check this screen has.
+        switch IssuerIdentity.assertDomain(doc) {
+        case .mismatch(let displayed, let rootCovered):
+            Text("This credential was issued under “\(rootCovered)”, but the document claims “\(displayed)”")
+                .font(.system(size: 11)).foregroundColor(c.danger)
+        case .notAssertable:
+            // Deliberately NOT a pass, and said so rather than left silent.
+            Text("This document carries no issuer identity inside its Merkle root, so its domain could not be cross-checked.")
+                .font(.system(size: 11)).foregroundColor(c.muted)
+        case .match:
+            EmptyView()
+        }
+
+        DomainBindingLine(binding: binding)
+    }
+
+    private func normalised(_ s: String) -> String {
+        s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+    }
     private var fields: [WrappedDoc.DecodedField] { doc?.decodedFields() ?? [] }
 
     var body: some View {
@@ -68,12 +135,15 @@ struct CredentialDetailScreen: View {
                     Text("ON-CHAIN").font(.system(size: 11, weight: .bold)).foregroundColor(c.muted)
                     let root = (doc?.merkleRoot).flatMap { $0.isEmpty ? nil : $0 } ?? cred.credentialRoot
                     CopyableMonoRow(label: "Merkle root", value: root)
-                    if let store = doc?.documentStore, !store.isEmpty {
-                        CopyableMonoRow(label: "Issuer address", value: store)
+                    // The chain's `rootIssuer[R]` once it has resolved, and only the document's claim
+                    // (labelled as such) until then — the document names a contract, it does not
+                    // establish one.
+                    if binding.cloneSource == .rootIssuer, !binding.cloneAddress.isEmpty {
+                        CopyableMonoRow(label: "Issuer address", value: binding.cloneAddress)
+                    } else if let store = doc?.documentStore, !store.isEmpty {
+                        CopyableMonoRow(label: "Issuer address (from document)", value: store)
                     }
-                    if let domain = doc?.issuerDomain, !domain.isEmpty {
-                        KeyValueRow(label: "Issuer domain", value: domain)
-                    }
+                    issuerIdentityRows
                     let rt = doc?.recordType.isEmpty == false ? doc!.recordType : cred.recordType
                     if !rt.isEmpty { KeyValueRow(label: "Record type", value: rt) }
                     Text("Anchored on the verification registry. Look the Merkle root up on the chain explorer to confirm validity.")
@@ -112,6 +182,26 @@ struct CredentialDetailScreen: View {
         .confirmDeleteCredential($pendingDelete) { cred in
             store.deleteCredential(id: cred.id)
             dismiss()
+        }
+        .task {
+            // A real resolution, every time the sheet opens (served from a short TTL cache so it is not a
+            // DNS lookup per render). Until it returns, the badge shows `.pending`.
+            //
+            // The document's `documentStore` is passed as a CLAIM, not as the contract to check: the
+            // resolver reads the factory's write-once `rootIssuer[R]` first and follows that. Handing it
+            // the document's claim directly would leave the relabelling attack open on the one surface a
+            // border official actually holds — a swapped `documentStore` pointed at another authority's
+            // genuine clone passes `isClone` and renders that authority's on-chain identity.
+            let claimed = (doc?.documentStore ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let root = (doc?.merkleRoot).flatMap { $0.isEmpty ? nil : $0 } ?? cred.credentialRoot
+            guard !claimed.isEmpty || !root.isEmpty else { return }
+            binding = await IssuerBindingResolver.resolve(
+                rpcUrl: AppConfig.roaxRpc,
+                factory: roax.issuerFactory,
+                domainRegistry: roax.issuerDomainRegistry,
+                documentStore: claimed,
+                root: root
+            )
         }
     }
 
@@ -198,3 +288,71 @@ private struct KeyValueRow: View {
     }
 }
 
+/// The badge: ONE compact line beside the issuer, not a panel.
+///
+/// `verified` is a small green check plus the factual line, with the description the domain owner
+/// published. `notListed` is the symmetric red line — same size, same placement, same register. A
+/// provenance failure gets its own mark and its own words. Everything we simply do not know stays
+/// neutral, because a resolver timeout is evidence of nothing.
+///
+/// Nothing here reads as a judgement on the credential or the organisation: a missing DNS record means
+/// the domain owner has not published the binding, and the credential's validity is proven separately
+/// on-chain.
+struct DomainBindingLine: View {
+    @Environment(\.dogTagColors) var c
+    let binding: IssuerBinding
+
+    private var color: Color {
+        switch binding.tone {
+        case .positive: return c.success
+        case .negative: return c.danger
+        case .neutral, .pending: return c.muted
+        }
+    }
+
+    private var symbol: String {
+        switch binding.state {
+        case .verified: return "checkmark"
+        case .notADogTagIssuer: return "building.2"
+        case .notListed: return "minus.circle"
+        case .pending: return "ellipsis"
+        default: return "info.circle"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: symbol).font(.system(size: 10, weight: .bold))
+                Text(binding.line).font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundColor(color)
+
+            if let swapped = binding.documentStoreLine {
+                // The chain's write-once record disagrees with the document about which contract issued
+                // this credential. Reported, not followed: everything above was resolved from the chain's
+                // answer. Red, because — unlike the free-form name drift — this is a structured
+                // comparison against a write-once on-chain value.
+                Text(swapped)
+                    .font(.system(size: 11)).foregroundColor(c.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 15)
+            }
+            if let published = binding.publishedDescription {
+                // The whole reason the TXT value is free-form: show what the domain chose to say.
+                Text("Domain says: “\(published)”")
+                    .font(.system(size: 11)).foregroundColor(c.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 15)
+            }
+            if let provenance = binding.provenanceLine() {
+                // A "verified" with no "when" is not auditable against a world where DNS changes. The
+                // DNS clause appears only when a DNS query really ran — see `provenanceLine`.
+                Text(provenance)
+                    .font(.system(size: 10)).foregroundColor(c.muted)
+                    .padding(.leading, 15)
+            }
+        }
+    }
+}

@@ -48,4 +48,18 @@ class RoaxRpcSelectorTest {
         assertEquals("0x4648c943", RoaxRpc.functionSelector("consumed(bytes32)"))
         assertEquals("0x85105cb3", RoaxRpc.functionSelector("profileRoot(uint256)"))
     }
+
+    /**
+     * The issuer↔domain chain's selectors, including `rootIssuer` — the read that decides WHICH contract
+     * a credential's identity is resolved from. A wrong selector there reverts, which the client reports
+     * as "could not read"; that fails closed, but it silently disables the defence against a swapped
+     * `issuer.documentStore`. Confirmed with `cast sig`.
+     */
+    @Test
+    fun theIssuerBindingSelectorsMatchTheirCanonicalSignatures() {
+        assertEquals("0x41e41d17", RoaxRpc.functionSelector("rootIssuer(bytes32)"))
+        assertEquals("0x00ae3676", RoaxRpc.functionSelector("isClone(address)"))
+        assertEquals("0xe0095e0e", RoaxRpc.functionSelector("domainOf(address)"))
+        assertEquals("0x06fdde03", RoaxRpc.functionSelector("name()"))
+    }
 }

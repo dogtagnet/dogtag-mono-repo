@@ -56,6 +56,15 @@ targets:
       # AnchorResolver is Foundation-only (the two pure ABI decoders); the FFI glue
       # that builds a TrustedAnchor + calls validateDiscovery lives in ScanScreen, not here.
       - path: DogTag/AnchorResolver.swift
+      # The issuer↔domain binding model + copy is Foundation-only by design (its only network use is via
+      # Net/Http, which are themselves Foundation-only), so the three-state DNS classification and the
+      # copy discipline are covered here rather than only by inspection.
+      # (Keccak256 already comes along below via Wallet's link-time closure.)
+      - path: DogTag/IssuerDomainBinding.swift
+      - path: DogTag/Net.swift
+      # Models is Foundation-only (JSONSerialization) and carries `rootCoveredIssuerLeaf`, which the DID
+      # assertion reads. SwiftUI lives in the screens, not here.
+      - path: DogTag/Models.swift
       # LocalDataSweep is Foundation-only by design so the destructive reset actions' file removal
       # (staging-sibling sweep, idempotence, partial-failure reporting) is covered here; the callers
       # that pull in Keychain/FFI/SwiftUI live in AppReset and the stores.

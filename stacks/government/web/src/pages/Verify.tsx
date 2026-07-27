@@ -2,6 +2,7 @@ import {
   Badge,
   Button,
   Card,
+  DomainBindingBadge,
   Label,
   QrCode,
   Select,
@@ -10,7 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
   Spinner,
+  displayIssuerName,
   explorerTxUrl,
+  type IssuerDomainBinding,
+  type IssuerIdentity,
 } from "@dogtag/ui";
 import { CheckCircle2, History, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -38,6 +42,41 @@ function Frag({ label, v, testid }: { label: string; v: unknown; testid?: string
       {label}: {v ? "yes" : "no"}
     </Badge>
   );
+}
+
+/** Link 1 as a verdict pillar, rendered TRI-state.
+ *
+ *  Only `notFactoryDeployed` — the factory was asked and answered no — is a definite negative and is the
+ *  only value that fails the verdict. `unknown` (no factory configured, or the read failed) is evidence
+ *  of nothing and stays neutral, exactly as `couldNotCheck` never renders as `notListed`; colouring it
+ *  red would be a lie of emphasis, and would also cry wolf on every credential in a deployment that has
+ *  no `FACTORY_ADDR`. */
+function ProvenanceFrag({ v }: { v: unknown }) {
+  if (v === "factoryDeployed")
+    return (
+      <Badge data-testid="pillar-provenance" variant="success">
+        factory-deployed: yes
+      </Badge>
+    );
+  if (v === "notFactoryDeployed")
+    return (
+      <Badge data-testid="pillar-provenance" variant="danger">
+        factory-deployed: no
+      </Badge>
+    );
+  return (
+    <Badge data-testid="pillar-provenance" variant="neutral">
+      factory-deployed: not checked
+    </Badge>
+  );
+}
+
+/** How `/v1/verify` chose the contract it checked against — see the `issuerResolution` block. */
+interface IssuerResolution {
+  source?: "operatorOverride" | "rootIssuer" | "documentClaim";
+  rootIssuer?: string | null;
+  documentDocumentStore?: string;
+  documentStoreDiffers?: boolean;
 }
 
 type Phase = "idle" | "starting" | "awaiting" | "verified" | "error" | "failed";
@@ -409,6 +448,9 @@ function PasteDocVerify({ health }: { health: Health | null }) {
 
   const frag = result?.fragments as Record<string, unknown> | undefined;
   const verdict = result?.verdict as boolean | undefined;
+  const identity = result?.issuerIdentity as IssuerIdentity | undefined;
+  const binding = result?.issuerDomainBinding as IssuerDomainBinding | undefined;
+  const resolution = result?.issuerResolution as IssuerResolution | undefined;
 
   return (
     <Card className="p-6">
@@ -465,13 +507,87 @@ function PasteDocVerify({ health }: { health: Health | null }) {
             <Frag label="integrity" testid="pillar-integrity" v={frag?.integrity} />
             <Frag label="on-chain" testid="pillar-onchain" v={frag?.onchain} />
             <Frag label="issuer whitelist" testid="pillar-whitelist" v={frag?.issuerWhitelisted} />
+            <ProvenanceFrag v={frag?.issuerProvenance} />
           </div>
+
+          <IssuerLine identity={identity} binding={binding} resolution={resolution} />
           <pre className="receipt-mono mt-4 max-h-80 overflow-auto rounded-md border border-border bg-surface-muted p-3 text-xs text-onSurface">
             {JSON.stringify(result, null, 2)}
           </pre>
         </div>
       )}
     </Card>
+  );
+}
+
+/** The issuer, as it may honestly be shown: the ON-CHAIN name, with the domain binding beside it.
+ *
+ *  The credential's own `issuer` block is outside the Merkle root, so it is never rendered as the
+ *  issuer — only as a stated disagreement when it contradicts the chain. That is the whole fix for the
+ *  audit's relabelling demo: a re-badged document now displays the authority that actually issued it. */
+function IssuerLine({
+  identity,
+  binding,
+  resolution,
+}: {
+  identity: IssuerIdentity | undefined;
+  binding: IssuerDomainBinding | undefined;
+  resolution: IssuerResolution | undefined;
+}) {
+  if (!identity && !binding) return null;
+  const { name, sourceLabel } = displayIssuerName(identity);
+
+  return (
+    <div data-testid="issuer-line" className="mt-4 border-t border-border pt-3">
+      <div className="text-xs font-medium text-muted">Issuer</div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span data-testid="issuer-name" className="text-sm font-medium text-onSurface">
+          {name}
+        </span>
+        {/* Never let a fallback pass for the authoritative value — and say which of the two withheld
+            cases actually happened, since "not factory-descended" and "could not be read" are
+            different facts. The copy lives in `displayIssuerName` so surfaces cannot drift. */}
+        <span data-testid="issuer-name-source" className="text-[11px] text-muted">
+          {sourceLabel}
+        </span>
+      </div>
+
+      {/* The badge: small, beside the issuer, an observation rather than a verdict. */}
+      <div className="mt-1.5">
+        {/* This is an audit surface, so the block anchor and the live-vs-recorded DNS label are shown:
+            "verified" without a "when" is not auditable against a world where DNS changes. */}
+        <DomainBindingBadge binding={binding} showProvenance data-testid="issuer-domain-binding" />
+      </div>
+
+      {/* Stated only when the document contradicts the chain. Factual, no alarm language: the
+          credential's validity is reported separately and is not what this is about. */}
+      {identity?.documentNameDiffers && (
+        <p data-testid="issuer-name-differs" className="mt-1.5 text-xs text-warning">
+          The document names a different issuer: “{identity.documentName}”
+        </p>
+      )}
+      {/* The chain says a different contract issued this root than the document claims. Reported, never
+          silently followed — following the document's claim is how a swapped documentStore redirects a
+          check at a contract the attacker controls. */}
+      {resolution?.documentStoreDiffers && (
+        <p data-testid="issuer-store-differs" className="mt-1.5 text-xs text-warning">
+          The document names contract {resolution.documentDocumentStore}, but the chain records{" "}
+          {resolution.rootIssuer} as the issuer of this credential
+        </p>
+      )}
+      {identity?.documentDomainDiffers && (
+        <p data-testid="issuer-domain-differs" className="mt-1 text-xs text-warning">
+          The document claims the domain “{identity.documentDomain}”, but this credential was issued
+          under “{identity.rootCoveredDomain}”
+        </p>
+      )}
+      {identity?.assertion === "notAssertable" && (
+        <p data-testid="issuer-did-not-assertable" className="mt-1 text-xs text-muted">
+          This document carries no issuer identity inside its Merkle root, so its issuer domain could
+          not be cross-checked.
+        </p>
+      )}
+    </div>
   );
 }
 

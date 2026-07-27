@@ -7,7 +7,7 @@ use admin_api::auth::JwtKeys;
 use admin_api::business::ReqwestBusinessClient;
 use admin_api::chain::{AlloyChain, ChainClient};
 use admin_api::crypto::MemVault;
-use admin_api::dns::{DnsChecker, DohDnsChecker, MockDnsChecker};
+use admin_api::dns::{DnsChecker, DohDnsChecker};
 use admin_api::indexer::{DisabledFeed, HttpOversightFeed, OversightFeed};
 use admin_api::store::{MemStore, Store};
 use tower_http::cors::CorsLayer;
@@ -47,10 +47,7 @@ async fn main() {
             "VERIFICATION_REGISTRY_ADDR",
             "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
         ),
-        sbt_addr: env(
-            "SBT_ADDR",
-            "0xBEbc45A838643D27004827b797b30A464b2b02c0",
-        ),
+        sbt_addr: env("SBT_ADDR", "0xBEbc45A838643D27004827b797b30A464b2b02c0"),
         factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         // Store a real password HASH, never the plaintext (audit L4) — admin_login verifies against
         // this with auth::verify_password. Optional `ADMIN_PASSWORD_HASH` ("<salt_hex>$<hash_hex>")
@@ -128,9 +125,7 @@ async fn main() {
             ),
         }
     } else {
-        tracing::warn!(
-            "ADMIN_PRIVATE_KEY unset; on-chain admin/governance writes will fail"
-        );
+        tracing::warn!("ADMIN_PRIVATE_KEY unset; on-chain admin/governance writes will fail");
     }
 
     // Control-plane authority preflight: resolve, ONCE at boot, whether the hosted signer actually
@@ -144,9 +139,12 @@ async fn main() {
     // simply UNRESOLVED, which is exactly the existing `AuthorityVerdict::Unknown` state - a warning,
     // never fatal, so ADMIN_REQUIRE_AUTHORITY does not fire on an unreadable chain either.
     const AUTHORITY_PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-    if tokio::time::timeout(AUTHORITY_PREFLIGHT_TIMEOUT, authority_preflight(&chain, &cfg))
-        .await
-        .is_err()
+    if tokio::time::timeout(
+        AUTHORITY_PREFLIGHT_TIMEOUT,
+        authority_preflight(&chain, &cfg),
+    )
+    .await
+    .is_err()
     {
         tracing::warn!(
             "control-plane authority preflight did not complete within {:?} (RPC accepted the \
@@ -156,14 +154,31 @@ async fn main() {
         );
     }
 
-    // DNS legitimacy check: real DoH in prod; set DNS_CHECK=skip for the local demo where the
-    // business domain (e.g. vet.local) has no published TXT record.
-    let dns: Arc<dyn DnsChecker> = if env("DNS_CHECK", "doh") == "skip" {
-        tracing::warn!("DNS_CHECK=skip: DNS TXT legitimacy verification is BYPASSED (demo only)");
-        Arc::new(MockDnsChecker::ok())
-    } else {
-        Arc::new(DohDnsChecker::default())
-    };
+    // DNS legitimacy check. The resolution is ALWAYS real — there is no fixture, stub or demo shortcut
+    // on this path, and no flag selects a different behaviour: the gate is ADVISORY for every
+    // deployment (see the `DNS_CHECK` note below).
+    //
+    // This deliberately replaces the previous `DNS_CHECK=skip` behaviour, which installed a checker
+    // returning an unconditional `Ok(true)`: a fabricated PASS on the gate that decides whether an
+    // organisation is legitimate enough to be whitelisted. A local demo whose business domain (e.g.
+    // `vet.local`) publishes no TXT now gets the truthful "not published" / "could not resolve"
+    // outcome, and proceeds only on the admin's explicit `proceedWithoutDns`, with that outcome
+    // recorded rather than inverted.
+    let dns: Arc<dyn DnsChecker> = Arc::new(DohDnsChecker::new(env(
+        "DNS_DOH_ENDPOINT",
+        "https://cloudflare-dns.com/dns-query",
+    )));
+    // `DNS_CHECK` is retired: the gate is ADVISORY for every deployment, so there is nothing left for
+    // the flag to select. Warn rather than ignore it silently — an operator who set `DNS_CHECK=skip`
+    // expecting a bypass should learn that the lookup now always runs and its real outcome is recorded.
+    if std::env::var("DNS_CHECK").is_ok() {
+        tracing::warn!(
+            "DNS_CHECK is ignored: the DNS legitimacy check is now ADVISORY for every deployment. The \
+             lookup always runs against the real domain; a non-verified outcome does not block \
+             whitelisting but requires the admin's explicit proceedWithoutDns and is recorded on the \
+             application."
+        );
+    }
 
     // Store selection: persistent MongoStore when MONGO_URI is set (fail-closed), else ephemeral
     // MemStore (demo/local — unchanged). Demo behavior is preserved when MONGO_URI is unset/empty.

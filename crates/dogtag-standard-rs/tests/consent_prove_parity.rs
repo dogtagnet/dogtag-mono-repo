@@ -32,8 +32,8 @@ use ark_groth16::{Groth16, Proof, VerifyingKey};
 use num_bigint::BigUint;
 
 use dogtag_standard::consent_assemble::{assemble_consent, ConsentWitness};
-use dogtag_standard::prover_ffi::prove_consent;
 use dogtag_standard::profile_tree::{AttributeLeaf, SALT_LEN};
+use dogtag_standard::prover_ffi::prove_consent;
 use dogtag_standard::types::TypedScalar;
 
 fn repo_root() -> PathBuf {
@@ -85,7 +85,11 @@ fn proof_from_parts(a: &[String], b: &[Vec<String>], c: &[String]) -> Proof<Bn25
     let bx = Fq2::new(fq(&b[0][1]), fq(&b[0][0]));
     let by = Fq2::new(fq(&b[1][1]), fq(&b[1][0]));
     let pb = G2Affine::new(bx, by);
-    Proof { a: pa, b: pb, c: pc }
+    Proof {
+        a: pa,
+        b: pb,
+        c: pc,
+    }
 }
 
 fn word32(hi: u64) -> String {
@@ -229,7 +233,10 @@ fn on_device_consent_proof_verifies_and_pub_matches() {
     )
     .expect("prove_consent");
 
-    assert_eq!(proof.pub_signals, expected, "consent public-signal 7-vector mismatch");
+    assert_eq!(
+        proof.pub_signals, expected,
+        "consent public-signal 7-vector mismatch"
+    );
 
     // Independently verify against the frozen VK json.
     let vk_json: serde_json::Value = serde_json::from_str(
@@ -241,5 +248,8 @@ fn on_device_consent_proof_verifies_and_pub_matches() {
     let pvk = Groth16::<Bn254>::process_vk(&vk).unwrap();
     let public_inputs: Vec<Fr> = proof.pub_signals.iter().map(|s| fr(s)).collect();
     let ok = Groth16::<Bn254>::verify_with_processed_vk(&pvk, &public_inputs, &ark_proof).unwrap();
-    assert!(ok, "on-device consent proof must verify under the frozen consent VK");
+    assert!(
+        ok,
+        "on-device consent proof must verify under the frozen consent VK"
+    );
 }

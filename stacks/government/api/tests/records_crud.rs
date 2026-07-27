@@ -30,6 +30,9 @@ fn demo_state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
+        issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
+        dns_doh_endpoint: String::new(),
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -51,6 +54,7 @@ fn demo_state() -> (AppState, MemChain) {
         store,
         chain: Arc::new(chain.clone()),
         cfg: Arc::new(cfg),
+        dns: std::sync::Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
         feed: Arc::new(government_api::oversight::DisabledFeed),
     };
     (state, chain)
@@ -148,7 +152,7 @@ async fn issue_persists_onchain_proof_and_lists() {
         format!("https://explorer.roax.net/tx/{tx}"),
         "explorer link built as https://explorer.roax.net/tx/<hash>"
     );
-    assert!(mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
+    assert!(mem.is_valid(ISSUER_ADDR, &root, None).await.unwrap());
 }
 
 #[tokio::test]
@@ -232,7 +236,7 @@ async fn mutations_require_the_bearer_token() {
         b["revokedTxHash"].is_null(),
         "rejected revoke must not write: {b}"
     );
-    assert!(mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
+    assert!(mem.is_valid(ISSUER_ADDR, &root, None).await.unwrap());
 
     // operator reads require the bearer.
     let (s, _b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
@@ -286,7 +290,7 @@ async fn record_reads_require_the_bearer_token_but_public_status_stays_open() {
 async fn revoke_is_soft_invalidation_keeping_history_and_proof() {
     let (state, mem) = demo_state();
     let root = issue_one(&state).await;
-    assert!(mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
+    assert!(mem.is_valid(ISSUER_ADDR, &root, None).await.unwrap());
 
     let (s, b) = call_auth(
         &state,
@@ -299,8 +303,12 @@ async fn revoke_is_soft_invalidation_keeping_history_and_proof() {
     assert_eq!(b["status"], "revoked");
 
     // on-chain: isValid flips false, historical anchor intact.
-    assert!(!mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
-    assert!(!mem.issued_at(ISSUER_ADDR, &root).await.unwrap().is_zero());
+    assert!(!mem.is_valid(ISSUER_ADDR, &root, None).await.unwrap());
+    assert!(!mem
+        .issued_at(ISSUER_ADDR, &root, None)
+        .await
+        .unwrap()
+        .is_zero());
 
     // record retained + still shows the issuance AND revoke proofs.
     let (_s, b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
@@ -363,7 +371,7 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
     assert_eq!(b["status"], "expired");
 
     // off-chain expiry doesn't touch the anchor; record retained + verifiable.
-    assert!(mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
+    assert!(mem.is_valid(ISSUER_ADDR, &root, None).await.unwrap());
     let (_s, b) = call_auth(&state, "GET", "/v1/records", Value::Null).await;
     assert_eq!(b["records"][0]["status"], "expired");
 
@@ -381,7 +389,7 @@ async fn expire_is_offchain_soft_state_that_keeps_the_record() {
         b["invalidationReason"], "validUntil lapsed",
         "revoke without a reason preserves the prior expiry reason"
     );
-    assert!(!mem.is_valid(ISSUER_ADDR, &root).await.unwrap());
+    assert!(!mem.is_valid(ISSUER_ADDR, &root, None).await.unwrap());
 }
 
 #[tokio::test]

@@ -42,14 +42,22 @@ fn coeff_d() -> Fr {
 /// `Base8` generator (cofactor-cleared base point), decimal coordinates from circomlibjs.
 fn base8() -> Point {
     Point {
-        x: fr_from_dec("5299619240641551281634865583518297030282874472190772894086521144482721001553"),
-        y: fr_from_dec("16950150798460657717958625567821834550301663161624707787222815936182638968203"),
+        x: fr_from_dec(
+            "5299619240641551281634865583518297030282874472190772894086521144482721001553",
+        ),
+        y: fr_from_dec(
+            "16950150798460657717958625567821834550301663161624707787222815936182638968203",
+        ),
     }
 }
 
 /// The BabyJubjub sub-group order `l` (== order >> 3) as a BigUint.
 fn sub_order() -> BigUint {
-    BigUint::parse_bytes(b"2736030358979909402780800718157159386076813972158567259200215660948447373041", 10).unwrap()
+    BigUint::parse_bytes(
+        b"2736030358979909402780800718157159386076813972158567259200215660948447373041",
+        10,
+    )
+    .unwrap()
 }
 
 fn fr_from_dec(s: &str) -> Fr {
@@ -110,7 +118,10 @@ pub struct Point {
 impl Point {
     /// The twisted-Edwards identity (0, 1).
     fn identity() -> Point {
-        Point { x: Fr::zero(), y: Fr::one() }
+        Point {
+            x: Fr::zero(),
+            y: Fr::one(),
+        }
     }
 
     /// Complete twisted-Edwards addition (a=168700, d=168696). Valid for all inputs (no special
@@ -176,7 +187,10 @@ impl Point {
                 // uses the same (Montgomery) field path regardless of the bit value -> no data branch.
                 let m = Fr::from(bit as u64);
                 let nm = Fr::one() - m;
-                result = Point { x: summed.x * m + result.x * nm, y: summed.y * m + result.y * nm };
+                result = Point {
+                    x: summed.x * m + result.x * nm,
+                    y: summed.y * m + result.y * nm,
+                };
                 addend = addend.add(&addend);
             }
         }
@@ -267,14 +281,22 @@ pub fn derive_babyjub_consent_key_per_tag(seed: &[u8], dog_tag_id: Fr) -> Babyju
     let mut prv = [0u8; 32];
     prv.copy_from_slice(&digest[0..32]);
     let a = prv2pub(&prv);
-    BabyjubConsentKey { prv, ax: a.x, ay: a.y }
+    BabyjubConsentKey {
+        prv,
+        ax: a.x,
+        ay: a.y,
+    }
 }
 
 /// Build a consent key directly from a 32-byte circomlibjs private key (no domain wrapping) — used
 /// for circomlibjs parity vectors where the raw seed *is* the private key.
 pub fn consent_key_from_raw_prv(prv: &[u8; 32]) -> BabyjubConsentKey {
     let a = prv2pub(prv);
-    BabyjubConsentKey { prv: *prv, ax: a.x, ay: a.y }
+    BabyjubConsentKey {
+        prv: *prv,
+        ax: a.x,
+        ay: a.y,
+    }
 }
 
 /// Sign the consent message field element `m` with the 32-byte private key, circomlibjs
@@ -303,7 +325,11 @@ pub fn sign_poseidon(prv: &[u8; 32], m: &Fr) -> EddsaSignature {
     // S = (r + hm * s) mod subOrder
     let s_sig = (&r + (&hm_big * &s)) % sub_order();
 
-    EddsaSignature { r8x: r8.x, r8y: r8.y, s: s_sig }
+    EddsaSignature {
+        r8x: r8.x,
+        r8y: r8.y,
+        s: s_sig,
+    }
 }
 
 /// Verify an EdDSA-BabyJubjub Poseidon signature against public key A and message m
@@ -363,11 +389,14 @@ mod tests {
     // circomlibjs reference vector for seed = 0x07 * 32 (the raw private key) and the anchor
     // consent message. Generated with `buildEddsa()` (circomlibjs 0.1.7) — see commit log.
     const SEED7: [u8; 32] = [7u8; 32];
-    const AX: &str = "14422859473778768188622151430526693594403470008420308922992775064941455773685";
+    const AX: &str =
+        "14422859473778768188622151430526693594403470008420308922992775064941455773685";
     const AY: &str = "7592518773672929099542717438998516546396504563265155469693554058278098107299";
-    const MSG: &str = "8453154477584343887478389844545598795962583039369853412305694095390935992699";
+    const MSG: &str =
+        "8453154477584343887478389844545598795962583039369853412305694095390935992699";
     const R8X: &str = "902064620424496881921101910457335166452907362670474296709799481663161455483";
-    const R8Y: &str = "2905613237943813585459385900172512868038628297396815629248623731388399618720";
+    const R8Y: &str =
+        "2905613237943813585459385900172512868038628297396815629248623731388399618720";
     const S: &str = "880907594470456950988239052178620804384023364539879359665304279941876276164";
 
     #[test]
@@ -419,7 +448,11 @@ mod tests {
             sub_order() - BigUint::from(1u32),
         ];
         for n in scalars {
-            assert_eq!(base8().mul_scalar(&n), base8().mul_scalar_ct(&n), "CT vs VT mismatch for {n}");
+            assert_eq!(
+                base8().mul_scalar(&n),
+                base8().mul_scalar_ct(&n),
+                "CT vs VT mismatch for {n}"
+            );
         }
     }
 
@@ -446,9 +479,22 @@ mod tests {
 
     #[test]
     fn point_validation_basics() {
-        assert!(base8().is_on_curve() && base8().is_in_subgroup(), "Base8 must validate");
-        assert!(Point::identity().validate().is_ok(), "identity must validate");
-        assert_eq!(Point { x: Fr::one(), y: Fr::one() }.validate(), Err(EddsaError::NotOnCurve));
+        assert!(
+            base8().is_on_curve() && base8().is_in_subgroup(),
+            "Base8 must validate"
+        );
+        assert!(
+            Point::identity().validate().is_ok(),
+            "identity must validate"
+        );
+        assert_eq!(
+            Point {
+                x: Fr::one(),
+                y: Fr::one()
+            }
+            .validate(),
+            Err(EddsaError::NotOnCurve)
+        );
     }
 
     #[test]
@@ -460,8 +506,14 @@ mod tests {
         assert_eq!((a.ax, a.ay), (b.ax, b.ay), "pubkey must be deterministic");
 
         let other = derive_babyjub_consent_key_per_tag(seed, Fr::from(2u64));
-        assert_ne!(a.prv, other.prv, "a different dogTagId must give a different key");
-        assert_ne!(a.ax, other.ax, "a different dogTagId must give a different Ax");
+        assert_ne!(
+            a.prv, other.prv,
+            "a different dogTagId must give a different key"
+        );
+        assert_ne!(
+            a.ax, other.ax,
+            "a different dogTagId must give a different Ax"
+        );
     }
 
     /// The per-tag domain wrapping must be a genuinely different derivation from using the raw
@@ -478,9 +530,15 @@ mod tests {
     #[test]
     fn the_per_tag_public_point_is_a_valid_subgroup_element() {
         let key = derive_babyjub_consent_key_per_tag(b"root-seed-material", Fr::from(424242u64));
-        let p = Point { x: key.ax, y: key.ay };
+        let p = Point {
+            x: key.ax,
+            y: key.ay,
+        };
         assert!(p.is_on_curve(), "Ax,Ay must be on the curve");
-        assert!(p.is_in_subgroup(), "Ax,Ay must be in the prime-order subgroup");
+        assert!(
+            p.is_in_subgroup(),
+            "Ax,Ay must be in the prime-order subgroup"
+        );
     }
 
     /// Signing with the per-tag key must verify under the per-tag pubkey - the end-to-end property

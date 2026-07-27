@@ -48,6 +48,10 @@ fn application_row(app_id: &str, entity: &str, domain: &str, addrs: &[&str]) -> 
         license: None,
         document_store: "0xstore".into(),
         status: "approved".into(),
+        dns_state: "verified".into(),
+        dns_checked_at: 1,
+        dns_state_at_approval: "verified".into(),
+        dns_proceeded_unverified: false,
         whitelist_txs: vec![],
     }
 }
@@ -97,11 +101,20 @@ fn seeded_feed() -> Arc<dyn OversightFeed> {
 async fn seed_directory(state: &admin_api::app::AppState) {
     state
         .store
-        .put_business(business_row("biz-gov", "DogTag Government Authority", "gov.example"))
+        .put_business(business_row(
+            "biz-gov",
+            "DogTag Government Authority",
+            "gov.example",
+        ))
         .await;
     state
         .store
-        .put_application(application_row("app-gov", "biz-gov", "gov.example", &[SIGNER, CLONE]))
+        .put_application(application_row(
+            "app-gov",
+            "biz-gov",
+            "gov.example",
+            &[SIGNER, CLONE],
+        ))
         .await;
 }
 
@@ -123,7 +136,10 @@ async fn activity_feed_is_unscoped_and_named_by_admin_directory() {
     assert_eq!(ev0["actorName"], "DogTag Government Authority");
     assert_eq!(ev0["cloneName"], "DogTag Government Authority");
     // explorer link from the indexer is preserved.
-    assert!(ev0["txUrl"].as_str().unwrap().starts_with("https://explorer.roax.net/tx/"));
+    assert!(ev0["txUrl"]
+        .as_str()
+        .unwrap()
+        .starts_with("https://explorer.roax.net/tx/"));
 }
 
 /// Query filters pass through to the indexer (the route accepts + forwards them without error).

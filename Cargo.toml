@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/dogtag-standard-rs",
     "crates/dogtag-prover-rs",
+    "crates/dogtag-dns-rs",
     "stacks/vet/api",
     "stacks/admin/api",
     "stacks/government/api",

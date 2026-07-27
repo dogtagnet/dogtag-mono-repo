@@ -246,7 +246,11 @@ mod tests {
         let d = build_profile_disclosure(SEED, tag_id(), &addr(), &attrs(), &reveal).unwrap();
 
         let tree = build_profile_tree(SEED, tag_id(), &addr(), &attrs()).unwrap();
-        assert_eq!(d.root, to_hex32(&tree.root), "envelope must carry the issued R");
+        assert_eq!(
+            d.root,
+            to_hex32(&tree.root),
+            "envelope must carry the issued R"
+        );
         assert_eq!(d.dog_tag_id, to_hex32(&tag_id()));
         assert_eq!(d.disclosures.len(), 1);
         assert_eq!(d.disclosures[0].key_path, "owner.identity.country");
@@ -256,8 +260,14 @@ mod tests {
 
         // Selective means selective: the other identity values are NOT in the envelope.
         let json = serde_json::to_string(&d).unwrap();
-        assert!(!json.contains("Alice Owner"), "unrevealed fullName must not leak");
-        assert!(!json.contains("PASSPORT-123"), "unrevealed docNumber must not leak");
+        assert!(
+            !json.contains("Alice Owner"),
+            "unrevealed fullName must not leak"
+        );
+        assert!(
+            !json.contains("PASSPORT-123"),
+            "unrevealed docNumber must not leak"
+        );
     }
 
     /// Multi-leaf disclosure + JSON round-trip (the exact wire the backend deserializes).
@@ -270,7 +280,13 @@ mod tests {
         let d = build_profile_disclosure(SEED, tag_id(), &addr(), &attrs(), &reveal).unwrap();
         let json = serde_json::to_string(&d).unwrap();
         // The wire names are frozen: dogTagId / R / disclosures[{keyPath,saltHex,tag,value,proof}].
-        for key in ["\"dogTagId\"", "\"R\"", "\"disclosures\"", "\"keyPath\"", "\"saltHex\""] {
+        for key in [
+            "\"dogTagId\"",
+            "\"R\"",
+            "\"disclosures\"",
+            "\"keyPath\"",
+            "\"saltHex\"",
+        ] {
             assert!(json.contains(key), "wire must carry {key}: {json}");
         }
         let back: ProfileDisclosure = serde_json::from_str(&json).unwrap();
@@ -299,7 +315,12 @@ mod tests {
     /// Owner-control leaves are undisclosable BY NAME, on both sides of the envelope.
     #[test]
     fn owner_control_key_paths_are_rejected() {
-        for kp in ["owner.secret", "owner.address", "owner.consentKey", "owner.delegateKey"] {
+        for kp in [
+            "owner.secret",
+            "owner.address",
+            "owner.consentKey",
+            "owner.delegateKey",
+        ] {
             let reveal = vec![kp.to_string()];
             assert!(
                 build_profile_disclosure(SEED, tag_id(), &addr(), &attrs(), &reveal).is_err(),

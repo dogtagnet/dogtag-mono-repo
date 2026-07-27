@@ -91,9 +91,186 @@ enum RoaxRpc {
         return truthy ? .valid : .invalid
     }
 
-    private static let isWhitelistedForSelector = "0x779c3985" // keccak256("isWhitelistedFor(bytes32,address)")[:4]
-    private static let consumedSelector = "0x4648c943"         // keccak256("consumed(bytes32)")[:4]
-    private static let profileRootSelector = "0x85105cb3"      // keccak256("profileRoot(uint256)")[:4]
+    // Derived, not hard-coded — same reasoning as `isValidSelector` above. These three were previously
+    // string constants whose comments claimed to be these hashes; the values happened to be right, but
+    // `consumed()` is the owner-hidden completion signal and `isWhitelistedFor()` is the groomer
+    // authorization gate, so a silent drift would land on two safety gates.
+    private static let isWhitelistedForSelector = functionSelector("isWhitelistedFor(bytes32,address)")
+    private static let consumedSelector = functionSelector("consumed(bytes32)")
+    private static let profileRootSelector = functionSelector("profileRoot(uint256)")
+
+    // ---- the issuer↔domain binding chain -------------------------------------------------------
+    private static let isCloneSelector = functionSelector("isClone(address)")
+    private static let domainOfSelector = functionSelector("domainOf(address)")
+    private static let issuerNameSelector = functionSelector("name()")
+    private static let rootIssuerSelector = functionSelector("rootIssuer(bytes32)")
+
+    /// Reading a dynamic `string` return has THREE outcomes, and collapsing any two of them is how a
+    /// fail-open gets reintroduced:
+    ///   - `.value` — the call returned ABI-encoded bytes (possibly an empty string, which is a real
+    ///     answer meaning "no claim published").
+    ///   - `.noContract` — an EMPTY `eth_call` result. That is what a call to an address with no code
+    ///     returns, i.e. the registry is not deployed for this config. It is emphatically NOT an empty
+    ///     string, and must surface as "we could not check", never as "no claim".
+    ///   - `.failure` — the RPC did not answer.
+    enum StringRead {
+        case value(String)
+        case noContract
+        case failure(String)
+    }
+
+    /// Reading an `address` return has the same three outcomes, kept apart for the same reason:
+    ///   - `.value` — a real, non-zero address.
+    ///   - `.noRecord` — the mapping answered with the zero address, i.e. "no entry for this key". A
+    ///     definite answer, not a failure.
+    ///   - `.failure` — the RPC did not answer, or the body was not an address word (an empty result,
+    ///     which is what a call to an address with no code returns, lands here). Emphatically NOT
+    ///     "no record": a read we could not make is evidence of nothing.
+    enum AddressRead {
+        case value(String)
+        case noRecord
+        case failure(String)
+    }
+
+    /// `DogTagIssuerFactory.rootIssuer(root)` — the clone that ISSUED this root, write-once on-chain.
+    ///
+    /// THE authoritative answer to "which contract issued this credential". The document's
+    /// `issuer.documentStore` is only a claim, and pointing it at ANOTHER authority's genuine clone is
+    /// the sharper form of the relabelling attack: link 1 (`isClone`) passes because the target really is
+    /// a factory clone, so without this read the phone renders that other authority's on-chain identity.
+    static func rootIssuer(
+        rpcUrl: String, factory: String, root: String, atBlock: UInt64?
+    ) async -> AddressRead {
+        guard !factory.isEmpty, !root.isEmpty else { return .failure("missing factory/root") }
+        let data = rootIssuerSelector + pad32(root)
+        switch await ethCall(rpcUrl: rpcUrl, to: factory, data: data, atBlock: atBlock) {
+        case .failure(let e): return .failure(e)
+        case .success(let hex):
+            guard let addr = decodeAbiAddress(hex) else { return .failure("not an address word") }
+            return isZeroAddress(addr) ? .noRecord : .value(addr)
+        }
+    }
+
+    /// Decode a right-aligned 32-byte `address` word to lowercase `0x..`. Returns nil rather than
+    /// guessing for anything that is not one — including an EMPTY result (no contract at that address)
+    /// and a word with dirty high bytes.
+    static func decodeAbiAddress(_ hex: String) -> String? {
+        let h = (hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex).lowercased()
+        guard h.count == 64, h.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        guard h.prefix(24).allSatisfy({ $0 == "0" }) else { return nil }
+        return "0x" + h.suffix(40)
+    }
+
+    /// The zero address, i.e. an unset mapping slot.
+    static func isZeroAddress(_ addr: String) -> Bool {
+        let h = addr.hasPrefix("0x") ? String(addr.dropFirst(2)) : addr
+        return !h.isEmpty && h.allSatisfy { $0 == "0" }
+    }
+
+    /// The current chain head, so every read in one verification can be pinned to ONE block. Against a
+    /// world where DNS changes and clones are superseded, an unanchored answer is not auditable.
+    static func blockNumber(rpcUrl: String) async -> UInt64? {
+        let payload: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []]
+        guard let raw = try? JSONSerialization.data(withJSONObject: payload),
+              let bodyStr = String(data: raw, encoding: .utf8) else { return nil }
+        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        guard resp.ok, let d = resp.body.data(using: .utf8),
+              let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let hex = o["result"] as? String else { return nil }
+        return UInt64(hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex, radix: 16)
+    }
+
+    /// `DogTagIssuerFactory.isClone(candidate)` — LINK 1. Proves the contract came from the DogTag
+    /// factory, i.e. passed through KYC-gated `createIssuer`. Without it a domain binding shows only
+    /// that whoever deployed some contract also controls a domain.
+    static func isClone(rpcUrl: String, factory: String, candidate: String, atBlock: UInt64?) async -> Result {
+        guard !factory.isEmpty, !candidate.isEmpty else { return .unknown("missing factory/candidate") }
+        let data = isCloneSelector + padAddr(candidate)
+        switch await ethCall(rpcUrl: rpcUrl, to: factory, data: data, atBlock: atBlock) {
+        case .failure(let e): return .unknown(e)
+        case .success(let hex):
+            // A call to a non-contract returns empty. That is not `false` — it is "no answer".
+            if hex.isEmpty { return .unknown("empty result") }
+            return hex.contains { $0 != "0" } ? .valid : .invalid
+        }
+    }
+
+    /// `IssuerDomainRegistry.domainOf(clone)` — LINK 2. The domain the CONTRACT claims. Never the
+    /// document's `issuer.domain`, which is outside the Merkle root and can be relabelled at will.
+    static func issuerClaimedDomain(
+        rpcUrl: String, domainRegistry: String, clone: String, atBlock: UInt64?
+    ) async -> StringRead {
+        guard !domainRegistry.isEmpty, !clone.isEmpty else { return .failure("missing registry/clone") }
+        let data = domainOfSelector + padAddr(clone)
+        return await ethCallString(rpcUrl: rpcUrl, to: domainRegistry, data: data, atBlock: atBlock)
+    }
+
+    /// `DogTagIssuer.name()` — the clone's own name, written by the factory's `onlyOwner` `createIssuer`
+    /// at KYC time. The only issuer name a surface may present: the document's `issuer.name` is outside
+    /// the Merkle root, so relabelling it alone passes integrity AND the `data.issuer` DID check (the DID
+    /// carries a domain, not a name).
+    static func issuerOnchainName(rpcUrl: String, clone: String, atBlock: UInt64?) async -> StringRead {
+        guard !clone.isEmpty else { return .failure("missing clone") }
+        return await ethCallString(rpcUrl: rpcUrl, to: clone, data: issuerNameSelector, atBlock: atBlock)
+    }
+
+    /// Decode a single ABI-encoded dynamic `string` return: [32-byte offset][32-byte length][bytes].
+    private static func ethCallString(
+        rpcUrl: String, to: String, data: String, atBlock: UInt64?
+    ) async -> StringRead {
+        switch await ethCall(rpcUrl: rpcUrl, to: to, data: data, atBlock: atBlock) {
+        case .failure(let e): return .failure(e)
+        case .success(let hex):
+            if hex.isEmpty { return .noContract }
+            return .value(decodeAbiString(hex) ?? "")
+        }
+    }
+
+    /// Decode `[offset][len][bytes...]`. Returns nil on a malformed body rather than guessing.
+    static func decodeAbiString(_ hex: String) -> String? {
+        let bytes = hexToBytes(hex)
+        guard bytes.count >= 64 else { return nil }
+        // The offset is a byte offset from the start of the return data; for a single string it is 0x20,
+        // but read it rather than assume so a tuple-wrapped return still decodes.
+        guard let offset = beInt(bytes[0..<32]), offset + 32 <= bytes.count else { return nil }
+        guard let len = beInt(bytes[offset..<(offset + 32)]) else { return nil }
+        let start = offset + 32
+        guard start + len <= bytes.count else { return nil }
+        return String(bytes: bytes[start..<(start + len)], encoding: .utf8)
+    }
+
+    private static func hexToBytes(_ hex: String) -> [UInt8] {
+        let h = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+        var out: [UInt8] = []
+        out.reserveCapacity(h.count / 2)
+        var idx = h.startIndex
+        while idx < h.endIndex, h.index(after: idx) < h.endIndex {
+            let next = h.index(idx, offsetBy: 2)
+            if let b = UInt8(h[idx..<next], radix: 16) { out.append(b) } else { return out }
+            idx = next
+        }
+        return out
+    }
+
+    /// Big-endian read of a 32-byte word as an `Int`. Returns nil when anything is set above the low 4
+    /// bytes, or when the result would not fit a 32-bit `Int` — a length or offset that large is not a
+    /// value we will honour.
+    ///
+    /// Returning an OPTIONAL rather than a sentinel is load-bearing: the caller used to write
+    /// `Int(beUInt(...))`, and `Int.init(_: UInt64)` TRAPS on overflow, so an adversarial word (the
+    /// `UInt64.max` reject sentinel, or any value above `Int.max`) crashed the app instead of rejecting
+    /// the body — the exact opposite of this decoder's "returns nil rather than guessing" contract, and
+    /// reachable from any `eth_call` reply while a credential sheet is open. Mirror of the Kotlin
+    /// `RoaxRpc.beInt`, which was already correct; keep the two in step.
+    private static func beInt(_ slice: ArraySlice<UInt8>) -> Int? {
+        let b = Array(slice)
+        guard b.count == 32 else { return nil }
+        if b.prefix(28).contains(where: { $0 != 0 }) { return nil }
+        var v: UInt64 = 0
+        for byte in b.suffix(4) { v = (v << 8) | UInt64(byte) }
+        guard v <= UInt64(Int32.max) else { return nil }
+        return Int(v)
+    }
 
     /// `DogTagSBTConsent.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or
     /// nil. `dogTagId` is the CANONICAL field-hashed id (`dogTagIdFieldHex`), the same value the tag
@@ -178,10 +355,15 @@ enum RoaxRpc {
 
     private enum CallResult { case success(String); case failure(String) }
 
-    private static func ethCall(rpcUrl: String, to: String, data: String) async -> CallResult {
+    private static func ethCall(
+        rpcUrl: String, to: String, data: String, atBlock: UInt64? = nil
+    ) async -> CallResult {
+        // Pin to a block when we have one so a whole verification is a consistent, reproducible
+        // snapshot; `latest` otherwise, and the caller reports the answer as unanchored.
+        let blockTag = atBlock.map { "0x" + String($0, radix: 16) } ?? "latest"
         let payload: [String: Any] = [
             "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-            "params": [["to": to, "data": data], "latest"],
+            "params": [["to": to, "data": data], blockTag],
         ]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
               let bodyStr = String(data: raw, encoding: .utf8) else { return .failure("encode") }
