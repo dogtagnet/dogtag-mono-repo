@@ -2339,3 +2339,105 @@ to verify a revoke rather than trusting the API's echo.
 
 Confirmed by that read: **`expired` is a document-borne status with no on-chain effect**. A record the
 store reports as `expired` is still `isValid=true` on chain, so expiry alone does not revoke.
+
+## Pets are a collection of their own (stored inside their owner)
+
+A pet is **addressed** in its own right (`/pets`, `/pets/{petId}`, `GET/PUT/DELETE`,
+`POST|DELETE /pets/{id}/dogtag`, `GET /pets/{id}/credentials`) but is still **stored** embedded in its
+owner's client document — `Client.pets: Vec<ClientPet>`, there is no pets collection on disk. Three
+consequences that are easy to get wrong:
+
+- **Every pet write is a client write, and must patch ONE pet.** `PUT /clients/{id}` is a whole-document
+  replace, so a pet route implemented the same way silently deletes every pet the caller did not mention.
+  `crm::mutate_pet` re-reads the owner, mutates only the addressed pet, writes the document back, then
+  `rebuild_search_key()` + `resync_client_labels()` (the calendar and settled history denormalize
+  `petName`). `tests/pets.rs` pins sibling survival, including a sibling's appointment link.
+- **Paging cannot be folded over `list_clients`.** `total` must count PETS and a client page boundary
+  falls between clients, so `Store::list_pets` is a real store query: MemStore flattens then sorts,
+  Mongo uses `$unwind` + `$facet`. Order is `updatedAt desc, clientId asc, petId asc` — all three keys
+  are load-bearing, because siblings share their owner's `updatedAt` exactly and without the `petId`
+  tiebreak the pager both repeats and skips rows.
+- **Pet search must not reuse `Client::search_key`.** That key concatenates every pet of the client, so
+  a needle matching one pet matches all its siblings. `PetRow::search_key()` is per-pet (pet fields +
+  the OWNER's name, so either half finds it); the Mongo side recomputes it in an `$addFields` stage and
+  needs `$ifNull` on every part, since one absent `dogTagId` would otherwise null the whole `$concat`.
+
+`GET /pets/{id}/credentials` is the read side of `POST /import/pull`, which wrote the accepted document
+to the per-tag `client_cache` that nothing ever read back — an imported credential was stored and then
+unreachable. It returns the document and **no verdict**: validity is an on-chain fact that changes after
+the import, so the caller re-checks the chain.
+
+`GET /verifications?petId=` was parsed off the query string and then never applied, so it returned the
+UNFILTERED history — one pet's page would have shown its sibling's checks as its own. A client with two
+pets is the case that catches it; `clientId` cannot.
+
+## On-chain DogTag discovery (`packages/ui/src/chain/tagDiscovery.ts`)
+
+### `dogTagId`: the operator-facing handle is NOT the chain key
+
+The stored `ClientPet.dogTagId` (and the `credentialSubject.dogTagId` leaf) is the short decimal
+**handle** from `Store::next_dog_tag_id`. The chain is keyed by `fieldOfValue(Integer(handle))` — a
+BN254 field element — in `DogTagSBTConsent.profileRoot`, the circuit's `pub[0]` and every indexed event
+topic. Verified against live chain 135: handle `"3"` →
+`1195241908933892557940129631300775214454584041594363078565480038450625444405`, handle `"4"` →
+`12814611650400102124986144372704047117871762901294624833396466912543715809135`, both real minted tags.
+Filtering logs on the raw handle is a well-formed uint256 that matches nothing, so the portal would
+render a confident "no on-chain activity" for a tag with plenty — use `resolveDogTagId`, which also
+accepts a field element already in decimal or `0x` form.
+
+### What a tag id can and cannot discover
+
+Discoverable, because keyed by / indexed on `dogTagId`: `profileRoot`, `issuerOf`, `status`, the
+`Issued`/`StatusChanged`/`Burned` logs, the Level-A profile credential resolved
+`profileRoot -> factory.rootIssuer(root) -> clone.issuedAt/isValid/isRevoked`, and every
+`VerificationRegistryConsent.Verified` event by ANY relayer.
+
+**Not discoverable, by design: Level-B credential roots are not bound to a `dogTagId` on chain.**
+`DogTagIssuer.RootIssued` carries only the root, and the consent circuit binds `dogTagId <-> R` for the
+tag's profile root alone. That link is exactly what would make a tag a public lookup key for an
+animal's history, so no scan can enumerate "this pet's vaccination records" and no surface may imply it
+can. What makes the gap useful rather than merely honest: a `Verified` event from a relayer that is not
+this shop is positive evidence such credentials exist, which is the cue for the import handoff.
+
+Read the registry address carefully — discovery needs `VerificationRegistryConsent`
+(`DEPLOYED_ADDRESSES.VerificationRegistryConsent`), whose `Verified` indexes `dogTagId`. The superseded
+`VerificationRegistry` emits no such event, so pointing a scan at it returns zero rows and is
+indistinguishable from a tag with no history.
+
+### A partial scan must never read as a complete one
+
+`DiscoveryCoverage` separates the REQUESTED window (`fromBlock`) from the extent actually reached
+(`reachedBlock`, `null` when no chunk completed) and lists each failed chunk's range. Head-first
+chunking means a cancelled run covers `[reachedBlock, toBlock]` and knows nothing below it; printing
+`fromBlock` as read is the same defect as rendering an unchecked credential as valid. `discoverTag`
+resolves on chunk failure or cancellation (the outcome is in the coverage) and rejects only when the
+point-in-time reads fail, because then there is no result to qualify.
+
+## `@dogtag/standard`'s barrel is browser-hostile — import the submodule
+
+`packages/dogtag-standard-ts`'s index re-exports `consent.ts`, whose `circomlibjs` EdDSA/BabyJubjub
+dependency touches the Node `Buffer` global at module init. In a browser that is an uncaught
+`ReferenceError` that takes down whatever imported it — and a production bundler tree-shakes the unused
+import away, so **it reproduces only under a dev server**. That is why the package now also exposes
+`"./*"` subpath exports and why `packages/ui` imports `@dogtag/standard/leaf`, `/verify`, `/field`,
+`/types` rather than the barrel. Every module except `consent.ts` is Buffer-free. Browser code that
+needs EdDSA (the owner wallet) still uses the barrel and must accept that constraint.
+
+Confirming this is a two-line check in the page, not a guess:
+
+```js
+await import("/@fs/<repo>/packages/dogtag-standard-ts/dist/index.js") // throws: Buffer is not defined
+await import("/@fs/<repo>/packages/dogtag-standard-ts/dist/leaf.js")  // fine
+```
+
+## Driving a portal in a browser while other crews are live
+
+`chrome-devtools-axi` attaches to a SHARED bridge by default, so a bare `chrome-devtools-axi open` can
+navigate a tab another crew is driving (observed: commands landing on a portal at `:43917`, neither mine
+nor the captain's). Set **both** `CHROME_DEVTOOLS_AXI_PORT` (a distinct bridge port) and
+`CHROME_DEVTOOLS_AXI_USER_DATA_DIR` (a scratch profile) to get an isolated browser, and check
+`location.href` before trusting a snapshot.
+
+Also: `pnpm --filter <pkg> dev -- --port N` does NOT reach vite (the `--` is passed through literally,
+and `strictPort` then fails on the config's own port). Run `./node_modules/.bin/vite --port N` from the
+package directory instead.
