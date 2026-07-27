@@ -18,7 +18,8 @@ use admin_api::auth::JwtKeys;
 use admin_api::business::{BusinessClient, ReqwestBusinessClient};
 use admin_api::chain::{record_type_key, AlloyChain, ChainClient};
 use admin_api::crypto::{KeyVault, MemVault};
-use admin_api::dns::{DnsChecker, MockDnsChecker};
+use admin_api::dns::DnsChecker;
+use common::MockDnsChecker;
 use admin_api::store::MemStore;
 
 const CONTRACTS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../contracts");
@@ -160,6 +161,7 @@ async fn anvil_state(rpc: &str, registry: &str, sbt: &str) -> AppState {
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
         propose_only: false,
+        dns_enforce: true,
     };
     AppState {
         store: Arc::new(MemStore::new()),

@@ -1,0 +1,21 @@
+[package]
+name = "dogtag-dns-rs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "DogTag issuer↔domain DNS TXT binding: the normative record convention plus a three-state resolver (verified / not listed / could not check) that never collapses a lookup failure into a verdict"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+# The DoH transport. Same spec the stack APIs declare (reqwest is not a workspace dependency).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

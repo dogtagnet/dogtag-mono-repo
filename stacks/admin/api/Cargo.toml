@@ -16,6 +16,8 @@ path = "src/lib.rs"
 
 [dependencies]
 dogtag-standard-rs = { path = "../../../crates/dogtag-standard-rs" }
+# The single Status-aware DoH client + the issuer↔domain TXT binding convention.
+dogtag-dns-rs = { path = "../../../crates/dogtag-dns-rs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

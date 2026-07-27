@@ -7,7 +7,7 @@ use admin_api::auth::JwtKeys;
 use admin_api::business::ReqwestBusinessClient;
 use admin_api::chain::{AlloyChain, ChainClient};
 use admin_api::crypto::MemVault;
-use admin_api::dns::{DnsChecker, DohDnsChecker, MockDnsChecker};
+use admin_api::dns::{DnsChecker, DohDnsChecker};
 use admin_api::indexer::{DisabledFeed, HttpOversightFeed, OversightFeed};
 use admin_api::store::{MemStore, Store};
 use tower_http::cors::CorsLayer;
@@ -74,6 +74,12 @@ async fn main() {
             "ADMIN_PROPOSE_ONLY",
             "ALLOW_UNAUTHORIZED_ADMIN_SIGNER",
         ]),
+        // POLICY only: whether a non-verified DNS check blocks whitelisting. The lookup is always real
+        // (see the `dns` wiring below) — `observe`/`skip` no longer fabricates a pass.
+        dns_enforce: !matches!(
+            env("DNS_CHECK", "doh").trim().to_ascii_lowercase().as_str(),
+            "observe" | "skip" | "off" | "false" | "0"
+        ),
     };
 
     // Fail-closed (audit H2): refuse to boot in production with an unset/dev-default ADMIN_PASSWORD or
@@ -156,14 +162,24 @@ async fn main() {
         );
     }
 
-    // DNS legitimacy check: real DoH in prod; set DNS_CHECK=skip for the local demo where the
-    // business domain (e.g. vet.local) has no published TXT record.
-    let dns: Arc<dyn DnsChecker> = if env("DNS_CHECK", "doh") == "skip" {
-        tracing::warn!("DNS_CHECK=skip: DNS TXT legitimacy verification is BYPASSED (demo only)");
-        Arc::new(MockDnsChecker::ok())
-    } else {
-        Arc::new(DohDnsChecker::default())
-    };
+    // DNS legitimacy check. The resolution is ALWAYS real — there is no fixture, stub or demo shortcut
+    // on this path. `DNS_CHECK` selects POLICY (enforce vs observe), never truth.
+    //
+    // This deliberately replaces the previous `DNS_CHECK=skip` behaviour, which installed a checker
+    // returning an unconditional `Ok(true)`: a fabricated PASS on the gate that decides whether an
+    // organisation is legitimate enough to be whitelisted. A local demo whose business domain (e.g.
+    // `vet.local`) publishes no TXT now gets the truthful "not published" / "could not resolve" outcome
+    // and, in observe mode, proceeds with that outcome recorded rather than inverted.
+    let dns: Arc<dyn DnsChecker> = Arc::new(DohDnsChecker::new(env(
+        "DNS_DOH_ENDPOINT",
+        "https://cloudflare-dns.com/dns-query",
+    )));
+    if !cfg.dns_enforce {
+        tracing::warn!(
+            "DNS_CHECK is non-enforcing: the DNS TXT legitimacy lookup still RUNS and its real outcome \
+             is reported, but a non-verified result will not block whitelisting (demo only)"
+        );
+    }
 
     // Store selection: persistent MongoStore when MONGO_URI is set (fail-closed), else ephemeral
     // MemStore (demo/local — unchanged). Demo behavior is preserved when MONGO_URI is unset/empty.
