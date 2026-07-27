@@ -52,6 +52,12 @@ async function mockBackend(page: Page, state: MockState) {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace(/^\/api/, "");
 
+    // Paged empty lists for the reads ClientDetail issues alongside the client itself: it fetches the
+    // client, its appointments and its verifications in ONE Promise.all, so a catch-all `{}` leaves
+    // `rows` undefined and the page throws before it can render.
+    if (path === "/appointments" || path === "/verifications") {
+      return route.fulfill({ json: { rows: [], total: 0, limit: 25, offset: 0 } });
+    }
     if (path === "/clients" && request.method() === "GET") {
       return route.fulfill({ json: { rows: [storedClient], total: 1, limit: 20, offset: 0 } });
     }
