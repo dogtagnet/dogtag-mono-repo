@@ -3599,6 +3599,7 @@ dependencies = [
  "alloy",
  "async-trait",
  "axum",
+ "dogtag-dns-rs",
  "dogtag-standard-rs",
  "futures",
  "hex",

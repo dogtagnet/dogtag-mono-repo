@@ -34,6 +34,8 @@ fn cfg() -> Config {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
+        dns_doh_endpoint: String::new(),
         verification_registry_addr: CONSENT_REGISTRY.into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -60,6 +62,7 @@ fn state_with(whitelisted: bool) -> (AppState, String) {
         store: Arc::new(MemStore::new()) as Arc<dyn Store>,
         chain: Arc::new(chain),
         cfg: Arc::new(c),
+        dns: Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
         feed: Arc::new(government_api::oversight::DisabledFeed),
     };
     (state, signer)

@@ -219,6 +219,10 @@ mod tests {
             document_store: "0xstore".to_string(),
             status: status.to_string(),
             whitelist_txs: vec![],
+            dns_state: String::new(),
+            dns_checked_at: 0,
+            dns_state_at_approval: String::new(),
+            dns_proceeded_unverified: false,
         }
     }
 

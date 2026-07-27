@@ -43,7 +43,6 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
         propose_only: false,
-        dns_enforce: true,
     };
     let state = AppState {
         store: Arc::new(MemStore::new()),
@@ -83,15 +82,11 @@ pub fn hermetic_state_propose_only() -> (AppState, MemChain, MemVault, MockBusin
     (state, chain, vault, business)
 }
 
-/// `hermetic_state()` with a caller-chosen DNS outcome and enforcement policy, so a test can drive all
-/// three real outcomes of the legitimacy gate (published / definitively absent / did-not-resolve)
-/// against both an enforcing and a non-enforcing deployment.
-pub fn hermetic_state_with_dns(dns: Arc<dyn DnsChecker>, enforce: bool) -> (AppState, MemChain) {
+/// `hermetic_state()` with a caller-chosen DNS outcome, so a test can drive all three real outcomes of
+/// the advisory legitimacy gate: verified, definitively not listed, and did-not-resolve.
+pub fn hermetic_state_with_dns(dns: Arc<dyn DnsChecker>) -> (AppState, MemChain) {
     let (mut state, chain, _vault, _business) = hermetic_state();
     state.dns = dns;
-    let mut cfg = (*state.cfg).clone();
-    cfg.dns_enforce = enforce;
-    state.cfg = Arc::new(cfg);
     (state, chain)
 }
 

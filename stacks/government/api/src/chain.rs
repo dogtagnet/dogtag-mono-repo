@@ -67,6 +67,15 @@ sol! {
         function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
     }
 
+    /// The ADDITIVE issuer↔domain claim registry. `getBinding` deliberately does NOT revert on an
+    /// unknown clone — "this issuer has claimed no domain" is a normal day-one state — so the caller
+    /// discriminates on `updatedAt != 0` rather than on a revert.
+    #[sol(rpc)]
+    contract IIssuerDomainRegistry {
+        struct Binding { string domain; uint64 updatedAt; address setBy; }
+        function getBinding(address clone) external view returns (Binding memory);
+    }
+
     /// The unified owner-hidden verification registry. The government records a
     /// proof-of-verification here as any other VERIFIER does — same contract, same four-arg
     /// `recordVerificationZK`, same `VERIFY:<purpose>` gating. Mirror of the `sol!` block in
@@ -135,6 +144,19 @@ pub trait ChainClient: Send + Sync {
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError>;
     /// `DogTagIssuer.issuedAt(root)` (0 == not issued).
     async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError>;
+    /// `IssuerDomainRegistry.getBinding(clone).domain` — the domain the ISSUER CLONE claims on chain.
+    ///
+    /// `Ok(None)` means the clone has claimed no domain (a normal state), which is NOT the same as a
+    /// read failure (`Err`). Callers must keep those apart: an unread claim cannot be displayed as
+    /// "no claim".
+    ///
+    /// This is the ONLY domain a surface may attribute to an issuer. The document's `issuer.domain` is
+    /// outside the Merkle root and can be relabelled at will (audit-m9 finding 4).
+    async fn issuer_claimed_domain(
+        &self,
+        domain_registry_addr: &str,
+        clone_addr: &str,
+    ) -> Result<Option<String>, ChainError>;
     /// `IssuerRegistry.isWhitelistedFor(recordType, signer)`.
     async fn is_whitelisted_for(
         &self,
@@ -326,6 +348,29 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
+    async fn issuer_claimed_domain(
+        &self,
+        domain_registry_addr: &str,
+        clone_addr: &str,
+    ) -> Result<Option<String>, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IIssuerDomainRegistry::new(parse_addr(domain_registry_addr), provider);
+        let b = c
+            .getBinding(parse_addr(clone_addr))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        // updatedAt == 0 is the contract's documented "no binding published" discriminator; an empty
+        // domain is unrepresentable on-chain, so both checks agree.
+        if b._0.updatedAt == 0 || b._0.domain.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(b._0.domain))
+    }
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
@@ -438,6 +483,8 @@ struct MemChainInner {
     whitelist: HashMap<(String, String, String), bool>,
     /// (registry_addr, nullifier) consumed by a recordVerificationZK — the emulated replay guard.
     consumed: HashMap<(String, String), bool>,
+    /// (domain_registry_addr, clone_addr) -> the clone's claimed domain (absent == no claim).
+    claimed_domains: HashMap<(String, String), String>,
     nonce: u64,
     clock: u64,
 }
@@ -449,6 +496,7 @@ impl Default for MemChainInner {
             revoked: HashMap::new(),
             whitelist: HashMap::new(),
             consumed: HashMap::new(),
+            claimed_domains: HashMap::new(),
             nonce: 0,
             clock: MEMCHAIN_CLOCK_BASE,
         }
@@ -479,6 +527,18 @@ impl MemChain {
     pub fn with_signer(mut self, addr: &str) -> Self {
         self.signer = addr.to_lowercase();
         self
+    }
+    /// Seed a clone's on-chain domain claim (test harness). Absence of a seeded value emulates the
+    /// normal "this issuer has claimed no domain" state.
+    pub fn set_claimed_domain(&self, domain_registry_addr: &str, clone_addr: &str, domain: &str) {
+        let mut g = self.inner.lock().unwrap();
+        g.claimed_domains.insert(
+            (
+                domain_registry_addr.to_lowercase(),
+                clone_addr.to_lowercase(),
+            ),
+            domain.to_string(),
+        );
     }
     /// Has a nullifier already been consumed on the emulated registry? (test harness — the replay
     /// guard the real `VerificationRegistryConsent` enforces on-chain.)
@@ -535,6 +595,19 @@ impl ChainClient for MemChain {
             .copied()
             .unwrap_or(0);
         Ok(U256::from(v))
+    }
+    async fn issuer_claimed_domain(
+        &self,
+        domain_registry_addr: &str,
+        clone_addr: &str,
+    ) -> Result<Option<String>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.claimed_domains
+            .get(&(
+                domain_registry_addr.to_lowercase(),
+                clone_addr.to_lowercase(),
+            ))
+            .cloned())
     }
     async fn is_whitelisted_for(
         &self,
