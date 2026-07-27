@@ -6,6 +6,8 @@
  * Tuesday" in the shop's timezone, never in UTC.
  */
 
+import { startOfDay } from "@dogtag/ui";
+
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** Unix seconds -> the `YYYY-MM-DDTHH:mm` value an `<input type="datetime-local">` expects (local). */
@@ -37,75 +39,27 @@ export function startOfDayFromInput(value: string): number {
 }
 
 export const nowSec = () => Math.floor(Date.now() / 1000);
-export const DAY_SECS = 86_400;
-
-/** Unix seconds of local midnight starting the day that contains `unixSec`. */
-export function startOfDay(unixSec: number): number {
-  const d = new Date(unixSec * 1000);
-  d.setHours(0, 0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
-}
 
 /**
- * Move `n` CALENDAR days, keeping the local wall-clock time of day.
+ * Calendar-GRID arithmetic lives in `@dogtag/ui` and is re-exported here so every existing call site
+ * keeps its import.
  *
- * This is the reason the calendar grids do not step by `86_400`. A local day is not always 86400
- * seconds: on a DST spring-forward it is 23 hours, on a fall-back it is 25. Enumerating a grid as
- * `start + i * DAY_SECS` therefore drifts off local midnight from the transition onwards — in the
- * March 2026 grid for Europe/London, 7 of the 42 cells land at 01:00 instead of 00:00, so a booking
- * bucketed under its true local midnight matches NO cell and disappears from the calendar with no
- * warning at all. Stepping the Date's day component instead re-resolves the offset per day, which is
- * what a calendar means by "the next day".
+ * It is shared rather than app-local for one reason: none of it may step by a fixed `86_400`. A
+ * local day is 23h or 25h across a DST transition, so fixed-seconds enumeration drifts off local
+ * midnight and silently drops bookings out of the grid. Keeping the day/week/month math in one
+ * tested place is what stops the three views drifting apart. See `packages/ui/src/calendar/grid.ts`
+ * and its property tests in `packages/ui/test/calendarGrid.test.ts`.
  */
-export function addDays(unixSec: number, n: number): number {
-  const d = new Date(unixSec * 1000);
-  d.setDate(d.getDate() + n);
-  return Math.floor(d.getTime() / 1000);
-}
-
-/** Whole local days between two local midnights. Rounded, because a DST day is 23h or 25h. */
-export function daysBetween(fromSec: number, toSec: number): number {
-  return Math.round((toSec - fromSec) / DAY_SECS);
-}
-
-/** Unix seconds of local midnight starting the MONDAY of the week containing `unixSec`. */
-export function startOfWeek(unixSec: number): number {
-  const start = startOfDay(unixSec);
-  // getDay(): 0=Sun..6=Sat. Shift so Monday is the first column.
-  const shift = (new Date(start * 1000).getDay() + 6) % 7;
-  return addDays(start, -shift);
-}
-
-/** Unix seconds of local midnight on the 1st of the month containing `unixSec`. */
-export function startOfMonth(unixSec: number): number {
-  const d = new Date(unixSec * 1000);
-  d.setDate(1);
-  d.setHours(0, 0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
-}
-
-/**
- * Move `n` calendar months, anchored on the 1st.
- *
- * Anchoring first is what makes this total: `setMonth` on the 31st overflows (31 Jan + 1 month lands
- * in March), which would make "next month" skip February entirely. Month navigation only ever needs
- * a month START, so normalizing to the 1st removes the trap rather than working around it.
- */
-export function addMonths(unixSec: number, n: number): number {
-  const d = new Date(startOfMonth(unixSec) * 1000);
-  d.setMonth(d.getMonth() + n);
-  return Math.floor(d.getTime() / 1000);
-}
-
-/**
- * The Monday that starts the month grid containing `unixSec`, and how many days the grid spans —
- * always whole weeks, so the grid is a clean 7-column block (28, 35 or 42 cells).
- */
-export function monthGrid(unixSec: number): { start: number; days: number } {
-  const start = startOfWeek(startOfMonth(unixSec));
-  const days = daysBetween(start, addMonths(unixSec, 1));
-  return { start, days: Math.ceil(days / 7) * 7 };
-}
+export {
+  DAY_SECS,
+  addDays,
+  addMonths,
+  daysBetween,
+  monthGrid,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+} from "@dogtag/ui";
 
 export function formatTime(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleTimeString(undefined, {
