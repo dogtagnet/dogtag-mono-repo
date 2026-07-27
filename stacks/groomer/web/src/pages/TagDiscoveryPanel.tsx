@@ -199,7 +199,9 @@ export function TagDiscoveryPanel({
               )}
             </div>
 
-            {progress && (
+            {/* Only while the scan is running: a bar left sitting at 100% reads as work still in
+                progress, and the coverage box below already states the outcome. */}
+            {scanning && progress && (
               <div
                 className="h-1.5 w-full overflow-hidden rounded-full bg-surface-muted"
                 role="progressbar"
@@ -270,14 +272,32 @@ function DiscoveryResult({
               ? "Scan cancelled — incomplete"
               : "Scan incomplete"}
         </p>
-        <p>
-          Read blocks {coverage.fromBlock.toString()}–{coverage.toBlock.toString()} of{" "}
-          {coverage.latestBlock.toString()} ({coverage.chunksDone}/{coverage.chunksTotal} ranges).
-        </p>
+        {/*
+          The REACHED extent, never the requested one. A cancelled scan that completed no chunk has
+          read nothing, and printing the requested window as though it had been read is precisely the
+          overstatement this whole panel exists to avoid.
+        */}
+        {coverage.reachedBlock === null ? (
+          <p>
+            No blocks were read (0 of {coverage.chunksTotal} ranges). The window asked for was{" "}
+            {coverage.fromBlock.toString()}–{coverage.toBlock.toString()}.
+          </p>
+        ) : coverage.complete ? (
+          <p>
+            Read blocks {coverage.fromBlock.toString()}–{coverage.toBlock.toString()} of{" "}
+            {coverage.latestBlock.toString()} ({coverage.chunksDone}/{coverage.chunksTotal} ranges).
+          </p>
+        ) : (
+          <p>
+            Reached back to block {coverage.reachedBlock.toString()} from{" "}
+            {coverage.toBlock.toString()} ({coverage.chunksDone}/{coverage.chunksTotal} ranges). The
+            window asked for was {coverage.fromBlock.toString()}–{coverage.toBlock.toString()}.
+          </p>
+        )}
         {!coverage.complete && (
           <p>
             {coverage.cancelled
-              ? "You stopped the scan, so blocks below the range above were not read."
+              ? "You stopped the scan, so anything older was not read."
               : "Some ranges could not be read."}{" "}
             Anything in an unread range is UNKNOWN — not absent.
           </p>

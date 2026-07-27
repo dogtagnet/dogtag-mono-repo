@@ -6,6 +6,10 @@
 //
 // The tag-id derivation is checked against the REAL `@dogtag/standard` field hash (not a stub),
 // because a scan that filters on the wrong id returns a confident, wrong "no activity".
+// Deliberately via the BARREL, while the module under test imports `@dogtag/standard/leaf` directly
+// (the barrel is browser-hostile — see the note there). Tests run in Node, where that is harmless, and
+// crossing the two paths is the point: this asserts the submodule and the package's public export are
+// the same function, so a subpath aimed at a stale or different dist file would fail here.
 import { TypeTag, fieldOfValue } from "@dogtag/standard";
 import type { Address, Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
@@ -157,6 +161,9 @@ describe("discoverTag", () => {
     });
     expect(r.coverage.fromBlock).toBe(499_901n);
     expect(r.coverage.toBlock).toBe(500_000n);
+    // A complete scan reached the window's floor, so the two agree — which is the ONLY case in which
+    // reporting `fromBlock` as read is truthful.
+    expect(r.coverage.reachedBlock).toBe(499_901n);
     expect(r.coverage.chunksTotal).toBe(4);
     expect(ranges).toHaveLength(4);
     // Nothing outside the declared window is ever requested.
@@ -289,6 +296,10 @@ describe("discoverTag", () => {
     expect(r.coverage.cancelled).toBe(true);
     // Cancelled is never complete: the operator stopped it, so most of the window is unknown.
     expect(r.coverage.complete).toBe(false);
+    // Only the newest chunk was read, so the reported extent must be that chunk's floor (900) — NOT
+    // the requested window's floor (0), which nothing looked at.
+    expect(r.coverage.fromBlock).toBe(0n);
+    expect(r.coverage.reachedBlock).toBe(900n);
   });
 
   it("does not start any chunk when already aborted", async () => {
@@ -306,6 +317,10 @@ describe("discoverTag", () => {
     expect(onRange).not.toHaveBeenCalled();
     expect(r.coverage.cancelled).toBe(true);
     expect(r.coverage.complete).toBe(false);
+    // Nothing was read at all, so there is no extent to report — the panel must say "no blocks were
+    // read" rather than print the requested window as if it had been covered.
+    expect(r.coverage.reachedBlock).toBeNull();
+    expect(r.coverage.chunksDone).toBe(0);
   });
 
   it("reports progress per chunk, newest range first", async () => {

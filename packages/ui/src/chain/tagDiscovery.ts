@@ -41,7 +41,14 @@
  * Nothing here writes: every call is an `eth_call` or `eth_getLogs`. No signer, no gas, no auth.
  */
 
-import { TypeTag, fieldOfValue } from "@dogtag/standard";
+// Imported from the SUBMODULES, not the `@dogtag/standard` barrel. The barrel re-exports
+// `consent.ts`, whose `circomlibjs` EdDSA/BabyJubjub dependency touches the Node `Buffer` global at
+// module init; in a browser that is a `ReferenceError` which takes down whatever imported it. A
+// production bundler tree-shakes the unused import away, so the crash appears only under a dev server
+// — the worst kind of latent break. Nothing here needs EdDSA: `fieldOfValue` is Poseidon-only, so the
+// fix is to depend on exactly the two leaf modules this uses.
+import { fieldOfValue } from "@dogtag/standard/leaf";
+import { TypeTag } from "@dogtag/standard/types";
 import type { Abi, Address, Hex } from "viem";
 import { DEPLOYED_ADDRESSES, roaxPublicClient } from "../wallet/contracts";
 
@@ -278,10 +285,20 @@ export interface DiscoveredProfileCredential {
 export interface DiscoveryCoverage {
   /** Chain head at the moment the scan started. */
   latestBlock: bigint;
-  /** First block actually requested. */
+  /** First block of the REQUESTED window — not a claim that it was read. See `reachedBlock`. */
   fromBlock: bigint;
-  /** Last block actually requested. */
+  /** Last block of the requested window (the head the scan started from). */
   toBlock: bigint;
+  /**
+   * The lowest block the scan actually got to, or `null` when no chunk completed at all.
+   *
+   * Separate from `fromBlock` because the two diverge exactly when it matters. The scan works
+   * head-first, so a cancelled or half-failed run has covered `[reachedBlock, toBlock]` and knows
+   * nothing below it — reporting the requested `fromBlock` as if it had been read is the overstatement
+   * this field exists to prevent. It is an EXTENT, not a guarantee of completeness within it:
+   * `failures` names any range inside it that could not be read.
+   */
+  reachedBlock: bigint | null;
   chunksTotal: number;
   chunksDone: number;
   /** One entry per chunk whose `eth_getLogs` failed, naming the range that is therefore UNKNOWN. */
@@ -593,6 +610,7 @@ export async function discoverTag(args: DiscoverTagArgs): Promise<TagDiscoveryRe
     latestBlock,
     fromBlock,
     toBlock,
+    reachedBlock: null,
     chunksTotal: ranges.length,
     chunksDone: 0,
     failures: [],
@@ -629,6 +647,7 @@ export async function discoverTag(args: DiscoverTagArgs): Promise<TagDiscoveryRe
     }
     coverage.chunksDone += 1;
     scannedTo = r.fromBlock;
+    coverage.reachedBlock = r.fromBlock;
     args.onProgress?.({
       chunksDone: coverage.chunksDone,
       chunksTotal: coverage.chunksTotal,
