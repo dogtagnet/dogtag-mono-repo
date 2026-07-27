@@ -243,6 +243,15 @@ export function expectedTxtName(cloneAddress: string, domain: string): string {
 export interface IssuerIdentity {
   onchainName?: string | null;
   onchainNameAvailable?: boolean;
+  /**
+   * Link 1: "factoryDeployed" | "notFactoryDeployed" | "unknown".
+   *
+   * WHY the on-chain name is or is not available, and the two withheld cases are NOT the same fact:
+   * `notFactoryDeployed` means the contract WAS read and the chain says it did not come from the
+   * factory, while `unknown` means nothing was read at all. Reporting either as the other states
+   * something that did not happen.
+   */
+  provenance?: string;
   documentName?: string;
   documentDomain?: string;
   rootCoveredDomain?: string | null;
@@ -254,16 +263,30 @@ export interface IssuerIdentity {
 }
 
 /**
- * The issuer name a surface should display, and whether it is the authoritative one.
+ * The issuer name a surface should display, whether it is the authoritative one, and the short label
+ * that says where it came from.
  *
- * Falls back to the document's name ONLY when the chain could not be read, and says so — so a fallback
- * is never presented as authoritative.
+ * The label is returned FROM HERE rather than written at each call site so a surface cannot render a
+ * name without saying where it came from, and so two surfaces cannot describe the same state
+ * differently. Each label is an OBSERVATION about the read, never a verdict about the organisation:
+ * a name that is not authoritative says nothing about the credential, whose validity is separately
+ * proven on-chain.
  */
 export function displayIssuerName(id: IssuerIdentity | null | undefined): {
   name: string;
   authoritative: boolean;
+  sourceLabel: string;
 } {
   const onchain = id?.onchainName?.trim();
-  if (id?.onchainNameAvailable && onchain) return { name: onchain, authoritative: true };
-  return { name: id?.documentName?.trim() || "Unknown issuer", authoritative: false };
+  if (id?.onchainNameAvailable && onchain) {
+    return { name: onchain, authoritative: true, sourceLabel: "(from the issuing contract)" };
+  }
+  return {
+    name: id?.documentName?.trim() || "Unknown issuer",
+    authoritative: false,
+    sourceLabel:
+      id?.provenance === "notFactoryDeployed"
+        ? "(from the document — the issuing contract was not deployed by the DogTag factory, so its own name is not authoritative)"
+        : "(from the document — the issuing contract could not be read)",
+  };
 }

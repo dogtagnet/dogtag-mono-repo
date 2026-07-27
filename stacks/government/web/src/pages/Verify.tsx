@@ -507,7 +507,7 @@ function IssuerLine({
   resolution: IssuerResolution | undefined;
 }) {
   if (!identity && !binding) return null;
-  const { name, authoritative } = displayIssuerName(identity);
+  const { name, sourceLabel } = displayIssuerName(identity);
 
   return (
     <div data-testid="issuer-line" className="mt-4 border-t border-border pt-3">
@@ -516,12 +516,12 @@ function IssuerLine({
         <span data-testid="issuer-name" className="text-sm font-medium text-onSurface">
           {name}
         </span>
-        {authoritative ? (
-          <span className="text-[11px] text-muted">(from the issuing contract)</span>
-        ) : (
-          // Never let a fallback pass for the authoritative value.
-          <span className="text-[11px] text-muted">(from the document — the contract was not read)</span>
-        )}
+        {/* Never let a fallback pass for the authoritative value — and say which of the two withheld
+            cases actually happened, since "not factory-descended" and "could not be read" are
+            different facts. The copy lives in `displayIssuerName` so surfaces cannot drift. */}
+        <span data-testid="issuer-name-source" className="text-[11px] text-muted">
+          {sourceLabel}
+        </span>
       </div>
 
       {/* The badge: small, beside the issuer, an observation rather than a verdict. */}
