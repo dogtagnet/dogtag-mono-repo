@@ -35,6 +35,7 @@ use government_api::store::{MemStore, Store};
 
 const CLONE: &str = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f";
 const DOMAIN_REGISTRY: &str = "0x00000000000000000000000000000000000000dd";
+const FACTORY: &str = "0x00000000000000000000000000000000000000fa";
 /// The name the protocol multisig wrote into the clone at `createIssuer`.
 const ONCHAIN_NAME: &str = "DogTag Government Authority";
 
@@ -45,6 +46,7 @@ fn state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c".into(),
+        factory_addr: FACTORY.into(),
         issuer_domain_registry_addr: DOMAIN_REGISTRY.into(),
         // No DoH endpoint: DNS therefore reports `couldNotCheck`, which is exactly the honest state for
         // a hermetic test and keeps this suite about the RELABELLING, not about resolution.
@@ -150,7 +152,10 @@ async fn verify(app: &axum::Router, doc: Value) -> (StatusCode, Value) {
 async fn seed(chain: &MemChain, doc: &Value) {
     let root = doc["signature"]["merkleRoot"].as_str().unwrap();
     issue_root(chain, root).await;
+    // Link 1: this clone really was deployed by the DogTag factory.
+    chain.set_factory_clone(FACTORY, CLONE, true);
     chain.set_onchain_name(CLONE, ONCHAIN_NAME);
+    // Link 2: the clone's own on-chain domain claim.
     chain.set_claimed_domain(DOMAIN_REGISTRY, CLONE, "gov.example");
 }
 
@@ -292,6 +297,7 @@ async fn an_issuer_with_no_domain_claim_reports_no_domain_claimed() {
     let doc = genuine_doc();
     let root = doc["signature"]["merkleRoot"].as_str().unwrap();
     issue_root(&chain, root).await;
+    chain.set_factory_clone(FACTORY, CLONE, true);
     chain.set_onchain_name(CLONE, ONCHAIN_NAME);
     // deliberately NO set_claimed_domain
     let app = government_api::router(st);
@@ -316,4 +322,237 @@ async fn no_configured_registry_reports_unavailable_not_absence() {
     let (_s, b) = verify(&app, doc).await;
     assert_eq!(b["issuerDomainBinding"]["state"], "unavailable");
     assert_ne!(b["issuerDomainBinding"]["state"], "noDomainClaimed");
+}
+
+// -------------------------------------------------------------------------------------------------
+// (5) link 1 — factory provenance
+// -------------------------------------------------------------------------------------------------
+
+/// The attack the DNS binding alone cannot see: deploy your OWN contract, claim a domain for it,
+/// publish a matching TXT record. DNS agrees. The domain registry agrees. And none of it means anything,
+/// because that contract never passed through the KYC-gated `createIssuer`.
+///
+/// This must be its own state, never rendered as merely "not listed in DNS" — it is a far stronger
+/// statement than a missing record.
+#[tokio::test]
+async fn a_contract_not_deployed_by_the_factory_is_reported_as_not_a_dogtag_issuer() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap();
+    issue_root(&chain, root).await;
+    chain.set_onchain_name(CLONE, ONCHAIN_NAME);
+    // The attacker HAS a domain claim and WOULD have a matching TXT record...
+    chain.set_claimed_domain(DOMAIN_REGISTRY, CLONE, "gov.example");
+    // ...but the contract was NOT deployed by the DogTag factory.
+    chain.set_factory_clone(FACTORY, CLONE, false);
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    let binding = &b["issuerDomainBinding"];
+    assert_eq!(binding["state"], "notADogTagIssuer", "{binding}");
+    assert_ne!(
+        binding["state"], "notListed",
+        "a non-clone must never be softened into a missing-DNS-record observation"
+    );
+    assert_ne!(binding["state"], "verified");
+    assert_ne!(binding["state"], "noDomainClaimed");
+}
+
+/// Provenance is re-checked at verification time, so link 1 short-circuits BEFORE the domain claim is
+/// even read. A stored binding is a claim; the app does not inherit trust it did not verify.
+#[tokio::test]
+async fn provenance_is_checked_before_the_domain_claim_is_trusted() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap();
+    issue_root(&chain, root).await;
+    chain.set_factory_clone(FACTORY, CLONE, false);
+    // A stored claim exists for a non-clone (e.g. written before the registry enforced provenance, or
+    // by a laxer registry the app was pointed at). It must not be honoured.
+    chain.set_claimed_domain(DOMAIN_REGISTRY, CLONE, "attacker.example.com");
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    assert_eq!(b["issuerDomainBinding"]["state"], "notADogTagIssuer");
+    assert!(
+        b["issuerDomainBinding"].get("domain").is_none(),
+        "the unverifiable claim is not even echoed back: {}",
+        b["issuerDomainBinding"]
+    );
+}
+
+/// A failed provenance READ is not "not a DogTag issuer" — we simply do not know.
+#[tokio::test]
+async fn no_configured_factory_reports_unavailable_not_a_provenance_failure() {
+    let (mut st, chain) = state();
+    let mut cfg = (*st.cfg).clone();
+    cfg.factory_addr = "0x0000000000000000000000000000000000000000".into();
+    st.cfg = Arc::new(cfg);
+
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    assert_eq!(b["issuerDomainBinding"]["state"], "unavailable");
+    assert_ne!(b["issuerDomainBinding"]["state"], "notADogTagIssuer");
+}
+
+/// The full three-link chain, and the categorical distinctness of the failure modes. Any two of these
+/// sharing a wire value would let a strong statement be mistaken for a weak one.
+#[tokio::test]
+async fn the_binding_states_are_all_categorically_distinct() {
+    let observed = {
+        let mut out: Vec<String> = Vec::new();
+
+        // link 1 fails
+        {
+            let (st, chain) = state();
+            let doc = genuine_doc();
+            let root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
+            issue_root(&chain, &root).await;
+            chain.set_factory_clone(FACTORY, CLONE, false);
+            let app = government_api::router(st);
+            let (_s, b) = verify(&app, doc).await;
+            out.push(b["issuerDomainBinding"]["state"].as_str().unwrap().to_string());
+        }
+        // link 1 holds, no claim
+        {
+            let (st, chain) = state();
+            let doc = genuine_doc();
+            let root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
+            issue_root(&chain, &root).await;
+            chain.set_factory_clone(FACTORY, CLONE, true);
+            let app = government_api::router(st);
+            let (_s, b) = verify(&app, doc).await;
+            out.push(b["issuerDomainBinding"]["state"].as_str().unwrap().to_string());
+        }
+        // links 1+2 hold, DNS unreachable (no DoH endpoint configured in this harness)
+        {
+            let (st, chain) = state();
+            let doc = genuine_doc();
+            seed(&chain, &doc).await;
+            let app = government_api::router(st);
+            let (_s, b) = verify(&app, doc).await;
+            out.push(b["issuerDomainBinding"]["state"].as_str().unwrap().to_string());
+        }
+        out
+    };
+
+    assert_eq!(observed, ["notADogTagIssuer", "noDomainClaimed", "couldNotCheck"]);
+    let unique: std::collections::HashSet<&String> = observed.iter().collect();
+    assert_eq!(unique.len(), 3, "no two failure modes may share a wire value");
+}
+
+// -------------------------------------------------------------------------------------------------
+// (6) block anchoring — what makes a verification auditable against a mutable world
+// -------------------------------------------------------------------------------------------------
+
+/// A verdict that says "verified" without saying WHEN is not auditable. Every response carries the block
+/// its on-chain reads were pinned to.
+#[tokio::test]
+async fn every_verification_reports_the_block_it_read_at() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    assert!(
+        b["blockNumber"].as_u64().is_some(),
+        "the verification is anchored to a block: {b}"
+    );
+    assert!(
+        b["issuerDomainBinding"]["blockNumber"].as_u64().is_some(),
+        "so is the binding: {}",
+        b["issuerDomainBinding"]
+    );
+}
+
+/// The claim's OWN block anchor is distinct from the block it was read at: the first answers "when did
+/// this issuer last change its domain", the second "which chain state is this answer from".
+#[tokio::test]
+async fn the_binding_carries_the_block_the_claim_was_written_at() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    let binding = &b["issuerDomainBinding"];
+    assert!(
+        binding["claimUpdatedAtBlock"].as_u64().is_some(),
+        "the on-chain claim's own anchor: {binding}"
+    );
+    assert!(binding["claimUpdatedAt"].as_u64().is_some());
+    assert!(binding["claimSetBy"].as_str().is_some());
+}
+
+/// THE ASYMMETRY. Chain state is reproducible at any block with an archive node; DNS has no history and
+/// is only ever observable NOW. So the DNS half must be labelled as a live observation, never presented
+/// as if it proved the past.
+#[tokio::test]
+async fn the_dns_half_is_labelled_as_a_live_observation_that_cannot_be_recomputed() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    let binding = &b["issuerDomainBinding"];
+    assert_eq!(binding["dnsObservation"], "live");
+    assert_eq!(
+        binding["dnsHistorical"], false,
+        "no DNS answer may ever claim to be historical: {binding}"
+    );
+    assert!(
+        binding["checkedAt"].as_u64().is_some(),
+        "the observation has its own wall-clock time, separate from the block anchor: {binding}"
+    );
+}
+
+// -------------------------------------------------------------------------------------------------
+// (7) old credentials resolve against the clone that ISSUED them
+// -------------------------------------------------------------------------------------------------
+
+/// `rootIssuer[R]` is write-once and names the clone that issued THIS root. Verification follows it
+/// rather than the document's `issuer.documentStore`, so a superseded clone still verifies its own
+/// credentials and a swapped documentStore cannot redirect the check.
+#[tokio::test]
+async fn verification_follows_the_root_issuer_not_the_document_claim() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap();
+    chain.set_root_issuer(FACTORY, root, CLONE);
+    let app = government_api::router(st);
+
+    // The attacker points documentStore at a contract they control.
+    let mut forged = doc.clone();
+    forged["issuer"]["documentStore"] = json!("0x00000000000000000000000000000000000000ee");
+
+    let (_s, b) = verify(&app, forged).await;
+    assert_eq!(
+        b["issuerResolution"]["source"], "rootIssuer",
+        "the chain resolves the issuer, not the document: {b}"
+    );
+    assert_eq!(b["issuerAddr"].as_str().unwrap().to_lowercase(), CLONE);
+    assert_eq!(
+        b["issuerResolution"]["documentStoreDiffers"], true,
+        "the swap is reported rather than silently followed"
+    );
+}
+
+/// With no `rootIssuer` record the document's claim is the only thing available — and the response says
+/// so, so a caller can tell an authoritative resolution from a fallback.
+#[tokio::test]
+async fn an_unresolvable_root_falls_back_to_the_document_and_says_so() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await; // deliberately NO set_root_issuer
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    assert_eq!(b["issuerResolution"]["source"], "documentClaim");
+    assert_eq!(b["issuerResolution"]["documentStoreDiffers"], false);
 }

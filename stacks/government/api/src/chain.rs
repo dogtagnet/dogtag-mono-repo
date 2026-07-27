@@ -66,6 +66,19 @@ sol! {
         function issuedAt(bytes32 r) external view returns (uint256);
     }
 
+    /// The clone factory. `isClone` is the FIRST link of the issuer↔domain chain: it proves the
+    /// contract was deployed by the DogTag factory, i.e. that it passed through KYC-gated
+    /// `createIssuer` (`onlyOwner`, the protocol multisig). Without it the binding is worthless —
+    /// anyone can deploy their own contract, claim a domain for it and publish a matching TXT record.
+    #[sol(rpc)]
+    contract IDogTagIssuerFactory {
+        function isClone(address candidate) external view returns (bool);
+        /// Write-once `R -> issuing clone`. THE authoritative answer to "which contract issued this
+        /// credential" — the document's `issuer.documentStore` is only a claim, and pointing it at a
+        /// contract you control is the sharper form of the relabelling attack.
+        function rootIssuer(bytes32 root) external view returns (address);
+    }
+
     #[sol(rpc)]
     contract IIssuerRegistry {
         function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
@@ -76,7 +89,7 @@ sol! {
     /// discriminates on `updatedAt != 0` rather than on a revert.
     #[sol(rpc)]
     contract IIssuerDomainRegistry {
-        struct Binding { string domain; uint64 updatedAt; address setBy; }
+        struct Binding { string domain; uint64 updatedAt; uint64 updatedAtBlock; address setBy; }
         function getBinding(address clone) external view returns (Binding memory);
     }
 
@@ -104,6 +117,19 @@ pub enum ChainError {
     NotFound,
     #[error("{0}")]
     Other(String),
+}
+
+/// A clone's on-chain domain claim, with the block anchor that makes it reproducible.
+///
+/// `updated_at_block` is the block the CLAIM was written at (from the contract). It is distinct from the
+/// block the claim was READ at, which the caller records separately: the first says when the issuer last
+/// changed its mind, the second says which chain state this answer came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DomainClaim {
+    pub domain: String,
+    pub updated_at: u64,
+    pub updated_at_block: u64,
+    pub set_by: String,
 }
 
 /// Result of a broadcast: the tx hash the caller records against the credential, plus the block it
@@ -148,13 +174,44 @@ pub trait ChainClient: Send + Sync {
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError>;
     /// `DogTagIssuer.issuedAt(root)` (0 == not issued).
     async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError>;
+    /// `DogTagIssuerFactory.isClone(clone)` — LINK 1 of the issuer↔domain chain.
+    ///
+    /// Re-checked at every verification rather than inherited from the fact that the domain registry
+    /// once enforced it: a stored binding is a CLAIM, and an app must not inherit trust it did not
+    /// verify itself. `Err` means the read failed, which is emphatically not the same as `Ok(false)`
+    /// ("this is not a DogTag issuer") and must never be rendered as it.
+    async fn is_factory_clone(
+        &self,
+        factory_addr: &str,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<bool, ChainError>;
     /// `DogTagIssuer.name()` — the clone's on-chain name.
     ///
     /// The ONLY issuer name a surface may present. The document's `issuer.name` is outside the Merkle
     /// root, so relabelling it alone passes both integrity AND the `data.issuer` DID assertion (the DID
     /// carries a DOMAIN, not a name) — leaving a fabricated authority rendered beside a green check.
     /// Reading the name from the clone closes that.
-    async fn issuer_onchain_name(&self, clone_addr: &str) -> Result<String, ChainError>;
+    async fn issuer_onchain_name(
+        &self,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<String, ChainError>;
+    /// `DogTagIssuerFactory.rootIssuer(root)` — the clone that ISSUED this root, or `None` when the
+    /// factory has no record of it.
+    ///
+    /// Old credentials must resolve against the clone that issued them, not against whatever the current
+    /// clone for that record type happens to be. If a clone is superseded, a credential issued by the
+    /// old one is still legitimate, and verification must not silently re-point at a successor.
+    async fn root_issuer(
+        &self,
+        factory_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, ChainError>;
+    /// The current chain head. Every binding read is pinned to ONE block so the whole verification is a
+    /// consistent, reproducible snapshot rather than a smear across several heights.
+    async fn block_number(&self) -> Result<u64, ChainError>;
     /// `IssuerDomainRegistry.getBinding(clone).domain` — the domain the ISSUER CLONE claims on chain.
     ///
     /// `Ok(None)` means the clone has claimed no domain (a normal state), which is NOT the same as a
@@ -167,7 +224,8 @@ pub trait ChainClient: Send + Sync {
         &self,
         domain_registry_addr: &str,
         clone_addr: &str,
-    ) -> Result<Option<String>, ChainError>;
+        at_block: Option<u64>,
+    ) -> Result<Option<DomainClaim>, ChainError>;
     /// `IssuerRegistry.isWhitelistedFor(recordType, signer)`.
     async fn is_whitelisted_for(
         &self,
@@ -359,42 +417,104 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
-    async fn issuer_onchain_name(&self, clone_addr: &str) -> Result<String, ChainError> {
-        use alloy::providers::ProviderBuilder;
+    async fn block_number(&self) -> Result<u64, ChainError> {
+        use alloy::providers::{Provider, ProviderBuilder};
         let provider = ProviderBuilder::new()
             .on_builtin(&self.rpc_url)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IDogTagIssuer::new(parse_addr(clone_addr), provider);
-        let r = c
-            .name()
-            .call()
+        provider
+            .get_block_number()
             .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        Ok(r._0)
+            .map_err(|e| ChainError::Rpc(e.to_string()))
     }
-    async fn issuer_claimed_domain(
+    async fn root_issuer(
         &self,
-        domain_registry_addr: &str,
-        clone_addr: &str,
+        factory_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
     ) -> Result<Option<String>, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
             .on_builtin(&self.rpc_url)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        let c = IIssuerDomainRegistry::new(parse_addr(domain_registry_addr), provider);
-        let b = c
-            .getBinding(parse_addr(clone_addr))
-            .call()
+        let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
+        let mut call = c.rootIssuer(parse_b256(root));
+        if let Some(b) = at_block {
+            call = call.block(b.into());
+        }
+        let r = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        if r._0 == Address::ZERO {
+            return Ok(None);
+        }
+        Ok(Some(format!("{:#x}", r._0)))
+    }
+    async fn is_factory_clone(
+        &self,
+        factory_addr: &str,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<bool, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
+        let mut call = c.isClone(parse_addr(clone_addr));
+        if let Some(b) = at_block {
+            call = call.block(b.into());
+        }
+        let r = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
+    async fn issuer_onchain_name(
+        &self,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuer::new(parse_addr(clone_addr), provider);
+        let mut call = c.name();
+        if let Some(b) = at_block {
+            call = call.block(b.into());
+        }
+        let r = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
+    async fn issuer_claimed_domain(
+        &self,
+        domain_registry_addr: &str,
+        clone_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<DomainClaim>, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IIssuerDomainRegistry::new(parse_addr(domain_registry_addr), provider);
+        let mut call = c.getBinding(parse_addr(clone_addr));
+        if let Some(blk) = at_block {
+            call = call.block(blk.into());
+        }
+        let b = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
         // updatedAt == 0 is the contract's documented "no binding published" discriminator; an empty
         // domain is unrepresentable on-chain, so both checks agree.
         if b._0.updatedAt == 0 || b._0.domain.trim().is_empty() {
             return Ok(None);
         }
-        Ok(Some(b._0.domain))
+        Ok(Some(DomainClaim {
+            domain: b._0.domain,
+            updated_at: b._0.updatedAt,
+            updated_at_block: b._0.updatedAtBlock,
+            set_by: format!("{:#x}", b._0.setBy),
+        }))
     }
     async fn is_whitelisted_for(
         &self,
@@ -509,9 +629,13 @@ struct MemChainInner {
     /// (registry_addr, nullifier) consumed by a recordVerificationZK — the emulated replay guard.
     consumed: HashMap<(String, String), bool>,
     /// (domain_registry_addr, clone_addr) -> the clone's claimed domain (absent == no claim).
-    claimed_domains: HashMap<(String, String), String>,
+    claimed_domains: HashMap<(String, String), DomainClaim>,
+    /// (factory_addr, root) -> the clone that issued it.
+    root_issuers: HashMap<(String, String), String>,
     /// clone_addr -> the clone's on-chain `name()`.
     onchain_names: HashMap<String, String>,
+    /// (factory_addr, clone_addr) -> whether the factory deployed it. Absent == not a clone.
+    factory_clones: HashMap<(String, String), bool>,
     nonce: u64,
     clock: u64,
 }
@@ -525,6 +649,8 @@ impl Default for MemChainInner {
             consumed: HashMap::new(),
             claimed_domains: HashMap::new(),
             onchain_names: HashMap::new(),
+            factory_clones: HashMap::new(),
+            root_issuers: HashMap::new(),
             nonce: 0,
             clock: MEMCHAIN_CLOCK_BASE,
         }
@@ -556,6 +682,15 @@ impl MemChain {
         self.signer = addr.to_lowercase();
         self
     }
+    /// Seed factory provenance for a clone (test harness). Not seeding it emulates a contract that was
+    /// NOT deployed by the DogTag factory — the attack link 1 exists to catch.
+    pub fn set_factory_clone(&self, factory_addr: &str, clone_addr: &str, is_clone: bool) {
+        let mut g = self.inner.lock().unwrap();
+        g.factory_clones.insert(
+            (factory_addr.to_lowercase(), clone_addr.to_lowercase()),
+            is_clone,
+        );
+    }
     /// Seed a clone's on-chain `name()` (test harness).
     pub fn set_onchain_name(&self, clone_addr: &str, name: &str) {
         let mut g = self.inner.lock().unwrap();
@@ -566,12 +701,27 @@ impl MemChain {
     /// normal "this issuer has claimed no domain" state.
     pub fn set_claimed_domain(&self, domain_registry_addr: &str, clone_addr: &str, domain: &str) {
         let mut g = self.inner.lock().unwrap();
+        let block = g.clock.max(1);
+        let ts = g.clock;
         g.claimed_domains.insert(
             (
                 domain_registry_addr.to_lowercase(),
                 clone_addr.to_lowercase(),
             ),
-            domain.to_string(),
+            DomainClaim {
+                domain: domain.to_string(),
+                updated_at: ts,
+                updated_at_block: block,
+                set_by: "0x00000000000000000000000000000000000000ad".to_string(),
+            },
+        );
+    }
+    /// Seed `rootIssuer[R]` (test harness) — which clone issued a given root.
+    pub fn set_root_issuer(&self, factory_addr: &str, root: &str, clone_addr: &str) {
+        let mut g = self.inner.lock().unwrap();
+        g.root_issuers.insert(
+            (factory_addr.to_lowercase(), root.to_lowercase()),
+            clone_addr.to_lowercase(),
         );
     }
     /// Has a nullifier already been consumed on the emulated registry? (test harness — the replay
@@ -630,7 +780,38 @@ impl ChainClient for MemChain {
             .unwrap_or(0);
         Ok(U256::from(v))
     }
-    async fn issuer_onchain_name(&self, clone_addr: &str) -> Result<String, ChainError> {
+    async fn block_number(&self) -> Result<u64, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.clock.max(1))
+    }
+    async fn root_issuer(
+        &self,
+        factory_addr: &str,
+        root: &str,
+        _at_block: Option<u64>,
+    ) -> Result<Option<String>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.root_issuers
+            .get(&(factory_addr.to_lowercase(), root.to_lowercase()))
+            .cloned())
+    }
+    async fn is_factory_clone(
+        &self,
+        factory_addr: &str,
+        clone_addr: &str,
+        _at_block: Option<u64>,
+    ) -> Result<bool, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.factory_clones
+            .get(&(factory_addr.to_lowercase(), clone_addr.to_lowercase()))
+            .copied()
+            .unwrap_or(false))
+    }
+    async fn issuer_onchain_name(
+        &self,
+        clone_addr: &str,
+        _at_block: Option<u64>,
+    ) -> Result<String, ChainError> {
         let g = self.inner.lock().unwrap();
         Ok(g.onchain_names
             .get(&clone_addr.to_lowercase())
@@ -641,7 +822,8 @@ impl ChainClient for MemChain {
         &self,
         domain_registry_addr: &str,
         clone_addr: &str,
-    ) -> Result<Option<String>, ChainError> {
+        _at_block: Option<u64>,
+    ) -> Result<Option<DomainClaim>, ChainError> {
         let g = self.inner.lock().unwrap();
         Ok(g.claimed_domains
             .get(&(

@@ -535,11 +535,43 @@ struct VerifyBody {
 async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Resp {
     let doc = body.wrapped_doc;
     let record_type = doc.issuer.record_type.clone();
+    let claimed_root = doc.signature.merkle_root.clone();
+
+    // Pin the WHOLE verification to one block, read once up front. Against a mutable world (DNS changes,
+    // clones get superseded) a verdict without a block anchor is not auditable, and reads smeared across
+    // several heights are not a consistent snapshot. `None` means the head could not be read — every
+    // dependent read then falls back to `latest` and the answer is reported as unanchored rather than
+    // pretending to a block it never saw.
+    let at_block = st.chain.block_number().await.ok();
+
+    // WHICH contract issued this credential. `issuer.documentStore` is only the document's CLAIM, and
+    // pointing it at a contract the attacker controls is the sharper form of the relabelling attack. The
+    // factory's write-once `rootIssuer[R]` is authoritative, and it names the clone that issued THIS
+    // root — so an old credential resolves against the clone that issued it, never against a successor.
+    let factory_cfg = st.cfg.factory_addr.trim().to_string();
+    let resolved_issuer = if factory_cfg.is_empty()
+        || factory_cfg.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000")
+    {
+        None
+    } else {
+        st.chain
+            .root_issuer(&factory_cfg, &claimed_root, at_block)
+            .await
+            .ok()
+            .flatten()
+    };
+    let document_issuer = doc.issuer.document_store.trim().to_lowercase();
+    // An explicit override still wins (operators use it to check a document against a specific clone),
+    // then the authoritative on-chain resolution, then the document's claim as a last resort.
     let issuer_addr = body
         .issuer_addr
         .clone()
+        .or_else(|| resolved_issuer.clone())
         .unwrap_or_else(|| doc.issuer.document_store.clone());
-    let claimed_root = doc.signature.merkle_root.clone();
+    let issuer_store_differs = resolved_issuer
+        .as_deref()
+        .map(|r| r.to_lowercase() != document_issuer)
+        .unwrap_or(false);
 
     // 1) integrity — recompute the root from the salted leaves and compare (offline, no chain).
     let (integrity_state, recomputed) = check_integrity(&doc);
@@ -589,7 +621,11 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     //     was written by the factory's `onlyOwner` `createIssuer` at KYC time, which makes it the one
     //     authoritative issuer name available. `None` means the read failed — reported as such, never
     //     silently substituted with the document's claim.
-    let onchain_name = st.chain.issuer_onchain_name(&issuer_addr).await.ok();
+    let onchain_name = st
+        .chain
+        .issuer_onchain_name(&issuer_addr, at_block)
+        .await
+        .ok();
 
     // (b) Which domain does the ISSUING CONTRACT itself claim, and does that domain's DNS zone name
     //     this contract back? The claim is read from the chain, never from the document — that is what
@@ -600,7 +636,7 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     //       - registry read, no claim               -> noDomainClaimed (normal on day one)
     //       - claim + DNS record present            -> verified, with the domain's own description
     //       - claim + DNS says absent / unreachable  -> notListed / couldNotCheck
-    let issuer_domain_json = resolve_issuer_domain_binding(&st, &issuer_addr).await;
+    let issuer_domain_json = resolve_issuer_domain_binding(&st, &issuer_addr, at_block).await;
 
     // Verdict: integrity + on-chain issuance are the required authenticity pillars here; the issuer
     // whitelist, when supplied, must also pass (architecture §5 authenticity pillars).
@@ -633,6 +669,24 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         "root": claimed_root,
         "recomputedRoot": recomputed_hex,
         "issuerAddr": issuer_addr,
+        // THE block anchor for every on-chain read in this response. `null` means the head could not be
+        // read, in which case the reads used `latest` and this answer is not reproducible — say so
+        // rather than implying a block.
+        "blockNumber": at_block,
+        "issuerResolution": {
+            // How `issuerAddr` was chosen. "rootIssuer" is the authoritative path.
+            "source": if body.issuer_addr.is_some() {
+                "operatorOverride"
+            } else if resolved_issuer.is_some() {
+                "rootIssuer"
+            } else {
+                "documentClaim"
+            },
+            "rootIssuer": resolved_issuer,
+            "documentDocumentStore": document_issuer,
+            // The document names a different contract than the one the chain says issued this root.
+            "documentStoreDiffers": issuer_store_differs,
+        },
         "fragments": {
             "integrity": integrity_valid,
             "onchain": onchain_valid,
@@ -707,27 +761,84 @@ fn normalise_name(s: &str) -> String {
         .to_lowercase()
 }
 
-/// Read the clone's on-chain domain claim and resolve the DNS half of the binding.
+/// Resolve the issuer↔domain binding as a THREE-LINK CHAIN. All three links are required, and each is
+/// re-checked here rather than inherited from a stored claim.
 ///
-/// Every state is a real observation. Nothing here synthesizes an outcome, and the four cases stay
-/// mutually distinguishable on the wire:
+/// 1. **Factory provenance** — `DogTagIssuerFactory.isClone(clone)`. Without this the rest is
+///    worthless: anyone can deploy their own contract, claim a domain for it, publish a matching TXT
+///    record, and present as verified. The DNS would agree, the registry would agree, and none of it
+///    would mean anything, because that contract never passed through the KYC-gated `createIssuer`.
+///    Factory provenance is what ties the binding back to the whitelisting that gives it value.
 ///
-/// * `unavailable`      — no `IssuerDomainRegistry` configured, or the read failed. We do not know.
-/// * `noDomainClaimed`  — the registry answered and this clone claims no domain. Normal on day one.
-/// * everything else    — a real DNS resolution: `verified` / `notListed` / `couldNotCheck`.
-async fn resolve_issuer_domain_binding(st: &AppState, clone_addr: &str) -> Value {
+///    The domain registry ALSO refuses a write for a non-clone, so bad bindings cannot be stored at
+///    all. This check is not redundant with that: a stored binding is a CLAIM, and an app must not
+///    inherit trust it did not verify itself (the registry could be swapped, or a future one could be
+///    laxer).
+///
+/// 2. **The on-chain domain claim** — read from `IssuerDomainRegistry`, never from the document, whose
+///    `issuer` block is outside the Merkle root.
+///
+/// 3. **The DNS half** — that domain's zone lists this clone address.
+///
+/// The failure modes stay CATEGORICALLY distinct, because they mean very different things:
+///
+/// * `notADogTagIssuer` — link 1 failed. A far stronger statement than a missing DNS record, and it
+///   must never be rendered as merely "not listed".
+/// * `noDomainClaimed`  — links 1 holds, no domain claimed. Normal on day one.
+/// * `notListed`        — links 1 and 2 hold; DNS does not list the address.
+/// * `couldNotCheck`    — a real attempt failed. Evidence of nothing.
+/// * `unavailable`      — a prerequisite could not be read at all (no address configured, read failed).
+async fn resolve_issuer_domain_binding(
+    st: &AppState,
+    clone_addr: &str,
+    at_block: Option<u64>,
+) -> Value {
+    const ZERO: &str = "0x0000000000000000000000000000000000000000";
+
+    // ---- link 1: factory provenance -------------------------------------------------------------
+    let factory = st.cfg.factory_addr.trim();
+    if factory.is_empty() || factory.eq_ignore_ascii_case(ZERO) {
+        return json!({
+            "state": "unavailable",
+            "detail": "no DogTagIssuerFactory configured, so clone provenance cannot be checked",
+        });
+    }
+    match st.chain.is_factory_clone(factory, clone_addr, at_block).await {
+        Ok(true) => {}
+        // A definitive "this contract was not deployed by the DogTag factory". Its own state.
+        Ok(false) => {
+            return json!({
+                "state": "notADogTagIssuer",
+                "cloneAddress": clone_addr.to_lowercase(),
+                "blockNumber": at_block,
+            })
+        }
+        // The read failed. NOT the same as "not a clone" — we simply do not know.
+        Err(e) => {
+            return json!({
+                "state": "unavailable",
+                "detail": format!("clone provenance read failed: {e}"),
+            })
+        }
+    }
+
+    // ---- link 2: the on-chain domain claim ------------------------------------------------------
     let registry = st.cfg.issuer_domain_registry_addr.trim();
-    if registry.is_empty() || registry.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000") {
+    if registry.is_empty() || registry.eq_ignore_ascii_case(ZERO) {
         return json!({
             "state": "unavailable",
             "detail": "no IssuerDomainRegistry configured for this deployment",
         });
     }
 
-    let claimed = match st.chain.issuer_claimed_domain(registry, clone_addr).await {
+    let claimed = match st
+        .chain
+        .issuer_claimed_domain(registry, clone_addr, at_block)
+        .await
+    {
         Ok(Some(d)) => d,
         // The registry answered: this issuer has published no domain claim. Unremarkable.
-        Ok(None) => return json!({ "state": "noDomainClaimed" }),
+        Ok(None) => return json!({ "state": "noDomainClaimed", "blockNumber": at_block }),
         // The READ failed — which is not the same as "no claim", and must not be shown as one.
         Err(e) => {
             return json!({
@@ -737,10 +848,24 @@ async fn resolve_issuer_domain_binding(st: &AppState, clone_addr: &str) -> Value
         }
     };
 
-    let check = st.dns.check(clone_addr, &claimed).await;
+    // ---- link 3: the DNS half ---------------------------------------------------------------------
+    //
+    // THE ASYMMETRY, stated plainly because it governs what this result can honestly claim:
+    //
+    //   * Chain state is REPRODUCIBLE. Anyone with an archive node can re-run every read above pinned
+    //     to `blockNumber` and get the same answer. (Verified against the ROAX node: `eth_call` at
+    //     head-5000 returns full historical state, so the anchor is not decorative.)
+    //   * DNS has NO HISTORY. There is no way to ask what a zone published at block N. A TXT record is
+    //     only ever observable NOW.
+    //
+    // So the DNS half is an OBSERVATION that can never be recomputed, and it is labelled as such:
+    // `dnsObservation: "live"` with its own wall-clock `checkedAt`, carried alongside — never inside —
+    // the block anchor. A stored observation must never be presented as live, and a live one must never
+    // be presented as proving the past.
+    let check = st.dns.check(clone_addr, &claimed.domain).await;
     let mut out = serde_json::to_value(&check).unwrap_or_else(|_| json!({}));
-    // Flatten the tagged status up one level so a client reads a single `state` field for all four
-    // cases rather than having to branch on nesting depth first.
+    // Flatten the tagged status up one level so a client reads a single `state` field for every case
+    // rather than having to branch on nesting depth first.
     if let (Some(obj), Ok(status)) = (out.as_object_mut(), serde_json::to_value(&check.status)) {
         obj.remove("status");
         if let Some(status_obj) = status.as_object() {
@@ -748,6 +873,21 @@ async fn resolve_issuer_domain_binding(st: &AppState, clone_addr: &str) -> Value
                 obj.insert(k.clone(), v.clone());
             }
         }
+    }
+    if let Some(obj) = out.as_object_mut() {
+        // The block the CHAIN half was read at.
+        obj.insert("blockNumber".into(), json!(at_block));
+        // When the issuer last CHANGED its domain claim, and at which block — so "what did this clone
+        // claim at block N" is answerable rather than only "what does it claim now".
+        obj.insert("claimUpdatedAt".into(), json!(claimed.updated_at));
+        obj.insert("claimUpdatedAtBlock".into(), json!(claimed.updated_at_block));
+        obj.insert("claimSetBy".into(), json!(claimed.set_by));
+        // This DNS answer was observed live and cannot be re-derived for any past block.
+        obj.insert("dnsObservation".into(), json!("live"));
+        obj.insert(
+            "dnsHistorical".into(),
+            json!(false),
+        );
     }
     out
 }

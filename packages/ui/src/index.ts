@@ -40,6 +40,22 @@ export {
 } from "./components/Dialog";
 export { Badge, badgeVariants, type BadgeProps } from "./components/Badge";
 export {
+  DomainBindingBadge,
+  type DomainBindingBadgeProps,
+} from "./components/DomainBindingBadge";
+export {
+  bindingExplanation,
+  bindingLine,
+  bindingTone,
+  displayIssuerName,
+  expectedTxtName,
+  isDomainVerified,
+  type BindingTone,
+  type IssuerDomainBinding,
+  type IssuerDomainBindingState,
+  type IssuerIdentity,
+} from "./domain/issuerDomainBinding";
+export {
   Table,
   TableHeader,
   TableBody,
