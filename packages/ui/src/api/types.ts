@@ -994,12 +994,34 @@ export interface GovernanceAuthority {
 // ---- import verdict (3 authenticity pillars + contextual ownership) ----
 export type FragmentState = "VALID" | "INVALID" | "ERROR" | "NOT_APPLICABLE";
 /** Shape of ImportPullResp.verdict from the vet/groomer backend `verify::verdict_json`. */
+/**
+ * The factory-anchored issuer-whitelist pillar's outcome. It is NOT a `FragmentState`, because a
+ * caller must be able to tell "we never asked" apart from "we asked and it passed" — a pillar that
+ * never ran must never render as one that succeeded.
+ *
+ * `unavailableNoFactoryConfigured` is the ONLY non-`passed` state that does not fail the credential:
+ * it means this verifier has no `FACTORY_ADDR`, which is our own gap and not evidence about the
+ * document. `unresolved` (we asked, and could not establish an answer) DOES fail it.
+ */
+export type IssuerWhitelistState =
+  | "passed"
+  | "failed"
+  | "unresolved"
+  | "unavailableNoFactoryConfigured";
+
+/** How the issuing clone was arrived at. Anything but `resolved` means `issuerAddr` is a claim. */
+export type IssuerResolution = "resolved" | "noRecord" | "noFactoryConfigured" | "readFailed";
+
 export interface ImportVerdict {
   valid: boolean;
   integrity: FragmentState;
   issuance: FragmentState;
   identity: FragmentState;
   ownership: FragmentState;
+  issuerWhitelistState: IssuerWhitelistState;
+  issuerResolution: IssuerResolution;
+  /** The clone the on-chain reads were made against — the FACTORY's answer when one was available. */
+  issuerAddr: string;
 }
 
 // --------------------------------------------------------------------------------------------

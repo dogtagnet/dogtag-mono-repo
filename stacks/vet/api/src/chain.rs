@@ -498,6 +498,22 @@ impl MemChain {
             true,
         );
     }
+    /// Withdraw a signer's authorization, mirroring `IssuerRegistry`'s `Delisted`
+    /// (`IssuerRegistry.sol:23`). Delisting is FORWARD-ONLY on the real contract: past credentials
+    /// keep their `issuedBy`, so a delisted issuer is exactly the state in which a genuinely issued
+    /// root has an unauthorized originator — the case the mandatory issuer-whitelist pillar exists
+    /// to catch, and one a test cannot reach by simply never whitelisting, because issuance itself
+    /// is gated on the whitelist.
+    pub fn delist(&self, registry: &str, record_type: &str, signer: &str) {
+        self.inner.lock().unwrap().whitelist.insert(
+            (
+                registry.to_lowercase(),
+                record_type.to_lowercase(),
+                signer.to_lowercase(),
+            ),
+            false,
+        );
+    }
     /// Decode an issue(bytes32)/revoke(bytes32) calldata into (is_issue, root_hex).
     fn decode_b32_call(calldata: &str) -> Option<(bool, String)> {
         let s = calldata.strip_prefix("0x").unwrap_or(calldata);
