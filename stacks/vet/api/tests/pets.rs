@@ -21,6 +21,13 @@ use std::sync::Arc;
 use vet_api::chain::MemChain;
 
 async fn pets_app() -> (axum::Router, String) {
+    let (app, op, _) = pets_app_with_state().await;
+    (app, op)
+}
+
+/// Same app, plus the `AppState` - needed by the tests that have to seed the per-tag document cache
+/// directly, since a groomer/vet test has no live customer wallet to run `POST /import/pull` against.
+async fn pets_app_with_state() -> (axum::Router, String, vet_api::app::AppState) {
     let state = state_with(
         Arc::new(MemChain::new()),
         "memchain".to_string(),
@@ -30,7 +37,7 @@ async fn pets_app() -> (axum::Router, String) {
         1,
     );
     let op = mint_operator(&state).await;
-    (vet_api::router(state), op)
+    (vet_api::router(state.clone()), op, state)
 }
 
 /// Create a client carrying `pets` verbatim; returns the clientId and the minted petIds in order.
@@ -449,6 +456,125 @@ async fn linking_requires_an_actual_tag_id() {
 }
 
 #[tokio::test]
+async fn a_tag_already_held_by_another_pet_is_refused_and_the_holder_is_named() {
+    let (app, op) = pets_app().await;
+    let (_, alice) = make_client_with_pets(
+        &app,
+        &op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "dogTagId": "4" }]),
+    )
+    .await;
+    let (_, bob) = make_client_with_pets(&app, &op, "Bob Lim", json!([{ "name": "Milo" }])).await;
+
+    // A mistyped digit is the realistic way in, and letting it through would silently merge two
+    // animals' histories: both pets would show the same held credential, the same on-chain history,
+    // and both would answer `?q=4`.
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/pets/{}/dogtag", bob[0]),
+        Some(&op),
+        Some(json!({ "dogTagId": "4" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    // Naming the holder is what tells a typo apart from a genuine conflict.
+    assert!(msg.contains("Rex"), "the conflicting pet must be named: {b}");
+    assert!(msg.contains("Alice Tan"), "its owner must be named too: {b}");
+
+    // The refusal must have written NOTHING - not to the target, not to the holder.
+    assert!(get_pet(&app, &op, &bob[0]).await["dogTagId"].is_null(), "{b}");
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn creating_a_pet_cannot_seat_a_tag_another_pet_already_holds() {
+    let (app, op) = pets_app().await;
+    let (_, _) = make_client_with_pets(
+        &app,
+        &op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "dogTagId": "4" }]),
+    )
+    .await;
+    let (bob, _) = make_client_with_pets(&app, &op, "Bob Lim", json!([])).await;
+
+    // `POST /pets` carries `dogTagId` too, so it is a second way to attach a tag and has to enforce
+    // the same rule - guarding only the link route would leave the merge reachable one route over.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/pets",
+        Some(&op),
+        Some(json!({ "clientId": bob, "name": "Milo", "dogTagId": "4" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert!(b["error"].as_str().unwrap_or_default().contains("Rex"), "{b}");
+
+    // ...and the pet must not have been created as a side effect of the refusal.
+    let (_, found) = call(&app, "GET", &format!("/pets?clientId={bob}"), Some(&op), None).await;
+    assert_eq!(found["total"], 0, "the refused pet must not exist: {found}");
+}
+
+#[tokio::test]
+async fn creating_a_pet_with_a_free_tag_still_works() {
+    let (app, op) = pets_app().await;
+    let (alice, _) = make_client_with_pets(&app, &op, "Alice Tan", json!([])).await;
+
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/pets",
+        Some(&op),
+        Some(json!({ "clientId": alice, "name": "Rex", "dogTagId": "4" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    assert_eq!(b["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn relinking_the_same_tag_to_the_same_pet_stays_idempotent() {
+    let (app, op) = pets_app().await;
+    let (_, pets) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }])).await;
+
+    // Nothing is being merged, so this is not a conflict - re-sending the tag a pet already holds
+    // must succeed rather than 409 an operator out of a no-op.
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/pets/{}/dogtag", pets[0]),
+        Some(&op),
+        Some(json!({ "dogTagId": "4" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn a_conflicting_tag_on_an_unknown_pet_is_still_a_404() {
+    let (app, op) = pets_app().await;
+    make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }])).await;
+
+    // The pet does not exist, so the honest answer is "no such pet" - not a conflict with a pet this
+    // request was never about.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/pets/nope/dogtag",
+        Some(&op),
+        Some(json!({ "dogTagId": "4" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{b}");
+}
+
+#[tokio::test]
 async fn unlinking_a_dogtag_clears_only_this_shops_note_of_it() {
     let (app, op) = pets_app().await;
     let (client_id, pets) = make_client_with_pets(
@@ -517,6 +643,51 @@ async fn a_tagged_pet_with_nothing_imported_returns_an_empty_list_under_its_tag(
     assert_eq!(s, StatusCode::OK, "{b}");
     assert_eq!(b["dogTagId"], "4", "the tag the lookup used must be named: {b}");
     assert_eq!(b["credentials"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn a_pet_linked_by_its_handle_finds_the_document_imported_under_that_handle() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (_, pets) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }])).await;
+    // What `POST /import/pull` writes: keyed by the doc's own `credentialSubject.dogTagId` leaf,
+    // which is the short operator-facing HANDLE.
+    state
+        .store
+        .upsert_client_cache("4".to_string(), json!({ "version": "dogtag/1.0" }))
+        .await;
+
+    let (s, b) = call(&app, "GET", &format!("/pets/{}/credentials", pets[0]), Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["credentials"].as_array().unwrap().len(), 1, "{b}");
+}
+
+#[tokio::test]
+async fn a_pet_linked_by_its_onchain_field_element_cannot_match_a_handle_keyed_document() {
+    let (app, op, state) = pets_app_with_state().await;
+    // The link route deliberately accepts BOTH forms, because linking from an explorer-visible
+    // on-chain id is genuinely useful and chain discovery resolves either one.
+    let field = "1195241908933892557940129631300775214454584041594363078565480038450625444405";
+    let (_, pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Alice Tan",
+        json!([{ "name": "Rex", "dogTagId": field }]),
+    )
+    .await;
+    state
+        .store
+        .upsert_client_cache("3".to_string(), json!({ "version": "dogtag/1.0" }))
+        .await;
+
+    let (s, b) = call(&app, "GET", &format!("/pets/{}/credentials", pets[0]), Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    // The cache is keyed by the HANDLE and handle -> field element is a Poseidon hash, so there is no
+    // way back: this lookup cannot be performed, which is NOT the same as holding nothing. The route
+    // names the tag it looked under so the caller can tell the two apart and say so - the frontend
+    // renders this case explicitly instead of "this shop holds no credential".
+    assert_eq!(b["dogTagId"], field, "the tag the lookup used must be named: {b}");
+    assert_eq!(b["credentials"].as_array().unwrap().len(), 0, "{b}");
 }
 
 // ============================================================================================

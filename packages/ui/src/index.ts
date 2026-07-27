@@ -110,6 +110,8 @@ export {
   DEFAULT_LOOKBACK_BLOCKS,
   DEFAULT_CHUNK_BLOCKS,
   TAG_STATUS_LABELS,
+  attributeSigner,
+  type SignerAttribution,
   type DiscoverTagArgs,
   type DiscoveryAddresses,
   type DiscoveryCoverage,

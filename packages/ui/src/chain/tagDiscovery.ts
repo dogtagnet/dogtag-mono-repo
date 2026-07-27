@@ -115,6 +115,50 @@ export function resolveDogTagId(stored?: string | null): ResolvedDogTagId | null
 // the reads
 // --------------------------------------------------------------------------------------------
 
+// Each event is declared as its OWN named const and the ABI is composed from them, so a topic
+// filter binds by NAME. Indexing into the ABI literal (`SBT_ABI[3]`) would let a reorder or an
+// inserted entry silently retarget a filter at a different event with no type error - the const
+// assertion only promises the element exists, never that it is the intended one.
+const SBT_ISSUED_EVENT = {
+  type: "event",
+  name: "Issued",
+  inputs: [
+    { name: "dogTagId", type: "uint256", indexed: true },
+    { name: "issuer", type: "address", indexed: true },
+  ],
+} as const;
+
+const SBT_STATUS_CHANGED_EVENT = {
+  type: "event",
+  name: "StatusChanged",
+  inputs: [
+    { name: "dogTagId", type: "uint256", indexed: true },
+    { name: "from", type: "uint8", indexed: false },
+    { name: "to", type: "uint8", indexed: false },
+    { name: "by", type: "address", indexed: false },
+    { name: "reason", type: "string", indexed: false },
+  ],
+} as const;
+
+const SBT_BURNED_EVENT = {
+  type: "event",
+  name: "Burned",
+  inputs: [{ name: "dogTagId", type: "uint256", indexed: true }],
+} as const;
+
+const VERIFIED_EVENT = {
+  type: "event",
+  name: "Verified",
+  inputs: [
+    { name: "dogTagId", type: "uint256", indexed: true },
+    { name: "relayer", type: "address", indexed: true },
+    { name: "purpose", type: "bytes32", indexed: false },
+    { name: "nullifier", type: "bytes32", indexed: false },
+    { name: "deadline", type: "uint256", indexed: false },
+    { name: "ts", type: "uint256", indexed: false },
+  ],
+} as const;
+
 const SBT_ABI = [
   {
     type: "function",
@@ -137,45 +181,9 @@ const SBT_ABI = [
     inputs: [{ name: "id", type: "uint256" }],
     outputs: [{ name: "", type: "uint8" }],
   },
-  {
-    type: "event",
-    name: "Issued",
-    inputs: [
-      { name: "dogTagId", type: "uint256", indexed: true },
-      { name: "issuer", type: "address", indexed: true },
-    ],
-  },
-  {
-    type: "event",
-    name: "StatusChanged",
-    inputs: [
-      { name: "dogTagId", type: "uint256", indexed: true },
-      { name: "from", type: "uint8", indexed: false },
-      { name: "to", type: "uint8", indexed: false },
-      { name: "by", type: "address", indexed: false },
-      { name: "reason", type: "string", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "Burned",
-    inputs: [{ name: "dogTagId", type: "uint256", indexed: true }],
-  },
-] as const satisfies Abi;
-
-const VERIFICATION_REGISTRY_ABI = [
-  {
-    type: "event",
-    name: "Verified",
-    inputs: [
-      { name: "dogTagId", type: "uint256", indexed: true },
-      { name: "relayer", type: "address", indexed: true },
-      { name: "purpose", type: "bytes32", indexed: false },
-      { name: "nullifier", type: "bytes32", indexed: false },
-      { name: "deadline", type: "uint256", indexed: false },
-      { name: "ts", type: "uint256", indexed: false },
-    ],
-  },
+  SBT_ISSUED_EVENT,
+  SBT_STATUS_CHANGED_EVENT,
+  SBT_BURNED_EVENT,
 ] as const satisfies Abi;
 
 const FACTORY_ABI = [
@@ -212,8 +220,20 @@ const ISSUER_ABI = [
   },
 ] as const satisfies Abi;
 
-/** The `DogTagSBTConsent.Status` enum, in declaration order. */
-export const TAG_STATUS_LABELS = ["active", "suspended", "revoked"] as const;
+/**
+ * The `DogTagSBTConsent.Status` enum, in declaration order - transcribed from
+ * `contracts/src/DogTagSBTConsent.sol`, which is the authority. The order is what gives each label
+ * its meaning, so a member that is wrong or missing does not degrade to "unknown": it renames a real
+ * status as a different real one. A tag mid-transfer read as "revoked" is a confident, wrong claim of
+ * the exact kind this module exists to prevent, so keep this list moving with the contract.
+ */
+export const TAG_STATUS_LABELS = [
+  "active",
+  "lost",
+  "transfer pending",
+  "deceased",
+  "revoked",
+] as const;
 export type TagStatusLabel = (typeof TAG_STATUS_LABELS)[number] | "unknown";
 
 /** Name a raw `status` byte, without inventing a meaning for a value the enum does not define. */
@@ -439,28 +459,28 @@ export function roaxTagDiscoveryReader(rpcUrl?: string): TagDiscoveryReader {
       const [issued, statusChanged, burned, verified] = await Promise.all([
         c.getLogs({
           address: sbt,
-          event: SBT_ABI[3],
+          event: SBT_ISSUED_EVENT,
           args: { dogTagId },
           fromBlock,
           toBlock,
         }),
         c.getLogs({
           address: sbt,
-          event: SBT_ABI[4],
+          event: SBT_STATUS_CHANGED_EVENT,
           args: { dogTagId },
           fromBlock,
           toBlock,
         }),
         c.getLogs({
           address: sbt,
-          event: SBT_ABI[5],
+          event: SBT_BURNED_EVENT,
           args: { dogTagId },
           fromBlock,
           toBlock,
         }),
         c.getLogs({
           address: verificationRegistry,
-          event: VERIFICATION_REGISTRY_ABI[0],
+          event: VERIFIED_EVENT,
           args: { dogTagId },
           fromBlock,
           toBlock,
@@ -518,8 +538,11 @@ export function roaxTagDiscoveryReader(rpcUrl?: string): TagDiscoveryReader {
 export interface DiscoveryProgress {
   chunksDone: number;
   chunksTotal: number;
-  /** Highest block confirmed scanned so far. */
-  scannedTo: bigint;
+  /**
+   * The LOWEST block reached so far - the scan runs head-first, so progress moves downwards and what
+   * has been covered is `[reachedBlock, toBlock]`. Mirrors {@link DiscoveryCoverage.reachedBlock}.
+   */
+  reachedBlock: bigint;
   fromBlock: bigint;
   toBlock: bigint;
   /** Events found so far — a long scan shows results as they arrive rather than only at the end. */
@@ -620,7 +643,6 @@ export async function discoverTag(args: DiscoverTagArgs): Promise<TagDiscoveryRe
   const events: DiscoveredEvent[] = [];
   // Newest first: scanning from the head means the operator sees the most recent — and for a
   // returning pet, the most relevant — activity while the older end is still in flight.
-  let scannedTo = toBlock;
 
   for (const r of [...ranges].reverse()) {
     if (args.signal?.aborted) {
@@ -646,12 +668,11 @@ export async function discoverTag(args: DiscoverTagArgs): Promise<TagDiscoveryRe
       });
     }
     coverage.chunksDone += 1;
-    scannedTo = r.fromBlock;
     coverage.reachedBlock = r.fromBlock;
     args.onProgress?.({
       chunksDone: coverage.chunksDone,
       chunksTotal: coverage.chunksTotal,
-      scannedTo,
+      reachedBlock: coverage.reachedBlock,
       fromBlock,
       toBlock,
       found: events.length,
@@ -702,14 +723,40 @@ export function chunkRanges(
 /**
  * Whether an address is one of THIS shop's own signers, compared case-insensitively.
  *
- * This is what turns "a verification happened" into the finding that matters — a verification by a
- * relayer that is not us is evidence of credentials this shop has never seen, and therefore the cue
- * to ask the owner to share them. With no signers known, everything is reported as not-ours, which is
- * the safe direction: it overstates what is unfamiliar rather than claiming a stranger's record as
- * this shop's own work.
+ * A PREDICATE over a KNOWN signer set, and nothing more. It cannot express "we do not know our own
+ * signers", because against an empty set every address is simply not-a-member - which is the right
+ * answer to the question asked and the wrong basis for a claim about a stranger. Anything that
+ * renders an attribution to an operator must go through {@link attributeSigner} instead.
  */
 export function isOwnSigner(addr: string | null | undefined, ownSigners: string[]): boolean {
   if (!addr) return false;
   const a = addr.trim().toLowerCase();
   return ownSigners.some((s) => s.trim().toLowerCase() === a);
+}
+
+/**
+ * Who recorded something: this shop, someone else, or - the third state - not determinable.
+ *
+ * `unknown` is not a nicety. `GET /issuer/signers` answers `200 {"signers": []}` whenever custody is
+ * LOCKED, which a groomer reaches routinely (operator sessions outlive a restart under Mongo while
+ * custody re-locks, and the custody passphrase is a separate credential from the operator password).
+ * Folding that into "not ours" turns missing data into a positive claim that a STRANGER verified this
+ * pet - the same defect class as rendering an unchecked credential as valid, just pointed outward.
+ */
+export type SignerAttribution = "own" | "other" | "unknown";
+
+/**
+ * Attribute an actor address against this shop's own signers.
+ *
+ * `ownSigners` is `null` when the set could not be established. An EMPTY set is treated the same
+ * way on purpose: with no address to compare against, "ours" and "a stranger's" are
+ * indistinguishable, so claiming either would be an assertion the data does not support.
+ */
+export function attributeSigner(
+  addr: string | null | undefined,
+  ownSigners: string[] | null,
+): SignerAttribution {
+  if (!addr) return "unknown";
+  if (!ownSigners || ownSigners.length === 0) return "unknown";
+  return isOwnSigner(addr, ownSigners) ? "own" : "other";
 }

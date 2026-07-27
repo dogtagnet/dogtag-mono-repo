@@ -10,14 +10,15 @@ import {
   ChainValue,
   Spinner,
   addressExplorerHref,
+  attributeSigner,
   discoverTag,
-  isOwnSigner,
   resolveDogTagId,
   txExplorerHref,
   useToast,
   type DiscoveredEvent,
   type DiscoveryProgress,
   type TagDiscoveryResult,
+  type TagStatusLabel,
 } from "@dogtag/ui";
 import { Radar, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -71,14 +72,19 @@ export function TagDiscoveryPanel({
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  /** The shop's own signer addresses, so "was this us?" is a fact rather than a guess. */
-  const [ownSigners, setOwnSigners] = useState<string[]>([]);
+  /**
+   * The shop's own signer addresses, so "was this us?" is a fact rather than a guess - and `null`
+   * when that set could NOT be established, which is a third state and not an empty one.
+   *
+   * `GET /issuer/signers` answers `200 {"signers": []}` whenever custody is locked, a state a groomer
+   * reaches routinely. Collapsing that into an empty list would make every one of the shop's own
+   * verifications render as a stranger's, and would drive the conclusion sentence and the import CTA
+   * below off data the portal never had. Not knowing is reported as not knowing.
+   */
+  const [ownSigners, setOwnSigners] = useState<string[] | null>(null);
 
   const resolved = resolveDogTagId(dogTagId);
 
-  // The shop's own signers come from the backend. If the read fails the list stays empty, which makes
-  // every relayer render as "not this shop" — the safe direction, since it overstates what is
-  // unfamiliar rather than claiming a stranger's verification as this shop's own work.
   useEffect(() => {
     let cancelled = false;
     void api
@@ -86,13 +92,24 @@ export function TagDiscoveryPanel({
       .then((r) => {
         if (cancelled) return;
         // The whitelist matrix carries one row per (recordType, signer) pair, so the same address
-        // appears repeatedly; only the distinct addresses matter here.
-        const addrs = [r.activeSigner, ...(r.matrix ?? []).map((m) => m.address)].filter(Boolean);
-        setOwnSigners([...new Set(signerAddress ? [...addrs, signerAddress] : addrs)]);
+        // appears repeatedly; only the distinct addresses matter here. Locked custody supplies
+        // neither field, so this resolves to nothing - which stays `null`, not `[]`.
+        const backend = [r.activeSigner, ...(r.matrix ?? []).map((m) => m.address)].filter(
+          (a): a is string => Boolean(a && a.trim()),
+        );
+        const addrs = [...new Set(signerAddress ? [...backend, signerAddress] : backend)];
+        setOwnSigners(addrs.length > 0 ? addrs : null);
       })
       .catch(() => {
-        if (!cancelled && signerAddress) setOwnSigners([signerAddress]);
+        if (!cancelled) setOwnSigners(signerAddress ? [signerAddress] : null);
       });
+    // Why `signerAddress` may make the set KNOWN on its own, rather than being a guess that reopens
+    // the defect above: it is not a browser wallet. Every writer of it (`Setup`, `Unlock`, the
+    // unlock dialog) sets it from `accounts[0]` of a custody unlock - custody account 0, which is
+    // `ACTIVE_SIGNER_INDEX`, the address the verify path actually broadcasts from and the same one
+    // `GET /issuer/signers` reports as `activeSigner` (its whole matrix is built from that one
+    // address). So it is a real shop signer, cached from a previous unlock, and attributing against
+    // it is a fact rather than an assumption.
     return () => {
       cancelled = true;
     };
@@ -135,7 +152,11 @@ export function TagDiscoveryPanel({
   const verifications = (result?.events ?? []).filter(
     (e): e is Extract<DiscoveredEvent, { kind: "verification" }> => e.kind === "verification",
   );
-  const foreignVerifications = verifications.filter((v) => !isOwnSigner(v.relayer, ownSigners));
+  // Only ever counted against a KNOWN signer set. With the set unknown these are not foreign
+  // verifications, they are unattributed ones, and counting them would manufacture the finding.
+  const foreignVerifications = verifications.filter(
+    (v) => attributeSigner(v.relayer, ownSigners) === "other",
+  );
 
   return (
     <Card>
@@ -193,7 +214,7 @@ export function TagDiscoveryPanel({
                 <span className="inline-flex items-center gap-2 text-sm text-muted">
                   <Spinner className="h-4 w-4" />
                   {progress
-                    ? `Scanning blocks ${progress.scannedTo.toString()}–${progress.toBlock.toString()} · ${progress.chunksDone}/${progress.chunksTotal} ranges · ${progress.found} found`
+                    ? `Scanning blocks ${progress.reachedBlock.toString()}–${progress.toBlock.toString()} · ${progress.chunksDone}/${progress.chunksTotal} ranges · ${progress.found} found`
                     : "Reading chain head…"}
                 </span>
               )}
@@ -241,6 +262,21 @@ export function TagDiscoveryPanel({
   );
 }
 
+/**
+ * How a tag status is drawn. `revoked` is the only one that is a permanent, deliberate invalidation,
+ * so it must not look identical to `lost` or `transfer pending`, which are lifecycle states a tag
+ * recovers from. `unknown` is a byte the contract's enum does not define, and gets no colour that
+ * would imply a meaning for it.
+ */
+const STATUS_VARIANT: Record<TagStatusLabel, "neutral" | "warning" | "danger"> = {
+  active: "neutral",
+  lost: "warning",
+  "transfer pending": "warning",
+  deceased: "warning",
+  revoked: "danger",
+  unknown: "neutral",
+};
+
 function DiscoveryResult({
   result,
   ownSigners,
@@ -249,12 +285,13 @@ function DiscoveryResult({
   petName,
 }: {
   result: TagDiscoveryResult;
-  ownSigners: string[];
+  ownSigners: string[] | null;
   foreignCount: number;
   onImport: () => void;
   petName: string;
 }) {
   const { coverage, profile } = result;
+  const signersKnown = ownSigners !== null;
   return (
     <div className="space-y-4">
       {/* COVERAGE FIRST. Everything below is only as good as the window it was read from, so an
@@ -324,10 +361,12 @@ function DiscoveryResult({
                     ? "profile credential revoked on chain"
                     : "profile credential never anchored"}
               </Badge>
-              <Badge variant={result.statusLabel === "active" ? "neutral" : "warning"}>
+              <Badge variant={STATUS_VARIANT[result.statusLabel]}>
                 tag status: {result.statusLabel}
               </Badge>
-              {!isOwnSigner(result.mintedBy, ownSigners) && (
+              {/* Only ever claimed against a KNOWN signer set. Unknown gets no badge here - the
+                  notice below explains why no row on this page can be attributed. */}
+              {attributeSigner(result.mintedBy, ownSigners) === "other" && (
                 <Badge
                   variant="neutral"
                   title="The issuer that minted this tag is not one of this shop's signers, so this credential was created elsewhere."
@@ -386,12 +425,28 @@ function DiscoveryResult({
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">
             On-chain activity for this tag
           </p>
-          {foreignCount > 0 && (
+          {/* The CTA follows from the finding "someone else verified this pet", so it cannot be
+              offered when nothing was attributed. */}
+          {signersKnown && foreignCount > 0 && (
             <Button size="sm" onClick={onImport}>
               Ask owner to share {foreignCount === 1 ? "the record" : "records"}
             </Button>
           )}
         </div>
+        {/*
+          Not knowing our own signers is reported as not knowing - never folded into "a stranger did
+          this". The rows below are real logs either way; what is missing is only the attribution.
+        */}
+        {!signersKnown && (
+          <p
+            className="rounded-md border border-warning/60 bg-warning/5 p-3 text-xs text-onSurface"
+            data-testid="discovery-signers-unknown"
+          >
+            This portal could not read its own signer list, so it cannot tell this shop's own
+            verifications from anyone else's - every row below is left unattributed. The usual cause
+            is custody being locked; unlock it and scan again to see which records are this shop's.
+          </p>
+        )}
         {result.events.length === 0 ? (
           <p className="text-sm text-muted">
             {coverage.complete
@@ -409,7 +464,7 @@ function DiscoveryResult({
             ))}
           </div>
         )}
-        {foreignCount > 0 && (
+        {signersKnown && foreignCount > 0 && (
           <p className="text-xs text-muted">
             {foreignCount === 1
               ? "1 verification was recorded by someone other than this shop"
@@ -435,7 +490,7 @@ function EventRow({
   ownSigners,
 }: {
   event: DiscoveredEvent;
-  ownSigners: string[];
+  ownSigners: string[] | null;
 }) {
   // Every row came out of a log the RPC returned, so the hash is real and the link always resolves.
   const href = txExplorerHref({ txHash: event.txHash });
@@ -447,7 +502,9 @@ function EventRow({
         : event.kind === "verification"
           ? event.relayer
           : null;
-  const mine = isOwnSigner(actor, ownSigners);
+  // Tri-state: "another party" is a claim about a stranger and is only ever made against a signer
+  // set this portal actually read. Not knowing renders as not knowing.
+  const attribution = attributeSigner(actor, ownSigners);
 
   return (
     <div className="space-y-2 rounded-md border border-border p-3">
@@ -455,14 +512,20 @@ function EventRow({
         <span className="text-sm font-medium text-onSurface">{KIND_LABEL[event.kind]}</span>
         {actor && (
           <Badge
-            variant={mine ? "success" : "neutral"}
+            variant={attribution === "own" ? "success" : "neutral"}
             title={
-              mine
+              attribution === "own"
                 ? "Recorded by one of this shop's own signers."
-                : "Recorded by an address that is not one of this shop's signers — this shop was not involved."
+                : attribution === "other"
+                  ? "Recorded by an address that is not one of this shop's signers - this shop was not involved."
+                  : "This portal could not read its own signer list, so it cannot say whether this was recorded by this shop or by someone else."
             }
           >
-            {mine ? "this shop" : "another party"}
+            {attribution === "own"
+              ? "this shop"
+              : attribution === "other"
+                ? "another party"
+                : "unknown"}
           </Badge>
         )}
         <span className="text-xs text-muted">block {event.blockNumber.toString()}</span>
