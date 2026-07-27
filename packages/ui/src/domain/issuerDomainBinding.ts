@@ -72,10 +72,34 @@ export interface IssuerDomainBinding {
   txtName?: string;
   /** Free-form text the DOMAIN OWNER published. Present only when `state === "verified"`. */
   description?: string;
-  /** Unix seconds of the real observation. A cached result keeps its original timestamp. */
+  /** Unix seconds of the real DNS observation. A cached result keeps its original timestamp. */
   checkedAt?: number;
   /** Why the check could not run (`unavailable`), for an operator-facing tooltip. */
   detail?: string;
+
+  // ---- block anchoring ----
+  //
+  // DNS changes and clones get superseded, so a binding without a block anchor is not auditable.
+  /** The block every ON-CHAIN read here was pinned to. `null`/absent == the head could not be read. */
+  blockNumber?: number | null;
+  /** The block the issuer's domain CLAIM was written at — the anchor for "what did it claim at block N". */
+  claimUpdatedAtBlock?: number;
+  /** Unix seconds the claim was written at. */
+  claimUpdatedAt?: number;
+  /** Which authorized key wrote the claim. */
+  claimSetBy?: string;
+  /**
+   * THE ASYMMETRY. `"live"` means this DNS answer was observed just now; `"stored"` means it is a
+   * recorded past observation being replayed.
+   *
+   * Chain state is reproducible at any block with an archive node. DNS has NO history — there is no way
+   * to ask what a zone published at block N, so a DNS answer can only ever be recorded, never
+   * recomputed. A stored observation must never be shown as live, and a live one must never be shown as
+   * proving the past.
+   */
+  dnsObservation?: "live" | "stored";
+  /** Always false: no DNS answer can be historical. Present so the claim is explicit, not implied. */
+  dnsHistorical?: boolean;
 }
 
 /** True only for a `verified` binding. Use this rather than hand-rolling a truthiness check. */
@@ -174,6 +198,28 @@ export function bindingExplanation(b: IssuerDomainBinding): string {
     case "pending":
       return "Reading the on-chain domain claim and resolving its DNS records.";
   }
+}
+
+/**
+ * The provenance suffix for a binding line: which block the chain half came from, and that the DNS half
+ * was seen live and cannot be re-derived for any past block.
+ *
+ * Returns `null` when there is nothing honest to say (no anchor, or a state with no DNS half).
+ */
+export function bindingProvenanceLine(b: IssuerDomainBinding): string | null {
+  const parts: string[] = [];
+  if (typeof b.blockNumber === "number") parts.push(`chain read at block ${b.blockNumber}`);
+  const hasDnsHalf = b.state === "verified" || b.state === "notListed" || b.state === "couldNotCheck";
+  if (hasDnsHalf) {
+    // Say plainly which kind of observation this is. DNS has no history, so "live" is not a boast —
+    // it is the only thing a DNS answer can ever be.
+    parts.push(
+      b.dnsObservation === "stored"
+        ? "DNS as recorded earlier (DNS has no history, so it cannot be re-checked for the past)"
+        : "DNS checked just now (DNS has no history, so it cannot be re-checked for the past)",
+    );
+  }
+  return parts.length ? parts.join(" · ") : null;
 }
 
 /** The exact TXT record an issuer must publish, for operator-facing "how do I fix this?" copy. */

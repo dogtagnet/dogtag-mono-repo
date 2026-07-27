@@ -44,6 +44,14 @@ function Frag({ label, v, testid }: { label: string; v: unknown; testid?: string
   );
 }
 
+/** How `/v1/verify` chose the contract it checked against — see the `issuerResolution` block. */
+interface IssuerResolution {
+  source?: "operatorOverride" | "rootIssuer" | "documentClaim";
+  rootIssuer?: string | null;
+  documentDocumentStore?: string;
+  documentStoreDiffers?: boolean;
+}
+
 type Phase = "idle" | "starting" | "awaiting" | "verified" | "error" | "failed";
 
 /** A started verify session and the moment its export token lapses, held as ONE value so a session is
@@ -415,6 +423,7 @@ function PasteDocVerify({ health }: { health: Health | null }) {
   const verdict = result?.verdict as boolean | undefined;
   const identity = result?.issuerIdentity as IssuerIdentity | undefined;
   const binding = result?.issuerDomainBinding as IssuerDomainBinding | undefined;
+  const resolution = result?.issuerResolution as IssuerResolution | undefined;
 
   return (
     <Card className="p-6">
@@ -473,7 +482,7 @@ function PasteDocVerify({ health }: { health: Health | null }) {
             <Frag label="issuer whitelist" testid="pillar-whitelist" v={frag?.issuerWhitelisted} />
           </div>
 
-          <IssuerLine identity={identity} binding={binding} />
+          <IssuerLine identity={identity} binding={binding} resolution={resolution} />
           <pre className="receipt-mono mt-4 max-h-80 overflow-auto rounded-md border border-border bg-surface-muted p-3 text-xs text-onSurface">
             {JSON.stringify(result, null, 2)}
           </pre>
@@ -491,9 +500,11 @@ function PasteDocVerify({ health }: { health: Health | null }) {
 function IssuerLine({
   identity,
   binding,
+  resolution,
 }: {
   identity: IssuerIdentity | undefined;
   binding: IssuerDomainBinding | undefined;
+  resolution: IssuerResolution | undefined;
 }) {
   if (!identity && !binding) return null;
   const { name, authoritative } = displayIssuerName(identity);
@@ -515,7 +526,9 @@ function IssuerLine({
 
       {/* The badge: small, beside the issuer, an observation rather than a verdict. */}
       <div className="mt-1.5">
-        <DomainBindingBadge binding={binding} data-testid="issuer-domain-binding" />
+        {/* This is an audit surface, so the block anchor and the live-vs-recorded DNS label are shown:
+            "verified" without a "when" is not auditable against a world where DNS changes. */}
+        <DomainBindingBadge binding={binding} showProvenance data-testid="issuer-domain-binding" />
       </div>
 
       {/* Stated only when the document contradicts the chain. Factual, no alarm language: the
@@ -523,6 +536,15 @@ function IssuerLine({
       {identity?.documentNameDiffers && (
         <p data-testid="issuer-name-differs" className="mt-1.5 text-xs text-warning">
           The document names a different issuer: “{identity.documentName}”
+        </p>
+      )}
+      {/* The chain says a different contract issued this root than the document claims. Reported, never
+          silently followed — following the document's claim is how a swapped documentStore redirects a
+          check at a contract the attacker controls. */}
+      {resolution?.documentStoreDiffers && (
+        <p data-testid="issuer-store-differs" className="mt-1.5 text-xs text-warning">
+          The document names contract {resolution.documentDocumentStore}, but the chain records{" "}
+          {resolution.rootIssuer} as the issuer of this credential
         </p>
       )}
       {identity?.documentDomainDiffers && (
