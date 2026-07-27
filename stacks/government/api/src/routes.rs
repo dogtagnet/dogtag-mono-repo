@@ -525,8 +525,10 @@ async fn issue(
 struct VerifyBody {
     /// The wrapped credential document to verify (as produced by any DogTag issuer).
     wrapped_doc: WrappedDoc,
-    /// Override the DogTagIssuer clone to check `isValid` against. Defaults to the doc's
-    /// `issuer.documentStore`.
+    /// OPTIONAL *expected* DogTagIssuer clone. It can only TIGHTEN: the clone every read is made
+    /// against is always the one the FACTORY names for this root, so this asserts an expectation
+    /// rather than selecting a contract. This route is unauthenticated, so a caller able to pick the
+    /// contract that answers for a credential would reopen the forgery this pillar exists to close.
     #[serde(default)]
     issuer_addr: Option<String>,
     /// OPTIONAL *expected* issuing signer. The issuer-whitelist pillar no longer depends on this: the
@@ -623,7 +625,18 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     let rt_key = app::record_type_key(&record_type);
     let (onchain_valid, whitelist_pillar, onchain_name, issuer_domain_json) = tokio::join!(
         // on-chain status — DogTagIssuer.isValid(root) over ROAX (gasless read).
-        st.chain.is_valid(&issuer_addr, &claimed_root, at_block),
+        //
+        // Read against the FACTORY-RESOLVED clone whenever the factory has a record of this root, and
+        // only fall back to `issuer_addr` (which honours an operator override, then the document's own
+        // claim) when it does not. Without that preference an `issuer_addr` override SELECTS which
+        // contract answers the issuance pillar, so a hostile contract vouches for the very credential
+        // that names it — the same "asking the suspect for its own references" failure the issuer
+        // pillar closes, reached through a different door.
+        st.chain.is_valid(
+            resolved_issuer.as_deref().unwrap_or(&issuer_addr),
+            &claimed_root,
+            at_block,
+        ),
         // issuer identity — MANDATORY, and SELF-RESOLVING.
         //
         // This used to run only when an operator typed a signer in, and to default to a pass when they
@@ -642,16 +655,30 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         //   Some(false) - resolved, but not whitelisted (or not the expected signer): a real failure
         //   None        - unresolvable (this clone never issued this root): INDETERMINATE, never a pass
         async {
-            let signer = st
-                .chain
-                .issued_by(&issuer_addr, &claimed_root, at_block)
-                .await?;
+            // EVERY read here is made against the FACTORY-RESOLVED clone, never `issuer_addr`.
+            // `issuer_addr` honours an operator override and falls back to the document's own
+            // `documentStore`, so using it would let the caller choose which contract answers the
+            // question about their own credential - the "asking the suspect for its references"
+            // failure this pillar exists to close. No factory record => indeterminate, never a pass.
+            let Some(clone) = resolved_issuer.clone() else {
+                return Ok::<_, crate::chain::ChainError>((None, None));
+            };
+            let signer = st.chain.issued_by(&clone, &claimed_root, at_block).await?;
             let Some(signer) = signer else {
                 return Ok::<_, crate::chain::ChainError>((None, None));
             };
+            // Ask about the record type the CLONE says it issues, not the one the envelope claims:
+            // otherwise a credential relabelled across record types is checked against the wrong
+            // whitelist key and a signer authorised for one type appears authorised for another.
+            let Some(chain_rt_key) = st.chain.issuer_record_type(&clone, at_block).await? else {
+                return Ok::<_, crate::chain::ChainError>((Some(signer), None));
+            };
+            if !chain_rt_key.eq_ignore_ascii_case(&rt_key) {
+                return Ok::<_, crate::chain::ChainError>((Some(signer), Some(false)));
+            }
             let whitelisted = st
                 .chain
-                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, &signer, at_block)
+                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &chain_rt_key, &signer, at_block)
                 .await?;
             // An explicitly expected signer only ever makes the pillar STRICTER - it can tighten, never
             // enable. Supplying one is now an assertion, not the thing that switches the check on.
@@ -700,7 +727,7 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         Err(e) => {
             return err(
                 StatusCode::BAD_GATEWAY,
-                &format!("on-chain isValid read failed: {e}"),
+                &format!("on-chain rootIssuer read failed: {e}"),
             )
         }
     };

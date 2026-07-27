@@ -131,6 +131,11 @@ async fn issue_root(chain: &MemChain, root: &str) {
         &government_api::app::record_type_key("TRAVEL_CLEARANCE"),
         &signer,
     );
+    // Declare the clone's own immutable `recordType()`, as the factory's `createIssuer` does on a real
+    // clone. The mandatory issuer-whitelist pillar asks the RESOLVED clone which record type it issues
+    // rather than trusting the envelope, so an undeclared clone leaves that pillar indeterminate — and
+    // an indeterminate pillar is never a pass.
+    chain.set_record_type(CLONE, &government_api::app::record_type_key("TRAVEL_CLEARANCE"));
     chain.issue(CLONE, root).await.expect("emulated issue");
 }
 
@@ -824,6 +829,14 @@ impl ChainClient for PinRecordingChain {
         // height than the block printed beside the verdict.
         self.record("issuedBy", at_block);
         self.inner.issued_by(issuer_addr, root, at_block).await
+    }
+    async fn issuer_record_type(
+        &self,
+        issuer_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        self.record("recordType", at_block);
+        self.inner.issuer_record_type(issuer_addr, at_block).await
     }
     async fn is_whitelisted_for(
         &self,

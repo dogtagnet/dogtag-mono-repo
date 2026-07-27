@@ -4,7 +4,7 @@
 // to the operator-gated vet-api handler it replaces, using the SAME reads the mobile apps do.
 import { TypeTag, wrapDocument, type IssuerMeta, type WrappedDoc } from "@dogtag/standard";
 import { describe, expect, it } from "vitest";
-import { DEPLOYED_ADDRESSES } from "../src/wallet/contracts";
+import { DEPLOYED_ADDRESSES, recordTypeKey } from "../src/wallet/contracts";
 import {
   verifyCredentialOnchain,
   type IssuerChainReader,
@@ -44,7 +44,14 @@ function tamperIntegrity(doc: WrappedDoc): WrappedDoc {
   return { ...doc, data };
 }
 
+const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+const VACCINATION_KEY = recordTypeKey("VACCINATION");
+
 interface ReaderCfg {
+  /** `rootIssuer(root)`; the zero address models a root no factory clone ever issued. */
+  rootIssuer?: string;
+  /** The RESOLVED clone's own `recordType()`; the zero word models an uninitialized contract. */
+  recordType?: string;
   issuedAt?: bigint;
   isValid?: boolean;
   isRevoked?: boolean;
@@ -53,9 +60,14 @@ interface ReaderCfg {
   isWhitelistedFor?: boolean;
 }
 
-/** Defaults describe a GENUINE credential: this clone issued it, and that signer is whitelisted. */
+/**
+ * Defaults describe a GENUINE credential: the factory names the clone the document claims, that clone
+ * declares the document's record type, it issued the root, and that signer is whitelisted.
+ */
 function fakeReader(cfg: ReaderCfg) {
   const calls = {
+    rootIssuer: [] as Array<[string, string]>,
+    recordType: [] as string[],
     issuedAt: [] as Array<[string, string]>,
     isValid: [] as Array<[string, string]>,
     isRevoked: [] as Array<[string, string]>,
@@ -63,6 +75,14 @@ function fakeReader(cfg: ReaderCfg) {
     isWhitelistedFor: [] as Array<[string, string, string]>,
   };
   const reader: IssuerChainReader = {
+    async rootIssuer(factory, root) {
+      calls.rootIssuer.push([factory, root]);
+      return cfg.rootIssuer ?? ISSUER.documentStore;
+    },
+    async recordType(addr) {
+      calls.recordType.push(addr);
+      return cfg.recordType ?? VACCINATION_KEY;
+    },
     async issuedAt(addr, root) {
       calls.issuedAt.push([addr, root]);
       return cfg.issuedAt ?? 0n;
@@ -79,8 +99,8 @@ function fakeReader(cfg: ReaderCfg) {
       calls.issuedBy.push([addr, root]);
       return cfg.issuedBy ?? SIGNER;
     },
-    async isWhitelistedFor(registry, recordType, signer) {
-      calls.isWhitelistedFor.push([registry, recordType, signer]);
+    async isWhitelistedFor(registry, key, signer) {
+      calls.isWhitelistedFor.push([registry, key, signer]);
       return cfg.isWhitelistedFor ?? true;
     },
   };
@@ -157,10 +177,10 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.verdict).toBe(false); // …but a non-whitelisted issuer signer fails the verdict.
     expect(r.signerAddr).toBe(SIGNER);
     expect(r.fragments.issuerWhitelisted).toBe(false);
-    // whitelist read uses the deployed IssuerRegistry, the human record type, and the CHAIN-resolved
-    // signer — never one supplied by the caller.
+    // whitelist read uses the deployed IssuerRegistry, the record-type key the CHAIN reported, and
+    // the CHAIN-resolved signer — never anything supplied by the caller or the document.
     expect(calls.isWhitelistedFor).toEqual([
-      [DEPLOYED_ADDRESSES.IssuerRegistry, "VACCINATION", SIGNER],
+      [DEPLOYED_ADDRESSES.IssuerRegistry, VACCINATION_KEY, SIGNER],
     ]);
   });
 
@@ -182,7 +202,7 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     const { reader, calls } = fakeReader({
       issuedAt: 1_699_000_000n,
       isValid: true,
-      issuedBy: "0x0000000000000000000000000000000000000000",
+      issuedBy: ZERO_ADDR,
     });
     const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
 
@@ -190,6 +210,81 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.verdict).toBe(false); // …and therefore NOT a pass.
     expect(r.signerAddr).toBeNull();
     // Never ask the registry whether the zero address is whitelisted: that answers the wrong question.
+    expect(calls.isWhitelistedFor).toEqual([]);
+  });
+
+  // The forgery this pillar exists for: point `issuer.documentStore` at a contract you control that
+  // answers `isValid = true` and names a genuinely whitelisted signer. Every question the verifier
+  // knows how to ask is then answered by the suspect. What refuses it is refusing to take the
+  // document's word for WHICH contract to ask.
+  it("a documentStore swap is refused: reads go to the clone the FACTORY names", async () => {
+    const doc = validDoc();
+    const hostile = "0x00000000000000000000000000000000deadbeef";
+    const forged = {
+      ...doc,
+      issuer: { ...doc.issuer, documentStore: hostile, name: "Ministry of Health" },
+    };
+    // The factory still names the REAL clone — the hostile contract can never enter that index.
+    const { reader, calls } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
+    const r = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(forged as WrappedDoc),
+      reader,
+      now: NOW,
+    });
+
+    expect(r.fragments.issuerWhitelisted).toBe(false);
+    expect(r.verdict).toBe(false);
+    // Every read went to the resolved clone, and the hostile contract was never consulted.
+    expect(r.issuerAddr).toBe(ISSUER.documentStore);
+    expect(calls.isValid[0]?.[0]).toBe(ISSUER.documentStore);
+    expect(calls.isWhitelistedFor).toEqual([]);
+  });
+
+  it("a root no factory clone ever issued is indeterminate, and no reads are made", async () => {
+    const doc = validDoc();
+    const { reader, calls } = fakeReader({ rootIssuer: ZERO_ADDR, isValid: true });
+    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+
+    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(r.fragments.onchain).toBe(false);
+    expect(r.status).toBe("not_issued");
+    expect(r.verdict).toBe(false);
+    expect(calls.isValid).toEqual([]);
+    expect(calls.issuedBy).toEqual([]);
+  });
+
+  it("a record-type relabel is refused by the resolved clone's own recordType()", async () => {
+    // `issuer.recordType` picks WHICH whitelist question gets asked and lives in the same
+    // root-uncovered block as documentStore, so an authority holding two record types could otherwise
+    // carry a credential relabelled from one to the other.
+    const doc = validDoc();
+    const relabelled = {
+      ...doc,
+      issuer: { ...doc.issuer, recordType: "TRAVEL_CLEARANCE" },
+    };
+    const { reader, calls } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
+    const r = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(relabelled as WrappedDoc),
+      reader,
+      now: NOW,
+    });
+
+    expect(r.fragments.issuerWhitelisted).toBe(false);
+    expect(r.verdict).toBe(false);
+    expect(calls.isWhitelistedFor).toEqual([]);
+  });
+
+  it("a clone reporting no record type leaves the pillar indeterminate, not passed", async () => {
+    const doc = validDoc();
+    const { reader, calls } = fakeReader({
+      issuedAt: 1_699_000_000n,
+      isValid: true,
+      recordType: `0x${"0".repeat(64)}`,
+    });
+    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+
+    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(r.verdict).toBe(false);
     expect(calls.isWhitelistedFor).toEqual([]);
   });
 
@@ -212,12 +307,15 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.signerAddr).toBe(SIGNER); // reported value stays the chain's answer
   });
 
-  it("reads the CLAIMED root + issuer documentStore, and recomputedRoot matches on a valid doc", async () => {
+  it("reads the CLAIMED root + the resolved clone, and recomputedRoot matches on a valid doc", async () => {
     const doc = validDoc();
     const { reader, calls } = fakeReader({ issuedAt: 1n, isValid: true });
     const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
 
     const claimedRoot = doc.signature.merkleRoot;
+    expect(calls.rootIssuer).toEqual([
+      [DEPLOYED_ADDRESSES.DogTagIssuerFactory, claimedRoot],
+    ]);
     for (const c of [calls.issuedAt[0], calls.isValid[0], calls.isRevoked[0]]) {
       expect(c).toEqual([ISSUER.documentStore, claimedRoot]);
     }
@@ -226,24 +324,65 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.recomputedRoot).toBe(claimedRoot);
   });
 
-  it("honors an explicit issuerAddr override for the chain reads", async () => {
+  it("an explicit issuerAddr only tightens - it never selects which contract answers", async () => {
+    // Were the override allowed to pick the read target, the whole forgery would just move to this
+    // field: name an obliging contract and the factory anchor is bypassed without touching
+    // `documentStore`. So it asserts an expectation, and a disagreeing one fails the pillar.
     const doc = validDoc();
-    const override = "0x000000000000000000000000000000000000beef";
+    const hostile = "0x000000000000000000000000000000000000beef";
     const { reader, calls } = fakeReader({ issuedAt: 1n, isValid: true });
     const r = await verifyCredentialOnchain({
       wrappedDoc: asRecord(doc),
-      issuerAddr: override,
+      issuerAddr: hostile,
       reader,
       now: NOW,
     });
 
-    expect(r.issuerAddr).toBe(override);
-    expect(calls.isValid[0]?.[0]).toBe(override);
+    expect(calls.isValid[0]?.[0]).toBe(ISSUER.documentStore); // the FACTORY's clone, not the override
+    expect(r.issuerAddr).toBe(ISSUER.documentStore);
+    expect(r.fragments.issuerWhitelisted).toBe(false);
+    expect(r.verdict).toBe(false);
+
+    // An override that AGREES with the factory leaves a genuine credential passing.
+    const agreeing = fakeReader({ issuedAt: 1n, isValid: true });
+    const ok = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      issuerAddr: ISSUER.documentStore.toUpperCase().replace("0X", "0x"),
+      reader: agreeing.reader,
+      now: NOW,
+    });
+    expect(ok.fragments.issuerWhitelisted).toBe(true);
+    expect(ok.verdict).toBe(true);
+  });
+
+  it("an override cannot resurrect a root no factory clone ever issued", async () => {
+    // The sharpest shape of the same bypass: with nothing in the factory index there is no clone at
+    // all, so an override naming an obliging contract must not become one.
+    const doc = validDoc();
+    const { reader, calls } = fakeReader({ rootIssuer: ZERO_ADDR, isValid: true, issuedAt: 1n });
+    const r = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      issuerAddr: "0x000000000000000000000000000000000000beef",
+      reader,
+      now: NOW,
+    });
+
+    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(r.verdict).toBe(false);
+    expect(calls.isValid).toEqual([]);
+    expect(calls.issuedBy).toEqual([]);
+    expect(calls.isWhitelistedFor).toEqual([]);
   });
 
   it("fails closed: an RPC read error rejects rather than resolving as valid", async () => {
     const doc = validDoc();
     const reader: IssuerChainReader = {
+      async rootIssuer() {
+        return ISSUER.documentStore;
+      },
+      async recordType() {
+        return VACCINATION_KEY;
+      },
       async issuedAt() {
         return 1n;
       },

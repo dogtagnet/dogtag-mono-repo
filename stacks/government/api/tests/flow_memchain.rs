@@ -16,10 +16,15 @@ use tower::ServiceExt;
 const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
 const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const API_TOKEN: &str = "dogtag-gov-demo-token";
+const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
+/// A LAN IP, not `localhost`: a loopback name is one of the bases issuance REFUSES to stamp into a
+/// credential (no phone can resolve it), so a localhost deployment would leave `statusBaseUrl` unset
+/// and the receipt-QR assertions below would be exercising the degradation branch by accident.
+const DEPLOYMENT_URL: &str = "http://192.168.1.20:44832";
 
 fn demo_state() -> (AppState, MemChain) {
     let cfg = Config {
-        deployment_url: "http://localhost:44832".into(),
+        deployment_url: DEPLOYMENT_URL.into(),
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
@@ -39,6 +44,10 @@ fn demo_state() -> (AppState, MemChain) {
     // verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed`, which fails the verdict
     // — correctly, but it would make this suite about provenance rather than about the flow.
     chain.set_factory_clone("0x00000000000000000000000000000000000000fa", ISSUER_ADDR, true);
+    // Declare the clone's own immutable `recordType()`, mirroring what the factory's `createIssuer`
+    // fixes on a real clone. The issuer pillar asks the RESOLVED clone which record type it issues, so
+    // an undeclared clone leaves that pillar indeterminate for the whole harness.
+    chain.set_record_type(ISSUER_ADDR, &government_api::app::record_type_key(TRAVEL_CLEARANCE));
     // whitelist the demo signer for TRAVEL_CLEARANCE so the issuer-identity pillar can be exercised.
     if let Some(signer) = chain.signer_address() {
         chain.whitelist(
@@ -139,6 +148,13 @@ impl ChainClient for LiveLikeChain {
         at_block: Option<u64>,
     ) -> Result<Option<String>, government_api::chain::ChainError> {
         self.0.issued_by(issuer_addr, root, at_block).await
+    }
+    async fn issuer_record_type(
+        &self,
+        issuer_addr: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        self.0.issuer_record_type(issuer_addr, at_block).await
     }
     async fn is_whitelisted_for(
         &self,
@@ -596,13 +612,22 @@ async fn verify_unanchored_root_is_invalid() {
 /// never ran.
 ///
 /// The sharp version of that attack - the one this pillar exists for - is the `documentStore` swap:
-/// point it at a contract the attacker controls which DOES answer `isValid(root) == true`. Integrity
-/// passes (data untouched) and the on-chain read passes (the attacker's clone says yes), so before
-/// this change nothing was left to object.
+/// point it at a contract the attacker controls which DOES answer `isValid(root) == true`, AND names a
+/// genuinely whitelisted signer as the issuer. Integrity passes (data untouched), the on-chain read
+/// passes (the attacker's contract says yes), and asking that same contract who issued the root yields
+/// an address the real registry really does authorize - so every question the verifier knew how to ask
+/// was being answered by the suspect.
 ///
-/// The clone here is therefore genuinely anchored, and `onchain` is asserted TRUE - otherwise the test
-/// would pass for the wrong reason (a clone that simply has no such root fails the issuance pillar and
-/// never exercises this one at all).
+/// What refuses it is refusing to take the document's word for WHICH contract to ask: the clone is
+/// resolved from the factory's write-once `rootIssuer[R]` index, which only a factory-deployed clone
+/// can ever write to. The hostile contract is therefore absent from it, and the envelope naming a
+/// contract other than the one the chain says issued the root is itself the definite failure.
+///
+/// The hostile contract's own answers are asserted first, so this cannot pass for an unrelated reason
+/// (a contract that simply fails `isValid` would be refused by the issuance pillar and never reach
+/// this one). Both attack shapes are covered: a genuine root with a swapped `documentStore` (resolves
+/// to the REAL clone → definite false) and a root no clone ever issued (resolves to nothing →
+/// indeterminate, which is equally not a pass).
 ///
 /// SCOPE: relabelling `name`/`domain` ALONE still verifies, and deliberately so. This pillar asks the
 /// chain who issued the root; it never reads those two fields. Binding them to the root-covered
@@ -633,35 +658,102 @@ async fn a_forged_issuer_clone_that_answers_isvalid_is_still_refused() {
     .await;
     assert_eq!(genuine["verdict"], true, "genuine: {genuine}");
     assert_eq!(genuine["fragments"]["issuerWhitelisted"], true);
+    let honest_signer = genuine["signerAddr"].as_str().unwrap().to_string();
 
-    // The attacker anchors the SAME root on their OWN clone, from their OWN signer. `.clone()` shares
-    // the emulated chain state; `with_signer` changes who `msg.sender` is, so the forged clone records
-    // `issuedBy[root] = ATTACKER` exactly as a real deployment would.
+    // The attacker deploys a contract of their own that is NOT a factory clone, and makes it answer
+    // every question favourably: valid, anchored, the right record type, and issued by the authority's
+    // OWN genuinely-whitelisted signer.
     const ATTACKER_CLONE: &str = "0x00000000000000000000000000000000deadbeef";
-    const ATTACKER_SIGNER: &str = "0x00000000000000000000000000000000000000ff";
-    chain
-        .clone()
-        .with_signer(ATTACKER_SIGNER)
-        .issue(ATTACKER_CLONE, &root)
-        .await
-        .expect("attacker anchors the stolen root on their own clone");
+    chain.with_hostile_clone(
+        ATTACKER_CLONE,
+        true,
+        1_782_864_012,
+        &honest_signer,
+        &government_api::app::record_type_key(TRAVEL_CLEARANCE),
+    );
+    // The hostile contract really does answer the way the attack requires - asserted directly, so the
+    // refusal below cannot be credited to a fixture that never posed the attack.
+    assert!(
+        chain.is_valid(ATTACKER_CLONE, &root, None).await.unwrap(),
+        "the hostile contract must answer isValid=true - that is the attack"
+    );
+    assert_eq!(
+        chain.issued_by(ATTACKER_CLONE, &root, None).await.unwrap(),
+        Some(honest_signer.clone()),
+        "the hostile contract names a genuinely whitelisted signer"
+    );
+    assert!(
+        chain
+            .is_whitelisted_for(
+                REGISTRY_ADDR,
+                &government_api::app::record_type_key(TRAVEL_CLEARANCE),
+                &honest_signer,
+                None
+            )
+            .await
+            .unwrap(),
+        "and that signer really IS whitelisted, so the registry would answer true"
+    );
+    // It can never appear in the factory index: only a clone may call `registerRoot`, and the genuine
+    // clone already claimed this root write-once.
+    assert_eq!(
+        chain.root_issuer(FACTORY, &root, None).await.unwrap().as_deref(),
+        Some(ISSUER_ADDR),
+        "the factory still names the REAL issuing clone"
+    );
+    assert!(
+        chain
+            .clone()
+            .with_signer("0x00000000000000000000000000000000000000ff")
+            .issue(ATTACKER_CLONE, &root)
+            .await
+            .is_err(),
+        "re-anchoring a claimed root must revert (`root taken`), as registerRoot does on chain"
+    );
 
     let mut forged = issued["wrappedDoc"].clone();
     forged["issuer"]["name"] = json!("Ministry of Health of Singapore");
     forged["issuer"]["domain"] = json!("moh.gov.sg");
     forged["issuer"]["documentStore"] = json!(ATTACKER_CLONE);
-    let (status, v) = call(&state, "POST", "/v1/verify", json!({ "wrapped_doc": forged })).await;
+    let (status, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": forged }),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK, "verify: {v}");
     assert_eq!(v["fragments"]["integrity"], true, "data is untouched: {v}");
+    // Every read was made against the clone the FACTORY named, so the hostile contract's answers were
+    // never consulted at all.
+    assert_eq!(v["issuerAddr"], json!(ISSUER_ADDR), "{v}");
+    // The pillar therefore reports the REAL signer honestly - it passes, because the signer it found
+    // genuinely is authorised. The forgery is caught one step earlier, at resolution: the envelope
+    // names a different contract than the one the chain says issued this root.
+    assert_eq!(v["fragments"]["issuerWhitelisted"], true, "{v}");
+    assert_eq!(v["issuerResolution"]["documentStoreDiffers"], true, "{v}");
     assert_eq!(
-        v["fragments"]["onchain"], true,
-        "the attacker's clone DOES answer isValid - this is the whole point: {v}"
+        v["verdict"], false,
+        "forged issuer clone must NOT verify: {v}"
     );
-    // The signer resolves, and is not one the registry authorizes for this record type.
-    assert_eq!(v["signerAddr"], json!(ATTACKER_SIGNER), "{v}");
-    assert_eq!(v["fragments"]["issuerWhitelisted"], false, "{v}");
-    assert_eq!(v["verdict"], false, "forged issuer clone must NOT verify: {v}");
+
+    // The other shape: a root NO clone ever issued, pointed at the same obliging contract. Nothing
+    // resolves, so the pillar is indeterminate — which is equally never a pass.
+    let mut fabricated = forged.clone();
+    fabricated["signature"]["merkleRoot"] = json!(format!("0x{}", "ab".repeat(32)));
+    let (_, v2) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": fabricated }),
+    )
+    .await;
+    assert!(
+        v2["fragments"]["issuerWhitelisted"].is_null(),
+        "unclaimed root -> indeterminate: {v2}"
+    );
+    assert_eq!(v2["verdict"], false, "{v2}");
 }
 
 /// The boundary of this pillar, and the moment the gap beside it CLOSED.
@@ -708,6 +800,141 @@ async fn a_name_only_relabel_is_out_of_this_pillars_reach() {
     assert_eq!(v["verdict"], false, "{v}");
 }
 
+/// The same forgery through the OTHER field. `POST /v1/verify` is unauthenticated, so `issuer_addr`
+/// is attacker-supplied, not operator-supplied: if it were allowed to SELECT which contract answers,
+/// the factory anchor would be bypassed without touching `documentStore` at all. It may only
+/// TIGHTEN - exactly like `signer_addr`.
+///
+/// Both shapes are covered: a genuine root with a disagreeing override (resolves to the real clone →
+/// definite false), and a fabricated root that no clone ever issued (nothing resolves, and no
+/// caller-named address may stand in → indeterminate). Neither is a pass.
+#[tokio::test]
+async fn an_issuer_addr_override_can_only_tighten_never_select_the_contract() {
+    let (state, chain) = demo_state();
+    const HOSTILE: &str = "0x00000000000000000000000000000000deadbe01";
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "16", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    let honest_signer = chain.signer_address().unwrap();
+
+    // The obliging contract: valid, right record type, issued by a genuinely whitelisted signer.
+    chain.with_hostile_clone(
+        HOSTILE,
+        true,
+        1_782_864_012,
+        &honest_signer,
+        &government_api::app::record_type_key(TRAVEL_CLEARANCE),
+    );
+
+    // (a) genuine root, override pointing elsewhere -> the reads still go to the factory's clone.
+    let (_, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": issued["wrappedDoc"].clone(), "issuer_addr": HOSTILE }),
+    )
+    .await;
+    // The override is REPORTED (labelled `operatorOverride`) but never gets to answer: both
+    // verdict-deciding reads went to the clone the FACTORY named, so the obliging contract's
+    // attacker-chosen answers are not what produced this result.
+    assert_eq!(v["issuerResolution"]["source"], "operatorOverride", "{v}");
+    assert_eq!(v["fragments"]["issuerWhitelisted"], true, "{v}");
+    assert_eq!(v["fragments"]["onchain"], true, "{v}");
+    // …and because the credential really is genuine, it still verifies. An override must not be able
+    // to CONDEMN a good credential either - only to fail to rescue a bad one.
+    assert_eq!(v["verdict"], true, "{v}");
+
+    // (b) fabricated root + the same override: nothing in the factory index, so nothing resolves.
+    let mut fabricated = issued["wrappedDoc"].clone();
+    fabricated["signature"]["merkleRoot"] = json!(format!("0x{}", "cd".repeat(32)));
+    let (_, v2) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": fabricated, "issuer_addr": HOSTILE }),
+    )
+    .await;
+    // THE point: the pillar refuses to resolve. An override cannot stand in for a clone the factory
+    // never recorded, so the answer is INDETERMINATE - never a pass, and never borrowed from whatever
+    // contract the caller nominated.
+    assert!(
+        v2["fragments"]["issuerWhitelisted"].is_null(),
+        "an override must not stand in for a clone that never existed: {v2}"
+    );
+    // With no factory record there is no resolved clone, so the issuance read falls back to the
+    // caller-nominated address and the obliging contract answers `true`. That is reported honestly
+    // rather than hidden - `rootIssuerRead: noRecord` and `issuerProvenance: unknown` say the
+    // provenance was never established, so nothing here claims that contract was vouched for.
+    assert_eq!(v2["issuerResolution"]["rootIssuerRead"], "noRecord", "{v2}");
+    assert_eq!(v2["fragments"]["issuerProvenance"], "unknown", "{v2}");
+    // And the credential is refused regardless: a fabricated root cannot survive integrity.
+    assert_eq!(v2["fragments"]["integrity"], false, "{v2}");
+    assert_eq!(v2["verdict"], false, "{v2}");
+
+    // An override that AGREES with the factory leaves a genuine credential passing.
+    let (_, ok) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": issued["wrappedDoc"].clone(), "issuer_addr": ISSUER_ADDR }),
+    )
+    .await;
+    assert_eq!(ok["fragments"]["issuerWhitelisted"], true, "{ok}");
+    assert_eq!(ok["verdict"], true, "{ok}");
+}
+
+/// Relabelling the RECORD TYPE is inside this pillar's reach, unlike `name`/`domain`.
+///
+/// `issuer.recordType` picks which whitelist question gets asked, and it sits in the same
+/// root-uncovered block as `documentStore`. An authority whitelisted for two record types - the demo
+/// government authority is whitelisted for both - could otherwise have a credential relabelled from
+/// one to the other and still pass, with the verify response echoing the forged type back. So the key
+/// is taken from the RESOLVED clone's own immutable `recordType()`, and a document claiming a
+/// different one is a definite failure rather than a differently-phrased question.
+#[tokio::test]
+async fn a_record_type_relabel_is_refused_by_the_clones_own_record_type() {
+    let (state, chain) = demo_state();
+    // The signer is whitelisted for BOTH types, so the forged label names a capability this authority
+    // genuinely holds - the mismatch is what refuses it, not a missing grant.
+    let signer = chain.signer_address().unwrap();
+    chain.whitelist(
+        REGISTRY_ADDR,
+        &government_api::app::record_type_key(government_api::app::EU_HEALTH_CERT),
+        &signer,
+    );
+
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "15", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+
+    let mut relabelled = issued["wrappedDoc"].clone();
+    relabelled["issuer"]["recordType"] = json!(government_api::app::EU_HEALTH_CERT);
+    let (_, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": relabelled }),
+    )
+    .await;
+
+    assert_eq!(v["fragments"]["integrity"], true, "data untouched: {v}");
+    assert_eq!(v["fragments"]["issuerWhitelisted"], false, "{v}");
+    assert_eq!(
+        v["verdict"], false,
+        "cross-type relabel must not verify: {v}"
+    );
+}
+
 /// A signer that DID issue the root but is not whitelisted for that record type is a resolved `false`,
 /// not an indeterminate — and equally must not pass. (Whitelists can be revoked after issuance; the
 /// authority is the registry now, not at mint time.)
@@ -718,21 +945,28 @@ async fn a_resolved_but_unwhitelisted_issuer_fails_the_verdict() {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        factory_addr: FACTORY.into(),
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
         issuer_name: "DogTag Government Authority".into(),
         issuer_domain: "gov.example".into(),
-        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
         issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
         dns_doh_endpoint: String::new(),
         demo: true,
         api_token: Some(API_TOKEN.into()),
     };
-    // Identical to `demo_state()` except the signer is NEVER whitelisted for TRAVEL_CLEARANCE.
+    // Identical to `demo_state()` except the signer is NEVER whitelisted for TRAVEL_CLEARANCE. The
+    // clone still declares its record type, so the pillar resolves all the way to the registry and the
+    // `false` below is the whitelist answering, not an unresolved read.
+    let chain = MemChain::new();
+    chain.set_record_type(
+        ISSUER_ADDR,
+        &government_api::app::record_type_key(TRAVEL_CLEARANCE),
+    );
     let state = AppState {
         store: Arc::new(MemStore::new()) as Arc<dyn Store>,
-        chain: Arc::new(MemChain::new()),
+        chain: Arc::new(chain),
         cfg: Arc::new(cfg),
         feed: Arc::new(government_api::oversight::DisabledFeed),
         dns: std::sync::Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
@@ -784,8 +1018,11 @@ async fn issuance_stamps_a_reachable_status_base_url_not_the_did_web_domain() {
     let base = doc["protocol"]["statusBaseUrl"]
         .as_str()
         .unwrap_or_else(|| panic!("statusBaseUrl stamped: {doc}"));
-    assert_eq!(base, "http://localhost:44832", "== DEPLOYMENT_URL: {doc}");
-    assert!(!base.ends_with('/'), "no trailing slash → no `//r/`: {base}");
+    assert_eq!(base, DEPLOYMENT_URL, "== DEPLOYMENT_URL: {doc}");
+    assert!(
+        !base.ends_with('/'),
+        "no trailing slash → no `//r/`: {base}"
+    );
 
     // The identity field is untouched and is NOT the QR base. Corrupting a root-covered did:web with a
     // rotating deployment hostname was the tempting non-fix; this asserts we did not take it.
