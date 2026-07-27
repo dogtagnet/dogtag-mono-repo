@@ -20,7 +20,6 @@ import {
   DEMO_ISSUER_APPLICATION_VET,
   type DemoIssuerApplication,
   DomainBindingBadge,
-  bindingLine,
   type DnsConfirmationRequired,
   type IssuerApplicationListItem,
   type IssuerApplicationStatus,
@@ -29,6 +28,7 @@ import {
 import { Check, ListChecks, Plus, Slash, Sparkles, X } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
+import { DnsConfirmDialog, type DnsPrompt } from "../components/DnsConfirmDialog";
 import { env } from "../lib/env";
 import { shortAddr } from "../lib/format";
 
@@ -73,9 +73,7 @@ export function IssuerApplications() {
   }, [load]);
 
   /** A pending confirmation: the live DNS observation was not verified, and the admin must decide. */
-  const [dnsPrompt, setDnsPrompt] = useState<(DnsConfirmationRequired & { applicationId: string }) | null>(
-    null,
-  );
+  const [dnsPrompt, setDnsPrompt] = useState<DnsPrompt | null>(null);
 
   /**
    * Approve. The DNS legitimacy check is ADVISORY: it never blocks, but a non-verified observation is
@@ -445,65 +443,4 @@ function observationPhrase(state: string): string {
   if (state === "couldNotCheck") return "DNS could not be reached";
   if (state === "verified") return "address listed in DNS";
   return state;
-}
-
-/**
- * The deliberate confirmation. The DNS check does not block onboarding — an organisation is routinely
- * KYC-approved days before its DNS team publishes anything — but proceeding is a DECISION, so it is an
- * explicit act rather than a warning that can be clicked past, and it is recorded.
- *
- * The copy states what was looked at and what was found, and stops there. No verdict about the
- * organisation, because none was established.
- */
-function DnsConfirmDialog({
-  prompt,
-  busy,
-  onCancel,
-  onProceed,
-}: {
-  prompt: (DnsConfirmationRequired & { applicationId: string }) | null;
-  busy: boolean;
-  onCancel: () => void;
-  onProceed: () => void;
-}) {
-  if (!prompt) return null;
-  const observation = bindingLine({
-    state: prompt.dnsState as IssuerDomainBindingState,
-    domain: prompt.domain,
-  });
-
-  return (
-    <Dialog open onOpenChange={(open) => !open && onCancel()}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Domain record not confirmed</DialogTitle>
-          <DialogDescription>
-            You can whitelist this issuer anyway. The outcome below is recorded either way.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div data-testid="dns-confirm-observation" className="rounded-md border border-border bg-surface-muted p-3">
-          <p className="text-sm text-onSurface">{observation}</p>
-          <p className="mt-2 text-xs text-muted">
-            For the record to be found, <code className="font-mono">{prompt.domain}</code> must publish a
-            TXT record with the value{" "}
-            <code className="font-mono break-all">{prompt.expectedTxt}</code>.
-          </p>
-          <p className="mt-2 text-xs text-muted">
-            This check shows only whether the domain owner has published that record. It is not a check
-            of the organisation, which is what the accreditation review above covers.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button variant="outline" onClick={onCancel} disabled={busy}>
-            Not now
-          </Button>
-          <Button data-testid="dns-confirm-proceed" loading={busy} onClick={onProceed}>
-            Whitelist anyway
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
 }

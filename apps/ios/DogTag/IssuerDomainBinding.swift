@@ -198,13 +198,13 @@ enum IssuerBindingResolver {
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
             return .couldNotCheck
         }
-        return classifyDoh(o)
+        return classifyDoh(o, queriedName: name)
     }
 
     /// Turn a DoH JSON answer into one of the three DNS states, branching on the `Status` RCODE so a
     /// resolver failure can never collapse into an absence. This is the mirror of `dogtag-dns-rs`'s
-    /// `classify_txt` and must stay behaviourally identical to it.
-    static func classifyDoh(_ o: [String: Any]) -> IssuerBindingState {
+    /// `classify_txt` + `select_binding` and must stay behaviourally identical to them.
+    static func classifyDoh(_ o: [String: Any], queriedName: String = "") -> IssuerBindingState {
         // An ABSENT Status is not "no error" — it means this is not a DoH JSON answer, and reading it as
         // NOERROR would turn a misconfiguration into a confident "absent".
         guard let status = o["Status"] as? Int else { return .couldNotCheck }
@@ -216,12 +216,37 @@ enum IssuerBindingResolver {
         guard let answers = o["Answer"] as? [[String: Any]] else {
             return .notListed              // NOERROR with no Answer section (NODATA)
         }
+        // COLLECT every TXT record before selecting one — a first-match-wins loop cannot implement the
+        // rule below, because the single-record case must be accepted regardless of its echoed name.
+        var records: [(name: String, value: String)] = []
         for a in answers {
             // type 16 == TXT; the Answer array may also carry CNAMEs from an alias chain.
             guard (a["type"] as? Int) == 16, let raw = a["data"] as? String else { continue }
-            return .verified(description: unquoteTxt(raw))
+            // DNS 0x20 means the echoed name's case is not guaranteed, so normalise it here once.
+            let name = ((a["name"] as? String) ?? "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                .lowercased()
+            records.append((name: name, value: unquoteTxt(raw)))
         }
-        return .notListed
+        guard let picked = selectBinding(records, queriedName: queriedName) else { return .notListed }
+        return .verified(description: picked)
+    }
+
+    /// The TXT value published AT `queriedName`, if any. Mirror of `dogtag-dns-rs`'s `select_binding`.
+    ///
+    /// A SINGLE answer whose echoed name differs is still accepted, because that is what a CNAME chain
+    /// looks like — the resolver answered the question it was asked. Two or more are not: there the
+    /// echoed name is the only way to tell which record belongs to our query, and taking whichever
+    /// happened to be first would let an unrelated record (an SPF line at a CNAME target, say) be
+    /// displayed as this domain's description of the issuer.
+    static func selectBinding(
+        _ records: [(name: String, value: String)], queriedName: String
+    ) -> String? {
+        if records.count == 1 { return records[0].value }
+        let want = queriedName
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        return records.first(where: { $0.name == want })?.value
     }
 
     /// Join a DoH TXT value into the string the zone published. TXT RDATA is a sequence of

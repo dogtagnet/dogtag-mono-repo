@@ -183,11 +183,10 @@ enum RoaxRpc {
         guard bytes.count >= 64 else { return nil }
         // The offset is a byte offset from the start of the return data; for a single string it is 0x20,
         // but read it rather than assume so a tuple-wrapped return still decodes.
-        let offset = Int(beUInt(bytes[0..<32]))
-        guard offset >= 0, offset + 32 <= bytes.count else { return nil }
-        let len = Int(beUInt(bytes[offset..<(offset + 32)]))
+        guard let offset = beInt(bytes[0..<32]), offset + 32 <= bytes.count else { return nil }
+        guard let len = beInt(bytes[offset..<(offset + 32)]) else { return nil }
         let start = offset + 32
-        guard len >= 0, start + len <= bytes.count else { return nil }
+        guard start + len <= bytes.count else { return nil }
         return String(bytes: bytes[start..<(start + len)], encoding: .utf8)
     }
 
@@ -204,15 +203,24 @@ enum RoaxRpc {
         return out
     }
 
-    /// Big-endian read of up to the low 8 bytes — enough for any length/offset we would accept, and it
-    /// cannot overflow on an adversarial 32-byte value because the high bytes are required to be zero.
-    private static func beUInt(_ slice: ArraySlice<UInt8>) -> UInt64 {
+    /// Big-endian read of a 32-byte word as an `Int`. Returns nil when anything is set above the low 4
+    /// bytes, or when the result would not fit a 32-bit `Int` — a length or offset that large is not a
+    /// value we will honour.
+    ///
+    /// Returning an OPTIONAL rather than a sentinel is load-bearing: the caller used to write
+    /// `Int(beUInt(...))`, and `Int.init(_: UInt64)` TRAPS on overflow, so an adversarial word (the
+    /// `UInt64.max` reject sentinel, or any value above `Int.max`) crashed the app instead of rejecting
+    /// the body — the exact opposite of this decoder's "returns nil rather than guessing" contract, and
+    /// reachable from any `eth_call` reply while a credential sheet is open. Mirror of the Kotlin
+    /// `RoaxRpc.beInt`, which was already correct; keep the two in step.
+    private static func beInt(_ slice: ArraySlice<UInt8>) -> Int? {
         let b = Array(slice)
-        // A length or offset with anything set above 8 bytes is not a value we will honour.
-        if b.dropLast(8).contains(where: { $0 != 0 }) { return UInt64.max }
+        guard b.count == 32 else { return nil }
+        if b.prefix(28).contains(where: { $0 != 0 }) { return nil }
         var v: UInt64 = 0
-        for byte in b.suffix(8) { v = (v << 8) | UInt64(byte) }
-        return v
+        for byte in b.suffix(4) { v = (v << 8) | UInt64(byte) }
+        guard v <= UInt64(Int32.max) else { return nil }
+        return Int(v)
     }
 
     /// `DogTagSBTConsent.profileRoot(dogTagId)` → the on-chain DOG_PROFILE root (0x.. 32-byte), or

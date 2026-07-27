@@ -38,9 +38,14 @@ struct CredentialDetailScreen: View {
         if !chainName.isEmpty {
             KeyValueRow(label: "Issuer", value: chainName)
             if !docName.isEmpty, normalised(docName) != normalised(chainName) {
-                // Factual, and about the document rather than the organisation.
+                // Factual, and about the document rather than the organisation. Deliberately MUTED, not
+                // red: free-form labels drift between what an issuing stack stamps and what the clone was
+                // created with, so a red line here would fire on legitimate credentials and train people
+                // to ignore it. The authoritative name is already displayed above; this is a footnote.
+                // The DOMAIN discrepancy below stays red — that one is a structured comparison against a
+                // root-covered value.
                 Text("The document names a different issuer: “\(docName)”")
-                    .font(.system(size: 11)).foregroundColor(c.danger)
+                    .font(.system(size: 11)).foregroundColor(c.muted)
             }
         } else if !docName.isEmpty {
             // A fallback is never presented as authoritative.
@@ -55,6 +60,23 @@ struct CredentialDetailScreen: View {
             }
         } else if !docDomain.isEmpty {
             KeyValueRow(label: "Issuer domain (from document)", value: docDomain)
+        }
+
+        // The DID assertion — the OTHER half of issuer identity, required alongside the DNS binding.
+        // DNS proves the domain owner vouches for the address; this proves the document has not been
+        // relabelled since issuance. It works even when the binding is unavailable, because it needs
+        // nothing but the document itself — and with no IssuerDomainRegistry bundled yet, it is the only
+        // issuer cross-check this screen has.
+        switch IssuerIdentity.assertDomain(doc) {
+        case .mismatch(let displayed, let rootCovered):
+            Text("This credential was issued under “\(rootCovered)”, but the document claims “\(displayed)”")
+                .font(.system(size: 11)).foregroundColor(c.danger)
+        case .notAssertable:
+            // Deliberately NOT a pass, and said so rather than left silent.
+            Text("This document carries no issuer identity inside its Merkle root, so its domain could not be cross-checked.")
+                .font(.system(size: 11)).foregroundColor(c.muted)
+        case .match:
+            EmptyView()
         }
 
         DomainBindingLine(binding: binding)

@@ -136,6 +136,56 @@ class IssuerDomainBindingTest {
         )
     }
 
+    /**
+     * A CNAME chain answers under the TARGET's name, so a lone record is accepted whatever name it
+     * echoes — the resolver answered the question it was asked.
+     */
+    @Test
+    fun a_single_record_is_accepted_even_when_the_echoed_name_differs() {
+        val s = IssuerBindingResolver.classifyDoh(
+            doh(0, txt("somewhere-else.example", "\\\"Travel clearance issuance\\\"")),
+            queriedName = "$cloneLc._dogtag.moh.gov.sg",
+        )
+        assertEquals(IssuerBindingState.Verified("Travel clearance issuance"), s)
+    }
+
+    /**
+     * With TWO OR MORE records the echoed name is the only way to tell which one answers OUR query, so
+     * it must be matched. Taking whichever happened to be first would display an unrelated record (an
+     * SPF line at a CNAME target, say) as this domain's description of the issuer. Rust's
+     * `select_binding` is the normative rule; this pins the Kotlin port to it.
+     */
+    @Test
+    fun multiple_records_require_the_echoed_name_to_match() {
+        val queried = "$cloneLc._dogtag.moh.gov.sg"
+        val mixed = txt("unrelated.example", "\\\"v=spf1 -all\\\"") + "," +
+            txt(queried, "\\\"Travel clearance issuance\\\"")
+        assertEquals(
+            IssuerBindingState.Verified("Travel clearance issuance"),
+            IssuerBindingResolver.classifyDoh(doh(0, mixed), queriedName = queried),
+        )
+        val none = txt("a.example", "\\\"one\\\"") + "," + txt("b.example", "\\\"two\\\"")
+        assertEquals(
+            IssuerBindingState.NotListed,
+            IssuerBindingResolver.classifyDoh(doh(0, none), queriedName = queried),
+        )
+    }
+
+    /**
+     * DNS 0x20 randomises the echoed case, and a zone file may or may not carry the trailing root dot.
+     * Neither may change the answer.
+     */
+    @Test
+    fun the_echoed_name_match_ignores_case_and_the_trailing_dot() {
+        val queried = "$cloneLc._dogtag.moh.gov.sg"
+        val answers = txt("unrelated.example", "\\\"v=spf1 -all\\\"") + "," +
+            txt("${cloneLc.uppercase()}._DogTag.MOH.gov.SG.", "\\\"Travel clearance issuance\\\"")
+        assertEquals(
+            IssuerBindingState.Verified("Travel clearance issuance"),
+            IssuerBindingResolver.classifyDoh(doh(0, answers), queriedName = queried),
+        )
+    }
+
     /** THE regression guard. */
     @Test
     fun servfail_and_absence_differ() {

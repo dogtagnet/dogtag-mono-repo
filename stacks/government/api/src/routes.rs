@@ -39,6 +39,10 @@ use serde_json::{json, Value};
 use crate::app::{self, AppState};
 use crate::store::{CredentialStatus, IssuedCredential, VerificationRecord, VerifySession};
 
+/// The "not configured" address. An address field left at zero means the deployment cannot make the
+/// read at all — which is `unavailable`, never a negative answer.
+const ZERO_ADDR: &str = "0x0000000000000000000000000000000000000000";
+
 /// On-chain-derived / anchored keys that a metadata update must never mutate. Presence of any of
 /// these in a PATCH body is rejected (they reflect immutable chain state).
 const IMMUTABLE_KEYS: &[&str] = &[
@@ -549,17 +553,25 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     // factory's write-once `rootIssuer[R]` is authoritative, and it names the clone that issued THIS
     // root — so an old credential resolves against the clone that issued it, never against a successor.
     let factory_cfg = st.cfg.factory_addr.trim().to_string();
-    let resolved_issuer = if factory_cfg.is_empty()
-        || factory_cfg.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000")
-    {
-        None
-    } else {
-        st.chain
-            .root_issuer(&factory_cfg, &claimed_root, at_block)
-            .await
-            .ok()
-            .flatten()
-    };
+    // A failed READ and "the factory has no record of this root" are different facts and stay apart all
+    // the way to the wire — the same rule the DNS states obey. Collapsing them (the old `.ok().flatten()`)
+    // made an RPC blip indistinguishable from a root that was never registered through a real clone.
+    // The FALLBACK is unchanged in both cases (the document's claim is all that is left), so only what
+    // gets REPORTED differs.
+    let (resolved_issuer, root_issuer_read, root_issuer_read_detail) =
+        if factory_cfg.is_empty() || factory_cfg.eq_ignore_ascii_case(ZERO_ADDR) {
+            (None, "noFactoryConfigured", None)
+        } else {
+            match st
+                .chain
+                .root_issuer(&factory_cfg, &claimed_root, at_block)
+                .await
+            {
+                Ok(Some(a)) => (Some(a), "resolved", None),
+                Ok(None) => (None, "noRecord", None),
+                Err(e) => (None, "readFailed", Some(format!("{e}"))),
+            }
+        };
     let document_issuer = doc.issuer.document_store.trim().to_lowercase();
     // An explicit override still wins (operators use it to check a document against a specific clone),
     // then the authoritative on-chain resolution, then the document's claim as a last resort.
@@ -572,6 +584,14 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         .as_deref()
         .map(|r| r.to_lowercase() != document_issuer)
         .unwrap_or(false);
+
+    // LINK 1, resolved ONCE for the whole verification and pinned to `at_block`, because everything that
+    // reads an IDENTITY off that contract has to sit behind it. Being on-chain is not the property that
+    // matters; being FACTORY-DESCENDED is — anyone can deploy a contract that returns whatever `name()`
+    // they like, and `issuer_addr` falls back to the document's own `documentStore` whenever the factory
+    // has no record of the root. Reading it once also means the name gate and the domain binding cannot
+    // disagree with each other within a single answer.
+    let provenance = resolve_clone_provenance(&st, &issuer_addr, at_block).await;
 
     // 1) integrity — recompute the root from the salted leaves and compare (offline, no chain).
     let (integrity_state, recomputed) = check_integrity(&doc);
@@ -619,13 +639,22 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
 
     //     The DID only carries a domain, so a name-only relabel slips past it. The clone's own `name()`
     //     was written by the factory's `onlyOwner` `createIssuer` at KYC time, which makes it the one
-    //     authoritative issuer name available. `None` means the read failed — reported as such, never
-    //     silently substituted with the document's claim.
-    let onchain_name = st
-        .chain
-        .issuer_onchain_name(&issuer_addr, at_block)
-        .await
-        .ok();
+    //     authoritative issuer name available — but ONLY because `createIssuer` is where it came from.
+    //     So the read is gated on link 1 being a DEFINITE yes: a contract we have not proven descends
+    //     from the factory has no authoritative name to offer, and reading one anyway is precisely how a
+    //     fabricated authority reaches a surface labelled "from the issuing contract". Neither a definite
+    //     no nor an unread provenance qualifies. `None` therefore means "no authoritative name", and
+    //     `onchainNameAvailable` says so, so a client falls back to the document value and labels it.
+    let onchain_name = if provenance.is_factory_deployed() {
+        // `None` here means the read itself failed — reported as such, never silently substituted with
+        // the document's claim.
+        st.chain
+            .issuer_onchain_name(&issuer_addr, at_block)
+            .await
+            .ok()
+    } else {
+        None
+    };
 
     // (b) Which domain does the ISSUING CONTRACT itself claim, and does that domain's DNS zone name
     //     this contract back? The claim is read from the chain, never from the document — that is what
@@ -636,7 +665,8 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     //       - registry read, no claim               -> noDomainClaimed (normal on day one)
     //       - claim + DNS record present            -> verified, with the domain's own description
     //       - claim + DNS says absent / unreachable  -> notListed / couldNotCheck
-    let issuer_domain_json = resolve_issuer_domain_binding(&st, &issuer_addr, at_block).await;
+    let issuer_domain_json =
+        resolve_issuer_domain_binding(&st, &issuer_addr, at_block, &provenance).await;
 
     // Verdict: integrity + on-chain issuance are the required authenticity pillars here; the issuer
     // whitelist, when supplied, must also pass (architecture §5 authenticity pillars).
@@ -682,6 +712,12 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             } else {
                 "documentClaim"
             },
+            // WHY the `rootIssuer` lookup produced what it did. "noRecord" (the factory has no record of
+            // this root) and "readFailed" (we could not ask) both land on the document's claim, but they
+            // are different facts and a caller must be able to tell them apart — a failed read is not
+            // evidence of absence.
+            "rootIssuerRead": root_issuer_read,
+            "rootIssuerReadDetail": root_issuer_read_detail,
             "rootIssuer": resolved_issuer,
             "documentDocumentStore": document_issuer,
             // The document names a different contract than the one the chain says issued this root.
@@ -696,7 +732,7 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             "issuerDidAssertion": did_assertion.as_str(),
         },
         // The issuer identity a surface should RENDER — on-chain first, document only as a diff.
-        "issuerIdentity": issuer_identity_json(&doc, &did_assertion, &onchain_name),
+        "issuerIdentity": issuer_identity_json(&doc, &did_assertion, &onchain_name, &provenance),
         "issuerDomainBinding": issuer_domain_json,
         "verificationId": rec.id,
     }))
@@ -714,10 +750,15 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
 /// and passes the DNS binding — the genuine domain really does publish the record. Without the on-chain
 /// name, that attack renders a fabricated authority beside a green check, which is worse than showing
 /// nothing.
+///
+/// `onchain_name` is only ever `Some` when link-1 provenance came back a DEFINITE yes (see `verify`).
+/// The `provenance` field is carried here so a surface can say WHY a name is unavailable rather than
+/// having to infer it from a bare `null`.
 fn issuer_identity_json(
     doc: &WrappedDoc,
     assertion: &IssuerDomainAssertion,
     onchain_name: &Option<String>,
+    provenance: &CloneProvenance,
 ) -> Value {
     let (root_covered, domain_conflict) = match assertion {
         IssuerDomainAssertion::Match { domain } => (Some(domain.clone()), false),
@@ -740,6 +781,9 @@ fn issuer_identity_json(
         // `onchainNameAvailable` says which happened so a UI never presents a fallback as authoritative.
         "onchainName": onchain_name,
         "onchainNameAvailable": onchain_name.as_deref().map(|n| !n.trim().is_empty()).unwrap_or(false),
+        // Link 1, the reason an on-chain name may be withheld: "factoryDeployed" | "notFactoryDeployed"
+        // | "unknown". Only the first authorises reading an identity off that contract.
+        "provenance": provenance.as_str(),
         // Untrusted, for diffing only.
         "documentName": doc.issuer.name,
         "documentDomain": doc.issuer.domain,
@@ -759,6 +803,61 @@ fn normalise_name(s: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+/// LINK 1 of the issuer↔domain chain — `DogTagIssuerFactory.isClone(addr)` — as a THREE-valued fact.
+///
+/// Kept as a type rather than a `bool` because the three cases authorise different things and only one
+/// of them authorises reading an IDENTITY (`name()`, the domain claim) off the contract. A read failure
+/// is emphatically not "this is not a DogTag issuer", and neither is a missing factory address; folding
+/// either into a boolean silently picks one of those meanings, and whichever one it picks is wrong.
+enum CloneProvenance {
+    /// The factory confirms it deployed this contract.
+    FactoryDeployed,
+    /// The factory confirms it did NOT. Categorically stronger than any DNS observation.
+    NotFactoryDeployed,
+    /// We could not find out — no factory configured, or the read failed. Evidence of nothing.
+    Unknown { detail: String },
+}
+
+impl CloneProvenance {
+    /// The ONLY gate that may authorise reading an identity off this contract.
+    fn is_factory_deployed(&self) -> bool {
+        matches!(self, CloneProvenance::FactoryDeployed)
+    }
+    fn as_str(&self) -> &'static str {
+        match self {
+            CloneProvenance::FactoryDeployed => "factoryDeployed",
+            CloneProvenance::NotFactoryDeployed => "notFactoryDeployed",
+            CloneProvenance::Unknown { .. } => "unknown",
+        }
+    }
+}
+
+/// Read link 1 once, pinned to `at_block`.
+async fn resolve_clone_provenance(
+    st: &AppState,
+    clone_addr: &str,
+    at_block: Option<u64>,
+) -> CloneProvenance {
+    let factory = st.cfg.factory_addr.trim();
+    if factory.is_empty() || factory.eq_ignore_ascii_case(ZERO_ADDR) {
+        return CloneProvenance::Unknown {
+            detail: "no DogTagIssuerFactory configured, so clone provenance cannot be checked"
+                .into(),
+        };
+    }
+    match st
+        .chain
+        .is_factory_clone(factory, clone_addr, at_block)
+        .await
+    {
+        Ok(true) => CloneProvenance::FactoryDeployed,
+        Ok(false) => CloneProvenance::NotFactoryDeployed,
+        Err(e) => CloneProvenance::Unknown {
+            detail: format!("clone provenance read failed: {e}"),
+        },
+    }
 }
 
 /// Resolve the issuer↔domain binding as a THREE-LINK CHAIN. All three links are required, and each is
@@ -792,43 +891,37 @@ async fn resolve_issuer_domain_binding(
     st: &AppState,
     clone_addr: &str,
     at_block: Option<u64>,
+    provenance: &CloneProvenance,
 ) -> Value {
-    const ZERO: &str = "0x0000000000000000000000000000000000000000";
-
     // ---- link 1: factory provenance -------------------------------------------------------------
-    let factory = st.cfg.factory_addr.trim();
-    if factory.is_empty() || factory.eq_ignore_ascii_case(ZERO) {
-        return json!({
-            "state": "unavailable",
-            "detail": "no DogTagIssuerFactory configured, so clone provenance cannot be checked",
-        });
-    }
-    match st
-        .chain
-        .is_factory_clone(factory, clone_addr, at_block)
-        .await
-    {
-        Ok(true) => {}
+    //
+    // Taken as a PARAMETER rather than re-read: the caller already resolved it at `at_block` to gate the
+    // on-chain name, and one verification making two `isClone` calls could answer them differently
+    // (different heights, one read failing) — leaving a single response internally inconsistent about
+    // whether the issuer is a DogTag issuer at all.
+    match provenance {
+        CloneProvenance::FactoryDeployed => {}
         // A definitive "this contract was not deployed by the DogTag factory". Its own state.
-        Ok(false) => {
+        CloneProvenance::NotFactoryDeployed => {
             return json!({
                 "state": "notADogTagIssuer",
                 "cloneAddress": clone_addr.to_lowercase(),
                 "blockNumber": at_block,
             })
         }
-        // The read failed. NOT the same as "not a clone" — we simply do not know.
-        Err(e) => {
+        // The read failed, or there is no factory to ask. NOT the same as "not a clone" — we simply do
+        // not know.
+        CloneProvenance::Unknown { detail } => {
             return json!({
                 "state": "unavailable",
-                "detail": format!("clone provenance read failed: {e}"),
+                "detail": detail,
             })
         }
     }
 
     // ---- link 2: the on-chain domain claim ------------------------------------------------------
     let registry = st.cfg.issuer_domain_registry_addr.trim();
-    if registry.is_empty() || registry.eq_ignore_ascii_case(ZERO) {
+    if registry.is_empty() || registry.eq_ignore_ascii_case(ZERO_ADDR) {
         return json!({
             "state": "unavailable",
             "detail": "no IssuerDomainRegistry configured for this deployment",

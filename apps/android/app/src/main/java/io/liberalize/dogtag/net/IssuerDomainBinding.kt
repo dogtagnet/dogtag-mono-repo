@@ -245,7 +245,7 @@ object IssuerBindingResolver {
             val url = "https://cloudflare-dns.com/dns-query?name=${URLEncoder.encode(name, "UTF-8")}&type=TXT"
             val resp = Http.getJsonAccept(url, accept = "application/dns-json")
             if (!resp.ok) return IssuerBindingState.CouldNotCheck
-            classifyDoh(JSONObject(resp.body))
+            classifyDoh(JSONObject(resp.body), queriedName = name)
         } catch (e: Exception) {
             IssuerBindingState.CouldNotCheck
         }
@@ -254,9 +254,9 @@ object IssuerBindingResolver {
     /**
      * Turn a DoH JSON answer into one of the three DNS states, branching on the `Status` RCODE so a
      * resolver failure can never collapse into an absence. Pure, so the rule is unit-testable without a
-     * network; mirror of `dogtag_dns_rs::classify_txt`.
+     * network; mirror of `dogtag_dns_rs::classify_txt` + `select_binding`.
      */
-    fun classifyDoh(o: JSONObject): IssuerBindingState {
+    fun classifyDoh(o: JSONObject, queriedName: String = ""): IssuerBindingState {
         // An ABSENT (or non-numeric) Status is not "no error" — it means this is not a DoH JSON answer,
         // and reading it as NOERROR would turn a misconfiguration into a confident "absent". A DNS RCODE
         // is 0..15, so -1 is an unambiguous "no usable Status" sentinel and needs no `has()` probe (which
@@ -268,15 +268,36 @@ object IssuerBindingResolver {
         }
         val answers = o.optJSONArray("Answer")
             ?: return IssuerBindingState.NotListed       // NOERROR with no Answer section (NODATA)
+        // COLLECT every TXT record before selecting one — a first-match-wins loop cannot implement the
+        // rule below, because the single-record case must be accepted regardless of its echoed name.
+        val records = ArrayList<Pair<String, String>>()
         for (i in 0 until answers.length()) {
             val a = answers.optJSONObject(i) ?: continue
             // type 16 == TXT; the Answer array may also carry CNAMEs from an alias chain.
             if (a.optInt("type", -1) != 16) continue
             val raw = a.optString("data", "")
             if (raw.isEmpty()) continue
-            return IssuerBindingState.Verified(unquoteTxt(raw))
+            // DNS 0x20 means the echoed name's case is not guaranteed, so normalise it here once.
+            val name = a.optString("name", "").trim('.').lowercase()
+            records.add(name to unquoteTxt(raw))
         }
-        return IssuerBindingState.NotListed
+        val picked = selectBinding(records, queriedName) ?: return IssuerBindingState.NotListed
+        return IssuerBindingState.Verified(picked)
+    }
+
+    /**
+     * The TXT value published AT [queriedName], if any. Mirror of `dogtag_dns_rs::select_binding`.
+     *
+     * A SINGLE answer whose echoed name differs is still accepted, because that is what a CNAME chain
+     * looks like — the resolver answered the question it was asked. Two or more are not: there the echoed
+     * name is the only way to tell which record belongs to our query, and taking whichever happened to be
+     * first would let an unrelated record (an SPF line at a CNAME target, say) be displayed as this
+     * domain's description of the issuer.
+     */
+    fun selectBinding(records: List<Pair<String, String>>, queriedName: String): String? {
+        if (records.size == 1) return records[0].second
+        val want = queriedName.trim('.').lowercase()
+        return records.firstOrNull { it.first == want }?.second
     }
 
     /**

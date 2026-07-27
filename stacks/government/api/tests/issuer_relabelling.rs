@@ -567,6 +567,7 @@ async fn verification_follows_the_root_issuer_not_the_document_claim() {
         "the chain resolves the issuer, not the document: {b}"
     );
     assert_eq!(b["issuerAddr"].as_str().unwrap().to_lowercase(), CLONE);
+    assert_eq!(b["issuerResolution"]["rootIssuerRead"], "resolved");
     assert_eq!(
         b["issuerResolution"]["documentStoreDiffers"], true,
         "the swap is reported rather than silently followed"
@@ -585,4 +586,121 @@ async fn an_unresolvable_root_falls_back_to_the_document_and_says_so() {
     let (_s, b) = verify(&app, doc).await;
     assert_eq!(b["issuerResolution"]["source"], "documentClaim");
     assert_eq!(b["issuerResolution"]["documentStoreDiffers"], false);
+    assert_eq!(
+        b["issuerResolution"]["rootIssuerRead"], "noRecord",
+        "the factory answered, and its answer was 'no record of this root': {b}"
+    );
+}
+
+// -------------------------------------------------------------------------------------------------
+// (8) NO identity is read from a contract we have not proven the factory deployed
+// -------------------------------------------------------------------------------------------------
+
+/// The sharpest form of the relabelling attack, and the one a DNS binding alone cannot see.
+///
+/// Being on-chain is not the property that matters — being FACTORY-DESCENDED is. The attacker deploys
+/// their own contract, makes its `name()` return "Ministry of Health of Singapore", and points the
+/// document's `documentStore` at it. `data` is untouched so integrity passes; `data.issuer` and
+/// `issuer.domain` are both left genuine so the DID assertion says `match`; the root really is issued on
+/// that contract so `isValid` passes. Every pillar is green. If the server reads `name()` off it anyway,
+/// the fabricated authority is rendered as the ON-CHAIN issuer, which is strictly worse than showing
+/// nothing — the surface is asserting provenance it never established.
+///
+/// So the name read is gated on link 1. Nothing else in this response may carry that string as an
+/// identity either.
+#[tokio::test]
+async fn an_identity_is_never_read_from_a_contract_the_factory_did_not_deploy() {
+    const ATTACKER: &str = "0x00000000000000000000000000000000000000ee";
+    const FABRICATED: &str = "Ministry of Health of Singapore";
+
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
+
+    // The attacker's contract answers every read a naive verifier would make.
+    chain.issue(ATTACKER, &root).await.expect("emulated issue");
+    chain.set_onchain_name(ATTACKER, FABRICATED);
+    chain.set_claimed_domain(DOMAIN_REGISTRY, ATTACKER, "gov.example");
+    // ...but the factory says it did not deploy it. Note there is deliberately NO `set_root_issuer`:
+    // the factory has no record of this root, so `issuer_addr` falls back to the document's claim —
+    // which is exactly how an attacker-controlled address gets read in the first place.
+    chain.set_factory_clone(FACTORY, ATTACKER, false);
+
+    let mut forged = doc.clone();
+    forged["issuer"]["documentStore"] = json!(ATTACKER);
+    forged["issuer"]["name"] = json!(FABRICATED);
+
+    let app = government_api::router(st);
+    let (s, b) = verify(&app, forged).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+
+    // The trap: everything the attacker controls checks out.
+    assert_eq!(
+        b["fragments"]["integrity"], true,
+        "the issuer block is outside the Merkle root, so integrity is untouched: {b}"
+    );
+    assert_eq!(b["fragments"]["onchain"], true, "{b}");
+    assert_eq!(b["fragments"]["issuerDidAssertion"], "match", "{b}");
+
+    // The defence: no authoritative name is offered at all, and the response says WHY.
+    assert_eq!(
+        b["issuerIdentity"]["onchainNameAvailable"], false,
+        "a name read off an unproven contract must never be reported as available: {b}"
+    );
+    assert!(
+        b["issuerIdentity"]["onchainName"].is_null(),
+        "no name may be carried at all: {}",
+        b["issuerIdentity"]
+    );
+    assert_eq!(b["issuerIdentity"]["provenance"], "notFactoryDeployed");
+    assert_eq!(b["issuerDomainBinding"]["state"], "notADogTagIssuer");
+
+    // And the fabricated string appears NOWHERE except as the document's own (untrusted) claim, which
+    // is the one place it is honest to show it.
+    assert_eq!(b["issuerIdentity"]["documentName"], FABRICATED);
+    let mut identity = b["issuerIdentity"].clone();
+    identity["documentName"] = json!("");
+    assert!(
+        !serde_json::to_string(&identity)
+            .unwrap()
+            .contains(FABRICATED),
+        "the fabricated name leaked into an identity field: {identity}"
+    );
+    assert!(
+        !serde_json::to_string(&b["issuerDomainBinding"])
+            .unwrap()
+            .contains(FABRICATED),
+        "the binding must not echo an unproven contract's self-description: {}",
+        b["issuerDomainBinding"]
+    );
+}
+
+/// The other arm of the same gate: provenance that could not be READ is not provenance. It must yield
+/// no on-chain name either — a failed read is not evidence, in whichever direction it would flatter.
+#[tokio::test]
+async fn an_unread_provenance_also_withholds_the_on_chain_name() {
+    let (mut st, chain) = state();
+    let mut cfg = (*st.cfg).clone();
+    cfg.factory_addr = "0x0000000000000000000000000000000000000000".into();
+    st.cfg = Arc::new(cfg);
+
+    let doc = genuine_doc();
+    seed(&chain, &doc).await; // the clone's `name()` IS seeded — it just cannot be authorised
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    assert_eq!(b["issuerIdentity"]["provenance"], "unknown");
+    assert_eq!(
+        b["issuerIdentity"]["onchainNameAvailable"], false,
+        "without link 1 there is no authoritative name to offer: {b}"
+    );
+    assert!(b["issuerIdentity"]["onchainName"].is_null());
+    // A withheld name is not evidence the document's name is wrong.
+    assert_eq!(b["issuerIdentity"]["documentNameDiffers"], false);
+    assert_eq!(b["issuerIdentity"]["relabelled"], false);
+    // And the resolution reports that the factory was never asked, rather than implying it answered.
+    assert_eq!(
+        b["issuerResolution"]["rootIssuerRead"], "noFactoryConfigured",
+        "{b}"
+    );
 }
