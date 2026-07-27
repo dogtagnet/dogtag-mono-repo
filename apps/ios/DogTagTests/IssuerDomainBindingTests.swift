@@ -481,3 +481,106 @@ final class IssuerDomainBindingTests: XCTestCase {
         XCTAssertEqual(IssuerIdentity.assertDomain(WrappedDoc(json: json)), .match(domain: "gov.example"))
     }
 }
+
+// -------------------------------------------------------------------------------------------------
+// Which contract the binding describes — the sharper relabelling attack
+// -------------------------------------------------------------------------------------------------
+
+/// The attack: relabel ONLY `issuer.documentStore` to point at ANOTHER authority's real, factory-deployed
+/// clone (clone addresses are public on-chain), and leave `data` untouched so integrity still passes.
+/// Link 1 (`isClone`) then PASSES — the target genuinely is a factory clone — and a resolver handed the
+/// document's claim directly renders that other authority's on-chain name, its claimed domain, and a
+/// green DNS badge.
+///
+/// The defence is the factory's write-once `rootIssuer[R]`, which names the clone that issued THIS root.
+/// `chooseClone` is that decision, kept pure so the property is assertable without a network.
+final class IssuerCloneResolutionTests: XCTestCase {
+    private let ours = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+    private let otherAuthority = "0x00000000000000000000000000000000000000ee"
+
+    /// THE property. A document naming some other factory clone must not cause that clone to be the one
+    /// the binding describes.
+    func test_a_swapped_document_store_never_becomes_the_resolved_issuer() {
+        let choice = IssuerBindingResolver.chooseClone(
+            rootIssuer: .value(ours), documentStore: otherAuthority
+        )
+        XCTAssertEqual(choice.address, ours, "the chain's answer is followed, not the document's")
+        XCTAssertNotEqual(choice.address, otherAuthority)
+        XCTAssertEqual(choice.source, .rootIssuer)
+        XCTAssertTrue(choice.documentStoreDiffers, "and the swap is REPORTED")
+        XCTAssertFalse(choice.readFailed)
+    }
+
+    /// An agreeing document is not a disagreement, and address CASE is not evidence of one.
+    func test_an_agreeing_document_store_is_not_reported_as_a_difference() {
+        let choice = IssuerBindingResolver.chooseClone(
+            rootIssuer: .value(ours), documentStore: "  0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F "
+        )
+        XCTAssertEqual(choice.address, ours)
+        XCTAssertFalse(choice.documentStoreDiffers)
+    }
+
+    /// The factory answered, and its answer is "no record of this root". The document's claim is then the
+    /// only thing available — used, but never labelled authoritative.
+    func test_no_root_issuer_record_falls_back_to_the_document_and_says_so() {
+        let choice = IssuerBindingResolver.chooseClone(
+            rootIssuer: .noRecord, documentStore: otherAuthority
+        )
+        XCTAssertEqual(choice.address, otherAuthority)
+        XCTAssertEqual(choice.source, .documentClaim)
+        XCTAssertFalse(choice.documentStoreDiffers, "silence is not disagreement")
+        XCTAssertFalse(choice.readFailed)
+    }
+
+    /// A read we could not make is not "no record", and must not become a licence to trust the document.
+    func test_a_failed_root_issuer_read_is_not_an_absence() {
+        let choice = IssuerBindingResolver.chooseClone(
+            rootIssuer: .failure("rpc 502"), documentStore: otherAuthority
+        )
+        XCTAssertTrue(choice.readFailed, "the caller must report 'could not read', not proceed")
+        XCTAssertFalse(choice.documentStoreDiffers)
+    }
+
+    /// The line stays an observation: it says what the chain records, and passes no judgement on the
+    /// credential, whose validity is proven on-chain separately.
+    func test_the_swapped_store_line_is_factual_and_free_of_verdict_words() {
+        var b = IssuerBinding()
+        b.documentStoreDiffers = true
+        let line = b.documentStoreLine
+        XCTAssertEqual(line, "The chain records a different issuing contract than this document names")
+        let lowered = (line ?? "").lowercased()
+        for word in [
+            "verification failed", "failed", "failure", "invalid", "untrusted", "not trusted",
+            "warning", "danger", "insecure", "fraud", "fake", "suspicious", "unsafe", "error",
+            "rejected",
+        ] {
+            XCTAssertFalse(lowered.contains(word), "\"\(lowered)\" contains \"\(word)\"")
+        }
+        // Nothing to say when the two agree.
+        XCTAssertNil(IssuerBinding().documentStoreLine)
+    }
+
+    // MARK: - the address word
+
+    func test_decodes_a_right_aligned_address_word() {
+        let word = String(repeating: "0", count: 24) + "b5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+        XCTAssertEqual(RoaxRpc.decodeAbiAddress(word), ours)
+        XCTAssertEqual(RoaxRpc.decodeAbiAddress("0x" + word.uppercased()), ours)
+    }
+
+    /// An EMPTY result is what a call to an address with no code returns. It is not the zero address, and
+    /// collapsing the two would turn "we could not ask" into a confident "no record".
+    func test_an_unreadable_word_is_nil_rather_than_a_guess() {
+        XCTAssertNil(RoaxRpc.decodeAbiAddress(""))
+        XCTAssertNil(RoaxRpc.decodeAbiAddress("0x00"))
+        // dirty high bytes: not an address word
+        XCTAssertNil(RoaxRpc.decodeAbiAddress(String(repeating: "1", count: 64)))
+        XCTAssertNil(RoaxRpc.decodeAbiAddress(String(repeating: "z", count: 64)))
+    }
+
+    func test_the_zero_address_is_an_unset_slot() {
+        XCTAssertTrue(RoaxRpc.isZeroAddress("0x" + String(repeating: "0", count: 40)))
+        XCTAssertFalse(RoaxRpc.isZeroAddress(ours))
+        XCTAssertFalse(RoaxRpc.isZeroAddress(""))
+    }
+}

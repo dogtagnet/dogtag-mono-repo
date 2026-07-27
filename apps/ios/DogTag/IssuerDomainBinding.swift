@@ -52,6 +52,33 @@ enum IssuerBindingState: Equatable {
     case pending
 }
 
+/// Where the contract this binding was resolved against came from.
+///
+/// Not cosmetic: the two carry different authority, and the difference is the whole of the sharper
+/// relabelling attack. `rootIssuer` is the factory's write-once record of which clone issued THIS root.
+/// `documentClaim` is the credential's own `issuer.documentStore`, which sits outside the Merkle root
+/// and can be pointed at any address — including another authority's genuine, factory-deployed clone.
+enum IssuerCloneSource: Equatable {
+    /// The factory's write-once `rootIssuer[R]`. Authoritative.
+    case rootIssuer
+    /// The document's own claim, reached only because the factory has no record of this root. Never
+    /// authoritative, and always labelled as the fallback it is.
+    case documentClaim
+}
+
+/// The pure decision "which contract does this binding describe", separated from the I/O so it is
+/// testable without a network. See [`IssuerBindingResolver.chooseClone`].
+struct IssuerCloneChoice: Equatable {
+    /// The contract every link of the chain is then resolved against.
+    var address: String = ""
+    var source: IssuerCloneSource = .documentClaim
+    /// The chain names a DIFFERENT issuing contract than the document does. Reported, never followed.
+    var documentStoreDiffers: Bool = false
+    /// The `rootIssuer` read did not resolve at all. The document's claim is then unchecked, so the
+    /// caller must report "could not read" rather than proceeding on it.
+    var readFailed: Bool = false
+}
+
 /// A resolved binding plus the provenance needed to be honest about it.
 struct IssuerBinding: Equatable {
     var state: IssuerBindingState = .pending
@@ -59,6 +86,12 @@ struct IssuerBinding: Equatable {
     var domain: String = ""
     /// The clone's on-chain `name()` — the only authoritative issuer name.
     var onchainName: String = ""
+    /// The contract this binding actually describes, and where that address came from.
+    var cloneAddress: String = ""
+    var cloneSource: IssuerCloneSource = .documentClaim
+    /// The chain's write-once `rootIssuer[R]` names a different contract than the document's
+    /// `issuer.documentStore`. Positive evidence the document's claim was swapped.
+    var documentStoreDiffers: Bool = false
     /// The block every on-chain read was pinned to. `nil` == the head could not be read, so this answer
     /// is not reproducible and must not imply a block.
     var blockNumber: UInt64?
@@ -105,27 +138,86 @@ enum IssuerBindingResolver {
         return "\(addr).\(label).\(dom)"
     }
 
-    /// Resolve the full chain. `clone` is the issuing contract; prefer the address the CHAIN resolved for
-    /// the credential's root over the document's `issuer.documentStore` where available.
+    /// Which contract the chain says issued this credential, given the factory's `rootIssuer[R]` answer
+    /// and the document's own `issuer.documentStore` claim.
+    ///
+    /// Pure, so the property that matters is testable without a network: a document whose
+    /// `documentStore` points at some OTHER factory clone must never cause that clone's identity to be
+    /// resolved. The chain's answer always wins; the document is a labelled last resort, reached only
+    /// when the factory has no record of the root at all.
+    static func chooseClone(rootIssuer: RoaxRpc.AddressRead, documentStore: String) -> IssuerCloneChoice {
+        let claimed = documentStore.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch rootIssuer {
+        case .value(let onchain):
+            return IssuerCloneChoice(
+                address: onchain,
+                source: .rootIssuer,
+                documentStoreDiffers: onchain.lowercased() != claimed.lowercased(),
+                readFailed: false
+            )
+        case .noRecord:
+            // The factory answered, and its answer is "no record of this root". The document's claim is
+            // then the only thing available — used, but never presented as authoritative.
+            return IssuerCloneChoice(address: claimed, source: .documentClaim, readFailed: false)
+        case .failure:
+            // We could not ask. NOT the same as "no record", and it must not become a licence to trust
+            // the document's claim unchecked.
+            return IssuerCloneChoice(address: claimed, source: .documentClaim, readFailed: true)
+        }
+    }
+
+    /// Resolve the full chain for the credential whose Merkle root is `root`.
+    ///
+    /// `documentStore` is the document's CLAIM about its issuing contract and is never followed while the
+    /// chain can answer: `rootIssuer[R]` is read first and, when it resolves, is the contract every link
+    /// below is checked against.
     static func resolve(
         rpcUrl: String,
         factory: String,
         domainRegistry: String,
-        clone: String,
+        documentStore: String,
+        root: String,
         useCache: Bool = true
     ) async -> IssuerBinding {
-        let key = "\(clone.lowercased())|\(domainRegistry.lowercased())|\(factory.lowercased())"
+        // The root is part of the key: two credentials can share a `documentStore` and still resolve to
+        // different clones, so keying on the document's claim alone would serve one credential's answer
+        // for another's.
+        let key = [
+            documentStore.lowercased(), root.lowercased(),
+            domainRegistry.lowercased(), factory.lowercased(),
+        ].joined(separator: "|")
         if useCache, let hit = cached(key) { return hit }
 
         var out = IssuerBinding()
+        out.cloneAddress = documentStore.trimmingCharacters(in: .whitespacesAndNewlines)
         out.blockNumber = await RoaxRpc.blockNumber(rpcUrl: rpcUrl)
 
-        // ---- link 1: factory provenance --------------------------------------------------------
+        // ---- link 0: WHICH contract, per the chain ---------------------------------------------
+        //
+        // Without a factory there is nothing to ask, and no link of the chain can be established — so
+        // this is "could not read", never a fall-through to trusting the document.
         guard !factory.isEmpty else {
             out.state = .unavailable
             store(key, out)
             return out
         }
+        let choice = chooseClone(
+            rootIssuer: await RoaxRpc.rootIssuer(
+                rpcUrl: rpcUrl, factory: factory, root: root, atBlock: out.blockNumber
+            ),
+            documentStore: documentStore
+        )
+        out.cloneAddress = choice.address
+        out.cloneSource = choice.source
+        out.documentStoreDiffers = choice.documentStoreDiffers
+        if choice.readFailed || choice.address.isEmpty {
+            out.state = .unavailable
+            store(key, out)
+            return out
+        }
+        let clone = choice.address
+
+        // ---- link 1: factory provenance --------------------------------------------------------
         switch await RoaxRpc.isClone(rpcUrl: rpcUrl, factory: factory, candidate: clone, atBlock: out.blockNumber) {
         case .invalid:
             out.state = .notADogTagIssuer
@@ -316,6 +408,16 @@ extension IssuerBinding {
         case .unavailable:     return "The on-chain domain claim could not be read"
         case .pending:         return "Checking this domain's DNS records…"
         }
+    }
+
+    /// The chain's write-once record names a different issuing contract than the document does.
+    ///
+    /// Stated as the observation it is, in the same register as the rest: no verdict about the
+    /// credential, whose validity is proven on-chain separately. What it means concretely is that the
+    /// identity shown above was resolved from the CHAIN's contract, not from the one the document names.
+    var documentStoreLine: String? {
+        guard documentStoreDiffers else { return nil }
+        return "The chain records a different issuing contract than this document names"
     }
 
     /// The domain owner's own description, shown only for a verified binding — the whole reason the TXT

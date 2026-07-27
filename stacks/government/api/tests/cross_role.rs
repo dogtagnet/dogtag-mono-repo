@@ -53,6 +53,9 @@ fn vet_issue_vaccination(dog_tag_id: &str) -> (String, Value) {
 }
 
 fn government_stack(chain: MemChain) -> AppState {
+    // The vet's clone really was deployed by the DogTag factory. Seeded because link-1 provenance is a
+    // verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed` and fails the verdict.
+    chain.set_factory_clone("0x00000000000000000000000000000000000000fa", VACC_CLONE, true);
     let cfg = Config {
         deployment_url: "http://localhost:44832".into(),
         rpc_url: "https://devrpc.roax.net".into(),

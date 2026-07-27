@@ -135,8 +135,13 @@ struct CredentialDetailScreen: View {
                     Text("ON-CHAIN").font(.system(size: 11, weight: .bold)).foregroundColor(c.muted)
                     let root = (doc?.merkleRoot).flatMap { $0.isEmpty ? nil : $0 } ?? cred.credentialRoot
                     CopyableMonoRow(label: "Merkle root", value: root)
-                    if let store = doc?.documentStore, !store.isEmpty {
-                        CopyableMonoRow(label: "Issuer address", value: store)
+                    // The chain's `rootIssuer[R]` once it has resolved, and only the document's claim
+                    // (labelled as such) until then — the document names a contract, it does not
+                    // establish one.
+                    if binding.cloneSource == .rootIssuer, !binding.cloneAddress.isEmpty {
+                        CopyableMonoRow(label: "Issuer address", value: binding.cloneAddress)
+                    } else if let store = doc?.documentStore, !store.isEmpty {
+                        CopyableMonoRow(label: "Issuer address (from document)", value: store)
                     }
                     issuerIdentityRows
                     let rt = doc?.recordType.isEmpty == false ? doc!.recordType : cred.recordType
@@ -181,13 +186,21 @@ struct CredentialDetailScreen: View {
         .task {
             // A real resolution, every time the sheet opens (served from a short TTL cache so it is not a
             // DNS lookup per render). Until it returns, the badge shows `.pending`.
-            let clone = (doc?.documentStore ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !clone.isEmpty else { return }
+            //
+            // The document's `documentStore` is passed as a CLAIM, not as the contract to check: the
+            // resolver reads the factory's write-once `rootIssuer[R]` first and follows that. Handing it
+            // the document's claim directly would leave the relabelling attack open on the one surface a
+            // border official actually holds — a swapped `documentStore` pointed at another authority's
+            // genuine clone passes `isClone` and renders that authority's on-chain identity.
+            let claimed = (doc?.documentStore ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let root = (doc?.merkleRoot).flatMap { $0.isEmpty ? nil : $0 } ?? cred.credentialRoot
+            guard !claimed.isEmpty || !root.isEmpty else { return }
             binding = await IssuerBindingResolver.resolve(
                 rpcUrl: AppConfig.roaxRpc,
                 factory: roax.issuerFactory,
                 domainRegistry: roax.issuerDomainRegistry,
-                clone: clone
+                documentStore: claimed,
+                root: root
             )
         }
     }
@@ -316,6 +329,16 @@ struct DomainBindingLine: View {
             }
             .foregroundColor(color)
 
+            if let swapped = binding.documentStoreLine {
+                // The chain's write-once record disagrees with the document about which contract issued
+                // this credential. Reported, not followed: everything above was resolved from the chain's
+                // answer. Red, because — unlike the free-form name drift — this is a structured
+                // comparison against a write-once on-chain value.
+                Text(swapped)
+                    .font(.system(size: 11)).foregroundColor(c.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 15)
+            }
             if let published = binding.publishedDescription {
                 // The whole reason the TXT value is free-form: show what the domain chose to say.
                 Text("Domain says: “\(published)”")

@@ -41,6 +41,7 @@ object RoaxRpc {
     private val IS_CLONE_SELECTOR = functionSelector("isClone(address)")
     private val DOMAIN_OF_SELECTOR = functionSelector("domainOf(address)")
     private val ISSUER_NAME_SELECTOR = functionSelector("name()")
+    private val ROOT_ISSUER_SELECTOR = functionSelector("rootIssuer(bytes32)")
 
     sealed class Result {
         object Valid : Result()
@@ -207,6 +208,60 @@ object RoaxRpc {
         data class Value(val value: String) : StringRead()
         object NoContract : StringRead()
         data class Failure(val reason: String) : StringRead()
+    }
+
+    /**
+     * Reading an `address` return has the same three outcomes, kept apart for the same reason:
+     *  - [Value] a real, non-zero address;
+     *  - [NoRecord] the mapping answered with the zero address, i.e. "no entry for this key" — a
+     *    DEFINITE answer, not a failure;
+     *  - [Failure] the RPC did not answer, or the body was not an address word (an empty result, which
+     *    is what a call to an address with no code returns, lands here). Emphatically NOT "no record":
+     *    a read we could not make is evidence of nothing.
+     */
+    sealed class AddressRead {
+        data class Value(val address: String) : AddressRead()
+        object NoRecord : AddressRead()
+        data class Failure(val reason: String) : AddressRead()
+    }
+
+    /**
+     * `DogTagIssuerFactory.rootIssuer(root)` — the clone that ISSUED this root, write-once on-chain.
+     *
+     * THE authoritative answer to "which contract issued this credential". The document's
+     * `issuer.documentStore` is only a claim, and pointing it at ANOTHER authority's genuine clone is the
+     * sharper form of the relabelling attack: link 1 (`isClone`) passes because the target really is a
+     * factory clone, so without this read the phone renders that other authority's on-chain identity.
+     */
+    suspend fun rootIssuer(rpcUrl: String, factory: String, root: String, atBlock: Long?): AddressRead {
+        if (factory.isBlank() || root.isBlank()) return AddressRead.Failure("missing factory/root")
+        val data = ROOT_ISSUER_SELECTOR + pad32(root)
+        return when (val r = ethCall(rpcUrl, factory, data, atBlock)) {
+            is CallResult.Err -> AddressRead.Failure(r.reason)
+            is CallResult.Ok -> {
+                val addr = decodeAbiAddress(r.hex) ?: return AddressRead.Failure("not an address word")
+                if (isZeroAddress(addr)) AddressRead.NoRecord else AddressRead.Value(addr)
+            }
+        }
+    }
+
+    /**
+     * Decode a right-aligned 32-byte `address` word to lowercase `0x..`. Returns null rather than
+     * guessing for anything that is not one — including an EMPTY result (no contract at that address)
+     * and a word with dirty high bytes.
+     */
+    fun decodeAbiAddress(hex: String): String? {
+        val h = hex.removePrefix("0x").lowercase()
+        if (h.length != 64) return null
+        if (!h.all { it in '0'..'9' || it in 'a'..'f' }) return null
+        if (!h.take(24).all { it == '0' }) return null
+        return "0x" + h.takeLast(40)
+    }
+
+    /** The zero address, i.e. an unset mapping slot. */
+    fun isZeroAddress(addr: String): Boolean {
+        val h = addr.removePrefix("0x")
+        return h.isNotEmpty() && h.all { it == '0' }
     }
 
     /**
