@@ -199,6 +199,10 @@ test("holder receipt: travel clearance renders and respects redacted re-imports"
   );
   await expect(page.getByTestId("receipt-public-url")).not.toContainText("gov.example");
   await expect(page.getByTestId("receipt-qr").locator("svg")).toBeVisible();
+  // Reviewer-visible half of the QR contract: a stamped base draws a real QR over a reachable host.
+  // Paired with the no-base capture in the next test, the two show the renderer DISCRIMINATES rather
+  // than always rendering (or always suppressing) the affordance.
+  await page.getByTestId("receipt-verify").screenshot({ path: "e2e-artifacts/receipt-qr-stamped-base.png" });
   await expect(page.getByTestId("receipt-live")).toContainText("anchored");
   await expect(page.getByTestId("receipt-root")).toContainText(
     "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
@@ -257,6 +261,10 @@ test("holder receipt: a credential with no stamped status base degrades honestly
   );
   await expect(page.getByTestId("receipt-public-url")).not.toContainText("gov.example");
   await expect(page.getByTestId("receipt-qr")).toHaveCount(0);
+  // The absence of a QR is the whole point, and absence is exactly what a selector assertion reads
+  // well and a human reads badly - capture the block so a reviewer can see the honest copy that
+  // replaced the dead `gov.example` link, not just trust a `toHaveCount(0)`.
+  await page.getByTestId("receipt-verify").screenshot({ path: "e2e-artifacts/receipt-qr-no-base.png" });
 });
 
 test("receive rejects a tampered credential", async ({ page }) => {
