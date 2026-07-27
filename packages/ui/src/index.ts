@@ -61,6 +61,42 @@ export {
   explorerTxUrl,
   explorerAddressUrl,
 } from "./wallet/chain";
+
+// on-chain provenance (audit surfaces: government Oversight, vet/groomer Traceability)
+export {
+  isHash32,
+  isEvmAddress,
+  chainProvenance,
+  txExplorerHref,
+  addressExplorerHref,
+  shortHex,
+  shortValue,
+  isOpaqueIdentifier,
+  formatChainTime,
+  formatRelativeTime,
+  emittingContractRole,
+  emittingCloneName,
+  eventDetailFields,
+  joinedDetailContext,
+  type ChainProvenance,
+  type ChainEventLike,
+  type ChainDetailField,
+  type ChainDetailContext,
+  type ChainLocalJoinLike,
+} from "./chain/provenance";
+export {
+  ChainValue,
+  ChainTime,
+  CopyButton,
+  ProvenanceBadge,
+  TxRef,
+  type ChainValueProps,
+  type ChainTimeProps,
+  type CopyButtonProps,
+  type ProvenanceBadgeProps,
+  type TxRefProps,
+} from "./chain/ChainValue";
+
 export { createWalletConfig, roaxNetwork, type WalletConfigOptions } from "./wallet/config";
 export {
   DEPLOYED_ADDRESSES,

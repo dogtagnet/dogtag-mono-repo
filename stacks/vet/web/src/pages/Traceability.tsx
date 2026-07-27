@@ -6,6 +6,9 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  ChainTime,
+  ChainValue,
+  ProvenanceBadge,
   Select,
   SelectContent,
   SelectItem,
@@ -17,17 +20,24 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  explorerAddressUrl,
-  shortAddress,
+  TxRef,
+  addressExplorerHref,
+  chainProvenance,
+  emittingCloneName,
+  emittingContractRole,
+  eventDetailFields,
+  formatChainTime,
+  joinedDetailContext,
+  shortHex,
+  txExplorerHref,
   useToast,
   type ApiError,
   type TraceActivityResp,
-  type TraceEvent,
   type TraceEventType,
   type TraceStatsResp,
 } from "@dogtag/ui";
 import { RefreshCw, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp } from "../app/AppContext";
 
 /** Human label + badge colour per on-chain event kind (mirrors the admin Activity console vocab). */
@@ -58,26 +68,11 @@ function eventMeta(t: string) {
   return EVENT_META[t as TraceEventType] ?? { label: t, variant: "neutral" as const };
 }
 
-/** Format a Unix-seconds timestamp as a compact local date-time; "—" when absent. */
-function fmtTime(secs?: number): string {
-  if (!secs) return "—";
-  return new Date(secs * 1000).toLocaleString();
-}
-
-/** Shorten a long opaque identifier (the field-hashed decimal dogTagId, a hashed purpose key). */
-function shortId(id: string): string {
-  return id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
-}
-
 /** Human label for the joined local row's kind. */
 function localKindLabel(kind?: string): string {
   if (kind === "verification") return "verification";
   if (kind === "mint") return "dog tag";
   return "record";
-}
-
-function txLink(ev: TraceEvent): string | null {
-  return ev.txUrl ?? null;
 }
 
 /** One stat tile in the summary strip. */
@@ -135,8 +130,12 @@ export function Traceability() {
     void load();
   }, [load]);
 
-  const events = resp?.events ?? [];
+  const events = useMemo(() => resp?.events ?? [], [resp]);
   const scopeLabel = resp?.scope?.label;
+  const syntheticCount = useMemo(
+    () => events.filter((ev) => chainProvenance(ev) !== "onchain").length,
+    [events],
+  );
 
   return (
     <Card>
@@ -243,6 +242,25 @@ export function Traceability() {
               </div>
             </div>
 
+            {/* Feed-level provenance. An event whose tx hash is not a well-formed 32-byte value came
+                from a scripted/demo indexer feed, not from chain history - and must not read as if it
+                did. See `@dogtag/ui` `chain/provenance`. */}
+            {syntheticCount > 0 && (
+              <div
+                className="mb-4 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+                data-testid="trace-synthetic-banner"
+              >
+                <span className="font-semibold">
+                  {syntheticCount} of {events.length}
+                </span>{" "}
+                event{syntheticCount === 1 ? "" : "s"} below carry a transaction hash that is not a
+                well-formed 32-byte value, so it addresses no transaction on any chain — most often a
+                scripted indexer feed. Those rows are marked{" "}
+                <span className="font-semibold">not chain-addressable</span> and their explorer links
+                are withheld.
+              </div>
+            )}
+
             {events.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted" data-testid="trace-empty">
                 {loading ? "Loading…" : "No on-chain activity in scope yet."}
@@ -252,52 +270,99 @@ export function Traceability() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      {/* Time, transaction+provenance and contract lead; the local joins scroll. */}
                       <TableHead>Event</TableHead>
+                      <TableHead>When</TableHead>
+                      <TableHead>On chain</TableHead>
+                      <TableHead>Contract</TableHead>
                       <TableHead>Details</TableHead>
                       <TableHead>Your record</TableHead>
                       <TableHead>Signer</TableHead>
-                      <TableHead>Block</TableHead>
-                      <TableHead>When</TableHead>
-                      <TableHead>Tx</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {events.map((ev) => {
                       const meta = eventMeta(ev.type);
-                      const link = txLink(ev);
+                      const provenance = chainProvenance(ev);
+                      const contractHref = addressExplorerHref(ev.contract);
+                      const actorHref = addressExplorerHref(ev.actor);
+                      const emittedCloneName = emittingCloneName(ev);
                       return (
-                        <TableRow key={ev.id} data-testid="trace-event-row" data-type={ev.type}>
+                        <TableRow
+                          key={ev.id}
+                          data-testid="trace-event-row"
+                          data-type={ev.type}
+                          data-provenance={provenance}
+                        >
                           <TableCell>
                             <Badge variant={meta.variant}>{meta.label}</Badge>
                           </TableCell>
+                          <TableCell data-testid="trace-when">
+                            <ChainTime seconds={ev.blockTimestamp} />
+                          </TableCell>
+                          {/* Block + finality + transaction + the per-row provenance verdict. */}
+                          <TableCell className="text-xs">
+                            <div className="flex flex-col gap-1">
+                              <span className="whitespace-nowrap font-mono">
+                                #{ev.blockNumber ?? "?"}
+                                {ev.finality && (
+                                  <Badge
+                                    variant={ev.finality === "finalized" ? "neutral" : "warning"}
+                                    className="ml-1.5"
+                                  >
+                                    {ev.finality}
+                                  </Badge>
+                                )}
+                              </span>
+                              <TxRef event={ev} href={txExplorerHref(ev)} testId="trace-tx-link" />
+                              <ProvenanceBadge provenance={provenance} className="w-fit" />
+                            </div>
+                          </TableCell>
+                          {/* WHICH smart contract emitted this. Not always the issuer clone -
+                              `issuerCreated`/`rootRegistered` come from the factory, `verified` from
+                              the verification registry - so the role is named beside the address, and
+                              the clone's NAME appears only when the clone is what emitted. */}
+                          <TableCell className="text-xs" data-testid="trace-contract">
+                            <div className="flex max-w-[10rem] flex-col gap-0.5">
+                              <ChainValue
+                                label={emittingContractRole(ev.type)}
+                                value={ev.contract}
+                                href={contractHref}
+                                head={8}
+                                stacked
+                                testId="trace-contract-value"
+                              />
+                              {emittedCloneName && (
+                                <span
+                                  className="truncate text-[10px] text-muted"
+                                  title={emittedCloneName}
+                                >
+                                  {emittedCloneName}
+                                </span>
+                              )}
+                            </div>
+                          </TableCell>
+                          {/* Every identifier is labelled: truncated 32-byte hex is otherwise
+                              indistinguishable between a root, a record-type key and a nullifier.
+                              The joined session carries the READABLE purpose and record type, which
+                              the owner-blind chain payload does not - prefer them over the keys. */}
                           <TableCell className="text-xs" data-testid="trace-details">
-                            <div className="flex flex-col gap-0.5">
-                              {(ev.recordType ?? ev.local?.recordType) ? (
-                                <span>{ev.recordType ?? ev.local?.recordType}</span>
-                              ) : ev.type !== "verified" ? (
-                                <span className="text-muted">—</span>
-                              ) : null}
-                              {/* Owner-blind verified payload: opaque tag id, hashed purpose key
-                                  (the joined session names it), proof-bound consent deadline. */}
-                              {ev.type === "verified" && (
-                                <>
-                                  {ev.dogTagId && (
-                                    <span
-                                      className="font-mono text-[10px] text-muted"
-                                      title={ev.dogTagId}
-                                    >
-                                      tag {shortId(ev.dogTagId)}
-                                    </span>
-                                  )}
-                                  <span className="font-mono text-[10px] text-muted" title={ev.purpose}>
-                                    purpose {ev.local?.purpose ?? (ev.purpose ? shortId(ev.purpose) : "—")}
-                                  </span>
-                                  {(ev.deadline ?? 0) > 0 && (
-                                    <span className="text-[10px] text-muted">
-                                      consent until {fmtTime(ev.deadline)}
-                                    </span>
-                                  )}
-                                </>
+                            <div className="flex max-w-[9rem] flex-col gap-0.5">
+                              {eventDetailFields(ev, joinedDetailContext(ev.local))
+                                .filter((f) => f.value)
+                                .map((f) => (
+                                  <ChainValue
+                                    key={f.label}
+                                    label={f.label}
+                                    value={f.value}
+                                    head={8}
+                                    stacked
+                                  />
+                                ))}
+                              {(ev.deadline ?? 0) > 0 && (
+                                <span className="text-[10px] text-muted">
+                                  consent until {formatChainTime(ev.deadline)}
+                                </span>
                               )}
                             </div>
                           </TableCell>
@@ -326,46 +391,24 @@ export function Traceability() {
                           </TableCell>
                           <TableCell className="text-xs">
                             {ev.actor ? (
-                              <a
-                                className="font-mono text-primary hover:underline"
-                                href={explorerAddressUrl(ev.actor)}
-                                target="_blank"
-                                rel="noreferrer"
-                                title={ev.actorName ?? ev.actor}
-                              >
-                                {ev.actorName ?? shortAddress(ev.actor)}
-                              </a>
-                            ) : (
-                              <span className="text-muted">—</span>
-                            )}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            <div className="flex flex-col">
-                              <span>#{ev.blockNumber ?? "?"}</span>
-                              {ev.finality && (
-                                <Badge
-                                  variant={ev.finality === "finalized" ? "neutral" : "warning"}
-                                  className="mt-1 w-fit"
+                              actorHref ? (
+                                <a
+                                  className="block max-w-[7rem] truncate font-mono text-primary hover:underline"
+                                  href={actorHref}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={ev.actorName ? `${ev.actorName} · ${ev.actor}` : ev.actor}
                                 >
-                                  {ev.finality}
-                                </Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-xs text-muted">
-                            {fmtTime(ev.blockTimestamp)}
-                          </TableCell>
-                          <TableCell>
-                            {link ? (
-                              <a
-                                className="font-mono text-xs text-primary hover:underline"
-                                href={link}
-                                target="_blank"
-                                rel="noreferrer"
-                                data-testid="trace-tx-link"
-                              >
-                                {ev.txHash ? shortAddress(ev.txHash) : "tx"} →
-                              </a>
+                                  {ev.actorName ?? shortHex(ev.actor, 8)}
+                                </a>
+                              ) : (
+                                <span
+                                  className="block max-w-[7rem] truncate font-mono text-muted"
+                                  title={ev.actor}
+                                >
+                                  {ev.actorName ?? shortHex(ev.actor, 8)}
+                                </span>
+                              )
                             ) : (
                               <span className="text-muted">—</span>
                             )}

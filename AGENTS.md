@@ -2201,3 +2201,141 @@ The delete confirmation resolves its own pet label, on BOTH ports: iOS inside
 `DeleteCredentialDialog` (via `List<Pet>.petLabel`). Never reintroduce a caller-supplied name
 parameter - two callers passing different fallbacks (`""` vs `"DogTag #<id>"`) is exactly how the
 same record came to be named two different ways depending on which screen raised the dialog.
+
+## On-chain provenance in the audit surfaces (government Oversight, vet Traceability)
+
+The oversight indexer's demo mode makes the activity feeds **entirely synthetic**, and nothing in the
+payload says so. `INDEXER_DEMO_MODE` / `DEMO_MODE` / `VITE_DEMO_MODE` (`stacks/indexer/api/src/main.rs`)
+swaps `AlloyLogSource` for a `MemLogSource` seeded by `demo_seed()`, which emits placeholder identifiers
+- `txHash` `0x0100`…`0x0800`, `blockHash` `0x01`…`0x08`, blocks 1-8, roots `0x1111…`/`0x2222…`. It also
+uses the REAL registry addresses, so the rows look plausible. Worse, `routes.rs` composes
+`txUrl = EXPLORER_BASE/tx/<hash>` **unconditionally**, so every synthetic row arrives carrying a
+live-looking `https://explorer.roax.net/tx/0x0800` that resolves to nothing.
+
+The government `/health` `demo` flag does NOT cover this: it is the API's ephemeral-store flag, and the
+topbar's `LIVE CHAIN` badge describes the ISSUANCE backend. A stack can therefore be truthfully live on
+chain 135 while its Oversight table is 100% scripted.
+
+The fix lives in `packages/ui/src/chain/` (`provenance.ts` + `ChainValue.tsx`), shared by BOTH portals so
+they cannot fork into separate dialects:
+
+- `chainProvenance(ev)` returns `synthetic` unless `txHash` is a well-formed 32-byte value. This is
+  arithmetic, not a demo-mode guess - an EVM transaction hash is keccak256 output, so `0x0800` cannot
+  address a transaction on any chain. It therefore also catches a single synthetic row inside an
+  otherwise-real feed, which a header badge cannot.
+  **Both badge labels are deliberately about SHAPE and symmetric** - `chain-addressable` /
+  `not chain-addressable`, never `on-chain`. No chain read happens on this path, so a green badge
+  claiming the transaction EXISTS would be asserting a fact from arithmetic, the same over-claiming the
+  module exists to remove. The `data-testid`s stay `provenance-onchain` / `provenance-synthetic`.
+- `txExplorerHref(ev)` returns `null` for a synthetic event **even when the API supplied a `txUrl`**;
+  callers render the hash inert rather than linking. Prefer the API's `txUrl` over composing one - the
+  deployment's `EXPLORER_BASE` need not be the ROAX default. When composing, it delegates to
+  `explorerTxUrl`/`explorerAddressUrl` (`packages/ui/src/wallet/chain.ts`) so the explorer path has one
+  home and this module cannot drift from what the rest of the portals link to.
+- `eventDetailFields(ev, joined?)` labels every identifier. `recordType` arrives EITHER as a human label
+  (`TRAVEL_CLEARANCE`) or as its keccak key depending on whether the indexer's directory reversed it, so
+  the label follows the value's shape (`isHash32`). The optional `ChainDetailContext` folds in what the
+  portal's OWN joined row knows, and exists because the chain payload is owner-blind and label-free:
+  `purpose` is only ever `keccak256(label) % r`, and **`RootIssued`/`RootRevoked` carry no `recordType`
+  either** (`chain.rs` sets it only for `issuerCreated`/`whitelisted`/`delisted`), so on those rows and
+  on `verified` the readable values can come from nowhere else. The context can only make a value more
+  readable or drop a duplicate - `eventDetailFields` resolves `ev.recordType ?? joined.recordType`, so a
+  join can never override what the chain itself asserts. The row-expansion panel deliberately passes
+  none of it (that panel is the raw chain payload).
+- **`joinedDetailContext(local)` builds that context, and BOTH consoles must go through it.** It exists
+  because government and vet each assembled the context themselves and so rendered the SAME on-chain
+  event with different facts - an operator comparing the two consoles saw them disagree. It encodes one
+  doctrinal rule: a `joinedBy: "dogTagId"` join is TAG-granular, proving only that the tag is one this
+  operator credentialed and never WHICH credential was verified (the owner-hidden `Verified` binds no
+  root and no record type), so such a join lends the event neither its `recordType` - that would assert
+  the very thing the event does not establish - nor its `dogTagId`, which the row's join cell already
+  shows in readable form. Every other join is by anchored root or tx hash, an exact match, so its record
+  type describes that event and is shown. Do not re-open-code this at a call site.
+- `emittingContractRole(type)` names what `contract` is: it is NOT always the issuer clone -
+  `issuerCreated` **and `rootRegistered`** come from the factory (`chain.rs` decodes both only when the
+  emitting address equals `ctx.factory`), `whitelisted`/`delisted` from the IssuerRegistry, `verified`
+  from the verification registry. Only `rootIssued`/`rootRevoked` are emitted by the clone itself.
+- `emittingCloneName(ev)` gates the clone's human name on `contract == clone`. The indexer resolves
+  `cloneName` from `ev.clone`, which on a factory-emitted row is the clone the factory ACTED ON - so
+  rendering it under the emitting address makes the factory read as that named clone. The clone and its
+  name stay together in the expansion panel, where they are labelled as the clone.
+
+Two table-layout traps, both of which produced visibly broken output before being caught by screenshot:
+the `<TableHead>` order and the `<TableCell>` order are independent and silently render mismatched
+columns if you reorder one; and a `ChainValue` with an inline label cannot shrink (the label is
+`shrink-0`), so in a width-capped column its content overflows and collides with the next cell - pass
+`stacked` in dense columns. Verify layout by measuring
+`table.getBoundingClientRect().width - .overflow-x-auto.clientWidth` at a 1512px viewport, not by eye.
+
+**Only an OPAQUE identifier may be middle-truncated, and `shortValue` is the one place that decides.**
+`shortHex` is a middle-truncator, which is right for hex - head and tail identify it, the middle is
+noise - and exactly WRONG for a human label, where the middle carries the meaning. `ChainValue` used to
+apply it to every value, so at the tables' `head = 8` the government's flagship record type rendered as
+`TRAVEL_C…ARANCE` (and `SERVICE_ATTESTATION` as `SERVICE_…TATION`, an `issuerCreated` name as
+`DogTag G…hority`) - corruption, not elision, on the cell that says what kind of record an event
+concerns. `shortValue` now gates on `isOpaqueIdentifier` (`0x`-hex, or an all-digit field element such
+as the decimal `dogTagId`); human text is returned whole and left to CSS `truncate`, so it degrades by
+clipping while staying complete in the DOM, the `title`, and the copy affordance. Do not reach for
+`shortHex` directly in a component - a new call site is how the mangling comes back.
+
+The row-expansion panel renders values in full via `ChainValue`/`TxRef`'s `full` prop, which swaps
+`truncate` for `break-all` (`break-words` for human text, which has word boundaries to break on):
+**dropping the `head` truncation alone is not enough**, because `truncate` would still clip the value in
+CSS - the string would be in the DOM (so a `toContainText` assertion passes) while the reader still
+cannot see it. `labelHidden` is the companion for a caller that prints the label itself; it keeps the
+label for the copy button's accessible name rather than degrading it to `Copy full ` as an empty
+`label` string did.
+
+`CopyButton` falls back to a hidden-textarea `document.execCommand("copy")` when `navigator.clipboard`
+is unavailable, and shows a FAILED state when both paths fail. Not legacy nostalgia: `navigator.clipboard`
+is undefined in any non-secure context, and these portals are routinely served over plain `http://` on a
+LAN - so without the fallback the button is dead in exactly the demo topology. It has to be visible
+rather than silent because middle-truncation removes characters from the STRING, so for an opaque
+identifier the elided characters are not in the DOM at all and copy is the operator's only route to the
+full value (a human label is merely CSS-clipped, so it does survive in the DOM). Its failure message may
+only name a fallback every
+consumer HAS: the row expansion is government-only (vet/groomer Traceability has no expander), so the
+message points at the value's own hover text, which both portals render.
+
+The e2e fixtures must use well-formed 32-byte hashes or every row reads as synthetic; `oversight.spec.ts`
+and `traceability.spec.ts` were updated accordingly and now assert both provenance verdicts explicitly.
+
+### Running the portal Playwright specs by hand WRITES to a live backend
+
+`vite preview` **honours `server.proxy`** in these portals, so serving the app on your own port does
+NOT give you your own backend: `/api` on any port you serve from proxies to
+`VITE_GOV_API_PROXY || http://localhost:44832`. "My own port" is not "my own backend" - a crew that
+carefully picked a spare port still drove the captain's live government API on ROAX chain 135.
+
+Only ONE government spec mocks the backend. `e2e/oversight.spec.ts` intercepts with `page.route` +
+`fulfill` and makes no backend calls. `e2e/government.spec.ts`, `e2e/receipt.spec.ts` and
+`e2e/records-crud.spec.ts` are deliberately unmocked live-portal drivers: between them they issue
+credentials, edit, revoke and expire, each anchoring on-chain. So `npx playwright test` with **no file
+filter** writes real records to whatever backend the proxy points at. That has happened once (five
+records created, later revoked with captain authorisation).
+
+Two safe forms:
+
+    GOV_URL=http://localhost:<your-port> npx playwright test e2e/oversight.spec.ts
+    VITE_GOV_API_PROXY=http://127.0.0.1:9 npx vite preview --port <your-port> --strictPort
+
+Note that `government.spec.ts` reads `/api/health` through `page.request`, which BYPASSES `page.route`
+entirely - so "this spec mocks" is never by itself proof that nothing escapes to a real backend.
+
+All five `stacks/vet/web/e2e` specs mock, so the vet suite is safe unfiltered.
+
+Neither `playwright.config.ts` is in `pnpm test` or CI (both need a served portal + browsers). The
+practical consequence, seen for real: an assertion that could never pass sat in the tree and the
+pipeline's test step did not catch it. Every e2e assertion on these portals is only as good as
+someone remembering to run it by hand, so run the relevant spec before claiming it passes.
+
+### Reading credential state straight from chain 135
+
+`isValid(bytes32)` = `0x6a938567`, `isRevoked(bytes32)` = `0x4294857f`, `issuedAt(bytes32)` =
+`0x6240dded`, called on the per-recordType issuer clone (`TRAVEL_CLEARANCE`
+`0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F`, `EU_HEALTH_CERT`
+`0x421cacf2a526726635fe16ac2c26d3f95c7726de`) via `eth_call` against `https://devrpc.roax.net`. Useful
+to verify a revoke rather than trusting the API's echo.
+
+Confirmed by that read: **`expired` is a document-borne status with no on-chain effect**. A record the
+store reports as `expired` is still `isValid=true` on chain, so expiry alone does not revoke.
