@@ -375,7 +375,7 @@ private fun Kv(label: String, value: String) {
 private fun SectionTable(title: String, slate: Color, rows: List<Row3>) {
     if (rows.isEmpty()) return
     val c = DogTagTheme.colors
-    val amber = Color(0xFFB45309)
+    val amber = c.warning
     Column(Modifier.fillMaxWidth().border(1.dp, c.outline)) {
         Text(
             title, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White,

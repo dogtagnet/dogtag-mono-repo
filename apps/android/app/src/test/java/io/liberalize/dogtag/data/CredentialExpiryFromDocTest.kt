@@ -28,15 +28,26 @@ class CredentialExpiryFromDocTest {
 
     private val now: Instant = Instant.parse("2026-07-28T12:00:00Z")
 
-    /** Leaves inside `data` are packed `"<salt>:<tag>:<value>"`. */
-    private fun docJson(validityBlock: String): String =
+    /**
+     * Leaves inside `data` are packed `"<salt>:<tag>:<value>"`.
+     *
+     * `subjectBlock` is appended INSIDE `credentialSubject`; `dataBlock` is appended as a SIBLING of it,
+     * at the top level of `data`. The two must stay separate: `VACCINATION` writes its expiry to the
+     * top level, so appending it to the subject block instead would build a shape no issuer emits and
+     * the tier-3 cases would pass against an implementation that only ever reads `credentialSubject`.
+     */
+    private fun docJson(subjectBlock: String, dataBlock: String = ""): String =
         """{"version":"dogtag/1.0",
-           "data":{"credentialSubject":{"dogTagId":"aa:2:42"$validityBlock}},
+           "data":{"credentialSubject":{"dogTagId":"aa:2:42"$subjectBlock}$dataBlock},
            "signature":{"type":"DogTagMerkleProof","targetHash":"0x11","proof":[],"merkleRoot":"0x11"},
            "privacy":{"obfuscated":[]},
            "issuer":{"documentStore":"0xabc","name":"Gov","domain":"gov.example","recordType":"TRAVEL_CLEARANCE"}}"""
 
-    private fun credential(validityBlock: String, verdict: String = "VALID") = Credential(
+    private fun credential(
+        subjectBlock: String,
+        dataBlock: String = "",
+        verdict: String = "VALID",
+    ) = Credential(
         id = "rec-1",
         dogTagId = "42",
         group = CredentialGroup.Travel,
@@ -47,17 +58,22 @@ class CredentialExpiryFromDocTest {
         issuedOn = "",
         credentialRoot = "0x11",
         verdict = verdict,
-        wrappedDocJson = docJson(validityBlock),
+        wrappedDocJson = docJson(subjectBlock, dataBlock),
         lastCheckedAt = now.minus(Duration.ofMinutes(1)).toString(),
         verdictReason = "anchored on ROAX and not revoked",
     )
 
+    /** Tier 1 — TRAVEL_CLEARANCE's nested `credentialSubject.validity` block. */
     private val lapsed = ""","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2026-06-30"}"""
     private val current = ""","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2027-06-30"}"""
 
-    /** EU_HEALTH_CERT has NO `validity` block: its window is the flat Annex-IV `rabiesValidUntil`. */
+    /** Tier 2 — EU_HEALTH_CERT has NO `validity` block: its window is the flat Annex-IV leaf. */
     private val rabiesLapsed = ""","rabiesValidUntil":"dd:2:2026-06-30""""
     private val rabiesCurrent = ""","rabiesValidUntil":"dd:2:2027-06-30""""
+
+    /** Tier 3 — VACCINATION writes a DOTLESS `validUntil`, so it lands beside `credentialSubject`. */
+    private val topLevelLapsed = ""","validUntil":"ee:2:2026-06-30""""
+    private val topLevelCurrent = ""","validUntil":"ee:2:2027-06-30""""
 
     /** The packed leaf is unwrapped to its bare value, exactly as the receipt sheet reads it. */
     @Test
@@ -170,6 +186,58 @@ class CredentialExpiryFromDocTest {
     }
 
     /**
+     * TIER 3, and the most common record an owner holds. `RABIES_VACCINATION` declares a DOTLESS
+     * `{ path: "validUntil" }`, so `buildFieldsObject` puts it at the top level of `fields` and
+     * `build_vc` clones that straight into `data` — a SIBLING of `credentialSubject`, not a child.
+     * Reading only the subject left every lapsed rabies certificate badging a full-strength green
+     * VALID on Home and Documents, on the one-year cycle the vet's own demo issues.
+     */
+    @Test
+    fun aLapsedVaccinationExpiresFromTheTopLevelDataLeaf() {
+        val cred = credential("", topLevelLapsed)
+        assertEquals("2026-06-30", cred.validUntil)
+        assertEquals("EXPIRED", cred.badge(now).label)
+        assertEquals(VerdictDisplay.Tone.WARNING, cred.badge(now).tone)
+    }
+
+    /** …and one still inside its window is untouched, exactly as for the other two tiers. */
+    @Test
+    fun aVaccinationInsideItsWindowIsUnaffected() {
+        assertEquals("2027-06-30", credential("", topLevelCurrent).validUntil)
+        assertEquals("VALID", credential("", topLevelCurrent).badge(now).label)
+    }
+
+    /**
+     * The full precedence order, each step asserted in BOTH directions so a reversed implementation
+     * cannot pass by accident: tier 1 beats tier 2 beats tier 3.
+     */
+    @Test
+    fun theThreeTiersArePreferredInOrder() {
+        assertEquals("2027-06-30", credential(current + rabiesLapsed, topLevelLapsed).validUntil)
+        assertEquals("2026-06-30", credential(lapsed + rabiesCurrent, topLevelCurrent).validUntil)
+
+        assertEquals("2027-06-30", credential(rabiesCurrent, topLevelLapsed).validUntil)
+        assertEquals("2026-06-30", credential(rabiesLapsed, topLevelCurrent).validUntil)
+
+        assertEquals("EXPIRED", credential(lapsed + rabiesCurrent, topLevelCurrent).badge(now).label)
+        assertEquals("VALID", credential(current + rabiesLapsed, topLevelLapsed).badge(now).label)
+    }
+
+    /**
+     * Tier 3 must not be gated on `credentialSubject`: it is a sibling, so a document without a subject
+     * block at all still carries a readable top-level claim.
+     */
+    @Test
+    fun theTopLevelLeafIsReadEvenWithNoCredentialSubject() {
+        val json = """{"version":"dogtag/1.0",
+           "data":{"validUntil":"ee:2:2026-06-30"},
+           "signature":{"type":"DogTagMerkleProof","targetHash":"0x11","proof":[],"merkleRoot":"0x11"},
+           "privacy":{"obfuscated":[]},
+           "issuer":{"documentStore":"0xabc","name":"Vet","domain":"vet.example","recordType":"VACCINATION"}}"""
+        assertEquals("2026-06-30", WrappedDoc(json).validUntil)
+    }
+
+    /**
      * The non-answer rule, kept intact through the fallback: a document carrying NEITHER leaf still
      * claims nothing. Manufacturing an expiry out of missing data is the same defect inverted.
      *
@@ -184,6 +252,10 @@ class CredentialExpiryFromDocTest {
         val emptyNested = ""","validity":{"validUntil":"cc:2:"}"""
         assertNull(credential(emptyNested).validUntil)
         assertEquals("2026-06-30", credential(emptyNested + rabiesLapsed).validUntil)
+
+        val emptyRabies = ""","rabiesValidUntil":"dd:2:""""
+        assertNull(credential(emptyRabies).validUntil)
+        assertEquals("2026-06-30", credential(emptyNested + emptyRabies, topLevelLapsed).validUntil)
     }
 
     /** `by lazy` must stay out of the generated equality: forcing it on one instance may not make two

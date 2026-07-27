@@ -234,37 +234,44 @@ struct WrappedDoc {
         return s
     }
 
-    /// The last day this credential claims to be good for, whichever leaf its record type writes it in:
-    /// `credentialSubject.validity.validUntil` first, else the FLAT `credentialSubject.rabiesValidUntil`.
+    /// The last day this credential claims to be good for, whichever of the THREE leaf shapes its record
+    /// type writes it in, in this preference order:
     ///
-    /// The two leaves exist because the shapes differ per record type: `TRAVEL_CLEARANCE` carries a
-    /// nested `validity` block, while `EU_HEALTH_CERT` has no `validity` block at all and states its
-    /// window as the flat Annex-IV `rabiesValidUntil`. The preference chain is unconditional — it is NOT
-    /// branched on `recordType` — so it mirrors the owner wallet's already-shipped rule
-    /// (`stacks/owner/web/src/lib/receipt.ts`) exactly and covers any future type using the flat leaf.
-    /// Without it a lapsed EU health certificate badged a full-strength green VALID while the same
-    /// document read EXPIRED on the web wallet.
+    ///  1. `credentialSubject.validity.validUntil` — `TRAVEL_CLEARANCE` (nested `validity` block)
+    ///  2. `credentialSubject.rabiesValidUntil`    — `EU_HEALTH_CERT` (flat Annex-IV leaf, no `validity`)
+    ///  3. `validUntil` at the TOP LEVEL of `data` — `VACCINATION` (outside `credentialSubject` entirely)
+    ///
+    /// Three shapes because three issuers build `data` differently. Tier 3 is the one that looks like a
+    /// typo and is not: `RABIES_VACCINATION` declares a DOTLESS `{ path: "validUntil" }`
+    /// (`packages/ui/src/schema/recordTypes.ts`), `buildFieldsObject` therefore puts it at the top level
+    /// of `fields`, and `vet-api`'s `build_vc` clones `fields` verbatim into `data` — so it is a sibling
+    /// of `credentialSubject`, never a child. That is why this reads `data` directly for tier 3 and must
+    /// NOT be gated on `credentialSubject` being present.
+    ///
+    /// The chain is unconditional — never branched on `recordType` — so a new record type reusing any of
+    /// these shapes is covered on arrival, and a fourth shape goes here rather than at a call site.
     ///
     /// ROOT-COVERED, so it is tamper-evident: an owner cannot extend their own credential without
     /// breaking integrity. It is also the ONLY expiry the protocol has — `DogTagIssuer.sol` carries no
     /// expiry concept at all — so every surface that renders a validity claim has to read this or
     /// silently ignore expiry, which is what all four list badges used to do.
     ///
-    /// Emptiness is tested on the UNWRAPPED value, not the packed leaf, so a present-but-empty
-    /// `validity.validUntil` still falls through rather than suppressing the fallback.
+    /// Emptiness is tested on the UNWRAPPED value, not the packed leaf, so a present-but-empty earlier
+    /// tier still falls through rather than suppressing the later ones.
     ///
     /// "" when the document claims no validity window at all — never the same as an expired one. Leaves
     /// are packed `"<salt>:<tag>:<value>"`.
     var validUntil: String {
-        guard let cs = data["credentialSubject"] as? [String: Any] else { return "" }
         func unwrap(_ keyPath: String, _ raw: Any?) -> String? {
             guard let packed = raw as? String, !packed.isEmpty else { return nil }
             let value = WrappedDoc.parseLeaf(keyPath: keyPath, raw: packed).value
             return value.isEmpty ? nil : value
         }
-        let validity = cs["validity"] as? [String: Any]
+        let cs = data["credentialSubject"] as? [String: Any]
+        let validity = cs?["validity"] as? [String: Any]
         return unwrap("validity.validUntil", validity?["validUntil"])
-            ?? unwrap("rabiesValidUntil", cs["rabiesValidUntil"])
+            ?? unwrap("rabiesValidUntil", cs?["rabiesValidUntil"])
+            ?? unwrap("validUntil", data["validUntil"])
             ?? ""
     }
 

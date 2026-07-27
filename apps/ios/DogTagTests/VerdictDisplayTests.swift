@@ -175,24 +175,37 @@ final class VerdictDisplayTests: XCTestCase {
 
     // MARK: - where the expiry actually comes from
 
-    private func docJson(_ validityBlock: String) -> String {
+    /// `subjectBlock` is appended INSIDE `credentialSubject`; `dataBlock` is appended as a SIBLING of it,
+    /// at the top level of `data`. The two must stay separate: `VACCINATION` writes its expiry to the top
+    /// level, so appending it to the subject block instead would build a shape no issuer emits and the
+    /// tier-3 cases would pass against an implementation that only ever reads `credentialSubject`.
+    private func docJson(_ subjectBlock: String, _ dataBlock: String = "") -> String {
         """
         {"version":"dogtag/1.0",
-         "data":{"credentialSubject":{"dogTagId":"aa:2:42"\(validityBlock)}},
+         "data":{"credentialSubject":{"dogTagId":"aa:2:42"\(subjectBlock)}\(dataBlock)},
          "signature":{"type":"DogTagMerkleProof","targetHash":"0x11","proof":[],"merkleRoot":"0x11"},
          "privacy":{"obfuscated":[]},
          "issuer":{"documentStore":"0xabc","name":"Gov","domain":"gov.example","recordType":"TRAVEL_CLEARANCE"}}
         """
     }
 
+    /// Tier 1 — TRAVEL_CLEARANCE's nested `credentialSubject.validity` block.
     private let lapsedBlock = ##","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2026-06-30"}"##
     private let currentBlock = ##","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2027-06-30"}"##
 
-    /// EU_HEALTH_CERT has NO `validity` block: its window is the flat Annex-IV `rabiesValidUntil`.
+    /// Tier 2 — EU_HEALTH_CERT has NO `validity` block: its window is the flat Annex-IV leaf.
     private let rabiesLapsedBlock = ##","rabiesValidUntil":"dd:2:2026-06-30""##
     private let rabiesCurrentBlock = ##","rabiesValidUntil":"dd:2:2027-06-30""##
 
-    private func credential(_ validityBlock: String, verdict: String = "VALID") -> Credential {
+    /// Tier 3 — VACCINATION writes a DOTLESS `validUntil`, so it lands beside `credentialSubject`.
+    private let topLevelLapsedBlock = ##","validUntil":"ee:2:2026-06-30""##
+    private let topLevelCurrentBlock = ##","validUntil":"ee:2:2027-06-30""##
+
+    private func credential(
+        _ subjectBlock: String,
+        _ dataBlock: String = "",
+        verdict: String = "VALID"
+    ) -> Credential {
         Credential(
             id: "rec-1",
             dogTagId: "42",
@@ -204,7 +217,7 @@ final class VerdictDisplayTests: XCTestCase {
             issuedOn: "",
             credentialRoot: "0x11",
             verdict: verdict,
-            wrappedDocJson: docJson(validityBlock),
+            wrappedDocJson: docJson(subjectBlock, dataBlock),
             importedAt: nil,
             lastCheckedAt: ago(60),
             verdictReason: "anchored on ROAX and not revoked"
@@ -291,6 +304,50 @@ final class VerdictDisplayTests: XCTestCase {
         XCTAssertEqual(credential(lapsedBlock + rabiesCurrentBlock).badge(now: now).label, "EXPIRED")
     }
 
+    /// TIER 3, and the most common record an owner holds. `RABIES_VACCINATION` declares a DOTLESS
+    /// `{ path: "validUntil" }`, so `buildFieldsObject` puts it at the top level of `fields` and
+    /// `build_vc` clones that straight into `data` — a SIBLING of `credentialSubject`, not a child.
+    /// Reading only the subject left every lapsed rabies certificate badging a full-strength green VALID
+    /// on Home and Documents, on the one-year cycle the vet's own demo issues.
+    func test_aLapsedVaccinationExpiresFromTheTopLevelDataLeaf() {
+        let cred = credential("", topLevelLapsedBlock)
+        XCTAssertEqual(cred.validUntil, "2026-06-30")
+        XCTAssertEqual(cred.badge(now: now).label, "EXPIRED")
+        XCTAssertEqual(cred.badge(now: now).tone, .warning)
+    }
+
+    /// …and one still inside its window is untouched, exactly as for the other two tiers.
+    func test_aVaccinationInsideItsWindowIsUnaffected() {
+        XCTAssertEqual(credential("", topLevelCurrentBlock).validUntil, "2027-06-30")
+        XCTAssertEqual(credential("", topLevelCurrentBlock).badge(now: now).label, "VALID")
+    }
+
+    /// The full precedence order, each step asserted in BOTH directions so a reversed implementation
+    /// cannot pass by accident: tier 1 beats tier 2 beats tier 3.
+    func test_theThreeTiersArePreferredInOrder() {
+        XCTAssertEqual(credential(currentBlock + rabiesLapsedBlock, topLevelLapsedBlock).validUntil, "2027-06-30")
+        XCTAssertEqual(credential(lapsedBlock + rabiesCurrentBlock, topLevelCurrentBlock).validUntil, "2026-06-30")
+
+        XCTAssertEqual(credential(rabiesCurrentBlock, topLevelLapsedBlock).validUntil, "2027-06-30")
+        XCTAssertEqual(credential(rabiesLapsedBlock, topLevelCurrentBlock).validUntil, "2026-06-30")
+
+        XCTAssertEqual(credential(lapsedBlock + rabiesCurrentBlock, topLevelCurrentBlock).badge(now: now).label, "EXPIRED")
+        XCTAssertEqual(credential(currentBlock + rabiesLapsedBlock, topLevelLapsedBlock).badge(now: now).label, "VALID")
+    }
+
+    /// Tier 3 must not be gated on `credentialSubject`: it is a sibling, so a document without a subject
+    /// block at all still carries a readable top-level claim.
+    func test_theTopLevelLeafIsReadEvenWithNoCredentialSubject() {
+        let json = """
+        {"version":"dogtag/1.0",
+         "data":{"validUntil":"ee:2:2026-06-30"},
+         "signature":{"type":"DogTagMerkleProof","targetHash":"0x11","proof":[],"merkleRoot":"0x11"},
+         "privacy":{"obfuscated":[]},
+         "issuer":{"documentStore":"0xabc","name":"Vet","domain":"vet.example","recordType":"VACCINATION"}}
+        """
+        XCTAssertEqual(WrappedDoc(json: json)?.validUntil, "2026-06-30")
+    }
+
     /// The non-answer rule, kept intact through the fallback: a document carrying NEITHER leaf still
     /// claims nothing. Manufacturing an expiry out of missing data is the same defect inverted.
     ///
@@ -303,6 +360,10 @@ final class VerdictDisplayTests: XCTestCase {
         let emptyNested = ##","validity":{"validUntil":"cc:2:"}"##
         XCTAssertNil(credential(emptyNested).validUntil)
         XCTAssertEqual(credential(emptyNested + rabiesLapsedBlock).validUntil, "2026-06-30")
+
+        let emptyRabies = ##","rabiesValidUntil":"dd:2:""##
+        XCTAssertNil(credential(emptyRabies).validUntil)
+        XCTAssertEqual(credential(emptyNested + emptyRabies, topLevelLapsedBlock).validUntil, "2026-06-30")
     }
 
     /// A record whose document cannot be parsed has no expiry claim, and must not blow up a list render
