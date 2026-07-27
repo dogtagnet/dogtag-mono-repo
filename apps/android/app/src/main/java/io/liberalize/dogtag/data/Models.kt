@@ -134,6 +134,21 @@ class WrappedDoc(val json: String) {
     val documentStore: String get() = issuerObj.optString("documentStore")
     val issuerName: String get() = issuerObj.optString("name", "Unknown issuer")
     val issuerDomain: String get() = issuerObj.optString("domain", "")
+
+    /**
+     * The ROOT-COVERED issuer identity leaf (`data.issuer`, or `data.credentialSubject.issuer`).
+     *
+     * Unlike the top-level `issuer` block, this is inside the Merkle root, so it cannot be relabelled
+     * without breaking integrity. It is the value `IssuerIdentity.assertDomain` checks the displayed
+     * domain against.
+     */
+    val rootCoveredIssuerLeaf: String?
+        get() {
+            data.optString("issuer", "").takeIf { it.isNotEmpty() }?.let { return it }
+            return data.optJSONObject("credentialSubject")
+                ?.optString("issuer", "")
+                ?.takeIf { it.isNotEmpty() }
+        }
     val recordType: String get() = issuerObj.optString("recordType", "")
 
     /** Best-effort dogTagId extraction from the data tree (data.credentialSubject.dogTagId leaf). */

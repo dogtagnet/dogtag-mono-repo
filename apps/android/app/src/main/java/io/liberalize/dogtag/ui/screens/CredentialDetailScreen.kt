@@ -54,6 +54,8 @@ import io.liberalize.dogtag.net.BindingTone
 import io.liberalize.dogtag.net.IssuerBinding
 import io.liberalize.dogtag.net.IssuerBindingResolver
 import io.liberalize.dogtag.net.IssuerBindingState
+import io.liberalize.dogtag.net.IssuerDidAssertion
+import io.liberalize.dogtag.net.IssuerIdentity
 import io.liberalize.dogtag.ui.DogTagTheme
 
 /**
@@ -159,9 +161,14 @@ fun CredentialDetailScreen(cred: Credential, onBack: () -> Unit) {
             if (chainName.isNotBlank()) {
                 KeyValueRow("Issuer", chainName)
                 if (docName.isNotBlank() && normaliseName(docName) != normaliseName(chainName)) {
+                    // Deliberately MUTED, not red: free-form labels drift between what an issuing stack
+                    // stamps and what the clone was created with, so a red line here would fire on
+                    // legitimate credentials and train people to ignore it. The authoritative name is
+                    // already displayed above; this is a footnote. The DOMAIN discrepancy below stays red —
+                    // that one is a structured comparison against a root-covered value.
                     Text(
                         "The document names a different issuer: \u201C$docName\u201D",
-                        fontSize = 11.sp, color = c.danger,
+                        fontSize = 11.sp, color = c.muted,
                     )
                 }
             } else if (docName.isNotBlank()) {
@@ -179,6 +186,26 @@ fun CredentialDetailScreen(cred: Credential, onBack: () -> Unit) {
             } else if (docDomain.isNotBlank()) {
                 KeyValueRow("Issuer domain (from document)", docDomain)
             }
+
+            // The DID assertion — the OTHER half of issuer identity, required alongside the DNS binding.
+            // DNS proves the domain owner vouches for the address; this proves the document has not been
+            // relabelled since issuance. It works even when the binding is unavailable, because it needs
+            // nothing but the document itself.
+            when (val a = IssuerIdentity.assertDomain(doc)) {
+                is IssuerDidAssertion.Mismatch -> Text(
+                    "This credential was issued under \u201C${a.rootCovered}\u201D, but the document " +
+                        "claims \u201C${a.displayed}\u201D",
+                    fontSize = 11.sp, color = c.danger,
+                )
+                // Deliberately NOT a pass, and said so rather than left silent.
+                IssuerDidAssertion.NotAssertable -> Text(
+                    "This document carries no issuer identity inside its Merkle root, so its domain " +
+                        "could not be cross-checked.",
+                    fontSize = 11.sp, color = c.muted,
+                )
+                is IssuerDidAssertion.Match -> Unit
+            }
+
             DomainBindingLine(binding)
             val rt = doc?.recordType ?: cred.recordType
             if (rt.isNotBlank()) KeyValueRow("Record type", rt)
