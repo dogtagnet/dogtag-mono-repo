@@ -10,10 +10,13 @@
 #   1. The test file is `#![cfg(feature = "prover")]`, so `cargo test -p dogtag-standard-rs` (no
 #      feature flag) compiles it away and prints `running 0 tests`. This script always passes
 #      `--features prover`.
-#   2. The test self-skips when the proving artifacts are absent, and libtest CAPTURES stdout for
-#      PASSING tests - so a print from inside the test cannot annotate anything. This script checks
-#      the artifacts FIRST, from the shell, where a `::error::` line is parsed by GitHub and an
-#      exit code is a real failure.
+#   2. The test used to SELF-SKIP when the proving artifacts were absent, because the graph was an
+#      uncommitted out-of-band build. Both artifacts are committed now, so absence means an
+#      incomplete checkout and the test PANICS instead. The wrapper still owns the diagnosis: a
+#      panic from inside libtest names one path, whereas this script checks BOTH artifacts FIRST,
+#      from the shell, where a `::error::` line is parsed by GitHub, an exit code is a real failure,
+#      and the message can say how to restore them. (libtest also CAPTURES stdout for PASSING tests,
+#      so a print from inside the test could never have annotated anything either way.)
 #
 # Usage: scripts/test-consent-parity.sh   (or: make test-consent-parity)
 set -euo pipefail

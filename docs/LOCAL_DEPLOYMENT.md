@@ -76,7 +76,8 @@ It all runs against the **live ROAX testnet** (chainId **135**, gas token **PLAS
 >   **fail-closed** - `POST /prove-consent` returns unavailable rather than serving a non-chain-valid
 >   proof. `consent.graph` is **not** read by the prover-service - it is the on-device witness
 >   backend vendored into each app bundle, so the phone flows need it in `circuits/build/` too.
->   Build it first (§2.2 in PREREQUISITES).
+>   It is committed like the zkey, so nothing needs building - a missing file is an incomplete
+>   checkout (§2.2 in PREREQUISITES).
 
 Run this single block to confirm the toolchain and inputs are present.
 
