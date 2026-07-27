@@ -2,6 +2,7 @@ import { cn } from "../lib/cn";
 import {
   bindingExplanation,
   bindingLine,
+  bindingProvenanceLine,
   bindingTone,
   type IssuerDomainBinding,
 } from "../domain/issuerDomainBinding";
@@ -26,6 +27,11 @@ import {
  */
 export interface DomainBindingBadgeProps {
   binding: IssuerDomainBinding | null | undefined;
+  /**
+   * Show the block anchor + live-vs-recorded DNS line beneath the badge. Off by default so the badge
+   * stays one line beside an issuer; on for audit surfaces, where "verified WHEN" is the whole point.
+   */
+  showProvenance?: boolean;
   /**
    * Render nothing at all when there is no domain claim on-chain. Off by default: a quiet line is
    * better than silence, because an issuer shown with NO badge must not read as verified.
@@ -132,6 +138,7 @@ function Mark({ tone, state }: { tone: ReturnType<typeof bindingTone>; state: st
 export function DomainBindingBadge({
   binding,
   hideWhenNoClaim = false,
+  showProvenance = false,
   className,
   "data-testid": testId,
 }: DomainBindingBadgeProps) {
@@ -141,6 +148,7 @@ export function DomainBindingBadge({
   const tone = bindingTone(binding.state);
   const line = bindingLine(binding);
   const description = binding.state === "verified" ? binding.description?.trim() : undefined;
+  const provenance = showProvenance ? bindingProvenanceLine(binding) : null;
 
   return (
     <span
@@ -160,6 +168,11 @@ export function DomainBindingBadge({
         // address. Quoted so it reads as the domain's words, not ours.
         <span data-testid="domain-binding-description" className="min-w-0 break-words pl-5 text-muted">
           Domain says: “{description}”
+        </span>
+      )}
+      {provenance && (
+        <span data-testid="domain-binding-provenance" className="min-w-0 break-words pl-5 text-muted">
+          {provenance}
         </span>
       )}
     </span>
