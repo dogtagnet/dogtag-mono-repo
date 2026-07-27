@@ -33,7 +33,8 @@ use crate::app::AppState;
 use crate::auth::now;
 use crate::store::{
     Appointment, AppointmentQuery, Client, ClientPet, ClientQuery, Page, PetQuery, PetRow, Store,
-    VerificationLog, VerificationQuery, VerifySession, APPOINTMENT_STATES, VERIFICATION_STATES,
+    StoreReadError, VerificationLog, VerificationQuery, VerifySession, APPOINTMENT_STATES,
+    VERIFICATION_STATES,
 };
 
 type Resp = (StatusCode, Json<Value>);
@@ -359,6 +360,9 @@ async fn update_client(
     {
         return conflict;
     }
+    if let Some(conflict) = reject_orphaning_pet_removals(&st.store, &existing.pets, &pets).await {
+        return conflict;
+    }
     let mut c = Client {
         client_id: existing.client_id,
         name: body.name.trim().to_string(),
@@ -393,11 +397,20 @@ async fn update_client(
 /// Both passes are bounded to one page: a single client's bookings and checks, never the whole
 /// collection.
 async fn resync_client_labels(store: &Arc<dyn Store>, c: &Client) {
-    let pet_name_of = |pet_id: Option<&String>| {
-        pet_id
-            .and_then(|pid| c.pets.iter().find(|p| &p.pet_id == pid))
+    // A row naming NO pet has no name to carry; a row whose pet no longer resolves KEEPS the name it
+    // has. Those two cases used to share `unwrap_or_default()`, which blanked the second — and an
+    // unresolvable pet is not evidence the stored name was wrong, exactly as an unreadable client is
+    // not (see `refresh_client_labels`). `reject_orphaning_pet_removals` should now make the second
+    // case unreachable for any pet a row points at; this is the belt to that guard's braces, and it
+    // must not degrade the label it is defending.
+    let pet_name_of = |pet_id: Option<&String>, current: &str| match pet_id {
+        None => String::new(),
+        Some(pid) => c
+            .pets
+            .iter()
+            .find(|p| &p.pet_id == pid)
             .map(|p| p.name.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|| current.to_string()),
     };
 
     let appts = store
@@ -408,7 +421,7 @@ async fn resync_client_labels(store: &Arc<dyn Store>, c: &Client) {
         })
         .await;
     for mut a in appts.rows {
-        let pet_name = pet_name_of(a.pet_id.as_ref());
+        let pet_name = pet_name_of(a.pet_id.as_ref(), &a.pet_name);
         if a.client_name == c.name && a.pet_name == pet_name {
             continue;
         }
@@ -430,7 +443,7 @@ async fn resync_client_labels(store: &Arc<dyn Store>, c: &Client) {
         if !v.is_terminal() {
             continue;
         }
-        let pet_name = pet_name_of(v.pet_id.as_ref());
+        let pet_name = pet_name_of(v.pet_id.as_ref(), &v.pet_name);
         if v.client_name == c.name && v.pet_name == pet_name {
             continue;
         }
@@ -518,6 +531,42 @@ struct PetDogTagBody {
     dog_tag_id: String,
 }
 
+/// The two store reads every pet-uniqueness guard depends on, as a FALLIBLE seam.
+///
+/// The guards are the one place where "the store said nothing holds this" and "the store did not
+/// answer" must not be the same value: collapsing them lets a driver fault admit the duplicate they
+/// exist to refuse, silently, with no operator-visible sign. Narrowing that dependency to two
+/// methods is also what makes the refusal testable — a stub implementing this is two functions,
+/// where a stub implementing [`Store`] would be nearly sixty.
+#[async_trait::async_trait]
+trait PetLookup {
+    async fn lookup_pet(&self, pet_id: &str) -> Result<Option<PetRow>, StoreReadError>;
+    async fn lookup_pets_by_tag(&self, tag: &str) -> Result<Vec<PetRow>, StoreReadError>;
+}
+
+#[async_trait::async_trait]
+impl<S: Store + ?Sized> PetLookup for Arc<S> {
+    async fn lookup_pet(&self, pet_id: &str) -> Result<Option<PetRow>, StoreReadError> {
+        self.try_get_pet(pet_id).await
+    }
+    async fn lookup_pets_by_tag(&self, tag: &str) -> Result<Vec<PetRow>, StoreReadError> {
+        self.try_find_pets_by_dog_tag(tag).await
+    }
+}
+
+/// The 503 for a write whose uniqueness could not be CHECKED.
+///
+/// Refusing is the only safe answer: the guards' whole job is to keep two animals off one tag or one
+/// pet id, and admitting a write nobody could validate is exactly the merge they prevent. Nothing has
+/// been written at the point every caller reaches this, so the operator loses only the retry.
+fn unverifiable(e: StoreReadError) -> Resp {
+    tracing::warn!(error = %e, "pet uniqueness guard could not read the store; refusing the write");
+    err(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "The pet records could not be read, so this save could not be checked against the pets already on file. Nothing was changed — try again.",
+    )
+}
+
 /// The pet, if any, that already holds `tag` and is not `self_pet_id`.
 ///
 /// One tag, at most one pet - the tag is the key every check and every on-chain lookup is keyed by,
@@ -529,12 +578,16 @@ struct PetDogTagBody {
 /// For the SURGICAL pet routes ([`create_pet`], [`link_pet_dogtag`]), which write one pet. The
 /// whole-document client routes need [`reject_dog_tag_conflicts`] instead, because their payload
 /// replaces the owner's entire pet list.
-async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -> Option<PetRow> {
-    store
-        .find_pets_by_dog_tag(tag)
-        .await
+async fn conflicting_pet<L: PetLookup + ?Sized>(
+    store: &L,
+    tag: &str,
+    self_pet_id: &str,
+) -> Result<Option<PetRow>, StoreReadError> {
+    Ok(store
+        .lookup_pets_by_tag(tag)
+        .await?
         .into_iter()
-        .find(|r| r.pet.pet_id != self_pet_id)
+        .find(|r| r.pet.pet_id != self_pet_id))
 }
 
 /// The same one-pet-per-tag rule, for the WHOLE-DOCUMENT client routes.
@@ -553,9 +606,14 @@ async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -
 ///    ordinary edit (echo every petId, tags unchanged) a non-conflict, and it also lets a tag move
 ///    between the owner's own pets in a single save.
 ///  - The payload is checked against ITSELF, since two of its pets can carry one tag with neither
-///    of them stored yet - a case no lookup against the store could see. That check is
-///    unconditional: two pets carrying one tag in a single write is the merge itself arriving,
-///    whichever of them held it before.
+///    of them stored yet - a case no lookup against the store could see. That twin check is
+///    grandfathered on exactly the same DELTA terms as the cross-client one, and by `&&`: a pair is
+///    exempt only when BOTH pets' stored records already carry the tag under this same owner. If
+///    even one of them is claiming it now, that is the merge arriving and it is still refused. The
+///    same-owner pre-existing pair has to be exempt for the same reason the cross-client one is -
+///    otherwise a client whose two pets already share a tag can never be saved again, so an operator
+///    fixing a phone number is refused over a duplicate they did not create and cannot clear from
+///    that form, which no longer has a DogTag field at all.
 ///  - What is validated is the DELTA, not the state. A pet whose STORED record already carries the
 ///    tag it is submitting is grandfathered, because this rule postdates the data: a store written
 ///    before it can already hold two pets on one tag, and without this an operator fixing a phone
@@ -588,8 +646,8 @@ async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -
 /// Two payload shapes still pass, and must: an id that resolves to nothing (a caller-supplied id for
 /// a genuinely new pet, which `build_pet` already tolerates), and an id belonging to the client being
 /// written, which is the ordinary echo.
-async fn reject_foreign_pet_ids(
-    store: &Arc<dyn Store>,
+async fn reject_foreign_pet_ids<L: PetLookup + ?Sized>(
+    store: &L,
     pets: &[ClientPet],
     client_id: Option<&str>,
 ) -> Option<Resp> {
@@ -603,7 +661,11 @@ async fn reject_foreign_pet_ids(
                 ),
             ));
         }
-        let Some(stored) = store.get_pet(&p.pet_id).await else {
+        let stored = match store.lookup_pet(&p.pet_id).await {
+            Ok(v) => v,
+            Err(e) => return Some(unverifiable(e)),
+        };
+        let Some(stored) = stored else {
             continue;
         };
         if client_id.is_some_and(|owner| stored.client_id == owner) {
@@ -620,8 +682,8 @@ async fn reject_foreign_pet_ids(
     None
 }
 
-async fn reject_dog_tag_conflicts(
-    store: &Arc<dyn Store>,
+async fn reject_dog_tag_conflicts<L: PetLookup + ?Sized>(
+    store: &L,
     pets: &[ClientPet],
     client_id: Option<&str>,
 ) -> Option<Resp> {
@@ -629,34 +691,142 @@ async fn reject_dog_tag_conflicts(
         let Some(tag) = p.dog_tag_id.as_deref() else {
             continue;
         };
+        // Memoised across the two branches below, both of which need this pet's own verdict, so the
+        // grandfather lookup still costs at most ONE store read per tagged pet - and only on a path
+        // that would otherwise refuse.
+        let mut mine: Option<bool> = None;
         if let Some(twin) = pets[..i].iter().find(|q| q.dog_tag_id.as_deref() == Some(tag)) {
-            return Some(err(
-                StatusCode::CONFLICT,
-                &format!(
-                    "DogTag {tag} is listed on two pets in this request ({} and {}). A tag identifies one animal, so give each pet its own id.",
-                    twin.name, p.name
-                ),
-            ));
+            let p_unchanged = match tag_is_unchanged(store, client_id, p, tag).await {
+                Ok(v) => v,
+                Err(e) => return Some(unverifiable(e)),
+            };
+            mine = Some(p_unchanged);
+            // Short-circuits: with this pet claiming the tag afresh the pair is refused regardless
+            // of the twin, so the twin's read is never paid for.
+            let pair_predates_the_rule = p_unchanged
+                && match tag_is_unchanged(store, client_id, twin, tag).await {
+                    Ok(v) => v,
+                    Err(e) => return Some(unverifiable(e)),
+                };
+            if !pair_predates_the_rule {
+                return Some(err(
+                    StatusCode::CONFLICT,
+                    &format!(
+                        "DogTag {tag} is listed on two pets in this request ({} and {}). A tag identifies one animal — open the pet that should not have it and unlink the tag from its own page.",
+                        twin.name, p.name
+                    ),
+                ));
+            }
         }
-        let held = store.find_pets_by_dog_tag(tag).await;
+        let held = match store.lookup_pets_by_tag(tag).await {
+            Ok(v) => v,
+            Err(e) => return Some(unverifiable(e)),
+        };
         let Some(other) = held
             .into_iter()
             .find(|r| client_id.is_none_or(|id| r.client_id != id))
         else {
             continue;
         };
-        // Reached only when the write WOULD be refused, so the grandfather lookup costs a store
-        // read on the rare rejecting path rather than on every tagged pet of every client write.
-        let unchanged = match client_id {
-            None => false,
-            Some(owner) => store.get_pet(&p.pet_id).await.is_some_and(|stored| {
-                stored.client_id == owner && stored.pet.dog_tag_id.as_deref() == Some(tag)
-            }),
+        let unchanged = match mine {
+            Some(v) => v,
+            None => match tag_is_unchanged(store, client_id, p, tag).await {
+                Ok(v) => v,
+                Err(e) => return Some(unverifiable(e)),
+            },
         };
         if unchanged {
             continue;
         }
         return Some(dog_tag_conflict(tag, &other));
+    }
+    None
+}
+
+/// Does the STORE already record this payload pet as holding `tag`, under the client being written?
+///
+/// The grandfather predicate, in one place because both branches of [`reject_dog_tag_conflicts`] ask
+/// it and a second copy is how the twin branch came to be unconditional in the first place. Bound to
+/// ownership deliberately: `build_pet` honours a caller-supplied `petId`, so a payload naming ANOTHER
+/// client's pet would otherwise find that stranger's record already holding the tag and read its own
+/// claim as unchanged. A create (`client_id == None`) grandfathers nothing — every pet in a create
+/// payload is new by definition, so it has no prior record to be unchanged from.
+async fn tag_is_unchanged<L: PetLookup + ?Sized>(
+    store: &L,
+    client_id: Option<&str>,
+    pet: &ClientPet,
+    tag: &str,
+) -> Result<bool, StoreReadError> {
+    let Some(owner) = client_id else {
+        return Ok(false);
+    };
+    Ok(store.lookup_pet(&pet.pet_id).await?.is_some_and(|stored| {
+        stored.client_id == owner && stored.pet.dog_tag_id.as_deref() == Some(tag)
+    }))
+}
+
+/// Why this pet cannot be removed from the shop's records, if it cannot.
+///
+/// The single definition of "removing this pet would orphan history", shared by BOTH routes that can
+/// drop a pet: the surgical [`delete_pet`] and the whole-document [`update_client`]. It has to be
+/// shared. An appointment and a verification row carry the pet's `petId`, and the verification
+/// history is permanent evidence of a check this shop performed - once the pet it names is gone the
+/// row keeps an id that resolves to nothing, so `GET /pets/{id}` 404s and the operator can no longer
+/// reach the animal a recorded check concerned. A guard on only one of the two routes reads as an
+/// enforced invariant while the other route quietly breaks it.
+async fn pet_removal_blocker(store: &Arc<dyn Store>, pet_id: &str) -> Option<&'static str> {
+    let appts = store
+        .list_appointments(&AppointmentQuery {
+            pet_id: Some(pet_id.to_string()),
+            limit: 1,
+            ..Default::default()
+        })
+        .await;
+    if appts.total > 0 {
+        return Some("pet has appointments; delete or reassign them first");
+    }
+    let verifs = store
+        .list_verification_logs(&VerificationQuery {
+            pet_id: Some(pet_id.to_string()),
+            limit: 1,
+            ..Default::default()
+        })
+        .await;
+    if verifs.total > 0 {
+        return Some("pet has verifications; its history must be kept");
+    }
+    None
+}
+
+/// The orphan guard for the WHOLE-DOCUMENT client routes.
+///
+/// `PUT /clients/{id}` replaces `Client.pets` outright, so a payload that simply omits a pet DELETES
+/// it - including a pet [`delete_pet`] would refuse to delete. The client form has a per-pet "Remove
+/// pet" button, so this is one click, not a hand-written request.
+///
+/// A DROP is a stored `petId` absent from the payload. That deliberately also catches a payload that
+/// re-sends a pet WITHOUT its `petId`: `build_pet` then mints a fresh one, which severs the same link
+/// just as thoroughly as omitting the pet, and leaves a second copy of the animal behind to hide it.
+///
+/// Checked BEFORE anything is written, like every other guard here, so a refusal never leaves a
+/// half-applied client. Additions and edits are untouched - only a removal can orphan a row.
+async fn reject_orphaning_pet_removals(
+    store: &Arc<dyn Store>,
+    stored: &[ClientPet],
+    payload: &[ClientPet],
+) -> Option<Resp> {
+    for pet in stored {
+        if payload.iter().any(|p| p.pet_id == pet.pet_id) {
+            continue;
+        }
+        let Some(blocker) = pet_removal_blocker(store, &pet.pet_id).await else {
+            continue;
+        };
+        let label = if pet.name.trim().is_empty() { &pet.pet_id } else { &pet.name };
+        return Some(err(
+            StatusCode::CONFLICT,
+            &format!("{label} cannot be removed from this client: {blocker}."),
+        ));
     }
     None
 }
@@ -750,8 +920,10 @@ async fn create_pet(
     // same one-pet-per-tag rule as [`link_pet_dogtag`]. Guarding only the link route would leave the
     // merge it prevents reachable through the adjacent route with the same field.
     if let Some(tag) = pet.dog_tag_id.as_deref() {
-        if let Some(other) = conflicting_pet(&st.store, tag, &pet.pet_id).await {
-            return dog_tag_conflict(tag, &other);
+        match conflicting_pet(&st.store, tag, &pet.pet_id).await {
+            Ok(Some(other)) => return dog_tag_conflict(tag, &other),
+            Ok(None) => {}
+            Err(e) => return unverifiable(e),
         }
     }
     c.pets.push(pet.clone());
@@ -827,8 +999,10 @@ async fn link_pet_dogtag(
     if st.store.get_pet(&id).await.is_none() {
         return err(StatusCode::NOT_FOUND, "pet not found");
     }
-    if let Some(other) = conflicting_pet(&st.store, &tag, &id).await {
-        return dog_tag_conflict(&tag, &other);
+    match conflicting_pet(&st.store, &tag, &id).await {
+        Ok(Some(other)) => return dog_tag_conflict(&tag, &other),
+        Ok(None) => {}
+        Err(e) => return unverifiable(e),
     }
     match mutate_pet(&st.store, &id, |p| p.dog_tag_id = Some(tag)).await {
         Some(r) => ok(pet_row_json(&r)),
@@ -906,34 +1080,11 @@ async fn delete_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Pa
         return e;
     }
     // Refuse to orphan bookings, mirroring `delete_client`: an appointment or a verification naming
-    // this pet must not be left pointing at a pet row that no longer exists.
-    let appts = st
-        .store
-        .list_appointments(&AppointmentQuery {
-            pet_id: Some(id.clone()),
-            limit: 1,
-            ..Default::default()
-        })
-        .await;
-    if appts.total > 0 {
-        return err(
-            StatusCode::CONFLICT,
-            "pet has appointments; delete or reassign them first",
-        );
-    }
-    let verifs = st
-        .store
-        .list_verification_logs(&VerificationQuery {
-            pet_id: Some(id.clone()),
-            limit: 1,
-            ..Default::default()
-        })
-        .await;
-    if verifs.total > 0 {
-        return err(
-            StatusCode::CONFLICT,
-            "pet has verifications; its history must be kept",
-        );
+    // this pet must not be left pointing at a pet row that no longer exists. Shared with
+    // `reject_orphaning_pet_removals` so the whole-document client route cannot admit what this one
+    // refuses.
+    if let Some(blocker) = pet_removal_blocker(&st.store, &id).await {
+        return err(StatusCode::CONFLICT, blocker);
     }
     let row = match st.store.get_pet(&id).await {
         Some(r) => r,
@@ -1425,4 +1576,83 @@ pub fn crm_router() -> Router<AppState> {
         )
         .route("/verifications", get(list_verifications))
         .route("/verifications/:id", get(get_verification))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A [`PetLookup`] whose every read fails, standing in for a store that cannot be reached.
+    ///
+    /// This is the whole point of narrowing the guards' dependency to two methods: a stub for the
+    /// full [`Store`] trait would be nearly sixty. It proves the GUARDS refuse rather than admit a
+    /// write they could not check. It does NOT prove `MongoStore` reports its driver errors instead
+    /// of swallowing them — that impl is behind `#[cfg(feature = "mongo")]`, which `cargo test` does
+    /// not compile, so `cargo check -p vet-api --features mongo` is the only signal on that side.
+    struct UnreachableStore;
+
+    #[async_trait::async_trait]
+    impl PetLookup for UnreachableStore {
+        async fn lookup_pet(&self, _pet_id: &str) -> Result<Option<PetRow>, StoreReadError> {
+            Err(StoreReadError("connection reset".into()))
+        }
+        async fn lookup_pets_by_tag(&self, _tag: &str) -> Result<Vec<PetRow>, StoreReadError> {
+            Err(StoreReadError("connection reset".into()))
+        }
+    }
+
+    fn pet(pet_id: &str, name: &str, tag: Option<&str>) -> ClientPet {
+        ClientPet {
+            pet_id: pet_id.to_string(),
+            name: name.to_string(),
+            species: "dog".into(),
+            breed: String::new(),
+            sex: String::new(),
+            date_of_birth: String::new(),
+            notes: String::new(),
+            dog_tag_id: tag.map(str::to_string),
+        }
+    }
+
+    fn status(r: &Option<Resp>) -> Option<StatusCode> {
+        r.as_ref().map(|(s, _)| *s)
+    }
+
+    #[tokio::test]
+    async fn a_tag_conflict_that_cannot_be_read_refuses_the_write() {
+        // "No pet holds this tag" and "the store did not answer" must not be the same answer: the
+        // second one admitting the write is exactly the two-animals-on-one-tag merge the guard is
+        // for, arriving silently.
+        let out = reject_dog_tag_conflicts(&UnreachableStore, &[pet("p1", "Rex", Some("4"))], None)
+            .await;
+        assert_eq!(status(&out), Some(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
+    #[tokio::test]
+    async fn a_pet_id_ownership_check_that_cannot_be_read_refuses_the_write() {
+        let out =
+            reject_foreign_pet_ids(&UnreachableStore, &[pet("p1", "Rex", None)], Some("c1")).await;
+        assert_eq!(status(&out), Some(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
+    #[tokio::test]
+    async fn the_grandfather_lookup_cannot_be_assumed_absent_either() {
+        // The exemption is decided by a store read too, so an unreadable store must not be allowed
+        // to resolve as "not grandfathered" NOR as "grandfathered" — both are guesses about state
+        // nobody could see. It refuses.
+        let out = reject_dog_tag_conflicts(
+            &UnreachableStore,
+            &[pet("p1", "Rex", Some("4")), pet("p2", "Milo", Some("4"))],
+            Some("c1"),
+        )
+        .await;
+        assert_eq!(status(&out), Some(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_store_never_reports_a_conflicting_pet() {
+        // The surgical pet routes read through the same seam, so their `Ok(None)` must mean the tag
+        // is free and never "the lookup failed".
+        assert!(conflicting_pet(&UnreachableStore, "4", "p1").await.is_err());
+    }
 }

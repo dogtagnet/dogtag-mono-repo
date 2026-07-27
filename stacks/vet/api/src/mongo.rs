@@ -11,7 +11,8 @@ use mongodb::{Client as MongoClient, Collection, Database, IndexModel};
 use crate::store::{
     clamp_limit, Appointment, AppointmentQuery, ApptReplica, Client, ClientPet, ClientQuery,
     CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, Page, PetQuery, PetRow,
-    ProfileIssueSession, Record, Store, VerificationLog, VerificationQuery, VerifySession,
+    ProfileIssueSession, Record, Store, StoreReadError, VerificationLog, VerificationQuery,
+    VerifySession,
 };
 
 pub struct MongoStore {
@@ -634,41 +635,52 @@ impl Store for MongoStore {
         Page { rows, total }
     }
 
-    async fn get_pet(&self, pet_id: &str) -> Option<PetRow> {
+    async fn try_get_pet(&self, pet_id: &str) -> Result<Option<PetRow>, StoreReadError> {
         // An elemMatch-free query is correct here because `pets.petId` is unique across the
         // collection - but that is ENFORCED, not merely assumed. `build_pet` mints the uuid whenever
         // a caller omits one, and the client routes, the only place an id arrives from outside,
         // reject a payload pet whose id repeats within the request or resolves to another client's
         // pet (`crm::reject_foreign_pet_ids`). Without that check this query would return whichever
         // document matched first and every `/pets/{id}` write would address an arbitrary animal.
-        let c: Client = self
+        //
+        // Enforcement rests on this read FAILING CLOSED, which is why the fallible form is the real
+        // one: an errored driver call that collapsed to `None` would tell the guard the id is free
+        // and admit the very duplicate it is there to refuse.
+        let found: Option<Client> = self
             .crm_clients()
             .find_one(doc! { "pets.petId": pet_id })
             .await
-            .ok()
-            .flatten()?;
-        let p = c.pets.iter().find(|p| p.pet_id == pet_id)?;
-        Some(c.pet_row(p))
+            .map_err(|e| StoreReadError(e.to_string()))?;
+        Ok(found.and_then(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p))))
     }
 
     /// The `pets.dogTagId` match selects CLIENTS holding a matching pet, so the per-pet filter is
     /// re-applied in Rust: a client with two pets matches on either, and returning the sibling too
     /// would name the wrong pet in the link conflict this feeds.
-    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow> {
+    ///
+    /// A cursor error mid-stream is an ERROR, not a short list: half the holders of a tag is
+    /// indistinguishable from none of them to the guard reading it, and "none" is what admits a
+    /// second pet onto the tag.
+    async fn try_find_pets_by_dog_tag(
+        &self,
+        dog_tag_id: &str,
+    ) -> Result<Vec<PetRow>, StoreReadError> {
         use futures::StreamExt;
         let mut out = Vec::new();
-        let mut cur = match self.crm_clients().find(doc! { "pets.dogTagId": dog_tag_id }).await {
-            Ok(c) => c,
-            Err(_) => return out,
-        };
-        while let Some(Ok(c)) = cur.next().await {
+        let mut cur = self
+            .crm_clients()
+            .find(doc! { "pets.dogTagId": dog_tag_id })
+            .await
+            .map_err(|e| StoreReadError(e.to_string()))?;
+        while let Some(next) = cur.next().await {
+            let c = next.map_err(|e| StoreReadError(e.to_string()))?;
             for p in c.pets.iter().filter(|p| p.dog_tag_id.as_deref() == Some(dog_tag_id)) {
                 out.push(c.pet_row(p));
             }
         }
         // Same total order as MemStore, so the conflict message names the same pet on either store.
         out.sort_by(|a, b| a.pet.pet_id.cmp(&b.pet.pet_id));
-        out
+        Ok(out)
     }
 
     // ---- shop CRM: appointments ----

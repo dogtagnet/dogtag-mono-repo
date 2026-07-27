@@ -712,6 +712,20 @@ pub fn clamp_limit(limit: usize) -> usize {
     }
 }
 
+/// A store read that did not resolve — the driver errored, not "the row is absent".
+///
+/// Deliberately one opaque string rather than an error taxonomy: exactly two reads surface it (the
+/// pet-uniqueness guards' lookups), and their only decision is refuse-vs-proceed. It carries the
+/// driver's own text for the log, never for the operator, whose 503 says what to do instead.
+#[derive(Debug, Clone)]
+pub struct StoreReadError(pub String);
+
+impl std::fmt::Display for StoreReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// The persistence trait. All methods async so MongoStore is a drop-in.
 #[async_trait]
 pub trait Store: Send + Sync {
@@ -828,9 +842,13 @@ pub trait Store: Send + Sync {
     /// mean pulling the whole collection into memory to slice it — exactly what every other list
     /// query here refuses to do.
     async fn list_pets(&self, q: &PetQuery) -> Page<PetRow>;
-    /// One pet by its `pet_id`, found without the caller having to know its owner. `None` when no
-    /// client holds a pet with that id.
-    async fn get_pet(&self, pet_id: &str) -> Option<PetRow>;
+    /// One pet by its `pet_id`, found without the caller having to know its owner.
+    ///
+    /// `Ok(None)` means the read SUCCEEDED and no client holds a pet with that id; `Err` means the
+    /// read itself did not resolve. The uniqueness guards need those two apart — collapsing them
+    /// makes a driver fault read as "no conflict" and admits exactly the duplicate they exist to
+    /// refuse — so this is the fallible form and [`Store::get_pet`] is derived from it.
+    async fn try_get_pet(&self, pet_id: &str) -> Result<Option<PetRow>, StoreReadError>;
     /// Every pet currently linked to `dog_tag_id`, across ALL owners.
     ///
     /// An EXACT match on the stored value, deliberately not the `?q=` needle: a needle over
@@ -838,7 +856,26 @@ pub trait Store: Send + Sync {
     /// name too, so it would both over- and under-report. Exists so the link route can refuse to let
     /// two pets share one tag - the tag is the key every check and every on-chain lookup is keyed
     /// by, and a mistyped id that silently merges two animals' histories is far worse than an error.
-    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow>;
+    ///
+    /// Fallible for the same reason as [`Store::try_get_pet`]: an empty result must mean "the tag is
+    /// free", never "the store could not say".
+    async fn try_find_pets_by_dog_tag(
+        &self,
+        dog_tag_id: &str,
+    ) -> Result<Vec<PetRow>, StoreReadError>;
+
+    /// [`Store::try_get_pet`] for readers that have nothing to do with an unreadable store: a
+    /// collapsed error becomes `None`, which every caller of this form turns into a 404 that REFUSES
+    /// the write. That is already fail-closed, so they do not need the distinction. The uniqueness
+    /// guards do, and use the fallible form.
+    async fn get_pet(&self, pet_id: &str) -> Option<PetRow> {
+        self.try_get_pet(pet_id).await.ok().flatten()
+    }
+    /// [`Store::try_find_pets_by_dog_tag`] for read-only callers. Never use this in a guard: an
+    /// unreadable store would present as an unclaimed tag.
+    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow> {
+        self.try_find_pets_by_dog_tag(dog_tag_id).await.unwrap_or_default()
+    }
 
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment);
@@ -1346,14 +1383,19 @@ impl Store for MemStore {
         paginate(matched, q.limit, q.offset)
     }
 
-    async fn get_pet(&self, pet_id: &str) -> Option<PetRow> {
+    // An in-memory map cannot fail to be read, so both fallible reads are always `Ok` here. The
+    // distinction they carry is real only for `MongoStore`.
+    async fn try_get_pet(&self, pet_id: &str) -> Result<Option<PetRow>, StoreReadError> {
         let g = self.inner.read().unwrap();
-        g.clients
+        Ok(g.clients
             .values()
-            .find_map(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p)))
+            .find_map(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p))))
     }
 
-    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow> {
+    async fn try_find_pets_by_dog_tag(
+        &self,
+        dog_tag_id: &str,
+    ) -> Result<Vec<PetRow>, StoreReadError> {
         let g = self.inner.read().unwrap();
         let mut out: Vec<PetRow> = g
             .clients
@@ -1368,7 +1410,7 @@ impl Store for MemStore {
         // Deterministic, so an error message naming "the pet that already holds this tag" names the
         // same one on every call rather than whichever the hash map happened to yield first.
         out.sort_by(|a, b| a.pet.pet_id.cmp(&b.pet.pet_id));
-        out
+        Ok(out)
     }
 
     // ---- shop CRM: appointments ----

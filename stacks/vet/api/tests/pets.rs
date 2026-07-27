@@ -1044,6 +1044,312 @@ async fn a_pasted_tag_is_trimmed_on_every_write_route_so_whitespace_cannot_defea
 }
 
 #[tokio::test]
+async fn a_preexisting_same_owner_duplicate_does_not_lock_the_client_out_of_editing() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (bob, bob_pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Bob Lim",
+        json!([{ "name": "Milo", "dogTagId": "4" }, { "name": "Coco" }]),
+    )
+    .await;
+    // Data that predates the rule, on ONE owner - the shape the removed client-form DogTag field
+    // made easiest to create. The cross-client duplicate was already grandfathered; this one landed
+    // in the twin check, which returned before the exemption was ever consulted.
+    force_tag(&state, &bob, &bob_pets[1], "4").await;
+
+    // The operator is fixing a phone number. Refusing this makes the record permanently unsaveable
+    // from a form that no longer has a DogTag field to clear the duplicate with.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "phone": "+65 8000 0000",
+            "pets": [
+                { "petId": bob_pets[0], "name": "Milo", "dogTagId": "4" },
+                { "petId": bob_pets[1], "name": "Coco", "dogTagId": "4" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "an unrelated edit must not 409: {b}");
+    assert_eq!(b["phone"], "+65 8000 0000");
+    // Grandfathered, not silently cleaned up.
+    assert_eq!(get_pet(&app, &op, &bob_pets[0]).await["dogTagId"], "4");
+    assert_eq!(get_pet(&app, &op, &bob_pets[1]).await["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn a_new_same_payload_duplicate_is_still_refused() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (bob, bob_pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Bob Lim",
+        json!([{ "name": "Milo", "dogTagId": "4" }, { "name": "Coco" }]),
+    )
+    .await;
+
+    // Only ONE of the pair holds the tag in the store, so the other is claiming it now. Exempting a
+    // pre-existing pair must not become a licence to create one - the exemption is by `&&`.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "pets": [
+                { "petId": bob_pets[0], "name": "Milo", "dogTagId": "4" },
+                { "petId": bob_pets[1], "name": "Coco", "dogTagId": "4" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "a fresh same-payload duplicate must 409: {b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(msg.contains("Milo") && msg.contains("Coco"), "both pets must be named: {b}");
+    // The remedy has to exist: the client form has no DogTag input, so the operator is sent to the
+    // pet's own page rather than told to edit a field that is not there.
+    assert!(msg.contains("unlink"), "the message must name a reachable remedy: {b}");
+    assert!(get_pet(&app, &op, &bob_pets[1]).await["dogTagId"].is_null(), "{b}");
+
+    // Neither does the same claim on a brand-new owner, where nothing is stored to grandfather.
+    force_tag(&state, &bob, &bob_pets[1], "4").await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({
+            "name": "Cara Ng",
+            "pets": [{ "name": "Bo", "dogTagId": "7" }, { "name": "Nub", "dogTagId": "7" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "a create grandfathers nothing: {b}");
+}
+
+// ============================================================================================
+// the whole-document client route must not drop a pet the pet route refuses to delete
+// ============================================================================================
+
+/// Seed a settled verification naming this pet — the permanent evidence the orphan guard protects.
+async fn force_verification(
+    state: &vet_api::app::AppState,
+    client_id: &str,
+    pet_id: &str,
+    pet_name: &str,
+) {
+    let mut v = vet_api::store::VerificationLog {
+        verification_id: format!("v-{pet_id}"),
+        appointment_id: None,
+        client_id: Some(client_id.to_string()),
+        pet_id: Some(pet_id.to_string()),
+        purpose: "grooming".into(),
+        record_type: "VACCINATION".into(),
+        status: "recorded".into(),
+        tx_hash: Some("0xabc".into()),
+        nullifier: Some("0xdef".into()),
+        dog_tag_id: None,
+        disclosed_key_paths: Vec::new(),
+        client_name: "Bob Lim".into(),
+        pet_name: pet_name.to_string(),
+        created_at: 1_800_000_000,
+        updated_at: 1_800_000_000,
+        search_key: String::new(),
+    };
+    v.rebuild_search_key();
+    state.store.put_verification_log(v).await;
+}
+
+#[tokio::test]
+async fn a_client_edit_cannot_drop_a_pet_that_has_appointments() {
+    let (app, op) = pets_app().await;
+    let (bob, bob_pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Bob Lim",
+        json!([{ "name": "Milo" }, { "name": "Coco" }]),
+    )
+    .await;
+    let (s, appt) = call(
+        &app,
+        "POST",
+        "/appointments",
+        Some(&op),
+        Some(json!({ "clientId": bob, "petId": bob_pets[1], "service": "Bath", "startAt": 1_800_000_000u64 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{appt}");
+
+    // `DELETE /pets/{id}` refuses this exact removal, so the whole-document route must too -
+    // otherwise one click on the form's "Remove pet" achieves what the purpose-built route forbids.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({ "name": "Bob Lim", "pets": [{ "petId": bob_pets[0], "name": "Milo" }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "dropping a booked pet must 409: {b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(msg.contains("Coco"), "the message must name the pet: {b}");
+    assert!(msg.contains("appointments"), "and what blocks it: {b}");
+
+    // Nothing was half-applied: the pet, its booking and its label all survive.
+    assert_eq!(get_pet(&app, &op, &bob_pets[1]).await["name"], "Coco");
+    let (_, list) =
+        call(&app, "GET", &format!("/appointments?petId={}", bob_pets[1]), Some(&op), None).await;
+    assert_eq!(list["total"], 1, "{list}");
+    assert_eq!(list["rows"][0]["petName"], "Coco", "the label must not be blanked: {list}");
+}
+
+#[tokio::test]
+async fn a_client_edit_cannot_drop_a_pet_that_has_verifications() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (bob, bob_pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Bob Lim",
+        json!([{ "name": "Milo" }, { "name": "Coco" }]),
+    )
+    .await;
+    force_verification(&state, &bob, &bob_pets[1], "Coco").await;
+
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({ "name": "Bob Lim", "pets": [{ "petId": bob_pets[0], "name": "Milo" }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "dropping a checked pet must 409: {b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(msg.contains("Coco"), "the message must name the pet: {b}");
+    assert!(msg.contains("history"), "and what blocks it: {b}");
+
+    // The permanent evidence keeps BOTH its label and a petId that still resolves.
+    let (_, list) =
+        call(&app, "GET", &format!("/verifications?petId={}", bob_pets[1]), Some(&op), None).await;
+    assert_eq!(list["total"], 1, "{list}");
+    assert_eq!(list["rows"][0]["petName"], "Coco", "{list}");
+    assert_eq!(get_pet(&app, &op, &bob_pets[1]).await["clientName"], "Bob Lim");
+}
+
+#[tokio::test]
+async fn a_client_edit_that_re_sends_a_pet_without_its_id_is_the_same_removal() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (bob, bob_pets) =
+        make_client_with_pets(&app, &op, "Bob Lim", json!([{ "name": "Coco" }])).await;
+    force_verification(&state, &bob, &bob_pets[0], "Coco").await;
+
+    // `build_pet` mints a fresh id when the payload omits one, which severs the row's link just as
+    // thoroughly as omitting the pet - and leaves a lookalike copy behind to hide that it happened.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({ "name": "Bob Lim", "pets": [{ "name": "Coco" }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "a re-mint is a removal: {b}");
+    assert_eq!(get_pet(&app, &op, &bob_pets[0]).await["petId"], bob_pets[0].as_str());
+}
+
+#[tokio::test]
+async fn a_client_edit_can_still_drop_a_pet_with_no_history_and_keep_the_rest_intact() {
+    let (app, op) = pets_app().await;
+    let (bob, bob_pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Bob Lim",
+        json!([{ "name": "Milo", "dogTagId": "4" }, { "name": "Coco" }]),
+    )
+    .await;
+
+    // The guard must not become "pets can never be removed": a pet with neither bookings nor checks
+    // orphans nothing, so removing it is exactly what `DELETE /pets/{id}` would allow.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "pets": [{ "petId": bob_pets[0], "name": "Milo", "dogTagId": "4" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "an unencumbered pet may still be removed: {b}");
+    assert_eq!(b["pets"].as_array().unwrap().len(), 1, "{b}");
+
+    let (s, _) = call(&app, "GET", &format!("/pets/{}", bob_pets[1]), Some(&op), None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "the dropped pet is gone");
+    // ...and the survivor keeps its identity and its tag.
+    let kept = get_pet(&app, &op, &bob_pets[0]).await;
+    assert_eq!(kept["petId"], bob_pets[0].as_str());
+    assert_eq!(kept["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn an_ordinary_client_edit_that_keeps_every_pet_still_succeeds() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (bob, bob_pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Bob Lim",
+        json!([{ "name": "Milo" }, { "name": "Coco", "dogTagId": "4" }]),
+    )
+    .await;
+    // Both encumbered, so the guard runs against every pet rather than skipping straight past.
+    force_verification(&state, &bob, &bob_pets[1], "Coco").await;
+    let (s, appt) = call(
+        &app,
+        "POST",
+        "/appointments",
+        Some(&op),
+        Some(json!({ "clientId": bob, "petId": bob_pets[0], "service": "Bath", "startAt": 1_800_000_000u64 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{appt}");
+
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim-Tan",
+            "pets": [
+                { "petId": bob_pets[0], "name": "Milo", "breed": "Beagle" },
+                { "petId": bob_pets[1], "name": "Coco", "dogTagId": "4" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "a full edit must not 409: {b}");
+    assert_eq!(b["name"], "Bob Lim-Tan");
+    for (i, id) in bob_pets.iter().enumerate() {
+        let after = get_pet(&app, &op, id).await;
+        assert_eq!(after["petId"], id.as_str(), "pet {i} must keep its identity: {after}");
+    }
+    assert_eq!(get_pet(&app, &op, &bob_pets[0]).await["breed"], "Beagle");
+    assert_eq!(get_pet(&app, &op, &bob_pets[1]).await["dogTagId"], "4");
+    // The rename reached the denormalized labels, and no pet name was blanked on the way.
+    let (_, list) =
+        call(&app, "GET", &format!("/verifications?petId={}", bob_pets[1]), Some(&op), None).await;
+    assert_eq!(list["rows"][0]["clientName"], "Bob Lim-Tan", "{list}");
+    assert_eq!(list["rows"][0]["petName"], "Coco", "{list}");
+}
+
+#[tokio::test]
 async fn unlinking_a_dogtag_clears_only_this_shops_note_of_it() {
     let (app, op) = pets_app().await;
     let (client_id, pets) = make_client_with_pets(
