@@ -95,6 +95,10 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
     val store = remember { LocalStore.get(context) }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
+    // THIS APP's IssuerRegistry (bundled roax.json) for the import-time issuer-whitelist pillar. It
+    // must come from our own config, never from the scanned document, or a forged issuer block could
+    // nominate the registry that vouches for it.
+    val roaxIssuerRegistry = remember { RoaxConfig.load(context).issuerRegistry }
 
     val walletExists = remember { Wallet.exists(context) }
 
@@ -156,7 +160,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 onImport = {
                     working = true; status = "Fetching + verifying record…"
                     scope.launch {
-                        val r = RecordImporter.import(p)
+                        val r = RecordImporter.import(p, roaxIssuerRegistry)
                         working = false
                         if (r.credential != null) {
                             store.addCredential(r.credential)
@@ -173,7 +177,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 onImport = {
                     working = true; status = "Fetching + verifying record…"
                     scope.launch {
-                        val r = RecordImporter.import(p)
+                        val r = RecordImporter.import(p, roaxIssuerRegistry)
                         working = false
                         if (r.credential != null) {
                             store.addCredential(r.credential)

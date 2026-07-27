@@ -813,6 +813,18 @@ impl ChainClient for PinRecordingChain {
             .issuer_claimed_domain(domain_registry_addr, clone_addr, at_block)
             .await
     }
+    async fn issued_by(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        // Recorded like every other verdict-deciding read: the issuer-whitelist pillar resolves its own
+        // signer through this call, so if it were left unpinned the pillar could answer at a different
+        // height than the block printed beside the verdict.
+        self.record("issuedBy", at_block);
+        self.inner.issued_by(issuer_addr, root, at_block).await
+    }
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,

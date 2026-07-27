@@ -33,6 +33,7 @@ object RoaxRpc {
      * handler and the web direct-RPC path all bind. `RoaxRpcSelectorTest` pins each value here.
      */
     private val IS_VALID_SELECTOR = functionSelector("isValid(bytes32)")
+    private val ISSUED_BY_SELECTOR = functionSelector("issuedBy(bytes32)")
     private val IS_WHITELISTED_FOR_SELECTOR = functionSelector("isWhitelistedFor(bytes32,address)")
     private val CONSUMED_SELECTOR = functionSelector("consumed(bytes32)")
     private val PROFILE_ROOT_SELECTOR = functionSelector("profileRoot(uint256)")
@@ -138,6 +139,57 @@ object RoaxRpc {
             }
             is CallResult.Err -> Result.Unknown(r.reason)
         }
+    }
+
+    /**
+     * `DogTagIssuer.issuedBy(root)` → the H-1 originator that actually called `issue(root)` on this
+     * clone, or null when the clone never issued it (the on-chain zero address) or the read did not
+     * resolve.
+     */
+    suspend fun issuedBy(rpcUrl: String, documentStore: String, root: String): String? {
+        if (documentStore.isBlank() || root.isBlank()) return null
+        val data = ISSUED_BY_SELECTOR + pad32(root)
+        return when (val r = ethCall(rpcUrl, documentStore, data)) {
+            // address is right-aligned in a 32-byte word; all-zero == never issued here.
+            is CallResult.Ok ->
+                if (r.hex.length < 40 || r.hex.trimStart('0').isEmpty()) null
+                else "0x" + r.hex.takeLast(40).lowercase()
+            is CallResult.Err -> null
+        }
+    }
+
+    /** `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
+     *  clone's own `recordType()` holds. Mirrors the backend `record_type_key` and the web
+     *  `recordTypeKey`; verified against `cast keccak "TRAVEL_CLEARANCE"` on chain 135. */
+    fun recordTypeKey(recordType: String): String =
+        "0x" + Keccak256.digest(recordType.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+    /**
+     * The ISSUER-WHITELIST pillar for a held credential, resolved end-to-end on-chain.
+     *
+     * The document's `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and — the
+     * sharp one — `documentStore` are attacker-controlled: relabel a genuine credential's authority,
+     * or point `documentStore` at a contract you control that returns true from `isValid`, and both
+     * the integrity recompute and the issuance read still pass. This pillar is what catches that.
+     *
+     * It asks the chain who issued the root ([issuedBy], set to `msg.sender` under `onlyWhitelisted`)
+     * and whether THAT signer is whitelisted for this record type in the registry from the app's own
+     * bundled `roax.json` — never an address named by the document, or the attacker supplies both
+     * sides of the question. [Result.Unknown] means the pillar did not resolve; a caller must treat
+     * that as indeterminate, never as a pass.
+     */
+    suspend fun issuerWhitelistPillar(
+        rpcUrl: String,
+        issuerRegistry: String,
+        documentStore: String,
+        root: String,
+        recordType: String,
+    ): Result {
+        if (issuerRegistry.isBlank()) return Result.Unknown("no IssuerRegistry configured")
+        if (recordType.isBlank()) return Result.Unknown("document declares no recordType")
+        val signer = issuedBy(rpcUrl, documentStore, root)
+            ?: return Result.Unknown("issuer clone reports no issuer for this root")
+        return isWhitelistedFor(rpcUrl, issuerRegistry, recordTypeKey(recordType), signer)
     }
 
     /**

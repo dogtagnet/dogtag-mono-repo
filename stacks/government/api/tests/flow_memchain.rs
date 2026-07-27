@@ -132,6 +132,14 @@ impl ChainClient for LiveLikeChain {
         Ok(None)
     }
 
+    async fn issued_by(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        self.0.issued_by(issuer_addr, root, at_block).await
+    }
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
@@ -575,4 +583,217 @@ async fn verify_unanchored_root_is_invalid() {
     assert_eq!(verdict["fragments"]["integrity"], true);
     assert_eq!(verdict["fragments"]["onchain"], false);
     assert_eq!(verdict["verdict"], false);
+}
+
+/// AUDIT FINDING (2026-07-27): a credential relabelled to a different issuing authority returned
+/// `verdict: true`.
+///
+/// `check_integrity` folds only `data` + `privacy.obfuscated`, so the whole `issuer` block - `name`,
+/// `domain`, and critically `documentStore`, the address every `isValid()` is made against - sits
+/// OUTSIDE the Merkle root. The live demonstration took a genuine credential, changed nothing in
+/// `data`, relabelled the issuer to "Ministry of Health of Singapore / moh.gov.sg", and still got
+/// `{"verdict":true,"fragments":{...,"issuerWhitelisted":null}}` - a pass riding on a pillar that
+/// never ran.
+///
+/// The sharp version of that attack - the one this pillar exists for - is the `documentStore` swap:
+/// point it at a contract the attacker controls which DOES answer `isValid(root) == true`. Integrity
+/// passes (data untouched) and the on-chain read passes (the attacker's clone says yes), so before
+/// this change nothing was left to object.
+///
+/// The clone here is therefore genuinely anchored, and `onchain` is asserted TRUE - otherwise the test
+/// would pass for the wrong reason (a clone that simply has no such root fails the issuance pillar and
+/// never exercises this one at all).
+///
+/// SCOPE: relabelling `name`/`domain` ALONE still verifies, and deliberately so. This pillar asks the
+/// chain who issued the root; it never reads those two fields. Binding them to the root-covered
+/// `data.issuer` DID is the separate issuer-identity assertion (audit rec 6) landing with the DNS
+/// issuer-binding work - see `a_name_only_relabel_is_out_of_this_pillars_reach` below, which pins that
+/// boundary honestly rather than letting this test imply coverage it does not have.
+#[tokio::test]
+async fn a_forged_issuer_clone_that_answers_isvalid_is_still_refused() {
+    let (state, chain) = demo_state();
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "11", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+    let root = issued["root"].as_str().unwrap().to_string();
+
+    // Baseline: the genuine document passes with the pillar RESOLVED - so a later refusal is the
+    // pillar working, not the fixture being broken.
+    let (_, genuine) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": issued["wrappedDoc"].clone() }),
+    )
+    .await;
+    assert_eq!(genuine["verdict"], true, "genuine: {genuine}");
+    assert_eq!(genuine["fragments"]["issuerWhitelisted"], true);
+
+    // The attacker anchors the SAME root on their OWN clone, from their OWN signer. `.clone()` shares
+    // the emulated chain state; `with_signer` changes who `msg.sender` is, so the forged clone records
+    // `issuedBy[root] = ATTACKER` exactly as a real deployment would.
+    const ATTACKER_CLONE: &str = "0x00000000000000000000000000000000deadbeef";
+    const ATTACKER_SIGNER: &str = "0x00000000000000000000000000000000000000ff";
+    chain
+        .clone()
+        .with_signer(ATTACKER_SIGNER)
+        .issue(ATTACKER_CLONE, &root)
+        .await
+        .expect("attacker anchors the stolen root on their own clone");
+
+    let mut forged = issued["wrappedDoc"].clone();
+    forged["issuer"]["name"] = json!("Ministry of Health of Singapore");
+    forged["issuer"]["domain"] = json!("moh.gov.sg");
+    forged["issuer"]["documentStore"] = json!(ATTACKER_CLONE);
+    let (status, v) = call(&state, "POST", "/v1/verify", json!({ "wrapped_doc": forged })).await;
+
+    assert_eq!(status, StatusCode::OK, "verify: {v}");
+    assert_eq!(v["fragments"]["integrity"], true, "data is untouched: {v}");
+    assert_eq!(
+        v["fragments"]["onchain"], true,
+        "the attacker's clone DOES answer isValid - this is the whole point: {v}"
+    );
+    // The signer resolves, and is not one the registry authorizes for this record type.
+    assert_eq!(v["signerAddr"], json!(ATTACKER_SIGNER), "{v}");
+    assert_eq!(v["fragments"]["issuerWhitelisted"], false, "{v}");
+    assert_eq!(v["verdict"], false, "forged issuer clone must NOT verify: {v}");
+}
+
+/// The boundary of this pillar, and the moment the gap beside it CLOSED.
+///
+/// Relabelling only `name`/`domain` leaves the real `documentStore` in place, so the issuer-whitelist
+/// pillar still reports the real, whitelisted signer - it authenticates the issuing KEY, not the label
+/// rendered next to it, and that remains true (`issuerWhitelisted: true` below).
+///
+/// This test previously asserted `verdict: true`, documenting that a name-only relabel slipped through,
+/// and said in as many words: if a future change makes this false, that is the domain assertion landing
+/// - update this test, do not treat it as a regression. That change has now landed (the root-covered
+/// `data.issuer` DID assertion, audit rec 6, from the DNS issuer-binding work), so the verdict is now
+/// correctly `false` on a MISMATCH while the whitelist pillar independently still passes.
+///
+/// Kept rather than deleted because it pins WHICH pillar catches WHICH forgery: the whitelist pillar
+/// says nothing about the label, and the DID assertion says nothing about the key. Both are needed.
+#[tokio::test]
+async fn a_name_only_relabel_is_out_of_this_pillars_reach() {
+    let (state, _) = demo_state();
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "14", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+
+    let mut relabelled = issued["wrappedDoc"].clone();
+    relabelled["issuer"]["name"] = json!("Ministry of Health of Singapore");
+    relabelled["issuer"]["domain"] = json!("moh.gov.sg");
+    let (_, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": relabelled }),
+    )
+    .await;
+
+    // The whitelist pillar is untouched by a label swap - it resolved the real signer and passed.
+    assert_eq!(v["fragments"]["issuerWhitelisted"], true, "{v}");
+    // ...and the DID assertion is what now catches the relabel, so the overall verdict fails.
+    assert_eq!(v["fragments"]["issuerDidAssertion"], "mismatch", "{v}");
+    assert_eq!(v["verdict"], false, "{v}");
+}
+
+/// A signer that DID issue the root but is not whitelisted for that record type is a resolved `false`,
+/// not an indeterminate — and equally must not pass. (Whitelists can be revoked after issuance; the
+/// authority is the registry now, not at mint time.)
+#[tokio::test]
+async fn a_resolved_but_unwhitelisted_issuer_fails_the_verdict() {
+    let cfg = Config {
+        deployment_url: "http://localhost:44832".into(),
+        rpc_url: "https://devrpc.roax.net".into(),
+        chain_id: 135,
+        issuer_registry_addr: REGISTRY_ADDR.into(),
+        verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
+        travel_clearance_issuer_addr: ISSUER_ADDR.into(),
+        eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
+        issuer_name: "DogTag Government Authority".into(),
+        issuer_domain: "gov.example".into(),
+        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
+        issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
+        dns_doh_endpoint: String::new(),
+        demo: true,
+        api_token: Some(API_TOKEN.into()),
+    };
+    // Identical to `demo_state()` except the signer is NEVER whitelisted for TRAVEL_CLEARANCE.
+    let state = AppState {
+        store: Arc::new(MemStore::new()) as Arc<dyn Store>,
+        chain: Arc::new(MemChain::new()),
+        cfg: Arc::new(cfg),
+        feed: Arc::new(government_api::oversight::DisabledFeed),
+        dns: std::sync::Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
+    };
+
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "12", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+
+    let (status, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": issued["wrappedDoc"].clone() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify: {v}");
+    assert_eq!(v["fragments"]["integrity"], true);
+    assert_eq!(v["fragments"]["onchain"], true, "the root IS anchored: {v}");
+    assert_eq!(v["fragments"]["issuerWhitelisted"], false, "{v}");
+    assert!(v["signerAddr"].is_string(), "signer resolved: {v}");
+    assert_eq!(v["verdict"], false, "{v}");
+}
+
+/// AUDIT FINDING (2026-07-27): the receipt QR encoded `https://gov.example/r/<id>` — NXDOMAIN — because
+/// three renderers built it from `issuer.domain`, a `did:web` IDENTITY, instead of a reachable host.
+///
+/// Issuance now stamps `protocol.statusBaseUrl` from `DEPLOYMENT_URL`, the same base the (already
+/// correct) share QR uses. Renderers read that and nothing else, so the QR points where the phone can
+/// actually go — while `issuer.domain` stays the stable identity it is supposed to be.
+#[tokio::test]
+async fn issuance_stamps_a_reachable_status_base_url_not_the_did_web_domain() {
+    let (state, _) = demo_state();
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "13", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+
+    let doc = &issued["wrappedDoc"];
+    let base = doc["protocol"]["statusBaseUrl"]
+        .as_str()
+        .unwrap_or_else(|| panic!("statusBaseUrl stamped: {doc}"));
+    assert_eq!(base, "http://localhost:44832", "== DEPLOYMENT_URL: {doc}");
+    assert!(!base.ends_with('/'), "no trailing slash → no `//r/`: {base}");
+
+    // The identity field is untouched and is NOT the QR base. Corrupting a root-covered did:web with a
+    // rotating deployment hostname was the tempting non-fix; this asserts we did not take it.
+    assert_eq!(doc["issuer"]["domain"], "gov.example");
+    assert_ne!(doc["issuer"]["domain"], json!(base));
+
+    // What a renderer builds now resolves on THIS deployment.
+    let receipt_id = issued["receiptId"].as_str().expect("receiptId");
+    let (status, _) = call(&state, "GET", &format!("/r/{receipt_id}"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "the stamped base serves /r/:id");
 }

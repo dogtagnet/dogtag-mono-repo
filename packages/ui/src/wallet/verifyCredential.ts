@@ -10,7 +10,9 @@ import {
   isRootRevoked,
   isRootValid,
   issuedAtOf,
+  issuedByOf,
   isWhitelistedFor,
+  ZERO_ADDRESS,
 } from "./contracts";
 
 /**
@@ -43,6 +45,8 @@ export interface IssuerChainReader {
   isValid(issuerAddr: string, root: string): Promise<boolean>;
   /** DogTagIssuer.isRevoked(root) = revokedAt != 0. */
   isRevoked(issuerAddr: string, root: string): Promise<boolean>;
+  /** DogTagIssuer.issuedBy(root) - the H-1 originator, zero address when never issued here. */
+  issuedBy(issuerAddr: string, root: string): Promise<string>;
   /** IssuerRegistry.isWhitelistedFor(keccak256(recordType), signer). */
   isWhitelistedFor(registryAddr: string, recordType: string, signer: string): Promise<boolean>;
 }
@@ -53,6 +57,7 @@ export function roaxIssuerChainReader(rpcUrl?: string): IssuerChainReader {
     issuedAt: (issuerAddr, root) => issuedAtOf({ issuerAddr, root, rpcUrl }),
     isValid: (issuerAddr, root) => isRootValid({ issuerAddr, root, rpcUrl }),
     isRevoked: (issuerAddr, root) => isRootRevoked({ issuerAddr, root, rpcUrl }),
+    issuedBy: (issuerAddr, root) => issuedByOf({ issuerAddr, root, rpcUrl }),
     isWhitelistedFor: (registryAddr, recordType, address) =>
       isWhitelistedFor({ registryAddr, recordType, address, rpcUrl }),
   };
@@ -61,7 +66,11 @@ export function roaxIssuerChainReader(rpcUrl?: string): IssuerChainReader {
 export interface VerifyCredentialOnchainArgs {
   /** WrappedDoc JSON as produced by a DogTag issuer (already parsed). */
   wrappedDoc: Record<string, unknown>;
-  /** Optional issuer signer address for the IssuerRegistry whitelist pillar. */
+  /**
+   * OPTIONAL *expected* issuer signer. The whitelist pillar no longer depends on this: the signer is
+   * resolved from the chain (`issuedBy(root)`). Supplying it adds a strictly stronger assertion - the
+   * pillar fails if the on-chain originator is not this address.
+   */
   signerAddr?: string;
   /** Optional DogTagIssuer clone override; defaults to `wrappedDoc.issuer.documentStore`. */
   issuerAddr?: string;
@@ -121,18 +130,46 @@ export async function verifyCredentialOnchain(
   }
 
   const reader = args.reader ?? roaxIssuerChainReader(args.rpcUrl);
+  // The registry ALWAYS comes from this client's own configuration, never from the document. If the
+  // document named the registry, an attacker would supply both sides of the whitelist question and
+  // the pillar would be theatre.
   const registryAddr = args.registryAddr?.trim() || DEPLOYED_ADDRESSES.IssuerRegistry;
-  const signer = args.signerAddr?.trim();
+  const expectedSigner = args.signerAddr?.trim();
 
   // On-chain pillars - all read the CLAIMED root (signature.merkleRoot), matching the server handler
   // and mobile; the recomputed root only ever populates the display field above.
-  const [issuedAt, onchainValid, revoked, issuerWhitelisted] = await Promise.all([
+  const [issuedAt, onchainValid, revoked, originator] = await Promise.all([
     reader.issuedAt(issuerAddr, claimedRoot),
     reader.isValid(issuerAddr, claimedRoot),
     reader.isRevoked(issuerAddr, claimedRoot),
-    signer ? reader.isWhitelistedFor(registryAddr, recordType, signer) : Promise.resolve(null),
+    reader.issuedBy(issuerAddr, claimedRoot),
   ]);
   const issued = issuedAt !== 0n;
+
+  // ISSUER-WHITELIST pillar, self-resolving and MANDATORY.
+  //
+  // The `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and - the sharp one -
+  // `documentStore` are attacker-controlled: relabel a genuine credential's issuing authority, or
+  // point `documentStore` at a contract you control that returns true from `isValid`, and integrity
+  // and the on-chain read both still pass. This pillar is the only thing that catches that, which is
+  // why it can no longer be skipped: the signer is resolved from the chain (`issuedBy(root)`, set to
+  // `msg.sender` under `onlyWhitelisted`) instead of being typed in, and then checked against THIS
+  // client's registry. An attacker's clone yields an originator the real registry never whitelisted.
+  //
+  // Tri-state, and only a definite `true` may contribute to a pass:
+  //   true  - resolved, and that signer is whitelisted for this record type
+  //   false - resolved, but not whitelisted (or not the expected signer): a real authenticity failure
+  //   null  - unresolvable (never issued here, so the zero address): INDETERMINATE, and an
+  //           unanswered check is never a passed check
+  const resolvedSigner =
+    originator && originator.toLowerCase() !== ZERO_ADDRESS ? originator : null;
+  let issuerWhitelisted: boolean | null = null;
+  if (resolvedSigner) {
+    issuerWhitelisted = await reader.isWhitelistedFor(registryAddr, recordType, resolvedSigner);
+    if (expectedSigner && expectedSigner.toLowerCase() !== resolvedSigner.toLowerCase()) {
+      issuerWhitelisted = false;
+    }
+  }
 
   const status: VerifyCredentialResp["status"] = !integrityValid
     ? "integrity_failed"
@@ -143,7 +180,7 @@ export async function verifyCredentialOnchain(
         : onchainValid
           ? "valid"
           : "invalid";
-  const verdict = integrityValid && onchainValid && (issuerWhitelisted ?? true);
+  const verdict = integrityValid && onchainValid && issuerWhitelisted === true;
 
   return {
     verdict,
@@ -152,7 +189,7 @@ export async function verifyCredentialOnchain(
     root: claimedRoot,
     recomputedRoot,
     issuerAddr,
-    signerAddr: signer || null,
+    signerAddr: resolvedSigner,
     issuedAt: issuedAt.toString(),
     checkedAt: args.now ?? Math.floor(Date.now() / 1000),
     fragments: {

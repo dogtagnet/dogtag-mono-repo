@@ -66,6 +66,7 @@ sol! {
         function name() external view returns (string);
         function isRevoked(bytes32 r) external view returns (bool);
         function issuedAt(bytes32 r) external view returns (uint256);
+        function issuedBy(bytes32 r) external view returns (address);
     }
 
     /// The clone factory. `isClone` is the FIRST link of the issuer↔domain chain: it proves the
@@ -244,6 +245,22 @@ pub trait ChainClient: Send + Sync {
         clone_addr: &str,
         at_block: Option<u64>,
     ) -> Result<Option<DomainClaim>, ChainError>;
+    /// `DogTagIssuer.issuedBy(root)` — the H-1 originator that actually called `issue(root)` on this
+    /// clone, or `None` when the clone never issued it (the on-chain zero address).
+    ///
+    /// This is what lets the issuer-whitelist pillar resolve its own signer instead of asking an
+    /// operator to type one in, and therefore what lets that pillar be MANDATORY. `issue()` is
+    /// `onlyWhitelisted`, so a genuinely issued root's originator was whitelisted for its record type
+    /// at issuance by construction.
+    ///
+    /// Pinned to `at_block` for the same reason as `is_valid`: every read behind one verdict must come
+    /// from ONE height, or the verdict cannot be reproduced at the block printed beside it.
+    async fn issued_by(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, ChainError>;
     /// `IssuerRegistry.isWhitelistedFor(recordType, signer)`.
     ///
     /// Pinned like the other verdict-deciding reads: when this pillar is reported under a block anchor it
@@ -567,6 +584,27 @@ impl ChainClient for AlloyChain {
             set_by: format!("{:#x}", b._0.setBy),
         }))
     }
+    async fn issued_by(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, ChainError> {
+        let provider = self.provider().await?;
+        let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
+        let mut call = c.issuedBy(parse_b256(root));
+        if let Some(b) = at_block {
+            call = call.block(b.into());
+        }
+        let r = call
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        // The zero address is a SUCCESSFUL read saying "this clone never issued this root". Return it
+        // as `None` so callers treat it as indeterminate rather than asking the registry whether the
+        // zero address is whitelisted (a definite `false` for the wrong reason).
+        Ok((!r._0.is_zero()).then(|| r._0.to_string()))
+    }
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
@@ -674,6 +712,9 @@ const MEMCHAIN_CLOCK_BASE: u64 = 1_782_864_000;
 struct MemChainInner {
     /// (issuer_addr, root) -> issuedAt timestamp (0 == not issued).
     issued: HashMap<(String, String), u64>,
+    /// (issuer_addr, root) -> the signer that issued it, mirroring the real clone's `issuedBy[r] =
+    /// msg.sender`. Absent == never issued here, which the whitelist pillar reads as indeterminate.
+    issued_by: HashMap<(String, String), String>,
     revoked: HashMap<(String, String), u64>,
     /// (registry_addr, record_type, signer) -> whitelisted.
     whitelist: HashMap<(String, String, String), bool>,
@@ -703,6 +744,7 @@ impl Default for MemChainInner {
     fn default() -> Self {
         MemChainInner {
             issued: HashMap::new(),
+            issued_by: HashMap::new(),
             revoked: HashMap::new(),
             whitelist: HashMap::new(),
             consumed: HashMap::new(),
@@ -945,6 +987,18 @@ impl ChainClient for MemChain {
             ))
             .cloned())
     }
+    async fn issued_by(
+        &self,
+        issuer_addr: &str,
+        root: &str,
+        at_block: Option<u64>,
+    ) -> Result<Option<String>, ChainError> {
+        self.record_at_block("issuedBy", at_block);
+        let g = self.inner.lock().unwrap();
+        Ok(g.issued_by
+            .get(&(issuer_addr.to_lowercase(), root.to_lowercase()))
+            .cloned())
+    }
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
@@ -971,7 +1025,11 @@ impl ChainClient for MemChain {
         }
         g.clock += 12;
         let ts = g.clock;
-        g.issued.insert(key, ts);
+        g.issued.insert(key.clone(), ts);
+        // Mirror the real clone's `issuedBy[r] = msg.sender` so the whitelist pillar resolves against
+        // this fake exactly as it does on chain — otherwise every MemChain-backed record looks like
+        // one nobody issued.
+        g.issued_by.insert(key, self.signer.clone());
         g.nonce += 1;
         let tx_hash = format!("0x{:064x}", g.nonce);
         // Emulate a monotonic block height so the persisted on-chain proof carries a block number.

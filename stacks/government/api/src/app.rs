@@ -129,6 +129,10 @@ pub fn issuer_meta(cfg: &Config, record_type: &str, issuer_addr: &str) -> Issuer
 /// Build the M7 provenance block (§4.2) for a government credential. `issuer_clone` == `documentStore`;
 /// `issuer_signer` is this authority's issuing signer (== the on-chain `clone.issuedBy[R]`, since gov
 /// anchors server-side). A routing hint only - the claim is validated against `issuedBy[R]` at verify.
+///
+/// This authority DOES publish a durable PII-free status page (`GET /r/:receiptId`), so it also stamps
+/// `statusBaseUrl` from `DEPLOYMENT_URL` - the one base a phone can actually reach. See
+/// [`status_base_url`] for why `issuer.domain` is not that base.
 pub fn protocol_meta(cfg: &Config, issuer_clone: &str, issuer_signer: &str) -> ProtocolMeta {
     ProtocolMeta {
         chain_id: cfg.chain_id,
@@ -136,7 +140,22 @@ pub fn protocol_meta(cfg: &Config, issuer_clone: &str, issuer_signer: &str) -> P
         verification_registry: cfg.verification_registry_addr.clone(),
         issuer_clone: issuer_clone.to_string(),
         issuer_signer: issuer_signer.to_string(),
+        status_base_url: status_base_url(cfg),
     }
+}
+
+/// The reachable origin this deployment serves `/r/:receiptId` from, for stamping into an issued
+/// document's `protocol` block. `DEPLOYMENT_URL` is the ONLY correct source: it is the base a phone
+/// must be able to reach (`qr_base`, the same rule the share QR already follows), whereas
+/// `ISSUER_DOMAIN` is a `did:web` identity that need not resolve - its shipped default `gov.example`
+/// is RFC-2606 reserved and NXDOMAIN.
+///
+/// A trailing slash is trimmed so the minted URL never contains `//r/`, and a blank value yields
+/// `None` (the key is then omitted entirely) rather than `Some("")`, so a renderer's
+/// "is there a status page?" test is a plain presence check.
+fn status_base_url(cfg: &Config) -> Option<String> {
+    let base = cfg.deployment_url.trim().trim_end_matches('/');
+    (!base.is_empty()).then(|| base.to_string())
 }
 
 /// Assemble the M7 §5.2 CONVENIENCE tier for the owner's device: platform-OWNED, UNVERIFIED claims

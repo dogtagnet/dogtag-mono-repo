@@ -74,7 +74,18 @@ const DOGTAG_ISSUER_ABI = [
     inputs: [{ name: "r", type: "bytes32" }],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    // public `mapping(bytes32 => address) issuedBy` getter - the H-1 originator (DogTagIssuer.sol).
+    type: "function",
+    name: "issuedBy",
+    stateMutability: "view",
+    inputs: [{ name: "r", type: "bytes32" }],
+    outputs: [{ name: "", type: "address" }],
+  },
 ] as const satisfies Abi;
+
+/** The all-zero address `issuedBy` returns for a root this clone never issued. */
+export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const clientCache = new Map<string, PublicClient>();
 
@@ -156,4 +167,26 @@ export async function issuedAtOf(args: {
     functionName: "issuedAt",
     args: [args.root as `0x${string}`],
   }) as Promise<bigint>;
+}
+
+/**
+ * Reads DogTagIssuer.issuedBy(merkleRoot) - the address that actually called `issue(root)` on this
+ * clone (`issuedBy[r] = msg.sender`, H-1 originator binding), or the zero address for a root this
+ * clone never issued.
+ *
+ * This is what makes the issuer-whitelist pillar self-resolving: the signer no longer has to be typed
+ * in by an operator, so the pillar can be mandatory. `issue()` is `onlyWhitelisted`, so a genuinely
+ * issued root's originator was whitelisted for that record type at issuance by construction.
+ */
+export async function issuedByOf(args: {
+  issuerAddr: string;
+  root: string;
+  rpcUrl?: string;
+}): Promise<string> {
+  return roaxPublicClient(args.rpcUrl).readContract({
+    address: args.issuerAddr as Address,
+    abi: DOGTAG_ISSUER_ABI,
+    functionName: "issuedBy",
+    args: [args.root as `0x${string}`],
+  }) as Promise<string>;
 }

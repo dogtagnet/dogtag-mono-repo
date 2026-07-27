@@ -65,6 +65,24 @@ pub struct ProtocolMeta {
     /// the signer that issued (claim, == on-chain `clone.issuedBy[R]`); validated, never trusted.
     #[serde(rename = "issuerSigner")]
     pub issuer_signer: String,
+    /// A REACHABLE origin (scheme + host [+ port]) serving this issuer's public, PII-free receipt
+    /// status page at `<statusBaseUrl>/r/<receiptId>` - stamped by the issuing stack from its own
+    /// `DEPLOYMENT_URL`. Absent when the issuer publishes no such page.
+    ///
+    /// This exists because `issuer.domain` is a `did:web` IDENTITY, not a host: a stable name that
+    /// need not resolve and need not serve anything (the shipped default `gov.example` is
+    /// RFC-2606 reserved and is NXDOMAIN by construction). Receipt renderers built their QR from it
+    /// and produced a dead link on every credential ever issued. A renderer MUST use this field and
+    /// MUST NOT fall back to `issuer.domain`; with no value there is no status page, and saying so
+    /// is the honest degradation. Never "fix" a dead QR by pointing `ISSUER_DOMAIN` at a deployment
+    /// host - that writes a rotating hostname into a root-covered identity.
+    ///
+    /// Like the rest of this block it is a routing hint, never authority: it sits OUTSIDE the Merkle
+    /// root (`check_integrity` folds only `data` + `privacy.obfuscated`), so stamping it neither
+    /// disturbs an anchored `R` nor lets a forged value make an invalid record verify - the page it
+    /// points at re-derives status from the chain itself.
+    #[serde(rename = "statusBaseUrl", default, skip_serializing_if = "Option::is_none")]
+    pub status_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
