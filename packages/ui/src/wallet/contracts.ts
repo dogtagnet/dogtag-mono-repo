@@ -74,10 +74,35 @@ const DOGTAG_ISSUER_ABI = [
     inputs: [{ name: "r", type: "bytes32" }],
     outputs: [{ name: "", type: "address" }],
   },
+  {
+    // public `bytes32 recordType` getter - the clone's own immutable record type, fixed by the
+    // factory at `createIssuer`. The authoritative answer to "what kind of credential is this?",
+    // as opposed to the document's own claim.
+    type: "function",
+    name: "recordType",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32" }],
+  },
+] as const satisfies Abi;
+
+const DOGTAG_ISSUER_FACTORY_ABI = [
+  {
+    // public `mapping(bytes32 => address) rootIssuer` getter - the protocol-global, write-once
+    // root -> issuing clone index (DogTagIssuerFactory.sol).
+    type: "function",
+    name: "rootIssuer",
+    stateMutability: "view",
+    inputs: [{ name: "root", type: "bytes32" }],
+    outputs: [{ name: "", type: "address" }],
+  },
 ] as const satisfies Abi;
 
 /** The all-zero address `issuedBy` returns for a root this clone never issued. */
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+/** The all-zero word a `bytes32` getter returns for an unset slot (e.g. an uninitialized clone). */
+export const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
 
 const clientCache = new Map<string, PublicClient>();
 
@@ -92,18 +117,26 @@ export function roaxPublicClient(rpcUrl?: string): PublicClient {
   return c;
 }
 
-/** Reads IssuerRegistry.isWhitelistedFor(keccak256(recordType), address). */
+/**
+ * Reads IssuerRegistry.isWhitelistedFor(key, address).
+ *
+ * Pass `recordTypeKey` when the key came from the chain (a clone's own `recordType()`); pass
+ * `recordType` to hash a label locally. The key form is what verification uses - the record type it
+ * asks about must be the one the chain says the root has, not one read off the document.
+ */
 export async function isWhitelistedFor(args: {
   registryAddr: string;
-  recordType: string;
+  recordType?: string;
+  recordTypeKey?: string;
   address: string;
   rpcUrl?: string;
 }): Promise<boolean> {
+  const key = args.recordTypeKey ?? recordTypeKey(args.recordType ?? "");
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.registryAddr as Address,
     abi: ISSUER_REGISTRY_ABI,
     functionName: "isWhitelistedFor",
-    args: [recordTypeKey(args.recordType), args.address as Address],
+    args: [key as `0x${string}`, args.address as Address],
   }) as Promise<boolean>;
 }
 
@@ -180,5 +213,45 @@ export async function issuedByOf(args: {
     abi: DOGTAG_ISSUER_ABI,
     functionName: "issuedBy",
     args: [args.root as `0x${string}`],
+  }) as Promise<string>;
+}
+
+/**
+ * Reads DogTagIssuerFactory.rootIssuer(merkleRoot) - the clone that actually issued this root, or the
+ * zero address when no clone of this factory ever did.
+ *
+ * This is the anchor the whole issuer pillar hangs from. `registerRoot` is called only from inside a
+ * clone's `issue()` and is `require(isClone[msg.sender])` + strictly write-once, so a contract the
+ * factory never deployed can never appear here and a genuine root's issuer can never be overwritten.
+ * Resolving the clone this way - rather than from the document's own `issuer.documentStore`, which
+ * lives outside the Merkle root - is what stops a forger nominating a contract of their own to answer
+ * every question about their forgery.
+ */
+export async function rootIssuerOf(args: {
+  factoryAddr: string;
+  root: string;
+  rpcUrl?: string;
+}): Promise<string> {
+  return roaxPublicClient(args.rpcUrl).readContract({
+    address: args.factoryAddr as Address,
+    abi: DOGTAG_ISSUER_FACTORY_ABI,
+    functionName: "rootIssuer",
+    args: [args.root as `0x${string}`],
+  }) as Promise<string>;
+}
+
+/**
+ * Reads DogTagIssuer.recordType() - the clone's own immutable record type key. Read from the RESOLVED
+ * clone so the whitelist question is asked about the record type the CHAIN says the root belongs to,
+ * never the one the document's `issuer` block claims.
+ */
+export async function recordTypeOf(args: {
+  issuerAddr: string;
+  rpcUrl?: string;
+}): Promise<string> {
+  return roaxPublicClient(args.rpcUrl).readContract({
+    address: args.issuerAddr as Address,
+    abi: DOGTAG_ISSUER_ABI,
+    functionName: "recordType",
   }) as Promise<string>;
 }

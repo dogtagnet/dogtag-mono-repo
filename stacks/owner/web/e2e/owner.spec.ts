@@ -191,7 +191,13 @@ test("holder receipt: travel clearance renders and respects redacted re-imports"
   await expect(sheet).toContainText("Blaze");
   await expect(sheet).toContainText("Section C - Travel Information");
   await expect(sheet).toContainText("AC 8552");
-  await expect(page.getByTestId("receipt-public-url")).toContainText("https://gov.example/r/9RVBXK8AFQ2C");
+  // The QR is built from `protocol.statusBaseUrl` - the reachable origin the issuer stamped - and
+  // NEVER from `issuer.domain`, which is the `did:web` identity `gov.example` (RFC-2606 reserved, so
+  // every QR built from it encoded an NXDOMAIN link that still read as a working live-status check).
+  await expect(page.getByTestId("receipt-public-url")).toContainText(
+    "https://travel.authority.example-demo.net/r/9RVBXK8AFQ2C",
+  );
+  await expect(page.getByTestId("receipt-public-url")).not.toContainText("gov.example");
   await expect(page.getByTestId("receipt-qr").locator("svg")).toBeVisible();
   await expect(page.getByTestId("receipt-live")).toContainText("anchored");
   await expect(page.getByTestId("receipt-root")).toContainText(
@@ -219,6 +225,38 @@ test("holder receipt: travel clearance renders and respects redacted re-imports"
   await expect(page.getByTestId("receipt-withheld-note")).toContainText("1 field");
   await expect(page.getByTestId("receipt-sheet")).toContainText("Dominic");
   await expect(page.getByTestId("receipt-sheet")).not.toContainText("887524355");
+});
+
+// The other half of the receipt-QR contract, and the one every credential issued before this change
+// takes: with no stamped base there is NO status page, so the receipt must say exactly that and draw
+// no QR. Falling back to `issuer.domain` was considered and rejected - a real did:web host resolves
+// but does not serve `/r/`, trading an NXDOMAIN for a 404 that looks even more legitimate.
+test("holder receipt: a credential with no stamped status base degrades honestly", async ({ page }) => {
+  await page.goto("/wallet");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+
+  // Take the stamped sample and drop only the provenance block - exactly what a pre-change document
+  // looks like. That block sits outside the Merkle root, so the credential stays integrity-VALID.
+  await page.goto("/receive");
+  await page.getByTestId("receive-sample-travel").click();
+  const stamped = await page.getByTestId("receive-input").inputValue();
+  const unstamped = JSON.parse(stamped) as Record<string, unknown>;
+  delete unstamped.protocol;
+  await page.getByTestId("receive-input").fill(JSON.stringify(unstamped, null, 2));
+  await page.getByTestId("receive-add").click();
+  await page.getByTestId("detail-receipt").click();
+
+  // Same credential, same root - only the reachable base is absent.
+  await expect(page.getByTestId("receipt-id")).toContainText("9RVBXK8AFQ2C");
+  await expect(page.getByTestId("receipt-root")).toContainText(
+    "0x010a607eb1f94fd672622331ae1272c5e08afba9b6d094b52b5b5e3a2bec4a45",
+  );
+  await expect(page.getByTestId("receipt-public-url")).toContainText(
+    "published no reachable status URL",
+  );
+  await expect(page.getByTestId("receipt-public-url")).not.toContainText("gov.example");
+  await expect(page.getByTestId("receipt-qr")).toHaveCount(0);
 });
 
 test("receive rejects a tampered credential", async ({ page }) => {

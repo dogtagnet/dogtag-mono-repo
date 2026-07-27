@@ -2,7 +2,8 @@ import Foundation
 
 /// Implements the scan-to-import flow (impl §6.5). Fetch the wrapped doc with the Bearer JWT and run
 /// the verification pillars: INTEGRITY (offline Rust FFI `verifyIntegrity`), ISSUANCE (on-chain
-/// `DogTagIssuer.isValid` over ROAX RPC) and ISSUER WHITELIST (on-chain `issuedBy` → the app's own
+/// `DogTagIssuer.isValid` over ROAX RPC) and ISSUER WHITELIST (the app's own
+/// `DogTagIssuerFactory.rootIssuer` → that clone's `recordType()`/`issuedBy` → the app's own
 /// `IssuerRegistry`). Store the record under the matching pet, grouped by recordType.
 ///
 /// Every pillar is tri-state and none may be skipped: a pillar that does not resolve yields an
@@ -62,11 +63,13 @@ enum RecordImporter {
         //
         // Integrity and issuance together still accept a forged authority: the `issuer` block is
         // outside the Merkle root, so relabelling the issuer - or pointing `documentStore` at a
-        // contract that returns true from `isValid` - passes both. This pillar asks the chain who
-        // actually issued the root and whether that signer is whitelisted for this record type in the
-        // app's own bundled registry.
+        // contract that returns true from `isValid` - passes both. This pillar resolves the issuing
+        // clone from the app's OWN factory, then asks THAT clone what record type it holds and who
+        // issued the root, and checks that signer against the app's own bundled registry.
+        let roax = RoaxConfig.load()
         let whitelist = await RoaxRpc.issuerWhitelistPillar(
-            rpcUrl: rpcUrl, issuerRegistry: RoaxConfig.load().issuerRegistry,
+            rpcUrl: rpcUrl, issuerRegistry: roax.issuerRegistry,
+            issuerFactory: roax.dogTagIssuerFactory,
             documentStore: doc.documentStore, root: doc.merkleRoot, recordType: doc.recordType)
         verdict = foldIssuerWhitelist(verdict, whitelist)
 

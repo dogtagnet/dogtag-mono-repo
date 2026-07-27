@@ -29,6 +29,28 @@ class IssuerWhitelistPillarTest {
     }
 
     /**
+     * `rootIssuer(bytes32)` on the FACTORY is what makes the pillar trustworthy at all: it is the
+     * write-once, `isClone`-gated index naming the contract that really issued the root, so the
+     * document never gets to choose which contract answers for it. A drifted selector reverts, the
+     * clone never resolves, and every credential silently degrades to unresolved.
+     * `cast sig "rootIssuer(bytes32)"`.
+     */
+    @Test
+    fun rootIssuerSelectorMatchesTheCanonicalSignature() {
+        assertEquals("0x41e41d17", RoaxRpc.functionSelector("rootIssuer(bytes32)"))
+    }
+
+    /**
+     * `recordType()` on the resolved clone supplies the whitelist key, so the pillar asks about the
+     * record type the CHAIN says the root has rather than the one the envelope claims.
+     * `cast sig "recordType()"`.
+     */
+    @Test
+    fun recordTypeSelectorMatchesTheCanonicalSignature() {
+        assertEquals("0xe55e492c", RoaxRpc.functionSelector("recordType()"))
+    }
+
+    /**
      * The whitelist key is `keccak256(recordType)` — the same value the clone's own `recordType()`
      * holds, the backend's `record_type_key` computes, and the web's `recordTypeKey` derives.
      * Confirmed on chain 135: `DogTagIssuer(0xB5D6654d…5F9F).recordType()` equals this exactly.

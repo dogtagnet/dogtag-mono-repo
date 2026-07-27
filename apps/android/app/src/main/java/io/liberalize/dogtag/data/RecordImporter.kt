@@ -12,9 +12,11 @@ import uniffi.dogtag_standard.verifyIntegrity
  *   1. INTEGRITY (offline): recompute the Poseidon leaves + Merkle root via the Rust FFI
  *      `verifyIntegrity(wrappedDocJson)` -> "VALID" / "INVALID" (== signature.targetHash/merkleRoot).
  *   2. ISSUANCE (on-chain): `DogTagIssuer.isValid(merkleRoot)` over `issuer.documentStore` via ROAX RPC.
- *   3. ISSUER WHITELIST (on-chain): `issuedBy(merkleRoot)` -> `IssuerRegistry.isWhitelistedFor` against
- *      the app's OWN bundled registry. This is what catches a forged `issuer` block, which sits
- *      outside the Merkle root and therefore passes pillars 1 and 2 unchanged.
+ *   3. ISSUER WHITELIST (on-chain): resolve the issuing clone from the app's OWN
+ *      `DogTagIssuerFactory.rootIssuer(merkleRoot)`, then `recordType()` + `issuedBy(merkleRoot)` on
+ *      THAT clone -> `IssuerRegistry.isWhitelistedFor` against the app's OWN bundled registry. This is
+ *      what catches a forged `issuer` block, which sits outside the Merkle root and therefore passes
+ *      pillars 1 and 2 unchanged.
  *
  * Every pillar is tri-state and none may be skipped: a pillar that does not resolve yields an
  * indeterminate verdict, never a pass.
@@ -33,6 +35,7 @@ object RecordImporter {
     suspend fun import(
         req: QrPayload.ImportRecord,
         issuerRegistry: String,
+        issuerFactory: String,
         rpcUrl: String = RoaxRpc.DEFAULT_RPC,
     ): ImportResult {
         // Legacy: fetch the wrapped doc from GET <host>/records/{recordId} with the Bearer record-JWT.
@@ -45,7 +48,7 @@ object RecordImporter {
         if (!resp.ok) {
             return ImportResult(false, "UNVERIFIED", "GET $url -> ${resp.code}: ${resp.body.take(120)}", null)
         }
-        return verifyAndBuild(resp.body, req.recordId, issuerRegistry, rpcUrl)
+        return verifyAndBuild(resp.body, req.recordId, issuerRegistry, issuerFactory, rpcUrl)
     }
 
     /**
@@ -56,6 +59,7 @@ object RecordImporter {
     suspend fun import(
         req: QrPayload.ImportRecordToken,
         issuerRegistry: String,
+        issuerFactory: String,
         rpcUrl: String = RoaxRpc.DEFAULT_RPC,
     ): ImportResult {
         val url = "${req.host}/r/${req.token}"
@@ -67,7 +71,7 @@ object RecordImporter {
         if (!resp.ok) {
             return ImportResult(false, "UNVERIFIED", "GET $url -> ${resp.code}: ${resp.body.take(120)}", null)
         }
-        return verifyAndBuild(resp.body, req.token, issuerRegistry, rpcUrl)
+        return verifyAndBuild(resp.body, req.token, issuerRegistry, issuerFactory, rpcUrl)
     }
 
     /**
@@ -79,6 +83,7 @@ object RecordImporter {
         wrappedJson: String,
         fallbackId: String,
         issuerRegistry: String,
+        issuerFactory: String,
         rpcUrl: String,
     ): ImportResult {
         val doc = try {
@@ -111,11 +116,11 @@ object RecordImporter {
         //
         // Integrity and issuance together still accept a forged authority: the `issuer` block is
         // outside the Merkle root, so relabelling the issuer — or pointing `documentStore` at a
-        // contract that returns true from `isValid` — passes both. This pillar asks the chain who
-        // actually issued the root and whether that signer is whitelisted for this record type in the
-        // app's own bundled registry.
+        // contract that returns true from `isValid` — passes both. This pillar resolves the issuing
+        // clone from the app's OWN factory, then asks THAT clone what record type it holds and who
+        // issued the root, and checks that signer against the app's own bundled registry.
         val whitelist = RoaxRpc.issuerWhitelistPillar(
-            rpcUrl, issuerRegistry, doc.documentStore, doc.merkleRoot, doc.recordType,
+            rpcUrl, issuerRegistry, issuerFactory, doc.documentStore, doc.merkleRoot, doc.recordType,
         )
         verdict = foldIssuerWhitelist(verdict, whitelist)
 

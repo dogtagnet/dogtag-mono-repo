@@ -41,6 +41,11 @@ pub struct Config {
     pub chain_id: u64,
     /// IssuerRegistry (the whitelist gate) — used to read issuer-identity of a credential's signer.
     pub issuer_registry_addr: String,
+    /// DogTagIssuerFactory — THIS verifier's own anchor for "which contract issued this root?".
+    /// Its write-once `rootIssuer[R]` index is the only trustworthy answer, because a document's
+    /// `issuer.documentStore` is outside the Merkle root and so is chosen by whoever built the
+    /// document. Must never be sourced from a credential.
+    pub issuer_factory_addr: String,
     /// VerificationRegistry address - THE routing key stamped in the M7 `protocol` block (§4.2).
     /// Defaults to the unified owner-hidden registry.
     pub verification_registry_addr: String,
@@ -133,9 +138,64 @@ pub fn protocol_meta(cfg: &Config, issuer_clone: &str, issuer_signer: &str) -> P
 /// A trailing slash is trimmed so the minted URL never contains `//r/`, and a blank value yields
 /// `None` (the key is then omitted entirely) rather than `Some("")`, so a renderer's
 /// "is there a status page?" test is a plain presence check.
+///
+/// A host that can never serve this page also yields `None` - see [`is_unreachable_status_host`]. The
+/// stamped base is PERMANENT in the holder's copy (unlike the 180s share QR that reads the same env
+/// var), so a placeholder written here is a dead link the owner keeps forever.
 fn status_base_url(cfg: &Config) -> Option<String> {
     let base = cfg.deployment_url.trim().trim_end_matches('/');
-    (!base.is_empty()).then(|| base.to_string())
+    if base.is_empty() || is_unreachable_status_host(base) {
+        return None;
+    }
+    Some(base.to_string())
+}
+
+/// Is this base one no phone could ever resolve - a documentation placeholder or a loopback name?
+///
+/// Stamping such a base is strictly worse than stamping none: every renderer would happily draw a QR,
+/// and a scan that goes nowhere still READS as a working live-status check. That is the exact failure
+/// this whole field exists to close, so the placeholder path must fall into the honest-degradation
+/// branch ("this issuer published no status page") instead.
+///
+/// Covers RFC-2606 (`example.com/net/org`, `.example`, `.invalid`, `.test`) and RFC-6761 `localhost`.
+/// Real hostnames and PLAIN IPs must still pass: `http://192.168.1.20:44832` is the normal demo path
+/// (`scripts/demo-up.sh` stamps the LAN IP) and dev tunnels are ordinary hostnames.
+fn is_unreachable_status_host(base: &str) -> bool {
+    let authority = base
+        .split_once("://")
+        .map_or(base, |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    // Strip a trailing `:port` only — an IPv6 literal's colons live inside the brackets.
+    let hostname = match authority.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    let host = hostname
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return true;
+    }
+    // Suffix tests are anchored on a label boundary, so `notexample.com` is NOT rejected.
+    const RESERVED: [&str; 6] = [
+        "example.com",
+        "example.net",
+        "example.org",
+        "example",
+        "invalid",
+        "test",
+    ];
+    if RESERVED
+        .iter()
+        .any(|r| host == *r || host.ends_with(&format!(".{r}")))
+    {
+        return true;
+    }
+    host == "localhost" || host.ends_with(".localhost")
 }
 
 /// Assemble the M7 §5.2 CONVENIENCE tier for the owner's device: platform-OWNED, UNVERIFIED claims
@@ -373,10 +433,11 @@ mod tests {
 
     fn demo_cfg() -> Config {
         Config {
-            deployment_url: "http://localhost:44832".into(),
+            deployment_url: "http://192.168.1.20:44832".into(),
             rpc_url: "https://devrpc.roax.net".into(),
             chain_id: 135,
             issuer_registry_addr: "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c".into(),
+            issuer_factory_addr: "0xED20269E3eBF0119739aaB5258741F3aEb49F140".into(),
             verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
             travel_clearance_issuer_addr: "0x1111111111111111111111111111111111111111".into(),
             eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -501,5 +562,60 @@ mod tests {
         assert!(cfg.issuer_addr_for(TRAVEL_CLEARANCE).is_some());
         assert!(cfg.issuer_addr_for(EU_HEALTH_CERT).is_none());
         assert!(cfg.issuer_addr_for("VACCINATION").is_none());
+    }
+
+    fn base(url: &str) -> Option<String> {
+        status_base_url(&Config {
+            deployment_url: url.into(),
+            ..demo_cfg()
+        })
+    }
+
+    /// A reachable base is stamped verbatim (minus a trailing slash). Plain IPs must pass: the LAN IP
+    /// `scripts/demo-up.sh` stamps is the normal demo path, and a dev tunnel is an ordinary hostname.
+    #[test]
+    fn a_reachable_base_is_stamped() {
+        assert_eq!(
+            base("https://gov.singapore.gov.sg"),
+            Some("https://gov.singapore.gov.sg".into())
+        );
+        assert_eq!(
+            base("http://192.168.1.20:44832/"),
+            Some("http://192.168.1.20:44832".into())
+        );
+        assert_eq!(
+            base("https://kind-otter-42.trycloudflare.com"),
+            Some("https://kind-otter-42.trycloudflare.com".into())
+        );
+        // A label that merely ENDS in a reserved word is a real host, not a placeholder.
+        assert_eq!(
+            base("https://notexample.com"),
+            Some("https://notexample.com".into())
+        );
+        assert_eq!(
+            base("https://mytest.gov.sg"),
+            Some("https://mytest.gov.sg".into())
+        );
+    }
+
+    /// A host no phone can resolve must yield `None`, so the document carries no status page at all and
+    /// every renderer degrades honestly. Stamping one of these would draw a QR that goes nowhere while
+    /// still reading as a live-status check - the exact failure this field exists to close, made
+    /// permanent because the base lives in the holder's copy forever.
+    #[test]
+    fn a_placeholder_or_loopback_base_is_refused() {
+        for url in [
+            "https://gov.example.com",
+            "https://gov.example",
+            "https://example.org",
+            "http://localhost:44832",
+            "http://api.localhost:8080",
+            "https://foo.invalid",
+            "https://staging.test",
+            "",
+            "   ",
+        ] {
+            assert_eq!(base(url), None, "{url} must not be stamped");
+        }
     }
 }

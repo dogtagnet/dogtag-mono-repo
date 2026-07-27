@@ -22,6 +22,7 @@ const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
 const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const API_TOKEN: &str = "dogtag-gov-demo-token";
 const DEPLOYMENT_URL: &str = "http://192.168.1.20:44832";
+const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 fn demo_state() -> AppState {
     let cfg = Config {
@@ -30,6 +31,7 @@ fn demo_state() -> AppState {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        issuer_factory_addr: FACTORY.into(),
         verification_registry_addr: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),

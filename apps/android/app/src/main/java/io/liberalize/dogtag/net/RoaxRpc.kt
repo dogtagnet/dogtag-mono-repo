@@ -34,6 +34,8 @@ object RoaxRpc {
      */
     private val IS_VALID_SELECTOR = functionSelector("isValid(bytes32)")
     private val ISSUED_BY_SELECTOR = functionSelector("issuedBy(bytes32)")
+    private val ROOT_ISSUER_SELECTOR = functionSelector("rootIssuer(bytes32)")
+    private val RECORD_TYPE_SELECTOR = functionSelector("recordType()")
     private val IS_WHITELISTED_FOR_SELECTOR = functionSelector("isWhitelistedFor(bytes32,address)")
     private val CONSUMED_SELECTOR = functionSelector("consumed(bytes32)")
     private val PROFILE_ROOT_SELECTOR = functionSelector("profileRoot(uint256)")
@@ -152,6 +154,38 @@ object RoaxRpc {
         }
     }
 
+    /**
+     * `DogTagIssuerFactory.rootIssuer(root)` → the clone that actually issued this root, or null when
+     * no clone of this factory ever did (the on-chain zero address) or the read did not resolve.
+     *
+     * This is the anchor the issuer pillar hangs from. `registerRoot` is called only from inside a
+     * clone's `issue()` and is `require(isClone[msg.sender])` + strictly write-once, so a contract the
+     * factory never deployed can never appear here and a genuine root's issuer can never be
+     * overwritten.
+     */
+    suspend fun rootIssuer(rpcUrl: String, factory: String, root: String): String? {
+        if (factory.isBlank() || root.isBlank()) return null
+        val data = ROOT_ISSUER_SELECTOR + pad32(root)
+        return when (val r = ethCall(rpcUrl, factory, data)) {
+            is CallResult.Ok ->
+                if (r.hex.length < 40 || r.hex.trimStart('0').isEmpty()) null
+                else "0x" + r.hex.takeLast(40).lowercase()
+            is CallResult.Err -> null
+        }
+    }
+
+    /**
+     * `DogTagIssuer.recordType()` → the clone's own immutable record-type key, or null when the
+     * contract reports the zero word (uninitialized / not a clone) or the read did not resolve.
+     */
+    suspend fun recordTypeOf(rpcUrl: String, issuerClone: String): String? {
+        if (issuerClone.isBlank()) return null
+        return when (val r = ethCall(rpcUrl, issuerClone, RECORD_TYPE_SELECTOR)) {
+            is CallResult.Ok -> normalizeBytes32(r.hex)?.takeIf { it.drop(2).any { c -> c != '0' } }
+            is CallResult.Err -> null
+        }
+    }
+
     /** `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
      *  clone's own `recordType()` holds. Mirrors the backend `record_type_key` and the web
      *  `recordTypeKey`; verified against `cast keccak "TRAVEL_CLEARANCE"` on chain 135. */
@@ -161,29 +195,43 @@ object RoaxRpc {
     /**
      * The ISSUER-WHITELIST pillar for a held credential, resolved end-to-end on-chain.
      *
-     * The document's `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and — the
-     * sharp one — `documentStore` are attacker-controlled: relabel a genuine credential's authority,
-     * or point `documentStore` at a contract you control that returns true from `isValid`, and both
-     * the integrity recompute and the issuance read still pass. This pillar is what catches that.
+     * The document's `issuer` block is NOT covered by the Merkle root, so `name`, `domain`,
+     * `recordType` and — the sharp one — `documentStore` are chosen by whoever built the document.
+     * Asking `documentStore` whether the credential is valid, and who issued it, is asking the
+     * suspect for their own references: deploy a contract that answers `isValid = true` and names a
+     * genuinely whitelisted signer, and integrity plus the issuance read both still pass.
      *
-     * It asks the chain who issued the root ([issuedBy], set to `msg.sender` under `onlyWhitelisted`)
-     * and whether THAT signer is whitelisted for this record type in the registry from the app's own
-     * bundled `roax.json` — never an address named by the document, or the attacker supplies both
-     * sides of the question. [Result.Unknown] means the pillar did not resolve; a caller must treat
-     * that as indeterminate, never as a pass.
+     * So the clone is resolved from the FACTORY in the app's own bundled `roax.json`
+     * ([rootIssuer]) — never from the document. Then the record type comes from that clone's own
+     * `recordType()`, and the issuing signer from its `issuedBy`, checked against the app's own
+     * `IssuerRegistry`. An envelope naming a different clone, or a different record type, than the
+     * chain does is a definite [Result.Invalid], not merely unresolved.
+     *
+     * [Result.Unknown] means the pillar did not resolve; a caller must treat that as indeterminate,
+     * never as a pass.
      */
     suspend fun issuerWhitelistPillar(
         rpcUrl: String,
         issuerRegistry: String,
+        issuerFactory: String,
         documentStore: String,
         root: String,
         recordType: String,
     ): Result {
         if (issuerRegistry.isBlank()) return Result.Unknown("no IssuerRegistry configured")
+        if (issuerFactory.isBlank()) return Result.Unknown("no DogTagIssuerFactory configured")
         if (recordType.isBlank()) return Result.Unknown("document declares no recordType")
-        val signer = issuedBy(rpcUrl, documentStore, root)
+        val clone = rootIssuer(rpcUrl, issuerFactory, root)
+            ?: return Result.Unknown("no factory clone ever issued this root")
+        // The envelope points somewhere other than the contract that actually issued the root: a
+        // definite misrepresentation, refused before the registry is consulted.
+        if (!clone.equals(documentStore.trim(), ignoreCase = true)) return Result.Invalid
+        val chainRecordType = recordTypeOf(rpcUrl, clone)
+            ?: return Result.Unknown("issuer clone reports no recordType")
+        if (!chainRecordType.equals(recordTypeKey(recordType), ignoreCase = true)) return Result.Invalid
+        val signer = issuedBy(rpcUrl, clone, root)
             ?: return Result.Unknown("issuer clone reports no issuer for this root")
-        return isWhitelistedFor(rpcUrl, issuerRegistry, recordTypeKey(recordType), signer)
+        return isWhitelistedFor(rpcUrl, issuerRegistry, chainRecordType, signer)
     }
 
     /**

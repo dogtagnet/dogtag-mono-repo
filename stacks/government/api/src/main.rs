@@ -62,6 +62,15 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
+        // The canonical ROAX `DogTagIssuerFactory` (contracts/deployments/roax.json). Unlike the
+        // registry this defaults to the REAL address rather than the zero address: it is the anchor the
+        // issuer pillar resolves every credential's issuing clone from, and a zero default would make
+        // that pillar permanently indeterminate — i.e. quietly unanswerable — on any stack that simply
+        // did not set the variable.
+        issuer_factory_addr: env(
+            "DOGTAG_ISSUER_FACTORY_ADDR",
+            "0xED20269E3eBF0119739aaB5258741F3aEb49F140",
+        ),
         // Unified owner-hidden verification registry: both the routing key stamped in the M7 `protocol`
         // block AND the submit target when this authority records a consent proof as a VERIFIER. The
         // sibling stacks name the SAME contract `VERIFICATION_REGISTRY_CONSENT_ADDR`, so accept that as
@@ -111,6 +120,17 @@ async fn main() {
 
     let chain: Arc<dyn ChainClient> = if use_mem {
         let mem = MemChain::new();
+        // Declare each configured clone's `recordType()`, mirroring what `createIssuer` fixes on a real
+        // clone. The issuer pillar reads the record type from the RESOLVED clone rather than from the
+        // document, so an undeclared clone would leave it indeterminate for the whole demo.
+        for rt in [
+            government_api::app::TRAVEL_CLEARANCE,
+            government_api::app::EU_HEALTH_CERT,
+        ] {
+            if let Some(addr) = cfg.issuer_addr_for(rt) {
+                mem.set_record_type(&addr, &government_api::app::record_type_key(rt));
+            }
+        }
         // Pre-whitelist the demo signer for both record types so the verify path can demonstrate the
         // issuer-identity pillar end-to-end without an admin round-trip.
         if let Some(signer) = mem.signer_address() {
