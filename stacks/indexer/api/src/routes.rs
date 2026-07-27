@@ -153,14 +153,42 @@ fn render_event(st: &AppState, ev: &IndexedEvent) -> Value {
     v
 }
 
-/// `GET /health` — no auth. Liveness + chain id (compose healthcheck target).
+/// `GET /health` - no auth. Liveness plus, critically, an HONEST statement of which event surface
+/// this indexer is serving.
+///
+/// The reported `chainId` is read from the LOG SOURCE, never from `CHAIN_ID` config. A demo-mode
+/// indexer used to inherit the configured `135` and report `{"ok":true,"chainId":135}` - byte-identical
+/// to a live one - while serving a scripted in-memory log with FABRICATED block numbers, merkle roots
+/// and `txUrl` links to transactions that do not exist. Nothing in the response let an operator, or the
+/// consoles that consume it, tell the difference. Now:
+///   - `backend`   - "live" | "simulated" (authoritative, from the source in use)
+///   - `simulated` - the same fact as a boolean, for UI badges
+///   - `chainId`   - the real id when live, `null` when simulated (never a network it is not on)
+///
+/// Both keys are emitted on BOTH paths. A flag present only when simulated would make its absence
+/// ambiguous between "live" and "a build too old to tell you" - i.e. "could not check" rendering as
+/// its own neighbour, which is the failure this endpoint exists to prevent.
 async fn health(State(st): State<AppState>) -> impl IntoResponse {
-    Json(json!({ "ok": true, "chainId": st.cfg.chain_id }))
+    let simulated = st.source.is_simulated();
+    Json(json!({
+        "ok": true,
+        // Null rather than a real id when simulated - this source is on no network at all.
+        "chainId": (!simulated).then(|| st.source.chain_id()),
+        "backend": st.source.backend().as_str(),
+        "simulated": simulated,
+    }))
 }
 
 /// `GET /v1/status` — indexer progress + finality watermark + this principal's scope.
+///
+/// Carries the same `backend`/`simulated`/`chainId` disclosure as `/health`, and for the same reason:
+/// this is the endpoint the oversight consoles poll for chain health, so `headBlock: 8` against a real
+/// chain head of ~282,800 must be readable as scripted rather than as a catastrophically lagging
+/// indexer. The progress numbers themselves are unchanged - this annotates them, it does not correct
+/// them, because they are a faithful report of the source actually in use.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
+    let simulated = st.source.is_simulated();
     let cursor = st.store.get_cursor().await;
     let head = st.source.head_block().await.ok();
     // Report the live finalized watermark + whether it comes from the chain's finality tag or the
@@ -178,7 +206,10 @@ async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<V
         _ => None,
     };
     Ok(Json(json!({
-        "chainId": st.cfg.chain_id,
+        // Null rather than a real id when simulated - see the `/health` doc above.
+        "chainId": (!simulated).then(|| st.source.chain_id()),
+        "backend": st.source.backend().as_str(),
+        "simulated": simulated,
         "headBlock": head,
         "finalizedBlock": finalized_block,
         "finalitySource": finality_source,

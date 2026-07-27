@@ -24,6 +24,42 @@ use crate::events::{EventType, Finality, IndexedEvent};
 
 pub const ROAX_CHAIN_ID: u64 = 135;
 
+/// The id a SIMULATED source reports. Deliberately not a real EIP-155 id: a scripted in-memory source
+/// is on no network at all, and answering `135` was the whole substance of the "simulated but
+/// indistinguishable from live" defect - an operator reading `/health` saw `chainId:135` and reasonably
+/// concluded the feed was ROAX, while the block numbers, merkle roots and `txUrl` links were fabricated.
+/// Operator-facing surfaces map this to JSON `null` and pair it with `backend()`/`is_simulated()`.
+///
+/// Mirrors `government-api`'s `chain::SIMULATED_CHAIN_ID` - same defect, same remedy, same shape.
+pub const SIMULATED_CHAIN_ID: u64 = 0;
+
+/// Which event surface a `LogSource` actually reads. This is a first-class part of the trait rather
+/// than something inferred from an `INDEXER_DEMO_MODE` config flag, because the operator-facing
+/// question ("are these events REAL?") is a property of the source in use, not of how it was chosen.
+///
+/// Mirrors `government-api`'s `chain::ChainBackend`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceBackend {
+    /// A real JSON-RPC node. Every event, block number and tx hash came off a real chain.
+    Live,
+    /// A scripted in-process source. Block numbers, merkle roots and tx hashes are FABRICATED, and
+    /// any `txUrl` built from them points at a transaction that does not exist.
+    Simulated,
+}
+
+impl SourceBackend {
+    /// Stable machine-readable token for `/health` and `/v1/status`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SourceBackend::Live => "live",
+            SourceBackend::Simulated => "simulated",
+        }
+    }
+    pub fn is_simulated(self) -> bool {
+        matches!(self, SourceBackend::Simulated)
+    }
+}
+
 sol! {
     #[sol(rpc)]
     contract IDogTagIssuerFactory {
@@ -93,8 +129,21 @@ pub fn watched_topic0() -> Vec<B256> {
 /// Abstract log surface. Block ranges are inclusive.
 #[async_trait]
 pub trait LogSource: Send + Sync {
+    /// The EIP-155 chain id these events came from. A simulated source MUST return
+    /// [`SIMULATED_CHAIN_ID`] rather than a real network id - see that constant.
     fn chain_id(&self) -> u64 {
         ROAX_CHAIN_ID
+    }
+    /// Which event surface this source actually reads.
+    ///
+    /// Required - deliberately NO default body. A new implementation cannot silently inherit "live"
+    /// and misrepresent fabricated events as chain history: it will not compile until it says which
+    /// it is. This compile-time obligation, not any runtime check, is what makes a simulated indexer
+    /// structurally impossible to mistake for a live one.
+    fn backend(&self) -> SourceBackend;
+    /// `true` when this source is scripted in-process rather than a real node.
+    fn is_simulated(&self) -> bool {
+        self.backend().is_simulated()
     }
     /// The current chain head (`eth_blockNumber`).
     async fn head_block(&self) -> Result<u64, ChainError>;
@@ -307,6 +356,11 @@ impl LogSource for AlloyLogSource {
         self.chain_id
     }
 
+    /// Real `eth_getLogs` against a real node.
+    fn backend(&self) -> SourceBackend {
+        SourceBackend::Live
+    }
+
     async fn head_block(&self) -> Result<u64, ChainError> {
         use alloy::providers::Provider;
         let provider = self.provider().await?;
@@ -495,6 +549,16 @@ pub struct EncodedLog {
 
 #[async_trait]
 impl LogSource for MemLogSource {
+    /// Scripted, in-process, on no network. Every consumer of this source must be able to say so.
+    fn backend(&self) -> SourceBackend {
+        SourceBackend::Simulated
+    }
+
+    /// Never a real network id - the blocks below were written by `demo_seed`, not mined.
+    fn chain_id(&self) -> u64 {
+        SIMULATED_CHAIN_ID
+    }
+
     async fn head_block(&self) -> Result<u64, ChainError> {
         let g = self.inner.lock().unwrap();
         if g.is_empty() {
