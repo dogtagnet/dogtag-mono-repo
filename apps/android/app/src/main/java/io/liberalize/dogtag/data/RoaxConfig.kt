@@ -12,6 +12,12 @@ data class RoaxConfig(
     val chainId: Long,
     val dogTagSbt: String,
     val issuerRegistry: String,
+    /**
+     * `DogTagIssuerFactory` — the app's OWN anchor for "which contract issued this root?". Credential
+     * verification resolves the issuing clone from its write-once `rootIssuer[R]` index instead of
+     * trusting a document's `issuer.documentStore`, which sits outside the Merkle root.
+     */
+    val dogTagIssuerFactory: String,
     /** Protocol discovery trust anchor. Blank fails closed until the registry is deployed. */
     val protocolRegistry: String,
 ) {
@@ -23,6 +29,7 @@ data class RoaxConfig(
                 chainId = o.optLong("chainId", 135),
                 dogTagSbt = o.optString("DogTagSBT"),
                 issuerRegistry = o.optString("IssuerRegistry"),
+                dogTagIssuerFactory = o.optString("DogTagIssuerFactory"),
                 protocolRegistry = o.optString("ProtocolRegistry"),
             )
         }

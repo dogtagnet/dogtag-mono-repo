@@ -314,7 +314,7 @@ async fn health(State(st): State<AppState>) -> Resp {
         "canSign": st.chain.can_broadcast_real_tx(),
         "signer": (!simulated).then(|| signer.clone()).flatten(),
         // The MemChain stand-in address, surfaced under a name that cannot be mistaken for a real key.
-        "simulatedSigner": simulated.then(|| signer).flatten(),
+        "simulatedSigner": simulated.then_some(signer).flatten(),
         "issuers": {
             app::TRAVEL_CLEARANCE: st.cfg.issuer_addr_for(app::TRAVEL_CLEARANCE),
             app::EU_HEALTH_CERT: st.cfg.issuer_addr_for(app::EU_HEALTH_CERT),
@@ -520,8 +520,10 @@ async fn issue(
 struct VerifyBody {
     /// The wrapped credential document to verify (as produced by any DogTag issuer).
     wrapped_doc: WrappedDoc,
-    /// Override the DogTagIssuer clone to check `isValid` against. Defaults to the doc's
-    /// `issuer.documentStore`.
+    /// OPTIONAL *expected* DogTagIssuer clone. It can only TIGHTEN: the clone every read is made
+    /// against is always the one the FACTORY names for this root, so this asserts an expectation
+    /// rather than selecting a contract. This route is unauthenticated, so a caller able to pick the
+    /// contract that answers for a credential would reopen the forgery this pillar exists to close.
     #[serde(default)]
     issuer_addr: Option<String>,
     /// OPTIONAL *expected* issuing signer. The issuer-whitelist pillar no longer depends on this: the
@@ -536,10 +538,6 @@ struct VerifyBody {
 async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Resp {
     let doc = body.wrapped_doc;
     let record_type = doc.issuer.record_type.clone();
-    let issuer_addr = body
-        .issuer_addr
-        .clone()
-        .unwrap_or_else(|| doc.issuer.document_store.clone());
     let claimed_root = doc.signature.merkle_root.clone();
 
     // 1) integrity — recompute the root from the salted leaves and compare (offline, no chain).
@@ -547,69 +545,153 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     let integrity_valid = integrity_state == FragmentState::Valid;
     let recomputed_hex = dogtag_standard::to_hex32(&recomputed);
 
-    // 2) on-chain status — DogTagIssuer.isValid(root) over ROAX (gasless read).
-    let onchain_valid = match st.chain.is_valid(&issuer_addr, &claimed_root).await {
+    // 2) ANCHOR THE ISSUING CLONE — the read every other on-chain pillar now hangs from.
+    //
+    // The `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and - the sharp one -
+    // `documentStore` are chosen by whoever built the document. Asking `documentStore` whether the
+    // credential is valid, and who issued it, is asking the suspect for their own references: an
+    // attacker deploys a contract that answers `isValid = true` and names a genuinely whitelisted
+    // signer, and every pillar passes on a wholly forged credential.
+    //
+    // So the clone is resolved from THIS deployment's own `DogTagIssuerFactory`, whose
+    // `rootIssuer[R]` index is written only from inside a clone's `issue()` (`require(isClone(...))`)
+    // and is strictly write-once. A contract the factory never deployed can never appear there, and a
+    // genuine root's issuer can never be overwritten.
+    let resolved_clone = match st
+        .chain
+        .root_issuer(&st.cfg.issuer_factory_addr, &claimed_root)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             return err(
                 StatusCode::BAD_GATEWAY,
-                &format!("on-chain isValid read failed: {e}"),
+                &format!("on-chain rootIssuer read failed: {e}"),
             )
+        }
+    };
+    // `issuer_addr` is an EXPECTED-clone assertion that can only TIGHTEN, exactly like `signer_addr`.
+    // It must never SELECT which contract answers: this route is unauthenticated, so letting a caller
+    // name the contract to read from would reopen the whole forgery through a second field - point it
+    // at an obliging contract, and the factory anchor is bypassed without touching `documentStore`.
+    let expected_clone = body
+        .issuer_addr
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    // The clone the envelope CLAIMS, kept only to detect that it disagrees with the chain.
+    let claimed_clone = doc.issuer.document_store.trim().to_string();
+    // Both claims are compared against the factory's answer; neither can substitute for it.
+    let clone_claims_agree = match &resolved_clone {
+        None => true,
+        Some(actual) => {
+            let envelope_ok =
+                claimed_clone.is_empty() || actual.eq_ignore_ascii_case(&claimed_clone);
+            let expected_ok = match expected_clone {
+                Some(want) => actual.eq_ignore_ascii_case(want),
+                None => true,
+            };
+            envelope_ok && expected_ok
         }
     };
 
-    // 3) issuer identity — MANDATORY, and self-resolving.
-    //
-    // The `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and - the sharp one -
-    // `documentStore` are attacker-controlled. Relabel a genuine credential's issuing authority, or
-    // point `documentStore` at a contract you control that returns true from `isValid`, and both the
-    // integrity recompute and the on-chain read still pass. This pillar is the only one that catches
-    // that, which is why it can no longer be skipped: the signer is read from the chain
-    // (`issuedBy(root)`, set to `msg.sender` under `onlyWhitelisted`) rather than typed in by an
-    // operator, then checked against THIS deployment's configured registry - never one named by the
-    // document, or the attacker would supply both sides of the question.
+    // 3) on-chain status — DogTagIssuer.isValid(root) on the RESOLVED clone (gasless read). With no
+    // clone there is nothing to ask: no factory clone ever issued this root, so it is not valid here.
+    let onchain_valid = match &resolved_clone {
+        Some(clone) => match st.chain.is_valid(clone, &claimed_root).await {
+            Ok(v) => v,
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("on-chain isValid read failed: {e}"),
+                )
+            }
+        },
+        None => false,
+    };
+
+    // 4) issuer identity — MANDATORY, and self-resolving.
     //
     // Tri-state, and only a definite `true` may contribute to a pass:
-    //   Some(true)  - resolved, and whitelisted for this record type
-    //   Some(false) - resolved, but not whitelisted (or not the expected signer): authenticity failure
-    //   None        - unresolvable (the clone never issued this root): INDETERMINATE. An unanswered
-    //                 check is not a passed check.
-    let resolved_signer = match st.chain.issued_by(&issuer_addr, &claimed_root).await {
-        Ok(v) => v,
-        Err(e) => {
-            return err(
-                StatusCode::BAD_GATEWAY,
-                &format!("on-chain issuedBy read failed: {e}"),
-            )
-        }
-    };
-    let issuer_whitelisted = match &resolved_signer {
-        Some(signer) => {
-            let rt_key = app::record_type_key(&record_type);
-            match st
-                .chain
-                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, signer)
-                .await
-            {
-                Ok(v) => {
-                    // An explicitly expected signer only ever makes the pillar stricter.
-                    let matches_expected = body
-                        .signer_addr
-                        .as_deref()
-                        .map(|want| want.trim().eq_ignore_ascii_case(signer))
-                        .unwrap_or(true);
-                    Some(v && matches_expected)
-                }
+    //   Some(true)  - resolved, and whitelisted for the record type the CHAIN says this root has
+    //   Some(false) - resolved, but not whitelisted, not the expected signer, or the envelope
+    //                 misrepresents the issuing clone / record type: a real authenticity failure
+    //   None        - unresolvable (no factory clone ever issued this root, or the clone reports no
+    //                 issuer): INDETERMINATE. An unanswered check is not a passed check.
+    let mut resolved_signer: Option<String> = None;
+    let issuer_whitelisted = match &resolved_clone {
+        // No clone claimed this root anywhere in the protocol: nothing to resolve, and no caller-named
+        // address may stand in for one. This is the case a fabricated root lands in.
+        None => None,
+        // A claim points somewhere other than the contract that actually issued the root. That is a
+        // definite misrepresentation, so it is refused BEFORE the registry is consulted - asking the
+        // whitelist about a document that already lied about its issuer would only launder the answer.
+        Some(_) if !clone_claims_agree => Some(false),
+        Some(clone) => {
+            // The record type comes from the clone itself, never from the envelope: a signer
+            // authorized for one record type must not be able to carry a credential relabelled as
+            // another. A clone reporting no record type leaves the pillar indeterminate rather than
+            // falling back to the claim.
+            let chain_rt_key = match st.chain.issuer_record_type(clone).await {
+                Ok(v) => v,
                 Err(e) => {
                     return err(
                         StatusCode::BAD_GATEWAY,
-                        &format!("on-chain whitelist read failed: {e}"),
+                        &format!("on-chain recordType read failed: {e}"),
                     )
+                }
+            };
+            match chain_rt_key {
+                None => None,
+                Some(rt_key)
+                    if !rt_key.eq_ignore_ascii_case(&app::record_type_key(&record_type)) =>
+                {
+                    Some(false)
+                }
+                Some(rt_key) => {
+                    let signer = match st.chain.issued_by(clone, &claimed_root).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return err(
+                                StatusCode::BAD_GATEWAY,
+                                &format!("on-chain issuedBy read failed: {e}"),
+                            )
+                        }
+                    };
+                    resolved_signer = signer.clone();
+                    match signer {
+                        None => None,
+                        Some(signer) => match st
+                            .chain
+                            .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, &signer)
+                            .await
+                        {
+                            Ok(v) => {
+                                // An explicitly expected signer only ever makes the pillar stricter.
+                                let matches_expected = body
+                                    .signer_addr
+                                    .as_deref()
+                                    .map(|want| want.trim().eq_ignore_ascii_case(&signer))
+                                    .unwrap_or(true);
+                                Some(v && matches_expected)
+                            }
+                            Err(e) => {
+                                return err(
+                                    StatusCode::BAD_GATEWAY,
+                                    &format!("on-chain whitelist read failed: {e}"),
+                                )
+                            }
+                        },
+                    }
                 }
             }
         }
-        None => None,
     };
+
+    // Reported for display/audit: the clone the checks were actually made against, falling back to the
+    // envelope's claim only when nothing resolved (so the operator sees what was asked about).
+    let issuer_addr = resolved_clone.unwrap_or(claimed_clone);
 
     // Verdict: all three authenticity pillars must PASS (architecture §5). `issuer_whitelisted` is
     // deliberately compared against `Some(true)` rather than defaulted - a pillar that could not be
@@ -917,7 +999,10 @@ async fn verify_session_start(
         return e;
     }
     if body.purpose.trim().is_empty() || body.record_type.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, "purpose and recordType are required");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "purpose and recordType are required",
+        );
     }
     let relayer = match st.chain.signer_address() {
         Some(a) if st.chain.can_sign() && !a.is_empty() => a,
@@ -1002,10 +1087,7 @@ async fn verify_session_resolve(State(st): State<AppState>, Path(token): Path<St
     // M7 P4 (§5.2) CONVENIENCE tier: platform-OWNED, UNVERIFIED claims. The app validates these against
     // the on-chain ProtocolRegistry / signed-manifest anchor before trusting any of them — and REFUSES
     // the whole flow if they are absent, so this block is mandatory, not decorative.
-    let issuer_clone = st
-        .cfg
-        .issuer_addr_for(&s.record_type)
-        .unwrap_or_default();
+    let issuer_clone = st.cfg.issuer_addr_for(&s.record_type).unwrap_or_default();
     let claims = app::convenience_claims(&st.cfg, st.chain.chain_id(), &issuer_clone, &s.purpose);
     ok(json!({
         "sessionId": s.session_id,
