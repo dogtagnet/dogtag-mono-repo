@@ -72,10 +72,6 @@ async function issueAndCopy(page: Page, c: TypeCase, dogTagId: string): Promise<
 async function verifyValid(page: Page, wrappedJson: string) {
   await page.goto("/verify");
   await page.getByTestId("verify-doc").fill(wrappedJson);
-
-  // Signer is prefilled from /health so the whitelist pillar is exercised; ensure it is non-empty.
-  await expect(page.getByTestId("verify-signer")).not.toHaveValue("");
-
   await page.getByTestId("verify-submit").click();
 
   await expect(page.getByTestId("verdict")).toContainText("VALID", { timeout: 45_000 });

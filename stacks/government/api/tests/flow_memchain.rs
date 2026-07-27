@@ -749,6 +749,62 @@ async fn a_name_only_relabel_is_out_of_this_pillars_reach() {
     assert_eq!(v["fragments"]["issuerWhitelisted"], true, "{v}");
 }
 
+/// The forgery through the ABSENCE of the field: strip `issuer.documentStore` instead of pointing it
+/// somewhere hostile.
+///
+/// Exempting a blank claim from the envelope-vs-factory comparison bought nothing - the factory
+/// supplies the address either way - while letting anyone holding a genuine credential skip the
+/// misrepresentation check entirely. The chain's answer was then backfilled into `issuerAddr`, so an
+/// unauthenticated caller could launder a stripped envelope into a clean-looking `verdict: true` row
+/// in the verifications audit log, naming an issuer the document itself never claimed.
+///
+/// Integrity is asserted TRUE first, so the refusal is provably the clone check and not the document
+/// failing to parse or fold: the `issuer` block sits outside the Merkle root, so emptying a field in
+/// it leaves the recompute untouched.
+#[tokio::test]
+async fn an_absent_document_store_is_a_mismatch_not_an_exemption() {
+    let (state, _) = demo_state();
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "17", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+
+    // Baseline: untouched, this exact document passes with the pillar RESOLVED.
+    let (_, genuine) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": issued["wrappedDoc"].clone() }),
+    )
+    .await;
+    assert_eq!(genuine["verdict"], true, "genuine: {genuine}");
+
+    let mut stripped = issued["wrappedDoc"].clone();
+    stripped["issuer"]["documentStore"] = json!("");
+    let (status, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": stripped }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "verify: {v}");
+    assert_eq!(
+        v["fragments"]["integrity"], true,
+        "the issuer block is outside R, so the recompute is untouched: {v}"
+    );
+    assert_eq!(v["fragments"]["issuerWhitelisted"], false, "{v}");
+    assert_eq!(
+        v["verdict"], false,
+        "a stripped documentStore must not verify: {v}"
+    );
+}
+
 /// The same forgery through the OTHER field. `POST /v1/verify` is unauthenticated, so `issuer_addr`
 /// is attacker-supplied, not operator-supplied: if it were allowed to SELECT which contract answers,
 /// the factory anchor would be bypassed without touching `documentStore` at all. It may only
