@@ -14,6 +14,7 @@ import { TypeTag, fieldOfValue } from "@dogtag/standard";
 import type { Address, Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import {
+  attributeSigner,
   chunkRanges,
   discoverTag,
   isOwnSigner,
@@ -126,11 +127,20 @@ describe("dogTagId resolution", () => {
     }
   });
 
-  it("names only the statuses the enum defines", () => {
+  it("names every status the contract's enum defines, in its declaration order", () => {
+    // Transcribed from `contracts/src/DogTagSBTConsent.sol`:
+    //   enum Status { Active, Lost, TransferPending, Deceased, Revoked }
+    // The ORDER is the meaning, so a short or reordered list does not degrade to "unknown" - it
+    // renames one real status as another. A TransferPending tag announced as "revoked", or a
+    // genuinely revoked one as "unknown", is exactly the confident-wrong claim this module exists to
+    // prevent, so assert all five rather than a prefix.
     expect(tagStatusLabel(0)).toBe("active");
-    expect(tagStatusLabel(1)).toBe("suspended");
-    expect(tagStatusLabel(2)).toBe("revoked");
+    expect(tagStatusLabel(1)).toBe("lost");
+    expect(tagStatusLabel(2)).toBe("transfer pending");
+    expect(tagStatusLabel(3)).toBe("deceased");
+    expect(tagStatusLabel(4)).toBe("revoked");
     // A byte the enum does not define must not be given an invented meaning.
+    expect(tagStatusLabel(5)).toBe("unknown");
     expect(tagStatusLabel(7)).toBe("unknown");
   });
 });
@@ -324,20 +334,22 @@ describe("discoverTag", () => {
   });
 
   it("reports progress per chunk, newest range first", async () => {
-    const progress: Array<{ done: number; scannedTo: bigint; found: number }> = [];
+    const progress: Array<{ done: number; reachedBlock: bigint; found: number }> = [];
     await discoverTag({
       dogTagId: 42n,
       addresses: ADDRESSES,
       reader: fakeReader({ latest: 99n, logs: [verification(95n)] }),
       lookbackBlocks: 100n,
       chunkBlocks: 25n,
-      onProgress: (p) => progress.push({ done: p.chunksDone, scannedTo: p.scannedTo, found: p.found }),
+      onProgress: (p) =>
+        progress.push({ done: p.chunksDone, reachedBlock: p.reachedBlock, found: p.found }),
     });
     expect(progress.map((p) => p.done)).toEqual([1, 2, 3, 4]);
-    // Head-first: the newest chunk (75..99) is scanned first, so its hit appears immediately.
-    expect(progress[0].scannedTo).toBe(75n);
+    // Head-first, so `reachedBlock` moves DOWN: the newest chunk (75..99) is scanned first, its hit
+    // appears immediately, and what has been covered is always [reachedBlock, toBlock].
+    expect(progress[0].reachedBlock).toBe(75n);
     expect(progress[0].found).toBe(1);
-    expect(progress[3].scannedTo).toBe(0n);
+    expect(progress[3].reachedBlock).toBe(0n);
   });
 
   it("rejects when a point-in-time read fails, rather than resolving an empty result", async () => {
@@ -372,9 +384,35 @@ describe("isOwnSigner", () => {
     expect(isOwnSigner(OTHER_SHOP, [MINTER])).toBe(false);
   });
 
-  it("with no signers known, reports everything as not ours rather than claiming it", () => {
-    // The safe direction: overstate what is unfamiliar, never claim a stranger's record as our work.
+  it("is a membership predicate only, so an empty set makes every address a non-member", () => {
+    // Correct as an ANSWER, and unusable as an attribution: "not in this set" and "we have no set"
+    // are the same boolean here, which is why nothing user-facing may call this directly. The
+    // attribution a reader is shown goes through `attributeSigner`, asserted below.
     expect(isOwnSigner(MINTER, [])).toBe(false);
     expect(isOwnSigner(null, [MINTER])).toBe(false);
+  });
+});
+
+describe("attributeSigner", () => {
+  it("names ours and a stranger's apart when the signer set is known", () => {
+    expect(attributeSigner(MINTER, [MINTER])).toBe("own");
+    expect(attributeSigner(OTHER_SHOP, [MINTER])).toBe("other");
+  });
+
+  it("reports UNKNOWN rather than 'other' when the signer set could not be established", () => {
+    // The defect this exists to close: `GET /issuer/signers` answers 200 `{"signers": []}` whenever
+    // custody is LOCKED, so folding that into "not ours" would turn missing data into a positive
+    // claim that a stranger verified this pet - complete with an ask-the-owner CTA driven off it.
+    expect(attributeSigner(MINTER, null)).toBe("unknown");
+    expect(attributeSigner(OTHER_SHOP, null)).toBe("unknown");
+  });
+
+  it("treats a KNOWN-but-empty set as unknown too - there is nothing to compare against", () => {
+    expect(attributeSigner(MINTER, [])).toBe("unknown");
+  });
+
+  it("reports an absent actor as unknown, never as a stranger", () => {
+    expect(attributeSigner(null, [MINTER])).toBe("unknown");
+    expect(attributeSigner(undefined, [MINTER])).toBe("unknown");
   });
 });

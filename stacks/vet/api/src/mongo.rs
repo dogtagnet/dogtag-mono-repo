@@ -642,6 +642,26 @@ impl Store for MongoStore {
         Some(c.pet_row(p))
     }
 
+    /// The `pets.dogTagId` match selects CLIENTS holding a matching pet, so the per-pet filter is
+    /// re-applied in Rust: a client with two pets matches on either, and returning the sibling too
+    /// would name the wrong pet in the link conflict this feeds.
+    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow> {
+        use futures::StreamExt;
+        let mut out = Vec::new();
+        let mut cur = match self.crm_clients().find(doc! { "pets.dogTagId": dog_tag_id }).await {
+            Ok(c) => c,
+            Err(_) => return out,
+        };
+        while let Some(Ok(c)) = cur.next().await {
+            for p in c.pets.iter().filter(|p| p.dog_tag_id.as_deref() == Some(dog_tag_id)) {
+                out.push(c.pet_row(p));
+            }
+        }
+        // Same total order as MemStore, so the conflict message names the same pet on either store.
+        out.sort_by(|a, b| a.pet.pet_id.cmp(&b.pet.pet_id));
+        out
+    }
+
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment) {
         let _ = self

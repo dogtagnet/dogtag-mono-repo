@@ -831,6 +831,14 @@ pub trait Store: Send + Sync {
     /// One pet by its `pet_id`, found without the caller having to know its owner. `None` when no
     /// client holds a pet with that id.
     async fn get_pet(&self, pet_id: &str) -> Option<PetRow>;
+    /// Every pet currently linked to `dog_tag_id`, across ALL owners.
+    ///
+    /// An EXACT match on the stored value, deliberately not the `?q=` needle: a needle over
+    /// [`PetRow::search_key`] is a substring match against the pet's other fields and its owner's
+    /// name too, so it would both over- and under-report. Exists so the link route can refuse to let
+    /// two pets share one tag - the tag is the key every check and every on-chain lookup is keyed
+    /// by, and a mistyped id that silently merges two animals' histories is far worse than an error.
+    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow>;
 
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment);
@@ -1343,6 +1351,24 @@ impl Store for MemStore {
         g.clients
             .values()
             .find_map(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p)))
+    }
+
+    async fn find_pets_by_dog_tag(&self, dog_tag_id: &str) -> Vec<PetRow> {
+        let g = self.inner.read().unwrap();
+        let mut out: Vec<PetRow> = g
+            .clients
+            .values()
+            .flat_map(|c| {
+                c.pets
+                    .iter()
+                    .filter(|p| p.dog_tag_id.as_deref() == Some(dog_tag_id))
+                    .map(move |p| c.pet_row(p))
+            })
+            .collect();
+        // Deterministic, so an error message naming "the pet that already holds this tag" names the
+        // same one on every call rather than whichever the hash map happened to yield first.
+        out.sort_by(|a, b| a.pet.pet_id.cmp(&b.pet.pet_id));
+        out
     }
 
     // ---- shop CRM: appointments ----

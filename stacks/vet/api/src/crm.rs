@@ -491,6 +491,38 @@ struct PetDogTagBody {
     dog_tag_id: String,
 }
 
+/// The pet, if any, that already holds `tag` and is not `self_pet_id`.
+///
+/// One tag, at most one pet - the tag is the key every check and every on-chain lookup is keyed by,
+/// so two pets sharing one would show each other's held credential, each other's on-chain history,
+/// and both would answer a `?q=<tag>` search: two animals' records silently merged, with a mistyped
+/// digit the realistic way in. Excluding `self_pet_id` is what keeps re-recording a tag a pet already
+/// holds idempotent rather than a self-conflict.
+///
+/// NOT an invariant over every write path: `POST /clients` and `PUT /clients/{id}` carry pets inline
+/// and are whole-document writes, so they can still seat a duplicate. The two PET routes that attach
+/// a tag ([`create_pet`] and [`link_pet_dogtag`]) both go through here.
+async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -> Option<PetRow> {
+    store
+        .find_pets_by_dog_tag(tag)
+        .await
+        .into_iter()
+        .find(|r| r.pet.pet_id != self_pet_id)
+}
+
+/// The 409 for a tag another pet already holds. NAMES that pet and its owner, because that is what
+/// tells a typo apart from a genuine conflict - a bare "already linked" leaves the operator with no
+/// way to find out which record to look at.
+fn dog_tag_conflict(tag: &str, other: &PetRow) -> Resp {
+    err(
+        StatusCode::CONFLICT,
+        &format!(
+            "DogTag {tag} is already linked to {} ({}). Remove it from that pet first, or check the id.",
+            other.pet.name, other.client_name
+        ),
+    )
+}
+
 /// Apply a mutation to ONE pet inside its owner's document, then persist the whole client.
 ///
 /// Pets are stored embedded, so every pet write is a client write; this helper is the single place
@@ -563,6 +595,14 @@ async fn create_pet(
     // pet onto an id that already exists elsewhere, and pet ids are what appointments point at.
     let mut pet = build_pet(&body.pet);
     pet.pet_id = uuid::Uuid::new_v4().to_string();
+    // `PetBody` carries `dogTagId`, so create is a second way to attach a tag and has to enforce the
+    // same one-pet-per-tag rule as [`link_pet_dogtag`]. Guarding only the link route would leave the
+    // merge it prevents reachable through the adjacent route with the same field.
+    if let Some(tag) = pet.dog_tag_id.as_deref() {
+        if let Some(other) = conflicting_pet(&st.store, tag, &pet.pet_id).await {
+            return dog_tag_conflict(tag, &other);
+        }
+    }
     c.pets.push(pet.clone());
     c.updated_at = now();
     c.rebuild_search_key();
@@ -612,6 +652,13 @@ async fn update_pet(
 /// This is not, and cannot be, an issuance: nothing is minted, no credential is created, and nothing
 /// is written on chain. It records an id the operator read off the owner's app so that this shop can
 /// tell which pet a verification concerned. It is freely reversible ([`unlink_pet_dogtag`]).
+///
+/// A tag already held by ANOTHER pet is refused with 409 rather than accepted. The tag is the key
+/// every check and every on-chain lookup is keyed by, so two pets sharing one would show each other's
+/// held credential, each other's on-chain history, and both answer a `?q=<tag>` search - two animals'
+/// records silently merged, with a mistyped digit the realistic way in. The refusal NAMES the pet
+/// already holding it, because that is what tells a typo apart from a genuine conflict. Re-linking a
+/// tag to the pet that already has it stays idempotent: nothing is being merged.
 async fn link_pet_dogtag(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -624,6 +671,13 @@ async fn link_pet_dogtag(
     let tag = body.dog_tag_id.trim().to_string();
     if tag.is_empty() {
         return err(StatusCode::BAD_REQUEST, "dogTagId is required");
+    }
+    // Existence first, so an unknown pet reports 404 rather than a conflict with a pet it is not.
+    if st.store.get_pet(&id).await.is_none() {
+        return err(StatusCode::NOT_FOUND, "pet not found");
+    }
+    if let Some(other) = conflicting_pet(&st.store, &tag, &id).await {
+        return dog_tag_conflict(&tag, &other);
     }
     match mutate_pet(&st.store, &id, |p| p.dog_tag_id = Some(tag)).await {
         Some(r) => ok(pet_row_json(&r)),
@@ -654,10 +708,17 @@ async fn unlink_pet_dogtag(
 /// The credential document(s) this shop HOLDS for the pet's DogTag.
 ///
 /// `POST /import/pull` verifies a customer's credential and writes it to the per-tag document cache
-/// (`upsert_client_cache`, keyed by the doc's own `credentialSubject.dogTagId` leaf — the same raw
-/// handle the operator records on the pet). Nothing read that cache back, so an imported credential
-/// was stored and then unreachable: the shop could accept a record and never see it again. This is the
-/// read side.
+/// (`upsert_client_cache`, keyed by the doc's own `credentialSubject.dogTagId` leaf - the short
+/// operator-facing HANDLE). Nothing read that cache back, so an imported credential was stored and
+/// then unreachable: the shop could accept a record and never see it again. This is the read side.
+///
+/// The lookup is an EXACT match on whatever the pet is linked by, and the link route accepts two
+/// forms: that handle, or the full on-chain field element an explorer shows. Only the handle can
+/// match here - handle -> field element is a Poseidon hash and cannot be inverted, so a
+/// field-element link has no handle to look under. An empty list from such a pet therefore means
+/// "this shop cannot perform the lookup", NOT "this shop holds nothing", and the caller must render
+/// the two differently (`PetTagCredentials` does, off `resolveDogTagId(...).form`). Normalising the
+/// two forms here is impossible, not merely unimplemented.
 ///
 /// It returns the STORED DOCUMENT and no verdict. Whether a credential is currently valid is an
 /// on-chain question whose answer changes after the import — a root can be revoked the next day — so

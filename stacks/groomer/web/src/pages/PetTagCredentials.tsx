@@ -10,6 +10,7 @@ import {
   ChainValue,
   Spinner,
   addressExplorerHref,
+  resolveDogTagId,
   verifyCredentialOnchain,
   type CrmPet,
   type VerifyCredentialResp,
@@ -32,12 +33,21 @@ import { env } from "../lib/env";
  *     it was imported, so a stored verdict is a claim about the past presented as the present.
  *  2. **"Could not check" is never rendered as valid.** A failed read is its own state, visually
  *     distinct from both valid and invalid, and it says which check could not be made.
+ *  3. **An unmatchable lookup is never rendered as an absence.** The held-document cache is keyed by
+ *     the tag HANDLE (`POST /import/pull` files each document under its own
+ *     `credentialSubject.dogTagId` leaf), while the link input deliberately also accepts the full
+ *     on-chain field element so a tag copied from an explorer still scans. Handle -> field element is
+ *     a hash and cannot be inverted, so a field-element link simply has no handle to look under. That
+ *     is a lookup this shop cannot perform, not evidence it holds nothing - a surface built on not
+ *     overstating must not understate either.
  */
 export function PetTagCredentials({ pet }: { pet: CrmPet }) {
   const { api } = useApp();
   const [docs, setDocs] = useState<Record<string, unknown>[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Reuses the discovery resolver rather than adding a second detector for the same two forms.
+  const tagForm = resolveDogTagId(pet.dogTagId)?.form ?? null;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,6 +93,24 @@ export function PetTagCredentials({ pet }: { pet: CrmPet }) {
           <p className="text-sm text-muted">
             No DogTag is linked to {pet.name}, so there is no tag to look credentials up under. Link one
             above first.
+          </p>
+        ) : (docs?.length ?? 0) === 0 && tagForm === "field" ? (
+          // NOT an absence. The lookup could not be performed at all, and saying "no credential" here
+          // would be a false negative about this shop's own records.
+          <p className="text-sm text-muted" data-testid="credentials-tag-form-mismatch">
+            {pet.name} is linked by the full on-chain DogTag id{" "}
+            <span className="font-mono">{pet.dogTagId}</span>, but credentials this shop imports are
+            filed under the SHORT tag handle carried inside the credential itself. That handle is
+            hashed to produce the on-chain id and the hash cannot be run backwards, so this shop's
+            held records cannot be matched to this pet by the id above - which is not the same as
+            holding none. Record the short number the owner's app shows to match them up, or{" "}
+            <Link
+              to={`/import?petId=${encodeURIComponent(pet.petId)}&dogTagId=${encodeURIComponent(pet.dogTagId)}`}
+              className="text-primary hover:underline"
+            >
+              ask the owner to share a record
+            </Link>
+            . Chain discovery below is unaffected - it reads the on-chain id directly.
           </p>
         ) : (docs?.length ?? 0) === 0 ? (
           <p className="text-sm text-muted">

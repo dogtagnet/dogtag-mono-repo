@@ -240,9 +240,23 @@ export interface WhitelistRow {
   address: string;
   whitelisted: boolean;
 }
+/**
+ * `GET /issuer/signers` answers with TWO different shapes, and modelling only one of them is how a
+ * caller ends up treating missing data as data.
+ *
+ * Custody UNLOCKED gives `{ activeSigner, matrix }`. Custody LOCKED short-circuits to
+ * `{ signers: [] }` - no `activeSigner`, no `matrix`, and no signer of any kind. Every field is
+ * therefore optional, and the locked shape is named rather than left to be inferred from a missing
+ * key: a consumer must be able to tell "this shop has no signer" apart from "this portal could not
+ * find out". Key on PRESENCE, never truthiness - `active_address()` can legitimately return `""`.
+ */
 export interface IssuerSignersResp {
-  activeSigner: string;
-  matrix: WhitelistRow[];
+  /** Present only when custody is unlocked. */
+  activeSigner?: string;
+  /** Present only when custody is unlocked; one row per (recordType, signer) pair. */
+  matrix?: WhitelistRow[];
+  /** The locked-custody shape. Always empty - it carries no signer to read. */
+  signers?: string[];
 }
 
 // ---- import ----
