@@ -32,7 +32,10 @@ on-chain wallet-to-consent-key bind.
 The receipt renderer is the owner-web counterpart of the government portal receipt and the native
 holder receipt screens. It is derived entirely from the held `WrappedDoc`: Section A/B/C or Annex-IV
 fields come from decoded Merkle leaves, withheld/redacted copies show only the leaves still present, and
-the QR points at the issuer-domain public status page `https://<issuer.domain>/r/<receiptId>`.
+the QR points at the public status page `<protocol.statusBaseUrl>/r/<receiptId>` - the reachable base the
+issuer stamped into the credential, never its `did:web` `issuer.domain` identity (see the `protocol` block
+in [`docs/architecture.md` §3.1](../../../docs/architecture.md)). A credential carrying no base has no
+status page, so the receipt renders no QR and says so.
 
 The status banner is computed the same way as the role portals: a live `DogTagIssuer.isValid(root)` read
 wins for revocation/not-anchored, then the local ISO validity window derives `EXPIRED`; otherwise the
