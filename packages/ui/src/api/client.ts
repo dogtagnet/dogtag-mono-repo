@@ -11,6 +11,7 @@ import type {
   CrmAppointment,
   CrmClient,
   CrmPage,
+  CrmPet,
   CrmVerification,
   GenesisConfirmReq,
   GenesisConfirmResp,
@@ -25,6 +26,10 @@ import type {
   IssuerSignersResp,
   LoginResp,
   AdminLoginResp,
+  PetCreateInput,
+  PetCredentialsResp,
+  PetListQuery,
+  PetPatchInput,
   PrepareReq,
   PrepareResp,
   ProfileIssueStartReq,
@@ -270,6 +275,33 @@ export function createApiClient(opts: ApiClientOptions) {
     createClient: (body: ClientInput) => request<CrmClient>("POST", "/clients", body),
     updateClient: (id: string, body: ClientInput) => request<CrmClient>("PUT", `/clients/${id}`, body),
     deleteClient: (id: string) => request<{ deleted: boolean }>("DELETE", `/clients/${id}`),
+
+    // ---- shop CRM: pets (a collection of their own; stored inside their owner) ----
+    listPets: (q: PetListQuery = {}) =>
+      request<CrmPage<CrmPet>>("GET", `/pets${queryString({ ...q })}`),
+    getPet: (id: string) => request<CrmPet>("GET", `/pets/${id}`),
+    createPet: (body: PetCreateInput) => request<CrmPet>("POST", "/pets", body),
+    /** PATCH semantics on a PUT: an omitted field is left as it is, never blanked. */
+    updatePet: (id: string, body: PetPatchInput) => request<CrmPet>("PUT", `/pets/${id}`, body),
+    deletePet: (id: string) => request<{ deleted: boolean }>("DELETE", `/pets/${id}`),
+    /**
+     * LINK a DogTag to this pet — writes the SHOP's own note of which tag the pet holds. Mints
+     * nothing and writes nothing on chain.
+     */
+    linkPetDogTag: (id: string, dogTagId: string) =>
+      request<CrmPet>("POST", `/pets/${id}/dogtag`, { dogTagId }),
+    /**
+     * UNLINK the DogTag from this pet. A LOCAL disassociation and nothing more: the credential stays
+     * valid, stays on chain, and stays verifiable by everyone else. This is NOT revocation — see
+     * `revoke` on the issuance surface, which is permanent and publicly visible.
+     */
+    unlinkPetDogTag: (id: string) => request<CrmPet>("DELETE", `/pets/${id}/dogtag`),
+    /**
+     * The credential document(s) this shop HOLDS for the pet's tag — what `POST /import/pull` stored.
+     * Carries no verdict on purpose: validity is an on-chain fact that changes after the import, so
+     * the caller re-checks the chain rather than trusting a frozen answer.
+     */
+    petCredentials: (id: string) => request<PetCredentialsResp>("GET", `/pets/${id}/credentials`),
 
     // ---- shop CRM: appointments ----
     listAppointments: (q: AppointmentListQuery = {}) =>

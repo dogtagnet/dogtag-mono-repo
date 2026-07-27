@@ -12,8 +12,10 @@ import {
   type FragmentState,
   type ImportVerdict,
 } from "@dogtag/ui";
-import { CheckCircle2, HelpCircle, ScanLine, XCircle } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import type { CrmPet } from "@dogtag/ui";
+import { CheckCircle2, HelpCircle, PawPrint, ScanLine, XCircle } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useApp } from "../app/AppContext";
 
 /**
@@ -25,6 +27,7 @@ import { useApp } from "../app/AppContext";
 export function ImportFromUser() {
   const { api } = useApp();
   const { toast } = useToast();
+  const [params] = useSearchParams();
   const [kind, setKind] = useState<"profile" | "vaccination">("vaccination");
   const [userApiBase, setUserApiBase] = useState("");
   const [userJwt, setUserJwt] = useState("");
@@ -32,6 +35,33 @@ export function ImportFromUser() {
   const [busy, setBusy] = useState(false);
   const [verdict, setVerdict] = useState<ImportVerdict | null>(null);
   const [accepted, setAccepted] = useState<boolean | null>(null);
+
+  // Arriving from a pet's page (or its on-chain discovery panel) carries the pet across, so the
+  // operator lands here already knowing WHOSE credential they are asking for instead of holding the
+  // context in their head. Discovery names what exists; this is where the owner shares it.
+  const petId = params.get("petId") ?? "";
+  const contextTagId = params.get("dogTagId") ?? "";
+  const [contextPet, setContextPet] = useState<CrmPet | null>(null);
+
+  useEffect(() => {
+    if (!petId) {
+      setContextPet(null);
+      return;
+    }
+    let cancelled = false;
+    // A pet that cannot be read simply leaves the banner off; the import itself does not depend on it.
+    void api
+      .getPet(petId)
+      .then((p) => {
+        if (!cancelled) setContextPet(p);
+      })
+      .catch(() => {
+        if (!cancelled) setContextPet(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, petId]);
 
   function tryParseScanned(text: string) {
     // a scanned QR may encode the whole payload as JSON; accept that too.
@@ -91,6 +121,47 @@ export function ImportFromUser() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {(contextPet || contextTagId) && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 p-3 text-sm">
+            <span className="flex flex-wrap items-center gap-2 text-onSurface">
+              <PawPrint className="h-4 w-4 text-primary" />
+              Importing for{" "}
+              {contextPet ? (
+                <Link to={`/pets/${contextPet.petId}`} className="font-medium text-primary hover:underline">
+                  {contextPet.name}
+                </Link>
+              ) : (
+                "this pet"
+              )}
+              {contextPet?.clientName && (
+                <>
+                  {" · owner "}
+                  <Link
+                    to={`/clients/${contextPet.clientId}`}
+                    className="text-primary hover:underline"
+                  >
+                    {contextPet.clientName}
+                  </Link>
+                </>
+              )}
+              {(contextPet?.dogTagId || contextTagId) && (
+                <Badge variant="outline" className="font-mono">
+                  DogTag {contextPet?.dogTagId || contextTagId}
+                </Badge>
+              )}
+            </span>
+            {/*
+              The tag is shown, not sent: `POST /import/pull` files an accepted document under the
+              dogTagId carried INSIDE the credential itself. Passing this one as a hint would let a
+              mis-scanned QR be filed against the wrong pet, so the credential stays the authority on
+              whose it is.
+            */}
+            <span className="text-xs text-muted">
+              The record is filed under the tag inside the credential, not under this one.
+            </span>
+          </div>
+        )}
+
         <div className="flex gap-2">
           <Button
             variant={kind === "profile" ? "primary" : "outline"}

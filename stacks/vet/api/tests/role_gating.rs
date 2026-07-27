@@ -48,6 +48,12 @@ const VERIFIER_ROUTES: &[(&str, &str)] = &[
     ("GET", "/clients"),
     ("GET", "/appointments"),
     ("GET", "/verifications"),
+    // Pets are a first-class collection for every role: a client/pet book is business data, not an
+    // issuance surface. This pairing is also what keeps the groomer pet page honest — the pet's tag
+    // can be LINKED and UNLINKED here while `/records/{id}/revoke` above stays absent, so a local
+    // disassociation is the only tag-removing act this role has.
+    ("GET", "/pets"),
+    ("GET", "/pets/some-id/credentials"),
 ];
 
 /// Build a Config for a given `BUSINESS_TYPE`, otherwise identical to the shared test config.
