@@ -883,6 +883,57 @@ export interface ClientPet {
   dogTagId: string | null;
 }
 
+/**
+ * One row of the PETS collection (`GET /pets`, `GET /pets/{petId}`).
+ *
+ * A pet is stored embedded in its owner's document but is addressed in its own right, so every row
+ * carries the owner denormalized — the same denormalization {@link CrmAppointment.clientName} uses.
+ * That is what makes the pet -> owner half of the round trip a link rather than a second fetch.
+ */
+export interface CrmPet extends ClientPet {
+  clientId: string;
+  clientName: string;
+  /** the OWNING CLIENT's `updatedAt`: a pet has no timestamp of its own. */
+  updatedAt: number;
+}
+
+/** Pet fields on create. A pet must belong to someone, so `clientId` is required. */
+export interface PetCreateInput extends ClientPetInput {
+  clientId: string;
+}
+
+/**
+ * Pet fields on edit. Every field is optional and an ABSENT field is left alone — unlike
+ * `PUT /clients/{id}`, which replaces the whole document (and so deletes any pet left out of it).
+ */
+export interface PetPatchInput {
+  name?: string;
+  species?: string;
+  breed?: string;
+  sex?: string;
+  dateOfBirth?: string;
+  notes?: string;
+}
+
+export interface PetListQuery extends ClientListQuery {
+  clientId?: string;
+}
+
+/**
+ * The credentials this shop HOLDS for a pet's DogTag (`GET /pets/{petId}/credentials`) — the wrapped
+ * documents `POST /import/pull` accepted and stored.
+ *
+ * Deliberately no verdict field. A credential's validity is an on-chain fact that can change after the
+ * import (a root may be revoked the next day), so a stored verdict would be a stale claim; the caller
+ * re-reads the chain for each document instead.
+ */
+export interface PetCredentialsResp {
+  /** The tag the lookup used, or `null` when the pet has none — distinguishing "no tag to look up" from "no credentials". */
+  dogTagId: string | null;
+  /** Wrapped credential documents, as stored. Parsed by the caller (`@dogtag/standard`). */
+  credentials: Record<string, unknown>[];
+}
+
 export interface CrmClient {
   clientId: string;
   name: string;
@@ -999,6 +1050,12 @@ export interface AppointmentListQuery extends ClientListQuery {
 }
 export interface VerificationListQuery extends ClientListQuery {
   clientId?: string;
+  /**
+   * Restrict to ONE pet's verifications. A client may bring several pets, each holding its own
+   * DogTag, so this is a genuinely narrower question than `clientId` — and the pet detail page must
+   * ask the narrow one or it would present another pet's checks as this pet's.
+   */
+  petId?: string;
   appointmentId?: string;
   status?: CrmVerification["status"];
   purpose?: string;

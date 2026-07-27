@@ -9,6 +9,8 @@ import { AppointmentDetail } from "./pages/AppointmentDetail";
 import { AppointmentForm } from "./pages/AppointmentForm";
 import { Clients } from "./pages/Clients";
 import { ClientDetail } from "./pages/ClientDetail";
+import { Pets } from "./pages/Pets";
+import { PetDetail } from "./pages/PetDetail";
 import { Groomers } from "./pages/Groomers";
 import { Reports } from "./pages/Reports";
 import { Marketing } from "./pages/Marketing";
@@ -49,6 +51,9 @@ export function App() {
       <Route path="/appointments" element={<Layout title="Appointments"><Appointments /></Layout>} />
       <Route path="/clients/:id" element={<Layout title="Client"><ClientDetail /></Layout>} />
       <Route path="/clients" element={<Layout title="Clients"><Clients /></Layout>} />
+      {/* Pets are addressable in their own right, and reach their owner from the detail page. */}
+      <Route path="/pets/:id" element={<Layout title="Pet"><PetDetail /></Layout>} />
+      <Route path="/pets" element={<Layout title="Pets"><Pets /></Layout>} />
       <Route path="/verifications/:id" element={<Layout title="Verification"><VerificationDetail /></Layout>} />
       <Route path="/verifications" element={<Layout title="All verifications"><Verifications /></Layout>} />
       <Route path="/groomers" element={<Layout title="Groomers"><Groomers /></Layout>} />

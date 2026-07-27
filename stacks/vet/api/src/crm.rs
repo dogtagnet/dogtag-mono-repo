@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -32,8 +32,8 @@ use serde_json::{json, Value};
 use crate::app::AppState;
 use crate::auth::now;
 use crate::store::{
-    Appointment, AppointmentQuery, Client, ClientPet, ClientQuery, Page, Store, VerificationLog,
-    VerificationQuery, VerifySession, APPOINTMENT_STATES, VERIFICATION_STATES,
+    Appointment, AppointmentQuery, Client, ClientPet, ClientQuery, Page, PetQuery, PetRow, Store,
+    VerificationLog, VerificationQuery, VerifySession, APPOINTMENT_STATES, VERIFICATION_STATES,
 };
 
 type Resp = (StatusCode, Json<Value>);
@@ -59,6 +59,18 @@ fn pet_json(p: &ClientPet) -> Value {
         "notes": p.notes,
         "dogTagId": p.dog_tag_id,
     })
+}
+
+/// One row of the pets collection: the pet's own fields plus the owner it belongs to.
+///
+/// `clientId`/`clientName` are what make the pet -> owner half of the round trip a plain link instead
+/// of a second fetch, and they are why the pets list can render an owner column without an N+1 join.
+fn pet_row_json(r: &PetRow) -> Value {
+    let mut v = pet_json(&r.pet);
+    v["clientId"] = json!(r.client_id);
+    v["clientName"] = json!(r.client_name);
+    v["updatedAt"] = json!(r.owner_updated_at);
+    v
 }
 
 fn client_json(c: &Client) -> Value {
@@ -427,6 +439,302 @@ async fn delete_client(State(st): State<AppState>, headers: HeaderMap, Path(id):
 }
 
 // ============================================================================================
+// pets — addressed in their own right, still stored inside their owner
+// ============================================================================================
+//
+// A pet is reachable BOTH ways round: `/pets?clientId=` lists one owner's pets, and every pet row
+// carries `clientId`/`clientName` so the pet names its owner. That symmetry is the point — an
+// operator with a pet in front of them and no idea who brought it needs to get to the owner, and an
+// operator on the phone to an owner needs to get to the pet.
+//
+// Every write here goes through [`mutate_pet`], which patches the ONE addressed pet inside its
+// client. That is deliberately unlike `PUT /clients/{id}`, which replaces the whole `pets` array and
+// therefore deletes any pet the caller omits.
+
+/// Fields a pet write accepts. Absent fields are left as they are on an edit — a pet route must not
+/// blank a field the caller simply did not mention, which is the failure mode a whole-document
+/// replace has by construction.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PetPatchBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    species: Option<String>,
+    #[serde(default)]
+    breed: Option<String>,
+    #[serde(default)]
+    sex: Option<String>,
+    #[serde(default)]
+    date_of_birth: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+/// Body of `POST /pets` — a pet must be created UNDER an owner, so `clientId` is required.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PetCreateBody {
+    client_id: String,
+    #[serde(flatten)]
+    pet: PetBody,
+}
+
+/// Body of `POST /pets/{id}/dogtag` — recording which tag this pet holds.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PetDogTagBody {
+    dog_tag_id: String,
+}
+
+/// Apply a mutation to ONE pet inside its owner's document, then persist the whole client.
+///
+/// Pets are stored embedded, so every pet write is a client write; this helper is the single place
+/// that knows it. It re-reads the owner, mutates only the addressed pet in place, and writes the
+/// document back — so the pet's SIBLINGS, and the appointment/verification rows pointing at them,
+/// are untouched. It then rebuilds the owner's search key (the client's key includes its pets' names
+/// and tag ids) and resyncs the denormalized labels the calendar and history carry.
+///
+/// `None` means no client holds a pet with this id, which the routes turn into a 404.
+async fn mutate_pet(
+    store: &Arc<dyn Store>,
+    pet_id: &str,
+    f: impl FnOnce(&mut ClientPet),
+) -> Option<PetRow> {
+    let row = store.get_pet(pet_id).await?;
+    let mut c = store.get_client(&row.client_id).await?;
+    {
+        let p = c.pets.iter_mut().find(|p| p.pet_id == pet_id)?;
+        f(p);
+    }
+    c.updated_at = now();
+    c.rebuild_search_key();
+    store.put_client(c.clone()).await;
+    resync_client_labels(store, &c).await;
+    c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p))
+}
+
+async fn list_pets(State(st): State<AppState>, headers: HeaderMap, Query(q): Query<ListQuery>) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    let page = st
+        .store
+        .list_pets(&PetQuery {
+            q: ListQuery::opt(&q.q),
+            client_id: ListQuery::opt(&q.client_id),
+            limit: q.limit(),
+            offset: q.offset(),
+        })
+        .await;
+    ok(page_json(page, q.limit(), q.offset(), pet_row_json))
+}
+
+async fn get_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    match st.store.get_pet(&id).await {
+        Some(r) => ok(pet_row_json(&r)),
+        None => err(StatusCode::NOT_FOUND, "pet not found"),
+    }
+}
+
+async fn create_pet(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PetCreateBody>,
+) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    if body.pet.name.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "name is required");
+    }
+    let mut c = match st.store.get_client(body.client_id.trim()).await {
+        Some(c) => c,
+        None => return err(StatusCode::NOT_FOUND, "client not found"),
+    };
+    // A supplied petId is ignored on create: `build_pet` would otherwise let a caller graft a second
+    // pet onto an id that already exists elsewhere, and pet ids are what appointments point at.
+    let mut pet = build_pet(&body.pet);
+    pet.pet_id = uuid::Uuid::new_v4().to_string();
+    c.pets.push(pet.clone());
+    c.updated_at = now();
+    c.rebuild_search_key();
+    st.store.put_client(c.clone()).await;
+    (StatusCode::CREATED, Json(pet_row_json(&c.pet_row(&pet))))
+}
+
+async fn update_pet(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<PetPatchBody>,
+) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    // A pet with a blank name is unusable in every list that renders it, so an explicit blank is a
+    // request error rather than something to silently accept.
+    if body.name.as_ref().is_some_and(|n| n.trim().is_empty()) {
+        return err(StatusCode::BAD_REQUEST, "name cannot be blank");
+    }
+    let set = |dst: &mut String, src: Option<String>| {
+        if let Some(v) = src {
+            *dst = v.trim().to_string();
+        }
+    };
+    let updated = mutate_pet(&st.store, &id, |p| {
+        set(&mut p.name, body.name);
+        set(&mut p.species, body.species);
+        set(&mut p.breed, body.breed);
+        set(&mut p.sex, body.sex);
+        set(&mut p.date_of_birth, body.date_of_birth);
+        // Notes keep their whitespace: a multi-line handling note is not a label to trim.
+        if let Some(n) = body.notes {
+            p.notes = n;
+        }
+    })
+    .await;
+    match updated {
+        Some(r) => ok(pet_row_json(&r)),
+        None => err(StatusCode::NOT_FOUND, "pet not found"),
+    }
+}
+
+/// LINK a DogTag to this pet — a write to the SHOP's own record of which tag this pet holds.
+///
+/// This is not, and cannot be, an issuance: nothing is minted, no credential is created, and nothing
+/// is written on chain. It records an id the operator read off the owner's app so that this shop can
+/// tell which pet a verification concerned. It is freely reversible ([`unlink_pet_dogtag`]).
+async fn link_pet_dogtag(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<PetDogTagBody>,
+) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    let tag = body.dog_tag_id.trim().to_string();
+    if tag.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "dogTagId is required");
+    }
+    match mutate_pet(&st.store, &id, |p| p.dog_tag_id = Some(tag)).await {
+        Some(r) => ok(pet_row_json(&r)),
+        None => err(StatusCode::NOT_FOUND, "pet not found"),
+    }
+}
+
+/// UNLINK the DogTag from this pet — clears the shop's own note of which tag the pet holds.
+///
+/// Deliberately NOT a revocation. The credential and the tag continue to exist, stay valid, and stay
+/// verifiable by everyone else; all that changes is that this shop's record no longer says which pet
+/// the tag belongs to. Re-linking restores it. On-chain revocation is a different act with a
+/// different, permanent, publicly visible effect and does not live on this route.
+async fn unlink_pet_dogtag(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    match mutate_pet(&st.store, &id, |p| p.dog_tag_id = None).await {
+        Some(r) => ok(pet_row_json(&r)),
+        None => err(StatusCode::NOT_FOUND, "pet not found"),
+    }
+}
+
+/// The credential document(s) this shop HOLDS for the pet's DogTag.
+///
+/// `POST /import/pull` verifies a customer's credential and writes it to the per-tag document cache
+/// (`upsert_client_cache`, keyed by the doc's own `credentialSubject.dogTagId` leaf — the same raw
+/// handle the operator records on the pet). Nothing read that cache back, so an imported credential
+/// was stored and then unreachable: the shop could accept a record and never see it again. This is the
+/// read side.
+///
+/// It returns the STORED DOCUMENT and no verdict. Whether a credential is currently valid is an
+/// on-chain question whose answer changes after the import — a root can be revoked the next day — so
+/// the caller re-checks it against the chain rather than trusting a verdict frozen at import time.
+///
+/// A LIST (of zero or one today, since the cache holds one document per tag) because "the credentials
+/// of this pet" is plural in the domain: the shape must not have to change when the cache does.
+async fn list_pet_credentials(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    let row = match st.store.get_pet(&id).await {
+        Some(r) => r,
+        None => return err(StatusCode::NOT_FOUND, "pet not found"),
+    };
+    // No tag means no credential can be looked up — reported as an empty list with the reason, so the
+    // caller does not read it as "this pet has no credentials".
+    let Some(tag) = row.pet.dog_tag_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return ok(json!({ "dogTagId": null, "credentials": [] }));
+    };
+    let held = st.store.get_client_cache(tag).await;
+    ok(json!({
+        "dogTagId": tag,
+        "credentials": held.map(|d| vec![d]).unwrap_or_default(),
+    }))
+}
+
+async fn delete_pet(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Resp {
+    if let Err(e) = crate::routes::require_operator(&st, &headers).await {
+        return e;
+    }
+    // Refuse to orphan bookings, mirroring `delete_client`: an appointment or a verification naming
+    // this pet must not be left pointing at a pet row that no longer exists.
+    let appts = st
+        .store
+        .list_appointments(&AppointmentQuery {
+            pet_id: Some(id.clone()),
+            limit: 1,
+            ..Default::default()
+        })
+        .await;
+    if appts.total > 0 {
+        return err(
+            StatusCode::CONFLICT,
+            "pet has appointments; delete or reassign them first",
+        );
+    }
+    let verifs = st
+        .store
+        .list_verification_logs(&VerificationQuery {
+            pet_id: Some(id.clone()),
+            limit: 1,
+            ..Default::default()
+        })
+        .await;
+    if verifs.total > 0 {
+        return err(
+            StatusCode::CONFLICT,
+            "pet has verifications; its history must be kept",
+        );
+    }
+    let row = match st.store.get_pet(&id).await {
+        Some(r) => r,
+        None => return err(StatusCode::NOT_FOUND, "pet not found"),
+    };
+    let mut c = match st.store.get_client(&row.client_id).await {
+        Some(c) => c,
+        None => return err(StatusCode::NOT_FOUND, "pet not found"),
+    };
+    c.pets.retain(|p| p.pet_id != id);
+    c.updated_at = now();
+    c.rebuild_search_key();
+    st.store.put_client(c).await;
+    ok(json!({ "deleted": true }))
+}
+
+// ============================================================================================
 // appointments
 // ============================================================================================
 
@@ -661,6 +969,10 @@ async fn list_verifications(
         .list_verification_logs(&VerificationQuery {
             q: ListQuery::opt(&q.q),
             client_id: ListQuery::opt(&q.client_id),
+            // `petId` was parsed off the query string but never applied, so `?petId=` silently
+            // returned the UNFILTERED history — a caller asking for one pet's checks got every
+            // pet's, which reads as "this pet was verified" about verifications that were not its.
+            pet_id: ListQuery::opt(&q.pet_id),
             appointment_id: ListQuery::opt(&q.appointment_id),
             status: ListQuery::opt(&q.status),
             purpose: ListQuery::opt(&q.purpose),
@@ -869,6 +1181,15 @@ pub fn crm_router() -> Router<AppState> {
             "/clients/:id",
             get(get_client).put(update_client).delete(delete_client),
         )
+        // Pets are a collection of their own — searchable and addressable without going through the
+        // owner — while still being STORED inside the client document. See the pets section above.
+        .route("/pets", get(list_pets).post(create_pet))
+        .route("/pets/:id", get(get_pet).put(update_pet).delete(delete_pet))
+        // LINK / UNLINK the shop's record of which tag this pet holds. Neither touches the chain:
+        // `DELETE` here is a local disassociation, NOT a revocation. See the handler docs.
+        .route("/pets/:id/dogtag", post(link_pet_dogtag).delete(unlink_pet_dogtag))
+        // The credentials this shop holds for the pet's tag — the read side of `POST /import/pull`.
+        .route("/pets/:id/credentials", get(list_pet_credentials))
         .route("/appointments", get(list_appointments).post(create_appointment))
         .route(
             "/appointments/:id",

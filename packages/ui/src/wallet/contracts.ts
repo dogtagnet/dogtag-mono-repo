@@ -18,6 +18,14 @@ export const DEPLOYED_ADDRESSES = {
   IssuerRegistry: "0xAEE540350292E49A9AeDf19Dd4C3BAc6ABeE6c21",
   DogTagSBT: "0xBEbc45A838643D27004827b797b30A464b2b02c0",
   VerificationRegistry: "0x4E2f0996e1CB4E24F1053346f3da2186906835E8",
+  /**
+   * The OWNER-HIDDEN verification registry — the live one, and a DIFFERENT contract from
+   * `VerificationRegistry` above (which it supersedes). Its `Verified(uint256 indexed dogTagId, ...)`
+   * is the only event that indexes a tag id, so it is what on-chain tag discovery must read; pointing
+   * a scan at the superseded address returns zero events and is indistinguishable from a tag with no
+   * history. Matches `VERIFICATION_REGISTRY_CONSENT_ADDR` in the deployed stacks.
+   */
+  VerificationRegistryConsent: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
   Poseidon6: "0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db",
   ConsentKeyRegistry: "0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671",
   DogTagIssuerFactory: "0xED20269E3eBF0119739aaB5258741F3aEb49F140",

@@ -391,7 +391,61 @@ pub struct Client {
     pub search_key: String,
 }
 
+/// One row of the PETS collection: a [`ClientPet`] together with the owner it belongs to.
+///
+/// A pet is *stored* embedded in its client document, but the portal addresses pets in their own
+/// right (`/pets`, `/pets/{petId}`), so every pet read carries the owner's id and name denormalized —
+/// the same denormalization [`Appointment::client_name`] uses, and for the same reason: a pet list
+/// must render, and link to each owner, without an N+1 client join.
+///
+/// `owner_updated_at` is the OWNING CLIENT's `updated_at`. A pet has no timestamp of its own (it is
+/// part of the client document, so every pet edit bumps the client), and it is carried here because
+/// it is the field the collection is ordered by — offset paging is only coherent over a TOTAL order,
+/// and the store has to be able to reproduce that same order on the next page request.
+///
+/// Deliberately not `Serialize`/`Deserialize`: this is an internal projection assembled by each
+/// store, never a persisted document.
+#[derive(Clone, Debug, Default)]
+pub struct PetRow {
+    pub pet: ClientPet,
+    pub client_id: String,
+    pub client_name: String,
+    pub owner_updated_at: u64,
+}
+
+impl PetRow {
+    /// The lowercased text a `?q=` needle is matched against: the pet's own searchable fields plus
+    /// the OWNER's name, so an operator who only remembers "the poodle that belongs to Tan" finds
+    /// the pet from either half of what they remember.
+    ///
+    /// Computed per row rather than stored. [`Client::search_key`] cannot serve a pet query: it
+    /// concatenates EVERY pet of the client, so a needle matching one pet would match all of its
+    /// siblings — on a client with two pets, searching one by name would return both.
+    pub fn search_key(&self) -> String {
+        [
+            self.pet.name.as_str(),
+            self.pet.species.as_str(),
+            self.pet.breed.as_str(),
+            self.pet.sex.as_str(),
+            self.pet.dog_tag_id.as_deref().unwrap_or(""),
+            self.client_name.as_str(),
+        ]
+        .join(" ")
+        .to_lowercase()
+    }
+}
+
 impl Client {
+    /// Build the [`PetRow`] projection for one of this client's pets.
+    pub fn pet_row(&self, p: &ClientPet) -> PetRow {
+        PetRow {
+            pet: p.clone(),
+            client_id: self.client_id.clone(),
+            client_name: self.name.clone(),
+            owner_updated_at: self.updated_at,
+        }
+    }
+
     /// Recompute [`Client::search_key`] from the current field values. Call after every mutation.
     pub fn rebuild_search_key(&mut self) {
         let mut parts = vec![
@@ -582,6 +636,17 @@ pub struct ClientQuery {
     pub offset: usize,
 }
 
+/// Free-text + owner filter + paging for the PETS collection.
+#[derive(Clone, Debug, Default)]
+pub struct PetQuery {
+    /// free-text needle, matched (lowercased) against [`PetRow::search_key`].
+    pub q: Option<String>,
+    /// restrict to one owner's pets — what the client detail page and the owner filter use.
+    pub client_id: Option<String>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AppointmentQuery {
     pub q: Option<String>,
@@ -599,6 +664,10 @@ pub struct AppointmentQuery {
 pub struct VerificationQuery {
     pub q: Option<String>,
     pub client_id: Option<String>,
+    /// Restrict to one PET's verifications. A client may bring several pets and each holds its own
+    /// DogTag, so "this client's checks" is not the same question as "this pet's checks" — the pet
+    /// detail page needs the narrower one.
+    pub pet_id: Option<String>,
     pub appointment_id: Option<String>,
     pub status: Option<String>,
     pub purpose: Option<String>,
@@ -723,6 +792,19 @@ pub trait Store: Send + Sync {
     /// Search/paginate clients, newest-updated first. Filtering happens HERE (indexed), never in the
     /// browser: the caller gets one bounded page plus the total match count.
     async fn list_clients(&self, q: &ClientQuery) -> Page<Client>;
+
+    // ---- shop CRM: pets (addressed in their own right; stored inside their owner) ----
+    /// Search/filter/paginate PETS across every client, each row carrying its owner.
+    ///
+    /// This is a store method rather than a fold over [`Store::list_clients`] because neither the
+    /// page nor the total can be derived from a page of clients: `total` must count PETS, and a
+    /// client page boundary falls between clients, not between pets. Doing it in the caller would
+    /// mean pulling the whole collection into memory to slice it — exactly what every other list
+    /// query here refuses to do.
+    async fn list_pets(&self, q: &PetQuery) -> Page<PetRow>;
+    /// One pet by its `pet_id`, found without the caller having to know its owner. `None` when no
+    /// client holds a pet with that id.
+    async fn get_pet(&self, pet_id: &str) -> Option<PetRow>;
 
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment);
@@ -1200,6 +1282,36 @@ impl Store for MemStore {
         paginate(matched, q.limit, q.offset)
     }
 
+    // ---- shop CRM: pets ----
+    async fn list_pets(&self, q: &PetQuery) -> Page<PetRow> {
+        let g = self.inner.read().unwrap();
+        let mut matched: Vec<PetRow> = g
+            .clients
+            .values()
+            .filter(|c| opt_eq(&q.client_id, &c.client_id))
+            .flat_map(|c| c.pets.iter().map(move |p| c.pet_row(p)))
+            .filter(|r| search_matches(&r.search_key(), q.q.as_ref()))
+            .collect();
+        // Newest-updated owner first, then client_id, then pet_id. All three keys are needed: pets
+        // sharing an owner share its `updated_at` exactly, so without the pet_id tiebreak two pages
+        // of the same result set could order those siblings differently and the pager would both
+        // repeat and skip rows.
+        matched.sort_by(|a, b| {
+            b.owner_updated_at
+                .cmp(&a.owner_updated_at)
+                .then_with(|| a.client_id.cmp(&b.client_id))
+                .then_with(|| a.pet.pet_id.cmp(&b.pet.pet_id))
+        });
+        paginate(matched, q.limit, q.offset)
+    }
+
+    async fn get_pet(&self, pet_id: &str) -> Option<PetRow> {
+        let g = self.inner.read().unwrap();
+        g.clients
+            .values()
+            .find_map(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p)))
+    }
+
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment) {
         self.inner.write().unwrap().appointments.insert(a.appointment_id.clone(), a);
@@ -1250,6 +1362,7 @@ impl Store for MemStore {
             .values()
             .filter(|v| search_matches(&v.search_key, q.q.as_ref()))
             .filter(|v| opt_eq_nullable(&q.client_id, &v.client_id))
+            .filter(|v| opt_eq_nullable(&q.pet_id, &v.pet_id))
             .filter(|v| opt_eq_nullable(&q.appointment_id, &v.appointment_id))
             .filter(|v| opt_eq(&q.status, &v.status))
             .filter(|v| opt_eq(&q.purpose, &v.purpose))
