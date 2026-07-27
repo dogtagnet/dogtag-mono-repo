@@ -73,10 +73,12 @@ export {
   formatChainTime,
   formatRelativeTime,
   emittingContractRole,
+  emittingCloneName,
   eventDetailFields,
   type ChainProvenance,
   type ChainEventLike,
   type ChainDetailField,
+  type ChainDetailContext,
 } from "./chain/provenance";
 export {
   ChainValue,

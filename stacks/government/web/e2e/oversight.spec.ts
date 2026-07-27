@@ -137,11 +137,14 @@ test("a real event is fully traceable: time, block, contract and a working explo
   await expect(real).toContainText("#20");
   await expect(real).toContainText("finalized");
 
-  // The row expands to the full, untruncated provenance.
+  // The row expands to the full, untruncated provenance — the values are rendered COMPLETE, not
+  // merely widened, so the auditor can read them without relying on the clipboard.
   await real.getByTestId("oversight-expand").click();
   const detail = page.getByTestId("oversight-event-detail");
   await expect(detail).toContainText("log 0");
-  await expect(detail.getByTestId("oversight-detail-blockhash")).toBeVisible();
+  await expect(detail.getByTestId("oversight-detail-tx")).toHaveText(new RegExp(TX));
+  await expect(detail.getByTestId("oversight-detail-contract")).toContainText(GOV_CLONE);
+  await expect(detail.getByTestId("oversight-detail-blockhash")).toContainText(`0x${"b2".repeat(32)}`);
   await expect(detail.getByTestId("oversight-synthetic-note")).toHaveCount(0);
 });
 

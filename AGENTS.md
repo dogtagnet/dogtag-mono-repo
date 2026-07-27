@@ -2223,15 +2223,34 @@ they cannot fork into separate dialects:
   arithmetic, not a demo-mode guess - an EVM transaction hash is keccak256 output, so `0x0800` cannot
   address a transaction on any chain. It therefore also catches a single synthetic row inside an
   otherwise-real feed, which a header badge cannot.
+  **Both badge labels are deliberately about SHAPE and symmetric** - `chain-addressable` /
+  `not chain-addressable`, never `on-chain`. No chain read happens on this path, so a green badge
+  claiming the transaction EXISTS would be asserting a fact from arithmetic, the same over-claiming the
+  module exists to remove. The `data-testid`s stay `provenance-onchain` / `provenance-synthetic`.
 - `txExplorerHref(ev)` returns `null` for a synthetic event **even when the API supplied a `txUrl`**;
   callers render the hash inert rather than linking. Prefer the API's `txUrl` over composing one - the
-  deployment's `EXPLORER_BASE` need not be the ROAX default.
-- `eventDetailFields(ev)` labels every identifier. `recordType` arrives EITHER as a human label
+  deployment's `EXPLORER_BASE` need not be the ROAX default. When composing, it delegates to
+  `explorerTxUrl`/`explorerAddressUrl` (`packages/ui/src/wallet/chain.ts`) so the explorer path has one
+  home and this module cannot drift from what the rest of the portals link to.
+- `eventDetailFields(ev, joined?)` labels every identifier. `recordType` arrives EITHER as a human label
   (`TRAVEL_CLEARANCE`) or as its keccak key depending on whether the indexer's directory reversed it, so
-  the label follows the value's shape (`isHash32`).
+  the label follows the value's shape (`isHash32`). The optional `ChainDetailContext` folds in what the
+  portal's OWN joined row knows, and exists because the chain payload is owner-blind and label-free:
+  `purpose` is only ever `keccak256(label) % r` and an owner-hidden `Verified` carries **no**
+  `recordType` at all, so on a `verified` row the readable purpose and the record type can come from
+  nowhere else. `dogTagNamedElsewhere` suppresses the field-hashed `dogTagId` when the row's join cell
+  already names that same tag by its readable handle (government, `joinedBy === "dogTagId"`) - printing
+  both renders one tag two ways. The context can only make a value more readable or drop a duplicate;
+  it never changes which chain value is shown, and the row-expansion panel deliberately passes none of
+  it (that panel is the raw chain payload).
 - `emittingContractRole(type)` names what `contract` is: it is NOT always the issuer clone -
-  `issuerCreated` comes from the factory, `whitelisted`/`delisted` from the IssuerRegistry, `verified`
-  from the verification registry.
+  `issuerCreated` **and `rootRegistered`** come from the factory (`chain.rs` decodes both only when the
+  emitting address equals `ctx.factory`), `whitelisted`/`delisted` from the IssuerRegistry, `verified`
+  from the verification registry. Only `rootIssued`/`rootRevoked` are emitted by the clone itself.
+- `emittingCloneName(ev)` gates the clone's human name on `contract == clone`. The indexer resolves
+  `cloneName` from `ev.clone`, which on a factory-emitted row is the clone the factory ACTED ON - so
+  rendering it under the emitting address makes the factory read as that named clone. The clone and its
+  name stay together in the expansion panel, where they are labelled as the clone.
 
 Two table-layout traps, both of which produced visibly broken output before being caught by screenshot:
 the `<TableHead>` order and the `<TableCell>` order are independent and silently render mismatched
@@ -2239,6 +2258,22 @@ columns if you reorder one; and a `ChainValue` with an inline label cannot shrin
 `shrink-0`), so in a width-capped column its content overflows and collides with the next cell - pass
 `stacked` in dense columns. Verify layout by measuring
 `table.getBoundingClientRect().width - .overflow-x-auto.clientWidth` at a 1512px viewport, not by eye.
+
+The row-expansion panel renders values in full via `ChainValue`/`TxRef`'s `full` prop, which swaps
+`truncate` for `break-all`: **dropping the `head` truncation alone is not enough**, because `truncate`
+would still clip the value in CSS - the string would be in the DOM (so a `toContainText` assertion
+passes) while the reader still cannot see it. `labelHidden` is the companion for a caller that prints
+the label itself; it keeps the label for the copy button's accessible name rather than degrading it to
+`Copy full ` as an empty `label` string did.
+
+`CopyButton` falls back to a hidden-textarea `document.execCommand("copy")` when `navigator.clipboard`
+is unavailable, and shows a FAILED state when both paths fail. Not legacy nostalgia: `navigator.clipboard`
+is undefined in any non-secure context, and these portals are routinely served over plain `http://` on a
+LAN - so without the fallback the button is dead in exactly the demo topology. It has to be visible
+rather than silent because `shortHex` truncates the STRING, so the elided characters are not in the DOM
+and copy is the operator's route to the full value. Its failure message may only name a fallback every
+consumer HAS: the row expansion is government-only (vet/groomer Traceability has no expander), so the
+message points at the value's own hover text, which both portals render.
 
 The e2e fixtures must use well-formed 32-byte hashes or every row reads as synthetic; `oversight.spec.ts`
 and `traceability.spec.ts` were updated accordingly and now assert both provenance verdicts explicitly.

@@ -20,7 +20,7 @@
  * Presentation only: nothing here changes what the indexer records or how anything is verified.
  */
 
-import { roax } from "../wallet/chain";
+import { explorerAddressUrl, explorerTxUrl } from "../wallet/chain";
 
 /** An EVM transaction/block hash, or any 32-byte commitment (root, purpose key, nullifier). */
 const HASH32_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -28,20 +28,23 @@ const HASH32_RE = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
 /** Whether `v` is a well-formed 32-byte hex value (`0x` + 64 hex digits). */
-export function isHash32(v?: string | null): boolean {
+export function isHash32(v?: string | null): v is string {
   return typeof v === "string" && HASH32_RE.test(v.trim());
 }
 
 /** Whether `v` is a well-formed 20-byte EVM address (`0x` + 40 hex digits). */
-export function isEvmAddress(v?: string | null): boolean {
+export function isEvmAddress(v?: string | null): v is string {
   return typeof v === "string" && ADDRESS_RE.test(v.trim());
 }
 
 /**
  * Whether an event's identifiers can address a real transaction.
  *
- * `onchain`   - the tx hash is a well-formed 32-byte value, so the explorer link means something.
- * `synthetic` - it is not, so this event did not come from a real transaction. Seeded/demo feeds and
+ * This is a claim about SHAPE and nothing more - no chain read happens here, so neither value may be
+ * reported as "this transaction exists" or "this transaction does not exist".
+ *
+ * `onchain`   - the tx hash is a well-formed 32-byte value, so it can be looked up on the explorer.
+ * `synthetic` - it is not, so it addresses no transaction on any chain. Seeded/demo feeds and
  *               half-populated fixtures land here; so would a malformed indexer row, which is a bug
  *               worth showing rather than papering over.
  */
@@ -60,15 +63,18 @@ export function chainProvenance(ev: { txHash?: string | null }): ChainProvenance
  * than a dead link is the point: callers must render synthetic rows as plain text.
  */
 export function txExplorerHref(ev: { txHash?: string | null; txUrl?: string | null }): string | null {
-  if (chainProvenance(ev) !== "onchain") return null;
+  const { txHash } = ev;
+  // The addressability rule lives in `chainProvenance`; the `isHash32` half is restated only so the
+  // compiler can narrow `txHash` to a string.
+  if (chainProvenance(ev) !== "onchain" || !isHash32(txHash)) return null;
   if (ev.txUrl) return ev.txUrl;
-  return `${roax.blockExplorers.default.url}/tx/${ev.txHash}`;
+  return explorerTxUrl(txHash);
 }
 
 /** The explorer link for an address, or `null` when it is not a well-formed EVM address. */
 export function addressExplorerHref(addr?: string | null): string | null {
   if (!isEvmAddress(addr)) return null;
-  return `${roax.blockExplorers.default.url}/address/${addr}`;
+  return explorerAddressUrl(addr);
 }
 
 /**
@@ -127,6 +133,28 @@ export interface ChainDetailField {
 }
 
 /**
+ * What the SURROUNDING row already knows from the operator's own joined record, so the labeller can
+ * prefer a readable value over a hash and can avoid printing the same thing twice.
+ *
+ * The chain payload is deliberately owner-blind and label-free: `purpose` arrives as
+ * `keccak256(label) % r` and an owner-hidden `Verified` carries no `recordType` at all. Where the
+ * portal joined its own row it holds the readable form, and a hash where the operator used to read a
+ * word is a regression, not extra rigour - so the join is passed in rather than each portal
+ * open-coding the preference.
+ */
+export interface ChainDetailContext {
+  /** The joined record's human purpose label ("grooming_checkin"), preferred over the hashed key. */
+  purpose?: string | null;
+  /** The joined record's record type, used when the chain event carries none (`verified` never does). */
+  recordType?: string | null;
+  /**
+   * Set when the row already names this tag by its readable handle elsewhere. The chain's `dogTagId`
+   * is the field-HASH of that same handle, so printing both renders one tag two ways.
+   */
+  dogTagNamedElsewhere?: boolean;
+}
+
+/**
  * The identifiers an event carries, each with a word saying WHAT it is.
  *
  * Every value here is 32 bytes of hex except the human record-type labels and the decimal dogTagId, so
@@ -134,11 +162,18 @@ export interface ChainDetailField {
  * root from a hashed record-type key from a nullifier. `recordType` arrives EITHER as a human label
  * (`TRAVEL_CLEARANCE`) or as its keccak key, depending on whether the indexer's directory could
  * reverse it, so the label follows the shape of the value rather than assuming one.
+ *
+ * `joined` lets a portal fold in what its own record says; it can only make a value MORE readable or
+ * suppress a duplicate, never change which chain value is shown.
  */
-export function eventDetailFields(ev: ChainEventLike): ChainDetailField[] {
+export function eventDetailFields(
+  ev: ChainEventLike,
+  joined: ChainDetailContext = {},
+): ChainDetailField[] {
+  const recordType = ev.recordType ?? joined.recordType ?? null;
   const recordTypeField: ChainDetailField = {
-    label: isHash32(ev.recordType) ? "record type key" : "record type",
-    value: ev.recordType,
+    label: isHash32(recordType) ? "record type key" : "record type",
+    value: recordType,
   };
   switch (ev.type) {
     case "rootIssued":
@@ -150,14 +185,21 @@ export function eventDetailFields(ev: ChainEventLike): ChainDetailField[] {
     case "whitelisted":
     case "delisted":
       return [recordTypeField];
-    case "verified":
+    case "verified": {
       // Owner-blind payload: an opaque tag id, a hashed purpose key and an unlinkable nullifier.
       // No subject exists downstream, so these are the only identifiers there are.
-      return [
-        { label: "dog tag id", value: ev.dogTagId },
-        { label: "purpose key", value: ev.purpose },
-        { label: "nullifier", value: ev.nullifier },
-      ];
+      const fields: ChainDetailField[] = [];
+      if (!joined.dogTagNamedElsewhere) fields.push({ label: "dog tag id", value: ev.dogTagId });
+      fields.push(
+        joined.purpose
+          ? { label: "purpose", value: joined.purpose }
+          : { label: "purpose key", value: ev.purpose },
+      );
+      // Only ever from the join: the owner-hidden `Verified` event binds no record type.
+      fields.push(recordTypeField);
+      fields.push({ label: "nullifier", value: ev.nullifier });
+      return fields;
+    }
     default:
       return [recordTypeField, { label: "credential root", value: ev.root }];
   }
@@ -165,13 +207,16 @@ export function eventDetailFields(ev: ChainEventLike): ChainDetailField[] {
 
 /**
  * What the contract that EMITTED an event is, given the event kind. The indexer's `contract` is the
- * emitting address and is NOT always the issuer clone: `issuerCreated` comes from the factory and
- * `whitelisted`/`delisted` from the IssuerRegistry, while `verified` comes from the verification
- * registry. "Which smart contract" is unanswerable without this distinction.
+ * emitting address and is NOT always the issuer clone: `issuerCreated` AND `rootRegistered` come from
+ * the factory (`stacks/indexer/api/src/chain.rs` decodes both only when the emitting address equals
+ * `ctx.factory`) and `whitelisted`/`delisted` from the IssuerRegistry, while `verified` comes from the
+ * verification registry. Only `rootIssued`/`rootRevoked` are emitted by the clone itself. "Which smart
+ * contract" is unanswerable without this distinction.
  */
 export function emittingContractRole(type: string): string {
   switch (type) {
     case "issuerCreated":
+    case "rootRegistered":
       return "issuer factory";
     case "whitelisted":
     case "delisted":
@@ -180,9 +225,27 @@ export function emittingContractRole(type: string): string {
       return "verification registry";
     case "rootIssued":
     case "rootRevoked":
-    case "rootRegistered":
       return "issuer clone";
     default:
       return "contract";
   }
+}
+
+/**
+ * The clone's human name, but ONLY when the clone is the contract that emitted this event.
+ *
+ * The indexer resolves `cloneName` from `ev.clone`, which for a factory-emitted `issuerCreated` /
+ * `rootRegistered` is the clone the factory ACTED ON, not the factory itself. Rendering that name
+ * under the emitting address makes the factory appear to be the named clone - two different contracts
+ * presented as one. The clone and its name still belong together in the expansion panel, where they
+ * are labelled as the clone.
+ */
+export function emittingCloneName(ev: {
+  contract?: string | null;
+  clone?: string | null;
+  cloneName?: string | null;
+}): string | null {
+  if (!ev.cloneName || !ev.contract || !ev.clone) return null;
+  const sameContract = ev.contract.trim().toLowerCase() === ev.clone.trim().toLowerCase();
+  return sameContract ? ev.cloneName : null;
 }

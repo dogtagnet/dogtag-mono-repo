@@ -23,6 +23,7 @@ import {
   TxRef,
   addressExplorerHref,
   chainProvenance,
+  emittingCloneName,
   emittingContractRole,
   eventDetailFields,
   formatChainTime,
@@ -252,10 +253,10 @@ export function Traceability() {
                   {syntheticCount} of {events.length}
                 </span>{" "}
                 event{syntheticCount === 1 ? "" : "s"} below carry a transaction hash that is not a
-                well-formed 32-byte value, so no such transaction exists on any chain — most often a
+                well-formed 32-byte value, so it addresses no transaction on any chain — most often a
                 scripted indexer feed. Those rows are marked{" "}
-                <span className="font-semibold">not on chain</span> and their explorer links are
-                withheld.
+                <span className="font-semibold">not chain-addressable</span> and their explorer links
+                are withheld.
               </div>
             )}
 
@@ -284,6 +285,7 @@ export function Traceability() {
                       const provenance = chainProvenance(ev);
                       const contractHref = addressExplorerHref(ev.contract);
                       const actorHref = addressExplorerHref(ev.actor);
+                      const emittedCloneName = emittingCloneName(ev);
                       return (
                         <TableRow
                           key={ev.id}
@@ -316,8 +318,9 @@ export function Traceability() {
                             </div>
                           </TableCell>
                           {/* WHICH smart contract emitted this. Not always the issuer clone -
-                              `issuerCreated` comes from the factory, `verified` from the
-                              verification registry - so the role is named beside the address. */}
+                              `issuerCreated`/`rootRegistered` come from the factory, `verified` from
+                              the verification registry - so the role is named beside the address, and
+                              the clone's NAME appears only when the clone is what emitted. */}
                           <TableCell className="text-xs" data-testid="trace-contract">
                             <div className="flex max-w-[10rem] flex-col gap-0.5">
                               <ChainValue
@@ -328,20 +331,25 @@ export function Traceability() {
                                 stacked
                                 testId="trace-contract-value"
                               />
-                              {ev.cloneName && (
-                                <span className="truncate text-[10px] text-muted" title={ev.cloneName}>
-                                  {ev.cloneName}
+                              {emittedCloneName && (
+                                <span
+                                  className="truncate text-[10px] text-muted"
+                                  title={emittedCloneName}
+                                >
+                                  {emittedCloneName}
                                 </span>
                               )}
                             </div>
                           </TableCell>
                           {/* Every identifier is labelled: truncated 32-byte hex is otherwise
-                              indistinguishable between a root, a record-type key and a nullifier. */}
+                              indistinguishable between a root, a record-type key and a nullifier.
+                              The joined session carries the READABLE purpose and record type, which
+                              the owner-blind chain payload does not - prefer them over the keys. */}
                           <TableCell className="text-xs" data-testid="trace-details">
                             <div className="flex max-w-[9rem] flex-col gap-0.5">
-                              {eventDetailFields({
-                                ...ev,
-                                recordType: ev.recordType ?? ev.local?.recordType,
+                              {eventDetailFields(ev, {
+                                purpose: ev.local?.purpose,
+                                recordType: ev.local?.recordType,
                               })
                                 .filter((f) => f.value)
                                 .map((f) => (

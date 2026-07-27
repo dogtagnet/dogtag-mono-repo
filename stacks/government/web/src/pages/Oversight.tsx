@@ -14,6 +14,7 @@ import {
   TxRef,
   addressExplorerHref,
   chainProvenance,
+  emittingCloneName,
   emittingContractRole,
   eventDetailFields,
   formatChainTime,
@@ -63,6 +64,10 @@ function PanelRow({ label, children }: { label: string; children: ReactNode }) {
 
 /**
  * The full on-chain provenance of one event: everything the indexer knows, untruncated and copyable.
+ * Every value here is rendered COMPLETE (wrapping rather than truncating) - this panel is the reason
+ * the row above may safely truncate, so a truncated value here would leave the full form reachable
+ * only by clipboard, which is precisely what the row already offers.
+ *
  * Lives behind a row expander so the table itself stays scannable - the task of the row is to let an
  * auditor decide whether to look closer; this panel is the looking closer.
  */
@@ -78,13 +83,14 @@ function ProvenancePanel({ ev, columns }: { ev: OversightEvent; columns: number 
       <TableCell colSpan={columns} className="bg-surface-muted/60">
         <div className="grid gap-x-8 gap-y-1.5 py-1 md:grid-cols-2">
           <PanelRow label="Transaction">
-            <TxRef event={ev} href={txHref} testId="oversight-detail-tx" />
+            <TxRef event={ev} href={txHref} full testId="oversight-detail-tx" />
           </PanelRow>
           <PanelRow label="Emitted by">
             <ChainValue
               label={emittingContractRole(ev.type)}
               value={ev.contract}
               href={contractHref}
+              full
               testId="oversight-detail-contract"
             />
           </PanelRow>
@@ -98,15 +104,18 @@ function ProvenancePanel({ ev, columns }: { ev: OversightEvent; columns: number 
                 label="block hash"
                 value={ev.blockHash}
                 className="ml-2"
+                full
                 testId="oversight-detail-blockhash"
               />
             )}
           </PanelRow>
+          {/* The clone the event ACTED ON. For a factory-emitted event this is NOT the emitting
+              contract above, which is why the name belongs here rather than under that address. */}
           <PanelRow label="Issuer clone">
             {ev.clone ? (
-              <span className="inline-flex flex-wrap items-center gap-1">
+              <span className="inline-flex min-w-0 flex-wrap items-center gap-1">
                 {ev.cloneName && <span className="text-onSurface">{ev.cloneName}</span>}
-                <ChainValue label="at" value={ev.clone} href={cloneHref} />
+                <ChainValue label="at" value={ev.clone} href={cloneHref} full />
               </span>
             ) : (
               <span className="text-muted">— (not a clone-scoped event)</span>
@@ -120,19 +129,21 @@ function ProvenancePanel({ ev, columns }: { ev: OversightEvent; columns: number 
           </PanelRow>
           <PanelRow label="Actor">
             {ev.actor ? (
-              <span className="inline-flex flex-wrap items-center gap-1">
+              <span className="inline-flex min-w-0 flex-wrap items-center gap-1">
                 {ev.actorName && <span className="text-onSurface">{ev.actorName}</span>}
-                <ChainValue label="signer" value={ev.actor} href={actorHref} />
+                <ChainValue label="signer" value={ev.actor} href={actorHref} full />
               </span>
             ) : (
               <span className="text-muted">—</span>
             )}
           </PanelRow>
+          {/* No join context here: the panel is the raw chain payload, so the field-hashed dogTagId
+              is shown even when the row above names the same tag by its readable handle. */}
           {eventDetailFields(ev)
             .filter((f) => f.value)
             .map((f) => (
               <PanelRow key={f.label} label={f.label}>
-                <ChainValue label="" value={f.value} head={24} />
+                <ChainValue label={f.label} value={f.value} full labelHidden />
               </PanelRow>
             ))}
           {(ev.deadline ?? 0) > 0 && (
@@ -275,10 +286,10 @@ export function Oversight() {
                 {syntheticCount} of {events.length}
               </span>{" "}
               event{syntheticCount === 1 ? "" : "s"} below carry a transaction hash that is not a
-              well-formed 32-byte value, so no such transaction exists on any chain — most often a
+              well-formed 32-byte value, so it addresses no transaction on any chain — most often a
               scripted indexer feed (<code>INDEXER_DEMO_MODE</code>). Those rows are marked{" "}
-              <span className="font-semibold">not on chain</span> and their explorer links are
-              withheld.
+              <span className="font-semibold">not chain-addressable</span> and their explorer links
+              are withheld.
             </div>
           )}
 
@@ -310,6 +321,7 @@ export function Oversight() {
                     const isOpen = !!expanded[ev.id];
                     const contractHref = addressExplorerHref(ev.contract);
                     const actorHref = addressExplorerHref(ev.actor);
+                    const emittedCloneName = emittingCloneName(ev);
                     const Chevron = isOpen ? ChevronDown : ChevronRight;
                     return (
                       <Fragment key={ev.id}>
@@ -359,7 +371,9 @@ export function Oversight() {
                             </div>
                           </TableCell>
                           {/* WHICH smart contract emitted this. Not the same as the issuer clone for
-                              factory/registry events, so the role is named alongside the address. */}
+                              factory/registry events, so the role is named alongside the address -
+                              and the clone's NAME is shown only when the clone is what emitted, else
+                              the factory would appear to be the named clone. */}
                           <TableCell className="text-xs" data-testid="oversight-contract">
                             <div className="flex max-w-[10rem] flex-col gap-0.5">
                               <ChainValue
@@ -370,16 +384,24 @@ export function Oversight() {
                                 stacked
                                 testId="oversight-contract-value"
                               />
-                              {ev.cloneName && (
-                                <span className="truncate text-[10px] text-muted" title={ev.cloneName}>
-                                  {ev.cloneName}
+                              {emittedCloneName && (
+                                <span
+                                  className="truncate text-[10px] text-muted"
+                                  title={emittedCloneName}
+                                >
+                                  {emittedCloneName}
                                 </span>
                               )}
                             </div>
                           </TableCell>
                           <TableCell className="text-xs" data-testid="oversight-details">
                             <div className="flex max-w-[9rem] flex-col gap-0.5">
-                              {eventDetailFields(ev)
+                              {/* When the event joined a credentialed tag, the join cell already
+                                  names the SAME tag by its readable handle - showing the field-hash
+                                  too would render one tag two ways, so it is suppressed. */}
+                              {eventDetailFields(ev, {
+                                dogTagNamedElsewhere: ev.local?.joinedBy === "dogTagId",
+                              })
                                 .filter((f) => f.value)
                                 .map((f) => (
                                   <ChainValue
