@@ -39,6 +39,43 @@ object CredentialRefresher {
         whitelistPillar: RoaxRpc.Result? = null,
         issuancePillar: RoaxRpc.Result? = null,
         integrityOverride: String? = null,
+    ): Credential = keepingEstablishedNegative(
+        cred,
+        derived(cred, roax, rpcUrl, whitelistPillar, issuancePillar, integrityOverride),
+    )
+
+    /**
+     * A refresh may LOWER a verdict freely - that is the whole point, and an unreachable chain must
+     * stop a stale VALID being claimed. But a NON-ANSWER must never make a credential look BETTER.
+     *
+     * Order the verdicts by severity: INVALID < UNVERIFIED < VALID. Re-deriving from scratch meant
+     * airplane mode plus one refresh tap replaced an established INVALID (revoked, or an unauthorised
+     * issuer) with UNVERIFIED and overwrote its reason - laundering a known-bad credential into
+     * "could not check". That is this branch's own defect class pointed backwards: a non-answer
+     * collapsing into a neighbouring state.
+     *
+     * Only non-answers are constrained. A DEFINITE outcome still sets the verdict freely, including
+     * INVALID -> VALID: a not-yet-anchored root can later anchor and a signer can later be
+     * whitelisted, so the guard must not freeze INVALID forever. [Credential.lastCheckedAt] is taken
+     * from the fresh result either way, so a kept verdict still shows the check ran and how old it is.
+     *
+     * Applied ONCE to the final result rather than at each return site, so a future early return
+     * cannot bypass it. Mirrors iOS `CredentialRefresher.keepingEstablishedNegative`.
+     */
+    fun keepingEstablishedNegative(previous: Credential, fresh: Credential): Credential =
+        if (fresh.verdict == "UNVERIFIED" && previous.verdict == "INVALID") {
+            fresh.copy(verdict = previous.verdict, verdictReason = previous.verdictReason)
+        } else {
+            fresh
+        }
+
+    private suspend fun derived(
+        cred: Credential,
+        roax: RoaxConfig,
+        rpcUrl: String,
+        whitelistPillar: RoaxRpc.Result?,
+        issuancePillar: RoaxRpc.Result?,
+        integrityOverride: String?,
     ): Credential {
         val stamped = cred.copy(lastCheckedAt = Stamp.now())
 

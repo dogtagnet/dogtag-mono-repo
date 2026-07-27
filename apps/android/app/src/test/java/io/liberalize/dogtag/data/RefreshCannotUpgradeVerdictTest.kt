@@ -124,4 +124,72 @@ class RefreshCannotUpgradeVerdictTest {
         assertEquals("INVALID", out.verdict)
         assertEquals("revoked or no longer anchored on ROAX", out.verdictReason)
     }
+
+    /** An already-INVALID credential, e.g. one a previous check found revoked. */
+    private fun invalidCredential() = unverifiedCredential().copy(
+        verdict = "INVALID",
+        verdictReason = "revoked or no longer anchored on ROAX",
+    )
+
+    /**
+     * THE OTHER HALF of the same rule. A refresh that learns NOTHING must not soften an established
+     * negative: airplane mode plus one refresh tap previously turned a known-revoked credential into
+     * "could not check", persisted, overwriting the reason that said why it was bad.
+     *
+     * Can fail: drop the `keepingEstablishedNegative` guard and this reverts to UNVERIFIED.
+     */
+    @Test
+    fun anEstablishedInvalidIsNotSoftenedToUnverifiedByANonAnswer() = runBlocking {
+        val out = CredentialRefresher.refreshed(
+            invalidCredential(),
+            roax,
+            whitelistPillar = RoaxRpc.Result.Valid,
+            issuancePillar = RoaxRpc.Result.Unknown("could not reach the chain (offline)"),
+            integrityOverride = "VALID",
+        )
+
+        assertEquals("INVALID", out.verdict)
+        // the ORIGINAL reason survives - not replaced by "could not reach the chain"
+        assertEquals("revoked or no longer anchored on ROAX", out.verdictReason)
+    }
+
+    /**
+     * The guard constrains NON-ANSWERS only. A definite, fully-resolved refresh must still be able to
+     * raise an INVALID: a not-yet-anchored root can later anchor, and a signer can later be
+     * whitelisted. Without this case the guard could silently freeze INVALID forever and still pass.
+     */
+    @Test
+    fun anEstablishedInvalidStillRisesWhenTheChainActuallySaysSo() = runBlocking {
+        val out = CredentialRefresher.refreshed(
+            invalidCredential(),
+            roax,
+            whitelistPillar = RoaxRpc.Result.Valid,
+            issuancePillar = RoaxRpc.Result.Valid,
+            integrityOverride = "VALID",
+        )
+
+        assertEquals("VALID", out.verdict)
+        assertEquals("anchored on ROAX and not revoked", out.verdictReason)
+    }
+
+    /**
+     * And the honest downgrade the refresh feature exists for is untouched: a stored VALID that can no
+     * longer be confirmed must still become UNVERIFIED. The guard must not be mistaken for "never
+     * change a stored verdict".
+     */
+    @Test
+    fun anEstablishedValidStillDegradesToUnverifiedWhenTheChainIsUnreachable() = runBlocking {
+        val out = CredentialRefresher.refreshed(
+            unverifiedCredential().copy(
+                verdict = "VALID",
+                verdictReason = "anchored on ROAX and not revoked",
+            ),
+            roax,
+            whitelistPillar = RoaxRpc.Result.Valid,
+            issuancePillar = RoaxRpc.Result.Unknown("rpc 502"),
+            integrityOverride = "VALID",
+        )
+
+        assertEquals("UNVERIFIED", out.verdict)
+    }
 }
