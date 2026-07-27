@@ -6,6 +6,8 @@
  * Tuesday" in the shop's timezone, never in UTC.
  */
 
+import { startOfDay } from "@dogtag/ui";
+
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** Unix seconds -> the `YYYY-MM-DDTHH:mm` value an `<input type="datetime-local">` expects (local). */
@@ -37,22 +39,27 @@ export function startOfDayFromInput(value: string): number {
 }
 
 export const nowSec = () => Math.floor(Date.now() / 1000);
-export const DAY_SECS = 86_400;
 
-/** Unix seconds of local midnight starting the day that contains `unixSec`. */
-export function startOfDay(unixSec: number): number {
-  const d = new Date(unixSec * 1000);
-  d.setHours(0, 0, 0, 0);
-  return Math.floor(d.getTime() / 1000);
-}
-
-/** Unix seconds of local midnight starting the MONDAY of the week containing `unixSec`. */
-export function startOfWeek(unixSec: number): number {
-  const d = new Date(startOfDay(unixSec) * 1000);
-  // getDay(): 0=Sun..6=Sat. Shift so Monday is the first column.
-  const shift = (d.getDay() + 6) % 7;
-  return startOfDay(unixSec) - shift * DAY_SECS;
-}
+/**
+ * Calendar-GRID arithmetic lives in `@dogtag/ui` and is re-exported here so every existing call site
+ * keeps its import.
+ *
+ * It is shared rather than app-local for one reason: none of it may step by a fixed `86_400`. A
+ * local day is 23h or 25h across a DST transition, so fixed-seconds enumeration drifts off local
+ * midnight and silently drops bookings out of the grid. Keeping the day/week/month math in one
+ * tested place is what stops the three views drifting apart. See `packages/ui/src/calendar/grid.ts`
+ * and its property tests in `packages/ui/test/calendarGrid.test.ts`.
+ */
+export {
+  DAY_SECS,
+  addDays,
+  addMonths,
+  daysBetween,
+  monthGrid,
+  startOfDay,
+  startOfMonth,
+  startOfWeek,
+} from "@dogtag/ui";
 
 export function formatTime(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleTimeString(undefined, {
@@ -78,4 +85,12 @@ export function formatDateTime(unixSec: number): string {
 /** "10:00 – 11:00" for a slot. */
 export function formatSlot(startAt: number, endAt: number): string {
   return endAt > startAt ? `${formatTime(startAt)} – ${formatTime(endAt)}` : formatTime(startAt);
+}
+
+/** "March 2026" — the month view's range label. */
+export function formatMonth(unixSec: number): string {
+  return new Date(unixSec * 1000).toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
 }

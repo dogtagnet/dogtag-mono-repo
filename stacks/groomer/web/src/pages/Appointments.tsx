@@ -6,7 +6,6 @@ import {
   CardHeader,
   CardTitle,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -26,7 +25,10 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "../app/AppContext";
 import {
+  AppointmentClient,
   AppointmentStatusBadge,
+  FilterBar,
+  FilterField,
   ListPlaceholder,
   PAGE_SIZE,
   Pager,
@@ -34,7 +36,7 @@ import {
   useDebounced,
   useList,
 } from "../app/crm";
-import { formatDate, formatSlot, startOfDayFromInput } from "../lib/time";
+import { addDays, formatDate, formatSlot, startOfDayFromInput } from "../lib/time";
 
 /** Sentinel for "no status filter" — a Select cannot hold an empty-string value. */
 const ANY = "any";
@@ -54,9 +56,11 @@ export function Appointments() {
   const q = useDebounced(search);
 
   // The date inputs are inclusive days; `to` becomes the START of the day AFTER, because the
-  // backend window is half-open [from, to). Without that, "to = today" would exclude today.
+  // backend window is half-open [from, to). Without that, "to = today" would exclude today. That
+  // next day is stepped with `addDays`, never `+ 86_400`: a DST day is 23h or 25h, so a fixed step
+  // would clip the selected end date's last hour or spill an hour of the day after into it.
   const from = fromDate ? startOfDayFromInput(fromDate) : undefined;
-  const to = toDate ? startOfDayFromInput(toDate) + 86_400 : undefined;
+  const to = toDate ? addDays(startOfDayFromInput(toDate), 1) : undefined;
 
   const { page, loading, error } = useList<CrmAppointment>(
     () =>
@@ -97,58 +101,58 @@ export function Appointments() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="relative lg:col-span-2">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+        <FilterBar>
+          {/* The search box carries the longest placeholder and the longest values, so it takes the
+              largest share; From/To get a whole column EACH rather than splitting one between them,
+              which is what made the date range unreadable. */}
+          <FilterField span="sm:col-span-2 xl:col-span-5" label="Search" htmlFor="appt-search">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+              <Input
+                id="appt-search"
+                className="pl-9"
+                placeholder="Search client, pet, service or groomer…"
+                value={search}
+                onChange={(e) => resetPaging(setSearch)(e.target.value)}
+                aria-label="Search appointments"
+              />
+            </div>
+          </FilterField>
+          <FilterField span="xl:col-span-3" label="Status">
+            <Select
+              value={status}
+              onValueChange={(v) => resetPaging(setStatus)(v as AppointmentStatus | typeof ANY)}
+            >
+              <SelectTrigger aria-label="Filter by status">
+                <SelectValue placeholder="Any status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Any status</SelectItem>
+                {APPOINTMENT_STATES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {statusLabel(s)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FilterField>
+          <FilterField span="xl:col-span-2" label="From" htmlFor="appt-from">
             <Input
-              className="pl-9"
-              placeholder="Search client, pet, service or groomer…"
-              value={search}
-              onChange={(e) => resetPaging(setSearch)(e.target.value)}
-              aria-label="Search appointments"
+              id="appt-from"
+              type="date"
+              value={fromDate}
+              onChange={(e) => resetPaging(setFromDate)(e.target.value)}
             />
-          </div>
-          <Select
-            value={status}
-            onValueChange={(v) => resetPaging(setStatus)(v as AppointmentStatus | typeof ANY)}
-          >
-            <SelectTrigger aria-label="Filter by status">
-              <SelectValue placeholder="Any status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Any status</SelectItem>
-              {APPOINTMENT_STATES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {statusLabel(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="flex items-end gap-2">
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="appt-from" className="text-xs">
-                From
-              </Label>
-              <Input
-                id="appt-from"
-                type="date"
-                value={fromDate}
-                onChange={(e) => resetPaging(setFromDate)(e.target.value)}
-              />
-            </div>
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="appt-to" className="text-xs">
-                To
-              </Label>
-              <Input
-                id="appt-to"
-                type="date"
-                value={toDate}
-                onChange={(e) => resetPaging(setToDate)(e.target.value)}
-              />
-            </div>
-          </div>
-        </div>
+          </FilterField>
+          <FilterField span="xl:col-span-2" label="To" htmlFor="appt-to">
+            <Input
+              id="appt-to"
+              type="date"
+              value={toDate}
+              onChange={(e) => resetPaging(setToDate)(e.target.value)}
+            />
+          </FilterField>
+        </FilterBar>
 
         {filtered && (
           <Button
@@ -179,18 +183,19 @@ export function Appointments() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead>Time</TableHead>
+                <TableHead className="whitespace-nowrap">Date</TableHead>
+                <TableHead className="whitespace-nowrap">Time</TableHead>
                 <TableHead>Client</TableHead>
                 <TableHead>Pet</TableHead>
                 <TableHead>Service</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Groomer</TableHead>
+                <TableHead className="whitespace-nowrap">Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((a) => (
                 <TableRow key={a.appointmentId}>
-                  <TableCell>
+                  <TableCell className="whitespace-nowrap">
                     <Link
                       to={`/appointments/${a.appointmentId}`}
                       className="font-medium text-primary hover:underline"
@@ -202,13 +207,12 @@ export function Appointments() {
                     {formatSlot(a.startAt, a.endAt)}
                   </TableCell>
                   <TableCell>
-                    <Link to={`/clients/${a.clientId}`} className="hover:underline">
-                      {a.clientName}
-                    </Link>
+                    <AppointmentClient appointment={a} />
                   </TableCell>
                   <TableCell>{a.petName || "—"}</TableCell>
                   <TableCell>{a.service || "—"}</TableCell>
-                  <TableCell>
+                  <TableCell className="text-muted">{a.groomer || "—"}</TableCell>
+                  <TableCell className="whitespace-nowrap">
                     <AppointmentStatusBadge status={a.status} />
                   </TableCell>
                 </TableRow>

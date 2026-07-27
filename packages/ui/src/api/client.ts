@@ -15,6 +15,9 @@ import type {
   GenesisConfirmReq,
   GenesisConfirmResp,
   GenesisStartResp,
+  IcsFeedResp,
+  IcsImportEventInput,
+  IcsImportResp,
   ImportPullReq,
   ImportPullResp,
   IssuerApplicationReq,
@@ -279,6 +282,31 @@ export function createApiClient(opts: ApiClientOptions) {
       request<CrmAppointment>("PUT", `/appointments/${id}`, body),
     deleteAppointment: (id: string) =>
       request<{ deleted: boolean }>("DELETE", `/appointments/${id}`),
+
+    // ---- `.ics` calendar interop: subscription feed + import ----
+    /** GET /calendar/feed — is a subscribable `.ics` feed published, and under which secret. */
+    getIcsFeed: () => request<IcsFeedResp>("GET", "/calendar/feed"),
+    /**
+     * POST /calendar/feed/rotate — publish a feed, or replace an existing one's secret.
+     *
+     * Rotation is also the re-publish half of revocation: the previous URL stops working the instant
+     * this returns, so every existing subscriber must be re-pointed at the new one.
+     */
+    rotateIcsFeed: () => request<IcsFeedResp>("POST", "/calendar/feed/rotate"),
+    /** DELETE /calendar/feed — take the feed offline. The URL 404s immediately. */
+    revokeIcsFeed: () => request<IcsFeedResp>("DELETE", "/calendar/feed"),
+    /**
+     * POST /calendar/import — create/update bookings from a parsed `.ics`.
+     *
+     * `dryRun` reports exactly what would happen and writes nothing. Events are deduped by their
+     * source `UID`, so re-importing the same file updates rather than duplicating.
+     */
+    importIcsEvents: (events: IcsImportEventInput[], dryRun = false) =>
+      request<IcsImportResp>(
+        "POST",
+        `/calendar/import${dryRun ? "?dryRun=1" : ""}`,
+        { events },
+      ),
 
     // ---- shop CRM: verification history ("All verifications") ----
     listVerifications: (q: VerificationListQuery = {}) =>

@@ -65,6 +65,22 @@ impl MongoStore {
         appts.create_index(plain(doc! { "clientId": 1, "startAt": 1 })).await?;
         appts.create_index(plain(doc! { "status": 1, "startAt": 1 })).await?;
         appts.create_index(plain(doc! { "searchKey": 1 })).await?;
+        // `.ics` import dedup. UNIQUE but PARTIAL: only rows that actually carry an `externalUid`
+        // participate, so the (many) bookings made in the portal — which have no external id at all —
+        // do not collide with each other on a shared null.
+        appts
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "externalUid": 1 })
+                    .options(
+                        IndexOptions::builder()
+                            .unique(true)
+                            .partial_filter_expression(doc! { "externalUid": { "$type": "string" } })
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await?;
 
         let verifs: Collection<Document> = self.db.collection("crm_verifications");
         verifs.create_index(unique(doc! { "verificationId": 1 })).await?;
@@ -581,6 +597,16 @@ impl Store for MongoStore {
         )
         .await;
         Page { rows, total }
+    }
+    async fn appointment_by_external_uid(&self, external_uid: &str) -> Option<Appointment> {
+        if external_uid.is_empty() {
+            return None;
+        }
+        self.crm_appointments()
+            .find_one(doc! { "externalUid": external_uid })
+            .await
+            .ok()
+            .flatten()
     }
 
     // ---- shop CRM: verification history ----

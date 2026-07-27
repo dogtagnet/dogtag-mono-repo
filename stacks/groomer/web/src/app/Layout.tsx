@@ -133,9 +133,18 @@ export function Layout({
   children,
   title,
   /**
-   * Widen the content column. The reading width that suits forms and tables (`max-w-5xl`) squeezes
-   * the calendar's seven day-columns to ~130px each, which truncates the very thing the operator is
-   * reading. Wide pages get the room instead.
+   * Mark this page a WORKING SURFACE rather than something to read.
+   *
+   * The two kinds of page want opposite things. A form or a detail view is READ: a label/field pair
+   * stretched across a 27" monitor is harder to follow, not easier, so those stay capped at a
+   * comfortable measure and centred. A booking list or a calendar is WORKED IN: a six-column table,
+   * a filter row and seven day-columns all need the width the screen actually has, and capping them
+   * leaves the operator scanning a cramped table beside a band of empty background.
+   *
+   * So this is not a bigger cap — a working surface takes the CONTENT COLUMN ITSELF, whatever width
+   * that is. The shell already supplies the gutters (`AppShell`'s `main` padding) and every table is
+   * wrapped in its own horizontal-scroll container, so the same markup holds up at 3840px and at
+   * 360px without a second layout.
    */
   wide = false,
 }: {
@@ -177,7 +186,7 @@ export function Layout({
         </>
       }
     >
-      <div className={wide ? "mx-auto max-w-7xl" : "mx-auto max-w-5xl"}>
+      <div className={wide ? "w-full" : "mx-auto w-full max-w-5xl"}>
         <CustodyPrompt />
         {children}
       </div>

@@ -10,13 +10,17 @@
 //!   app.rs         — AppState/config + server-side VC build/wrap
 //!   verify.rs      — third-party verify + canonical owner-hidden consent submission
 //!   crm.rs         — the shop's clients/appointments + the verification history they link to
+//!   ics.rs         — pure RFC 5545 (iCalendar) serialization
+//!   calendar_ics.rs— the published `.ics` subscription feed + `.ics` import routes
 //!   routes.rs      — Axum router + all handlers
 
 pub mod app;
 pub mod auth;
 pub mod calendar;
+pub mod calendar_ics;
 pub mod chain;
 pub mod crm;
+pub mod ics;
 pub mod custody;
 pub mod discovery;
 pub mod oversight;

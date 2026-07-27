@@ -90,6 +90,10 @@ fn appointment_json(a: &Appointment) -> Value {
         "groomer": a.groomer,
         "createdAt": a.created_at,
         "updatedAt": a.updated_at,
+        // Provenance, so the portal can label an imported booking as imported (and as UNASSIGNED
+        // while its `clientId` is still empty) rather than presenting it as one the shop entered.
+        "source": a.source,
+        "externalUid": a.external_uid,
     })
 }
 
@@ -530,6 +534,10 @@ async fn create_appointment(
         client_name,
         pet_name,
         search_key: String::new(),
+        // Booked in the portal, so it has no external calendar identity. Only `.ics` import sets
+        // these (see `calendar_ics::new_from_import`).
+        source: None,
+        external_uid: None,
     };
     a.rebuild_search_key();
     st.store.put_appointment(a.clone()).await;
@@ -600,6 +608,11 @@ async fn update_appointment(
         client_name,
         pet_name,
         search_key: String::new(),
+        // An edit never rewrites the booking's ORIGIN. Dropping `external_uid` here would orphan an
+        // imported booking from its source event, so the next re-import of the same file would
+        // create a duplicate instead of updating this row.
+        source: existing.source,
+        external_uid: existing.external_uid,
     };
     a.rebuild_search_key();
     st.store.put_appointment(a.clone()).await;
@@ -704,7 +717,10 @@ pub async fn resolve_session_context(
         .ok_or_else(|| "appointmentId does not exist".to_string())?;
     Ok(SessionContext {
         appointment_id: a.appointment_id,
-        client_id: Some(a.client_id),
+        // An `.ics`-imported booking has no client yet (see [`Appointment::client_id`]). Carrying an
+        // EMPTY client id onto the verification would make the history filterable by a client that
+        // does not exist and link the row to nothing — `None` is what "no client" means here.
+        client_id: Some(a.client_id).filter(|c| !c.is_empty()),
         pet_id: a.pet_id,
         client_name: a.client_name,
         pet_name: a.pet_name,
