@@ -140,30 +140,84 @@ enum RoaxRpc {
     }
 
     private static let issuedBySelector = functionSelector("issuedBy(bytes32)")
+    private static let rootIssuerSelector = functionSelector("rootIssuer(bytes32)")
+    private static let recordTypeSelector = functionSelector("recordType()")
+
+    /// `DogTagIssuerFactory.rootIssuer(root)` → the clone that actually issued this root, or nil when
+    /// no clone of this factory ever did (the on-chain zero address) or the read did not resolve.
+    ///
+    /// This is the anchor the issuer pillar hangs from. `registerRoot` is called only from inside a
+    /// clone's `issue()` and is `require(isClone[msg.sender])` + strictly write-once, so a contract
+    /// the factory never deployed can never appear here and a genuine root's issuer can never be
+    /// overwritten. Selector DERIVED from the signature, never a constant (see `isValidSelector`).
+    static func rootIssuer(rpcUrl: String, factory: String, root: String) async -> String? {
+        guard !factory.isEmpty, !root.isEmpty else { return nil }
+        let data = rootIssuerSelector + pad32(root)
+        switch await ethCall(rpcUrl: rpcUrl, to: factory, data: data) {
+        case let .success(hex):
+            guard hex.count >= 40, hex.contains(where: { $0 != "0" }) else { return nil }
+            return "0x" + hex.suffix(40).lowercased()
+        case .failure: return nil
+        }
+    }
+
+    /// `DogTagIssuer.recordType()` → the clone's own immutable record-type key, or nil when the
+    /// contract reports the zero word (uninitialized / not a clone) or the read did not resolve.
+    static func recordTypeOf(rpcUrl: String, issuerClone: String) async -> String? {
+        guard !issuerClone.isEmpty else { return nil }
+        switch await ethCall(rpcUrl: rpcUrl, to: issuerClone, data: recordTypeSelector) {
+        case let .success(hex):
+            guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }),
+                  hex.contains(where: { $0 != "0" }) else { return nil }
+            return "0x" + hex.lowercased()
+        case .failure: return nil
+        }
+    }
 
     /// The ISSUER-WHITELIST pillar for a held credential, resolved end-to-end on-chain.
     ///
-    /// The document's `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and - the
-    /// sharp one - `documentStore` are attacker-controlled: relabel a genuine credential's authority,
-    /// or point `documentStore` at a contract you control that returns true from `isValid`, and both
-    /// the integrity recompute and the issuance read still pass. This pillar is what catches that.
+    /// The document's `issuer` block is NOT covered by the Merkle root, so `name`, `domain`,
+    /// `recordType` and - the sharp one - `documentStore` are chosen by whoever built the document.
+    /// Asking `documentStore` whether the credential is valid, and who issued it, is asking the
+    /// suspect for their own references: deploy a contract that answers `isValid = true` and names a
+    /// genuinely whitelisted signer, and integrity plus the issuance read both still pass.
     ///
-    /// It asks the chain who issued the root (`issuedBy`, set to `msg.sender` under `onlyWhitelisted`)
-    /// and whether THAT signer is whitelisted for this record type in the registry from the app's own
-    /// bundled `roax.json` - never an address named by the document, or the attacker supplies both
-    /// sides of the question. `.unknown` means the pillar did not resolve; a caller must treat that as
-    /// indeterminate, never as a pass.
+    /// So the clone is resolved from the FACTORY in the app's own bundled `roax.json`
+    /// (`rootIssuer`) - never from the document. Then the record type comes from that clone's own
+    /// `recordType()`, and the issuing signer from its `issuedBy`, checked against the app's own
+    /// `IssuerRegistry`. An envelope naming a different clone, or a different record type, than the
+    /// chain does is a definite `.invalid`, not merely unresolved.
+    ///
+    /// `.unknown` means the pillar did not resolve; a caller must treat that as indeterminate, never
+    /// as a pass.
     static func issuerWhitelistPillar(
-        rpcUrl: String, issuerRegistry: String, documentStore: String, root: String, recordType: String
+        rpcUrl: String, issuerRegistry: String, issuerFactory: String,
+        documentStore: String, root: String, recordType: String
     ) async -> Result {
         guard !issuerRegistry.isEmpty else { return .unknown("no IssuerRegistry configured") }
+        guard !issuerFactory.isEmpty else { return .unknown("no DogTagIssuerFactory configured") }
         guard !recordType.isEmpty else { return .unknown("document declares no recordType") }
-        guard let signer = await issuedBy(rpcUrl: rpcUrl, documentStore: documentStore, root: root) else {
+        guard let clone = await rootIssuer(rpcUrl: rpcUrl, factory: issuerFactory, root: root) else {
+            return .unknown("no factory clone ever issued this root")
+        }
+        // The envelope points somewhere other than the contract that actually issued the root: a
+        // definite misrepresentation, refused before the registry is consulted.
+        guard clone.caseInsensitiveCompare(
+            documentStore.trimmingCharacters(in: .whitespaces)) == .orderedSame else {
+            return .invalid
+        }
+        guard let chainRecordType = await recordTypeOf(rpcUrl: rpcUrl, issuerClone: clone) else {
+            return .unknown("issuer clone reports no recordType")
+        }
+        guard chainRecordType.caseInsensitiveCompare(recordTypeKey(recordType)) == .orderedSame else {
+            return .invalid
+        }
+        guard let signer = await issuedBy(rpcUrl: rpcUrl, documentStore: clone, root: root) else {
             return .unknown("issuer clone reports no issuer for this root")
         }
         return await isWhitelistedFor(
             rpcUrl: rpcUrl, issuerRegistry: issuerRegistry,
-            key: recordTypeKey(recordType), signer: signer)
+            key: chainRecordType, signer: signer)
     }
 
     /// `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the

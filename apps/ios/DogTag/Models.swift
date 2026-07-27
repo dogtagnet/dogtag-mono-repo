@@ -378,6 +378,10 @@ struct RoaxConfig {
     let chainId: Int
     let dogTagSbt: String
     let issuerRegistry: String
+    /// `DogTagIssuerFactory` - the app's OWN anchor for "which contract issued this root?". Credential
+    /// verification resolves the issuing clone from its write-once `rootIssuer[R]` index instead of
+    /// trusting a document's `issuer.documentStore`, which sits outside the Merkle root.
+    let dogTagIssuerFactory: String
     let poseidon6: String
     /// `ProtocolRegistry` is the discovery trust anchor. Empty until redeployment; verification then
     /// fails closed instead of inventing an address.
@@ -388,12 +392,13 @@ struct RoaxConfig {
               let data = try? Data(contentsOf: url),
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return RoaxConfig(chainId: 135, dogTagSbt: "", issuerRegistry: "",
-                              poseidon6: "", protocolRegistry: "")
+                              dogTagIssuerFactory: "", poseidon6: "", protocolRegistry: "")
         }
         return RoaxConfig(
             chainId: (o["chainId"] as? Int) ?? 135,
             dogTagSbt: (o["DogTagSBT"] as? String) ?? "",
             issuerRegistry: (o["IssuerRegistry"] as? String) ?? "",
+            dogTagIssuerFactory: (o["DogTagIssuerFactory"] as? String) ?? "",
             poseidon6: (o["Poseidon6"] as? String) ?? "",
             protocolRegistry: (o["ProtocolRegistry"] as? String) ?? ""
         )

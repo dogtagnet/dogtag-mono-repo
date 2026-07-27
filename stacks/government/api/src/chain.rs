@@ -61,6 +61,17 @@ sol! {
         function isRevoked(bytes32 r) external view returns (bool);
         function issuedAt(bytes32 r) external view returns (uint256);
         function issuedBy(bytes32 r) external view returns (address);
+        function recordType() external view returns (bytes32);
+    }
+
+    /// The protocol-global write-once `rootIssuer[R]` index. `registerRoot` is gated by
+    /// `isClone[msg.sender]`, so ONLY a contract this factory deployed can ever claim a root, and a
+    /// claimed root can never be re-registered. That makes this mapping the only trustworthy answer
+    /// to "which contract actually issued this root?" - the document's own `issuer.documentStore` is
+    /// outside the Merkle root and therefore attacker-chosen.
+    #[sol(rpc)]
+    contract IDogTagIssuerFactory {
+        function rootIssuer(bytes32 root) external view returns (address);
     }
 
     #[sol(rpc)]
@@ -132,6 +143,24 @@ pub trait ChainClient: Send + Sync {
     }
     /// The government signer's `0x..` address, if a signer is loaded.
     fn signer_address(&self) -> Option<String>;
+    /// `DogTagIssuerFactory.rootIssuer(root)` — the clone that actually issued this root, or `None`
+    /// when no factory clone ever registered it (the on-chain zero address).
+    ///
+    /// This is the ANCHOR the whole issuer pillar hangs from. `registerRoot` is `require(isClone(...))`
+    /// and strictly write-once, so a contract the factory never deployed cannot appear here and a
+    /// genuine root's issuer cannot be overwritten. Resolving the clone this way - rather than from the
+    /// document's `issuer.documentStore`, which sits outside the Merkle root - is what stops an
+    /// attacker from nominating a contract of their own to answer every question about their forgery.
+    async fn root_issuer(
+        &self,
+        factory_addr: &str,
+        root: &str,
+    ) -> Result<Option<String>, ChainError>;
+    /// `DogTagIssuer.recordType()` — the clone's own immutable record type key, or `None` when the
+    /// contract reports the zero word (uninitialized / not a clone). Read from the RESOLVED clone so
+    /// the whitelist question is asked about the record type the chain says this root belongs to,
+    /// never the one the envelope claims.
+    async fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, ChainError>;
     /// `DogTagIssuer.isValid(root)` — issued && !revoked.
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError>;
     /// `DogTagIssuer.issuedAt(root)` (0 == not issued).
@@ -307,6 +336,39 @@ impl ChainClient for AlloyChain {
     fn signer_address(&self) -> Option<String> {
         self.signer.as_ref().map(|s| format!("{:#x}", s.address()))
     }
+    async fn root_issuer(
+        &self,
+        factory_addr: &str,
+        root: &str,
+    ) -> Result<Option<String>, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
+        let r = c
+            .rootIssuer(parse_b256(root))
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        // Zero is a SUCCESSFUL read saying "no clone of this factory ever issued this root".
+        Ok((!r._0.is_zero()).then(|| r._0.to_string()))
+    }
+    async fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
+        let r = c
+            .recordType()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok((!r._0.is_zero()).then(|| format!("{:#x}", r._0)))
+    }
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
         use alloy::providers::ProviderBuilder;
         let provider = ProviderBuilder::new()
@@ -456,6 +518,23 @@ impl AlloyChain {
 /// receipt + public status page read as a plausible present-day date in demo mode.
 const MEMCHAIN_CLOCK_BASE: u64 = 1_782_864_000;
 
+/// A contract the factory never deployed, whose reads return whatever its operator chose. This is the
+/// forgery the issuer pillar exists to catch: a real attacker deploys exactly this and points a
+/// relabelled document's `issuer.documentStore` at it.
+///
+/// It is a first-class part of the emulation rather than a test-only shim because the honest
+/// `issue()` path CANNOT express it - that path stamps `issued_by = self.signer` and registers the
+/// root in the factory index, so it can only ever produce answers a genuine clone would give. Without
+/// this, a test aimed at the attack silently exercises an honest clone instead and passes for the
+/// wrong reason.
+#[derive(Clone)]
+struct HostileClone {
+    is_valid: bool,
+    issued_at: u64,
+    issued_by: String,
+    record_type: String,
+}
+
 struct MemChainInner {
     /// (issuer_addr, root) -> issuedAt timestamp (0 == not issued).
     issued: HashMap<(String, String), u64>,
@@ -463,6 +542,14 @@ struct MemChainInner {
     /// msg.sender`. Absent == never issued here, which the whitelist pillar reads as indeterminate.
     issued_by: HashMap<(String, String), String>,
     revoked: HashMap<(String, String), u64>,
+    /// root -> the clone that registered it. Mirrors `DogTagIssuerFactory.rootIssuer`, which is
+    /// protocol-global and strictly write-once, so this is keyed by root ALONE (the emulation has one
+    /// factory) and `issue` refuses a root another clone already claimed.
+    root_issuer: HashMap<String, String>,
+    /// issuer_addr -> the clone's immutable `recordType()` key.
+    record_types: HashMap<String, String>,
+    /// Contracts the factory never deployed, answering with attacker-chosen values.
+    hostile: HashMap<String, HostileClone>,
     /// (registry_addr, record_type, signer) -> whitelisted.
     whitelist: HashMap<(String, String, String), bool>,
     /// (registry_addr, nullifier) consumed by a recordVerificationZK — the emulated replay guard.
@@ -477,6 +564,9 @@ impl Default for MemChainInner {
             issued: HashMap::new(),
             issued_by: HashMap::new(),
             revoked: HashMap::new(),
+            root_issuer: HashMap::new(),
+            record_types: HashMap::new(),
+            hostile: HashMap::new(),
             whitelist: HashMap::new(),
             consumed: HashMap::new(),
             nonce: 0,
@@ -521,6 +611,41 @@ impl MemChain {
             .copied()
             .unwrap_or(false)
     }
+    /// Declare a clone's immutable `recordType()` (test harness / demo bootstrap). A real clone always
+    /// has one, set at `createIssuer`; a clone left undeclared here reads as `None`, which the issuer
+    /// pillar treats as indeterminate rather than guessing from the document.
+    pub fn set_record_type(&self, issuer_addr: &str, record_type_key: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .record_types
+            .insert(issuer_addr.to_lowercase(), record_type_key.to_lowercase());
+    }
+    /// Register a contract the factory never deployed, whose `isValid`/`issuedAt`/`issuedBy`/
+    /// `recordType` reads return attacker-chosen values (test harness).
+    ///
+    /// It is deliberately absent from the `rootIssuer` index — that is the whole point: a genuine
+    /// factory clone gets in there by calling `registerRoot` from inside `issue`, and nothing else
+    /// can. `issued_by` may name a genuinely whitelisted signer, so a verifier that asks THIS contract
+    /// who issued the root gets a real, authorized-looking address back.
+    pub fn with_hostile_clone(
+        &self,
+        addr: &str,
+        is_valid: bool,
+        issued_at: u64,
+        issued_by: &str,
+        record_type_key: &str,
+    ) {
+        self.inner.lock().unwrap().hostile.insert(
+            addr.to_lowercase(),
+            HostileClone {
+                is_valid,
+                issued_at,
+                issued_by: issued_by.to_lowercase(),
+                record_type: record_type_key.to_lowercase(),
+            },
+        );
+    }
     /// Whitelist a signer for a (registry, recordType, signer) tuple (test harness / demo bootstrap).
     pub fn whitelist(&self, registry: &str, record_type: &str, signer: &str) {
         self.inner.lock().unwrap().whitelist.insert(
@@ -550,8 +675,27 @@ impl ChainClient for MemChain {
     fn signer_address(&self) -> Option<String> {
         Some(self.signer.clone())
     }
+    async fn root_issuer(
+        &self,
+        _factory_addr: &str,
+        root: &str,
+    ) -> Result<Option<String>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.root_issuer.get(&root.to_lowercase()).cloned())
+    }
+    async fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, ChainError> {
+        let g = self.inner.lock().unwrap();
+        let addr = issuer_addr.to_lowercase();
+        if let Some(h) = g.hostile.get(&addr) {
+            return Ok(Some(h.record_type.clone()));
+        }
+        Ok(g.record_types.get(&addr).cloned())
+    }
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError> {
         let g = self.inner.lock().unwrap();
+        if let Some(h) = g.hostile.get(&issuer_addr.to_lowercase()) {
+            return Ok(h.is_valid);
+        }
         let key = (issuer_addr.to_lowercase(), root.to_lowercase());
         let issued = g.issued.get(&key).copied().unwrap_or(0) != 0;
         let revoked = g.revoked.get(&key).copied().unwrap_or(0) != 0;
@@ -559,6 +703,9 @@ impl ChainClient for MemChain {
     }
     async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError> {
         let g = self.inner.lock().unwrap();
+        if let Some(h) = g.hostile.get(&issuer_addr.to_lowercase()) {
+            return Ok(U256::from(h.issued_at));
+        }
         let v = g
             .issued
             .get(&(issuer_addr.to_lowercase(), root.to_lowercase()))
@@ -568,9 +715,11 @@ impl ChainClient for MemChain {
     }
     async fn issued_by(&self, issuer_addr: &str, root: &str) -> Result<Option<String>, ChainError> {
         let g = self.inner.lock().unwrap();
-        Ok(g.issued_by
-            .get(&(issuer_addr.to_lowercase(), root.to_lowercase()))
-            .cloned())
+        let addr = issuer_addr.to_lowercase();
+        if let Some(h) = g.hostile.get(&addr) {
+            return Ok((!h.issued_by.is_empty()).then(|| h.issued_by.clone()));
+        }
+        Ok(g.issued_by.get(&(addr, root.to_lowercase())).cloned())
     }
     async fn is_whitelisted_for(
         &self,
@@ -590,9 +739,20 @@ impl ChainClient for MemChain {
     }
     async fn issue(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
         let mut g = self.inner.lock().unwrap();
-        let key = (issuer_addr.to_lowercase(), root.to_lowercase());
+        let addr = issuer_addr.to_lowercase();
+        let root_key = root.to_lowercase();
+        let key = (addr.clone(), root_key.clone());
         if g.issued.get(&key).copied().unwrap_or(0) != 0 {
             return Err(ChainError::Other("BadRoot: already issued".into()));
+        }
+        // Mirror `DogTagIssuerFactory.registerRoot`, which every real `issue()` calls: the root->clone
+        // index is protocol-global and strictly write-once, so a second clone cannot claim a root that
+        // is already someone else's. Without this the emulation would let an "attacker" re-anchor a
+        // genuine root under their own address - something the real chain reverts.
+        if let Some(existing) = g.root_issuer.get(&root_key) {
+            if existing != &addr {
+                return Err(ChainError::Other("root taken".into()));
+            }
         }
         g.clock += 12;
         let ts = g.clock;
@@ -601,6 +761,7 @@ impl ChainClient for MemChain {
         // this fake exactly as it does on chain — otherwise every MemChain-backed record looks like
         // one nobody issued.
         g.issued_by.insert(key, self.signer.clone());
+        g.root_issuer.insert(root_key, addr);
         g.nonce += 1;
         let tx_hash = format!("0x{:064x}", g.nonce);
         // Emulate a monotonic block height so the persisted on-chain proof carries a block number.
@@ -730,7 +891,8 @@ mod tests {
         ];
         let cc = ["7".to_string(), "8".to_string()];
         // pub[3] is the nullifier (frozen output order).
-        let pubs: [String; 7] = std::array::from_fn(|i| if i == 3 { "99".into() } else { "1".into() });
+        let pubs: [String; 7] =
+            std::array::from_fn(|i| if i == 3 { "99".into() } else { "1".into() });
         assert!(!c.is_consumed(registry, &format!("0x{:064x}", 99)));
         let tx = c
             .record_verification_zk_consent(registry, &a, &b, &cc, &pubs)
@@ -761,7 +923,8 @@ mod tests {
 
     #[test]
     fn alloychain_reports_live_and_gates_real_broadcast_on_a_signer() {
-        let live = AlloyChain::new("https://devrpc.roax.net".to_string()).with_chain_id(ROAX_CHAIN_ID);
+        let live =
+            AlloyChain::new("https://devrpc.roax.net".to_string()).with_chain_id(ROAX_CHAIN_ID);
         assert_eq!(live.backend(), ChainBackend::Live);
         assert!(!live.is_simulated());
         assert_eq!(live.chain_id(), ROAX_CHAIN_ID);

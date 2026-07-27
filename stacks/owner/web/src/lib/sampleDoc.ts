@@ -121,6 +121,18 @@ export const SAMPLE_TRAVEL_CLEARANCE_DOC: WrappedDoc = {
     documentStore: "0x1111111111111111111111111111111111111111",
     recordType: "TRAVEL_CLEARANCE",
   },
+  // The provenance block an issuing stack stamps. `statusBaseUrl` is the REACHABLE origin the receipt
+  // QR points at - note it is deliberately NOT `issuer.domain` (`gov.example`), which is a `did:web`
+  // identity and RFC-2606 reserved. This block sits outside the Merkle root, so its presence does not
+  // move `signature.merkleRoot` above.
+  protocol: {
+    chainId: 135,
+    version: "dogtag-levelb/1",
+    verificationRegistry: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
+    issuerClone: "0x1111111111111111111111111111111111111111",
+    issuerSigner: "0x8E27E117663bc6B65F82cC6E98412b4003e6F4A2",
+    statusBaseUrl: "https://travel.authority.example-demo.net",
+  },
 };
 
 export const SAMPLE_TRAVEL_CLEARANCE_DOC_JSON = JSON.stringify(SAMPLE_TRAVEL_CLEARANCE_DOC, null, 2);

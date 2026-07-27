@@ -23,6 +23,7 @@ use tower::ServiceExt;
 const VACC_CLONE: &str = "0x5c703910111f942ee0f47e02214291b5274cdb53";
 const REGISTRY: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const VET_SIGNER: &str = "0x00000000000000000000000000000000000000a1";
+const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 /// Build a VACCINATION wrapped credential exactly as the vet stack would: a typed-scalar VC wrapped
 /// through the shared SDK's `wrap_document` (the same primitive `vet-api`'s `app::wrap` calls).
@@ -58,6 +59,7 @@ fn government_stack(chain: MemChain) -> AppState {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY.into(),
+        issuer_factory_addr: FACTORY.into(),
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: "0x1111111111111111111111111111111111111111".into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -102,6 +104,13 @@ async fn government_verifies_a_vet_issued_credential() {
     // The vet's own signer anchors, so the emulated clone records `issuedBy[root] = VET_SIGNER` just
     // as the real one records `msg.sender` — that is the address the whitelist pillar resolves.
     let chain = MemChain::new().with_signer(VET_SIGNER);
+    // The vet's clone declares its own `recordType()` exactly as `createIssuer` fixes it on chain -
+    // the government verifier reads the record type from the clone it resolves, not from the vet's
+    // envelope, so a clone that declares nothing leaves the pillar indeterminate.
+    chain.set_record_type(
+        VACC_CLONE,
+        &government_api::app::record_type_key("VACCINATION"),
+    );
     chain
         .issue(VACC_CLONE, &root)
         .await

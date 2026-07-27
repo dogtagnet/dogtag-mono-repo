@@ -53,7 +53,8 @@ export interface ReceiptModel {
   root: string;
   documentStore: string;
   issuerDomain: string;
-  /** Public, PII-free status URL the QR encodes (`https://<issuerDomain>/r/<receiptId>`) or "". */
+  /** Public, PII-free status URL the QR encodes (`<protocol.statusBaseUrl>/r/<receiptId>`) or "" when
+   *  the issuer stamped no reachable base - deliberately NOT built from `issuer.domain`. */
   publicStatusUrl: string;
 }
 

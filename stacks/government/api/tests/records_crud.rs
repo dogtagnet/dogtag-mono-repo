@@ -23,6 +23,7 @@ use tower::ServiceExt;
 const ISSUER_ADDR: &str = "0x1111111111111111111111111111111111111111";
 const REGISTRY_ADDR: &str = "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c";
 const API_TOKEN: &str = "test-gov-token";
+const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 fn demo_state() -> (AppState, MemChain) {
     let cfg = Config {
@@ -30,6 +31,7 @@ fn demo_state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        issuer_factory_addr: FACTORY.into(),
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),

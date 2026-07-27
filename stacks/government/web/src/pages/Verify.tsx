@@ -372,23 +372,17 @@ function OwnerHiddenHistory() {
  *
  *  Kept alongside the QR flow deliberately — it needs no phone, no owner present and no consent, so it
  *  stays the right tool for checking a document someone emailed over or an officer already holds. */
-function PasteDocVerify({ health }: { health: Health | null }) {
+function PasteDocVerify() {
   const [doc, setDoc] = useState("");
   const [signer, setSigner] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Prefill the issuer signer with this authority's own signer so the whitelist pillar (the third
-  // authenticity pillar) is exercised by default. Users can override or clear it.
-  // On a simulated backend the address lives in `simulatedSigner` (`signer` is null by design, so a
-  // stand-in is never mistaken for a real key) - fall back to it, or the prefill silently goes empty
-  // and the whitelist pillar stops being exercised.
-  const ownSigner = health?.signer ?? health?.simulatedSigner ?? null;
-  useEffect(() => {
-    if (ownSigner && !signer) setSigner(ownSigner);
-  }, [ownSigner]);
-
+  // Deliberately NOT prefilled with this authority's own signer. The whitelist pillar resolves its
+  // own signer from the chain now, so this field is only an EXPECTED-signer assertion that tightens
+  // the pillar - and prefilling it would silently assert "this credential must have been issued by
+  // US", failing the documented cross-role flow where a vet issues and the government verifies.
   async function submit() {
     setBusy(true);
     setError(null);
@@ -431,7 +425,7 @@ function PasteDocVerify({ health }: { health: Health | null }) {
       />
 
       <label className="mt-4 block text-xs font-medium text-muted">
-        Issuer signer address (optional — checks the whitelist pillar)
+        Expected issuer signer (optional)
       </label>
       <input
         data-testid="verify-signer"
@@ -479,7 +473,7 @@ export function Verify({ health }: { health: Health | null }) {
   return (
     <div className="space-y-4">
       <OwnerHiddenVerifyFlow health={health} />
-      <PasteDocVerify health={health} />
+      <PasteDocVerify />
       <OwnerHiddenHistory />
     </div>
   );
