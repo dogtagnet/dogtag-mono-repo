@@ -49,6 +49,16 @@ fn state_with(whitelisted: bool) -> (AppState, String) {
     let chain = MemChain::new();
     let signer = chain.signer_address().unwrap();
     let c = cfg();
+    // The authority's ISSUING right, which is a different grant from the VERIFY:<purpose> gate the
+    // `whitelisted` flag toggles below. It is unconditional because it holds on the real chain by
+    // construction: `issue()` is `onlyWhitelisted`, so anything this signer anchored was whitelisted
+    // for that record type. Without it the mandatory issuer-whitelist pillar cannot resolve and every
+    // credential this fake issues would verify as indeterminate.
+    chain.whitelist(
+        REGISTRY_ADDR,
+        &government_api::app::record_type_key(TRAVEL_CLEARANCE),
+        &signer,
+    );
     if whitelisted {
         chain.whitelist(
             REGISTRY_ADDR,

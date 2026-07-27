@@ -105,14 +105,18 @@ fun TravelReceiptScreen(cred: Credential, onBack: () -> Unit) {
     val issuanceDate = pick("validity.issuedOn").ifBlank { cred.issuedOn }
     val validUntil = pick("validity.validUntil")
 
-    // Public PII-free status URL: https://<issuerDomain>/r/<receiptId>.
+    // Public PII-free status URL: <protocol.statusBaseUrl>/r/<receiptId>.
+    //
+    // The base is stamped at issuance from the issuer's DEPLOYMENT_URL — the only host in the document
+    // a phone can actually reach. It deliberately does NOT fall back to issuer.domain: that is a
+    // did:web identity, and the shipped default `gov.example` is RFC-2606 reserved (NXDOMAIN), so
+    // every QR built from it encoded a dead link that reads as a working live-status check.
+    //
+    // Blank when the issuer stamped no base — including every pre-stamping document. The card then
+    // renders no QR and says so, rather than printing a URL that resolves to nothing.
     val publicUrl = run {
-        val domain = (doc?.issuerDomain ?: "").trim()
-        if (domain.isBlank() || receiptId.isBlank()) ""
-        else {
-            val base = if (domain.startsWith("http")) domain else "https://$domain"
-            "$base/r/$receiptId"
-        }
+        val base = doc?.statusBaseUrl ?: ""
+        if (base.isBlank() || receiptId.isBlank()) "" else "$base/r/$receiptId"
     }
 
     // Section-A person/importer leaves — the PII block that defaults to WITHHELD when presenting.
@@ -393,9 +397,16 @@ private fun VerificationBlock(slate: Color, publicUrl: String, root: String, doc
                     Image(it, "Public status QR", modifier = Modifier.size(116.dp).clip(RoundedCornerShape(6.dp)).background(Color.White))
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Scan to confirm live status on-chain", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
                     Text(
-                        publicUrl.ifBlank { "Public status page unavailable (no receipt id / issuer domain)." },
+                        if (publicUrl.isBlank()) "No public status page for this receipt"
+                        else "Scan to confirm live status on-chain",
+                        fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground,
+                    )
+                    Text(
+                        publicUrl.ifBlank {
+                            "This credential's issuer published no reachable status URL. " +
+                                "Confirm it against the on-chain record below."
+                        },
                         fontSize = 11.sp, color = c.muted, maxLines = 3, overflow = TextOverflow.Ellipsis,
                     )
                     Text(

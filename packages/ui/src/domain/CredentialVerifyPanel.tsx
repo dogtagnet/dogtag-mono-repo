@@ -97,12 +97,17 @@ export function CredentialVerifyPanel({
           </div>
 
           <div className="space-y-1.5">
-            <Label>Issuer signer address</Label>
+            <Label>Expected issuer signer</Label>
             <Input
               value={signer}
               onChange={(e) => setSigner(e.target.value)}
               placeholder="0x... optional"
             />
+            <p className="text-xs text-muted">
+              Optional. The issuer whitelist is always checked - the signer is read from the chain
+              (<code>issuedBy</code>), never typed in. Fill this only to additionally require that the
+              credential was issued by one specific address.
+            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -124,8 +129,19 @@ export function CredentialVerifyPanel({
 }
 
 function CredentialVerifyResult({ result }: { result: VerifyCredentialResp }) {
-  const statusVariant =
-    result.status === "valid" ? "success" : result.status === "revoked" ? "danger" : "warning";
+  // `status` describes the on-chain RECORD (anchored? revoked?); `verdict` is whether the credential
+  // as a whole verified. A record can be `valid` on-chain while the credential fails - an unresolved
+  // or non-whitelisted issuer is exactly that case. Never paint the status chip green then, or the
+  // loud signal contradicts the true one.
+  const statusVariant = !result.verdict
+    ? result.status === "revoked"
+      ? "danger"
+      : "warning"
+    : result.status === "valid"
+      ? "success"
+      : result.status === "revoked"
+        ? "danger"
+        : "warning";
   const issuedAt = formatIssuedAt(result.issuedAt);
   return (
     <div className="space-y-4 rounded-md border border-border bg-surface-muted p-4">
@@ -166,6 +182,10 @@ function CredentialVerifyResult({ result }: { result: VerifyCredentialResp }) {
             </a>
           </dd>
         </div>
+        <Detail
+          label="Issuing signer (from chain)"
+          value={result.signerAddr || "unresolved - this clone never issued this root"}
+        />
         <Detail label="Issued at" value={issuedAt} />
       </dl>
     </div>
@@ -181,11 +201,13 @@ function Pillar({
   value?: boolean | null;
   invert?: boolean;
 }) {
+  // An indeterminate pillar is a FAILURE to establish the claim, not an optional step that was
+  // skipped - it cannot contribute to a pass, so it must not be styled like a neutral "n/a".
   if (value === null || value === undefined) {
     return (
       <div className="rounded-md border border-border bg-surface px-3 py-2">
         <div className="text-xs text-muted">{label}</div>
-        <div className="text-sm font-semibold text-muted">Not checked</div>
+        <div className="text-sm font-semibold text-warning">Unresolved</div>
       </div>
     );
   }

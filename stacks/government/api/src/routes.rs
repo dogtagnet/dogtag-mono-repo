@@ -524,7 +524,9 @@ struct VerifyBody {
     /// `issuer.documentStore`.
     #[serde(default)]
     issuer_addr: Option<String>,
-    /// Optional signer address to check issuer-identity (`isWhitelistedFor(recordType, signer)`).
+    /// OPTIONAL *expected* issuing signer. The issuer-whitelist pillar no longer depends on this: the
+    /// signer is resolved from the chain (`issuedBy(root)`). Supplying it adds a strictly stronger
+    /// assertion - the pillar fails when the on-chain originator is not this address.
     #[serde(default)]
     signer_addr: Option<String>,
 }
@@ -556,8 +558,32 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         }
     };
 
-    // 3) issuer identity (optional) — IssuerRegistry.isWhitelistedFor(keccak(recordType), signer).
-    let issuer_whitelisted = match &body.signer_addr {
+    // 3) issuer identity — MANDATORY, and self-resolving.
+    //
+    // The `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and - the sharp one -
+    // `documentStore` are attacker-controlled. Relabel a genuine credential's issuing authority, or
+    // point `documentStore` at a contract you control that returns true from `isValid`, and both the
+    // integrity recompute and the on-chain read still pass. This pillar is the only one that catches
+    // that, which is why it can no longer be skipped: the signer is read from the chain
+    // (`issuedBy(root)`, set to `msg.sender` under `onlyWhitelisted`) rather than typed in by an
+    // operator, then checked against THIS deployment's configured registry - never one named by the
+    // document, or the attacker would supply both sides of the question.
+    //
+    // Tri-state, and only a definite `true` may contribute to a pass:
+    //   Some(true)  - resolved, and whitelisted for this record type
+    //   Some(false) - resolved, but not whitelisted (or not the expected signer): authenticity failure
+    //   None        - unresolvable (the clone never issued this root): INDETERMINATE. An unanswered
+    //                 check is not a passed check.
+    let resolved_signer = match st.chain.issued_by(&issuer_addr, &claimed_root).await {
+        Ok(v) => v,
+        Err(e) => {
+            return err(
+                StatusCode::BAD_GATEWAY,
+                &format!("on-chain issuedBy read failed: {e}"),
+            )
+        }
+    };
+    let issuer_whitelisted = match &resolved_signer {
         Some(signer) => {
             let rt_key = app::record_type_key(&record_type);
             match st
@@ -565,7 +591,15 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
                 .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, signer)
                 .await
             {
-                Ok(v) => Some(v),
+                Ok(v) => {
+                    // An explicitly expected signer only ever makes the pillar stricter.
+                    let matches_expected = body
+                        .signer_addr
+                        .as_deref()
+                        .map(|want| want.trim().eq_ignore_ascii_case(signer))
+                        .unwrap_or(true);
+                    Some(v && matches_expected)
+                }
                 Err(e) => {
                     return err(
                         StatusCode::BAD_GATEWAY,
@@ -577,9 +611,10 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         None => None,
     };
 
-    // Verdict: integrity + on-chain issuance are the required authenticity pillars here; the issuer
-    // whitelist, when supplied, must also pass (architecture §5 authenticity pillars).
-    let verdict = integrity_valid && onchain_valid && issuer_whitelisted.unwrap_or(true);
+    // Verdict: all three authenticity pillars must PASS (architecture §5). `issuer_whitelisted` is
+    // deliberately compared against `Some(true)` rather than defaulted - a pillar that could not be
+    // resolved is an indeterminate verdict, never a pass.
+    let verdict = integrity_valid && onchain_valid && issuer_whitelisted == Some(true);
 
     let rec = VerificationRecord {
         id: uuid::Uuid::new_v4().to_string(),
@@ -600,6 +635,9 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         "root": claimed_root,
         "recomputedRoot": recomputed_hex,
         "issuerAddr": issuer_addr,
+        // The signer the CHAIN says issued this root, not one the caller supplied. `null` means the
+        // clone never issued it, which is why the whitelist pillar could not be resolved.
+        "signerAddr": resolved_signer,
         "fragments": {
             "integrity": integrity_valid,
             "onchain": onchain_valid,
