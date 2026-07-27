@@ -262,4 +262,79 @@ final class IssuerDomainBindingTests: XCTestCase {
         XCTAssertEqual(IssuerBindingResolver.unquoteTxt("\"quoted\""), "quoted")
         XCTAssertEqual(IssuerBindingResolver.unquoteTxt("\"a\\\"b\""), "a\"b")
     }
+
+    // MARK: - the DID assertion (the other half of issuer identity)
+
+    private func doc(displayedDomain: String, dataIssuer: String?) -> WrappedDoc? {
+        var data: [String: Any] = ["credentialSubject": ["name": "s:0:Max"]]
+        if let d = dataIssuer { data["issuer"] = d }
+        let root: [String: Any] = [
+            "version": "1.0",
+            "data": data,
+            "signature": ["type": "t", "targetHash": "0x00", "proof": [], "merkleRoot": "0x00"],
+            "privacy": ["obfuscated": []],
+            "issuer": [
+                "name": "Example Competent Authority",
+                "domain": displayedDomain,
+                "documentStore": clone,
+                "recordType": "TRAVEL_CLEARANCE",
+            ],
+        ]
+        let json = String(data: try! JSONSerialization.data(withJSONObject: root), encoding: .utf8)!
+        return WrappedDoc(json: json)
+    }
+
+    func test_did_web_host_drops_path_segments_and_ports() {
+        XCTAssertEqual(IssuerIdentity.didWebHost("did:web:example.com"), "example.com")
+        XCTAssertEqual(IssuerIdentity.didWebHost("did:web:example.com:dept:vet"), "example.com")
+        XCTAssertEqual(IssuerIdentity.didWebHost("did:web:example.com%3A8443"), "example.com")
+        XCTAssertEqual(IssuerIdentity.didWebHost("did:web:EXAMPLE.com"), "example.com")
+        XCTAssertNil(IssuerIdentity.didWebHost("did:key:z6Mk"))
+        XCTAssertNil(IssuerIdentity.didWebHost("did:web:localhost"), "a single label is not a domain")
+        XCTAssertNil(IssuerIdentity.didWebHost("not a did"))
+    }
+
+    func test_matching_domain_and_did_asserts() {
+        let a = IssuerIdentity.assertDomain(doc(displayedDomain: "gov.example", dataIssuer: "abcd:2:did:web:gov.example"))
+        XCTAssertEqual(a, .match(domain: "gov.example"))
+        XCTAssertFalse(a.isMismatch)
+    }
+
+    /// The audit's attack, caught by the document alone — no chain, no DNS needed.
+    func test_the_relabelling_attack_is_detected() {
+        let a = IssuerIdentity.assertDomain(doc(displayedDomain: "moh.gov.sg", dataIssuer: "abcd:2:did:web:gov.example"))
+        XCTAssertEqual(a, .mismatch(displayed: "moh.gov.sg", rootCovered: "gov.example"))
+        XCTAssertTrue(a.isMismatch)
+    }
+
+    func test_comparison_ignores_case_and_a_trailing_dot() {
+        let a = IssuerIdentity.assertDomain(doc(displayedDomain: "GOV.Example.", dataIssuer: "abcd:2:did:web:gov.example"))
+        XCTAssertEqual(a, .match(domain: "gov.example"))
+    }
+
+    /// A document with no root-covered DID is NOT a pass and NOT a forgery — it is un-assertable.
+    func test_a_document_without_the_leaf_is_not_assertable_and_not_a_pass() {
+        let a = IssuerIdentity.assertDomain(doc(displayedDomain: "gov.example", dataIssuer: nil))
+        XCTAssertEqual(a, .notAssertable)
+        XCTAssertFalse(a.isMismatch)
+        if case .match = a { XCTFail("notAssertable must never read as a pass") }
+    }
+
+    func test_a_bare_unpacked_did_is_still_read() {
+        let a = IssuerIdentity.assertDomain(doc(displayedDomain: "gov.example", dataIssuer: "did:web:gov.example"))
+        XCTAssertEqual(a, .match(domain: "gov.example"))
+    }
+
+    func test_the_leaf_is_read_from_credential_subject_too() {
+        var data: [String: Any] = ["credentialSubject": ["name": "s:0:Max", "issuer": "abcd:2:did:web:gov.example"]]
+        let root: [String: Any] = [
+            "version": "1.0", "data": data,
+            "signature": ["type": "t", "targetHash": "0x00", "proof": [], "merkleRoot": "0x00"],
+            "privacy": ["obfuscated": []],
+            "issuer": ["name": "X", "domain": "gov.example", "documentStore": clone, "recordType": "T"],
+        ]
+        data = [:]
+        let json = String(data: try! JSONSerialization.data(withJSONObject: root), encoding: .utf8)!
+        XCTAssertEqual(IssuerIdentity.assertDomain(WrappedDoc(json: json)), .match(domain: "gov.example"))
+    }
 }
