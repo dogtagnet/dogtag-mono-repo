@@ -12,7 +12,6 @@ use crate::store::Store;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub rpc_url: String,
-    pub chain_id: u64,
 
     // Watched contracts (lowercase `0x…`).
     pub factory_addr: String,

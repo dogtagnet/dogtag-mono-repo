@@ -33,7 +33,6 @@ fn b32(seed: u8) -> String {
 fn cfg() -> Config {
     Config {
         rpc_url: "mem://".into(),
-        chain_id: 135,
         factory_addr: FACTORY.to_ascii_lowercase(),
         registry_addr: REGISTRY.to_ascii_lowercase(),
         verification_registry_consent_addr: VREG.to_ascii_lowercase(),
@@ -212,10 +211,22 @@ async fn filters_and_stats_and_auth() {
     let (st, _) = get(&state, "/v1/events", Some("nope")).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 
-    // health is open
+    // health is open - and HONEST that this whole fixture is a simulated source.
+    //
+    // This assertion previously read `body["chainId"] == 135`, which encoded the defect: this state is
+    // built on a `MemLogSource` whose blocks, roots and tx hashes are scripted, yet it inherited the
+    // configured real ROAX id and was byte-identical to a live indexer's `/health`. A simulated source
+    // now says so. See `tests/simulated_disclosure.rs` for the full contract.
     let (st, body) = get(&state, "/health", None).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(body["chainId"], 135);
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["simulated"], true);
+    assert_eq!(body["backend"], "simulated");
+    assert!(
+        body["chainId"].is_null(),
+        "a simulated source must not report a real chainId, got {}",
+        body["chainId"]
+    );
 }
 
 #[tokio::test]

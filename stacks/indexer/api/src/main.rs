@@ -58,7 +58,6 @@ async fn main() {
 
     let cfg = Config {
         rpc_url: rpc_url.clone(),
-        chain_id,
         factory_addr: lc(env("FACTORY_ADDR", DEFAULT_FACTORY)),
         registry_addr: lc(env("ISSUER_REGISTRY_ADDR", DEFAULT_REGISTRY)),
         verification_registry_consent_addr: lc(env(
