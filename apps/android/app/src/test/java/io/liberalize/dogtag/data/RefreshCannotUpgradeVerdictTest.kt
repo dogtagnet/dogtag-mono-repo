@@ -48,7 +48,8 @@ class RefreshCannotUpgradeVerdictTest {
         dogTagSbt = "0xsbt",
         issuerRegistry = "0xreg",
         protocolRegistry = "0xproto",
-        dogTagIssuerFactory = "0xfactory",
+        issuerFactory = "0xfactory",
+        issuerDomainRegistry = "0xdomainregistry",
     )
 
     /**

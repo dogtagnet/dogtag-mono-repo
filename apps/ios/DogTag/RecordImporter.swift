@@ -176,7 +176,7 @@ enum IssuerWhitelist {
         } else {
             resolved = await RoaxRpc.issuerWhitelistPillar(
                 rpcUrl: rpcUrl, issuerRegistry: roax.issuerRegistry,
-                issuerFactory: roax.dogTagIssuerFactory,
+                issuerFactory: roax.issuerFactory,
                 documentStore: documentStore, root: root, recordType: recordType)
         }
         return fold(verdict, reason, resolved)

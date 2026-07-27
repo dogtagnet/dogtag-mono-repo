@@ -117,7 +117,6 @@ enum RoaxRpc {
     private static let isCloneSelector = functionSelector("isClone(address)")
     private static let domainOfSelector = functionSelector("domainOf(address)")
     private static let issuerNameSelector = functionSelector("name()")
-    private static let rootIssuerSelector = functionSelector("rootIssuer(bytes32)")
 
     /// Reading a dynamic `string` return has THREE outcomes, and collapsing any two of them is how a
     /// fail-open gets reintroduced:
@@ -342,25 +341,6 @@ enum RoaxRpc {
     private static let rootIssuerSelector = functionSelector("rootIssuer(bytes32)")
     private static let recordTypeSelector = functionSelector("recordType()")
 
-    /// `DogTagIssuerFactory.rootIssuer(root)` → the clone that actually issued this root. `.unset`
-    /// when no clone of this factory ever did (the on-chain zero address), `.unresolved` when the read
-    /// did not answer.
-    ///
-    /// This is the anchor the issuer pillar hangs from. `registerRoot` is called only from inside a
-    /// clone's `issue()` and is `require(isClone[msg.sender])` + strictly write-once, so a contract
-    /// the factory never deployed can never appear here and a genuine root's issuer can never be
-    /// overwritten. Selector DERIVED from the signature, never a constant (see `isValidSelector`).
-    static func rootIssuer(rpcUrl: String, factory: String, root: String) async -> HexRead {
-        guard !factory.isEmpty, !root.isEmpty else { return .unresolved("missing factory/root") }
-        let data = rootIssuerSelector + pad32(root)
-        switch await ethCall(rpcUrl: rpcUrl, to: factory, data: data) {
-        case let .success(hex):
-            guard hex.count >= 40 else { return .unresolved("the factory returned no address") }
-            guard hex.contains(where: { $0 != "0" }) else { return .unset }
-            return .found("0x" + hex.suffix(40).lowercased())
-        case let .failure(reason): return .unresolved(reason)
-        }
-    }
 
     /// `DogTagIssuer.recordType()` → the clone's own immutable record-type key. `.unset` when the
     /// contract reports the zero word (uninitialized / not a clone), `.unresolved` when the read did
@@ -409,11 +389,14 @@ enum RoaxRpc {
         guard !recordType.isEmpty else { return .unknown("document declares no recordType") }
         let claimedStore = documentStore.trimmingCharacters(in: .whitespaces)
         guard !claimedStore.isEmpty else { return .unknown("document names no issuer contract") }
+        // Uses the SAME factory read the issuer-domain binding uses, so both features agree on which
+        // contract issued a root. `.noRecord` (the factory answered, and has none) and `.failure` (we
+        // could not ask) stay distinct: neither is a pass, but only one is evidence.
         let clone: String
-        switch await rootIssuer(rpcUrl: rpcUrl, factory: issuerFactory, root: root) {
-        case let .found(addr): clone = addr
-        case .unset: return .unknown("no factory clone ever issued this root")
-        case let .unresolved(r): return .unknown("could not read the factory's issuer index (\(r))")
+        switch await rootIssuer(rpcUrl: rpcUrl, factory: issuerFactory, root: root, atBlock: nil) {
+        case let .value(addr): clone = addr
+        case .noRecord: return .unknown("no factory clone ever issued this root")
+        case let .failure(r): return .unknown("could not read the factory's issuer index (\(r))")
         }
         // The envelope points somewhere other than the contract that actually issued the root: a
         // definite misrepresentation, refused before the registry is consulted.

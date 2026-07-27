@@ -233,7 +233,7 @@ object IssuerWhitelist {
         pillar: RoaxRpc.Result? = null,
     ): Pair<String, String> {
         val resolved = pillar ?: RoaxRpc.issuerWhitelistPillar(
-            rpcUrl, roax.issuerRegistry, roax.dogTagIssuerFactory, documentStore, root, recordType,
+            rpcUrl, roax.issuerRegistry, roax.issuerFactory, documentStore, root, recordType,
         )
         return fold(verdict, reason, resolved)
     }

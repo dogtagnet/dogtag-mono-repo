@@ -34,7 +34,6 @@ object RoaxRpc {
      */
     private val IS_VALID_SELECTOR = functionSelector("isValid(bytes32)")
     private val ISSUED_BY_SELECTOR = functionSelector("issuedBy(bytes32)")
-    private val ROOT_ISSUER_SELECTOR = functionSelector("rootIssuer(bytes32)")
     private val RECORD_TYPE_SELECTOR = functionSelector("recordType()")
     private val IS_WHITELISTED_FOR_SELECTOR = functionSelector("isWhitelistedFor(bytes32,address)")
     private val CONSUMED_SELECTOR = functionSelector("consumed(bytes32)")
@@ -181,27 +180,6 @@ object RoaxRpc {
         }
     }
 
-    /**
-     * `DogTagIssuerFactory.rootIssuer(root)` → the clone that actually issued this root.
-     * [HexRead.Unset] when no clone of this factory ever did (the on-chain zero address),
-     * [HexRead.Unresolved] when the read did not answer.
-     *
-     * This is the anchor the issuer pillar hangs from. `registerRoot` is called only from inside a
-     * clone's `issue()` and is `require(isClone[msg.sender])` + strictly write-once, so a contract the
-     * factory never deployed can never appear here and a genuine root's issuer can never be
-     * overwritten.
-     */
-    suspend fun rootIssuer(rpcUrl: String, factory: String, root: String): HexRead {
-        if (factory.isBlank() || root.isBlank()) return HexRead.Unresolved("missing factory/root")
-        val data = ROOT_ISSUER_SELECTOR + pad32(root)
-        return when (val r = ethCall(rpcUrl, factory, data)) {
-            is CallResult.Ok ->
-                if (r.hex.length < 40) HexRead.Unresolved("the factory returned no address")
-                else if (r.hex.trimStart('0').isEmpty()) HexRead.Unset
-                else HexRead.Found("0x" + r.hex.takeLast(40).lowercase())
-            is CallResult.Err -> HexRead.Unresolved(r.reason)
-        }
-    }
 
     /**
      * `DogTagIssuer.recordType()` → the clone's own immutable record-type key. [HexRead.Unset] when
@@ -267,10 +245,13 @@ object RoaxRpc {
         if (recordType.isBlank()) return Result.Unknown("document declares no recordType")
         val claimedStore = documentStore.trim()
         if (claimedStore.isBlank()) return Result.Unknown("document names no issuer contract")
-        val clone = when (val r = rootIssuer(rpcUrl, issuerFactory, root)) {
-            is HexRead.Found -> r.hex
-            is HexRead.Unset -> return Result.Unknown("no factory clone ever issued this root")
-            is HexRead.Unresolved ->
+        // Uses the SAME factory read the issuer-domain binding uses, so both features agree on which
+        // contract issued a root. `NoRecord` (the factory answered, and has none) and `Failure` (we
+        // could not ask) are kept distinct: neither is a pass, but only one is evidence.
+        val clone = when (val r = rootIssuer(rpcUrl, issuerFactory, root, null)) {
+            is AddressRead.Value -> r.address
+            is AddressRead.NoRecord -> return Result.Unknown("no factory clone ever issued this root")
+            is AddressRead.Failure ->
                 return Result.Unknown("could not read the factory's issuer index (${r.reason})")
         }
         // The envelope points somewhere other than the contract that actually issued the root: a
