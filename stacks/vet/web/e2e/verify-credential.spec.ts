@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Request, type Route } from "@playwright/test";
 import { TypeTag, wrapDocument, type IssuerMeta, type WrappedDoc } from "@dogtag/standard";
+import { keccak256, toBytes } from "viem";
 
 /**
  * E2E for the permissionless, direct-to-RPC credential verify panel (fm/dogtag-webverify-n3).
@@ -7,9 +8,15 @@ import { TypeTag, wrapDocument, type IssuerMeta, type WrappedDoc } from "@dogtag
  * Proves the decoupling: when the operator clicks "Verify credential", the browser reads the ROAX
  * chain DIRECTLY (viem `eth_call` over the public RPC) and classifies the credential itself - the
  * operator-gated `POST /verify/credential` relay is never called. We drive the REAL `Verify` page and
- * REAL `@dogtag/ui` `CredentialVerifyPanel`; only the four on-chain `view` reads are mocked (by their
+ * REAL `@dogtag/ui` `CredentialVerifyPanel`; only the on-chain `view` reads are mocked (by their
  * 4-byte selector) so the valid/revoked/whitelist verdicts render deterministically without a live
  * anchored credential. Integrity is the genuine offline `@dogtag/standard` recompute (real doc).
+ *
+ * The fake must ANCHOR THE CLONE THROUGH THE FACTORY, exactly as the shipped path does: the issuing
+ * clone comes from `DogTagIssuerFactory.rootIssuer(root)`, and the record type from that clone's own
+ * `recordType()`. A fake that only answered the per-clone reads would model the pre-audit world in
+ * which the document's own `documentStore` gets to say whether it is valid - the forgery the
+ * mandatory issuer-whitelist pillar exists to close.
  */
 
 const OP_TOKEN_KEY = "vet.opToken";
@@ -17,9 +24,12 @@ const OP_TOKEN_KEY = "vet.opToken";
 // Function selectors the shipped web ABI produces (contracts.ts). Note isValid == 0x6a938567, the
 // server's selector - NOT the mobile hard-coded 0x6d04f0bc (which reverts on the live deployment).
 const SEL = {
+  rootIssuer: "0x41e41d17",
+  recordType: "0xe55e492c",
   isValid: "0x6a938567",
   isRevoked: "0x4294857f",
   issuedAt: "0x6240dded",
+  issuedBy: "0xe0d272c0",
   isWhitelistedFor: "0x779c3985",
 } as const;
 
@@ -29,7 +39,16 @@ const ISSUER: IssuerMeta = {
   documentStore: "0x0000000000000000000000000000000000000001",
   recordType: "VACCINATION",
 };
+/** The address the chain reports as this root's originator - resolved, never typed by the operator. */
 const SIGNER = "0xabc0000000000000000000000000000000000abc";
+/**
+ * What the issuing clone's own `recordType()` returns. DERIVED from the envelope's claim rather than
+ * pinned, because the pillar compares the two: a hardcoded key that drifted from `ISSUER.recordType`
+ * would silently turn every case into a relabelling failure instead of the scenario under test.
+ */
+const CHAIN_RECORD_TYPE_KEY = keccak256(toBytes(ISSUER.recordType));
+/** `rootIssuer` for a root no factory clone ever issued - the indeterminate case. */
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 /** Deterministic-salt wrapped doc so integrity reconciles to a stable claimed root every run. */
 function validDoc(): WrappedDoc {
@@ -49,16 +68,23 @@ function validDoc(): WrappedDoc {
 
 const boolWord = (b: boolean) => "0x" + (b ? "1" : "0").padStart(64, "0");
 const uintWord = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
+const addressWord = (a: string) => "0x" + a.replace(/^0x/, "").toLowerCase().padStart(64, "0");
 
 interface ChainState {
+  /** DogTagIssuerFactory.rootIssuer(root) - the clone every other read below is made against. */
+  rootIssuer: string;
+  /** The clone's own immutable recordType() key; keccak256("VACCINATION") for the fixture doc. */
+  recordType: string;
   issuedAt: bigint;
   isValid: boolean;
   isRevoked: boolean;
+  /** DogTagIssuer.issuedBy(root) - the H-1 originator the whitelist pillar resolves for itself. */
+  issuedBy: string;
   isWhitelistedFor: boolean;
 }
 
 /**
- * Intercept the ROAX public RPC and answer the four verify reads by selector. Every other JSON-RPC
+ * Intercept the ROAX public RPC and answer the verify reads by selector. Every other JSON-RPC
  * method (eth_chainId, wagmi bootstrap calls) is answered benignly so the app still boots. Returns a
  * mutable list of every URL the page requested, so the test can assert the operator relay was NOT hit.
  */
@@ -72,9 +98,12 @@ async function mockRoaxRpc(page: Page, state: ChainState): Promise<string[]> {
     if (msg.method === "eth_call") {
       const data = String((msg.params?.[0] as { data?: string } | undefined)?.data ?? "");
       const sel = data.slice(0, 10);
+      if (sel === SEL.rootIssuer) return answer(msg.id, addressWord(state.rootIssuer));
+      if (sel === SEL.recordType) return answer(msg.id, state.recordType);
       if (sel === SEL.isValid) return answer(msg.id, boolWord(state.isValid));
       if (sel === SEL.isRevoked) return answer(msg.id, boolWord(state.isRevoked));
       if (sel === SEL.issuedAt) return answer(msg.id, uintWord(state.issuedAt));
+      if (sel === SEL.issuedBy) return answer(msg.id, addressWord(state.issuedBy));
       if (sel === SEL.isWhitelistedFor) return answer(msg.id, boolWord(state.isWhitelistedFor));
       return answer(msg.id, boolWord(false));
     }
@@ -97,7 +126,25 @@ test.beforeEach(async ({ page }) => {
   ]);
 });
 
-async function openVerifyAndSubmit(page: Page, doc: WrappedDoc, signer?: string) {
+/**
+ * A genuinely anchored credential: the factory names the very clone the envelope claims, that clone
+ * reports the record type the envelope claims, and its originator is whitelisted. Each test overrides
+ * only the one fact it is about.
+ */
+function anchoredChain(over: Partial<ChainState> = {}): ChainState {
+  return {
+    rootIssuer: ISSUER.documentStore,
+    recordType: CHAIN_RECORD_TYPE_KEY,
+    issuedAt: 1_699_000_000n,
+    isValid: true,
+    isRevoked: false,
+    issuedBy: SIGNER,
+    isWhitelistedFor: true,
+    ...over,
+  };
+}
+
+async function openVerifyAndSubmit(page: Page, doc: WrappedDoc) {
   await page.goto("/verify");
   await expect(page.getByText("Check credential status")).toBeVisible();
   // The new permissionless copy ships on the real surface.
@@ -105,9 +152,15 @@ async function openVerifyAndSubmit(page: Page, doc: WrappedDoc, signer?: string)
     page.getByText(/Permissionless - verified in-browser over the public RPC/i),
   ).toBeVisible();
 
+  // Deliberately no "Expected issuer signer": the whitelist pillar resolves its own signer from the
+  // chain, so every assertion below holds with zero operator input.
   await page.getByPlaceholder("Paste wrappedDoc JSON").fill(JSON.stringify(doc));
-  if (signer) await page.getByPlaceholder("0x... optional").fill(signer);
   await page.getByRole("button", { name: "Verify credential" }).click();
+}
+
+/** The value cell of a named pillar tile, so "Yes"/"No" is read off the pillar under test. */
+function pillar(page: Page, label: string) {
+  return page.getByText(label, { exact: true }).locator("xpath=..");
 }
 
 function assertNoOperatorRelay(urls: string[]) {
@@ -125,19 +178,16 @@ function panelCard(page: Page) {
 test("valid credential: reads chain directly, renders Verdict pass / Valid, no operator relay", async ({
   page,
 }) => {
-  const urls = await mockRoaxRpc(page, {
-    issuedAt: 1_699_000_000n,
-    isValid: true,
-    isRevoked: false,
-    isWhitelistedFor: false,
-  });
+  const urls = await mockRoaxRpc(page, anchoredChain());
   const doc = validDoc();
   await openVerifyAndSubmit(page, doc);
 
   await expect(page.getByText("Verdict: pass")).toBeVisible();
   await expect(page.getByText("Valid", { exact: true })).toBeVisible();
-  // Integrity + on-chain + issued pillars all pass; revoked shows No; whitelist "Not checked" (no signer).
-  await expect(page.getByText("Not checked")).toBeVisible();
+  // The whitelist pillar is answered - not skipped - even though the operator typed no signer: it
+  // resolved the originator from `issuedBy` itself. That self-resolution is what makes it mandatory.
+  await expect(pillar(page, "Issuer whitelist")).toHaveText(/Yes$/);
+  await expect(page.getByText(new RegExp(`^${SIGNER}$`, "i"))).toBeVisible();
 
   // The claimed root the panel read on-chain equals the doc's signature root (and the recompute).
   await expect(page.getByText(doc.signature.merkleRoot).first()).toBeVisible();
@@ -150,12 +200,7 @@ test("valid credential: reads chain directly, renders Verdict pass / Valid, no o
 });
 
 test("revoked credential: renders Verdict fail / Revoked", async ({ page }) => {
-  const urls = await mockRoaxRpc(page, {
-    issuedAt: 1_699_000_000n,
-    isValid: false,
-    isRevoked: true,
-    isWhitelistedFor: false,
-  });
+  const urls = await mockRoaxRpc(page, anchoredChain({ isValid: false, isRevoked: true }));
   await openVerifyAndSubmit(page, validDoc());
 
   await expect(page.getByText("Verdict: fail")).toBeVisible();
@@ -166,21 +211,36 @@ test("revoked credential: renders Verdict fail / Revoked", async ({ page }) => {
   await panelCard(page).screenshot({ path: "e2e-artifacts/verify-revoked.png" });
 });
 
-test("whitelist pillar gates the verdict: valid on-chain but non-whitelisted signer fails", async ({
+test("whitelist pillar gates the verdict: valid on-chain but non-whitelisted issuer fails", async ({
   page,
 }) => {
-  const urls = await mockRoaxRpc(page, {
-    issuedAt: 1_699_000_000n,
-    isValid: true,
-    isRevoked: false,
-    isWhitelistedFor: false,
-  });
-  await openVerifyAndSubmit(page, validDoc(), SIGNER);
+  const urls = await mockRoaxRpc(page, anchoredChain({ isWhitelistedFor: false }));
+  await openVerifyAndSubmit(page, validDoc());
 
-  // Status is valid (chain state) but the verdict fails because the issuer signer is not whitelisted.
+  // The record is valid on-chain, yet the credential fails: the address that actually issued this
+  // root is not whitelisted for the record type the clone reports. No operator input was needed to
+  // reach that verdict, which is the point - the pillar can no longer be left unrun.
   await expect(page.getByText("Valid", { exact: true })).toBeVisible();
   await expect(page.getByText("Verdict: fail")).toBeVisible();
+  await expect(pillar(page, "Issuer whitelist")).toHaveText(/No$/);
 
   assertNoOperatorRelay(urls);
   await panelCard(page).screenshot({ path: "e2e-artifacts/verify-whitelist-fail.png" });
+});
+
+test("unresolvable issuer renders Unresolved and fails closed, never a silent pass", async ({
+  page,
+}) => {
+  // No factory clone ever issued this root, so there is nobody to ask. The audit defect was exactly
+  // this shape - an unanswered check counted as a passed one - so the pillar must render as a
+  // FAILURE to establish the claim, not as a neutral step that was skipped.
+  const urls = await mockRoaxRpc(page, anchoredChain({ rootIssuer: ZERO_ADDRESS }));
+  await openVerifyAndSubmit(page, validDoc());
+
+  await expect(page.getByText("Verdict: fail")).toBeVisible();
+  await expect(page.getByText("Not issued", { exact: true })).toBeVisible();
+  await expect(pillar(page, "Issuer whitelist")).toHaveText(/Unresolved$/);
+
+  assertNoOperatorRelay(urls);
+  await panelCard(page).screenshot({ path: "e2e-artifacts/verify-unresolved-issuer.png" });
 });
