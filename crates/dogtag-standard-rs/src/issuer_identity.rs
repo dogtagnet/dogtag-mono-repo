@@ -35,7 +35,10 @@ pub enum IssuerDomainAssertion {
     Match { domain: String },
     /// Both present and DIFFERENT. This is positive evidence the document's issuer block was
     /// relabelled after issuance — the displayed authority is fabricated.
-    Mismatch { displayed: String, root_covered: String },
+    Mismatch {
+        displayed: String,
+        root_covered: String,
+    },
     /// The document carries no root-covered issuer DID (or no displayed domain), so the two cannot be
     /// compared.
     ///
@@ -94,7 +97,11 @@ pub fn root_covered_issuer_did(doc: &WrappedDoc) -> Option<String> {
         Some(Value::String(s)) => s.clone(),
         // Some producers nest the identity under credentialSubject; accept either shape rather than
         // silently reporting NotAssertable for a document that does carry the leaf.
-        _ => match doc.data.get("credentialSubject").and_then(|c| c.get("issuer")) {
+        _ => match doc
+            .data
+            .get("credentialSubject")
+            .and_then(|c| c.get("issuer"))
+        {
             Some(Value::String(s)) => s.clone(),
             _ => return None,
         },
@@ -118,7 +125,9 @@ pub fn assert_issuer_domain(doc: &WrappedDoc) -> IssuerDomainAssertion {
         .trim_end_matches('.')
         .to_ascii_lowercase();
 
-    let did_host = root_covered_issuer_did(doc).as_deref().and_then(did_web_host);
+    let did_host = root_covered_issuer_did(doc)
+        .as_deref()
+        .and_then(did_web_host);
 
     match (displayed.is_empty(), did_host) {
         (false, Some(root)) if root == displayed => IssuerDomainAssertion::Match { domain: root },
@@ -203,7 +212,10 @@ mod tests {
     #[test]
     fn a_document_without_the_root_covered_leaf_is_not_assertable_not_a_pass() {
         let d = doc_with("gov.example", None);
-        assert_eq!(assert_issuer_domain(&d), IssuerDomainAssertion::NotAssertable);
+        assert_eq!(
+            assert_issuer_domain(&d),
+            IssuerDomainAssertion::NotAssertable
+        );
         assert!(
             !assert_issuer_domain(&d).is_match(),
             "NotAssertable must never read as a pass"
@@ -217,13 +229,19 @@ mod tests {
     #[test]
     fn an_empty_displayed_domain_is_not_assertable() {
         let d = doc_with("", Some("abcd:2:did:web:gov.example"));
-        assert_eq!(assert_issuer_domain(&d), IssuerDomainAssertion::NotAssertable);
+        assert_eq!(
+            assert_issuer_domain(&d),
+            IssuerDomainAssertion::NotAssertable
+        );
     }
 
     #[test]
     fn a_non_did_web_identity_is_not_assertable() {
         let d = doc_with("gov.example", Some("abcd:2:did:key:z6Mk"));
-        assert_eq!(assert_issuer_domain(&d), IssuerDomainAssertion::NotAssertable);
+        assert_eq!(
+            assert_issuer_domain(&d),
+            IssuerDomainAssertion::NotAssertable
+        );
     }
 
     #[test]
@@ -235,7 +253,10 @@ mod tests {
 
     #[test]
     fn did_web_host_drops_path_segments_and_ports() {
-        assert_eq!(did_web_host("did:web:example.com").as_deref(), Some("example.com"));
+        assert_eq!(
+            did_web_host("did:web:example.com").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(
             did_web_host("did:web:example.com:dept:vet").as_deref(),
             Some("example.com")
@@ -244,9 +265,16 @@ mod tests {
             did_web_host("did:web:example.com%3A8443").as_deref(),
             Some("example.com")
         );
-        assert_eq!(did_web_host("did:web:EXAMPLE.com").as_deref(), Some("example.com"));
+        assert_eq!(
+            did_web_host("did:web:EXAMPLE.com").as_deref(),
+            Some("example.com")
+        );
         assert_eq!(did_web_host("did:key:z6Mk"), None);
-        assert_eq!(did_web_host("did:web:localhost"), None, "a single label is not a domain");
+        assert_eq!(
+            did_web_host("did:web:localhost"),
+            None,
+            "a single label is not a domain"
+        );
         assert_eq!(did_web_host("not a did"), None);
     }
 
@@ -260,7 +288,10 @@ mod tests {
     #[test]
     fn wire_tags_are_stable_and_distinct() {
         assert_eq!(
-            IssuerDomainAssertion::Match { domain: "x.io".into() }.as_str(),
+            IssuerDomainAssertion::Match {
+                domain: "x.io".into()
+            }
+            .as_str(),
             "match"
         );
         assert_eq!(
@@ -271,6 +302,9 @@ mod tests {
             .as_str(),
             "mismatch"
         );
-        assert_eq!(IssuerDomainAssertion::NotAssertable.as_str(), "notAssertable");
+        assert_eq!(
+            IssuerDomainAssertion::NotAssertable.as_str(),
+            "notAssertable"
+        );
     }
 }

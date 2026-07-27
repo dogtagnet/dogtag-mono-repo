@@ -156,7 +156,14 @@ pub fn check_integrity(doc: &WrappedDoc) -> (FragmentState, Fr) {
     // invariant forbids trusting a permissive commutative fold in the trust path — so a non-empty
     // proof is rejected outright rather than folded (see merkle::process_proof, DSDP plan §2.3).
     let ok = doc.signature.proof.is_empty() && merkle_root == target_hash;
-    (if ok { FragmentState::Valid } else { FragmentState::Invalid }, root)
+    (
+        if ok {
+            FragmentState::Valid
+        } else {
+            FragmentState::Invalid
+        },
+        root,
+    )
 }
 
 /// Extract the cleartext dogTagId value (the packed value after `salt:tag:`).
@@ -197,7 +204,9 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
                 .rpc
                 .issued_by(&doc.issuer.document_store, &doc.signature.merkle_root)
             {
-                Ok(onchain) if onchain.eq_ignore_ascii_case(&p.issuer_signer) => FragmentState::Valid,
+                Ok(onchain) if onchain.eq_ignore_ascii_case(&p.issuer_signer) => {
+                    FragmentState::Valid
+                }
                 Ok(_) => FragmentState::Invalid,
                 Err(_) => FragmentState::Valid,
             }
@@ -382,7 +391,9 @@ mod tests {
             self.is_valid_res.map_err(|_| AdapterError("rpc".into()))
         }
         fn owner_of(&self, _id: &str) -> Result<String, AdapterError> {
-            self.owner_res.clone().map_err(|_| AdapterError("rpc".into()))
+            self.owner_res
+                .clone()
+                .map_err(|_| AdapterError("rpc".into()))
         }
     }
 
@@ -411,7 +422,10 @@ mod tests {
     #[test]
     fn self_import_all_pillars_valid() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -431,7 +445,10 @@ mod tests {
     #[test]
     fn self_import_owner_mismatch_gates_validity() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -448,7 +465,10 @@ mod tests {
     #[test]
     fn self_import_owner_lookup_error_is_error_not_invalid() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Err(()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Err(()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -465,7 +485,10 @@ mod tests {
     #[test]
     fn third_party_without_wallet_is_not_applicable_and_does_not_gate() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -482,7 +505,10 @@ mod tests {
     #[test]
     fn third_party_owner_mismatch_does_not_gate_validity() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -499,7 +525,10 @@ mod tests {
     #[test]
     fn issuance_false_makes_invalid() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(false), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(false),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -516,7 +545,10 @@ mod tests {
     #[test]
     fn issuance_adapter_error_is_error_state() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Err(()), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Err(()),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -533,7 +565,10 @@ mod tests {
     #[test]
     fn identity_requires_both_txt_and_registry() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        };
         // TXT matches but registry does not know -> Invalid (not Error)
         let opts = VerifyOpts {
             rpc: &rpc,
@@ -551,7 +586,10 @@ mod tests {
     #[test]
     fn identity_adapter_error_is_error_state() {
         let doc = good_doc();
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Err(())), // transient DNS failure
@@ -572,8 +610,14 @@ mod tests {
         let subj = doc.data["credentialSubject"].as_object_mut().unwrap();
         let packed = subj["name"].as_str().unwrap();
         let parts: Vec<&str> = packed.splitn(3, ':').collect();
-        subj.insert("name".to_string(), Value::String(format!("{}:{}:Max", parts[0], parts[1])));
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) };
+        subj.insert(
+            "name".to_string(),
+            Value::String(format!("{}:{}:Max", parts[0], parts[1])),
+        );
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        };
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -650,7 +694,10 @@ mod tests {
     fn provenance_matching_issuer_signer_verifies() {
         let mut doc = good_doc();
         doc.protocol = Some(protocol_block(SIGNER)); // claim == on-chain issuedBy[R]
-        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let rpc = MockRpcSigner {
+            is_valid: true,
+            issued_by: SIGNER.to_string(),
+        };
         let v = verify(&doc, &provenance_opts(&rpc));
         assert_eq!(v.issuance, FragmentState::Valid);
         assert!(v.valid);
@@ -663,7 +710,10 @@ mod tests {
         // routing hint, never authority.
         let mut doc = good_doc();
         doc.protocol = Some(protocol_block("0x00000000000000000000000000000000deadbeef"));
-        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let rpc = MockRpcSigner {
+            is_valid: true,
+            issued_by: SIGNER.to_string(),
+        };
         let v = verify(&doc, &provenance_opts(&rpc));
         assert_eq!(v.issuance, FragmentState::Invalid);
         assert!(!v.valid);
@@ -675,7 +725,10 @@ mod tests {
         // the additive issuer-signer check is skipped entirely.
         let doc = good_doc(); // protocol == None
         assert!(doc.protocol.is_none());
-        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let rpc = MockRpcSigner {
+            is_valid: true,
+            issued_by: SIGNER.to_string(),
+        };
         let v = verify(&doc, &provenance_opts(&rpc));
         assert_eq!(v.issuance, FragmentState::Valid);
         assert!(v.valid);
@@ -687,7 +740,10 @@ mod tests {
         // skipped and base validity governs - a stamped block never regresses an unwired backend.
         let mut doc = good_doc();
         doc.protocol = Some(protocol_block("0xanything"));
-        let rpc = MockRpc { is_valid_res: Ok(true), owner_res: Ok(OWNER.to_string()) }; // no issued_by
+        let rpc = MockRpc {
+            is_valid_res: Ok(true),
+            owner_res: Ok(OWNER.to_string()),
+        }; // no issued_by
         let opts = VerifyOpts {
             rpc: &rpc,
             dns: &MockDns(Ok(true)),
@@ -708,7 +764,10 @@ mod tests {
         // reports invalid (is_valid == false) - the additive check only ever tightens.
         let mut doc = good_doc();
         doc.protocol = Some(protocol_block(SIGNER)); // claim == on-chain, yet base validity is false
-        let rpc = MockRpcSigner { is_valid: false, issued_by: SIGNER.to_string() };
+        let rpc = MockRpcSigner {
+            is_valid: false,
+            issued_by: SIGNER.to_string(),
+        };
         let v = verify(&doc, &provenance_opts(&rpc));
         assert_eq!(v.issuance, FragmentState::Invalid);
         assert!(!v.valid);
@@ -721,12 +780,17 @@ mod tests {
         let subj = doc.data["credentialSubject"].as_object_mut().unwrap();
         let packed = subj["name"].as_str().unwrap();
         let parts: Vec<&str> = packed.splitn(3, ':').collect();
-        subj.insert("name".to_string(), Value::String(format!("{}:{}:Max", parts[0], parts[1])));
+        subj.insert(
+            "name".to_string(),
+            Value::String(format!("{}:{}:Max", parts[0], parts[1])),
+        );
         doc.protocol = Some(protocol_block(SIGNER));
-        let rpc = MockRpcSigner { is_valid: true, issued_by: SIGNER.to_string() };
+        let rpc = MockRpcSigner {
+            is_valid: true,
+            issued_by: SIGNER.to_string(),
+        };
         let v = verify(&doc, &provenance_opts(&rpc));
         assert_eq!(v.integrity, FragmentState::Invalid);
         assert!(!v.valid);
     }
-
 }

@@ -176,7 +176,10 @@ pub enum DiscoveryError {
     /// (R-5). A caller that stitched an anchor from a mismatched pair is refused rather than allowed to
     /// fetch artifacts under the wrong identity.
     #[error("anchor artifactSet {artifact_set:?} does not hash to its artifactSetId {artifact_set_id:?}")]
-    ArtifactSetIncoherent { artifact_set: String, artifact_set_id: String },
+    ArtifactSetIncoherent {
+        artifact_set: String,
+        artifact_set_id: String,
+    },
     /// The claimed chain id differs from the anchor — the platform cannot point the app at another chain.
     #[error("claimed chainId {claimed} does not match anchor chainId {anchor}")]
     ChainIdMismatch { claimed: u64, anchor: u64 },
@@ -191,7 +194,10 @@ pub enum DiscoveryError {
     /// deprecated contract set means the whole protocol version is retired, while a deprecated artifact
     /// set means only the proving artifacts were pulled and the trio is untouched.
     #[error("the {axis} of version {version:?} is deprecated (inactive) at the anchor")]
-    DeprecatedVersion { version: String, axis: DeprecatedAxis },
+    DeprecatedVersion {
+        version: String,
+        axis: DeprecatedAxis,
+    },
     /// The app build is older than the version's `minAppVersion` — refuse and route to update/owner-web.
     #[error("app build {build:?} is older than minAppVersion {min:?} for this version")]
     AppTooOld { build: String, min: String },
@@ -325,8 +331,12 @@ pub fn validate(
 
     // (6) minAppVersion (§5.3 step 5): refuse a build older than the anchor's floor. Numeric semver, and
     // fail-closed on any malformed input.
-    if compare_semver(ctx.app_version, "app_version", &anchor.min_app_version, "min_app_version")?
-        == std::cmp::Ordering::Less
+    if compare_semver(
+        ctx.app_version,
+        "app_version",
+        &anchor.min_app_version,
+        "min_app_version",
+    )? == std::cmp::Ordering::Less
     {
         return Err(DiscoveryError::AppTooOld {
             build: ctx.app_version.to_string(),
@@ -374,7 +384,10 @@ fn parse_semver(v: &str, which: &'static str) -> Result<[u64; 3], DiscoveryError
         value: v.to_string(),
     };
     let core = v.trim();
-    let core = core.strip_prefix('v').or_else(|| core.strip_prefix('V')).unwrap_or(core);
+    let core = core
+        .strip_prefix('v')
+        .or_else(|| core.strip_prefix('V'))
+        .unwrap_or(core);
     // Drop everything from the first `-` (prerelease) or `+` (build metadata); the numeric core alone is
     // compared. An input that is ONLY a suffix (`-rc1`) leaves an empty core and fails closed below.
     let core = match core.find(['-', '+']) {
@@ -453,7 +466,10 @@ mod tests {
     }
 
     fn ctx<'a>() -> ClientContext<'a> {
-        ClientContext { app_version: "1.4.0", expected_purpose: PURPOSE }
+        ClientContext {
+            app_version: "1.4.0",
+            expected_purpose: PURPOSE,
+        }
     }
 
     /// The happy path: matching claims + a new-enough build validate, and the result carries the version
@@ -465,7 +481,10 @@ mod tests {
         assert_eq!(v.circuit_id, CIRCUIT);
         assert_eq!(v.chain_id, 135);
         assert_eq!(v.verification_registry, REGISTRY);
-        assert_eq!(v.artifact_set, ARTIFACTS, "the validated artifact axis is surfaced to the caller");
+        assert_eq!(
+            v.artifact_set, ARTIFACTS,
+            "the validated artifact axis is surfaced to the caller"
+        );
     }
 
     /// R-5 in the validator: an ARTIFACT rotation (new artifact set, raised app floor) validates on its
@@ -480,10 +499,17 @@ mod tests {
         rotated.artifact_set_id = version_id("dogtag-levelb-artifacts/2");
         rotated.min_app_version = "1.5.0".to_string();
 
-        let newer = ClientContext { app_version: "1.5.0", expected_purpose: PURPOSE };
-        let after = validate(&claims(), &rotated, &newer).expect("the rotated artifact set validates");
+        let newer = ClientContext {
+            app_version: "1.5.0",
+            expected_purpose: PURPOSE,
+        };
+        let after =
+            validate(&claims(), &rotated, &newer).expect("the rotated artifact set validates");
 
-        assert_eq!(after.artifact_set, "dogtag-levelb-artifacts/2", "the artifact axis moved");
+        assert_eq!(
+            after.artifact_set, "dogtag-levelb-artifacts/2",
+            "the artifact axis moved"
+        );
         // ...and nothing on the on-chain axis did.
         assert_eq!(after.version, before.version);
         assert_eq!(after.circuit_id, before.circuit_id);
@@ -545,7 +571,10 @@ mod tests {
         let mut c = claims();
         c.chain_id = 1;
         match validate(&c, &anchor(), &ctx()) {
-            Err(DiscoveryError::ChainIdMismatch { claimed: 1, anchor: 135 }) => {}
+            Err(DiscoveryError::ChainIdMismatch {
+                claimed: 1,
+                anchor: 135,
+            }) => {}
             other => panic!("expected ChainIdMismatch, got {other:?}"),
         }
     }
@@ -555,7 +584,10 @@ mod tests {
     #[test]
     fn purpose_mismatch_fails_closed() {
         let c = claims(); // claims.purpose == GROOMING_INTAKE
-        let ctx = ClientContext { app_version: "1.4.0", expected_purpose: "AIRLINE_CHECKIN" };
+        let ctx = ClientContext {
+            app_version: "1.4.0",
+            expected_purpose: "AIRLINE_CHECKIN",
+        };
         match validate(&c, &anchor(), &ctx) {
             Err(DiscoveryError::PurposeMismatch { claimed, expected }) => {
                 assert_eq!(claimed, PURPOSE);
@@ -633,19 +665,28 @@ mod tests {
         let mut a = anchor();
         a.artifact_set_active = false;
         let msg = validate(&claims(), &a, &ctx()).unwrap_err().to_string();
-        assert!(msg.contains("proving-artifact set"), "artifact axis must be named: {msg}");
+        assert!(
+            msg.contains("proving-artifact set"),
+            "artifact axis must be named: {msg}"
+        );
 
         let mut b = anchor();
         b.contract_set_active = false;
         let msg_b = validate(&claims(), &b, &ctx()).unwrap_err().to_string();
-        assert!(msg_b.contains("on-chain contract set"), "contract axis must be named: {msg_b}");
+        assert!(
+            msg_b.contains("on-chain contract set"),
+            "contract axis must be named: {msg_b}"
+        );
         assert_ne!(msg, msg_b, "the two axes must not render identically");
     }
 
     /// A build older than `minAppVersion` FAILS CLOSED (refuse + route to update/owner-web, §5.3 step 5).
     #[test]
     fn app_older_than_min_fails_closed() {
-        let ctx = ClientContext { app_version: "1.3.9", expected_purpose: PURPOSE };
+        let ctx = ClientContext {
+            app_version: "1.3.9",
+            expected_purpose: PURPOSE,
+        };
         match validate(&claims(), &anchor(), &ctx) {
             Err(DiscoveryError::AppTooOld { build, min }) => {
                 assert_eq!(build, "1.3.9");
@@ -662,21 +703,36 @@ mod tests {
         // Build 1.10.0 against floor 1.9.0: numerically newer -> validates (string compare would fail).
         let mut a = anchor();
         a.min_app_version = "1.9.0".to_string();
-        let ctx = ClientContext { app_version: "1.10.0", expected_purpose: PURPOSE };
-        assert!(validate(&claims(), &a, &ctx).is_ok(), "1.10.0 must satisfy a 1.9.0 floor");
+        let ctx = ClientContext {
+            app_version: "1.10.0",
+            expected_purpose: PURPOSE,
+        };
+        assert!(
+            validate(&claims(), &a, &ctx).is_ok(),
+            "1.10.0 must satisfy a 1.9.0 floor"
+        );
 
         // The reverse is refused: build 1.9.0 against a 1.10.0 floor is too old.
         let mut a2 = anchor();
         a2.min_app_version = "1.10.0".to_string();
-        let ctx2 = ClientContext { app_version: "1.9.0", expected_purpose: PURPOSE };
+        let ctx2 = ClientContext {
+            app_version: "1.9.0",
+            expected_purpose: PURPOSE,
+        };
         assert!(matches!(
             validate(&claims(), &a2, &ctx2),
             Err(DiscoveryError::AppTooOld { .. })
         ));
 
         // A shorter build string is zero-extended: 1.4 == 1.4.0 meets the floor.
-        let ctx3 = ClientContext { app_version: "1.4", expected_purpose: PURPOSE };
-        assert!(validate(&claims(), &anchor(), &ctx3).is_ok(), "1.4 == 1.4.0 meets the floor");
+        let ctx3 = ClientContext {
+            app_version: "1.4",
+            expected_purpose: PURPOSE,
+        };
+        assert!(
+            validate(&claims(), &anchor(), &ctx3).is_ok(),
+            "1.4 == 1.4.0 meets the floor"
+        );
     }
 
     /// A real mobile build carries a prerelease/build suffix (`1.4.0-rc1`, `1.4.0+build.5`). Only the
@@ -685,7 +741,10 @@ mod tests {
     #[test]
     fn prerelease_and_build_metadata_compare_by_numeric_core() {
         for build in ["1.4.0-rc1", "1.4.0+build.5", "v1.4.0-rc.1+exp.sha.5114f85"] {
-            let ctx = ClientContext { app_version: build, expected_purpose: PURPOSE };
+            let ctx = ClientContext {
+                app_version: build,
+                expected_purpose: PURPOSE,
+            };
             assert!(
                 validate(&claims(), &anchor(), &ctx).is_ok(),
                 "{build} must satisfy a 1.4.0 floor"
@@ -693,24 +752,39 @@ mod tests {
         }
 
         // The suffix does not rescue a build that is numerically too old.
-        let ctx_old = ClientContext { app_version: "1.3.9-rc1", expected_purpose: PURPOSE };
+        let ctx_old = ClientContext {
+            app_version: "1.3.9-rc1",
+            expected_purpose: PURPOSE,
+        };
         assert!(matches!(
             validate(&claims(), &anchor(), &ctx_old),
             Err(DiscoveryError::AppTooOld { .. })
         ));
 
         // A non-numeric core is still refused, suffix or not.
-        let ctx_bad = ClientContext { app_version: "1.x.0-rc1", expected_purpose: PURPOSE };
+        let ctx_bad = ClientContext {
+            app_version: "1.x.0-rc1",
+            expected_purpose: PURPOSE,
+        };
         assert!(matches!(
             validate(&claims(), &anchor(), &ctx_bad),
-            Err(DiscoveryError::BadSemver { which: "app_version", .. })
+            Err(DiscoveryError::BadSemver {
+                which: "app_version",
+                ..
+            })
         ));
 
         // A suffix with NO numeric core leaves nothing to compare - fail closed.
-        let ctx_empty = ClientContext { app_version: "-rc1", expected_purpose: PURPOSE };
+        let ctx_empty = ClientContext {
+            app_version: "-rc1",
+            expected_purpose: PURPOSE,
+        };
         assert!(matches!(
             validate(&claims(), &anchor(), &ctx_empty),
-            Err(DiscoveryError::BadSemver { which: "app_version", .. })
+            Err(DiscoveryError::BadSemver {
+                which: "app_version",
+                ..
+            })
         ));
     }
 
@@ -718,17 +792,29 @@ mod tests {
     #[test]
     fn malformed_semver_fails_closed() {
         // Malformed BUILD version.
-        let ctx_bad = ClientContext { app_version: "1.x.0", expected_purpose: PURPOSE };
+        let ctx_bad = ClientContext {
+            app_version: "1.x.0",
+            expected_purpose: PURPOSE,
+        };
         assert!(matches!(
             validate(&claims(), &anchor(), &ctx_bad),
-            Err(DiscoveryError::BadSemver { which: "app_version", .. })
+            Err(DiscoveryError::BadSemver {
+                which: "app_version",
+                ..
+            })
         ));
 
         // Empty build version.
-        let ctx_empty = ClientContext { app_version: "", expected_purpose: PURPOSE };
+        let ctx_empty = ClientContext {
+            app_version: "",
+            expected_purpose: PURPOSE,
+        };
         assert!(matches!(
             validate(&claims(), &anchor(), &ctx_empty),
-            Err(DiscoveryError::BadSemver { which: "app_version", .. })
+            Err(DiscoveryError::BadSemver {
+                which: "app_version",
+                ..
+            })
         ));
 
         // Malformed ANCHOR floor.
@@ -736,7 +822,10 @@ mod tests {
         a.min_app_version = "1..0".to_string();
         assert!(matches!(
             validate(&claims(), &a, &ctx()),
-            Err(DiscoveryError::BadSemver { which: "min_app_version", .. })
+            Err(DiscoveryError::BadSemver {
+                which: "min_app_version",
+                ..
+            })
         ));
 
         // Too many components.
@@ -744,7 +833,10 @@ mod tests {
         a4.min_app_version = "1.4.0.1".to_string();
         assert!(matches!(
             validate(&claims(), &a4, &ctx()),
-            Err(DiscoveryError::BadSemver { which: "min_app_version", .. })
+            Err(DiscoveryError::BadSemver {
+                which: "min_app_version",
+                ..
+            })
         ));
     }
 

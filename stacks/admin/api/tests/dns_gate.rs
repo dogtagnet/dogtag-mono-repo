@@ -106,7 +106,10 @@ async fn an_absent_record_asks_for_confirmation_rather_than_refusing() {
     assert_eq!(b["dnsState"], "notListed");
     assert_eq!(b["domain"], "vet.example");
     assert!(
-        b["expectedTxt"].as_str().unwrap().starts_with("dogtag-verify="),
+        b["expectedTxt"]
+            .as_str()
+            .unwrap()
+            .starts_with("dogtag-verify="),
         "the prompt tells the admin exactly what the domain must publish: {b}"
     );
     assert_eq!(b["retryWith"]["proceedWithoutDns"], true);
@@ -114,7 +117,8 @@ async fn an_absent_record_asks_for_confirmation_rather_than_refusing() {
 
 #[tokio::test]
 async fn a_failed_lookup_asks_for_confirmation_and_names_itself_as_unreachable() {
-    let (s, b, _app, _admin) = approve_with(Arc::new(MockDnsChecker::could_not_check()), false).await;
+    let (s, b, _app, _admin) =
+        approve_with(Arc::new(MockDnsChecker::could_not_check()), false).await;
     assert_eq!(s, StatusCode::CONFLICT, "{b}");
     assert_eq!(
         b["dnsState"], "couldNotCheck",
@@ -143,7 +147,10 @@ async fn the_admin_may_proceed_and_whitelist_anyway() {
 async fn proceeding_records_an_immutable_trace_of_the_override() {
     let (s, b, app, admin) = approve_with(Arc::new(MockDnsChecker::not_published()), true).await;
     assert_eq!(s, StatusCode::OK, "{b}");
-    assert_eq!(b["dnsState"], "notListed", "the REAL observation, not a pass");
+    assert_eq!(
+        b["dnsState"], "notListed",
+        "the REAL observation, not a pass"
+    );
     assert_ne!(b["dnsState"], "verified");
     assert_eq!(b["dnsProceededUnverified"], true);
     assert!(
@@ -201,7 +208,8 @@ async fn the_latest_state_and_the_approval_time_state_are_separate_fields() {
 async fn the_three_outcomes_are_all_distinct_on_the_wire() {
     let (_s1, verified, _, _) = approve_with(Arc::new(MockDnsChecker::ok()), true).await;
     let (_s2, absent, _, _) = approve_with(Arc::new(MockDnsChecker::not_published()), true).await;
-    let (_s3, unknown, _, _) = approve_with(Arc::new(MockDnsChecker::could_not_check()), true).await;
+    let (_s3, unknown, _, _) =
+        approve_with(Arc::new(MockDnsChecker::could_not_check()), true).await;
 
     let seen = [
         verified["dnsState"].as_str().unwrap(),

@@ -123,7 +123,9 @@ fn raw_doc() -> Value {
 /// Anchor `root` on the emulated chain through the real `issue` write path, so `isValid` is genuinely
 /// true. The attack must be defeated against a REAL valid record, not a conveniently invalid one.
 async fn issue_root(chain: &MemChain, root: &str) {
-    let signer = chain.signer_address().expect("MemChain has an emulated signer");
+    let signer = chain
+        .signer_address()
+        .expect("MemChain has an emulated signer");
     chain.whitelist(
         "0x5d86e4cf98a34ae0576f190f8d209c2943a9c79c",
         &government_api::app::record_type_key("TRAVEL_CLEARANCE"),
@@ -144,7 +146,10 @@ async fn verify(app: &axum::Router, doc: Value) -> (StatusCode, Value) {
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// Seed the chain so the record is genuinely issued+valid and the clone carries its real name/domain.
@@ -222,7 +227,10 @@ async fn relabelled_name_only_is_exposed_and_never_displayed_as_the_issuer() {
     // The defence: the authoritative name comes from the clone, and the document's is flagged.
     assert_eq!(b["issuerIdentity"]["onchainName"], ONCHAIN_NAME);
     assert_eq!(b["issuerIdentity"]["onchainNameAvailable"], true);
-    assert_eq!(b["issuerIdentity"]["documentName"], "Ministry of Health of Singapore");
+    assert_eq!(
+        b["issuerIdentity"]["documentName"],
+        "Ministry of Health of Singapore"
+    );
     assert_eq!(
         b["issuerIdentity"]["documentNameDiffers"], true,
         "the fabricated name is reported as a discrepancy, not rendered as the issuer"
@@ -414,7 +422,12 @@ async fn the_binding_states_are_all_categorically_distinct() {
             chain.set_factory_clone(FACTORY, CLONE, false);
             let app = government_api::router(st);
             let (_s, b) = verify(&app, doc).await;
-            out.push(b["issuerDomainBinding"]["state"].as_str().unwrap().to_string());
+            out.push(
+                b["issuerDomainBinding"]["state"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
         }
         // link 1 holds, no claim
         {
@@ -425,7 +438,12 @@ async fn the_binding_states_are_all_categorically_distinct() {
             chain.set_factory_clone(FACTORY, CLONE, true);
             let app = government_api::router(st);
             let (_s, b) = verify(&app, doc).await;
-            out.push(b["issuerDomainBinding"]["state"].as_str().unwrap().to_string());
+            out.push(
+                b["issuerDomainBinding"]["state"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
         }
         // links 1+2 hold, DNS unreachable (no DoH endpoint configured in this harness)
         {
@@ -434,14 +452,26 @@ async fn the_binding_states_are_all_categorically_distinct() {
             seed(&chain, &doc).await;
             let app = government_api::router(st);
             let (_s, b) = verify(&app, doc).await;
-            out.push(b["issuerDomainBinding"]["state"].as_str().unwrap().to_string());
+            out.push(
+                b["issuerDomainBinding"]["state"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
         }
         out
     };
 
-    assert_eq!(observed, ["notADogTagIssuer", "noDomainClaimed", "couldNotCheck"]);
+    assert_eq!(
+        observed,
+        ["notADogTagIssuer", "noDomainClaimed", "couldNotCheck"]
+    );
     let unique: std::collections::HashSet<&String> = observed.iter().collect();
-    assert_eq!(unique.len(), 3, "no two failure modes may share a wire value");
+    assert_eq!(
+        unique.len(),
+        3,
+        "no two failure modes may share a wire value"
+    );
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -1670,7 +1670,9 @@ async fn whitelist_grant(
                         issuer_role_dispatched = Some(d);
                         rendered
                     }
-                    Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}")),
+                    Err(e) => {
+                        return err(StatusCode::BAD_GATEWAY, &format!("grantRole(ISSUER): {e}"))
+                    }
                 }
             }
             Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("hasRole(ISSUER): {e}")),
@@ -1811,13 +1813,23 @@ fn enrich_events(dir: &crate::directory::SignerDirectory, body: &mut Value) {
         return;
     };
     for ev in events.iter_mut() {
-        let Some(obj) = ev.as_object_mut() else { continue };
-        if let Some(actor) = obj.get("actor").and_then(|v| v.as_str()).map(str::to_string) {
+        let Some(obj) = ev.as_object_mut() else {
+            continue;
+        };
+        if let Some(actor) = obj
+            .get("actor")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        {
             if let Some(name) = dir.name(&actor) {
                 obj.insert("actorName".into(), json!(name));
             }
         }
-        if let Some(clone) = obj.get("clone").and_then(|v| v.as_str()).map(str::to_string) {
+        if let Some(clone) = obj
+            .get("clone")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        {
             if let Some(name) = dir.name(&clone) {
                 obj.insert("cloneName".into(), json!(name));
             }
@@ -1889,9 +1901,13 @@ async fn admin_activity_issuers(State(st): State<AppState>, headers: HeaderMap) 
             let dir = crate::directory::SignerDirectory::from_store(st.store.as_ref()).await;
             if let Some(list) = body.get_mut("issuers").and_then(|v| v.as_array_mut()) {
                 for it in list.iter_mut() {
-                    let Some(obj) = it.as_object_mut() else { continue };
-                    if let Some(clone) =
-                        obj.get("clone").and_then(|v| v.as_str()).map(str::to_string)
+                    let Some(obj) = it.as_object_mut() else {
+                        continue;
+                    };
+                    if let Some(clone) = obj
+                        .get("clone")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
                     {
                         if let Some(name) = dir.name(&clone) {
                             obj.insert("cloneName".into(), json!(name));

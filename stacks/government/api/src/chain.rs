@@ -444,7 +444,10 @@ impl ChainClient for AlloyChain {
         if let Some(b) = at_block {
             call = call.block(b.into());
         }
-        let r = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let r = call
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         if r._0 == Address::ZERO {
             return Ok(None);
         }
@@ -466,7 +469,10 @@ impl ChainClient for AlloyChain {
         if let Some(b) = at_block {
             call = call.block(b.into());
         }
-        let r = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let r = call
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
     async fn issuer_onchain_name(
@@ -484,7 +490,10 @@ impl ChainClient for AlloyChain {
         if let Some(b) = at_block {
             call = call.block(b.into());
         }
-        let r = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let r = call
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
     async fn issuer_claimed_domain(
@@ -503,7 +512,10 @@ impl ChainClient for AlloyChain {
         if let Some(blk) = at_block {
             call = call.block(blk.into());
         }
-        let b = call.call().await.map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let b = call
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
         // updatedAt == 0 is the contract's documented "no binding published" discriminator; an empty
         // domain is unrepresentable on-chain, so both checks agree.
         if b._0.updatedAt == 0 || b._0.domain.trim().is_empty() {
@@ -986,7 +998,8 @@ mod tests {
         ];
         let cc = ["7".to_string(), "8".to_string()];
         // pub[3] is the nullifier (frozen output order).
-        let pubs: [String; 7] = std::array::from_fn(|i| if i == 3 { "99".into() } else { "1".into() });
+        let pubs: [String; 7] =
+            std::array::from_fn(|i| if i == 3 { "99".into() } else { "1".into() });
         assert!(!c.is_consumed(registry, &format!("0x{:064x}", 99)));
         let tx = c
             .record_verification_zk_consent(registry, &a, &b, &cc, &pubs)
@@ -1017,7 +1030,8 @@ mod tests {
 
     #[test]
     fn alloychain_reports_live_and_gates_real_broadcast_on_a_signer() {
-        let live = AlloyChain::new("https://devrpc.roax.net".to_string()).with_chain_id(ROAX_CHAIN_ID);
+        let live =
+            AlloyChain::new("https://devrpc.roax.net".to_string()).with_chain_id(ROAX_CHAIN_ID);
         assert_eq!(live.backend(), ChainBackend::Live);
         assert!(!live.is_simulated());
         assert_eq!(live.chain_id(), ROAX_CHAIN_ID);

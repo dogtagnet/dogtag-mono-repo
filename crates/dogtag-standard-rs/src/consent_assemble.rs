@@ -238,7 +238,8 @@ pub fn assemble_consent(w: &ConsentWitness) -> Result<ConsentAssembledInputs, Ff
 /// STRINGS, the three sibling signals are decimal-string ARRAYS of length [`DEPTH`]. This is the seam
 /// the server `/prove-consent` proves against and the on-device path cross-checks.
 pub fn consent_circuit_input_value(inp: &ConsentAssembledInputs) -> Value {
-    let arr = |a: &[String; DEPTH]| Value::Array(a.iter().map(|s| Value::String(s.clone())).collect());
+    let arr =
+        |a: &[String; DEPTH]| Value::Array(a.iter().map(|s| Value::String(s.clone())).collect());
     serde_json::json!({
         "dogTagId": inp.dog_tag_id,
         "purpose": inp.purpose,
@@ -362,7 +363,10 @@ mod tests {
         let one = assemble_consent(&witness("1000000000000000001", &a)).unwrap();
         let two = assemble_consent(&witness("1000000000000000002", &a)).unwrap();
 
-        assert_ne!(one.dog_tag_id, two.dog_tag_id, "precondition: distinct tags");
+        assert_ne!(
+            one.dog_tag_id, two.dog_tag_id,
+            "precondition: distinct tags"
+        );
         assert_ne!(one.ax, two.ax, "assembled Ax must differ per tag");
         assert_ne!(one.ay, two.ay, "assembled Ay must differ per tag");
         assert_ne!(one.root, two.root, "R must differ per tag");
@@ -371,8 +375,7 @@ mod tests {
     #[test]
     fn canonical_field_is_used_across_circuit_input_kdf_and_mint_id() {
         let a = attrs();
-        let dog_tag_id_field =
-            field_of_value(&TypedScalar::Integer(HANDLE.to_string())).unwrap();
+        let dog_tag_id_field = field_of_value(&TypedScalar::Integer(HANDLE.to_string())).unwrap();
         // (b) the KDF binding: a tree built with the canonical field.
         let tree = build_profile_tree(SEED, dog_tag_id_field, &addr(), &a).unwrap();
 
@@ -383,7 +386,10 @@ mod tests {
         // (c) on-chain mint id == the SAME canonical field.
         assert_eq!(inp.dog_tag_id_field, dog_tag_id_field);
         // R the proof binds == the tree root the SBT seals as profileRoot(dogTagId).
-        assert_eq!(inp.root, tree.root, "assembled R must equal the KDF-bound profileRoot");
+        assert_eq!(
+            inp.root, tree.root,
+            "assembled R must equal the KDF-bound profileRoot"
+        );
     }
 
     /// The fixture's raw-handle shortcut is fail-closed: a tree KDF-bound to the RAW handle `424242`
@@ -395,7 +401,10 @@ mod tests {
         let a = attrs();
         let canonical = field_of_value(&TypedScalar::Integer(HANDLE.to_string())).unwrap();
         let raw = Fr::from(424_242u64);
-        assert_ne!(canonical, raw, "the raw handle and its field-hash must differ");
+        assert_ne!(
+            canonical, raw,
+            "the raw handle and its field-hash must differ"
+        );
 
         let tree_raw = build_profile_tree(SEED, raw, &addr(), &a).unwrap();
         let tree_canonical = build_profile_tree(SEED, canonical, &addr(), &a).unwrap();
@@ -405,8 +414,14 @@ mod tests {
         );
 
         let inp = assemble_consent(&witness(HANDLE, &a)).unwrap();
-        assert_eq!(inp.root, tree_canonical.root, "assembler binds the canonical field");
-        assert_ne!(inp.root, tree_raw.root, "assembler can never produce the raw-bound R");
+        assert_eq!(
+            inp.root, tree_canonical.root,
+            "assembler binds the canonical field"
+        );
+        assert_ne!(
+            inp.root, tree_raw.root,
+            "assembler can never produce the raw-bound R"
+        );
     }
 
     /// The front-packed inclusion paths fold to `R` exactly as `consent.circom`'s `MerkleInclusion`
@@ -427,7 +442,11 @@ mod tests {
         };
 
         assert_eq!(
-            fold(tree.owner_address_leaf, &inp.owner_siblings, &inp.owner_path_len),
+            fold(
+                tree.owner_address_leaf,
+                &inp.owner_siblings,
+                &inp.owner_path_len
+            ),
             inp.root
         );
         assert_eq!(
@@ -435,13 +454,20 @@ mod tests {
             inp.root
         );
         assert_eq!(
-            fold(tree.owner_secret_leaf, &inp.secret_siblings, &inp.secret_path_len),
+            fold(
+                tree.owner_secret_leaf,
+                &inp.secret_siblings,
+                &inp.secret_path_len
+            ),
             inp.root
         );
 
         // Sanity: the SDK's own full-proof fold agrees (Promote steps are identity).
         assert_eq!(
-            process_proof(&merkle_proof(&tree.tree.layers, tree.owner_secret_leaf), tree.owner_secret_leaf),
+            process_proof(
+                &merkle_proof(&tree.tree.layers, tree.owner_secret_leaf),
+                tree.owner_secret_leaf
+            ),
             inp.root
         );
     }
@@ -454,14 +480,34 @@ mod tests {
         let inp = assemble_consent(&witness(HANDLE, &a)).unwrap();
         let v = consent_circuit_input_value(&inp);
         for k in [
-            "dogTagId", "purpose", "relayer", "recordType", "deadline", "consentNonce",
-            "ownerAddress", "ownerSecret", "Ax", "Ay", "R8x", "R8y", "S", "ownerSalt",
-            "keySalt", "secretSalt", "ownerPathLen", "keyPathLen", "secretPathLen",
+            "dogTagId",
+            "purpose",
+            "relayer",
+            "recordType",
+            "deadline",
+            "consentNonce",
+            "ownerAddress",
+            "ownerSecret",
+            "Ax",
+            "Ay",
+            "R8x",
+            "R8y",
+            "S",
+            "ownerSalt",
+            "keySalt",
+            "secretSalt",
+            "ownerPathLen",
+            "keyPathLen",
+            "secretPathLen",
         ] {
             assert!(v[k].is_string(), "{k} must be a decimal string");
         }
         for k in ["ownerSiblings", "keySiblings", "secretSiblings"] {
-            assert_eq!(v[k].as_array().unwrap().len(), DEPTH, "{k} must be DEPTH-wide");
+            assert_eq!(
+                v[k].as_array().unwrap().len(),
+                DEPTH,
+                "{k} must be DEPTH-wide"
+            );
         }
     }
 }

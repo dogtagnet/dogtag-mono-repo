@@ -53,7 +53,10 @@ fn fr_from_dec(s: &str) -> Fr {
 fn key_hash_parity() {
     let v = load();
     let vecs = v["keyHash"].as_array().unwrap();
-    assert!(!vecs.is_empty(), "consent-vectors.json must carry keyHash vectors");
+    assert!(
+        !vecs.is_empty(),
+        "consent-vectors.json must carry keyHash vectors"
+    );
     for kh in vecs {
         let name = kh["name"].as_str().unwrap();
         let ax = fr_from_dec(kh["Ax"].as_str().unwrap());

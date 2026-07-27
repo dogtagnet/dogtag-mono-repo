@@ -47,10 +47,7 @@ async fn main() {
             "VERIFICATION_REGISTRY_ADDR",
             "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
         ),
-        sbt_addr: env(
-            "SBT_ADDR",
-            "0xBEbc45A838643D27004827b797b30A464b2b02c0",
-        ),
+        sbt_addr: env("SBT_ADDR", "0xBEbc45A838643D27004827b797b30A464b2b02c0"),
         factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         // Store a real password HASH, never the plaintext (audit L4) — admin_login verifies against
         // this with auth::verify_password. Optional `ADMIN_PASSWORD_HASH` ("<salt_hex>$<hash_hex>")
@@ -128,9 +125,7 @@ async fn main() {
             ),
         }
     } else {
-        tracing::warn!(
-            "ADMIN_PRIVATE_KEY unset; on-chain admin/governance writes will fail"
-        );
+        tracing::warn!("ADMIN_PRIVATE_KEY unset; on-chain admin/governance writes will fail");
     }
 
     // Control-plane authority preflight: resolve, ONCE at boot, whether the hosted signer actually
@@ -144,9 +139,12 @@ async fn main() {
     // simply UNRESOLVED, which is exactly the existing `AuthorityVerdict::Unknown` state - a warning,
     // never fatal, so ADMIN_REQUIRE_AUTHORITY does not fire on an unreadable chain either.
     const AUTHORITY_PREFLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-    if tokio::time::timeout(AUTHORITY_PREFLIGHT_TIMEOUT, authority_preflight(&chain, &cfg))
-        .await
-        .is_err()
+    if tokio::time::timeout(
+        AUTHORITY_PREFLIGHT_TIMEOUT,
+        authority_preflight(&chain, &cfg),
+    )
+    .await
+    .is_err()
     {
         tracing::warn!(
             "control-plane authority preflight did not complete within {:?} (RPC accepted the \
