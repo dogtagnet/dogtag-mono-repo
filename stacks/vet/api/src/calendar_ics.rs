@@ -11,8 +11,20 @@
 //!
 //! THE FEED URL IS A CREDENTIAL. It is unauthenticated by construction — a calendar client cannot
 //! present a bearer token — so the secret lives in the path. Hence: 32 CSPRNG bytes, compared in
-//! constant time, revocable in one click, and never logged. Anyone holding the URL can read the
-//! shop's entire schedule, which the UI says in as many words.
+//! constant time, revocable in one click. Anyone holding the URL can read the shop's entire
+//! schedule, which the UI says in as many words.
+//!
+//! WHAT A PATH-BORNE SECRET COSTS, stated exactly rather than glossed. THIS APPLICATION never logs
+//! the token — it appears in no `tracing` call, and the router carries no request-logging layer — but
+//! that is the whole of what this code can promise. The secret is a URL PATH SEGMENT, and the request
+//! URI is precisely what a reverse proxy, CDN or tunnel records in its access log BY DEFAULT, so on a
+//! deployed stack every subscriber poll writes the credential to those logs in plaintext, on the
+//! provider's own polling schedule, indefinitely. A header- or query-borne credential would not be
+//! exposed that way; a calendar client can present neither. This is inherent to the design and is the
+//! residual risk it accepts. Two mitigations, both real: switch the log off for this path wherever
+//! the proxy is ours (`stacks/groomer/web/nginx.conf` does exactly that for `^/api/calendar/feed/`),
+//! and ROTATE — one click mints a new secret and kills the old URL, which is why rotation is a
+//! first-class action here and not a recovery procedure.
 //!
 //! WHERE THE PARSER IS. `.ics` FILES are parsed in the BROWSER, not here — this crate has no
 //! timezone database, and `TZID=Europe/London` cannot be resolved to a UTC instant without one.
@@ -340,6 +352,17 @@ async fn revoke_feed(State(st): State<AppState>, headers: HeaderMap) -> Resp {
 // import (operator-gated)
 // ============================================================================================
 
+/// Hard cap on events accepted in ONE import.
+///
+/// The parsed calendar arrives as a single JSON body, so the real ceiling is axum's 2 MB default body
+/// limit — nothing in this service raises it — and that limit rejects the request before any handler
+/// runs, as a bare size error that mentions neither calendars nor what to do next. Refusing at a
+/// stated COUNT well under it lets the portal tell the operator what happened in words. A 244-event
+/// Google export is an ordinary size, so this is a backstop rather than a working limit; a file whose
+/// events carry unusually long `DESCRIPTION`s can still reach the body limit first, which this
+/// narrows but cannot close.
+const MAX_IMPORT_EVENTS: usize = 1_000;
+
 /// One event from an uploaded `.ics`, ALREADY normalized by the browser parser: instants are UNIX
 /// SECONDS resolved against the event's own `TZID`/`VALUE=DATE` semantics, so this endpoint performs
 /// no time-zone interpretation of its own.
@@ -355,9 +378,19 @@ struct ImportEvent {
     description: String,
     #[serde(default)]
     location: String,
-    start_at: u64,
+    /// Unix seconds — OPTIONAL and SIGNED, and both of those are load-bearing.
+    ///
+    /// A `DTSTART` before 1970 is an ordinary thing to find in an exported calendar (a birthday, or a
+    /// malformed year that a browser reads as 1901) and resolves to a NEGATIVE instant; an
+    /// unresolvable value can serialize as `null`. Against a bare `u64` serde rejects either one, and
+    /// it rejects the WHOLE BODY — so a single unusable event would 422 the request before this
+    /// handler ran, aborting the import of every other event in the file. Accepted here, then skipped
+    /// individually in [`import_events`], which is this module's stated posture: report an unusable
+    /// event, never guess at it, and never let it take the file down with it.
     #[serde(default)]
-    end_at: u64,
+    start_at: Option<i64>,
+    #[serde(default)]
+    end_at: Option<i64>,
     /// The source event was `VALUE=DATE` (all-day). Recorded in the notes, because an `Appointment`
     /// is a slot with a start and an end and has no all-day flag to set.
     #[serde(default)]
@@ -369,6 +402,18 @@ struct ImportEvent {
     /// The source event's `STATUS` (`cancelled` is the only value acted on).
     #[serde(default)]
     status: String,
+}
+
+impl ImportEvent {
+    /// The start this event books at, or `None` when the source gave one no booking can be made at:
+    /// absent, `null`, or at/before the epoch. Never clamped to a plausible-looking value — a booking
+    /// invented at the wrong time is worse than one the operator is told about.
+    fn start(&self) -> Option<u64> {
+        match self.start_at {
+            Some(s) if s > 0 => Some(s as u64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -419,9 +464,14 @@ impl ImportQuery {
 ///
 /// Idempotency: dedup is by source `UID`. Re-importing the same file UPDATES the slot and label of
 /// the booking it already created, and never duplicates it. A re-import deliberately does NOT
-/// overwrite the shop's own work on that booking — the linked client, pet, groomer and a status the
-/// operator has since advanced all survive — because the calendar file is the source of truth for
-/// WHEN, and the portal is the source of truth for WHO.
+/// overwrite the shop's own work on that booking — the linked client, pet, groomer, a status the
+/// operator has since advanced, and anything they TYPED IN THE NOTES all survive — because the
+/// calendar file is the source of truth for WHEN, and the portal is the source of truth for WHO. The
+/// exact notes rule is in [`merge_notes`], because "notes" is the one field both sides write.
+///
+/// A single unusable event never takes the file down with it: it is counted in `skipped` and the rest
+/// import normally. Beyond [`MAX_IMPORT_EVENTS`] the whole request is refused, in words, rather than
+/// left to fail as a body-size error that names nothing.
 async fn import_events(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -435,6 +485,16 @@ async fn import_events(
         Ok(v) => v,
         Err(e) => return e,
     };
+    if body.events.len() > MAX_IMPORT_EVENTS {
+        return err(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "this calendar has {} events and an import accepts at most {MAX_IMPORT_EVENTS} at a \
+                 time. Export a narrower date range from the other calendar and import it in parts.",
+                body.events.len()
+            ),
+        );
+    }
 
     let mut created = 0u32;
     let mut updated = 0u32;
@@ -448,10 +508,15 @@ async fn import_events(
 
     for ev in &body.events {
         let uid = ev.uid.trim();
-        if uid.is_empty() || ev.start_at == 0 {
-            skipped += 1;
-            continue;
-        }
+        // No identity, or no instant a booking can be made at. Skipped INDIVIDUALLY — see the note on
+        // `ImportEvent::start_at` for why one such event must not be allowed to reject the body.
+        let start = match ev.start() {
+            Some(s) if !uid.is_empty() => s,
+            _ => {
+                skipped += 1;
+                continue;
+            }
+        };
         if !seen.insert(uid.to_string()) {
             skipped += 1;
             continue;
@@ -470,13 +535,13 @@ async fn import_events(
             (None, true) => skipped += 1,
             (None, false) => {
                 if !dry_run {
-                    st.store.put_appointment(new_from_import(ev, uid)).await;
+                    st.store.put_appointment(new_from_import(ev, uid, start)).await;
                 }
                 created += 1;
             }
             (Some(a), cancel) => {
                 if !dry_run {
-                    st.store.put_appointment(merge_import(a, ev, cancel)).await;
+                    st.store.put_appointment(merge_import(a, ev, cancel, start)).await;
                 }
                 if cancel {
                     cancelled += 1;
@@ -509,6 +574,18 @@ fn import_service(ev: &ImportEvent) -> String {
     }
 }
 
+/// The LAST line of every notes block an import writes, and therefore the boundary between what an
+/// import owns and what the operator has typed since. Load-bearing: [`operator_notes`] finds it.
+const IMPORT_MARKER: &str = "Imported from an .ics calendar file.";
+const ALL_DAY_NOTE: &str =
+    "Imported from an all-day calendar event — booked as a full local day because a booking is a \
+     slot.";
+const RECURRING_NOTE: &str =
+    "The source event repeats (RRULE). This import does NOT expand recurrence: only this single \
+     occurrence was created.";
+/// Prefix of the one import-written line whose text is not fixed.
+const LOCATION_PREFIX: &str = "Location: ";
+
 /// The notes block, carrying the source event's own text plus every caveat this import applied — so
 /// the operator reads the compromise on the booking itself, not only in a summary they dismissed.
 fn import_notes(ev: &ImportEvent) -> String {
@@ -517,31 +594,85 @@ fn import_notes(ev: &ImportEvent) -> String {
         parts.push(ev.description.trim().to_string());
     }
     if !ev.location.trim().is_empty() {
-        parts.push(format!("Location: {}", ev.location.trim()));
+        parts.push(format!("{LOCATION_PREFIX}{}", ev.location.trim()));
     }
     if ev.all_day {
-        parts.push(
-            "Imported from an all-day calendar event — booked as a full local day because a \
-             booking is a slot."
-                .to_string(),
-        );
+        parts.push(ALL_DAY_NOTE.to_string());
     }
     if ev.recurring {
-        parts.push(
-            "The source event repeats (RRULE). This import does NOT expand recurrence: only this \
-             single occurrence was created."
-                .to_string(),
-        );
+        parts.push(RECURRING_NOTE.to_string());
     }
-    parts.push("Imported from an .ics calendar file.".to_string());
+    parts.push(IMPORT_MARKER.to_string());
     parts.join("\n")
+}
+
+/// Is this line one a previous import wrote itself, rather than something the operator typed?
+///
+/// Everything except the source description has a fixed shape, so identification is exact for those.
+/// The description is arbitrary file text and can only be matched against the CURRENT event's — a
+/// deliberate asymmetry, see [`operator_notes`].
+fn is_import_line(line: &str, ev: &ImportEvent) -> bool {
+    let l = line.trim();
+    l.is_empty()
+        || l == IMPORT_MARKER
+        || l == ALL_DAY_NOTE
+        || l == RECURRING_NOTE
+        || l.starts_with(LOCATION_PREFIX)
+        || ev.description.trim().lines().any(|d| d.trim() == l)
+}
+
+/// Everything on this booking's notes that the OPERATOR is responsible for.
+///
+/// [`import_notes`] always writes its block FIRST and always ends it with [`IMPORT_MARKER`], so on a
+/// booking an import created, that marker is the end of the block a previous import wrote. Notes with
+/// no marker at all mean the operator replaced them wholesale: every line is theirs, kept verbatim.
+///
+/// Within the leading block, a line is dropped only when it can be POSITIVELY identified as
+/// import-written — an operator who typed ABOVE the imported text keeps that line too, which is the
+/// whole point. Two asymmetries that identification cannot resolve, both erring toward KEEPING text:
+/// when the source file's DESCRIPTION has changed since the last import, its previous text is no
+/// longer identifiable and survives as if the operator had written it (stale and visible, rather than
+/// deleted); and conversely a `Location: ` line is treated as import-written by CONVENTION rather
+/// than by fact, so an operator opening a line that way inside the block does lose it. Safe direction
+/// first, for a field the shop types into.
+fn operator_notes(existing: &str, ev: &ImportEvent) -> String {
+    let lines: Vec<&str> = existing.lines().collect();
+    let marker = lines.iter().position(|l| l.trim() == IMPORT_MARKER);
+    let Some(end) = marker else {
+        return existing.trim().to_string();
+    };
+    let mut kept: Vec<&str> = lines[..end]
+        .iter()
+        .copied()
+        .filter(|l| !is_import_line(l, ev))
+        .collect();
+    // Past the marker is the operator's alone; it is never filtered, because a line of theirs that
+    // happens to read like a stamp is still theirs.
+    kept.extend(lines[end + 1..].iter().copied());
+    kept.join("\n").trim().to_string()
+}
+
+/// Re-stamp the import's own block while keeping whatever the operator typed.
+///
+/// `notes` is the one field BOTH sides write: the file carries the source event's description,
+/// location and this import's caveats, and the operator edits the same box through
+/// `PUT /appointments/:id`. Rebuilding it wholesale from the file — which is what a re-import used to
+/// do — silently destroyed the shop's own text on every refresh of an already-imported calendar.
+fn merge_notes(existing: &str, ev: &ImportEvent) -> String {
+    let kept = operator_notes(existing, ev);
+    let block = import_notes(ev);
+    if kept.is_empty() {
+        block
+    } else {
+        format!("{block}\n{kept}")
+    }
 }
 
 /// Default slot length when the source event carried no usable `DTEND`/`DURATION` — matches the
 /// portal's own one-hour default for a booking entered without an end time.
 const DEFAULT_SLOT_SECS: u64 = 3600;
 
-fn new_from_import(ev: &ImportEvent, uid: &str) -> Appointment {
+fn new_from_import(ev: &ImportEvent, uid: &str, start: u64) -> Appointment {
     let ts = now();
     let mut a = Appointment {
         appointment_id: uuid::Uuid::new_v4().to_string(),
@@ -549,8 +680,8 @@ fn new_from_import(ev: &ImportEvent, uid: &str) -> Appointment {
         client_id: String::new(),
         pet_id: None,
         service: import_service(ev),
-        start_at: ev.start_at,
-        end_at: import_end(ev),
+        start_at: start,
+        end_at: import_end(ev, start),
         status: "scheduled".to_string(),
         notes: import_notes(ev),
         groomer: String::new(),
@@ -566,24 +697,26 @@ fn new_from_import(ev: &ImportEvent, uid: &str) -> Appointment {
     a
 }
 
-fn import_end(ev: &ImportEvent) -> u64 {
-    if ev.end_at > ev.start_at {
-        ev.end_at
-    } else {
-        ev.start_at + DEFAULT_SLOT_SECS
+/// The slot's end, given the start that was already validated as storable. An end that is absent,
+/// `null`, at/before the start, or unrepresentable falls back to the portal's own default length.
+fn import_end(ev: &ImportEvent, start: u64) -> u64 {
+    match ev.end_at {
+        Some(e) if e > 0 && (e as u64) > start => e as u64,
+        _ => start + DEFAULT_SLOT_SECS,
     }
 }
 
 /// Fold a re-imported event onto the booking it already created.
 ///
 /// The calendar file owns WHEN (start, end) and the event's own text; the portal owns WHO and HOW
-/// FAR ALONG (client, pet, groomer, workflow status). A cancellation in the source file is the one
-/// status change the file is allowed to make.
-fn merge_import(mut a: Appointment, ev: &ImportEvent, cancel: bool) -> Appointment {
-    a.start_at = ev.start_at;
-    a.end_at = import_end(ev);
+/// FAR ALONG (client, pet, groomer, workflow status) — and, per [`merge_notes`], everything the
+/// operator typed into the notes. A cancellation in the source file is the one status change the file
+/// is allowed to make.
+fn merge_import(mut a: Appointment, ev: &ImportEvent, cancel: bool, start: u64) -> Appointment {
+    a.start_at = start;
+    a.end_at = import_end(ev, start);
     a.service = import_service(ev);
-    a.notes = import_notes(ev);
+    a.notes = merge_notes(&a.notes, ev);
     if cancel {
         a.status = "cancelled".to_string();
     }
@@ -782,8 +915,8 @@ mod tests {
             summary: "Bath & brush".into(),
             description: "bring the muzzle".into(),
             location: "Shop".into(),
-            start_at: 1_772_020_800,
-            end_at: 1_772_024_400,
+            start_at: Some(1_772_020_800),
+            end_at: Some(1_772_024_400),
             all_day: false,
             recurring: false,
             status: String::new(),
@@ -792,7 +925,7 @@ mod tests {
 
     #[test]
     fn new_from_import_creates_an_unassigned_booking_carrying_its_source_uid() {
-        let a = new_from_import(&import_ev(), "evt-1@example.com");
+        let a = new_from_import(&import_ev(), "evt-1@example.com", 1_772_020_800);
         assert_eq!(a.client_id, "", "an import never invents a client");
         assert_eq!(a.client_name, "");
         assert_eq!(a.service, "Bath & brush");
@@ -808,13 +941,53 @@ mod tests {
 
     #[test]
     fn import_end_defaults_a_missing_or_inverted_end_to_one_hour() {
+        let start = 1_772_020_800u64;
         let mut ev = import_ev();
-        ev.end_at = 0;
-        assert_eq!(import_end(&ev), ev.start_at + 3600);
-        ev.end_at = ev.start_at;
-        assert_eq!(import_end(&ev), ev.start_at + 3600);
-        ev.end_at = ev.start_at - 1;
-        assert_eq!(import_end(&ev), ev.start_at + 3600);
+        ev.end_at = None;
+        assert_eq!(import_end(&ev, start), start + 3600);
+        ev.end_at = Some(0);
+        assert_eq!(import_end(&ev, start), start + 3600);
+        ev.end_at = Some(start as i64);
+        assert_eq!(import_end(&ev, start), start + 3600);
+        ev.end_at = Some(start as i64 - 1);
+        assert_eq!(import_end(&ev, start), start + 3600);
+        // A pre-epoch end is nonsense, not a slot that ends before it began.
+        ev.end_at = Some(-10);
+        assert_eq!(import_end(&ev, start), start + 3600);
+    }
+
+    // ---- unstorable instants (one bad event must never abort the file) ------------------------
+
+    #[test]
+    fn start_rejects_every_instant_a_booking_cannot_be_made_at() {
+        let mut ev = import_ev();
+        assert_eq!(ev.start(), Some(1_772_020_800));
+        // A pre-1970 DTSTART: real in exported calendars, and NEGATIVE once resolved.
+        ev.start_at = Some(-2_145_916_800);
+        assert_eq!(ev.start(), None);
+        ev.start_at = Some(0);
+        assert_eq!(ev.start(), None);
+        // `null` on the wire — what a browser sends for an instant that resolved to NaN.
+        ev.start_at = None;
+        assert_eq!(ev.start(), None);
+    }
+
+    #[test]
+    fn a_negative_or_null_start_deserializes_instead_of_rejecting_the_whole_body() {
+        // The point of the Option<i64>: serde must ACCEPT these so the handler can skip them one by
+        // one. Against a bare u64 this parse fails, and axum answers 422 for the entire upload.
+        let body: ImportBody = serde_json::from_str(
+            r#"{"events":[
+                {"uid":"a","startAt":-2145916800},
+                {"uid":"b","startAt":null},
+                {"uid":"c","startAt":1772020800}
+            ]}"#,
+        )
+        .expect("one unstorable event must not reject the file");
+        assert_eq!(body.events.len(), 3);
+        assert_eq!(body.events[0].start(), None);
+        assert_eq!(body.events[1].start(), None);
+        assert_eq!(body.events[2].start(), Some(1_772_020_800));
     }
 
     #[test]
@@ -841,13 +1014,14 @@ mod tests {
         existing.external_uid = Some("evt-1@example.com".into());
         existing.status = "completed".into();
         let mut ev = import_ev();
-        ev.start_at += 7200;
-        ev.end_at += 7200;
+        let moved = 1_772_020_800 + 7200;
+        ev.start_at = Some(moved);
+        ev.end_at = Some(moved + 3600);
 
-        let merged = merge_import(existing.clone(), &ev, false);
+        let merged = merge_import(existing.clone(), &ev, false, moved as u64);
         // the file owns WHEN
-        assert_eq!(merged.start_at, ev.start_at);
-        assert_eq!(merged.end_at, ev.end_at);
+        assert_eq!(merged.start_at, moved as u64);
+        assert_eq!(merged.end_at, moved as u64 + 3600);
         assert_eq!(merged.service, "Bath & brush");
         // the portal owns WHO and HOW FAR ALONG
         assert_eq!(merged.client_id, "cli-1");
@@ -862,8 +1036,84 @@ mod tests {
     fn merge_import_honours_a_cancellation_from_the_source_file() {
         let mut existing = appt();
         existing.external_uid = Some("evt-1@example.com".into());
-        let merged = merge_import(existing, &import_ev(), true);
+        let merged = merge_import(existing, &import_ev(), true, 1_772_020_800);
         assert_eq!(merged.status, "cancelled");
+    }
+
+    // ---- notes: the one field both the file and the operator write ----------------------------
+
+    #[test]
+    fn a_reimport_restamps_its_own_block_without_duplicating_it() {
+        let ev = import_ev();
+        let first = import_notes(&ev);
+        let second = merge_notes(&first, &ev);
+        assert_eq!(second, first, "an unchanged re-import must be a no-op on the notes");
+    }
+
+    #[test]
+    fn a_reimport_keeps_what_the_operator_typed_below_the_imported_block() {
+        let ev = import_ev();
+        let edited = format!("{}\nOwner says the dog bites. Muzzle on arrival.", import_notes(&ev));
+        let merged = merge_notes(&edited, &ev);
+        assert!(merged.contains("Owner says the dog bites. Muzzle on arrival."));
+        assert!(merged.contains(IMPORT_MARKER));
+        assert_eq!(merged.matches(IMPORT_MARKER).count(), 1);
+    }
+
+    #[test]
+    fn a_reimport_keeps_what_the_operator_typed_above_the_imported_block() {
+        // A prefilled textarea invites typing at the top as readily as at the bottom, so the leading
+        // block is filtered line by line rather than dropped wholesale.
+        let ev = import_ev();
+        let edited = format!("CALL THE OWNER FIRST\n{}", import_notes(&ev));
+        let merged = merge_notes(&edited, &ev);
+        assert!(merged.contains("CALL THE OWNER FIRST"));
+        assert_eq!(merged.matches("bring the muzzle").count(), 1);
+        assert_eq!(merged.matches("Location: Shop").count(), 1);
+    }
+
+    #[test]
+    fn a_reimport_keeps_notes_the_operator_replaced_wholesale() {
+        // No marker anywhere: none of this came from an import, so none of it may be dropped.
+        let merged = merge_notes("Rebooked by phone. Nervous dog.", &import_ev());
+        assert!(merged.contains("Rebooked by phone. Nervous dog."));
+        assert!(merged.contains(IMPORT_MARKER));
+    }
+
+    #[test]
+    fn a_reimport_drops_the_previous_caveats_when_the_file_no_longer_carries_them() {
+        let mut ev = import_ev();
+        ev.recurring = true;
+        ev.all_day = true;
+        let first = import_notes(&ev);
+        ev.recurring = false;
+        ev.all_day = false;
+        let merged = merge_notes(&first, &ev);
+        assert!(!merged.contains("does NOT expand recurrence"));
+        assert!(!merged.contains("all-day"));
+        assert!(merged.contains(IMPORT_MARKER));
+    }
+
+    #[test]
+    fn a_changed_description_is_preserved_rather_than_deleted() {
+        // The only line an import cannot positively identify on a re-import. Erring toward keeping it
+        // leaves a stale line the operator can see and delete; erring the other way silently eats
+        // text they may have written themselves.
+        let mut ev = import_ev();
+        let first = import_notes(&ev);
+        ev.description = "bring the harness".into();
+        let merged = merge_notes(&first, &ev);
+        assert!(merged.contains("bring the harness"), "the file's current text");
+        assert!(merged.contains("bring the muzzle"), "never silently deleted");
+    }
+
+    #[test]
+    fn merge_import_keeps_the_operator_s_notes() {
+        let mut existing = appt();
+        existing.external_uid = Some("evt-1@example.com".into());
+        existing.notes = format!("{}\nAllergic to the oatmeal shampoo.", import_notes(&import_ev()));
+        let merged = merge_import(existing, &import_ev(), false, 1_772_020_800);
+        assert!(merged.notes.contains("Allergic to the oatmeal shampoo."));
     }
 
     // ---- truncation notice --------------------------------------------------------------------

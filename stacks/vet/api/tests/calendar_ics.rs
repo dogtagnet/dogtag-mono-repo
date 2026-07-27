@@ -606,6 +606,107 @@ async fn an_empty_upload_reports_zeroes_rather_than_failing() {
     assert_eq!(r["skipped"], 0);
 }
 
+#[tokio::test]
+async fn one_unstorable_event_is_skipped_without_aborting_the_rest_of_the_file() {
+    // A pre-1970 DTSTART is ordinary in a real export and resolves to a NEGATIVE unix second; an
+    // instant the browser could not resolve serializes as `null`. Neither may be allowed to reject
+    // the BODY, which would 422 the request and lose every other booking in the calendar.
+    let (app, op) = app().await;
+    let start = vet_api::auth::now() + 86_400;
+    let (s, r) = call(
+        &app,
+        "POST",
+        "/calendar/import",
+        Some(&op),
+        Some(json!({ "events": [
+            { "uid": "birthday@old.example", "summary": "Born", "startAt": -2_145_916_800i64 },
+            { "uid": "unresolvable@old.example", "summary": "?", "startAt": null },
+            { "uid": "good@old.example", "summary": "Full groom", "startAt": start },
+        ] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "one bad event must not reject the upload: {r}");
+    assert_eq!(r["created"], 1, "the good booking still imports");
+    assert_eq!(r["skipped"], 2);
+
+    let (_, page) = call(&app, "GET", "/appointments", Some(&op), None).await;
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["rows"][0]["startAt"], start);
+}
+
+#[tokio::test]
+async fn an_oversized_calendar_is_refused_in_words_that_name_the_limit() {
+    let (app, op) = app().await;
+    let start = vet_api::auth::now() + 86_400;
+    let events: Vec<Value> = (0..1_001u64)
+        .map(|i| ics_event(&format!("evt-{i}@old.example"), start + i * 3600))
+        .collect();
+    let (s, r) = call(
+        &app,
+        "POST",
+        "/calendar/import",
+        Some(&op),
+        Some(json!({ "events": events })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let msg = r["error"].as_str().unwrap_or_default();
+    assert!(msg.contains("1001"), "says how many arrived: {msg}");
+    assert!(msg.contains("1000"), "and what the limit is: {msg}");
+    // Refused whole: nothing was half-written before the cap was noticed.
+    let (_, page) = call(&app, "GET", "/appointments", Some(&op), None).await;
+    assert_eq!(page["total"], 0);
+}
+
+#[tokio::test]
+async fn an_operator_note_survives_a_reimport_of_the_same_file() {
+    // `notes` is the one field BOTH the calendar file and the operator write. Refreshing an already
+    // imported calendar must not delete what the shop typed on the booking.
+    let (app, op) = app().await;
+    let start = vet_api::auth::now() + 2 * 86_400;
+    import(&app, &op, json!([ics_event("evt-1@old.example", start)])).await;
+
+    let (client_id, pet_id) = make_client(&app, &op, "Alice Tan", "Rex").await;
+    let (_, page) = call(&app, "GET", "/appointments", Some(&op), None).await;
+    let appt_id = page["rows"][0]["appointmentId"].as_str().unwrap().to_string();
+    let imported_notes = page["rows"][0]["notes"].as_str().unwrap().to_string();
+    // The operator types above AND below the block the import wrote — a prefilled textarea invites
+    // both, and neither may be eaten.
+    let edited = format!("CALL THE OWNER FIRST\n{imported_notes}\nAllergic to the oatmeal shampoo.");
+    let (s, _) = call(
+        &app,
+        "PUT",
+        &format!("/appointments/{appt_id}"),
+        Some(&op),
+        Some(json!({
+            "clientId": client_id,
+            "petId": pet_id,
+            "service": "Full groom",
+            "startAt": start,
+            "notes": edited,
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let moved = start + 3600;
+    let r = import(&app, &op, json!([ics_event("evt-1@old.example", moved)])).await;
+    assert_eq!(r["updated"], 1);
+
+    let (_, a) = call(&app, "GET", &format!("/appointments/{appt_id}"), Some(&op), None).await;
+    let notes = a["notes"].as_str().unwrap();
+    assert!(notes.contains("CALL THE OWNER FIRST"), "typed above the block: {notes}");
+    assert!(notes.contains("Allergic to the oatmeal shampoo."), "typed below it: {notes}");
+    // The import's own block is RE-STAMPED, not duplicated.
+    assert_eq!(
+        notes.matches("Imported from an .ics calendar file.").count(),
+        1,
+        "{notes}"
+    );
+    assert_eq!(notes.matches("from the old calendar").count(), 1, "{notes}");
+    assert_eq!(a["startAt"], moved, "the file still owns WHEN");
+}
+
 // ================================================================================================
 // round trip
 // ================================================================================================

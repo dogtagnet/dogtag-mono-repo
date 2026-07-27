@@ -275,12 +275,14 @@ function ImportCard() {
   const [parsed, setParsed] = useState<IcsParseResult | null>(null);
   const [preview, setPreview] = useState<IcsImportResp | null>(null);
   const [result, setResult] = useState<IcsImportResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   function reset() {
     setParsed(null);
     setPreview(null);
     setResult(null);
+    setError(null);
     setFileName("");
     if (fileInput.current) fileInput.current.value = "";
   }
@@ -290,39 +292,49 @@ function ImportCard() {
     if (!file) return;
     setResult(null);
     setPreview(null);
+    setError(null);
     setFileName(file.name);
     setBusy(true);
     try {
       // Parsed HERE, in the browser, so `TZID=Europe/London` resolves through the full IANA
       // database the browser already ships. See packages/ui/src/calendar/ics.ts.
-      const r = parseIcs(await file.text());
+      let r: IcsParseResult;
+      try {
+        r = parseIcs(await file.text());
+      } catch (err) {
+        fail("Could not read the file", (err as Error).message);
+        return;
+      }
       setParsed(r);
       if (r.notACalendar) {
-        toast({
-          title: "That is not a calendar file",
-          description: "An .ics file starts with BEGIN:VCALENDAR.",
-          variant: "danger",
-        });
+        fail("That is not a calendar file", "An .ics file starts with BEGIN:VCALENDAR.");
         return;
       }
       if (r.events.length > 0) {
         // Dry run first: the operator sees exactly what would happen before anything is written.
-        setPreview(await api.importIcsEvents(r.events, true));
+        // The backend refuses an oversized calendar in words (it names the limit); that message is
+        // shown as-is rather than collapsed into a generic failure.
+        try {
+          setPreview(await api.importIcsEvents(r.events, true));
+        } catch (err) {
+          fail("This calendar cannot be imported", (err as Error).message);
+        }
       }
-    } catch (err) {
-      toast({
-        title: "Could not read the file",
-        description: (err as Error).message,
-        variant: "danger",
-      });
     } finally {
       setBusy(false);
     }
   }
 
+  /** Report a failure in BOTH places: a toast that may be dismissed, and inline where it persists. */
+  function fail(title: string, description: string) {
+    setError(description);
+    toast({ title, description, variant: "danger" });
+  }
+
   async function confirmImport() {
     if (!parsed) return;
     setBusy(true);
+    setError(null);
     try {
       const r = await api.importIcsEvents(parsed.events, false);
       setResult(r);
@@ -332,11 +344,7 @@ function ImportCard() {
         variant: "success",
       });
     } catch (err) {
-      toast({
-        title: "Import failed",
-        description: (err as Error).message,
-        variant: "danger",
-      });
+      fail("Import failed", (err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -373,6 +381,12 @@ function ImportCard() {
             </Button>
           )}
         </div>
+
+        {error && (
+          <p className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+            {error}
+          </p>
+        )}
 
         {parsed && !parsed.notACalendar && parsed.events.length === 0 && (
           <p className="text-sm text-muted">
@@ -433,22 +447,6 @@ function ImportCard() {
               client before running a vaccination check.
             </p>
 
-            {parsed && parsed.skipped.length > 0 && (
-              <div className="border-t border-border pt-2">
-                <p className="font-semibold text-onSurface">
-                  {parsed.skipped.length} event{parsed.skipped.length === 1 ? "" : "s"} in the file
-                  could not be read
-                </p>
-                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted">
-                  {parsed.skipped.map((s) => (
-                    <li key={`${s.label}-${s.reason}`}>
-                      <span className="text-onSurface">{s.label}</span> — {s.reason}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
             {!result && (
               <div className="flex flex-wrap gap-2 border-t border-border pt-3">
                 <Button loading={busy} onClick={() => void confirmImport()}>
@@ -467,6 +465,25 @@ function ImportCard() {
                 </Button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* Deliberately OUTSIDE the summary box. There is no summary when zero events parsed — which
+            is exactly the case where every event failed, and so exactly the moment these reasons
+            matter most. Nesting them under the summary discarded them there. */}
+        {parsed && parsed.skipped.length > 0 && (
+          <div className="rounded-md border border-border p-3 text-sm">
+            <p className="font-semibold text-onSurface">
+              {parsed.skipped.length} event{parsed.skipped.length === 1 ? "" : "s"} in the file could
+              not be read
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted">
+              {parsed.skipped.map((s) => (
+                <li key={`${s.label}-${s.reason}`}>
+                  <span className="text-onSurface">{s.label}</span> — {s.reason}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </CardContent>

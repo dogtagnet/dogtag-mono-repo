@@ -40,6 +40,16 @@ is the secret in the path: 32 CSPRNG bytes, compared in constant time, revocable
 Anyone holding the URL can read the shop's whole schedule — client names, pets and times.
 The portal says this at the point the operator copies the link, and rotation is one button.
 
+**A path-borne secret is log-visible, and that is the residual risk.** The application never logs the
+token, but the token is a URL path segment and the request URI is what a reverse proxy, CDN or tunnel
+records in its access log by default — so every subscriber poll writes the credential to those logs
+in plaintext, on the provider's polling schedule, indefinitely. A header- or query-borne credential
+would not be exposed this way; a calendar client can present neither, which is the whole reason the
+secret is in the path. `stacks/groomer/web/nginx.conf` sets `access_log off` for
+`^/api/calendar/feed/` so the proxy we control does not do it, but anything in front of it (today, a
+Cloudflare tunnel) still will unless configured otherwise. Rotation is the mitigation, which is why
+it is a one-click action rather than a recovery procedure.
+
 **What the feed does not give you, stated plainly:**
 
 - **It is one direction.** Bookings made in DogTag appear in the subscribed calendar.
@@ -70,6 +80,20 @@ updates the booking it already created rather than duplicating it. A re-import d
 overwrite the shop's own work: the calendar file owns WHEN (start, end, label), and the portal owns
 WHO and HOW FAR ALONG (client, pet, groomer, workflow status). A `STATUS:CANCELLED` in the source
 file is the one status change the file is allowed to make.
+
+`notes` is the one field BOTH sides write, so it has its own rule. The import writes a block ending
+with the line `Imported from an .ics calendar file.`, and on a re-import that block is re-stamped
+from the current file while everything the operator typed around it is kept — above it or below it,
+or replacing it wholesale. A line is only removed when it can be positively identified as one an
+import wrote. The single cost of erring that way: when the source event's `DESCRIPTION` has changed
+since the last import, the previous text is no longer identifiable and is kept as if the operator had
+written it. Stale and visible beats silently deleted, for a box the shop types into.
+
+**One unusable event never takes the file down with it.** An event whose start cannot be resolved, or
+resolves before 1970, is counted as skipped with a reason and the rest of the calendar imports
+normally. Above 1000 events in one upload the request is refused with a message naming the limit,
+rather than left to fail as a body-size error that explains nothing — export a narrower date range
+and import in parts.
 
 **Why the parser runs in the browser.** The hard part of reading a real calendar is
 `DTSTART;TZID=Europe/London:20260330T100000` — turning a wall clock in a named zone into an exact

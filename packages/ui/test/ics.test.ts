@@ -338,6 +338,52 @@ describe("parseIcs", () => {
     expect(r.skipped[0].label).toBe("Mystery booking");
   });
 
+  it("skips a pre-1970 start rather than sending an instant no booking can hold", () => {
+    // Ordinary in a real export — a birthday or anniversary — and it resolves NEGATIVE. Sent on, it
+    // is a number the import must reject, and rejecting it there costs the WHOLE file.
+    const r = parseIcs(
+      cal(vevent("UID:birthday@old.example", "DTSTART:19420704T090000Z", "SUMMARY:Born")),
+    );
+    expect(r.events).toEqual([]);
+    expect(r.skipped[0].label).toBe("birthday@old.example");
+    expect(r.skipped[0].reason).toContain("1970");
+  });
+
+  it("skips a year the runtime cannot represent as a real instant", () => {
+    // `00010101` is well-formed to the grammar and maps to no usable instant.
+    const r = parseIcs(cal(vevent("UID:ancient", "DTSTART;VALUE=DATE:00010101", "SUMMARY:x")));
+    expect(r.events).toEqual([]);
+    expect(r.skipped).toHaveLength(1);
+  });
+
+  it("keeps a good event when a sibling in the same file is unstorable", () => {
+    const r = parseIcs(
+      cal(
+        vevent("UID:birthday@old.example", "DTSTART:19420704T090000Z", "SUMMARY:Born"),
+        vevent("UID:good@old.example", "DTSTART:20260330T100000Z", "SUMMARY:Full groom"),
+      ),
+    );
+    expect(r.events).toHaveLength(1);
+    expect(r.events[0].uid).toBe("good@old.example");
+    expect(r.events[0].startAt).toBeGreaterThan(0);
+    expect(r.skipped).toHaveLength(1);
+  });
+
+  it("never emits a start or end the import would have to refuse", () => {
+    const r = parseIcs(
+      cal(
+        vevent("UID:a", "DTSTART:20260330T100000Z", "DTEND:19600101T000000Z"),
+        vevent("UID:b", "DTSTART:20260330T100000Z", "DTEND:20260330T113000Z"),
+      ),
+    );
+    for (const e of r.events) {
+      expect(Number.isFinite(e.startAt) && e.startAt > 0).toBe(true);
+      expect(Number.isFinite(e.endAt) && e.endAt >= 0).toBe(true);
+    }
+    // A pre-epoch DTEND is no end at all; the import applies its own default slot length.
+    expect(r.events[0].endAt).toBe(0);
+  });
+
   // ---- identity ----
 
   it("synthesizes a STABLE uid for an event the file left unidentified", () => {

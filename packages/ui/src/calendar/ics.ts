@@ -392,6 +392,20 @@ function finishEvent(props: Record<string, ContentLine>, out: IcsParseResult): v
     return;
   }
 
+  // An instant no booking can be made at. A `DTSTART` before 1970 is ordinary in a real export (a
+  // birthday, or a year like `00010101` that JS maps to 1901) and resolves NEGATIVE; a value the
+  // runtime cannot render resolves to NaN. Reported with a reason here, exactly like an unresolvable
+  // TZID, rather than shipped to the import as a number it would have to reject.
+  if (!Number.isFinite(start.unix) || start.unix <= 0) {
+    out.skipped.push({
+      label,
+      reason: Number.isFinite(start.unix)
+        ? `its start time "${dtstart.value}" is at or before 1 January 1970, which is not a date a booking can be made at`
+        : `its start time "${dtstart.value}" does not resolve to a real point in time`,
+    });
+    return;
+  }
+
   const allDay = start.date;
   let endAt = 0;
   const dtend = props.DTEND;
@@ -409,6 +423,9 @@ function finishEvent(props: Record<string, ContentLine>, out: IcsParseResult): v
     d.setDate(d.getDate() + 1);
     endAt = Math.floor(d.getTime() / 1000);
   }
+  // An end the import cannot hold is simply NO end — it applies its own default slot length rather
+  // than the caller sending a number that is refused. The start is what an event cannot do without.
+  if (!Number.isFinite(endAt) || endAt <= 0) endAt = 0;
 
   const recurring = "RRULE" in props;
   if (recurring) out.recurring += 1;
