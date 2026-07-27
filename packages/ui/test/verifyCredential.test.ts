@@ -48,14 +48,18 @@ interface ReaderCfg {
   issuedAt?: bigint;
   isValid?: boolean;
   isRevoked?: boolean;
+  /** `issuedBy(root)`; the zero address models a clone that never issued this root. */
+  issuedBy?: string;
   isWhitelistedFor?: boolean;
 }
 
+/** Defaults describe a GENUINE credential: this clone issued it, and that signer is whitelisted. */
 function fakeReader(cfg: ReaderCfg) {
   const calls = {
     issuedAt: [] as Array<[string, string]>,
     isValid: [] as Array<[string, string]>,
     isRevoked: [] as Array<[string, string]>,
+    issuedBy: [] as Array<[string, string]>,
     isWhitelistedFor: [] as Array<[string, string, string]>,
   };
   const reader: IssuerChainReader = {
@@ -71,9 +75,13 @@ function fakeReader(cfg: ReaderCfg) {
       calls.isRevoked.push([addr, root]);
       return cfg.isRevoked ?? false;
     },
+    async issuedBy(addr, root) {
+      calls.issuedBy.push([addr, root]);
+      return cfg.issuedBy ?? SIGNER;
+    },
     async isWhitelistedFor(registry, recordType, signer) {
       calls.isWhitelistedFor.push([registry, recordType, signer]);
-      return cfg.isWhitelistedFor ?? false;
+      return cfg.isWhitelistedFor ?? true;
     },
   };
   return { reader, calls };
@@ -92,13 +100,14 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
     expect(r.recordType).toBe("VACCINATION");
     expect(r.issuedAt).toBe("1699000000");
     expect(r.checkedAt).toBe(NOW);
-    expect(r.signerAddr).toBeNull();
+    // The signer is RESOLVED from the chain, not supplied by the caller.
+    expect(r.signerAddr).toBe(SIGNER);
     expect(r.fragments).toEqual({
       integrity: true,
       onchain: true,
       issued: true,
       revoked: false,
-      issuerWhitelisted: null,
+      issuerWhitelisted: true,
     });
   });
 
@@ -142,30 +151,65 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       isRevoked: false,
       isWhitelistedFor: false,
     });
-    const r = await verifyCredentialOnchain({
-      wrappedDoc: asRecord(doc),
-      signerAddr: SIGNER,
-      reader,
-      now: NOW,
-    });
+    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
 
     expect(r.status).toBe("valid"); // on-chain state is valid…
     expect(r.verdict).toBe(false); // …but a non-whitelisted issuer signer fails the verdict.
     expect(r.signerAddr).toBe(SIGNER);
     expect(r.fragments.issuerWhitelisted).toBe(false);
-    // whitelist read uses the deployed IssuerRegistry, the human record type, and the signer.
+    // whitelist read uses the deployed IssuerRegistry, the human record type, and the CHAIN-resolved
+    // signer — never one supplied by the caller.
     expect(calls.isWhitelistedFor).toEqual([
       [DEPLOYED_ADDRESSES.IssuerRegistry, "VACCINATION", SIGNER],
     ]);
   });
 
-  it("skips the whitelist read (issuerWhitelisted = null) when no signer is given", async () => {
+  it("resolves the signer from the chain, so the pillar runs with no operator input at all", async () => {
     const doc = validDoc();
     const { reader, calls } = fakeReader({ issuedAt: 1_699_000_000n, isValid: true });
     const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
 
-    expect(r.fragments.issuerWhitelisted).toBeNull();
+    expect(calls.issuedBy).toEqual([[ISSUER.documentStore, doc.signature.merkleRoot]]);
+    expect(r.fragments.issuerWhitelisted).toBe(true);
+    expect(r.verdict).toBe(true);
+  });
+
+  it("an UNRESOLVED whitelist pillar is never a pass (the relabelled-issuer fail-open)", async () => {
+    // `issuedBy` == the zero address: the clone the document names never issued this root. Before the
+    // pillar was mandatory this returned `verdict: true` — which is how a credential relabelled to a
+    // different issuing authority still verified.
+    const doc = validDoc();
+    const { reader, calls } = fakeReader({
+      issuedAt: 1_699_000_000n,
+      isValid: true,
+      issuedBy: "0x0000000000000000000000000000000000000000",
+    });
+    const r = await verifyCredentialOnchain({ wrappedDoc: asRecord(doc), reader, now: NOW });
+
+    expect(r.fragments.issuerWhitelisted).toBeNull(); // indeterminate…
+    expect(r.verdict).toBe(false); // …and therefore NOT a pass.
+    expect(r.signerAddr).toBeNull();
+    // Never ask the registry whether the zero address is whitelisted: that answers the wrong question.
     expect(calls.isWhitelistedFor).toEqual([]);
+  });
+
+  it("an explicit expected signer only tightens the pillar - a mismatch fails it", async () => {
+    const doc = validDoc();
+    const { reader } = fakeReader({
+      issuedAt: 1_699_000_000n,
+      isValid: true,
+      isWhitelistedFor: true,
+    });
+    const r = await verifyCredentialOnchain({
+      wrappedDoc: asRecord(doc),
+      signerAddr: "0x00000000000000000000000000000000000000ff",
+      reader,
+      now: NOW,
+    });
+
+    expect(r.fragments.issuerWhitelisted).toBe(false);
+    expect(r.verdict).toBe(false);
+    expect(r.signerAddr).toBe(SIGNER); // reported value stays the chain's answer
   });
 
   it("reads the CLAIMED root + issuer documentStore, and recomputedRoot matches on a valid doc", async () => {
@@ -208,6 +252,9 @@ describe("verifyCredentialOnchain - classification parity with the vet-api handl
       },
       async isRevoked() {
         return false;
+      },
+      async issuedBy() {
+        return SIGNER;
       },
       async isWhitelistedFor() {
         return true;

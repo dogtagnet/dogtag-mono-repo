@@ -374,6 +374,7 @@ async fn import_credential(
             verification_registry: st.cfg.verification_registry_addr.clone(),
             issuer_clone: doc.issuer.document_store.clone(),
             issuer_signer: String::new(),
+            status_base_url: None,
         });
     let sealed = match crypto::seal_json(st.vault.as_ref(), &body.wrapped_doc).await {
         Ok(s) => s,

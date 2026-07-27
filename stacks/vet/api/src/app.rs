@@ -132,6 +132,10 @@ pub fn protocol_meta(
         verification_registry: cfg.verification_registry_consent_addr.clone(),
         issuer_clone: issuer_clone.to_string(),
         issuer_signer: issuer_signer.to_string(),
+        // No public receipt-status page here: this stack's `/r/<token>` is a one-time record-share
+        // handoff, not a durable PII-free status page. Stamping `deployment_url` would point a
+        // receipt QR at a route that 404s once the token is consumed.
+        status_base_url: None,
     }
 }
 

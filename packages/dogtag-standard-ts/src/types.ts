@@ -38,6 +38,19 @@ export interface ProtocolMeta {
   verificationRegistry: string; // THE routing key
   issuerClone: string; // == issuer.documentStore; the direct isValid target
   issuerSigner: string; // the signer that issued (claim == clone.issuedBy[R]); validated, never trusted
+  /**
+   * A REACHABLE origin (scheme + host [+ port]) serving this issuer's public, PII-free receipt status
+   * page at `<statusBaseUrl>/r/<receiptId>` - stamped by the issuing stack from its `DEPLOYMENT_URL`.
+   * Absent when the issuer publishes no such page.
+   *
+   * `issuer.domain` is NOT this: it is a `did:web` IDENTITY, a stable name that need not resolve and
+   * need not serve anything (the shipped default `gov.example` is RFC-2606 reserved, hence NXDOMAIN).
+   * Renderers MUST use this field and MUST NOT fall back to `issuer.domain`; with no value there is
+   * no status page, and saying so is the honest degradation.
+   *
+   * Outside the Merkle root like the rest of this block, so stamping it disturbs no anchored `R`.
+   */
+  statusBaseUrl?: string;
 }
 
 export interface WrappedDoc {

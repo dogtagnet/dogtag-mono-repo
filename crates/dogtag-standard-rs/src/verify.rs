@@ -408,6 +408,41 @@ mod tests {
     // sample_credential's dogTagId value is "42"; owner_of receives that id.
     const OWNER: &str = "0xAbC0000000000000000000000000000000000001";
 
+    /// Stamping `protocol.statusBaseUrl` into an ALREADY-ISSUED document must not disturb its anchored
+    /// root. This is the premise the receipt-QR fix rests on: `check_integrity` folds only `data` plus
+    /// `privacy.obfuscated`, so the whole `protocol` block is outside `R` and issuers can start
+    /// stamping a reachable status host without invalidating a single credential already in the wild.
+    #[test]
+    fn stamping_a_status_base_url_does_not_move_the_merkle_root() {
+        let doc = good_doc();
+        let (before_state, before_root) = check_integrity(&doc);
+
+        let mut stamped = doc.clone();
+        stamped.protocol = Some(ProtocolMeta {
+            status_base_url: Some("https://receipts.gov.example.org".to_string()),
+            ..protocol_block("0x00000000000000000000000000000000000000a1")
+        });
+        let (after_state, after_root) = check_integrity(&stamped);
+
+        assert_eq!(before_state, FragmentState::Valid);
+        assert_eq!(after_state, FragmentState::Valid);
+        assert_eq!(before_root, after_root, "the protocol block is outside R");
+        assert_eq!(stamped.signature.merkle_root, doc.signature.merkle_root);
+    }
+
+    /// The field is optional and serializes as ABSENT, not `null`, so a renderer's "is there a status
+    /// page?" test stays a plain presence check and pre-stamping documents round-trip byte-identically.
+    #[test]
+    fn an_unstamped_status_base_url_is_omitted_from_the_json_entirely() {
+        let mut doc = good_doc();
+        doc.protocol = Some(protocol_block("0x00000000000000000000000000000000000000a1"));
+        let json = serde_json::to_string(&doc).unwrap();
+        assert!(!json.contains("statusBaseUrl"), "{json}");
+
+        let back: WrappedDoc = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protocol.unwrap().status_base_url, None);
+    }
+
     #[test]
     fn self_import_all_pillars_valid() {
         let doc = good_doc();
@@ -632,6 +667,7 @@ mod tests {
             verification_registry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
             issuer_clone: issuer().document_store,
             issuer_signer: issuer_signer.to_string(),
+            status_base_url: None,
         }
     }
 

@@ -162,6 +162,7 @@ struct WrappedDoc {
     private var sig: [String: Any] { (root["signature"] as? [String: Any]) ?? [:] }
     private var issuerObj: [String: Any] { (root["issuer"] as? [String: Any]) ?? [:] }
     private var data: [String: Any] { (root["data"] as? [String: Any]) ?? [:] }
+    private var protocolObj: [String: Any] { (root["protocol"] as? [String: Any]) ?? [:] }
 
     init?(json: String) {
         guard let d = json.data(using: .utf8),
@@ -176,6 +177,19 @@ struct WrappedDoc {
     var issuerName: String { (issuerObj["name"] as? String) ?? "Unknown issuer" }
     var issuerDomain: String { (issuerObj["domain"] as? String) ?? "" }
     var recordType: String { (issuerObj["recordType"] as? String) ?? "" }
+
+    /// `protocol.statusBaseUrl` — the REACHABLE origin the issuer serves its public, PII-free receipt
+    /// status page from (`<base>/r/<receiptId>`), stamped at issuance from the issuer's
+    /// `DEPLOYMENT_URL`. "" when the issuer publishes none, including every pre-stamping document.
+    ///
+    /// This is NOT `issuerDomain`: that is a `did:web` identity, a name that need not resolve (the
+    /// shipped `gov.example` default is RFC-2606 reserved, hence NXDOMAIN). Never substitute one for
+    /// the other — a QR built from the identity is a dead link wearing a verification affordance.
+    var statusBaseUrl: String {
+        var s = ((protocolObj["statusBaseUrl"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
+        while s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
 
     var dogTagId: String {
         let cs = data["credentialSubject"] as? [String: Any]
