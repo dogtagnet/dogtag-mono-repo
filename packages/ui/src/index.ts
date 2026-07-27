@@ -70,6 +70,8 @@ export {
   txExplorerHref,
   addressExplorerHref,
   shortHex,
+  shortValue,
+  isOpaqueIdentifier,
   formatChainTime,
   formatRelativeTime,
   emittingContractRole,

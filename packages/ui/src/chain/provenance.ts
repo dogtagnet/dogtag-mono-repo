@@ -89,6 +89,37 @@ export function shortHex(v?: string | null, head = 10, tail = 6): string {
 }
 
 /**
+ * Whether `v` is an OPAQUE machine identifier: `0x`-prefixed hex (roots, tx/block hashes, addresses,
+ * record-type and purpose keys, nullifiers) or an all-digit field element (the on-chain `dogTagId`,
+ * which the indexer renders as a decimal `U256`).
+ *
+ * This is the middle-truncation predicate, and the property it tests is opacity rather than encoding:
+ * eliding the middle of an opaque token loses a reader nothing, because the head and tail are what
+ * distinguish two of them and the middle is noise.
+ */
+export function isOpaqueIdentifier(v?: string | null): boolean {
+  if (typeof v !== "string") return false;
+  const s = v.trim();
+  return /^0x[0-9a-fA-F]+$/.test(s) || /^\d+$/.test(s);
+}
+
+/**
+ * The display form of ANY identifier a chain row carries - the one place that decides whether a value
+ * may be middle-truncated.
+ *
+ * A middle-truncator is correct for an opaque identifier and exactly WRONG for a human label, where
+ * the middle is where the meaning lives: at the table's `head = 8`, blind truncation turned
+ * `TRAVEL_CLEARANCE` into `TRAVEL_C…ARANCE` and `SERVICE_ATTESTATION` into `SERVICE_…TATION`, which
+ * read as corruption rather than elision - on the very cell an operator uses to tell what kind of
+ * record an event concerns. Human text is therefore returned whole and left to CSS `truncate`, so it
+ * degrades by clipping (and stays complete in the DOM, the `title`, and the copy affordance).
+ */
+export function shortValue(v?: string | null, head = 10): string {
+  if (!v) return "—";
+  return isOpaqueIdentifier(v) ? shortHex(v, head) : v;
+}
+
+/**
  * The absolute, unambiguous rendering of an on-chain timestamp - the form an audit surface must
  * always offer. Includes the timezone abbreviation, because "14:03" is not evidence without one.
  */

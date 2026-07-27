@@ -6,7 +6,9 @@ import {
   chainProvenance,
   formatChainTime,
   formatRelativeTime,
+  isOpaqueIdentifier,
   shortHex,
+  shortValue,
   type ChainProvenance,
 } from "./provenance";
 
@@ -180,9 +182,11 @@ export function ChainValue({
       </span>
     );
   }
-  const shown = full ? value : shortHex(value, head);
-  // `truncate` clips in CSS, so the full form has to opt out of it as well as out of `shortHex`.
-  const valueClass = full ? "break-all" : "truncate";
+  const opaque = isOpaqueIdentifier(value);
+  const shown = full ? value : shortValue(value, head);
+  // `truncate` clips in CSS, so the full form has to opt out of it as well as out of `shortValue`.
+  // Human text breaks on word boundaries; an opaque identifier has none, so it breaks anywhere.
+  const valueClass = full ? (opaque ? "break-all" : "break-words") : "truncate";
   return (
     <span
       className={cn(

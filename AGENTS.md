@@ -2267,19 +2267,33 @@ columns if you reorder one; and a `ChainValue` with an inline label cannot shrin
 `stacked` in dense columns. Verify layout by measuring
 `table.getBoundingClientRect().width - .overflow-x-auto.clientWidth` at a 1512px viewport, not by eye.
 
+**Only an OPAQUE identifier may be middle-truncated, and `shortValue` is the one place that decides.**
+`shortHex` is a middle-truncator, which is right for hex - head and tail identify it, the middle is
+noise - and exactly WRONG for a human label, where the middle carries the meaning. `ChainValue` used to
+apply it to every value, so at the tables' `head = 8` the government's flagship record type rendered as
+`TRAVEL_C…ARANCE` (and `SERVICE_ATTESTATION` as `SERVICE_…TATION`, an `issuerCreated` name as
+`DogTag G…hority`) - corruption, not elision, on the cell that says what kind of record an event
+concerns. `shortValue` now gates on `isOpaqueIdentifier` (`0x`-hex, or an all-digit field element such
+as the decimal `dogTagId`); human text is returned whole and left to CSS `truncate`, so it degrades by
+clipping while staying complete in the DOM, the `title`, and the copy affordance. Do not reach for
+`shortHex` directly in a component - a new call site is how the mangling comes back.
+
 The row-expansion panel renders values in full via `ChainValue`/`TxRef`'s `full` prop, which swaps
-`truncate` for `break-all`: **dropping the `head` truncation alone is not enough**, because `truncate`
-would still clip the value in CSS - the string would be in the DOM (so a `toContainText` assertion
-passes) while the reader still cannot see it. `labelHidden` is the companion for a caller that prints
-the label itself; it keeps the label for the copy button's accessible name rather than degrading it to
-`Copy full ` as an empty `label` string did.
+`truncate` for `break-all` (`break-words` for human text, which has word boundaries to break on):
+**dropping the `head` truncation alone is not enough**, because `truncate` would still clip the value in
+CSS - the string would be in the DOM (so a `toContainText` assertion passes) while the reader still
+cannot see it. `labelHidden` is the companion for a caller that prints the label itself; it keeps the
+label for the copy button's accessible name rather than degrading it to `Copy full ` as an empty
+`label` string did.
 
 `CopyButton` falls back to a hidden-textarea `document.execCommand("copy")` when `navigator.clipboard`
 is unavailable, and shows a FAILED state when both paths fail. Not legacy nostalgia: `navigator.clipboard`
 is undefined in any non-secure context, and these portals are routinely served over plain `http://` on a
 LAN - so without the fallback the button is dead in exactly the demo topology. It has to be visible
-rather than silent because `shortHex` truncates the STRING, so the elided characters are not in the DOM
-and copy is the operator's route to the full value. Its failure message may only name a fallback every
+rather than silent because middle-truncation removes characters from the STRING, so for an opaque
+identifier the elided characters are not in the DOM at all and copy is the operator's only route to the
+full value (a human label is merely CSS-clipped, so it does survive in the DOM). Its failure message may
+only name a fallback every
 consumer HAS: the row expansion is government-only (vet/groomer Traceability has no expander), so the
 message points at the value's own hover text, which both portals render.
 

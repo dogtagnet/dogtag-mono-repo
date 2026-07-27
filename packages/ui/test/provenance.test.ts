@@ -9,8 +9,10 @@ import {
   formatRelativeTime,
   isEvmAddress,
   isHash32,
+  isOpaqueIdentifier,
   joinedDetailContext,
   shortHex,
+  shortValue,
   txExplorerHref,
 } from "../src/chain/provenance";
 
@@ -86,6 +88,54 @@ describe("shortHex", () => {
     expect(shortHex(REAL_TX)).toBe(`0xabababab…ababab`);
     expect(shortHex("0x0800")).toBe("0x0800");
     expect(shortHex(undefined)).toBe("—");
+  });
+});
+
+describe("isOpaqueIdentifier", () => {
+  it("accepts 0x-hex and all-digit field elements", () => {
+    expect(isOpaqueIdentifier(REAL_TX)).toBe(true);
+    expect(isOpaqueIdentifier("0x0800")).toBe(true);
+    expect(isOpaqueIdentifier("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F")).toBe(true);
+    // The indexer renders the on-chain dogTagId as a decimal U256.
+    expect(isOpaqueIdentifier("12345678901234567890")).toBe(true);
+  });
+
+  it("rejects human text, however long", () => {
+    expect(isOpaqueIdentifier("TRAVEL_CLEARANCE")).toBe(false);
+    expect(isOpaqueIdentifier("SERVICE_ATTESTATION")).toBe(false);
+    expect(isOpaqueIdentifier("grooming_checkin")).toBe(false);
+    expect(isOpaqueIdentifier("DogTag Government Authority")).toBe(false);
+    expect(isOpaqueIdentifier(undefined)).toBe(false);
+  });
+});
+
+describe("shortValue", () => {
+  // The dense table cells render at head=8, which is where blind middle-truncation did its damage.
+  const HEAD = 8;
+
+  it("middle-truncates an opaque identifier exactly as before", () => {
+    expect(shortValue(`0x${"33".repeat(32)}`, HEAD)).toBe("0x333333…333333");
+    expect(shortValue("0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F", HEAD)).toBe("0xB5D665…6c5F9F");
+    // A decimal dogTagId is opaque too - head and tail identify it, the middle is noise.
+    expect(shortValue("12345678901234567890", HEAD)).toBe("12345678…567890");
+    expect(shortValue(REAL_TX)).toBe("0xabababab…ababab");
+  });
+
+  it("NEVER middle-truncates a human label - the middle is where the meaning is", () => {
+    // The regression this guards: at head=8 these rendered as "TRAVEL_C…ARANCE" and
+    // "SERVICE_…TATION", which read as corruption on the cell that names the kind of record.
+    expect(shortValue("TRAVEL_CLEARANCE", HEAD)).toBe("TRAVEL_CLEARANCE");
+    expect(shortValue("SERVICE_ATTESTATION", HEAD)).toBe("SERVICE_ATTESTATION");
+    expect(shortValue("DogTag Government Authority", HEAD)).toBe("DogTag Government Authority");
+    for (const label of ["TRAVEL_CLEARANCE", "SERVICE_ATTESTATION", "DogTag Government Authority"]) {
+      expect(shortValue(label, HEAD)).not.toContain("…");
+    }
+  });
+
+  it("leaves short values and absent ones alone", () => {
+    expect(shortValue("VACCINATION", HEAD)).toBe("VACCINATION");
+    expect(shortValue("0x0800", HEAD)).toBe("0x0800");
+    expect(shortValue(undefined)).toBe("—");
   });
 });
 
