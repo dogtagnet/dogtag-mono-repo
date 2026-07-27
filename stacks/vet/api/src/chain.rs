@@ -633,16 +633,30 @@ impl ChainClient for MemChain {
             if g.issued.get(&key).copied().unwrap_or(0) != 0 {
                 return Err(ChainError::Other("BadRoot: already issued".into()));
             }
+            // `rootIndex.registerRoot(r)` (`DogTagIssuer.sol:56`), write-once and `isClone`-gated. Only
+            // recorded when this fake models a chain that HAS a factory: "issued, but the factory has
+            // no record of it" is a state a verifier must be able to see, so it stays reachable.
+            //
+            // STRICTLY write-once, and it REVERTS on a second claimant rather than quietly keeping the
+            // first (`DogTagIssuerFactory.sol:52`, `require(rootIssuer[root] == address(0), "root
+            // taken")`). Keeping the first would let this fake model a chain where two clones both
+            // report a nonzero `issuedAt` for one root — a state the real chain forbids — so a forgery
+            // test built on it could pass for the wrong reason. Checked BEFORE any mutation, because a
+            // real revert leaves no partial state behind.
+            let root_idx =
+                (!self.factory.is_empty()).then(|| (self.factory.clone(), root.to_lowercase()));
+            if root_idx
+                .as_ref()
+                .is_some_and(|i| g.root_issuers.contains_key(i))
+            {
+                return Err(ChainError::Other("root taken".into()));
+            }
             g.issued.insert(key.clone(), ts);
             // `issuedBy[r] = msg.sender` (`DogTagIssuer.sol:55`) — the H-1 originator the mandatory
             // issuer-whitelist pillar resolves instead of asking an operator to type a signer in.
             g.issued_by.insert(key, signer.clone());
-            // `rootIndex.registerRoot(r)` (`DogTagIssuer.sol:56`), write-once and `isClone`-gated. Only
-            // recorded when this fake models a chain that HAS a factory: "issued, but the factory has
-            // no record of it" is a state a verifier must be able to see, so it stays reachable.
-            if !self.factory.is_empty() {
-                let idx = (self.factory.clone(), root.to_lowercase());
-                g.root_issuers.entry(idx).or_insert_with(|| to_l.clone());
+            if let Some(idx) = root_idx {
+                g.root_issuers.insert(idx, to_l.clone());
             }
             logs.push((root.to_lowercase(), signer.clone()));
         } else {
@@ -1178,6 +1192,40 @@ mod tests {
     fn selector(calldata: &str) -> String {
         let s = calldata.strip_prefix("0x").unwrap();
         s[..8].to_string()
+    }
+
+    /// `DogTagIssuerFactory.registerRoot` is STRICTLY write-once and REVERTS on a second claimant
+    /// (`DogTagIssuerFactory.sol:52`). The fake must revert too rather than quietly keeping the
+    /// first: `issued` is keyed per-clone, so a silent keep would let two clones both report a
+    /// nonzero `issuedAt` for one root — a state the real chain cannot reach, and one a forgery test
+    /// could then pass against for entirely the wrong reason.
+    #[tokio::test]
+    async fn a_second_clone_cannot_claim_a_root_the_factory_already_indexed() {
+        const FACTORY: &str = "0x00000000000000000000000000000000000000fa";
+        const CLONE_A: &str = "0x00000000000000000000000000000000000000a1";
+        const CLONE_B: &str = "0x00000000000000000000000000000000000000b1";
+        let root = format!("0x{:064x}", 7u8);
+
+        let mem = MemChain::new().with_factory(FACTORY);
+        mem.set_signer(0, "0x00000000000000000000000000000000000000c0");
+
+        mem.sign_and_send(0, CLONE_A, &issue_calldata(&root))
+            .await
+            .expect("the first clone registers the root");
+
+        let e = mem
+            .sign_and_send(0, CLONE_B, &issue_calldata(&root))
+            .await
+            .expect_err("a second clone must not be able to claim the same root");
+        assert!(format!("{e}").contains("root taken"), "{e}");
+
+        // The rejected issue left NO partial state: the second clone must not report the root as
+        // issued, or the fake still models the impossible world just one field over.
+        assert!(mem.issued_at(CLONE_B, &root).await.unwrap().is_zero());
+        assert_eq!(
+            mem.root_issuer(FACTORY, &root).await.unwrap().as_deref(),
+            Some(CLONE_A)
+        );
     }
 
     #[test]

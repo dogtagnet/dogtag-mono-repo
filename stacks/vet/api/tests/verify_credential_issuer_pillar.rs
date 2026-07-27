@@ -9,18 +9,33 @@
 //! Every read is now anchored to the factory's write-once `rootIssuer[R]`, and the pillar is mandatory:
 //! only a definite `true` may contribute to a pass.
 //!
-//! MUTATION-CHECKED, and each mutation kills a DIFFERENT test — the three independent halves of the
-//! fix are pinned separately rather than by one test that would go red for any of them:
+//! MUTATION-CHECKED, and each mutation kills a DIFFERENT test — the independent halves of the fix
+//! are pinned separately rather than by one test that would go red for any of them:
 //!   * restoring `issuer_whitelisted.unwrap_or(true)` reds `a_forged_document_store_cannot_verify`;
 //!   * restoring the old `body.issuer_addr`-first resolution order reds
 //!     `an_operator_supplied_issuer_addr_cannot_select_the_answering_contract`;
 //!   * deleting the `&& !issuer_store_differs` verdict term reds
-//!     `a_rewritten_document_store_on_an_anchored_root_is_a_mismatch`.
+//!     `a_rewritten_document_store_on_an_anchored_root_is_a_mismatch`;
+//!   * folding the expected-signer assertion back inside the resolved branch — i.e. dropping the
+//!     `(None, Some(want))` arm's registry read — reds
+//!     `a_factoryless_deployment_still_fails_an_unwhitelisted_expected_signer`, and so does dropping
+//!     the `is_none()` term from `issuer_pillar_ok` (which would let a factory-less `Some(false)`
+//!     pass anyway);
+//!   * breaking the tighten-only asymmetry — returning `Some(whitelisted)` from that arm instead of
+//!     a failure-or-nothing — reds
+//!     `a_factoryless_deployment_cannot_be_talked_into_a_pass_by_an_expected_signer`;
+//!   * collapsing `expectedIssuerState` back into the bare `expectedIssuerDiffers` boolean reds
+//!     `an_unevaluable_expected_clone_assertion_is_reported_not_swallowed`.
 //!
-//! That third one exists because the first test cannot reach it: there the factory has NO record of
-//! the root, so `resolved_issuer` is `None` and `issuer_store_differs` is `false`. The single-field
+//! The third exists because the first test cannot reach it: there the factory has NO record of the
+//! root, so `resolved_issuer` is `None` and `issuer_store_differs` is `false`. The single-field
 //! forgery against a GENUINELY anchored root is a different path, and it is the one where every other
 //! pillar passes.
+//!
+//! The tighten-only test asserts on the STATE FIELDS, not on the verdict, and that is deliberate:
+//! with no factory configured `issuer_pillar_ok` is satisfied by the unavailable branch either way,
+//! so `verdict == true` holds under the mutation too and would pin nothing. `issuerWhitelistState`
+//! and `issuerWhitelisted` are the only places the difference is observable.
 
 mod common;
 
@@ -99,6 +114,29 @@ async fn issue_doc(app: &axum::Router, op: &str, dog_tag_id: &str) -> (String, S
     let (s, doc) = call(app, "GET", &format!("/r/{token}"), None, None).await;
     assert_eq!(s, StatusCode::OK, "get shared: {doc}");
     (record_id, root, doc)
+}
+
+/// A deployment that never set `FACTORY_ADDR`, so the factory-anchored pillar cannot be evaluated at
+/// all. Everything else is wired exactly as `boot()` wires it.
+async fn boot_factoryless() -> (axum::Router, String, String, MemChain) {
+    let mem = MemChain::new();
+    let mut state = state_with(
+        Arc::new(mem.clone()),
+        "memchain".to_string(),
+        REGISTRY.to_string(),
+        ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let mut cfg = (*state.cfg).clone();
+    cfg.factory_addr = String::new();
+    state.cfg = Arc::new(cfg);
+    let app = vet_api::router(state);
+    let (_admin, op, backend) = boot_custody(&app).await;
+    let rt = record_type_key("VACCINATION");
+    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_record_type(ISSUER, &rt);
+    (app, op, backend, mem)
 }
 
 async fn verify(app: &axum::Router, op: &str, body: Value) -> Value {
@@ -242,6 +280,7 @@ async fn an_expected_signer_can_only_tighten() {
     .await;
     assert_eq!(b["verdict"], true, "{b}");
     assert_eq!(b["fragments"]["issuerWhitelistState"], "passed", "{b}");
+    assert_eq!(b["fragments"]["expectedSignerState"], "matched", "{b}");
 
     // Asserting a different signer: the pillar FAILS, even though `issuedBy[R]` is whitelisted.
     let b = verify(
@@ -255,6 +294,7 @@ async fn an_expected_signer_can_only_tighten() {
         "a wrong expected signer must fail: {b}"
     );
     assert_eq!(b["fragments"]["issuerWhitelistState"], "failed", "{b}");
+    assert_eq!(b["fragments"]["expectedSignerState"], "differs", "{b}");
     assert_eq!(b["status"], "issuer_not_whitelisted", "{b}");
     // The reported signer is still the CHAIN's answer, never the caller's claim.
     assert_eq!(b["signerAddr"], backend.to_lowercase(), "{b}");
@@ -267,6 +307,112 @@ async fn an_expected_signer_can_only_tighten() {
     )
     .await;
     assert_eq!(b["verdict"], true, "{b}");
+    assert_eq!(b["fragments"]["expectedSignerState"], "notAsserted", "{b}");
+}
+
+/// Reporting the pillar UNAVAILABLE must not cost a capability that worked without a factory.
+///
+/// "We could not resolve the clone" is not "we stopped checking anything". Before this, the caller's
+/// expected-signer assertion lived inside the resolved branch, so on a factory-less deployment it was
+/// silently DISCARDED — an operator who explicitly named the signer they expected got `verdict: true`
+/// with no check performed at all, which is strictly weaker than the endpoint was before the pillar
+/// existed. It is exactly the defect class this whole change is about, turned on the caller's own
+/// claim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_factoryless_deployment_still_fails_an_unwhitelisted_expected_signer() {
+    let (app, op, _backend, _mem) = boot_factoryless().await;
+    let (_id, _root, doc) = issue_doc(&app, &op, "51").await;
+
+    let b = verify(
+        &app,
+        &op,
+        serde_json::json!({ "wrappedDoc": doc, "signerAddr": ATTACKER_SIGNER }),
+    )
+    .await;
+
+    assert_eq!(b["issuerResolution"], "noFactoryConfigured", "{b}");
+    // The registry really was consulted, and it said no.
+    assert_eq!(
+        b["fragments"]["expectedSignerState"], "unanchoredNotWhitelisted",
+        "the assertion must still reach this deployment's own registry: {b}"
+    );
+    assert_eq!(b["fragments"]["issuerWhitelisted"], false, "{b}");
+    // A DEFINITE failure outranks "we never asked" — reporting it as unavailable would hide a real
+    // failure behind our own configuration gap.
+    assert_eq!(b["fragments"]["issuerWhitelistState"], "failed", "{b}");
+    assert_eq!(
+        b["verdict"], false,
+        "a definite whitelist failure must fail the credential even with no factory: {b}"
+    );
+    assert_eq!(b["status"], "issuer_not_whitelisted", "{b}");
+}
+
+/// The other half of that ruling, and the one that must not be reintroduced as a bypass: the
+/// expected-signer path is TIGHTEN-ONLY. It may contribute a definite failure and may NEVER
+/// contribute a pass.
+///
+/// With no factory we still could not resolve the clone, so a signer that happens to be whitelisted
+/// shows nothing about whether it issued THIS root. The pillar therefore stays unavailable.
+///
+/// Asserted on the STATE FIELDS, not the verdict: `issuer_pillar_ok` is satisfied by the unavailable
+/// branch regardless, so `verdict == true` holds under the broken version too and would pin nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_factoryless_deployment_cannot_be_talked_into_a_pass_by_an_expected_signer() {
+    let (app, op, backend, _mem) = boot_factoryless().await;
+    let (_id, _root, doc) = issue_doc(&app, &op, "52").await;
+
+    let b = verify(
+        &app,
+        &op,
+        serde_json::json!({ "wrappedDoc": doc, "signerAddr": backend }),
+    )
+    .await;
+
+    // The asserted signer IS whitelisted for this record type...
+    assert_eq!(
+        b["fragments"]["expectedSignerState"], "unanchoredUnconfirmed",
+        "{b}"
+    );
+    // ...and that changes NOTHING about the pillar. Still unevaluated, still not a pass.
+    assert_eq!(
+        b["fragments"]["issuerWhitelisted"],
+        Value::Null,
+        "a whitelisted expected signer must never promote an unresolved pillar: {b}"
+    );
+    assert_eq!(
+        b["fragments"]["issuerWhitelistState"], "unavailableNoFactoryConfigured",
+        "{b}"
+    );
+    assert_eq!(b["issuerResolution"], "noFactoryConfigured", "{b}");
+    // Unchanged from the no-assertion case: our own misconfiguration still does not condemn it.
+    assert_eq!(b["verdict"], true, "{b}");
+}
+
+/// A caller assertion that could not be evaluated must be VISIBLE, never silently discarded. The
+/// boolean `expectedIssuerDiffers` spells "checked and held" and "never checked" the same way, which
+/// is precisely how a dropped check comes to read as a satisfied one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unevaluable_expected_clone_assertion_is_reported_not_swallowed() {
+    let (app, op, _backend, _mem) = boot_factoryless().await;
+    let (_id, _root, doc) = issue_doc(&app, &op, "53").await;
+
+    let b = verify(
+        &app,
+        &op,
+        serde_json::json!({ "wrappedDoc": doc, "issuerAddr": HOSTILE }),
+    )
+    .await;
+
+    assert_eq!(
+        b["fragments"]["expectedIssuerState"], "notEvaluated",
+        "an unevaluable clone assertion must say so: {b}"
+    );
+    // The bare boolean cannot tell this apart from a satisfied assertion — which is the whole reason
+    // the state field exists beside it.
+    assert_eq!(b["fragments"]["expectedIssuerDiffers"], false, "{b}");
+    assert_eq!(b["expectedIssuerAddr"], HOSTILE, "{b}");
+    // And it still did not select which contract answers.
+    assert_ne!(b["issuerAddr"], HOSTILE, "{b}");
 }
 
 /// The stated repro in its most direct form: the root IS genuinely anchored to the real clone, and

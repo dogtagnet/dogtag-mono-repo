@@ -343,6 +343,25 @@ export interface VerifyCredentialResp {
     documentStoreDiffers?: boolean;
     /** The caller's expected-clone assertion disagrees with the factory-resolved clone. */
     expectedIssuerDiffers?: boolean;
+    /**
+     * What became of the caller's expected-clone assertion. `expectedIssuerDiffers` spells "held" and
+     * "could not be checked" the same way (`false`), which is how a dropped check reads as a
+     * satisfied one - this says which it was.
+     */
+    expectedIssuerState?: "notAsserted" | "matched" | "differs" | "notEvaluated";
+    /**
+     * What became of the caller's expected-signer assertion. It may only ever TIGHTEN: `differs` and
+     * `unanchoredNotWhitelisted` are definite failures folded into the pillar, while
+     * `unanchoredUnconfirmed` (no clone resolved, but the asserted address is whitelisted for the
+     * claimed record type) deliberately promotes nothing - being whitelisted does not show that
+     * address issued THIS root.
+     */
+    expectedSignerState?:
+      | "notAsserted"
+      | "matched"
+      | "differs"
+      | "unanchoredNotWhitelisted"
+      | "unanchoredUnconfirmed";
   };
 }
 export interface VerifySessionStartReq {

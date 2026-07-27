@@ -1135,14 +1135,23 @@ async fn verify_credential(
         .as_deref()
         .map(|r| !r.eq_ignore_ascii_case(doc.issuer.document_store.trim()))
         .unwrap_or(false);
-    // The caller's expected-clone assertion, which can only TIGHTEN.
-    let expected_clone_differs = match (
-        &resolved_issuer,
-        body.issuer_addr.as_deref().filter(|s| !s.trim().is_empty()),
-    ) {
-        (Some(actual), Some(want)) => !actual.eq_ignore_ascii_case(want.trim()),
-        _ => false,
+    // The caller's expected-clone assertion, which can only TIGHTEN. An assertion that could NOT be
+    // evaluated — no clone resolved, so there is nothing authoritative to compare against — is
+    // reported as `notEvaluated` rather than collapsed into the same `false` a satisfied assertion
+    // produces. A caller must always be able to tell "checked and held" from "never checked"; that is
+    // the same rule the pillar's own explicit states exist for, applied to the caller's own claim.
+    let want_clone = body
+        .issuer_addr
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let expected_clone_state = match (resolved_issuer.as_deref(), want_clone) {
+        (_, None) => "notAsserted",
+        (Some(actual), Some(want)) if actual.eq_ignore_ascii_case(want) => "matched",
+        (Some(_), Some(_)) => "differs",
+        (None, Some(_)) => "notEvaluated",
     };
+    let expected_clone_differs = expected_clone_state == "differs";
 
     let (integrity_state, recomputed) = check_integrity(&doc);
     let integrity_valid = integrity_state == FragmentState::Valid;
@@ -1195,7 +1204,12 @@ async fn verify_credential(
     //   Some(false) — resolved, but not whitelisted (or not the expected signer): a real failure
     //   None        — unresolvable: INDETERMINATE, and never a pass
     let rt_key = app::rt_key(&record_type);
-    let (resolved_signer, issuer_whitelisted) = match resolved_issuer.as_deref() {
+    let want_signer = body
+        .signer_addr
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let (resolved_signer, chain_whitelisted) = match resolved_issuer.as_deref() {
         // EVERY read here is made against the FACTORY-RESOLVED clone. Using `issuer_addr` would let the
         // document's own claim answer the question about itself whenever the factory had no record —
         // asking the suspect for its own references.
@@ -1243,16 +1257,7 @@ async fn verify_credential(
                                     )
                                 }
                             };
-                            // An explicitly expected signer only ever makes the pillar STRICTER — it
-                            // can tighten, never enable. Supplying one is an assertion now, not the
-                            // thing that switches the check on. An empty string is not an assertion.
-                            let matches_expected = body
-                                .signer_addr
-                                .as_deref()
-                                .filter(|s| !s.trim().is_empty())
-                                .map(|want| want.trim().eq_ignore_ascii_case(&signer))
-                                .unwrap_or(true);
-                            (Some(signer), Some(whitelisted && matches_expected))
+                            (Some(signer), Some(whitelisted))
                         }
                     }
                 }
@@ -1263,14 +1268,65 @@ async fn verify_credential(
         _ => (None, None),
     };
 
+    // The caller's expected-signer assertion, folded here rather than inside the resolved branch so
+    // that it is evaluated on EVERY path. It used to live in the innermost arm, which meant an
+    // explicit operator assertion was silently DISCARDED whenever the clone could not be resolved —
+    // exactly the "a check stopped running and nothing said so" defect this whole pillar exists to
+    // remove, and it landed hardest on deployments with no factory, where the assertion was the only
+    // check left.
+    //
+    // It may only ever TIGHTEN: it can turn a pass into a definite failure and can NEVER manufacture
+    // a pass. That asymmetry is what lets it stay live on an unresolvable clone without reopening the
+    // hole — an unresolved pillar stays unresolved no matter how agreeable the assertion is.
+    //
+    //   matched / differs        — the chain named the originator, so the claim is decidable.
+    //   unanchoredNotWhitelisted — no originator to compare against, but the asserted address is not
+    //                              whitelisted at all for the CLAIMED record type: a definite failure.
+    //                              Sourcing that record type from the document is sound ONLY because
+    //                              this branch can never yield a pass — a caller who names a type
+    //                              their signer happens to hold gains nothing by it.
+    //   unanchoredUnconfirmed    — as above but the address IS whitelisted, which still does not show
+    //                              it issued THIS root. Nothing is promoted.
+    let expected_signer_state = match (resolved_signer.as_deref(), want_signer) {
+        (_, None) => "notAsserted",
+        (Some(actual), Some(want)) if want.eq_ignore_ascii_case(actual) => "matched",
+        (Some(_), Some(_)) => "differs",
+        (None, Some(want)) => match st
+            .chain
+            .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, want)
+            .await
+        {
+            Ok(true) => "unanchoredUnconfirmed",
+            Ok(false) => "unanchoredNotWhitelisted",
+            Err(e) => {
+                return err(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("on-chain whitelist read failed: {e}"),
+                )
+            }
+        },
+    };
+    let signer_assertion_failed = matches!(
+        expected_signer_state,
+        "differs" | "unanchoredNotWhitelisted"
+    );
+    let issuer_whitelisted = if signer_assertion_failed {
+        Some(false)
+    } else {
+        chain_whitelisted
+    };
+
     // Only a DEFINITE `true` contributes to a pass. `unwrap_or(true)` is deliberately gone: a pillar
     // that could not be resolved is indeterminate, never a pass.
     //
     // The one exception is our OWN misconfiguration: with no factory configured we never asked, which
     // is not evidence about the credential and must not fail it. That state is reported explicitly
     // (`issuerWhitelistState`), never as a silent absence, because misconfigure-to-bypass would
-    // otherwise be a real attack path.
-    let issuer_pillar_ok = issuer_whitelisted == Some(true) || !factory_configured;
+    // otherwise be a real attack path. The `is_none()` term is load-bearing: "we never asked" is only
+    // the unresolved case, so a DEFINITE failure the caller's assertion produced must still fail the
+    // credential on a factory-less deployment. Without it, unavailable would swallow it.
+    let issuer_pillar_ok =
+        issuer_whitelisted == Some(true) || (!factory_configured && issuer_whitelisted.is_none());
     let verdict = integrity_valid
         && onchain_valid
         && issuer_pillar_ok
@@ -1301,14 +1357,15 @@ async fn verify_credential(
     // Why `issuerWhitelisted` is what it is, as an explicit state rather than a bare tri-state the
     // caller has to interpret. "not evaluated because this verifier has no factory configured" and
     // "evaluated and passed" must never be indistinguishable.
-    let whitelist_state = if !factory_configured {
-        "unavailableNoFactoryConfigured"
-    } else {
-        match issuer_whitelisted {
-            Some(true) => "passed",
-            Some(false) => "failed",
-            None => "unresolved",
-        }
+    //
+    // A DEFINITE outcome outranks "we never asked", so `Some(false)` reads as `failed` even with no
+    // factory configured: the caller's assertion genuinely was checked and genuinely did fail, and
+    // reporting that as unavailable would hide a real failure behind our own gap.
+    let whitelist_state = match issuer_whitelisted {
+        Some(true) => "passed",
+        Some(false) => "failed",
+        None if !factory_configured => "unavailableNoFactoryConfigured",
+        None => "unresolved",
     };
 
     ok(json!({
@@ -1346,6 +1403,15 @@ async fn verify_credential(
             // assertion does.
             "documentStoreDiffers": issuer_store_differs,
             "expectedIssuerDiffers": expected_clone_differs,
+            // What became of each of the caller's OWN assertions. A supplied assertion that could not
+            // be evaluated must be distinguishable from one that was evaluated and held — the boolean
+            // above spells both `false`, which is how a dropped check reads as a satisfied one.
+            //   "notAsserted" | "matched" | "differs" | "notEvaluated"
+            "expectedIssuerState": expected_clone_state,
+            //   "notAsserted" | "matched" | "differs"
+            //   | "unanchoredNotWhitelisted"  — definite failure, folded into the pillar
+            //   | "unanchoredUnconfirmed"     — whitelisted, but never promotes the pillar
+            "expectedSignerState": expected_signer_state,
         },
     }))
 }
