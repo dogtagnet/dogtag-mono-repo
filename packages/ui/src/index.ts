@@ -97,6 +97,29 @@ export {
   IssuanceStatusPanel,
   type IssuanceStatusPanelProps,
 } from "./domain/IssuanceStatusPanel";
+export {
+  CustodyUnlockForm,
+  CustodyUnlockDialog,
+  CustodyUnlockPanel,
+  CustodyLockedBanner,
+  type CustodyUnlockFormProps,
+  type CustodyUnlockDialogProps,
+  type CustodyUnlockPanelProps,
+  type CustodyLockedBannerProps,
+} from "./domain/CustodyUnlock";
+
+// custody lock / unlock routing
+export {
+  UNLOCK_PATH,
+  NEXT_PARAM,
+  buildUnlockPath,
+  custodyStateFromSigners,
+  isCustodyLockedError,
+  isNoSealError,
+  isWrongPassphraseError,
+  sanitizeNextPath,
+  type CustodyState,
+} from "./custody/lock";
 
 // api
 export { createApiClient, type ApiClient, type ApiClientOptions } from "./api/client";
@@ -124,6 +147,7 @@ export {
   demoRabiesIssue,
   DEMO_ADMIN_PASSWORD,
   DEMO_OPERATOR_PASSWORD,
+  DEMO_CUSTODY_PASSPHRASE,
   DEMO_RECORD_TYPE,
   DEMO_VERIFY_PURPOSES,
   DEMO_VACCINATION_DOCUMENT_STORE,

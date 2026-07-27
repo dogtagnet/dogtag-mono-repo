@@ -3,6 +3,7 @@ import { useApp } from "./app/AppContext";
 import { Layout } from "./app/Layout";
 import { Login } from "./pages/Login";
 import { Setup } from "./pages/Setup";
+import { Unlock } from "./pages/Unlock";
 import { Issue } from "./pages/Issue";
 import { IssueDogTag } from "./pages/IssueDogTag";
 import { Records } from "./pages/Records";
@@ -18,6 +19,8 @@ export function App() {
 
   return (
     <Routes>
+      {/* Standalone (no Layout): unlocking is the whole page, not a section of the portal. */}
+      <Route path="/unlock" element={<Unlock />} />
       <Route path="/setup" element={<Layout title="Setup"><Setup /></Layout>} />
       {/* Register-first: registering a pet is the prerequisite, so it leads (see Layout's NAV). */}
       <Route

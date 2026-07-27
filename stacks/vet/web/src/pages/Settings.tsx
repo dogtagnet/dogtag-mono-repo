@@ -15,7 +15,7 @@ import { useEffect, useState } from "react";
 import { useApp } from "../app/AppContext";
 
 export function Settings() {
-  const { api, signingMode, setSigningMode, unlocked } = useApp();
+  const { api, signingMode, setSigningMode, custodyState } = useApp();
   const { toast } = useToast();
   const [whitelist, setWhitelist] = useState<WhitelistRow[]>([]);
   const [backendSigner, setBackendSigner] = useState<string>();
@@ -36,7 +36,7 @@ export function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [api, unlocked]);
+  }, [api, custodyState]);
 
   async function changeMode(mode: SigningMode) {
     try {
@@ -66,7 +66,10 @@ export function Settings() {
       <StatusPanel
         mode={signingMode}
         whitelist={whitelist}
-        genesisState={unlocked ? "initialized" : "locked"}
+        // Report the seal honestly: a backend we have not reached yet is UNKNOWN, not locked.
+        genesisState={
+          custodyState === "unlocked" ? "initialized" : custodyState === "locked" ? "locked" : "unknown"
+        }
         backendSignerAddress={signingMode === "backend" ? backendSigner : undefined}
       />
 

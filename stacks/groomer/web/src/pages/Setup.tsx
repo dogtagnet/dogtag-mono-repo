@@ -9,29 +9,29 @@ import {
   Input,
   Label,
   useToast,
+  buildUnlockPath,
   DEMO_ADMIN_PASSWORD,
+  DEMO_CUSTODY_PASSPHRASE,
   DEMO_WHITELIST_APPLY_GROOMER,
   type AccountInfo,
   type GenesisStartResp,
 } from "@dogtag/ui";
 import { Check, Copy, KeyRound, ShieldAlert } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 
 type Step = "admin" | "genesis" | "confirm" | "unlock" | "accounts" | "apply" | "dns" | "done";
 
-// Demo-only passphrase (matches the vet portal) — used to auto-fill the genesis-confirm + unlock
-// steps under VITE_DEMO_MODE so the local demo is click-through. Never used in production.
-const DEMO_PASSPHRASE = "demo-pass-0000";
-
 export function Setup() {
-  const { api, adminToken, setAdminToken, setUnlocked, setSignerAddress } = useApp();
+  const { api, adminToken, setAdminToken, setCustodyState, setSignerAddress } = useApp();
   const { toast } = useToast();
-  // Always start at the admin login: it reports the custody state and routes to Unlock (when the seal
-  // is already initialized — e.g. hydrated from disk after a backend restart) instead of Genesis. A
-  // stale token from a prior session can't be trusted to mean "uninitialized".
+  // Always start at the admin login: it is the only endpoint that reports the custody state, which
+  // decides between Genesis (no seal) and the dedicated /unlock page (sealed but locked). A stale
+  // token from a prior session can't be trusted to mean "uninitialized".
   const [step, setStep] = useState<Step>("admin");
+  const navigate = useNavigate();
 
   // Stale-session recovery: if the admin (custody) token is cleared (e.g. a 401 after a backend
   // restart), drop back to the Custody admin login instead of stranding the user mid-wizard.
@@ -46,13 +46,15 @@ export function Setup() {
         <AdminLogin
           onDone={(tok, initialized, unlocked) => {
             setAdminToken(tok);
-            // route by custody state: already unlocked -> accounts; initialized-but-locked (seal
-            // hydrated after a restart) -> Unlock; fresh -> Genesis.
+            // Route by custody state. Setup owns GENESIS only: an already-sealed instance that is
+            // merely locked (seal hydrated from disk after a restart) belongs on the dedicated
+            // /unlock page, which returns here once custody is open. Re-entering the wizard's own
+            // unlock step is what made unlocking a scavenger hunt.
             if (unlocked) {
-              setUnlocked(true);
+              setCustodyState("unlocked");
               setStep("accounts");
             } else if (initialized) {
-              setStep("unlock");
+              navigate(buildUnlockPath("/setup"));
             } else {
               setStep("genesis");
             }
@@ -73,7 +75,7 @@ export function Setup() {
       {step === "unlock" && (
         <Unlock
           onNext={(addr) => {
-            setUnlocked(true);
+            setCustodyState("unlocked");
             if (addr) setSignerAddress(addr);
             setStep("accounts");
           }}
@@ -255,7 +257,7 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
     ? JSON.parse(sessionStorage.getItem("groomer.demoWords") ?? "[]")
     : [];
   const [words, setWords] = useState<string[]>(() => indices.map((idx) => demoWords[idx] ?? ""));
-  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_PASSPHRASE : "");
+  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_CUSTODY_PASSPHRASE : "");
   const [busy, setBusy] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -325,7 +327,7 @@ function GenesisConfirm({ onNext }: { onNext: (address?: string) => void }) {
 function Unlock({ onNext }: { onNext: (address?: string) => void }) {
   const { api } = useApp();
   const { toast } = useToast();
-  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_PASSPHRASE : "");
+  const [passphrase, setPassphrase] = useState(env.demoMode ? DEMO_CUSTODY_PASSPHRASE : "");
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<AccountInfo[] | null>(null);
 

@@ -39,6 +39,7 @@ import type {
   VerifySessionStartResp,
   VerifySessionStatusResp,
 } from "./types";
+import { isCustodyLockedError, isWrongPassphraseError } from "../custody/lock";
 
 export interface ApiClientOptions {
   /** vet backend base URL (e.g. "/api" with a Vite proxy, or an absolute origin) */
@@ -56,9 +57,32 @@ export interface ApiClientOptions {
    * "operator"/"admin" token kinds (not record-JWT bearer or unauthenticated calls).
    */
   onUnauthorized?: (kind: "operator" | "admin") => void;
+  /**
+   * Invoked when ANY call is refused because the backend's custody seal is locked (see
+   * `isCustodyLockedError`). The host raises its point-of-need unlock prompt and resolves TRUE once
+   * the seal is open, at which point this client REPLAYS the refused request exactly once, so the
+   * operator's action continues instead of dying in an error toast. Resolving false (or omitting the
+   * handler) rethrows the original refusal.
+   *
+   * Replay is safe because the backends check `is_unlocked()` at the TOP of each handler, before any
+   * store or chain write, so a "not unlocked" refusal means nothing happened. Purely a client-side
+   * signal — the backend's locked state and its gates are untouched.
+   */
+  onCustodyLocked?: () => boolean | Promise<boolean>;
 }
 
 type TokenKind = "operator" | "admin" | "bearer" | "none";
+
+/**
+ * A 401 that REJECTS A SUBMITTED CREDENTIAL rather than reporting a dead session, keyed on the
+ * backend's message. `/admin/unlock` answers a wrong passphrase with 401; clearing the just-issued
+ * admin token there would replace the unlock page's inline "wrong passphrase" with a bogus "session
+ * expired". Exempting the whole path would go too far — the same route's admin gate raises `missing
+ * admin session` / `invalid admin session` with the same status, and those ARE dead sessions.
+ */
+function isCredentialRejection(err: unknown): boolean {
+  return isWrongPassphraseError(err);
+}
 
 function makeError(status: number, body: unknown): ApiError {
   const msg =
@@ -82,6 +106,8 @@ export function createApiClient(opts: ApiClientOptions) {
     tokenKind: TokenKind = "operator",
     explicitToken?: string,
     rootBase: "vet" | "central" = "vet",
+    /** Internal: set on the single post-unlock replay so a still-locked backend cannot loop. */
+    isRetry = false,
   ): Promise<T> {
     const root = rootBase === "central" ? central : base;
     if (!root) throw new Error(`No base URL configured for ${rootBase} API`);
@@ -102,13 +128,26 @@ export function createApiClient(opts: ApiClientOptions) {
     const text = await res.text();
     const parsed: unknown = text ? safeJson(text) : null;
     if (!res.ok) {
+      const e = makeError(res.status, parsed);
       // Stale-session handling: a 401 on a token-bearing call means the persisted session was
       // invalidated (e.g. the backend restarted its in-memory session store). Clear it so the UI
       // routes back to login instead of replaying a dead token.
-      if (res.status === 401 && (tokenKind === "operator" || tokenKind === "admin") && !explicitToken) {
+      if (
+        res.status === 401 &&
+        (tokenKind === "operator" || tokenKind === "admin") &&
+        !explicitToken &&
+        !isCredentialRejection(e)
+      ) {
         opts.onUnauthorized?.(tokenKind);
       }
-      throw makeError(res.status, parsed);
+      // Locked-custody handling: a restart drops the decrypted seed, so any custody-backed call
+      // starts failing with "not unlocked". Surface it centrally, let the host unlock in place, then
+      // replay the request ONCE so the operator's action completes and their form survives.
+      if (isCustodyLockedError(e) && !isRetry && opts.onCustodyLocked) {
+        const unlocked = await opts.onCustodyLocked();
+        if (unlocked) return request<T>(method, path, body, tokenKind, explicitToken, rootBase, true);
+      }
+      throw e;
     }
     return parsed as T;
   }

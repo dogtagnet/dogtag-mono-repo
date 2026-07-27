@@ -1,4 +1,11 @@
-import { createApiClient, useToast, type ApiClient, type SigningMode } from "@dogtag/ui";
+import {
+  createApiClient,
+  custodyStateFromSigners,
+  useToast,
+  type ApiClient,
+  type CustodyState,
+  type SigningMode,
+} from "@dogtag/ui";
 import {
   createContext,
   useCallback,
@@ -26,9 +33,19 @@ interface AppContextValue {
   setSignerAddress: (a: string | null) => void;
   signingMode: SigningMode;
   setSigningMode: (m: SigningMode) => void;
-  /** in-memory unlock flag — the backend keeps the real state; this gates optimistic UI */
-  unlocked: boolean;
-  setUnlocked: (v: boolean) => void;
+  /**
+   * What we currently believe about the backend's custody seal. `unknown` until the probe (or a
+   * failing call) tells us otherwise; nothing may announce a lock on `unknown`, since a backend that
+   * is merely down is not a locked one.
+   */
+  custodyState: CustodyState;
+  setCustodyState: (s: CustodyState) => void;
+  /** True while the point-of-need unlock prompt is raised. */
+  unlockPromptOpen: boolean;
+  /** Resolve the pending unlock prompt: true once the seal is open, false if it was dismissed. */
+  resolveUnlockPrompt: (unlocked: boolean) => void;
+  /** Raise the unlock prompt by hand (the locked banner) rather than via a refused request. */
+  openUnlockPrompt: () => void;
   logout: () => void;
 }
 
@@ -48,7 +65,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [adminToken, setAdminTokenState] = useState<string | null>(() => read(ADMIN_KEY));
   const [signerAddress, setSignerAddressState] = useState<string | null>(() => read(SIGNER_KEY));
   const [signingMode, setSigningMode] = useState<SigningMode>("backend");
-  const [unlocked, setUnlocked] = useState(false);
+  const [custodyState, setCustodyState] = useState<CustodyState>("unknown");
+  const [unlockPromptOpen, setUnlockPromptOpen] = useState(false);
+  // A single in-flight prompt shared by every request that trips the lock at once, so two concurrent
+  // 409s raise ONE dialog and both replay on the same answer.
+  const pendingUnlock = useRef<{ promise: Promise<boolean>; resolve: (v: boolean) => void } | null>(null);
+
+  const requestUnlock = useCallback((): Promise<boolean> => {
+    setCustodyState("locked");
+    if (pendingUnlock.current) return pendingUnlock.current.promise;
+    let resolve!: (v: boolean) => void;
+    const promise = new Promise<boolean>((r) => {
+      resolve = r;
+    });
+    pendingUnlock.current = { promise, resolve };
+    setUnlockPromptOpen(true);
+    return promise;
+  }, []);
+
+  const resolveUnlockPrompt = useCallback((didUnlock: boolean) => {
+    setUnlockPromptOpen(false);
+    if (didUnlock) setCustodyState("unlocked");
+    const pending = pendingUnlock.current;
+    pendingUnlock.current = null;
+    pending?.resolve(didUnlock);
+  }, []);
+
+  const openUnlockPrompt = useCallback(() => {
+    void requestUnlock();
+  }, [requestUnlock]);
 
   const persist = (key: string, t: string | null) => {
     try {
@@ -80,13 +125,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   onUnauthorizedRef.current = (kind) => {
     if (kind === "operator") setOpToken(null);
     setAdminToken(null);
-    setUnlocked(false);
+    // The session died, but that says nothing about the seal — go back to "unknown" so the probe
+    // re-runs after the next login instead of asserting a lock we did not observe.
+    setCustodyState("unknown");
     toast({
       title: "Session expired",
       description: "Your session is no longer valid — please log in again.",
       variant: "danger",
     });
   };
+
+  // Routed through a ref so the once-created client always sees the latest resolver.
+  const onCustodyLockedRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  onCustodyLockedRef.current = () => requestUnlock();
 
   const api = useMemo(
     () =>
@@ -96,6 +147,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         getOperatorToken: () => read(OP_KEY),
         getAdminToken: () => read(ADMIN_KEY),
         onUnauthorized: (kind) => onUnauthorizedRef.current(kind),
+        // Any "not unlocked" refusal raises the in-place prompt and, once the seal opens, the client
+        // replays the refused request. The page never unmounts, so a half-filled form is preserved
+        // and the operator's action simply continues.
+        onCustodyLocked: () => onCustodyLockedRef.current(),
       }),
     [],
   );
@@ -103,8 +158,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     setOpToken(null);
     setAdminToken(null);
-    setUnlocked(false);
+    setCustodyState("unknown");
   }, [setOpToken, setAdminToken]);
+
+  // Custody probe: once an operator session exists and we have no opinion yet, ask the existing
+  // read-only GET /issuer/signers whether the seal is unlocked. A restart re-locks custody silently,
+  // so this is what turns "the portal loads" into a visible locked banner. It routes nowhere - it
+  // only sets `custodyState` - because read-only work must stay reachable while locked. Any failure
+  // leaves the state `unknown`: a backend that is down must not look like a locked one.
+  useEffect(() => {
+    if (!opToken || custodyState !== "unknown") return;
+    let cancelled = false;
+    api
+      .issuerSigners()
+      .then((r) => {
+        if (!cancelled) setCustodyState(custodyStateFromSigners(r));
+      })
+      .catch(() => {
+        /* unauthenticated or backend down — stay `unknown` and do not redirect */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [opToken, custodyState, api]);
 
   // best-effort: load persisted signing mode once an operator session exists.
   useEffect(() => {
@@ -134,8 +210,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSignerAddress,
       signingMode,
       setSigningMode,
-      unlocked,
-      setUnlocked,
+      custodyState,
+      setCustodyState,
+      unlockPromptOpen,
+      resolveUnlockPrompt,
+      openUnlockPrompt,
       logout,
     }),
     [
@@ -147,7 +226,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       signerAddress,
       setSignerAddress,
       signingMode,
-      unlocked,
+      custodyState,
+      unlockPromptOpen,
+      resolveUnlockPrompt,
+      openUnlockPrompt,
       logout,
     ],
   );

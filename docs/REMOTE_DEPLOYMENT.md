@@ -361,7 +361,8 @@ Expected: `{"status":"ok"}`.
 ## 6. Custody runbook (manual — no autofill)
 
 Per **business stack (vet, groomer)** and for the **admin signer**, on the portal Setup wizard (reached
-through the TLS domain `https://<DOMAIN>/`):
+through the TLS domain `https://<DOMAIN>/`). Setup owns **genesis** (steps 1-4); **re-unlocking**
+after a restart (step 5) is a dedicated page, not a wizard step:
 
 1. **Genesis** a new **24-word BIP-39** seed. The words are shown **once** — **WRITE THEM DOWN**. There
    is **no autofill** in production (`VITE_DEMO_MODE` unset) and the seed is never stashed.
@@ -369,8 +370,14 @@ through the TLS domain `https://<DOMAIN>/`):
 3. Set a **strong passphrase**. The seed is scrypt/age-encrypted under it and stored as a
    **`CustodyBlob` in Mongo**.
 4. **Unlock** with that passphrase to wire the signer into the chain client.
-5. **Re-unlock after EVERY api restart** — custody is **not** auto-unlocked. Records and the encrypted
-   seed survive the restart, but the signer cannot sign until you `POST /admin/unlock` again.
+5. **Re-unlock after EVERY api restart** — custody is **not** auto-unlocked.
+   Records and the encrypted seed survive the restart, but the signer cannot sign until you `POST /admin/unlock` again.
+   You do **not** hunt for this in Setup.
+   On this (Mongo) path the operator session outlives the restart while the seal re-locks, so the lock usually surfaces on the **first action** that trips it: the portal raises an **unlock prompt in place**, over the page you are already on, and **replays the refused request** once the seal opens - so a half-filled form is never discarded and nothing navigates.
+   Arriving at an already-locked backend instead shows a **non-blocking banner** with an Unlock button; read-only pages (records, traceability, verification history) stay reachable, because the operator password and the custody-admin password are **separate credentials** and front-desk staff must not be shut out by a lock they cannot clear.
+   The dedicated **`/unlock`** page remains as the fallback surface and as a direct link, restoring `?next=` when it carries one.
+   Either surface asks for the custody-admin password and the passphrase; a wrong passphrase is an inline error, not a lost session.
+   Both point at Setup **only** if the instance has no seal at all - that needs genesis (steps 1-4), not a passphrase.
 
 **Where custody lives.** The encrypted seed is a **`CustodyBlob` in Mongo** (in the stack's data
 volume) — **NOT on disk**. The legacy `KEYSTORE_PATH` / `seed.age` volume (`vetseed` / `adminseed` /

@@ -16,6 +16,7 @@ import { Traceability } from "./pages/Traceability";
 import { Verify } from "./pages/Verify";
 import { Setup } from "./pages/Setup";
 import { Settings } from "./pages/Settings";
+import { Unlock } from "./pages/Unlock";
 
 export function App() {
   const { opToken } = useApp();
@@ -24,6 +25,8 @@ export function App() {
 
   return (
     <Routes>
+      {/* Standalone (no Layout): unlocking is the whole page, not a section of the portal. */}
+      <Route path="/unlock" element={<Unlock />} />
       <Route path="/dashboard" element={<Layout title="Dashboard"><Dashboard /></Layout>} />
       <Route path="/calendar" element={<Layout title="Calendar"><Calendar /></Layout>} />
       <Route path="/appointments" element={<Layout title="Appointments"><Appointments /></Layout>} />
