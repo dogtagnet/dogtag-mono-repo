@@ -497,14 +497,57 @@ export interface IssuerApplicationListItem {
   verifyPurposes?: string[];
   domain: string;
   status: IssuerApplicationStatus;
+
+  // ---- the DNS legitimacy trace (advisory gate) ----
+  //
+  // The DNS check never blocks onboarding: an organisation is routinely KYC-approved before its DNS
+  // team publishes anything, and a hard block just drives operators to a bypass. What keeps that from
+  // being fail-open is this trace.
+  /**
+   * LATEST observed DNS state: "verified" | "notListed" | "couldNotCheck" (empty == never checked).
+   * Safe for the future daily re-check job to overwrite, so a binding can turn verified with no admin
+   * action.
+   */
+  dnsState?: string;
+  /** Unix seconds of the observation in `dnsState` (0 == never checked). */
+  dnsCheckedAt?: number;
+  /**
+   * IMMUTABLE: the state observed at the instant whitelisting happened. Never overwritten by the
+   * re-check job, so "whitelisted while DNS was unverified" stays legible even after the binding later
+   * turns verified.
+   */
+  dnsStateAtApproval?: string;
+  /** IMMUTABLE: the admin explicitly confirmed and proceeded despite a non-verified observation. */
+  dnsProceededUnverified?: boolean;
 }
 export interface IssuerApplicationsResp {
   applications: IssuerApplicationListItem[];
 }
+/**
+ * The 409 the approve route returns when the live DNS observation is not `verified` and the admin has
+ * not yet confirmed. NOT a refusal — a request for a deliberate act, carrying exactly what was OBSERVED
+ * so the prompt can state the observation rather than a verdict about the organisation.
+ */
+export interface DnsConfirmationRequired {
+  error: "dnsConfirmationRequired";
+  /** "notListed" | "couldNotCheck" — which of the two non-verified outcomes actually occurred. */
+  dnsState: string;
+  domain: string;
+  documentStore: string;
+  /** The exact TXT value the domain must publish, for actionable operator copy. */
+  expectedTxt: string;
+  retryWith: { proceedWithoutDns: boolean };
+}
+
 /** POST /v1/issuer-applications/{id}/approve → on-chain whitelistFor per (address,recordType). */
 export interface ApproveApplicationResp {
   status: "approved";
   whitelistTxs: string[];
+  /** The REAL DNS observation at approval time: "verified" | "notListed" | "couldNotCheck". */
+  dnsState?: string;
+  dnsCheckedAt?: number;
+  /** True when this issuer was whitelisted on an explicit override rather than a clean pass. */
+  dnsProceededUnverified?: boolean;
   /**
    * True when the application is a dog-tag issuer (recordTypes include DOG_PROFILE): approval ALSO
    * grants DogTagSBT.ISSUER_ROLE so the signer can mint dog tags. False for groomers / verify-only.

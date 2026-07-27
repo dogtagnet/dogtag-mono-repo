@@ -41,6 +41,10 @@ pub struct Config {
     pub chain_id: u64,
     /// IssuerRegistry (the whitelist gate) — used to read issuer-identity of a credential's signer.
     pub issuer_registry_addr: String,
+    /// `DogTagIssuerFactory` address — LINK 1 of the issuer↔domain chain (`isClone`). Zero/empty means
+    /// provenance cannot be checked, in which case the binding reports `unavailable` rather than
+    /// claiming anything.
+    pub factory_addr: String,
     /// `IssuerDomainRegistry` address — the ADDITIVE contract holding each clone's on-chain domain
     /// claim. Zero/empty when this deployment has not been pointed at one, in which case the binding is
     /// reported as unavailable rather than as absent.
@@ -374,6 +378,7 @@ mod tests {
             rpc_url: "https://devrpc.roax.net".into(),
             chain_id: 135,
             issuer_registry_addr: "0x5d86e4CF98A34Ae0576F190F8d209c2943a9C79c".into(),
+            factory_addr: "0x0000000000000000000000000000000000000000".into(),
             issuer_domain_registry_addr: "0x0000000000000000000000000000000000000000".into(),
             dns_doh_endpoint: "https://cloudflare-dns.com/dns-query".into(),
             verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),

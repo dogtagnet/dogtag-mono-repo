@@ -145,8 +145,19 @@ export function createCentralClient(opts: CentralClientOptions) {
       request<IssuerApplicationResp>("POST", "/v1/issuer-applications", body, "none"),
     listApplications: () =>
       request<IssuerApplicationsResp>("GET", "/v1/issuer-applications"),
-    approveApplication: (id: string) =>
-      request<ApproveApplicationResp>("POST", `/v1/issuer-applications/${id}/approve`),
+    /**
+     * POST /v1/issuer-applications/{id}/approve.
+     *
+     * The DNS legitimacy check is ADVISORY. When the live observation is not `verified` and
+     * `proceedWithoutDns` is not set, the backend answers 409 `dnsConfirmationRequired` with the
+     * observed state — the caller shows it and re-issues with `proceedWithoutDns: true` if the admin
+     * deliberately confirms. Proceeding is recorded on the application, so an override is never
+     * indistinguishable from a clean pass.
+     */
+    approveApplication: (id: string, opts?: { proceedWithoutDns?: boolean }) =>
+      request<ApproveApplicationResp>("POST", `/v1/issuer-applications/${id}/approve`, {
+        proceedWithoutDns: opts?.proceedWithoutDns ?? false,
+      }),
     rejectApplication: (id: string) =>
       request<RejectApplicationResp>("POST", `/v1/issuer-applications/${id}/reject`),
     delistApplication: (id: string) =>

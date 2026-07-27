@@ -2,6 +2,7 @@ import {
   Badge,
   Button,
   Card,
+  DomainBindingBadge,
   Label,
   QrCode,
   Select,
@@ -10,7 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
   Spinner,
+  displayIssuerName,
   explorerTxUrl,
+  type IssuerDomainBinding,
+  type IssuerIdentity,
 } from "@dogtag/ui";
 import { CheckCircle2, History, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -409,6 +413,8 @@ function PasteDocVerify({ health }: { health: Health | null }) {
 
   const frag = result?.fragments as Record<string, unknown> | undefined;
   const verdict = result?.verdict as boolean | undefined;
+  const identity = result?.issuerIdentity as IssuerIdentity | undefined;
+  const binding = result?.issuerDomainBinding as IssuerDomainBinding | undefined;
 
   return (
     <Card className="p-6">
@@ -466,12 +472,72 @@ function PasteDocVerify({ health }: { health: Health | null }) {
             <Frag label="on-chain" testid="pillar-onchain" v={frag?.onchain} />
             <Frag label="issuer whitelist" testid="pillar-whitelist" v={frag?.issuerWhitelisted} />
           </div>
+
+          <IssuerLine identity={identity} binding={binding} />
           <pre className="receipt-mono mt-4 max-h-80 overflow-auto rounded-md border border-border bg-surface-muted p-3 text-xs text-onSurface">
             {JSON.stringify(result, null, 2)}
           </pre>
         </div>
       )}
     </Card>
+  );
+}
+
+/** The issuer, as it may honestly be shown: the ON-CHAIN name, with the domain binding beside it.
+ *
+ *  The credential's own `issuer` block is outside the Merkle root, so it is never rendered as the
+ *  issuer — only as a stated disagreement when it contradicts the chain. That is the whole fix for the
+ *  audit's relabelling demo: a re-badged document now displays the authority that actually issued it. */
+function IssuerLine({
+  identity,
+  binding,
+}: {
+  identity: IssuerIdentity | undefined;
+  binding: IssuerDomainBinding | undefined;
+}) {
+  if (!identity && !binding) return null;
+  const { name, authoritative } = displayIssuerName(identity);
+
+  return (
+    <div data-testid="issuer-line" className="mt-4 border-t border-border pt-3">
+      <div className="text-xs font-medium text-muted">Issuer</div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span data-testid="issuer-name" className="text-sm font-medium text-onSurface">
+          {name}
+        </span>
+        {authoritative ? (
+          <span className="text-[11px] text-muted">(from the issuing contract)</span>
+        ) : (
+          // Never let a fallback pass for the authoritative value.
+          <span className="text-[11px] text-muted">(from the document — the contract was not read)</span>
+        )}
+      </div>
+
+      {/* The badge: small, beside the issuer, an observation rather than a verdict. */}
+      <div className="mt-1.5">
+        <DomainBindingBadge binding={binding} data-testid="issuer-domain-binding" />
+      </div>
+
+      {/* Stated only when the document contradicts the chain. Factual, no alarm language: the
+          credential's validity is reported separately and is not what this is about. */}
+      {identity?.documentNameDiffers && (
+        <p data-testid="issuer-name-differs" className="mt-1.5 text-xs text-warning">
+          The document names a different issuer: “{identity.documentName}”
+        </p>
+      )}
+      {identity?.documentDomainDiffers && (
+        <p data-testid="issuer-domain-differs" className="mt-1 text-xs text-warning">
+          The document claims the domain “{identity.documentDomain}”, but this credential was issued
+          under “{identity.rootCoveredDomain}”
+        </p>
+      )}
+      {identity?.assertion === "notAssertable" && (
+        <p data-testid="issuer-did-not-assertable" className="mt-1 text-xs text-muted">
+          This document carries no issuer identity inside its Merkle root, so its issuer domain could
+          not be cross-checked.
+        </p>
+      )}
+    </div>
   );
 }
 

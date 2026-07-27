@@ -60,6 +60,7 @@ contract IssuerDomainRegistryTest is Test {
         assertEq(b.domain, "moh.gov.sg");
         assertEq(b.setBy, admin);
         assertTrue(b.updatedAt != 0);
+        assertEq(b.updatedAtBlock, uint64(block.number), "the write is anchored to a block");
         assertTrue(domains.hasBinding(address(clone_)));
         assertEq(domains.domainOf(address(clone_)), "moh.gov.sg");
     }
@@ -271,5 +272,39 @@ contract IssuerDomainRegistryTest is Test {
         vm.prank(admin);
         registry.revokeRole(role, operator);
         assertFalse(domains.canSetDomain(address(clone_), operator));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Block anchoring — what makes a claim reproducible rather than merely current
+    // ---------------------------------------------------------------------------------------------
+
+    /// DNS changes and clones get superseded, so "this issuer claims X" is only auditable with a block
+    /// anchor. The stored block is what lets a verifier ask "what did this clone claim at block N".
+    function test_binding_records_the_block_it_was_written_at() public {
+        vm.roll(1_000);
+        vm.prank(business);
+        domains.setDomain(address(clone_), "one.example.com");
+        assertEq(domains.getBinding(address(clone_)).updatedAtBlock, 1_000);
+
+        vm.roll(2_500);
+        vm.prank(business);
+        domains.setDomain(address(clone_), "two.example.com");
+        assertEq(
+            domains.getBinding(address(clone_)).updatedAtBlock,
+            2_500,
+            "a replacement re-anchors to the block that replaced it"
+        );
+    }
+
+    function test_no_binding_has_a_zero_block_anchor() public view {
+        assertEq(domains.getBinding(address(clone_)).updatedAtBlock, 0);
+    }
+
+    function test_domain_set_event_carries_the_block() public {
+        vm.roll(4_242);
+        vm.expectEmit(true, true, false, true, address(domains));
+        emit IssuerDomainRegistry.DomainSet(address(clone_), "evt.example.com", business, 4_242);
+        vm.prank(business);
+        domains.setDomain(address(clone_), "evt.example.com");
     }
 }
