@@ -29,7 +29,9 @@ const ACTIVITY = {
       clone: GOV_CLONE,
       contract: GOV_CLONE,
       cloneName: "DogTag Government Authority",
-      recordType: "TRAVEL_CLEARANCE",
+      // NO event-level recordType: the on-chain RootIssued log carries none, and the indexer sets it
+      // only for issuerCreated/whitelisted/delisted. It reaches the row through the local join below,
+      // exactly as it does against a real chain - a fixture richer than reality hides defects.
       root: "0x3333333333333333333333333333333333333333333333333333333333333333",
       actor: "0x119f8c7f6d7ec10e7376983739c6f46cf9cc3e96",
       actorName: "DogTag Government Authority",
@@ -136,6 +138,12 @@ test("a real event is fully traceable: time, block, contract and a working explo
   // BLOCK + finality.
   await expect(real).toContainText("#20");
   await expect(real).toContainText("finalized");
+
+  // DETAILS — the record type comes from this authority's own root-joined record, since the chain
+  // event carries none. Without it the same event reads differently here than in the vet console.
+  const details = real.getByTestId("oversight-details");
+  await expect(details).toContainText("record type");
+  await expect(details).toContainText("TRAVEL_CLEARANCE");
 
   // The row expands to the full, untruncated provenance — the values are rendered COMPLETE, not
   // merely widened, so the auditor can read them without relying on the clipboard.

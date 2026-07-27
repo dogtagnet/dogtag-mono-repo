@@ -27,6 +27,7 @@ import {
   emittingContractRole,
   eventDetailFields,
   formatChainTime,
+  joinedDetailContext,
   shortHex,
   txExplorerHref,
   useToast,
@@ -347,10 +348,7 @@ export function Traceability() {
                               the owner-blind chain payload does not - prefer them over the keys. */}
                           <TableCell className="text-xs" data-testid="trace-details">
                             <div className="flex max-w-[9rem] flex-col gap-0.5">
-                              {eventDetailFields(ev, {
-                                purpose: ev.local?.purpose,
-                                recordType: ev.local?.recordType,
-                              })
+                              {eventDetailFields(ev, joinedDetailContext(ev.local))
                                 .filter((f) => f.value)
                                 .map((f) => (
                                   <ChainValue

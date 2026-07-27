@@ -75,10 +75,12 @@ export {
   emittingContractRole,
   emittingCloneName,
   eventDetailFields,
+  joinedDetailContext,
   type ChainProvenance,
   type ChainEventLike,
   type ChainDetailField,
   type ChainDetailContext,
+  type ChainLocalJoinLike,
 } from "./chain/provenance";
 export {
   ChainValue,

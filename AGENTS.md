@@ -2236,13 +2236,21 @@ they cannot fork into separate dialects:
   (`TRAVEL_CLEARANCE`) or as its keccak key depending on whether the indexer's directory reversed it, so
   the label follows the value's shape (`isHash32`). The optional `ChainDetailContext` folds in what the
   portal's OWN joined row knows, and exists because the chain payload is owner-blind and label-free:
-  `purpose` is only ever `keccak256(label) % r` and an owner-hidden `Verified` carries **no**
-  `recordType` at all, so on a `verified` row the readable purpose and the record type can come from
-  nowhere else. `dogTagNamedElsewhere` suppresses the field-hashed `dogTagId` when the row's join cell
-  already names that same tag by its readable handle (government, `joinedBy === "dogTagId"`) - printing
-  both renders one tag two ways. The context can only make a value more readable or drop a duplicate;
-  it never changes which chain value is shown, and the row-expansion panel deliberately passes none of
-  it (that panel is the raw chain payload).
+  `purpose` is only ever `keccak256(label) % r`, and **`RootIssued`/`RootRevoked` carry no `recordType`
+  either** (`chain.rs` sets it only for `issuerCreated`/`whitelisted`/`delisted`), so on those rows and
+  on `verified` the readable values can come from nowhere else. The context can only make a value more
+  readable or drop a duplicate - `eventDetailFields` resolves `ev.recordType ?? joined.recordType`, so a
+  join can never override what the chain itself asserts. The row-expansion panel deliberately passes
+  none of it (that panel is the raw chain payload).
+- **`joinedDetailContext(local)` builds that context, and BOTH consoles must go through it.** It exists
+  because government and vet each assembled the context themselves and so rendered the SAME on-chain
+  event with different facts - an operator comparing the two consoles saw them disagree. It encodes one
+  doctrinal rule: a `joinedBy: "dogTagId"` join is TAG-granular, proving only that the tag is one this
+  operator credentialed and never WHICH credential was verified (the owner-hidden `Verified` binds no
+  root and no record type), so such a join lends the event neither its `recordType` - that would assert
+  the very thing the event does not establish - nor its `dogTagId`, which the row's join cell already
+  shows in readable form. Every other join is by anchored root or tx hash, an exact match, so its record
+  type describes that event and is shown. Do not re-open-code this at a call site.
 - `emittingContractRole(type)` names what `contract` is: it is NOT always the issuer clone -
   `issuerCreated` **and `rootRegistered`** come from the factory (`chain.rs` decodes both only when the
   emitting address equals `ctx.factory`), `whitelisted`/`delisted` from the IssuerRegistry, `verified`

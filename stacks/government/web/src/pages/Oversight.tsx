@@ -18,6 +18,7 @@ import {
   emittingContractRole,
   eventDetailFields,
   formatChainTime,
+  joinedDetailContext,
   shortHex,
   txExplorerHref,
 } from "@dogtag/ui";
@@ -396,12 +397,11 @@ export function Oversight() {
                           </TableCell>
                           <TableCell className="text-xs" data-testid="oversight-details">
                             <div className="flex max-w-[9rem] flex-col gap-0.5">
-                              {/* When the event joined a credentialed tag, the join cell already
-                                  names the SAME tag by its readable handle - showing the field-hash
-                                  too would render one tag two ways, so it is suppressed. */}
-                              {eventDetailFields(ev, {
-                                dogTagNamedElsewhere: ev.local?.joinedBy === "dogTagId",
-                              })
+                              {/* A root/tx join names this very event, so its record type is shown.
+                                  A tag-granular join does not: the join cell already names the SAME
+                                  tag by its readable handle (so the field-hash would render one tag
+                                  two ways), and WHICH credential was verified is unknowable. */}
+                              {eventDetailFields(ev, joinedDetailContext(ev.local))
                                 .filter((f) => f.value)
                                 .map((f) => (
                                   <ChainValue

@@ -9,6 +9,7 @@ import {
   formatRelativeTime,
   isEvmAddress,
   isHash32,
+  joinedDetailContext,
   shortHex,
   txExplorerHref,
 } from "../src/chain/provenance";
@@ -200,5 +201,57 @@ describe("eventDetailFields", () => {
     const labels = eventDetailFields(verified, { dogTagNamedElsewhere: true }).map((f) => f.label);
     expect(labels).not.toContain("dog tag id");
     expect(eventDetailFields(verified).map((f) => f.label)).toContain("dog tag id");
+  });
+
+  it("never lets a joined record type override the chain's own", () => {
+    // The guard below may only ever suppress a LOCALLY INFERRED record type. A chain-attested one
+    // outranks any join, so withholding can never hide what the event itself asserts.
+    expect(
+      eventDetailFields(
+        { type: "whitelisted", recordType: RT_KEY },
+        { recordType: "SOMETHING_ELSE" },
+      ),
+    ).toContainEqual({ label: "record type key", value: RT_KEY });
+  });
+});
+
+describe("joinedDetailContext", () => {
+  it("passes a root/tx-joined record type through, since that join is an exact match", () => {
+    // The chain's RootIssued/RootRevoked logs carry no recordType at all, so the operator's own
+    // root-joined record is the ONLY source - and it describes this very event.
+    expect(joinedDetailContext({ kind: "issuance", recordType: "TRAVEL_CLEARANCE" })).toEqual({
+      purpose: undefined,
+      recordType: "TRAVEL_CLEARANCE",
+      dogTagNamedElsewhere: false,
+    });
+  });
+
+  it("withholds the record type of a TAG-granular join", () => {
+    // `joinedBy: "dogTagId"` proves only that the tag is one this operator credentialed. The
+    // owner-hidden Verified event binds no root, so WHICH credential was verified is unknowable -
+    // lending it this credential's record type would assert exactly that unknown.
+    expect(
+      joinedDetailContext({ recordType: "TRAVEL_CLEARANCE", joinedBy: "dogTagId" }),
+    ).toEqual({ purpose: undefined, recordType: null, dogTagNamedElsewhere: true });
+  });
+
+  it("keeps a readable joined purpose, which the owner-blind chain payload never carries", () => {
+    expect(joinedDetailContext({ purpose: "grooming_checkin" }).purpose).toBe("grooming_checkin");
+  });
+
+  it("yields an empty context for an unjoined event", () => {
+    expect(joinedDetailContext(null)).toEqual({});
+    expect(joinedDetailContext(undefined)).toEqual({});
+  });
+
+  it("drives both consoles to the same fields for one event", () => {
+    // The defect this replaces: government and vet rendered the SAME rootIssued event differently
+    // because each assembled the context itself. One helper, one answer.
+    const rootIssued = { type: "rootIssued", root: `0x${"33".repeat(32)}` };
+    const govLocal = { kind: "issuance", recordType: "TRAVEL_CLEARANCE", dogTagId: "7" };
+    const vetLocal = { kind: "issuance", recordType: "TRAVEL_CLEARANCE", recordId: "rec-7" };
+    expect(eventDetailFields(rootIssued, joinedDetailContext(govLocal))).toEqual(
+      eventDetailFields(rootIssued, joinedDetailContext(vetLocal)),
+    );
   });
 });

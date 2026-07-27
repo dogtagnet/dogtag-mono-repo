@@ -154,6 +154,36 @@ export interface ChainDetailContext {
   dogTagNamedElsewhere?: boolean;
 }
 
+/** The shape every portal's joined local row shares; each carries the subset its backend produces. */
+export interface ChainLocalJoinLike {
+  purpose?: string | null;
+  recordType?: string | null;
+  /** How the backend matched this row - `"dogTagId"` marks a TAG-granular join. See below. */
+  joinedBy?: string | null;
+}
+
+/**
+ * Build the detail context from a portal's OWN joined record. One implementation for every console,
+ * because the defect this replaces was the government and vet tables rendering the SAME on-chain event
+ * with different facts - an operator comparing the two consoles must not see them disagree.
+ *
+ * The doctrine it enforces: a `joinedBy: "dogTagId"` join proves only that the tag is one this
+ * operator credentialed, never WHICH credential was verified - the owner-hidden `Verified` event binds
+ * no root and no record type, so that is genuinely unknowable. Such a join therefore lends the event
+ * neither its record type (which would assert exactly that unknown) nor its tag id (already shown by
+ * the row's join cell, in readable form). Any other join - by anchored root or tx hash - is an exact
+ * match, so its record type describes this very event and is the right thing to show.
+ */
+export function joinedDetailContext(local?: ChainLocalJoinLike | null): ChainDetailContext {
+  if (!local) return {};
+  const tagOnly = local.joinedBy === "dogTagId";
+  return {
+    purpose: local.purpose,
+    recordType: tagOnly ? null : local.recordType,
+    dogTagNamedElsewhere: tagOnly,
+  };
+}
+
 /**
  * The identifiers an event carries, each with a word saying WHAT it is.
  *
