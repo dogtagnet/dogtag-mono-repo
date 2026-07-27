@@ -89,6 +89,9 @@ impl ChainClient for LiveLikeChain {
     ) -> Result<alloy::primitives::U256, government_api::chain::ChainError> {
         self.0.issued_at(issuer_addr, root).await
     }
+    async fn issuer_onchain_name(&self, _clone_addr: &str) -> Result<String, government_api::chain::ChainError> {
+        Ok(String::new())
+    }
     /// This harness's issuer claims no on-chain domain, which is the normal day-one state.
     async fn issuer_claimed_domain(
         &self,

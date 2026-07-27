@@ -58,6 +58,10 @@ sol! {
         function issue(bytes32 r) external;
         function revoke(bytes32 r) external;
         function isValid(bytes32 r) external view returns (bool);
+        /// The clone's own name, written by the factory at `createIssuer` — which is `onlyOwner` on the
+        /// factory, i.e. the protocol multisig at KYC time. This is an AUTHORITATIVE issuer name in
+        /// exactly the way the document's `issuer.name` is not (that one is outside the Merkle root).
+        function name() external view returns (string);
         function isRevoked(bytes32 r) external view returns (bool);
         function issuedAt(bytes32 r) external view returns (uint256);
     }
@@ -144,6 +148,13 @@ pub trait ChainClient: Send + Sync {
     async fn is_valid(&self, issuer_addr: &str, root: &str) -> Result<bool, ChainError>;
     /// `DogTagIssuer.issuedAt(root)` (0 == not issued).
     async fn issued_at(&self, issuer_addr: &str, root: &str) -> Result<U256, ChainError>;
+    /// `DogTagIssuer.name()` — the clone's on-chain name.
+    ///
+    /// The ONLY issuer name a surface may present. The document's `issuer.name` is outside the Merkle
+    /// root, so relabelling it alone passes both integrity AND the `data.issuer` DID assertion (the DID
+    /// carries a DOMAIN, not a name) — leaving a fabricated authority rendered beside a green check.
+    /// Reading the name from the clone closes that.
+    async fn issuer_onchain_name(&self, clone_addr: &str) -> Result<String, ChainError>;
     /// `IssuerDomainRegistry.getBinding(clone).domain` — the domain the ISSUER CLONE claims on chain.
     ///
     /// `Ok(None)` means the clone has claimed no domain (a normal state), which is NOT the same as a
@@ -348,6 +359,20 @@ impl ChainClient for AlloyChain {
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
         Ok(r._0)
     }
+    async fn issuer_onchain_name(&self, clone_addr: &str) -> Result<String, ChainError> {
+        use alloy::providers::ProviderBuilder;
+        let provider = ProviderBuilder::new()
+            .on_builtin(&self.rpc_url)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let c = IDogTagIssuer::new(parse_addr(clone_addr), provider);
+        let r = c
+            .name()
+            .call()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        Ok(r._0)
+    }
     async fn issuer_claimed_domain(
         &self,
         domain_registry_addr: &str,
@@ -485,6 +510,8 @@ struct MemChainInner {
     consumed: HashMap<(String, String), bool>,
     /// (domain_registry_addr, clone_addr) -> the clone's claimed domain (absent == no claim).
     claimed_domains: HashMap<(String, String), String>,
+    /// clone_addr -> the clone's on-chain `name()`.
+    onchain_names: HashMap<String, String>,
     nonce: u64,
     clock: u64,
 }
@@ -497,6 +524,7 @@ impl Default for MemChainInner {
             whitelist: HashMap::new(),
             consumed: HashMap::new(),
             claimed_domains: HashMap::new(),
+            onchain_names: HashMap::new(),
             nonce: 0,
             clock: MEMCHAIN_CLOCK_BASE,
         }
@@ -527,6 +555,12 @@ impl MemChain {
     pub fn with_signer(mut self, addr: &str) -> Self {
         self.signer = addr.to_lowercase();
         self
+    }
+    /// Seed a clone's on-chain `name()` (test harness).
+    pub fn set_onchain_name(&self, clone_addr: &str, name: &str) {
+        let mut g = self.inner.lock().unwrap();
+        g.onchain_names
+            .insert(clone_addr.to_lowercase(), name.to_string());
     }
     /// Seed a clone's on-chain domain claim (test harness). Absence of a seeded value emulates the
     /// normal "this issuer has claimed no domain" state.
@@ -595,6 +629,13 @@ impl ChainClient for MemChain {
             .copied()
             .unwrap_or(0);
         Ok(U256::from(v))
+    }
+    async fn issuer_onchain_name(&self, clone_addr: &str) -> Result<String, ChainError> {
+        let g = self.inner.lock().unwrap();
+        Ok(g.onchain_names
+            .get(&clone_addr.to_lowercase())
+            .cloned()
+            .unwrap_or_default())
     }
     async fn issuer_claimed_domain(
         &self,

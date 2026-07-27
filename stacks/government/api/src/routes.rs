@@ -585,6 +585,12 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     //     The root-covered `data.issuer` DID is the true identity; assert the two agree.
     let did_assertion = assert_issuer_domain(&doc);
 
+    //     The DID only carries a domain, so a name-only relabel slips past it. The clone's own `name()`
+    //     was written by the factory's `onlyOwner` `createIssuer` at KYC time, which makes it the one
+    //     authoritative issuer name available. `None` means the read failed — reported as such, never
+    //     silently substituted with the document's claim.
+    let onchain_name = st.chain.issuer_onchain_name(&issuer_addr).await.ok();
+
     // (b) Which domain does the ISSUING CONTRACT itself claim, and does that domain's DNS zone name
     //     this contract back? The claim is read from the chain, never from the document — that is what
     //     makes it unforgeable by relabelling. The DNS half is resolved SERVER-SIDE (see AppState::dns).
@@ -635,20 +641,31 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             // un-assertable identity as a verified one.
             "issuerDidAssertion": did_assertion.as_str(),
         },
-        // The DISPLAYED issuer identity, with everything a surface needs to be honest about it.
-        "issuerIdentity": issuer_identity_json(&doc, &did_assertion),
+        // The issuer identity a surface should RENDER — on-chain first, document only as a diff.
+        "issuerIdentity": issuer_identity_json(&doc, &did_assertion, &onchain_name),
         "issuerDomainBinding": issuer_domain_json,
         "verificationId": rec.id,
     }))
 }
 
-/// The issuer block a surface may render, plus the root-covered value it was checked against.
+/// The issuer identity a surface should render, and the untrusted document values it was checked
+/// against.
 ///
-/// `displayDomain` is what the DOCUMENT says and is safe to show only alongside `assertion`. When the
-/// assertion is `mismatch`, `rootCoveredDomain` is the domain that was actually issued against and is
-/// the one a surface should treat as true.
-fn issuer_identity_json(doc: &WrappedDoc, assertion: &IssuerDomainAssertion) -> Value {
-    let (root_covered, displayed_conflict) = match assertion {
+/// `onchainName` is AUTHORITATIVE and is what a UI must display. `documentName`/`documentDomain` come
+/// from the credential's `issuer` block, which sits outside the Merkle root — they are shown only to
+/// state a disagreement, never as the issuer's identity.
+///
+/// Why the name needs its own source: `data.issuer` is a `did:web:` value, so it carries a DOMAIN and
+/// nothing else. Relabelling ONLY `issuer.name` therefore passes integrity, passes the DID assertion,
+/// and passes the DNS binding — the genuine domain really does publish the record. Without the on-chain
+/// name, that attack renders a fabricated authority beside a green check, which is worse than showing
+/// nothing.
+fn issuer_identity_json(
+    doc: &WrappedDoc,
+    assertion: &IssuerDomainAssertion,
+    onchain_name: &Option<String>,
+) -> Value {
+    let (root_covered, domain_conflict) = match assertion {
         IssuerDomainAssertion::Match { domain } => (Some(domain.clone()), false),
         IssuerDomainAssertion::Mismatch {
             root_covered,
@@ -656,14 +673,38 @@ fn issuer_identity_json(doc: &WrappedDoc, assertion: &IssuerDomainAssertion) -> 
         } => (Some(root_covered.clone()), true),
         IssuerDomainAssertion::NotAssertable => (None, false),
     };
+
+    // Compare names only after normalising whitespace and case: a free-form label differing by padding
+    // is not evidence of anything, and treating it as such would cry wolf on legitimate credentials.
+    let name_conflict = match onchain_name {
+        Some(on) if !on.trim().is_empty() => normalise_name(on) != normalise_name(&doc.issuer.name),
+        _ => false,
+    };
+
     json!({
-        "displayName": doc.issuer.name,
-        "displayDomain": doc.issuer.domain,
+        // What to display. Falls back to the document's name ONLY when the chain could not be read, and
+        // `onchainNameAvailable` says which happened so a UI never presents a fallback as authoritative.
+        "onchainName": onchain_name,
+        "onchainNameAvailable": onchain_name.as_deref().map(|n| !n.trim().is_empty()).unwrap_or(false),
+        // Untrusted, for diffing only.
+        "documentName": doc.issuer.name,
+        "documentDomain": doc.issuer.domain,
         "rootCoveredDomain": root_covered,
         "assertion": assertion.as_str(),
-        // A blunt flag for the UI: the document's issuer block contradicts what was issued.
-        "relabelled": displayed_conflict,
+        // The document's issuer block contradicts what was actually issued. Either flag is enough for a
+        // UI to stop presenting the document's identity as the issuer.
+        "documentNameDiffers": name_conflict,
+        "documentDomainDiffers": domain_conflict,
+        "relabelled": name_conflict || domain_conflict,
     })
+}
+
+/// Casefold + collapse whitespace, for comparing free-form issuer labels.
+fn normalise_name(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Read the clone's on-chain domain claim and resolve the DNS half of the binding.
