@@ -293,6 +293,18 @@ export function ClientForm({
                 <Plus className="h-4 w-4" /> Add pet
               </Button>
             </div>
+            {/*
+              A DogTag is linked on the PET page, not here. That page is where linking is explained -
+              that it records this shop's own note of which tag the pet holds, mints nothing and
+              writes nothing on chain, and that removing it is a local reversible disassociation and
+              NOT a revocation. A bare optional field on this form would be a second way in that says
+              none of it. Tags already linked are preserved by an edit here; they are just not
+              editable from this form.
+            */}
+            <p className="text-xs text-muted">
+              Pet details only. A DogTag is linked from the pet's own page, where what linking does -
+              and what it does not do - is spelled out. Any tag already linked stays as it is.
+            </p>
             {pets.map((p) => (
               <div key={p.key} className="space-y-3 rounded-md border border-border p-3">
                 <div className="grid gap-3 sm:grid-cols-3">
@@ -332,15 +344,6 @@ export function ClientForm({
                       value={p.sex}
                       onChange={(e) => updatePet(p.key, { sex: e.target.value })}
                       placeholder="male / female"
-                    />
-                  </div>
-                  <div className="space-y-2 sm:col-span-2">
-                    <Label htmlFor={`pet-tag-${p.key}`}>DogTag id (optional)</Label>
-                    <Input
-                      id={`pet-tag-${p.key}`}
-                      value={p.dogTagId ?? ""}
-                      onChange={(e) => updatePet(p.key, { dogTagId: e.target.value })}
-                      placeholder="Leave blank if the owner has no DogTag"
                     />
                   </div>
                 </div>

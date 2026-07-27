@@ -648,6 +648,145 @@ async fn one_request_cannot_put_the_same_tag_on_two_of_its_own_pets() {
     assert!(msg.contains("Rex") && msg.contains("Milo"), "both pets must be named: {b}");
 }
 
+/// Seed a duplicate the guard would refuse, by writing the store directly - the state a store
+/// written BEFORE the one-pet-per-tag rule can legitimately already be in.
+async fn force_tag(state: &vet_api::app::AppState, client_id: &str, pet_id: &str, tag: &str) {
+    let mut c = state.store.get_client(client_id).await.expect("client");
+    let p = c.pets.iter_mut().find(|p| p.pet_id == pet_id).expect("pet");
+    p.dog_tag_id = Some(tag.to_string());
+    state.store.put_client(c).await;
+}
+
+#[tokio::test]
+async fn a_preexisting_duplicate_tag_does_not_block_an_unrelated_edit() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (_, alice) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }]))
+            .await;
+    let (bob, bob_pets) =
+        make_client_with_pets(&app, &op, "Bob Lim", json!([{ "name": "Milo" }])).await;
+    // Data that predates the rule: two pets, two owners, one tag.
+    force_tag(&state, &bob, &bob_pets[0], "4").await;
+
+    // The operator is fixing a phone number. They did not create this conflict and cannot resolve it
+    // from this form, so refusing the save would make a live client record uneditable.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "phone": "+65 8000 0000",
+            "pets": [{ "petId": bob_pets[0], "name": "Milo", "dogTagId": "4" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "an unrelated edit must not 409: {b}");
+    assert_eq!(b["phone"], "+65 8000 0000");
+    // Grandfathered, not silently cleaned up: both tags survive exactly as they were.
+    assert_eq!(get_pet(&app, &op, &bob_pets[0]).await["dogTagId"], "4");
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn a_grandfathered_tag_does_not_license_a_new_duplicate_on_any_route() {
+    let (app, op, state) = pets_app_with_state().await;
+    let (_, alice) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }]))
+            .await;
+    let (bob, bob_pets) = make_client_with_pets(
+        &app,
+        &op,
+        "Bob Lim",
+        json!([{ "name": "Milo" }, { "name": "Coco" }]),
+    )
+    .await;
+    force_tag(&state, &bob, &bob_pets[0], "4").await;
+
+    // Tolerating the pre-existing pair must not become a licence to add to it. A tag is NEW or
+    // CHANGED for every pet below, so each is a fresh claim and each must still be refused.
+
+    // (a) PUT /clients - Coco, a sibling that never held the tag.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "pets": [
+                { "petId": bob_pets[0], "name": "Milo", "dogTagId": "4" },
+                { "petId": bob_pets[1], "name": "Coco", "dogTagId": "4" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "a third pet on the tag must be refused: {b}");
+    assert!(get_pet(&app, &op, &bob_pets[1]).await["dogTagId"].is_null(), "{b}");
+
+    // (b) POST /clients - a brand new owner.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({ "name": "Cara Ng", "pets": [{ "name": "Bo", "dogTagId": "4" }] })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+
+    // (c) POST /pets.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/pets",
+        Some(&op),
+        Some(json!({ "clientId": bob, "name": "Nub", "dogTagId": "4" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+
+    // (d) POST /pets/{id}/dogtag.
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/pets/{}/dogtag", bob_pets[1]),
+        Some(&op),
+        Some(json!({ "dogTagId": "4" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+
+    // Alice's original is untouched throughout.
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn a_client_edit_that_echoes_a_tag_it_does_not_render_keeps_it() {
+    let (app, op) = pets_app().await;
+    let (client_id, pets) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }]))
+            .await;
+
+    // The contract the client form depends on now that it no longer renders a DogTag input: a
+    // whole-document replace that ECHOES the stored tag preserves it. If the form ever stopped
+    // sending the field, saving a client would silently unlink every tag it holds.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{client_id}"),
+        Some(&op),
+        Some(json!({
+            "name": "Alice Tan-Lim",
+            "pets": [{ "petId": pets[0], "name": "Rex", "dogTagId": "4" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["pets"][0]["dogTagId"], "4", "an echoed tag must survive the edit: {b}");
+}
+
 #[tokio::test]
 async fn resaving_a_client_with_its_own_tags_is_not_a_conflict_with_itself() {
     let (app, op) = pets_app().await;
