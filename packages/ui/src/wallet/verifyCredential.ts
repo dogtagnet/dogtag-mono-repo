@@ -92,9 +92,17 @@ export interface VerifyCredentialOnchainArgs {
    * this pillar exists to close, just through a different field.
    */
   issuerAddr?: string;
-  /** IssuerRegistry address for the whitelist read; defaults to the deployed ROAX registry. */
+  /**
+   * IssuerRegistry address for the whitelist read; defaults to the deployed ROAX registry. A MATCHED
+   * PAIR with {@link VerifyCredentialOnchainArgs.factoryAddr}: a clone is gated by its OWN
+   * `registry()`, so overriding one axis alone asks a registry about a signer resolved through a
+   * factory it does not govern.
+   */
   registryAddr?: string;
-  /** DogTagIssuerFactory address used to resolve the issuing clone; defaults to the ROAX factory. */
+  /**
+   * DogTagIssuerFactory address used to resolve the issuing clone; defaults to the ROAX factory.
+   * Matched pair with {@link VerifyCredentialOnchainArgs.registryAddr} - see there.
+   */
   factoryAddr?: string;
   /** Public RPC URL override; defaults to the ROAX devrpc configured in the chain definition. */
   rpcUrl?: string;

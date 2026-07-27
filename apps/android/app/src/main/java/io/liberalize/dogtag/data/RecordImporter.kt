@@ -126,7 +126,12 @@ object RecordImporter {
         val whitelist = RoaxRpc.issuerWhitelistPillar(
             rpcUrl, issuerRegistry, issuerFactory, doc.documentStore, doc.merkleRoot, doc.recordType,
         )
-        verdict = foldIssuerWhitelist(verdict, whitelist)
+        // Same fold the refresh path uses, and the REASON moves with the verdict: a degraded verdict
+        // still carrying "anchored on ROAX and not revoked" would be an over-claiming explanation
+        // stapled to a correct verdict, and it is `verdictReason` the owner is shown.
+        val folded = IssuerWhitelist.fold(verdict, reason, whitelist)
+        verdict = folded.first
+        reason = folded.second
 
         val chainNote = when (onchain) {
             is RoaxRpc.Result.Valid -> "on-chain isValid: yes"
