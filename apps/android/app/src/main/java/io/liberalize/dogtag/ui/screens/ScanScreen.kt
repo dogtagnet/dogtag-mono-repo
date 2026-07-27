@@ -95,6 +95,12 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
     val store = remember { LocalStore.get(context) }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
+    // THIS APP's IssuerRegistry + DogTagIssuerFactory (bundled roax.json) for the import-time
+    // issuer-whitelist pillar. Both must come from our own config, never from the scanned document:
+    // a forged issuer block would otherwise nominate the factory that resolves it AND the registry
+    // that vouches for it, and answer its own question twice.
+    val roaxIssuerRegistry = remember { RoaxConfig.load(context).issuerRegistry }
+    val roaxIssuerFactory = remember { RoaxConfig.load(context).issuerFactory }
 
     val walletExists = remember { Wallet.exists(context) }
 
@@ -156,7 +162,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 onImport = {
                     working = true; status = "Fetching + verifying record…"
                     scope.launch {
-                        val r = RecordImporter.import(p)
+                        val r = RecordImporter.import(p, roaxIssuerRegistry, roaxIssuerFactory)
                         working = false
                         if (r.credential != null) {
                             store.addCredential(r.credential)
@@ -173,7 +179,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 onImport = {
                     working = true; status = "Fetching + verifying record…"
                     scope.launch {
-                        val r = RecordImporter.import(p)
+                        val r = RecordImporter.import(p, roaxIssuerRegistry, roaxIssuerFactory)
                         working = false
                         if (r.credential != null) {
                             store.addCredential(r.credential)

@@ -29,6 +29,53 @@ object CredentialRefresher {
         cred: Credential,
         roax: RoaxConfig,
         rpcUrl: String = RoaxRpc.DEFAULT_RPC,
+        /**
+         * Test seams ONLY, so the verdict rule can be driven without a live RPC or the native FFI
+         * (neither is available in a JVM unit test). Production leaves all three null and every value
+         * is read for real. Mirrors the injected-reader pattern the web path already uses
+         * (`IssuerChainReader`) — without them the refresh path could not be tested at all, and it is
+         * precisely the path that silently upgraded verdicts.
+         */
+        whitelistPillar: RoaxRpc.Result? = null,
+        issuancePillar: RoaxRpc.Result? = null,
+        integrityOverride: String? = null,
+    ): Credential = keepingEstablishedNegative(
+        cred,
+        derived(cred, roax, rpcUrl, whitelistPillar, issuancePillar, integrityOverride),
+    )
+
+    /**
+     * A refresh may LOWER a verdict freely - that is the whole point, and an unreachable chain must
+     * stop a stale VALID being claimed. But a NON-ANSWER must never make a credential look BETTER.
+     *
+     * Order the verdicts by severity: INVALID < UNVERIFIED < VALID. Re-deriving from scratch meant
+     * airplane mode plus one refresh tap replaced an established INVALID (revoked, or an unauthorised
+     * issuer) with UNVERIFIED and overwrote its reason - laundering a known-bad credential into
+     * "could not check". That is this branch's own defect class pointed backwards: a non-answer
+     * collapsing into a neighbouring state.
+     *
+     * Only non-answers are constrained. A DEFINITE outcome still sets the verdict freely, including
+     * INVALID -> VALID: a not-yet-anchored root can later anchor and a signer can later be
+     * whitelisted, so the guard must not freeze INVALID forever. [Credential.lastCheckedAt] is taken
+     * from the fresh result either way, so a kept verdict still shows the check ran and how old it is.
+     *
+     * Applied ONCE to the final result rather than at each return site, so a future early return
+     * cannot bypass it. Mirrors iOS `CredentialRefresher.keepingEstablishedNegative`.
+     */
+    fun keepingEstablishedNegative(previous: Credential, fresh: Credential): Credential =
+        if (fresh.verdict == "UNVERIFIED" && previous.verdict == "INVALID") {
+            fresh.copy(verdict = previous.verdict, verdictReason = previous.verdictReason)
+        } else {
+            fresh
+        }
+
+    private suspend fun derived(
+        cred: Credential,
+        roax: RoaxConfig,
+        rpcUrl: String,
+        whitelistPillar: RoaxRpc.Result?,
+        issuancePillar: RoaxRpc.Result?,
+        integrityOverride: String?,
     ): Credential {
         val stamped = cred.copy(lastCheckedAt = Stamp.now())
 
@@ -39,7 +86,8 @@ object CredentialRefresher {
         }
 
         // 1. INTEGRITY (offline) - the stored doc must still hash to its own signed root.
-        val integrity = try { verifyIntegrity(cred.wrappedDocJson) } catch (e: Exception) { "INVALID" }
+        val integrity = integrityOverride
+            ?: try { verifyIntegrity(cred.wrappedDocJson) } catch (e: Exception) { "INVALID" }
         if (integrity != "VALID") {
             return stamped.marked("INVALID", "the record's contents do not match its signed Merkle root")
         }
@@ -52,13 +100,29 @@ object CredentialRefresher {
         // 2. ISSUANCE (on-chain). Two anchor shapes: an ordinary record is anchored in a DogTagIssuer
         // clone (isValid(root)); a DOG_PROFILE is anchored in the DogTagSBT itself (profileRoot).
         if (doc.documentStore.isNotBlank()) {
-            return when (val r = RoaxRpc.isValid(rpcUrl, doc.documentStore, root)) {
-                is RoaxRpc.Result.Valid -> stamped.marked("VALID", "anchored on ROAX and not revoked")
-                is RoaxRpc.Result.Invalid ->
-                    stamped.marked("INVALID", "revoked or no longer anchored on ROAX")
-                is RoaxRpc.Result.Unknown ->
-                    stamped.marked("UNVERIFIED", "could not reach the chain (${r.reason})")
+            val issuance = when (
+                val r = issuancePillar ?: RoaxRpc.isValid(rpcUrl, doc.documentStore, root)
+            ) {
+                is RoaxRpc.Result.Valid -> "VALID" to "anchored on ROAX and not revoked"
+                is RoaxRpc.Result.Invalid -> "INVALID" to "revoked or no longer anchored on ROAX"
+                is RoaxRpc.Result.Unknown -> "UNVERIFIED" to "could not reach the chain (${r.reason})"
             }
+            // 3. ISSUER WHITELIST — the SAME mandatory pillar import runs, through the SAME fold.
+            //
+            // Without it this path answered VALID from `isValid` alone, which meant the first refresh
+            // silently UPGRADED a credential import had correctly marked UNVERIFIED for an unresolved
+            // issuer. A refresh may lower a verdict, and may raise one only as far as the pillars
+            // actually establish — never past them.
+            //
+            // Scoped to the clone path deliberately: the DOG_PROFILE branch below anchors in the SBT,
+            // where `rootIssuer`/`issuedBy` do not exist, so applying the pillar there would resolve
+            // indeterminate and turn every profile refresh into UNVERIFIED — the same over-claiming
+            // mistake inverted.
+            val (verdict, reason) = IssuerWhitelist.evaluate(
+                issuance.first, issuance.second, rpcUrl, roax,
+                doc.documentStore, root, doc.recordType, whitelistPillar,
+            )
+            return stamped.marked(verdict, reason)
         }
 
         if (roax.dogTagSbt.isBlank() || cred.dogTagId.isBlank()) {

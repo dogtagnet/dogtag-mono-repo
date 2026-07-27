@@ -233,6 +233,7 @@ class WrappedDoc(val json: String) {
     private val sig: JSONObject = root.optJSONObject("signature") ?: JSONObject()
     private val issuerObj: JSONObject = root.optJSONObject("issuer") ?: JSONObject()
     private val data: JSONObject = root.optJSONObject("data") ?: JSONObject()
+    private val protocolObj: JSONObject = root.optJSONObject("protocol") ?: JSONObject()
 
     val merkleRoot: String get() = sig.optString("merkleRoot")
     val targetHash: String get() = sig.optString("targetHash")
@@ -255,6 +256,17 @@ class WrappedDoc(val json: String) {
                 ?.takeIf { it.isNotEmpty() }
         }
     val recordType: String get() = issuerObj.optString("recordType", "")
+
+    /**
+     * `protocol.statusBaseUrl` — the REACHABLE origin the issuer serves its public, PII-free receipt
+     * status page from (`<base>/r/<receiptId>`), stamped at issuance from the issuer's
+     * `DEPLOYMENT_URL`. Blank when the issuer publishes none, including every pre-stamping document.
+     *
+     * This is NOT [issuerDomain]: that is a `did:web` identity, a name that need not resolve (the
+     * shipped `gov.example` default is RFC-2606 reserved, hence NXDOMAIN). Never substitute one for
+     * the other — a QR built from the identity is a dead link wearing a verification affordance.
+     */
+    val statusBaseUrl: String get() = protocolObj.optString("statusBaseUrl", "").trim().trimEnd('/')
 
     /** Best-effort dogTagId extraction from the data tree (data.credentialSubject.dogTagId leaf). */
     val dogTagId: String

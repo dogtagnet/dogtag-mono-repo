@@ -525,11 +525,15 @@ async fn issue(
 struct VerifyBody {
     /// The wrapped credential document to verify (as produced by any DogTag issuer).
     wrapped_doc: WrappedDoc,
-    /// Override the DogTagIssuer clone to check `isValid` against. Defaults to the doc's
-    /// `issuer.documentStore`.
+    /// OPTIONAL *expected* DogTagIssuer clone. It can only TIGHTEN: the clone every read is made
+    /// against is always the one the FACTORY names for this root, so this asserts an expectation
+    /// rather than selecting a contract. This route is unauthenticated, so a caller able to pick the
+    /// contract that answers for a credential would reopen the forgery this pillar exists to close.
     #[serde(default)]
     issuer_addr: Option<String>,
-    /// Optional signer address to check issuer-identity (`isWhitelistedFor(recordType, signer)`).
+    /// OPTIONAL *expected* issuing signer. The issuer-whitelist pillar no longer depends on this: the
+    /// signer is resolved from the chain (`issuedBy(root)`). Supplying it adds a strictly stronger
+    /// assertion - the pillar fails when the on-chain originator is not this address.
     #[serde(default)]
     signer_addr: Option<String>,
 }
@@ -558,6 +562,9 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     // factory's write-once `rootIssuer[R]` is authoritative, and it names the clone that issued THIS
     // root — so an old credential resolves against the clone that issued it, never against a successor.
     let factory_cfg = st.cfg.factory_addr.trim().to_string();
+    // Whether THIS deployment can evaluate the factory-anchored pillars at all.
+    let factory_configured =
+        !(factory_cfg.is_empty() || factory_cfg.eq_ignore_ascii_case(ZERO_ADDR));
     // A failed READ and "the factory has no record of this root" are different facts and stay apart all
     // the way to the wire — the same rule the DNS states obey. Collapsing them (the old `.ok().flatten()`)
     // made an RPC blip indistinguishable from a root that was never registered through a real clone.
@@ -589,6 +596,15 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         .as_deref()
         .map(|r| r.to_lowercase() != document_issuer)
         .unwrap_or(false);
+    // An operator-supplied `issuer_addr` is an EXPECTED-clone assertion that can only TIGHTEN. It must
+    // never SELECT which contract answers - this route is unauthenticated, so letting a caller name the
+    // contract to read from would reopen the whole forgery through a second field: point it at an
+    // obliging contract and the factory anchor is bypassed without touching `documentStore` at all.
+    // (The verdict-deciding reads above already go to `resolved_issuer`; this is the assertion half.)
+    let expected_clone_differs = match (&resolved_issuer, body.issuer_addr.as_deref()) {
+        (Some(actual), Some(want)) => !actual.eq_ignore_ascii_case(want.trim()),
+        _ => false,
+    };
 
     // LINK 1, resolved ONCE for the whole verification and pinned to `at_block`, because everything that
     // reads an IDENTITY off that contract has to sit behind it. Being on-chain is not the property that
@@ -619,19 +635,80 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     let did_assertion = assert_issuer_domain(&doc);
 
     let rt_key = app::record_type_key(&record_type);
-    let (onchain_valid, issuer_whitelisted, onchain_name, issuer_domain_json) = tokio::join!(
+    let (onchain_valid, whitelist_pillar, onchain_name, issuer_domain_json) = tokio::join!(
         // on-chain status — DogTagIssuer.isValid(root) over ROAX (gasless read).
-        st.chain.is_valid(&issuer_addr, &claimed_root, at_block),
-        // issuer identity (optional) — IssuerRegistry.isWhitelistedFor(keccak(recordType), signer).
+        //
+        // Read against the FACTORY-RESOLVED clone whenever the factory has a record of this root, and
+        // only fall back to `issuer_addr` (which honours an operator override, then the document's own
+        // claim) when it does not. Without that preference an `issuer_addr` override SELECTS which
+        // contract answers the issuance pillar, so a hostile contract vouches for the very credential
+        // that names it — the same "asking the suspect for its own references" failure the issuer
+        // pillar closes, reached through a different door.
+        st.chain.is_valid(
+            resolved_issuer.as_deref().unwrap_or(&issuer_addr),
+            &claimed_root,
+            at_block,
+        ),
+        // issuer identity — MANDATORY, and SELF-RESOLVING.
+        //
+        // This used to run only when an operator typed a signer in, and to default to a pass when they
+        // did not: `issuer_whitelisted.unwrap_or(true)`. That is how the audit's relabelled credential
+        // returned `verdict: true` with `issuerWhitelisted: null` - the one pillar that catches a forged
+        // `issuer` block simply never ran.
+        //
+        // It now asks the chain who issued the root - `issuedBy`, set to `msg.sender` under
+        // `onlyWhitelisted` - and checks THAT signer against THIS deployment's configured registry.
+        // Never an address named by the document, or the attacker supplies both sides of the question.
+        // The read is made against `issuer_addr`, which upstream already resolved through the factory's
+        // `rootIssuer`, so a hostile contract cannot answer on its own behalf either.
+        //
+        // Tri-state, and only a definite `true` may contribute to a pass:
+        //   Some(true)  - resolved, and whitelisted for this record type
+        //   Some(false) - resolved, but not whitelisted (or not the expected signer): a real failure
+        //   None        - unresolvable (this clone never issued this root): INDETERMINATE, never a pass
         async {
-            match &body.signer_addr {
-                Some(signer) => st
-                    .chain
-                    .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, signer, at_block)
-                    .await
-                    .map(Some),
-                None => Ok(None),
+            // THREE states, not two. `noFactoryConfigured` means THIS VERIFIER never asked - our own
+            // misconfiguration, which is not evidence about the credential and must not condemn it.
+            // `noRecord` means we DID ask and the chain has no record of this root, which IS evidence.
+            // Collapsing the two in either direction is the bug both this branch and the issuer-domain
+            // work hit from opposite sides: one failed every credential on a misconfigured stack, the
+            // other passed a credential whose provenance was never established.
+            if !factory_configured {
+                return Ok::<_, crate::chain::ChainError>((None, None));
             }
+            // EVERY read here is made against the FACTORY-RESOLVED clone, never `issuer_addr`.
+            // `issuer_addr` honours an operator override and falls back to the document's own
+            // `documentStore`, so using it would let the caller choose which contract answers the
+            // question about their own credential - the "asking the suspect for its references"
+            // failure this pillar exists to close. No factory record => indeterminate, never a pass.
+            let Some(clone) = resolved_issuer.clone() else {
+                return Ok::<_, crate::chain::ChainError>((None, None));
+            };
+            let signer = st.chain.issued_by(&clone, &claimed_root, at_block).await?;
+            let Some(signer) = signer else {
+                return Ok::<_, crate::chain::ChainError>((None, None));
+            };
+            // Ask about the record type the CLONE says it issues, not the one the envelope claims:
+            // otherwise a credential relabelled across record types is checked against the wrong
+            // whitelist key and a signer authorised for one type appears authorised for another.
+            let Some(chain_rt_key) = st.chain.issuer_record_type(&clone, at_block).await? else {
+                return Ok::<_, crate::chain::ChainError>((Some(signer), None));
+            };
+            if !chain_rt_key.eq_ignore_ascii_case(&rt_key) {
+                return Ok::<_, crate::chain::ChainError>((Some(signer), Some(false)));
+            }
+            let whitelisted = st
+                .chain
+                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &chain_rt_key, &signer, at_block)
+                .await?;
+            // An explicitly expected signer only ever makes the pillar STRICTER - it can tighten, never
+            // enable. Supplying one is now an assertion, not the thing that switches the check on.
+            let matches_expected = body
+                .signer_addr
+                .as_deref()
+                .map(|want| want.trim().eq_ignore_ascii_case(&signer))
+                .unwrap_or(true);
+            Ok((Some(signer), Some(whitelisted && matches_expected)))
         },
         //     The DID only carries a domain, so a name-only relabel slips past it. The clone's own
         //     `name()` was written by the factory's `onlyOwner` `createIssuer` at KYC time, which makes
@@ -671,39 +748,65 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         Err(e) => {
             return err(
                 StatusCode::BAD_GATEWAY,
-                &format!("on-chain isValid read failed: {e}"),
+                &format!("on-chain rootIssuer read failed: {e}"),
             )
         }
     };
-    let issuer_whitelisted = match issuer_whitelisted {
+    let (resolved_signer, issuer_whitelisted) = match whitelist_pillar {
         Ok(v) => v,
         Err(e) => {
             return err(
                 StatusCode::BAD_GATEWAY,
-                &format!("on-chain whitelist read failed: {e}"),
+                &format!("on-chain issuer-whitelist read failed: {e}"),
             )
         }
     };
 
-    // Verdict: integrity + on-chain issuance are the required authenticity pillars here; the issuer
-    // whitelist, when supplied, must also pass (architecture §5 authenticity pillars).
+    // Verdict: integrity + on-chain issuance + the issuer-whitelist pillar must ALL pass
+    // (architecture §5 authenticity pillars).
+    //
+    // `issuer_whitelisted` is compared against `Some(true)` rather than defaulted with
+    // `unwrap_or(true)`: a pillar that could not be RESOLVED is an indeterminate verdict, never a
+    // pass. That default is what let the audit's relabelled credential return `verdict: true` with
+    // `issuerWhitelisted: null` - an unanswered check counted as a passed one.
     //
     // A positive DID MISMATCH also fails the verdict: it is proof the issuer block was rewritten after
     // issuance, which is exactly the attack the audit demonstrated. `NotAssertable` deliberately does
-    // NOT fail it and does NOT contribute a pass either — a document that simply carries no root-covered
+    // NOT fail it and does NOT contribute a pass either - a document that simply carries no root-covered
     // DID is not evidence of forgery, and the surfaces report it as un-asserted rather than verified.
     //
     // So does a DEFINITE link-1 failure. `onchain_valid` above was read from `issuer_addr`, which falls
-    // back to the document's own `documentStore` whenever the factory has no record of the root — so a
+    // back to the document's own `documentStore` whenever the factory has no record of the root - so a
     // contract the attacker deployed can answer `isValid` however it likes. Reporting
     // `notFactoryDeployed` beside `verdict: true` is worse than not checking at all: it is
     // checked, failed, and passed anyway. Only the DEFINITE negative fails; `Unknown` (no factory
     // configured, or the read failed) is evidence of nothing and leaves the verdict alone.
     let verdict = integrity_valid
         && onchain_valid
-        && issuer_whitelisted.unwrap_or(true)
+        && (issuer_whitelisted == Some(true) || !factory_configured)
+        // The envelope names a different contract than the one the chain says issued this root - or the
+        // caller asserted an expected clone that disagrees with it. Either way the document
+        // misrepresents its issuer, which is the forgery this pillar exists to refuse. An ABSENT
+        // `documentStore` is a mismatch like any other: exempting it would buy nothing (the factory
+        // supplies the address regardless) while letting a caller strip one field to skip the check.
+        && !issuer_store_differs
+        && !expected_clone_differs
         && !did_assertion.is_mismatch()
         && !provenance.is_definitely_not_factory_deployed();
+
+    // Why `issuerWhitelisted` is what it is, as an explicit state rather than a bare tri-state a
+    // caller has to interpret. "not evaluated because this verifier has no factory configured" and
+    // "evaluated and passed" must never be indistinguishable - a pillar that was never run reading as
+    // one that succeeded is the exact defect this branch exists to remove.
+    let whitelist_state = if !factory_configured {
+        "unavailableNoFactoryConfigured"
+    } else {
+        match issuer_whitelisted {
+            Some(true) => "passed",
+            Some(false) => "failed",
+            None => "unresolved",
+        }
+    };
 
     let rec = VerificationRecord {
         id: uuid::Uuid::new_v4().to_string(),
@@ -748,10 +851,18 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             // The document names a different contract than the one the chain says issued this root.
             "documentStoreDiffers": issuer_store_differs,
         },
+        // The signer the CHAIN says issued this root, never one the caller supplied. `null` means
+        // the clone never issued it, which is why the whitelist pillar could not be resolved.
+        "signerAddr": resolved_signer,
         "fragments": {
             "integrity": integrity_valid,
             "onchain": onchain_valid,
             "issuerWhitelisted": issuer_whitelisted,
+            // Why `issuerWhitelisted` is what it is. A caller MUST be able to tell "not evaluated
+            // because this verifier has no factory configured" from "evaluated and passed" - a pillar
+            // that was never run must never read as one that succeeded.
+            //   "passed" | "failed" | "unresolved" | "unavailableNoFactoryConfigured"
+            "issuerWhitelistState": whitelist_state,
             // "match" | "mismatch" | "notAssertable" — never a boolean, so a client cannot read an
             // un-assertable identity as a verified one.
             "issuerDidAssertion": did_assertion.as_str(),

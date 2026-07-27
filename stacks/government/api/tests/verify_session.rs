@@ -23,6 +23,7 @@ const API_TOKEN: &str = "dogtag-gov-demo-token";
 const DEPLOYMENT_URL: &str = "http://192.168.1.20:44832";
 const PURPOSE: &str = "travel_check";
 const RECORD_TYPE: &str = "VACCINATION";
+const FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 
 /// BN254 r — the field modulus every public signal must be below.
 const BN254_R_DEC: &str =
@@ -49,13 +50,30 @@ fn cfg() -> Config {
 
 /// A state whose signer is (or is not) whitelisted for `VERIFY:travel_check`.
 fn state_with(whitelisted: bool) -> (AppState, String) {
-    let chain = MemChain::new();
+    let chain = MemChain::new().with_factory("0x00000000000000000000000000000000000000fa");
     // The authority's own clone really was deployed by the DogTag factory. Seeded because link-1
     // provenance is a verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed` and
     // fails the verdict.
     chain.set_factory_clone("0x00000000000000000000000000000000000000fa", ISSUER_ADDR, true);
     let signer = chain.signer_address().unwrap();
     let c = cfg();
+    // The clone's own immutable `recordType()`, as `createIssuer` fixes it on a real clone. The
+    // issuer-whitelist pillar reads the record type from the RESOLVED clone rather than from the
+    // document, so an undeclared clone leaves that pillar indeterminate.
+    chain.set_record_type(
+        ISSUER_ADDR,
+        &government_api::app::record_type_key(TRAVEL_CLEARANCE),
+    );
+    // The authority's ISSUING right, which is a different grant from the VERIFY:<purpose> gate the
+    // `whitelisted` flag toggles below. It is unconditional because it holds on the real chain by
+    // construction: `issue()` is `onlyWhitelisted`, so anything this signer anchored was whitelisted
+    // for that record type. Without it the mandatory issuer-whitelist pillar cannot resolve and every
+    // credential this fake issues would verify as indeterminate.
+    chain.whitelist(
+        REGISTRY_ADDR,
+        &government_api::app::record_type_key(TRAVEL_CLEARANCE),
+        &signer,
+    );
     if whitelisted {
         chain.whitelist(
             REGISTRY_ADDR,

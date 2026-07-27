@@ -52,6 +52,20 @@ enum Http {
 enum RoaxRpc {
     enum Result { case valid, invalid, unknown(String) }
 
+    /// The outcome of a read whose on-chain answer is an address or a word.
+    ///
+    /// Three outcomes, never two: `unset` is the chain ANSWERING with its zero value (nobody ever
+    /// wrote that slot), while `unresolved` is the read not answering at all - a transport failure, a
+    /// revert, or a reply too short to hold the value. Collapsing the pair into one `nil` is how a
+    /// dropped connection came to be reported to the holder as the definite chain fact "no factory
+    /// clone ever issued this root". Both remain indeterminate and neither can ever become a pass;
+    /// only what the owner is told differs.
+    enum HexRead {
+        case found(String)
+        case unset
+        case unresolved(String)
+    }
+
     /// `DogTagIssuer.isValid(bytes32)` selector, DERIVED from the canonical signature rather than
     /// hard-coded: keccak256("isValid(bytes32)")[:4] = 0x6a938567 - the exact selector viem, the
     /// Rust/alloy ABI, the vet-api `verify_credential` handler and the web direct-RPC path all bind.
@@ -103,7 +117,6 @@ enum RoaxRpc {
     private static let isCloneSelector = functionSelector("isClone(address)")
     private static let domainOfSelector = functionSelector("domainOf(address)")
     private static let issuerNameSelector = functionSelector("name()")
-    private static let rootIssuerSelector = functionSelector("rootIssuer(bytes32)")
 
     /// Reading a dynamic `string` return has THREE outcomes, and collapsing any two of them is how a
     /// fail-open gets reintroduced:
@@ -289,16 +302,132 @@ enum RoaxRpc {
 
     /// `IssuerRegistry.isWhitelistedFor(key, signer)` — the PRE-PROOF groomer check. On Unknown the
     /// caller MUST hard-stop (this gate is a user-safety requirement → unknown == not authorized).
+    ///
+    /// A reply too short to hold a bool word is the registry NOT ANSWERING (a codeless or wrong
+    /// address returns `0x` as a SUCCESSFUL call), so it is `.unknown` - never the definite `.invalid`
+    /// that accuses a genuine credential's issuer of being unauthorised. Only a full 32-byte zero word
+    /// is a real "no".
     static func isWhitelistedFor(rpcUrl: String, issuerRegistry: String, key: String, signer: String) async -> Result {
         guard !issuerRegistry.isEmpty, !key.isEmpty, !signer.isEmpty else { return .unknown("missing addr/key/signer") }
         let data = isWhitelistedForSelector + pad32(key) + padAddr(signer)
         switch await ethCall(rpcUrl: rpcUrl, to: issuerRegistry, data: data) {
         case let .success(hex):
+            guard hex.count >= 64 else { return .unknown("the registry returned no answer") }
             let truthy = hex.contains { $0 != "0" }
             return truthy ? .valid : .invalid
         case let .failure(reason):
             return .unknown(reason)
         }
+    }
+
+    /// `DogTagIssuer.issuedBy(root)` → the H-1 originator that actually called `issue(root)` on this
+    /// clone. `.unset` when the clone never issued it (the on-chain zero address), `.unresolved` when
+    /// the read did not answer. Selector DERIVED from the signature, never a constant (see
+    /// `isValidSelector`).
+    static func issuedBy(rpcUrl: String, documentStore: String, root: String) async -> HexRead {
+        guard !documentStore.isEmpty, !root.isEmpty else { return .unresolved("missing addr/root") }
+        let data = issuedBySelector + pad32(root)
+        switch await ethCall(rpcUrl: rpcUrl, to: documentStore, data: data) {
+        case let .success(hex):
+            // address is right-aligned in a 32-byte word; all-zero == never issued here.
+            guard hex.count >= 40 else { return .unresolved("the issuer clone returned no address") }
+            guard hex.contains(where: { $0 != "0" }) else { return .unset }
+            return .found("0x" + hex.suffix(40).lowercased())
+        case let .failure(reason): return .unresolved(reason)
+        }
+    }
+
+    private static let issuedBySelector = functionSelector("issuedBy(bytes32)")
+    private static let rootIssuerSelector = functionSelector("rootIssuer(bytes32)")
+    private static let recordTypeSelector = functionSelector("recordType()")
+
+
+    /// `DogTagIssuer.recordType()` → the clone's own immutable record-type key. `.unset` when the
+    /// contract reports the zero word (uninitialized / not a clone), `.unresolved` when the read did
+    /// not answer.
+    static func recordTypeOf(rpcUrl: String, issuerClone: String) async -> HexRead {
+        guard !issuerClone.isEmpty else { return .unresolved("missing issuer clone") }
+        switch await ethCall(rpcUrl: rpcUrl, to: issuerClone, data: recordTypeSelector) {
+        case let .success(hex):
+            guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else {
+                return .unresolved("the issuer clone returned no record-type word")
+            }
+            guard hex.contains(where: { $0 != "0" }) else { return .unset }
+            return .found("0x" + hex.lowercased())
+        case let .failure(reason): return .unresolved(reason)
+        }
+    }
+
+    /// The ISSUER-WHITELIST pillar for a held credential, resolved end-to-end on-chain.
+    ///
+    /// The document's `issuer` block is NOT covered by the Merkle root, so `name`, `domain`,
+    /// `recordType` and - the sharp one - `documentStore` are chosen by whoever built the document.
+    /// Asking `documentStore` whether the credential is valid, and who issued it, is asking the
+    /// suspect for their own references: deploy a contract that answers `isValid = true` and names a
+    /// genuinely whitelisted signer, and integrity plus the issuance read both still pass.
+    ///
+    /// So the clone is resolved from the FACTORY in the app's own bundled `roax.json`
+    /// (`rootIssuer`) - never from the document. Then the record type comes from that clone's own
+    /// `recordType()`, and the issuing signer from its `issuedBy`, checked against the app's own
+    /// `IssuerRegistry`. An envelope naming a different clone, or a different record type, than the
+    /// chain does is a definite `.invalid`, not merely unresolved.
+    ///
+    /// `.unknown` means the pillar did not resolve; a caller must treat that as indeterminate, never
+    /// as a pass. A read that FAILED and a slot the chain says is empty both land there, but they say
+    /// so differently: only the latter may state a chain fact.
+    ///
+    /// A document naming no issuer contract at all is indeterminate too, not a mismatch. There is
+    /// nothing to compare the factory's answer against, and the DOG_PROFILE records that legitimately
+    /// carry no `documentStore` anchor in the SBT instead - so a comparison against the empty string
+    /// would call every one of them a forgery.
+    static func issuerWhitelistPillar(
+        rpcUrl: String, issuerRegistry: String, issuerFactory: String,
+        documentStore: String, root: String, recordType: String
+    ) async -> Result {
+        guard !issuerRegistry.isEmpty else { return .unknown("no IssuerRegistry configured") }
+        guard !issuerFactory.isEmpty else { return .unknown("no DogTagIssuerFactory configured") }
+        guard !recordType.isEmpty else { return .unknown("document declares no recordType") }
+        let claimedStore = documentStore.trimmingCharacters(in: .whitespaces)
+        guard !claimedStore.isEmpty else { return .unknown("document names no issuer contract") }
+        // Uses the SAME factory read the issuer-domain binding uses, so both features agree on which
+        // contract issued a root. `.noRecord` (the factory answered, and has none) and `.failure` (we
+        // could not ask) stay distinct: neither is a pass, but only one is evidence.
+        let clone: String
+        switch await rootIssuer(rpcUrl: rpcUrl, factory: issuerFactory, root: root, atBlock: nil) {
+        case let .value(addr): clone = addr
+        case .noRecord: return .unknown("no factory clone ever issued this root")
+        case let .failure(r): return .unknown("could not read the factory's issuer index (\(r))")
+        }
+        // The envelope points somewhere other than the contract that actually issued the root: a
+        // definite misrepresentation, refused before the registry is consulted.
+        guard clone.caseInsensitiveCompare(claimedStore) == .orderedSame else {
+            return .invalid
+        }
+        let chainRecordType: String
+        switch await recordTypeOf(rpcUrl: rpcUrl, issuerClone: clone) {
+        case let .found(key): chainRecordType = key
+        case .unset: return .unknown("issuer clone reports no recordType")
+        case let .unresolved(r): return .unknown("could not read the issuer clone's record type (\(r))")
+        }
+        guard chainRecordType.caseInsensitiveCompare(recordTypeKey(recordType)) == .orderedSame else {
+            return .invalid
+        }
+        let signer: String
+        switch await issuedBy(rpcUrl: rpcUrl, documentStore: clone, root: root) {
+        case let .found(addr): signer = addr
+        case .unset: return .unknown("issuer clone reports no issuer for this root")
+        case let .unresolved(r): return .unknown("could not read who issued this root (\(r))")
+        }
+        return await isWhitelistedFor(
+            rpcUrl: rpcUrl, issuerRegistry: issuerRegistry,
+            key: chainRecordType, signer: signer)
+    }
+
+    /// `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
+    /// clone's own `recordType()` holds. Mirrors the backend `record_type_key` and the web
+    /// `recordTypeKey`; verified against `cast keccak "TRAVEL_CLEARANCE"` on chain 135.
+    static func recordTypeKey(_ recordType: String) -> String {
+        "0x" + Keccak256.digest(Data(recordType.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// `VerificationRegistry.consumed(nullifier)` → true once the relayer's `recordVerificationZK`

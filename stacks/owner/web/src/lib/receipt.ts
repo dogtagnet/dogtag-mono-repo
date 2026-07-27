@@ -53,7 +53,8 @@ export interface ReceiptModel {
   root: string;
   documentStore: string;
   issuerDomain: string;
-  /** Public, PII-free status URL the QR encodes (`https://<issuerDomain>/r/<receiptId>`) or "". */
+  /** Public, PII-free status URL the QR encodes (`<protocol.statusBaseUrl>/r/<receiptId>`) or "" when
+   *  the issuer stamped no reachable base - deliberately NOT built from `issuer.domain`. */
   publicStatusUrl: string;
 }
 
@@ -141,13 +142,20 @@ export function statusBadgeClass(status: EffectiveStatus): "ok" | "warn" | "bad"
   return "bad";
 }
 
-/** The public, PII-free status URL the QR encodes: `https://<issuerDomain>/r/<receiptId>`. The gov
- *  web app serves `/r/:receiptId` at the credential's issuer (`did:web`) domain. "" when either the
- *  issuer domain or the receipt id is missing (a QR would be meaningless). */
+/** The public, PII-free status URL the QR encodes: `<protocol.statusBaseUrl>/r/<receiptId>`.
+ *
+ *  `statusBaseUrl` is stamped at issuance from the issuer's `DEPLOYMENT_URL` and is the only field in
+ *  the document that names a host a phone can actually reach. This deliberately does NOT fall back to
+ *  `issuer.domain`: that is a `did:web` identity, not a deployment - the shipped default `gov.example`
+ *  is RFC-2606 reserved and NXDOMAIN, so every QR built from it encoded a dead link that still read as
+ *  a legitimate verification affordance.
+ *
+ *  "" when the base or the receipt id is missing - including every document issued before issuers
+ *  began stamping the field. The caller renders no QR and says the issuer published no status page,
+ *  which is true, rather than printing a URL that resolves to nothing. */
 export function publicStatusUrl(doc: WrappedDoc, receiptId: string): string {
-  const domain = (doc.issuer.domain || "").trim();
-  if (!domain || !receiptId) return "";
-  const base = domain.startsWith("http") ? domain : `https://${domain}`;
+  const base = (doc.protocol?.statusBaseUrl || "").trim().replace(/\/+$/, "");
+  if (!base || !receiptId) return "";
   return `${base}/r/${receiptId}`;
 }
 

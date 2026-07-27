@@ -122,6 +122,17 @@ async fn main() {
 
     let chain: Arc<dyn ChainClient> = if use_mem {
         let mem = MemChain::new();
+        // Declare each configured clone's `recordType()`, mirroring what `createIssuer` fixes on a real
+        // clone. The issuer pillar reads the record type from the RESOLVED clone rather than from the
+        // document, so an undeclared clone would leave it indeterminate for the whole demo.
+        for rt in [
+            government_api::app::TRAVEL_CLEARANCE,
+            government_api::app::EU_HEALTH_CERT,
+        ] {
+            if let Some(addr) = cfg.issuer_addr_for(rt) {
+                mem.set_record_type(&addr, &government_api::app::record_type_key(rt));
+            }
+        }
         // Pre-whitelist the demo signer for both record types so the verify path can demonstrate the
         // issuer-identity pillar end-to-end without an admin round-trip.
         if let Some(signer) = mem.signer_address() {
