@@ -1,5 +1,6 @@
 package io.liberalize.dogtag.net
 
+import io.liberalize.dogtag.data.WrappedDoc
 import org.json.JSONObject
 import java.net.URLEncoder
 
@@ -318,4 +319,67 @@ object IssuerBindingResolver {
 
     /** Drop every cached observation (used on an explicit refresh). */
     fun clearCache() = synchronized(lock) { cache.clear() }
+}
+
+// -------------------------------------------------------------------------------------------------
+// The DID assertion — the OTHER half of issuer identity (audit-m9 recommendation 6)
+// -------------------------------------------------------------------------------------------------
+
+/**
+ * Comparing the DISPLAYED `issuer.domain` with the root-covered `data.issuer` DID.
+ *
+ * This is NOT the same check as the DNS binding, and the brief requires both:
+ *  * the DNS binding proves the domain owner vouches for the contract address;
+ *  * this proves the document has not been RELABELLED since issuance.
+ *
+ * Neither substitutes for the other. Mirror of `dogtag_standard::issuer_identity` and of the Swift
+ * `IssuerIdentity` — behaviour must stay identical across all three.
+ */
+sealed class IssuerDidAssertion {
+    data class Match(val domain: String) : IssuerDidAssertion()
+
+    /** Positive evidence the issuer block was rewritten after issuance. */
+    data class Mismatch(val displayed: String, val rootCovered: String) : IssuerDidAssertion()
+
+    /**
+     * No root-covered DID to compare against. NOT a pass — a skipped pillar contributing a pass is
+     * exactly how an unverified claim reaches a user looking verified.
+     */
+    object NotAssertable : IssuerDidAssertion()
+
+    val isMismatch: Boolean get() = this is Mismatch
+}
+
+object IssuerIdentity {
+    /**
+     * Extract the host from a `did:web:` DID. Path segments and a percent-encoded port are dropped;
+     * anything that is not a `did:web` yields null.
+     */
+    fun didWebHost(did: String): String? {
+        val t = did.trim()
+        if (!t.startsWith("did:web:")) return null
+        var host = t.removePrefix("did:web:").substringBefore(':')
+        host = host.substringBefore("%3A").substringBefore("%3a")
+        host = host.trim().trim('.').lowercase()
+        return if (host.isEmpty() || !host.contains('.')) null else host
+    }
+
+    /** The root-covered issuer DID from the `data.issuer` leaf, unpacking `<salt>:<tag>:<value>`. */
+    fun rootCoveredDid(doc: WrappedDoc?): String? {
+        val raw = doc?.rootCoveredIssuerLeaf?.takeIf { it.isNotBlank() } ?: return null
+        // A bare DID is used as-is; a packed leaf splits on the FIRST TWO colons only, because the value
+        // itself contains colons (`did:web:...`).
+        if (raw.startsWith("did:")) return raw
+        val parts = raw.split(":", limit = 3)
+        return if (parts.size == 3) parts[2] else raw
+    }
+
+    /** Compare, before displaying either value. */
+    fun assertDomain(doc: WrappedDoc?): IssuerDidAssertion {
+        val displayed = (doc?.issuerDomain ?: "").trim().trim('.').lowercase()
+        if (displayed.isEmpty()) return IssuerDidAssertion.NotAssertable
+        val root = rootCoveredDid(doc)?.let { didWebHost(it) } ?: return IssuerDidAssertion.NotAssertable
+        return if (root == displayed) IssuerDidAssertion.Match(root)
+        else IssuerDidAssertion.Mismatch(displayed, root)
+    }
 }

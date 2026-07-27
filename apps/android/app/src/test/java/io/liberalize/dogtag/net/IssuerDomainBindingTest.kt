@@ -1,5 +1,6 @@
 package io.liberalize.dogtag.net
 
+import io.liberalize.dogtag.data.WrappedDoc
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -310,5 +311,90 @@ class IssuerDomainBindingTest {
         assertEquals("plain text", IssuerBindingResolver.unquoteTxt("plain text"))
         assertEquals("quoted", IssuerBindingResolver.unquoteTxt("\"quoted\""))
         assertEquals("a\"b", IssuerBindingResolver.unquoteTxt("\"a\\\"b\""))
+    }
+
+    // ---- the DID assertion (the other half of issuer identity) -----------------------------------
+
+    private fun doc(displayedDomain: String, dataIssuer: String?, nested: Boolean = false): WrappedDoc {
+        val subject = JSONObject().put("name", "s:0:Max")
+        val data = JSONObject().put("credentialSubject", subject)
+        if (dataIssuer != null) {
+            if (nested) subject.put("issuer", dataIssuer) else data.put("issuer", dataIssuer)
+        }
+        val root = JSONObject()
+            .put("version", "1.0")
+            .put("data", data)
+            .put(
+                "signature",
+                JSONObject().put("type", "t").put("targetHash", "0x00")
+                    .put("proof", org.json.JSONArray()).put("merkleRoot", "0x00"),
+            )
+            .put("privacy", JSONObject().put("obfuscated", org.json.JSONArray()))
+            .put(
+                "issuer",
+                JSONObject().put("name", "Example Competent Authority")
+                    .put("domain", displayedDomain).put("documentStore", clone)
+                    .put("recordType", "TRAVEL_CLEARANCE"),
+            )
+        return WrappedDoc(root.toString())
+    }
+
+    @Test
+    fun did_web_host_drops_path_segments_and_ports() {
+        assertEquals("example.com", IssuerIdentity.didWebHost("did:web:example.com"))
+        assertEquals("example.com", IssuerIdentity.didWebHost("did:web:example.com:dept:vet"))
+        assertEquals("example.com", IssuerIdentity.didWebHost("did:web:example.com%3A8443"))
+        assertEquals("example.com", IssuerIdentity.didWebHost("did:web:EXAMPLE.com"))
+        assertNull(IssuerIdentity.didWebHost("did:key:z6Mk"))
+        assertNull(IssuerIdentity.didWebHost("did:web:localhost"))
+        assertNull(IssuerIdentity.didWebHost("not a did"))
+    }
+
+    @Test
+    fun matching_domain_and_did_asserts() {
+        val a = IssuerIdentity.assertDomain(doc("gov.example", "abcd:2:did:web:gov.example"))
+        assertEquals(IssuerDidAssertion.Match("gov.example"), a)
+        assertFalse(a.isMismatch)
+    }
+
+    /** The audit's attack, caught by the document alone — no chain, no DNS needed. */
+    @Test
+    fun the_relabelling_attack_is_detected() {
+        val a = IssuerIdentity.assertDomain(doc("moh.gov.sg", "abcd:2:did:web:gov.example"))
+        assertEquals(IssuerDidAssertion.Mismatch("moh.gov.sg", "gov.example"), a)
+        assertTrue(a.isMismatch)
+    }
+
+    @Test
+    fun comparison_ignores_case_and_a_trailing_dot() {
+        assertEquals(
+            IssuerDidAssertion.Match("gov.example"),
+            IssuerIdentity.assertDomain(doc("GOV.Example.", "abcd:2:did:web:gov.example")),
+        )
+    }
+
+    /** A document with no root-covered DID is NOT a pass and NOT a forgery — it is un-assertable. */
+    @Test
+    fun a_document_without_the_leaf_is_not_assertable_and_not_a_pass() {
+        val a = IssuerIdentity.assertDomain(doc("gov.example", null))
+        assertEquals(IssuerDidAssertion.NotAssertable, a)
+        assertFalse(a.isMismatch)
+        assertFalse(a is IssuerDidAssertion.Match)
+    }
+
+    @Test
+    fun a_bare_unpacked_did_is_still_read() {
+        assertEquals(
+            IssuerDidAssertion.Match("gov.example"),
+            IssuerIdentity.assertDomain(doc("gov.example", "did:web:gov.example")),
+        )
+    }
+
+    @Test
+    fun the_leaf_is_read_from_credential_subject_too() {
+        assertEquals(
+            IssuerDidAssertion.Match("gov.example"),
+            IssuerIdentity.assertDomain(doc("gov.example", "abcd:2:did:web:gov.example", nested = true)),
+        )
     }
 }

@@ -175,6 +175,17 @@ struct WrappedDoc {
     var documentStore: String { (issuerObj["documentStore"] as? String) ?? "" }
     var issuerName: String { (issuerObj["name"] as? String) ?? "Unknown issuer" }
     var issuerDomain: String { (issuerObj["domain"] as? String) ?? "" }
+
+    /// The ROOT-COVERED issuer identity leaf (`data.issuer`, or `data.credentialSubject.issuer`).
+    ///
+    /// Unlike the top-level `issuer` block, this is inside the Merkle root, so it cannot be relabelled
+    /// without breaking integrity. It is the value `IssuerIdentity.assertDomain` checks the displayed
+    /// domain against.
+    var rootCoveredIssuerLeaf: String? {
+        if let s = data["issuer"] as? String { return s }
+        if let cs = data["credentialSubject"] as? [String: Any], let s = cs["issuer"] as? String { return s }
+        return nil
+    }
     var recordType: String { (issuerObj["recordType"] as? String) ?? "" }
 
     var dogTagId: String {

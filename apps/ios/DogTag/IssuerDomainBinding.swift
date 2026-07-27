@@ -315,3 +315,66 @@ extension IssuerBinding {
         }
     }
 }
+
+// -------------------------------------------------------------------------------------------------
+// The DID assertion — the OTHER half of issuer identity (audit-m9 recommendation 6)
+// -------------------------------------------------------------------------------------------------
+
+/// Comparing the DISPLAYED `issuer.domain` with the root-covered `data.issuer` DID.
+///
+/// This is NOT the same check as the DNS binding, and the brief requires both:
+///  * the DNS binding proves the domain owner vouches for the contract address;
+///  * this proves the document has not been RELABELLED since issuance.
+///
+/// Neither substitutes for the other. Mirror of `dogtag_standard::issuer_identity` — behaviour must stay
+/// identical to the Rust, which the government API uses.
+enum IssuerDidAssertion: Equatable {
+    case match(domain: String)
+    /// Positive evidence the issuer block was rewritten after issuance.
+    case mismatch(displayed: String, rootCovered: String)
+    /// No root-covered DID to compare against. NOT a pass — a skipped pillar contributing a pass is
+    /// exactly how an unverified claim reaches a user looking verified.
+    case notAssertable
+
+    var isMismatch: Bool { if case .mismatch = self { return true }; return false }
+}
+
+enum IssuerIdentity {
+    /// Extract the host from a `did:web:` DID. Path segments and a percent-encoded port are dropped;
+    /// anything that is not a `did:web` yields nil.
+    static func didWebHost(_ did: String) -> String? {
+        let t = did.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.hasPrefix("did:web:") else { return nil }
+        var host = String(t.dropFirst("did:web:".count))
+        host = host.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? host
+        for sep in ["%3A", "%3a"] {
+            if let r = host.range(of: sep) { host = String(host[host.startIndex..<r.lowerBound]) }
+        }
+        host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        return (host.isEmpty || !host.contains(".")) ? nil : host
+    }
+
+    /// The root-covered issuer DID from the `data.issuer` leaf, unpacking `<salt>:<tag>:<value>`.
+    static func rootCoveredDid(_ doc: WrappedDoc?) -> String? {
+        guard let raw = doc?.rootCoveredIssuerLeaf, !raw.isEmpty else { return nil }
+        // A bare DID is used as-is; a packed leaf splits on the FIRST TWO colons only, because the
+        // value itself contains colons (`did:web:...`).
+        if raw.hasPrefix("did:") { return raw }
+        let parts = raw.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        return parts.count == 3 ? String(parts[2]) : raw
+    }
+
+    /// Compare, before displaying either value.
+    static func assertDomain(_ doc: WrappedDoc?) -> IssuerDidAssertion {
+        let displayed = (doc?.issuerDomain ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        guard !displayed.isEmpty, let root = rootCoveredDid(doc).flatMap(didWebHost) else {
+            return .notAssertable
+        }
+        return root == displayed ? .match(domain: root) : .mismatch(displayed: displayed, rootCovered: root)
+    }
+}

@@ -62,6 +62,9 @@ targets:
       # (Keccak256 already comes along below via Wallet's link-time closure.)
       - path: DogTag/IssuerDomainBinding.swift
       - path: DogTag/Net.swift
+      # Models is Foundation-only (JSONSerialization) and carries `rootCoveredIssuerLeaf`, which the DID
+      # assertion reads. SwiftUI lives in the screens, not here.
+      - path: DogTag/Models.swift
       # LocalDataSweep is Foundation-only by design so the destructive reset actions' file removal
       # (staging-sibling sweep, idempotence, partial-failure reporting) is covered here; the callers
       # that pull in Keychain/FFI/SwiftUI live in AppReset and the stores.
