@@ -562,6 +562,9 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     // factory's write-once `rootIssuer[R]` is authoritative, and it names the clone that issued THIS
     // root — so an old credential resolves against the clone that issued it, never against a successor.
     let factory_cfg = st.cfg.factory_addr.trim().to_string();
+    // Whether THIS deployment can evaluate the factory-anchored pillars at all.
+    let factory_configured =
+        !(factory_cfg.is_empty() || factory_cfg.eq_ignore_ascii_case(ZERO_ADDR));
     // A failed READ and "the factory has no record of this root" are different facts and stay apart all
     // the way to the wire — the same rule the DNS states obey. Collapsing them (the old `.ok().flatten()`)
     // made an RPC blip indistinguishable from a root that was never registered through a real clone.
@@ -593,6 +596,15 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         .as_deref()
         .map(|r| r.to_lowercase() != document_issuer)
         .unwrap_or(false);
+    // An operator-supplied `issuer_addr` is an EXPECTED-clone assertion that can only TIGHTEN. It must
+    // never SELECT which contract answers - this route is unauthenticated, so letting a caller name the
+    // contract to read from would reopen the whole forgery through a second field: point it at an
+    // obliging contract and the factory anchor is bypassed without touching `documentStore` at all.
+    // (The verdict-deciding reads above already go to `resolved_issuer`; this is the assertion half.)
+    let expected_clone_differs = match (&resolved_issuer, body.issuer_addr.as_deref()) {
+        (Some(actual), Some(want)) => !actual.eq_ignore_ascii_case(want.trim()),
+        _ => false,
+    };
 
     // LINK 1, resolved ONCE for the whole verification and pinned to `at_block`, because everything that
     // reads an IDENTITY off that contract has to sit behind it. Being on-chain is not the property that
@@ -655,6 +667,15 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         //   Some(false) - resolved, but not whitelisted (or not the expected signer): a real failure
         //   None        - unresolvable (this clone never issued this root): INDETERMINATE, never a pass
         async {
+            // THREE states, not two. `noFactoryConfigured` means THIS VERIFIER never asked - our own
+            // misconfiguration, which is not evidence about the credential and must not condemn it.
+            // `noRecord` means we DID ask and the chain has no record of this root, which IS evidence.
+            // Collapsing the two in either direction is the bug both this branch and the issuer-domain
+            // work hit from opposite sides: one failed every credential on a misconfigured stack, the
+            // other passed a credential whose provenance was never established.
+            if !factory_configured {
+                return Ok::<_, crate::chain::ChainError>((None, None));
+            }
             // EVERY read here is made against the FACTORY-RESOLVED clone, never `issuer_addr`.
             // `issuer_addr` honours an operator override and falls back to the document's own
             // `documentStore`, so using it would let the caller choose which contract answers the
@@ -762,9 +783,30 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     // configured, or the read failed) is evidence of nothing and leaves the verdict alone.
     let verdict = integrity_valid
         && onchain_valid
-        && issuer_whitelisted == Some(true)
+        && (issuer_whitelisted == Some(true) || !factory_configured)
+        // The envelope names a different contract than the one the chain says issued this root - or the
+        // caller asserted an expected clone that disagrees with it. Either way the document
+        // misrepresents its issuer, which is the forgery this pillar exists to refuse. An ABSENT
+        // `documentStore` is a mismatch like any other: exempting it would buy nothing (the factory
+        // supplies the address regardless) while letting a caller strip one field to skip the check.
+        && !issuer_store_differs
+        && !expected_clone_differs
         && !did_assertion.is_mismatch()
         && !provenance.is_definitely_not_factory_deployed();
+
+    // Why `issuerWhitelisted` is what it is, as an explicit state rather than a bare tri-state a
+    // caller has to interpret. "not evaluated because this verifier has no factory configured" and
+    // "evaluated and passed" must never be indistinguishable - a pillar that was never run reading as
+    // one that succeeded is the exact defect this branch exists to remove.
+    let whitelist_state = if !factory_configured {
+        "unavailableNoFactoryConfigured"
+    } else {
+        match issuer_whitelisted {
+            Some(true) => "passed",
+            Some(false) => "failed",
+            None => "unresolved",
+        }
+    };
 
     let rec = VerificationRecord {
         id: uuid::Uuid::new_v4().to_string(),
@@ -816,6 +858,11 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             "integrity": integrity_valid,
             "onchain": onchain_valid,
             "issuerWhitelisted": issuer_whitelisted,
+            // Why `issuerWhitelisted` is what it is. A caller MUST be able to tell "not evaluated
+            // because this verifier has no factory configured" from "evaluated and passed" - a pillar
+            // that was never run must never read as one that succeeded.
+            //   "passed" | "failed" | "unresolved" | "unavailableNoFactoryConfigured"
+            "issuerWhitelistState": whitelist_state,
             // "match" | "mismatch" | "notAssertable" — never a boolean, so a client cannot read an
             // un-assertable identity as a verified one.
             "issuerDidAssertion": did_assertion.as_str(),

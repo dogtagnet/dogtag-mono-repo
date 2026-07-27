@@ -50,7 +50,7 @@ fn cfg() -> Config {
 
 /// A state whose signer is (or is not) whitelisted for `VERIFY:travel_check`.
 fn state_with(whitelisted: bool) -> (AppState, String) {
-    let chain = MemChain::new();
+    let chain = MemChain::new().with_factory("0x00000000000000000000000000000000000000fa");
     // The authority's own clone really was deployed by the DogTag factory. Seeded because link-1
     // provenance is a verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed` and
     // fails the verdict.

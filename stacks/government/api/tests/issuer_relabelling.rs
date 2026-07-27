@@ -162,6 +162,11 @@ async fn verify(app: &axum::Router, doc: Value) -> (StatusCode, Value) {
 async fn seed(chain: &MemChain, doc: &Value) {
     let root = doc["signature"]["merkleRoot"].as_str().unwrap();
     issue_root(chain, root).await;
+    // A real `issue()` calls `registerRoot`, so the factory HAS a record of anything genuinely issued.
+    // Modelling that explicitly keeps "issued, and the factory knows it" distinct from "the factory has
+    // no record" — the latter is a state a fake must still be able to express (see
+    // `an_unresolvable_root_falls_back_to_the_document_and_says_so`, which deliberately omits this).
+    chain.set_root_issuer(FACTORY, root, CLONE);
     // Link 1: this clone really was deployed by the DogTag factory.
     chain.set_factory_clone(FACTORY, CLONE, true);
     chain.set_onchain_name(CLONE, ONCHAIN_NAME);
@@ -585,7 +590,12 @@ async fn verification_follows_the_root_issuer_not_the_document_claim() {
 async fn an_unresolvable_root_falls_back_to_the_document_and_says_so() {
     let (st, chain) = state();
     let doc = genuine_doc();
-    seed(&chain, &doc).await; // deliberately NO set_root_issuer
+    // Deliberately NOT `seed()`: this test needs the factory to have NO record of the root, so it does
+    // the issuance without the `registerRoot` mirror that `seed()` performs.
+    issue_root(&chain, doc["signature"]["merkleRoot"].as_str().unwrap()).await;
+    chain.set_factory_clone(FACTORY, CLONE, true);
+    chain.set_onchain_name(CLONE, ONCHAIN_NAME);
+    chain.set_claimed_domain(DOMAIN_REGISTRY, CLONE, "gov.example");
     let app = government_api::router(st);
 
     let (_s, b) = verify(&app, doc).await;

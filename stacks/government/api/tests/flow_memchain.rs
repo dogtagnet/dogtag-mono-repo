@@ -39,7 +39,8 @@ fn demo_state() -> (AppState, MemChain) {
         demo: true,
         api_token: Some("dogtag-gov-demo-token".into()),
     };
-    let chain = MemChain::new();
+    // Issuances register under this factory, as a real `issue()` does via `registerRoot`.
+    let chain = MemChain::new().with_factory("0x00000000000000000000000000000000000000fa");
     // The demo clone really was deployed by the DogTag factory. Seeded because link-1 provenance is a
     // verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed`, which fails the verdict
     // — correctly, but it would make this suite about provenance rather than about the flow.
@@ -697,7 +698,7 @@ async fn a_forged_issuer_clone_that_answers_isvalid_is_still_refused() {
     // It can never appear in the factory index: only a clone may call `registerRoot`, and the genuine
     // clone already claimed this root write-once.
     assert_eq!(
-        chain.root_issuer(FACTORY, &root, None).await.unwrap().as_deref(),
+        chain.root_issuer("0x00000000000000000000000000000000000000fa", &root, None).await.unwrap().as_deref(),
         Some(ISSUER_ADDR),
         "the factory still names the REAL issuing clone"
     );
@@ -800,6 +801,67 @@ async fn a_name_only_relabel_is_out_of_this_pillars_reach() {
     assert_eq!(v["verdict"], false, "{v}");
 }
 
+/// The forgery through the ABSENCE of the field: strip `issuer.documentStore` instead of pointing it
+/// somewhere hostile.
+///
+/// Exempting a blank claim from the envelope-vs-factory comparison bought nothing - the factory
+/// supplies the address either way - while letting anyone holding a genuine credential skip the
+/// misrepresentation check entirely. The chain's answer was then backfilled into `issuerAddr`, so an
+/// unauthenticated caller could launder a stripped envelope into a clean-looking `verdict: true` row
+/// in the verifications audit log, naming an issuer the document itself never claimed.
+///
+/// Integrity is asserted TRUE first, so the refusal is provably the clone check and not the document
+/// failing to parse or fold: the `issuer` block sits outside the Merkle root, so emptying a field in
+/// it leaves the recompute untouched.
+#[tokio::test]
+async fn an_absent_document_store_is_a_mismatch_not_an_exemption() {
+    let (state, _) = demo_state();
+    let (status, issued) = call_auth(
+        &state,
+        "POST",
+        "/v1/travel-clearance/issue",
+        json!({ "record_type": TRAVEL_CLEARANCE, "dog_tag_id": "17", "fields": {} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "issue: {issued}");
+
+    // Baseline: untouched, this exact document passes with the pillar RESOLVED.
+    let (_, genuine) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": issued["wrappedDoc"].clone() }),
+    )
+    .await;
+    assert_eq!(genuine["verdict"], true, "genuine: {genuine}");
+
+    let mut stripped = issued["wrappedDoc"].clone();
+    stripped["issuer"]["documentStore"] = json!("");
+    let (status, v) = call(
+        &state,
+        "POST",
+        "/v1/verify",
+        json!({ "wrapped_doc": stripped }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "verify: {v}");
+    assert_eq!(
+        v["fragments"]["integrity"], true,
+        "the issuer block is outside R, so the recompute is untouched: {v}"
+    );
+    // The pillar itself resolved fine and passes honestly - it found the real clone via the factory
+    // and the real, whitelisted signer. The REFUSAL comes from the clone-agreement check: an absent
+    // `documentStore` is a mismatch like any other, not an exemption.
+    assert_eq!(v["fragments"]["issuerWhitelisted"], true, "{v}");
+    assert_eq!(v["fragments"]["issuerWhitelistState"], "passed", "{v}");
+    assert_eq!(v["issuerResolution"]["documentStoreDiffers"], true, "{v}");
+    assert_eq!(
+        v["verdict"], false,
+        "a stripped documentStore must not verify: {v}"
+    );
+}
+
 /// The same forgery through the OTHER field. `POST /v1/verify` is unauthenticated, so `issuer_addr`
 /// is attacker-supplied, not operator-supplied: if it were allowed to SELECT which contract answers,
 /// the factory anchor would be bypassed without touching `documentStore` at all. It may only
@@ -843,11 +905,13 @@ async fn an_issuer_addr_override_can_only_tighten_never_select_the_contract() {
     // verdict-deciding reads went to the clone the FACTORY named, so the obliging contract's
     // attacker-chosen answers are not what produced this result.
     assert_eq!(v["issuerResolution"]["source"], "operatorOverride", "{v}");
+    // The override never got to ANSWER: both verdict-deciding reads went to the clone the factory
+    // named, so the pillar reports the real signer and passes honestly.
     assert_eq!(v["fragments"]["issuerWhitelisted"], true, "{v}");
     assert_eq!(v["fragments"]["onchain"], true, "{v}");
-    // …and because the credential really is genuine, it still verifies. An override must not be able
-    // to CONDEMN a good credential either - only to fail to rescue a bad one.
-    assert_eq!(v["verdict"], true, "{v}");
+    // But an override that DISAGREES with the factory is a failed assertion, and tightens: the caller
+    // asserted this credential came from a contract the chain says did not issue it.
+    assert_eq!(v["verdict"], false, "{v}");
 
     // (b) fabricated root + the same override: nothing in the factory index, so nothing resolves.
     let mut fabricated = issued["wrappedDoc"].clone();
@@ -959,7 +1023,7 @@ async fn a_resolved_but_unwhitelisted_issuer_fails_the_verdict() {
     // Identical to `demo_state()` except the signer is NEVER whitelisted for TRAVEL_CLEARANCE. The
     // clone still declares its record type, so the pillar resolves all the way to the registry and the
     // `false` below is the whitelist answering, not an unresolved read.
-    let chain = MemChain::new();
+    let chain = MemChain::new().with_factory(FACTORY);
     chain.set_record_type(
         ISSUER_ADDR,
         &government_api::app::record_type_key(TRAVEL_CLEARANCE),

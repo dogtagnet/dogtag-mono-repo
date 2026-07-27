@@ -109,7 +109,7 @@ async fn government_verifies_a_vet_issued_credential() {
     let (root, wrapped) = vet_issue_vaccination("7");
     // The vet's own signer anchors, so the emulated clone records `issuedBy[root] = VET_SIGNER` just
     // as the real one records `msg.sender` — that is the address the whitelist pillar resolves.
-    let chain = MemChain::new().with_signer(VET_SIGNER);
+    let chain = MemChain::new().with_signer(VET_SIGNER).with_factory("0x00000000000000000000000000000000000000fa");
     // The vet's clone declares its own `recordType()` exactly as `createIssuer` fixes it on chain -
     // the government verifier reads the record type from the clone it resolves, not from the vet's
     // envelope, so a clone that declares nothing leaves the pillar indeterminate.

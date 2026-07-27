@@ -819,6 +819,9 @@ impl Default for MemChainInner {
 pub struct MemChain {
     inner: Arc<Mutex<MemChainInner>>,
     signer: String,
+    /// Factory that issuances register under; empty = this fake models a chain whose factory has no
+    /// record of what it issued.
+    factory: String,
 }
 
 impl Default for MemChain {
@@ -827,6 +830,7 @@ impl Default for MemChain {
         MemChain {
             inner: Arc::new(Mutex::new(MemChainInner::default())),
             signer: "0x0000000000000000000000000000000000600760".to_lowercase(),
+            factory: String::new(),
         }
     }
 }
@@ -836,6 +840,14 @@ impl MemChain {
         Self::default()
     }
     /// Override the emulated signer address (test harness).
+    /// Register issuances under this factory, mirroring the `registerRoot` every real `issue()`
+    /// performs. Left UNSET by default on purpose: "issued, but the factory has no record of it" is a
+    /// distinct and testable state, and a fake that collapsed it into "resolved" would make the
+    /// unresolvable-root case impossible to model.
+    pub fn with_factory(mut self, factory_addr: &str) -> Self {
+        self.factory = factory_addr.to_lowercase();
+        self
+    }
     pub fn with_signer(mut self, addr: &str) -> Self {
         self.signer = addr.to_lowercase();
         self
@@ -1029,19 +1041,9 @@ impl ChainClient for MemChain {
     ) -> Result<Option<String>, ChainError> {
         self.record_at_block("rootIssuer", at_block);
         let g = self.inner.lock().unwrap();
-        let root_key = root.to_lowercase();
-        if let Some(seeded) = g
-            .root_issuers
-            .get(&(factory_addr.to_lowercase(), root_key.clone()))
-        {
-            return Ok(Some(seeded.clone()));
-        }
-        // Fall back to the index `issue()` writes, which mirrors the `registerRoot` every real
-        // issuance performs. Seeding via `set_root_issuer` pins a specific factory; anything actually
-        // ISSUED through this emulation is by construction factory-deployed, so it resolves here.
-        // A HOSTILE clone never goes through `issue()`, so it is deliberately absent from both maps
-        // and still resolves to `None` - which is what makes the forged-clone test able to fail.
-        Ok(g.root_issuer.get(&root_key).cloned())
+        Ok(g.root_issuers
+            .get(&(factory_addr.to_lowercase(), root.to_lowercase()))
+            .cloned())
     }
     /// Link 1, and the ONE read where an unseeded pair must NOT default to `false`.
     ///
@@ -1166,7 +1168,10 @@ impl ChainClient for MemChain {
         // this fake exactly as it does on chain — otherwise every MemChain-backed record looks like
         // one nobody issued.
         g.issued_by.insert(key, self.signer.clone());
-        g.root_issuer.insert(root_key, addr);
+        g.root_issuer.insert(root_key.clone(), addr.clone());
+        if !self.factory.is_empty() {
+            g.root_issuers.insert((self.factory.clone(), root_key), addr);
+        }
         g.nonce += 1;
         let tx_hash = format!("0x{:064x}", g.nonce);
         // Emulate a monotonic block height so the persisted on-chain proof carries a block number.
