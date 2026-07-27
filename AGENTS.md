@@ -2344,6 +2344,48 @@ practical consequence, seen for real: an assertion that could never pass sat in 
 pipeline's test step did not catch it. Every e2e assertion on these portals is only as good as
 someone remembering to run it by hand, so run the relevant spec before claiming it passes.
 
+### Rendering a portal against YOUR OWN backend, with the proxy trap disarmed
+
+The safe counterpart to the section above, and the cheaper way to verify a portal surface end-to-end
+when the spec you would otherwise run is unmocked (or, as for `stacks/admin/web`, does not exist).
+
+Every portal has an **absolute API-base override**, which is strictly better than pointing the proxy at
+a dead port: an absolute base takes `/api` out of the picture entirely, so `server.proxy` is never
+consulted and the captain's backend is unreachable by construction rather than merely failing closed.
+Note #88 recommended the dead-port proxy trick for government even though `VITE_GOV_API_BASE` existed.
+
+| Portal | Var | Declared in | Default |
+|---|---|---|---|
+| admin | `VITE_CENTRAL_API_BASE` | `src/lib/env.ts` | `/api` |
+| government | `VITE_GOV_API_BASE` | `src/lib/api.ts` (**not** `env.ts`) | `/api` |
+| vet | `VITE_VET_API_BASE` | `src/lib/env.ts` | `/api` |
+| groomer | `VITE_GROOMER_API_BASE` | `src/lib/env.ts` | `/api` |
+
+**Vet and groomer additionally take `VITE_CENTRAL_API_BASE`, and its default is already the ABSOLUTE
+`http://localhost:39742`** - not `/api`. Overriding only the portal's own base therefore still leaves
+central calls pointed at a shared backend on the default port, with no proxy involved to notice it.
+Override both when serving either of those two.
+
+    VITE_CENTRAL_API_BASE=http://127.0.0.1:<your-mock-port> npx vite build
+    npx vite preview --port <your-port> --strictPort
+
+It must be set at **build** time, not preview time: `import.meta.env` is inlined by the bundler, so
+exporting it before `vite preview` alone does nothing.
+
+Portal auth is a localStorage token, so a mock needs no login endpoint - seed it directly
+(admin: `window.localStorage.setItem("admin.token", "anything")`) and the mock can accept any bearer.
+Only admin's key was verified by this run; check the other portals' `AppContext.tsx` for theirs.
+
+This is how the admin Activity provenance work was verified: a ~120-line `node:http` mock served
+`GET /v1/admin/activity` with a deliberately MIXED feed - real 32-byte tx hashes alongside a scripted
+`0x0800` row - which is the case that matters, because a wholly-synthetic fixture cannot distinguish a
+per-row arithmetic gate from a feed-level demo-mode flag. Remember CORS headers on the mock, since the
+app's origin is now a different port from the API's.
+
+Kill the servers you started by the PID **on the port you chose**
+(`lsof -nP -iTCP:<port> -sTCP:LISTEN -t`), never by matching a path fragment: many checkouts share a
+`target/release/<name>` path and a fleet has killed a captain's live service that way.
+
 ### Reading credential state straight from chain 135
 
 `isValid(bytes32)` = `0x6a938567`, `isRevoked(bytes32)` = `0x4294857f`, `issuedAt(bytes32)` =
