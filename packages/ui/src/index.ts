@@ -166,6 +166,21 @@ export {
 } from "./api/central";
 export * from "./api/types";
 
+// calendar interop — `.ics` parsing for import (see calendar/ics.ts for why it runs client-side)
+export {
+  parseIcs,
+  parseInstant,
+  parseDuration,
+  parseContentLine,
+  unfoldLines,
+  unescapeText,
+  zonedToUnix,
+  type IcsImportEvent,
+  type IcsParseResult,
+  type IcsSkippedEvent,
+  type ParsedInstant,
+} from "./calendar/ics";
+
 // schema
 export {
   RECORD_TYPE_SCHEMAS,

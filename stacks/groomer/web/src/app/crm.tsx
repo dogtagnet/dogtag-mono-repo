@@ -7,8 +7,9 @@
  */
 
 import { Badge, Button, Spinner, useToast } from "@dogtag/ui";
-import type { AppointmentStatus, CrmPage, CrmVerification } from "@dogtag/ui";
+import type { AppointmentStatus, CrmAppointment, CrmPage, CrmVerification } from "@dogtag/ui";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 /** How many rows a list page holds. Matches what the operator can scan without a pager marathon. */
 export const PAGE_SIZE = 25;
@@ -173,6 +174,83 @@ export function DisclosureBadge({
     <Badge variant="neutral" title={disclosedKeyPaths.join(", ")}>
       {n} field{n === 1 ? "" : "s"} revealed
     </Badge>
+  );
+}
+
+/**
+ * The client an appointment belongs to, or an honest "Unassigned" when it has none.
+ *
+ * A booking created by an `.ics` import carries no client (a calendar invite names an event, not a
+ * customer), so `clientId` is empty until the operator links one. Rendering that as a link would
+ * produce `/clients/` with no label — a dead link that reads as a bug. Every surface that shows an
+ * appointment's client goes through here so they cannot drift apart.
+ */
+export function AppointmentClient({
+  appointment,
+  className,
+}: {
+  appointment: Pick<CrmAppointment, "clientId" | "clientName" | "source">;
+  className?: string;
+}) {
+  const { clientId, clientName, source } = appointment;
+  if (!clientId) {
+    return (
+      <span
+        className={className ? `text-muted ${className}` : "text-muted"}
+        title={
+          source === "ics"
+            ? "Imported from a calendar file. Edit the appointment to link a client."
+            : "No client linked to this booking."
+        }
+      >
+        Unassigned
+      </span>
+    );
+  }
+  return (
+    <Link to={`/clients/${clientId}`} className={className ?? "hover:underline"}>
+      {clientName || "—"}
+    </Link>
+  );
+}
+
+/**
+ * The filter toolbar shared by every list page.
+ *
+ * A twelve-column track at `xl` is what stops the controls squeezing each other: a search box, a
+ * couple of selects and a date range have genuinely different natural widths, and a 4-up equal grid
+ * gives the two date inputs a QUARTER of the row between them. Children declare their own
+ * `xl:col-span-*`; below `xl` this collapses to two columns and then to one, so it holds up narrow.
+ */
+export function FilterBar({ children }: { children: ReactNode }) {
+  return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-12">{children}</div>;
+}
+
+/** One labelled control inside a [`FilterBar`]. `min-w-0` keeps a long value from forcing overflow. */
+export function FilterField({
+  label,
+  htmlFor,
+  span,
+  children,
+}: {
+  label?: string;
+  htmlFor?: string;
+  /** Tailwind col-span classes for the `xl` track, e.g. `"xl:col-span-4"`. */
+  span: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`min-w-0 space-y-1 ${span}`}>
+      {label && (
+        <label
+          htmlFor={htmlFor}
+          className="block text-xs font-medium uppercase tracking-wide text-muted"
+        >
+          {label}
+        </label>
+      )}
+      {children}
+    </div>
   );
 }
 

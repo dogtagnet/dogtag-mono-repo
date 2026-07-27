@@ -4,6 +4,7 @@ import { Layout } from "./app/Layout";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
 import { Calendar } from "./pages/Calendar";
+import { CalendarSync } from "./pages/CalendarSync";
 import { Appointments } from "./pages/Appointments";
 import { AppointmentDetail } from "./pages/AppointmentDetail";
 import { AppointmentForm } from "./pages/AppointmentForm";
@@ -35,6 +36,10 @@ export function App() {
       {/* Standalone (no Layout): unlocking is the whole page, not a section of the portal. */}
       <Route path="/unlock" element={<Unlock />} />
       <Route path="/dashboard" element={<Layout title="Dashboard"><Dashboard /></Layout>} />
+      {/* `wide` marks a WORKING SURFACE (see Layout): the calendar grid and the searchable,
+          filterable lists take the full content column. Forms and detail views keep the reading
+          measure. `/calendar/sync` is declared before `/calendar` so it is not shadowed. */}
+      <Route path="/calendar/sync" element={<Layout title="Calendar sync"><CalendarSync /></Layout>} />
       <Route path="/calendar" element={<Layout title="Calendar" wide><Calendar /></Layout>} />
       {/* `/new` is declared before `/:id` so it is matched as the create form, not an id. */}
       <Route
@@ -46,11 +51,11 @@ export function App() {
         element={<Layout title="Edit appointment"><AppointmentForm mode="edit" /></Layout>}
       />
       <Route path="/appointments/:id" element={<Layout title="Appointment"><AppointmentDetail /></Layout>} />
-      <Route path="/appointments" element={<Layout title="Appointments"><Appointments /></Layout>} />
+      <Route path="/appointments" element={<Layout title="Appointments" wide><Appointments /></Layout>} />
       <Route path="/clients/:id" element={<Layout title="Client"><ClientDetail /></Layout>} />
-      <Route path="/clients" element={<Layout title="Clients"><Clients /></Layout>} />
+      <Route path="/clients" element={<Layout title="Clients" wide><Clients /></Layout>} />
       <Route path="/verifications/:id" element={<Layout title="Verification"><VerificationDetail /></Layout>} />
-      <Route path="/verifications" element={<Layout title="All verifications"><Verifications /></Layout>} />
+      <Route path="/verifications" element={<Layout title="All verifications" wide><Verifications /></Layout>} />
       <Route path="/groomers" element={<Layout title="Groomers"><Groomers /></Layout>} />
       <Route path="/reports" element={<Layout title="Reports"><Reports /></Layout>} />
       <Route path="/marketing" element={<Layout title="Marketing"><Marketing /></Layout>} />

@@ -6,7 +6,6 @@ import {
   CardHeader,
   CardTitle,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -25,8 +24,10 @@ import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useApp } from "../app/AppContext";
 import {
-  ListPlaceholder,
   DisclosureBadge,
+  FilterBar,
+  FilterField,
+  ListPlaceholder,
   PAGE_SIZE,
   Pager,
   VerificationStatusBadge,
@@ -132,71 +133,72 @@ export function Verifications() {
           </p>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="relative lg:col-span-2">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+        <FilterBar>
+          {/* Five filters on one row at xl: the search box takes the largest share and each of the
+              two date inputs gets its own column, rather than sharing a quarter-width cell. */}
+          <FilterField span="sm:col-span-2 xl:col-span-4" label="Search" htmlFor="verif-search">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+              <Input
+                id="verif-search"
+                className="pl-9"
+                placeholder="Search client, pet, purpose, tx or DogTag id…"
+                value={search}
+                onChange={(e) => set(setSearch)(e.target.value)}
+                aria-label="Search verifications"
+              />
+            </div>
+          </FilterField>
+          <FilterField span="xl:col-span-2" label="Result">
+            <Select
+              value={status}
+              onValueChange={(v) => set(setStatus)(v as CrmVerification["status"] | typeof ANY)}
+            >
+              <SelectTrigger aria-label="Filter by result">
+                <SelectValue placeholder="Any result" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Any result</SelectItem>
+                {STATUSES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FilterField>
+          <FilterField span="xl:col-span-2" label="Purpose">
+            <Select value={purpose} onValueChange={set(setPurpose)}>
+              <SelectTrigger aria-label="Filter by purpose">
+                <SelectValue placeholder="Any purpose" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ANY}>Any purpose</SelectItem>
+                {VERIFY_PURPOSES.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FilterField>
+          <FilterField span="xl:col-span-2" label="From" htmlFor="verif-from">
             <Input
-              className="pl-9"
-              placeholder="Search client, pet, purpose, tx or DogTag id…"
-              value={search}
-              onChange={(e) => set(setSearch)(e.target.value)}
-              aria-label="Search verifications"
+              id="verif-from"
+              type="date"
+              value={fromDate}
+              onChange={(e) => set(setFromDate)(e.target.value)}
             />
-          </div>
-          <Select
-            value={status}
-            onValueChange={(v) => set(setStatus)(v as CrmVerification["status"] | typeof ANY)}
-          >
-            <SelectTrigger aria-label="Filter by result">
-              <SelectValue placeholder="Any result" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Any result</SelectItem>
-              {STATUSES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={purpose} onValueChange={set(setPurpose)}>
-            <SelectTrigger aria-label="Filter by purpose">
-              <SelectValue placeholder="Any purpose" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ANY}>Any purpose</SelectItem>
-              {VERIFY_PURPOSES.map((p) => (
-                <SelectItem key={p.value} value={p.value}>
-                  {p.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="flex items-end gap-2 lg:col-span-2">
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="verif-from" className="text-xs">
-                From
-              </Label>
-              <Input
-                id="verif-from"
-                type="date"
-                value={fromDate}
-                onChange={(e) => set(setFromDate)(e.target.value)}
-              />
-            </div>
-            <div className="flex-1 space-y-1">
-              <Label htmlFor="verif-to" className="text-xs">
-                To
-              </Label>
-              <Input
-                id="verif-to"
-                type="date"
-                value={toDate}
-                onChange={(e) => set(setToDate)(e.target.value)}
-              />
-            </div>
-          </div>
-        </div>
+          </FilterField>
+          <FilterField span="xl:col-span-2" label="To" htmlFor="verif-to">
+            <Input
+              id="verif-to"
+              type="date"
+              value={toDate}
+              onChange={(e) => set(setToDate)(e.target.value)}
+            />
+          </FilterField>
+        </FilterBar>
 
         {filtered && (
           <Button variant="ghost" size="sm" onClick={clearAll}>

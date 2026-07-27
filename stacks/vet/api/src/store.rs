@@ -249,12 +249,19 @@ pub struct ProfileIssueSession {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IssuerSettings {
     pub signing_mode: String, // "wallet" | "backend"
+    /// The BEARER SECRET in the published `.ics` subscription URL — anyone holding it can read the
+    /// shop's whole schedule, so it is treated as a credential: minted from a CSPRNG, never derived
+    /// from anything guessable, and revoked by clearing it (which instantly 404s the feed). `None`
+    /// (the default) means no feed has ever been published for this deployment.
+    #[serde(rename = "icsFeedToken", default)]
+    pub ics_feed_token: Option<String>,
 }
 
 impl Default for IssuerSettings {
     fn default() -> Self {
         IssuerSettings {
             signing_mode: "backend".to_string(),
+            ics_feed_token: None,
         }
     }
 }
@@ -416,6 +423,14 @@ impl Client {
 pub struct Appointment {
     #[serde(rename = "appointmentId")]
     pub appointment_id: String,
+    /// The shop client this booking belongs to, or EMPTY for an UNASSIGNED booking.
+    ///
+    /// Every booking made in the portal carries a real client id — the create/update routes reject a
+    /// `clientId` that does not resolve. Empty is reserved for a booking that arrived from OUTSIDE
+    /// the shop's own directory, namely an `.ics` import: a calendar invite carries a summary and a
+    /// slot, not a DogTag client, and inventing a placeholder client to satisfy the column would put
+    /// fabricated rows in the customer directory. The portal renders an empty id as "Unassigned" and
+    /// the operator links a real client by editing the booking.
     #[serde(rename = "clientId")]
     pub client_id: String,
     #[serde(rename = "petId", default)]
@@ -448,6 +463,17 @@ pub struct Appointment {
     /// see [`Client::search_key`].
     #[serde(rename = "searchKey", default)]
     pub search_key: String,
+    /// Where this booking came from. `None`/absent -> booked in the portal; `Some("ics")` -> created
+    /// by an `.ics` import. Kept so the portal can label an imported booking honestly rather than
+    /// presenting it as one the shop entered.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The ORIGINATING calendar's `UID` for an imported booking (RFC 5545 §3.8.4.7), which is what
+    /// makes a re-import of the same file idempotent instead of duplicating every event. Also
+    /// re-emitted as the `UID` of the outbound feed, so an appointment that came in from a calendar
+    /// and goes back out to one keeps a single identity across the round trip.
+    #[serde(rename = "externalUid", default)]
+    pub external_uid: Option<String>,
 }
 
 /// The lifecycle states an [`Appointment`] may hold. Anything else is rejected at the route.
@@ -730,6 +756,13 @@ pub trait Store: Send + Sync {
     async fn delete_appointment(&self, id: &str) -> bool;
     /// Search/filter/paginate appointments ordered by `start_at` ASC (calendar order).
     async fn list_appointments(&self, q: &AppointmentQuery) -> Page<Appointment>;
+    /// Find the booking an `.ics` import previously created for `external_uid`, if any.
+    ///
+    /// This is the whole dedup mechanism for repeated imports: an event's `UID` is stable across
+    /// exports of the same calendar, so re-uploading the same file finds the existing booking and
+    /// updates it instead of creating a second copy. Indexed (unique-per-present-value in Mongo), so
+    /// it is a seek and not a scan.
+    async fn appointment_by_external_uid(&self, external_uid: &str) -> Option<Appointment>;
 
     // ---- shop CRM: verification history ----
     async fn put_verification_log(&self, v: VerificationLog);
@@ -1230,6 +1263,18 @@ impl Store for MemStore {
             a.start_at.cmp(&b.start_at).then_with(|| a.appointment_id.cmp(&b.appointment_id))
         });
         paginate(matched, q.limit, q.offset)
+    }
+    async fn appointment_by_external_uid(&self, external_uid: &str) -> Option<Appointment> {
+        if external_uid.is_empty() {
+            return None;
+        }
+        self.inner
+            .read()
+            .unwrap()
+            .appointments
+            .values()
+            .find(|a| a.external_uid.as_deref() == Some(external_uid))
+            .cloned()
     }
 
     // ---- shop CRM: verification history ----

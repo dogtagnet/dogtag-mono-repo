@@ -46,12 +46,65 @@ export function startOfDay(unixSec: number): number {
   return Math.floor(d.getTime() / 1000);
 }
 
+/**
+ * Move `n` CALENDAR days, keeping the local wall-clock time of day.
+ *
+ * This is the reason the calendar grids do not step by `86_400`. A local day is not always 86400
+ * seconds: on a DST spring-forward it is 23 hours, on a fall-back it is 25. Enumerating a grid as
+ * `start + i * DAY_SECS` therefore drifts off local midnight from the transition onwards — in the
+ * March 2026 grid for Europe/London, 7 of the 42 cells land at 01:00 instead of 00:00, so a booking
+ * bucketed under its true local midnight matches NO cell and disappears from the calendar with no
+ * warning at all. Stepping the Date's day component instead re-resolves the offset per day, which is
+ * what a calendar means by "the next day".
+ */
+export function addDays(unixSec: number, n: number): number {
+  const d = new Date(unixSec * 1000);
+  d.setDate(d.getDate() + n);
+  return Math.floor(d.getTime() / 1000);
+}
+
+/** Whole local days between two local midnights. Rounded, because a DST day is 23h or 25h. */
+export function daysBetween(fromSec: number, toSec: number): number {
+  return Math.round((toSec - fromSec) / DAY_SECS);
+}
+
 /** Unix seconds of local midnight starting the MONDAY of the week containing `unixSec`. */
 export function startOfWeek(unixSec: number): number {
-  const d = new Date(startOfDay(unixSec) * 1000);
+  const start = startOfDay(unixSec);
   // getDay(): 0=Sun..6=Sat. Shift so Monday is the first column.
-  const shift = (d.getDay() + 6) % 7;
-  return startOfDay(unixSec) - shift * DAY_SECS;
+  const shift = (new Date(start * 1000).getDay() + 6) % 7;
+  return addDays(start, -shift);
+}
+
+/** Unix seconds of local midnight on the 1st of the month containing `unixSec`. */
+export function startOfMonth(unixSec: number): number {
+  const d = new Date(unixSec * 1000);
+  d.setDate(1);
+  d.setHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
+/**
+ * Move `n` calendar months, anchored on the 1st.
+ *
+ * Anchoring first is what makes this total: `setMonth` on the 31st overflows (31 Jan + 1 month lands
+ * in March), which would make "next month" skip February entirely. Month navigation only ever needs
+ * a month START, so normalizing to the 1st removes the trap rather than working around it.
+ */
+export function addMonths(unixSec: number, n: number): number {
+  const d = new Date(startOfMonth(unixSec) * 1000);
+  d.setMonth(d.getMonth() + n);
+  return Math.floor(d.getTime() / 1000);
+}
+
+/**
+ * The Monday that starts the month grid containing `unixSec`, and how many days the grid spans —
+ * always whole weeks, so the grid is a clean 7-column block (28, 35 or 42 cells).
+ */
+export function monthGrid(unixSec: number): { start: number; days: number } {
+  const start = startOfWeek(startOfMonth(unixSec));
+  const days = daysBetween(start, addMonths(unixSec, 1));
+  return { start, days: Math.ceil(days / 7) * 7 };
 }
 
 export function formatTime(unixSec: number): string {
@@ -78,4 +131,12 @@ export function formatDateTime(unixSec: number): string {
 /** "10:00 – 11:00" for a slot. */
 export function formatSlot(startAt: number, endAt: number): string {
   return endAt > startAt ? `${formatTime(startAt)} – ${formatTime(endAt)}` : formatTime(startAt);
+}
+
+/** "March 2026" — the month view's range label. */
+export function formatMonth(unixSec: number): string {
+  return new Date(unixSec * 1000).toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
 }

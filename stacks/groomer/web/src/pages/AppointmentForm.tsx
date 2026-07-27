@@ -176,6 +176,16 @@ export function AppointmentForm({ mode }: { mode: "create" | "edit" }) {
         </CardHeader>
         <CardContent>
           <form className="space-y-6" onSubmit={submit}>
+            {/* An `.ics`-imported booking arrives UNASSIGNED — a calendar invite names an event, not
+                a DogTag client, and the import refuses to invent one. The backend requires a real
+                client on every write, so saving is blocked until one is picked; say that here rather
+                than leaving the operator staring at a disabled button. */}
+            {existing && !existing.clientId && (
+              <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
+                This booking came from an imported calendar file and has no client yet. Pick the
+                client it belongs to before saving — the verification flow needs one.
+              </p>
+            )}
             <ClientPicker value={clientId} selected={client} onChange={setClientId} />
 
             <div className="grid gap-4 sm:grid-cols-2">

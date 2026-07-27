@@ -19,7 +19,16 @@ import { Plus, Search, Trash2, Users } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../app/AppContext";
-import { ListPlaceholder, PAGE_SIZE, Pager, useAction, useDebounced, useList } from "../app/crm";
+import {
+  FilterBar,
+  FilterField,
+  ListPlaceholder,
+  PAGE_SIZE,
+  Pager,
+  useAction,
+  useDebounced,
+  useList,
+} from "../app/crm";
 
 /**
  * The customer directory (impl §5.2). Owner particulars + their pets, searchable across owner name,
@@ -66,16 +75,23 @@ export function Clients() {
           </Button>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
-            <Input
-              className="pl-9"
-              placeholder="Search name, email, phone, pet or DogTag id…"
-              value={search}
-              onChange={(e) => onSearch(e.target.value)}
-              aria-label="Search clients"
-            />
-          </div>
+          {/* The directory has one filter, so it is bounded rather than stretched: a search box the
+              width of a 27" monitor is a worse target than one sized to what you type into it. */}
+          <FilterBar>
+            <FilterField span="sm:col-span-2 xl:col-span-6" label="Search" htmlFor="client-search">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+                <Input
+                  id="client-search"
+                  className="pl-9"
+                  placeholder="Search name, email, phone, pet or DogTag id…"
+                  value={search}
+                  onChange={(e) => onSearch(e.target.value)}
+                  aria-label="Search clients"
+                />
+              </div>
+            </FilterField>
+          </FilterBar>
 
           <ListPlaceholder
             loading={loading}
@@ -228,7 +244,10 @@ export function ClientForm({
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <form className="space-y-6" onSubmit={submit}>
+        {/* This form is hosted on a WORKING-SURFACE page (the directory uses the full width), but a
+            form is read, not scanned: the fields keep a comfortable measure instead of inheriting
+            the list's width. */}
+        <form className="max-w-3xl space-y-6" onSubmit={submit}>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="client-name">Name</Label>

@@ -21,9 +21,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useApp } from "../app/AppContext";
 import {
+  AppointmentClient,
   AppointmentStatusBadge,
-  ListPlaceholder,
   DisclosureBadge,
+  ListPlaceholder,
   VerificationStatusBadge,
   useAction,
 } from "../app/crm";
@@ -136,9 +137,7 @@ export function AppointmentDetail() {
             <div>
               <dt className="text-xs font-semibold uppercase tracking-wide text-muted">Client</dt>
               <dd className="mt-1">
-                <Link to={`/clients/${appt.clientId}`} className="text-primary hover:underline">
-                  {appt.clientName}
-                </Link>
+                <AppointmentClient appointment={appt} className="text-primary hover:underline" />
               </dd>
             </div>
             <div>

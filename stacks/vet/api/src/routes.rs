@@ -36,7 +36,7 @@ use serde_json::{json, Value};
 
 use crate::app::{self, AppState};
 use crate::auth::{self, ShareClaims};
-use crate::store::{ApptReplica, IssuerSettings, Record, RecordStatus, VerifySession};
+use crate::store::{ApptReplica, Record, RecordStatus, VerifySession};
 
 type Resp = (StatusCode, Json<Value>);
 
@@ -432,11 +432,11 @@ async fn put_signing_mode(
             "prepared record outstanding; cannot switch mode",
         );
     }
-    st.store
-        .put_settings(IssuerSettings {
-            signing_mode: body.mode.clone(),
-        })
-        .await;
+    // Read-modify-write: settings is one document, and switching the signing mode must not silently
+    // drop a sibling field (the published calendar-feed secret would revoke every subscription).
+    let mut settings = st.store.get_settings().await;
+    settings.signing_mode = body.mode.clone();
+    st.store.put_settings(settings).await;
     ok(json!({ "signingMode": body.mode }))
 }
 
@@ -2739,6 +2739,11 @@ pub fn public_router(state: AppState) -> Router {
         .merge(issuance)
         // the shop's own clients / appointments / verification history (operator-gated)
         .merge(crate::crm::crm_router())
+        // `.ics` calendar interop: the UNAUTHENTICATED subscription feed (the secret is in the
+        // path — a calendar client cannot present a bearer token) + the operator-gated feed
+        // administration and import routes.
+        .merge(crate::calendar_ics::ics_feed_router())
+        .merge(crate::calendar_ics::ics_admin_router())
         // health (no auth) — used by compose healthchecks
         .route("/health", get(health))
         // login

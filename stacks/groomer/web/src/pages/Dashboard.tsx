@@ -102,7 +102,7 @@ export function Dashboard() {
                   >
                     <div className="min-w-0">
                       <p className="truncate font-medium text-onSurface">
-                        {formatSlot(a.startAt, a.endAt)} · {a.clientName}
+                        {formatSlot(a.startAt, a.endAt)} · {a.clientName || "Unassigned"}
                       </p>
                       <p className="truncate text-sm text-muted">
                         {[a.petName, a.service].filter(Boolean).join(" · ") || "—"}

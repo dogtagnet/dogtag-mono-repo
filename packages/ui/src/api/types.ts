@@ -928,6 +928,14 @@ export type AppointmentStatus = (typeof APPOINTMENT_STATES)[number];
 
 export interface CrmAppointment {
   appointmentId: string;
+  /**
+   * The shop client this booking belongs to, or `""` for an UNASSIGNED one.
+   *
+   * Empty only ever comes from an `.ics` import: a calendar invite names an event, not a DogTag
+   * client, and the import refuses to fabricate a directory entry to fill the column. Render it via
+   * `AppointmentClient` rather than linking to `/clients/${clientId}` — an empty id produces a dead
+   * link with no label.
+   */
   clientId: string;
   /** denormalized so a list renders without a per-row client fetch */
   clientName: string;
@@ -942,6 +950,10 @@ export interface CrmAppointment {
   groomer: string;
   createdAt: number;
   updatedAt: number;
+  /** `"ics"` for a booking created by a calendar import; absent/null when booked in the portal. */
+  source?: string | null;
+  /** The originating calendar's `UID` for an imported booking — what makes a re-import idempotent. */
+  externalUid?: string | null;
   /** present on the single-appointment read only */
   verifications?: CrmVerification[];
 }
@@ -1004,4 +1016,54 @@ export interface VerificationListQuery extends ClientListQuery {
   purpose?: string;
   from?: number;
   to?: number;
+}
+
+// --------------------------------------------------------------------------------------------
+// `.ics` calendar interop (`stacks/vet/api/src/calendar_ics.rs`).
+// --------------------------------------------------------------------------------------------
+
+/**
+ * The published `.ics` subscription feed's state.
+ *
+ * `token` is a CREDENTIAL: anyone holding the URL it builds can read the shop's whole schedule. It
+ * is returned to the operator's own session so the portal can display and copy the link, and is
+ * revoked by `revokeIcsFeed` / replaced by `rotateIcsFeed`.
+ */
+export interface IcsFeedResp {
+  enabled: boolean;
+  token: string | null;
+  /**
+   * API-relative path of the feed, e.g. `/calendar/feed/<token>.ics`. The portal composes the
+   * absolute URL against its own origin + API base, because that is what a subscriber actually
+   * reaches — the backend's configured `DEPLOYMENT_URL` can legitimately differ (dev proxy, tunnel).
+   */
+  path: string | null;
+}
+
+/** One already-normalized event from a parsed `.ics` (see `packages/ui/src/calendar/ics.ts`). */
+export interface IcsImportEventInput {
+  uid: string;
+  summary?: string;
+  description?: string;
+  location?: string;
+  /** unix seconds, resolved from the source event's own TZID/DATE semantics */
+  startAt: number;
+  endAt?: number;
+  allDay?: boolean;
+  /** the source carried an RRULE; the import does NOT expand it */
+  recurring?: boolean;
+  status?: string;
+}
+
+/** What an import did (or, for a dry run, WOULD do). */
+export interface IcsImportResp {
+  dryRun: boolean;
+  total: number;
+  created: number;
+  updated: number;
+  cancelled: number;
+  skipped: number;
+  /** events imported as a SINGLE occurrence because recurrence is not expanded */
+  recurringNotExpanded: number;
+  allDay: number;
 }
