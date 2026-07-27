@@ -1,7 +1,9 @@
 package io.liberalize.dogtag.data
 
 import io.liberalize.dogtag.net.RoaxRpc
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -96,5 +98,57 @@ class IssuerWhitelistPillarTest {
             "INVALID",
             RecordImporter.foldIssuerWhitelist("INVALID", RoaxRpc.Result.Unknown("rpc 502")),
         )
+    }
+
+    /**
+     * A read that never ANSWERED must not be reported to the owner as a chain FACT.
+     *
+     * "No factory clone ever issued this root" is a statement about the chain's contents; a dropped
+     * connection, a revert or a truncated reply establishes nothing of the sort. Both stay
+     * indeterminate - that tri-state is untouched - but only the genuine zero slot may claim what the
+     * chain says, because this text is persisted in `verdictReason` and shown to the holder.
+     *
+     * This is the PR's own defect class relocated into a string: an unrun check reported as a
+     * conclusion.
+     */
+    @Test
+    fun anUnresolvedReadSaysTheReadFailedRatherThanAssertingAChainFact() = runBlocking {
+        val pillar = RoaxRpc.issuerWhitelistPillar(
+            rpcUrl = "http://127.0.0.1:1",
+            issuerRegistry = "0xreg",
+            issuerFactory = "0xfactory",
+            documentStore = "0xabc",
+            root = "",
+            recordType = "TRAVEL_CLEARANCE",
+        )
+        val reason = (pillar as RoaxRpc.Result.Unknown).reason
+        assertTrue(reason, reason.startsWith("could not read the factory's issuer index ("))
+        assertTrue(reason, !reason.contains("no factory clone ever issued this root"))
+    }
+
+    /**
+     * A document naming NO issuer contract is indeterminate, not a mismatch.
+     *
+     * The pillar used to compare the factory's answer against the empty string and return a definite
+     * Invalid, so import stamped a hard INVALID while [CredentialRefresher] - which scopes the pillar
+     * to a non-blank `documentStore` for exactly this reason, since a DOG_PROFILE anchors in the SBT
+     * instead - answered indeterminate for the same record. Two verdicts for one credential.
+     */
+    @Test
+    fun aDocumentNamingNoIssuerContractIsIndeterminateNotAMismatch() = runBlocking {
+        val pillar = RoaxRpc.issuerWhitelistPillar(
+            rpcUrl = "http://127.0.0.1:1",
+            issuerRegistry = "0xreg",
+            issuerFactory = "0xfactory",
+            documentStore = "   ",
+            root = "0x11",
+            recordType = "DOG_PROFILE",
+        )
+        assertEquals(
+            RoaxRpc.Result.Unknown("document names no issuer contract"),
+            pillar,
+        )
+        // …and folding it can only degrade a pass, never manufacture a forgery accusation.
+        assertEquals("UNVERIFIED", RecordImporter.foldIssuerWhitelist("VALID", pillar))
     }
 }

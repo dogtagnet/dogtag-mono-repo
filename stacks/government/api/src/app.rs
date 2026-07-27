@@ -157,9 +157,13 @@ fn status_base_url(cfg: &Config) -> Option<String> {
 /// this whole field exists to close, so the placeholder path must fall into the honest-degradation
 /// branch ("this issuer published no status page") instead.
 ///
-/// Covers RFC-2606 (`example.com/net/org`, `.example`, `.invalid`, `.test`) and RFC-6761 `localhost`.
-/// Real hostnames and PLAIN IPs must still pass: `http://192.168.1.20:44832` is the normal demo path
-/// (`scripts/demo-up.sh` stamps the LAN IP) and dev tunnels are ordinary hostnames.
+/// Covers RFC-2606 (`example.com/net/org`, `.example`, `.invalid`, `.test`), RFC-6761 `localhost`,
+/// and the loopback/unspecified IP LITERALS a phone resolves to ITSELF - `127.0.0.0/8`, `::1`,
+/// `0.0.0.0`, `::` - which are the natural thing to reach for once the `localhost` NAME is refused
+/// and produce exactly the same permanently-dead QR.
+///
+/// Real hostnames and routable PLAIN IPs must still pass: `http://192.168.1.20:44832` is the normal
+/// demo path (`scripts/demo-up.sh` stamps the LAN IP) and dev tunnels are ordinary hostnames.
 fn is_unreachable_status_host(base: &str) -> bool {
     let authority = base
         .split_once("://")
@@ -195,7 +199,17 @@ fn is_unreachable_status_host(base: &str) -> bool {
     {
         return true;
     }
-    host == "localhost" || host.ends_with(".localhost")
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    // An IP LITERAL is checked as an address, not as a name: a scanning phone resolves any loopback
+    // address to ITSELF and the unspecified address to nothing, so neither can ever reach this
+    // server. `127.0.0.53` and `0:0:0:0:0:0:0:1` are covered as much as `127.0.0.1` and `::1`.
+    // Anything that is not an IP literal (a hostname, including a tunnel) falls through untouched.
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback() || ip.is_unspecified(),
+        Err(_) => false,
+    }
 }
 
 /// Assemble the M7 §5.2 CONVENIENCE tier for the owner's device: platform-OWNED, UNVERIFIED claims
@@ -596,6 +610,28 @@ mod tests {
             base("https://mytest.gov.sg"),
             Some("https://mytest.gov.sg".into())
         );
+        // A routable public IP is a real host too - only loopback/unspecified literals are refused.
+        assert_eq!(base("http://203.0.113.9"), Some("http://203.0.113.9".into()));
+    }
+
+    /// A loopback or unspecified IP LITERAL resolves, on the scanning phone, to the phone itself (or
+    /// to nothing) - so it is exactly as dead as the `localhost` NAME, and it is what an operator
+    /// reaches for once that name is refused. The whole `127.0.0.0/8` block counts, not just
+    /// `127.0.0.1`, and the IPv6 forms count in both their bracketed and expanded spellings.
+    #[test]
+    fn a_loopback_ip_literal_is_refused() {
+        for url in [
+            "http://127.0.0.1:44832",
+            "http://127.0.0.53",
+            "https://127.1.2.3/",
+            "http://[::1]:44832",
+            "http://[::1]",
+            "http://[0:0:0:0:0:0:0:1]:44832",
+            "http://0.0.0.0:44832",
+            "http://[::]:44832",
+        ] {
+            assert_eq!(base(url), None, "{url} must not be stamped");
+        }
     }
 
     /// A host no phone can resolve must yield `None`, so the document carries no status page at all and
