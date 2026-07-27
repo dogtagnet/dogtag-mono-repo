@@ -12,8 +12,21 @@ import { verifyCredentialOnchain, type IssuerChainReader } from "../wallet/verif
 
 export interface CredentialVerifyPanelProps {
   defaultSigner?: string;
-  /** IssuerRegistry address for the whitelist pillar; defaults to the deployed ROAX registry. */
+  /**
+   * IssuerRegistry address for the whitelist pillar; defaults to the deployed ROAX registry.
+   *
+   * A MATCHED PAIR with {@link CredentialVerifyPanelProps.factoryAddr} - override both or neither. A
+   * clone is gated by its OWN `registry()`, so pointing one axis at a different deployment leaves the
+   * pillar asking a registry about a signer resolved through a factory it does not govern, which
+   * answers indeterminate or falsely negative.
+   */
   registryAddr?: string;
+  /**
+   * DogTagIssuerFactory address used to resolve the issuing clone from its write-once `rootIssuer[R]`
+   * index; defaults to the deployed ROAX factory. Matched pair with
+   * {@link CredentialVerifyPanelProps.registryAddr} - see there.
+   */
+  factoryAddr?: string;
   /** Public RPC URL override; defaults to the ROAX devrpc from the chain definition. */
   rpcUrl?: string;
   /** Injected chain reader (tests/storybook); defaults to a viem reader over the public ROAX RPC. */
@@ -31,6 +44,7 @@ const STATUS_LABEL: Record<VerifyCredentialResp["status"], string> = {
 export function CredentialVerifyPanel({
   defaultSigner = "",
   registryAddr,
+  factoryAddr,
   rpcUrl,
   reader,
 }: CredentialVerifyPanelProps = {}) {
@@ -55,6 +69,7 @@ export function CredentialVerifyPanel({
         wrappedDoc: parsed as Record<string, unknown>,
         signerAddr: signer.trim() || undefined,
         registryAddr,
+        factoryAddr,
         rpcUrl,
         reader,
       });

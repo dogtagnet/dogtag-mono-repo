@@ -53,6 +53,22 @@ object RoaxRpc {
     }
 
     /**
+     * The outcome of a read whose on-chain answer is an address or a word.
+     *
+     * Three outcomes, never two: [Unset] is the chain ANSWERING with its zero value (nobody ever wrote
+     * that slot), while [Unresolved] is the read not answering at all - a transport failure, a revert,
+     * or a reply too short to hold the value. Collapsing the pair into one `null` is how a dropped
+     * connection came to be reported to the holder as the definite chain fact "no factory clone ever
+     * issued this root". Both remain indeterminate and neither can ever become a pass; only what the
+     * owner is told differs. Mirrors iOS `RoaxRpc.HexRead`.
+     */
+    sealed class HexRead {
+        data class Found(val hex: String) : HexRead()
+        object Unset : HexRead()
+        data class Unresolved(val reason: String) : HexRead()
+    }
+
+    /**
      * Call `isValid(root)` on the issuer clone. `documentStore` is the issuer contract address from the
      * wrapped doc; `root` is the 0x.. 32-byte merkleRoot.
      */
@@ -123,6 +139,10 @@ object RoaxRpc {
      * 0x.. 32-byte VERIFY key (`verifyWhitelistKeyHex(purpose)`); `signer` is the scanned relayer.
      * Returns Valid (whitelisted), Invalid (not), or Unknown (RPC unreachable). On Unknown the caller
      * MUST hard-stop — this gate is a user-safety requirement, so unknown is treated as not-authorized.
+     *
+     * A reply too short to hold a bool word is the registry NOT ANSWERING (a codeless or wrong address
+     * returns `0x` as a SUCCESSFUL call), so it is Unknown - never the definite Invalid that accuses a
+     * genuine credential's issuer of being unauthorised. Only a full 32-byte zero word is a real "no".
      */
     suspend fun isWhitelistedFor(
         rpcUrl: String,
@@ -135,60 +155,72 @@ object RoaxRpc {
         }
         val data = IS_WHITELISTED_FOR_SELECTOR + pad32(key) + padAddr(signer)
         return when (val r = ethCall(rpcUrl, issuerRegistry, data)) {
-            is CallResult.Ok -> {
-                val truthy = r.hex.trimStart('0').isNotEmpty()
-                if (truthy) Result.Valid else Result.Invalid
-            }
+            is CallResult.Ok ->
+                if (r.hex.length < 64) Result.Unknown("the registry returned no answer")
+                else if (r.hex.trimStart('0').isNotEmpty()) Result.Valid
+                else Result.Invalid
             is CallResult.Err -> Result.Unknown(r.reason)
         }
     }
 
     /**
      * `DogTagIssuer.issuedBy(root)` → the H-1 originator that actually called `issue(root)` on this
-     * clone, or null when the clone never issued it (the on-chain zero address) or the read did not
-     * resolve.
+     * clone. [HexRead.Unset] when the clone never issued it (the on-chain zero address),
+     * [HexRead.Unresolved] when the read did not answer.
      */
-    suspend fun issuedBy(rpcUrl: String, documentStore: String, root: String): String? {
-        if (documentStore.isBlank() || root.isBlank()) return null
+    suspend fun issuedBy(rpcUrl: String, documentStore: String, root: String): HexRead {
+        if (documentStore.isBlank() || root.isBlank()) return HexRead.Unresolved("missing addr/root")
         val data = ISSUED_BY_SELECTOR + pad32(root)
         return when (val r = ethCall(rpcUrl, documentStore, data)) {
             // address is right-aligned in a 32-byte word; all-zero == never issued here.
             is CallResult.Ok ->
-                if (r.hex.length < 40 || r.hex.trimStart('0').isEmpty()) null
-                else "0x" + r.hex.takeLast(40).lowercase()
-            is CallResult.Err -> null
+                if (r.hex.length < 40) HexRead.Unresolved("the issuer clone returned no address")
+                else if (r.hex.trimStart('0').isEmpty()) HexRead.Unset
+                else HexRead.Found("0x" + r.hex.takeLast(40).lowercase())
+            is CallResult.Err -> HexRead.Unresolved(r.reason)
         }
     }
 
     /**
-     * `DogTagIssuerFactory.rootIssuer(root)` → the clone that actually issued this root, or null when
-     * no clone of this factory ever did (the on-chain zero address) or the read did not resolve.
+     * `DogTagIssuerFactory.rootIssuer(root)` → the clone that actually issued this root.
+     * [HexRead.Unset] when no clone of this factory ever did (the on-chain zero address),
+     * [HexRead.Unresolved] when the read did not answer.
      *
      * This is the anchor the issuer pillar hangs from. `registerRoot` is called only from inside a
      * clone's `issue()` and is `require(isClone[msg.sender])` + strictly write-once, so a contract the
      * factory never deployed can never appear here and a genuine root's issuer can never be
      * overwritten.
      */
-    suspend fun rootIssuer(rpcUrl: String, factory: String, root: String): String? {
-        if (factory.isBlank() || root.isBlank()) return null
+    suspend fun rootIssuer(rpcUrl: String, factory: String, root: String): HexRead {
+        if (factory.isBlank() || root.isBlank()) return HexRead.Unresolved("missing factory/root")
         val data = ROOT_ISSUER_SELECTOR + pad32(root)
         return when (val r = ethCall(rpcUrl, factory, data)) {
             is CallResult.Ok ->
-                if (r.hex.length < 40 || r.hex.trimStart('0').isEmpty()) null
-                else "0x" + r.hex.takeLast(40).lowercase()
-            is CallResult.Err -> null
+                if (r.hex.length < 40) HexRead.Unresolved("the factory returned no address")
+                else if (r.hex.trimStart('0').isEmpty()) HexRead.Unset
+                else HexRead.Found("0x" + r.hex.takeLast(40).lowercase())
+            is CallResult.Err -> HexRead.Unresolved(r.reason)
         }
     }
 
     /**
-     * `DogTagIssuer.recordType()` → the clone's own immutable record-type key, or null when the
-     * contract reports the zero word (uninitialized / not a clone) or the read did not resolve.
+     * `DogTagIssuer.recordType()` → the clone's own immutable record-type key. [HexRead.Unset] when
+     * the contract reports the zero word (uninitialized / not a clone), [HexRead.Unresolved] when the
+     * read did not answer.
      */
-    suspend fun recordTypeOf(rpcUrl: String, issuerClone: String): String? {
-        if (issuerClone.isBlank()) return null
+    suspend fun recordTypeOf(rpcUrl: String, issuerClone: String): HexRead {
+        if (issuerClone.isBlank()) return HexRead.Unresolved("missing issuer clone")
         return when (val r = ethCall(rpcUrl, issuerClone, RECORD_TYPE_SELECTOR)) {
-            is CallResult.Ok -> normalizeBytes32(r.hex)?.takeIf { it.drop(2).any { c -> c != '0' } }
-            is CallResult.Err -> null
+            is CallResult.Ok -> {
+                val word = normalizeBytes32(r.hex)
+                when {
+                    word == null ->
+                        HexRead.Unresolved("the issuer clone returned no record-type word")
+                    word.drop(2).all { it == '0' } -> HexRead.Unset
+                    else -> HexRead.Found(word)
+                }
+            }
+            is CallResult.Err -> HexRead.Unresolved(r.reason)
         }
     }
 
@@ -214,7 +246,13 @@ object RoaxRpc {
      * chain does is a definite [Result.Invalid], not merely unresolved.
      *
      * [Result.Unknown] means the pillar did not resolve; a caller must treat that as indeterminate,
-     * never as a pass.
+     * never as a pass. A read that FAILED and a slot the chain says is empty both land there, but they
+     * say so differently: only the latter may state a chain fact.
+     *
+     * A document naming no issuer contract at all is indeterminate too, not a mismatch. There is
+     * nothing to compare the factory's answer against, and the DOG_PROFILE records that legitimately
+     * carry no `documentStore` anchor in the SBT instead - so a comparison against the empty string
+     * would call every one of them a forgery.
      */
     suspend fun issuerWhitelistPillar(
         rpcUrl: String,
@@ -227,16 +265,30 @@ object RoaxRpc {
         if (issuerRegistry.isBlank()) return Result.Unknown("no IssuerRegistry configured")
         if (issuerFactory.isBlank()) return Result.Unknown("no DogTagIssuerFactory configured")
         if (recordType.isBlank()) return Result.Unknown("document declares no recordType")
-        val clone = rootIssuer(rpcUrl, issuerFactory, root)
-            ?: return Result.Unknown("no factory clone ever issued this root")
+        val claimedStore = documentStore.trim()
+        if (claimedStore.isBlank()) return Result.Unknown("document names no issuer contract")
+        val clone = when (val r = rootIssuer(rpcUrl, issuerFactory, root)) {
+            is HexRead.Found -> r.hex
+            is HexRead.Unset -> return Result.Unknown("no factory clone ever issued this root")
+            is HexRead.Unresolved ->
+                return Result.Unknown("could not read the factory's issuer index (${r.reason})")
+        }
         // The envelope points somewhere other than the contract that actually issued the root: a
         // definite misrepresentation, refused before the registry is consulted.
-        if (!clone.equals(documentStore.trim(), ignoreCase = true)) return Result.Invalid
-        val chainRecordType = recordTypeOf(rpcUrl, clone)
-            ?: return Result.Unknown("issuer clone reports no recordType")
+        if (!clone.equals(claimedStore, ignoreCase = true)) return Result.Invalid
+        val chainRecordType = when (val r = recordTypeOf(rpcUrl, clone)) {
+            is HexRead.Found -> r.hex
+            is HexRead.Unset -> return Result.Unknown("issuer clone reports no recordType")
+            is HexRead.Unresolved ->
+                return Result.Unknown("could not read the issuer clone's record type (${r.reason})")
+        }
         if (!chainRecordType.equals(recordTypeKey(recordType), ignoreCase = true)) return Result.Invalid
-        val signer = issuedBy(rpcUrl, clone, root)
-            ?: return Result.Unknown("issuer clone reports no issuer for this root")
+        val signer = when (val r = issuedBy(rpcUrl, clone, root)) {
+            is HexRead.Found -> r.hex
+            is HexRead.Unset -> return Result.Unknown("issuer clone reports no issuer for this root")
+            is HexRead.Unresolved ->
+                return Result.Unknown("could not read who issued this root (${r.reason})")
+        }
         return isWhitelistedFor(rpcUrl, issuerRegistry, chainRecordType, signer)
     }
 
