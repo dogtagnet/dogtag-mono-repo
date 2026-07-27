@@ -7,7 +7,7 @@ import {
   Spinner,
 } from "@dogtag/ui";
 import type { CrmAppointment } from "@dogtag/ui";
-import { CalendarDays, History, ShieldCheck, Users } from "lucide-react";
+import { CalendarDays, History, ShieldCheck, Users, Wand2 } from "lucide-react";
 import type { ComponentType } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../app/AppContext";
