@@ -6,39 +6,58 @@ import { test, expect, type Page, type Route } from "@playwright/test";
  * are the government's OWN credentials (an "our record" badge) while showing other issuers' events as
  * "other issuer", and falls back to a first-class "indexer not connected" state on a 503. The gov
  * portal has no login gate, so no token seeding is needed.
+ *
+ * It also proves the AUDIT-surface contract this console has to meet: chain provenance is stated PER
+ * ROW, a real event carries a working explorer link with its time/block/contract populated from the
+ * chain data, and a synthetic event (the shape the indexer's `INDEXER_DEMO_MODE` feed actually emits)
+ * is visibly marked and offers NO transaction link at all.
  */
 
 const GOV_CLONE = "0x1111111111111111111111111111111111111111";
 const OTHER_CLONE = "0x2222222222222222222222222222222222222222";
-const TX = "0xgovtx1111";
+const REGISTRY = "0xaee540350292e49a9aedf19dd4c3bac6abee6c21";
+/** A well-formed 32-byte transaction hash, as a real ROAX transaction carries. */
+const TX = `0x${"a1".repeat(32)}`;
+/** What the demo indexer really emits: too short to be a transaction hash on any chain. */
+const DEMO_TX = "0x0800";
 
 const ACTIVITY = {
   events: [
     {
-      id: "0xgovtx1111:0",
+      id: `${TX}:0`,
       type: "rootIssued",
       clone: GOV_CLONE,
+      contract: GOV_CLONE,
       cloneName: "DogTag Government Authority",
       recordType: "TRAVEL_CLEARANCE",
       root: "0x3333333333333333333333333333333333333333333333333333333333333333",
+      actor: "0x119f8c7f6d7ec10e7376983739c6f46cf9cc3e96",
+      actorName: "DogTag Government Authority",
       txHash: TX,
       txUrl: `https://explorer.roax.net/tx/${TX}`,
+      blockHash: `0x${"b2".repeat(32)}`,
       blockNumber: 20,
+      logIndex: 0,
       blockTimestamp: 1_700_000_000,
+      onchainTs: 1_700_000_000,
       finality: "finalized",
       local: { kind: "issuance", recordType: "TRAVEL_CLEARANCE", dogTagId: "7", receiptId: "RCPT12345", status: "issued" },
     },
     {
-      id: "0xother:0",
-      type: "rootIssued",
+      id: `${DEMO_TX}:0`,
+      type: "whitelisted",
       clone: OTHER_CLONE,
-      recordType: "VACCINATION",
-      root: "0x9999999999999999999999999999999999999999999999999999999999999999",
-      txHash: "0xothertx",
-      txUrl: "https://explorer.roax.net/tx/0xothertx",
-      blockNumber: 21,
+      // The registry emits `whitelisted`, not the clone — "which contract" is not "which issuer".
+      contract: REGISTRY,
+      // A hashed record-type key, not a human label: it MUST be rendered with a word saying so.
+      recordType: "0x0ea3b61f198af15d1c1f1cd1bd926f52cb69cde62893f72fbb94e628c820321d",
+      txHash: DEMO_TX,
+      // The indexer composes txUrl unconditionally, so a demo row arrives carrying a live-looking
+      // explorer URL for a transaction that cannot exist. The UI must refuse to render it.
+      txUrl: `https://explorer.roax.net/tx/${DEMO_TX}`,
+      blockNumber: 8,
       blockTimestamp: 1_700_000_100,
-      finality: "finalized",
+      finality: "pending",
       local: null,
     },
   ],
@@ -89,6 +108,63 @@ test("unscoped feed shows all issuers and highlights the government's own creden
   const other = rows.filter({ has: page.getByTestId("oversight-local-other") });
   await expect(other).toHaveCount(1);
   await expect(other).toHaveAttribute("data-own", "false");
+});
+
+test("a real event is fully traceable: time, block, contract and a working explorer link", async ({
+  page,
+}) => {
+  await mockBackend(page);
+  await page.goto("/oversight");
+
+  const real = page.getByTestId("oversight-event-row").filter({ hasText: "Root issued" });
+  await expect(real).toHaveAttribute("data-provenance", "onchain");
+
+  // WHEN — the absolute on-chain time is present, not just a relative hint.
+  await expect(real.getByTestId("oversight-when")).toContainText("2023");
+
+  // TX — links to the explorer, using the txUrl the API supplied.
+  const txLink = real.getByTestId("oversight-tx-link");
+  expect(await txLink.getAttribute("href")).toBe(`https://explorer.roax.net/tx/${TX}`);
+
+  // CONTRACT — the emitting contract, named by role and linked to the explorer.
+  const contract = real.getByTestId("oversight-contract");
+  await expect(contract).toContainText("issuer clone");
+  expect(await contract.getByTestId("oversight-contract-value-link").getAttribute("href")).toBe(
+    `https://explorer.roax.net/address/${GOV_CLONE}`,
+  );
+
+  // BLOCK + finality.
+  await expect(real).toContainText("#20");
+  await expect(real).toContainText("finalized");
+
+  // The row expands to the full, untruncated provenance.
+  await real.getByTestId("oversight-expand").click();
+  const detail = page.getByTestId("oversight-event-detail");
+  await expect(detail).toContainText("log 0");
+  await expect(detail.getByTestId("oversight-detail-blockhash")).toBeVisible();
+  await expect(detail.getByTestId("oversight-synthetic-note")).toHaveCount(0);
+});
+
+test("a synthetic event is marked as such and never claims a transaction", async ({ page }) => {
+  await mockBackend(page);
+  await page.goto("/oversight");
+
+  const demo = page.getByTestId("oversight-event-row").filter({ hasText: "Whitelisted" });
+  await expect(demo).toHaveAttribute("data-provenance", "synthetic");
+  await expect(demo.getByTestId("provenance-synthetic")).toBeVisible();
+
+  // No explorer link at all — the tx hash renders inert, despite the API supplying a txUrl.
+  await expect(demo.getByTestId("oversight-tx-link")).toHaveCount(0);
+  await expect(demo.getByTestId("oversight-tx-link-inert")).toBeVisible();
+
+  // The feed-level count reconciles with the per-row marks.
+  await expect(page.getByTestId("oversight-synthetic-banner")).toContainText("1 of 2");
+
+  // The hashed record-type key is LABELLED, never a bare 32-byte hex.
+  await expect(demo.getByTestId("oversight-details")).toContainText("record type key");
+
+  await demo.getByTestId("oversight-expand").click();
+  await expect(page.getByTestId("oversight-synthetic-note")).toBeVisible();
 });
 
 test("renders a first-class 'indexer not connected' state on 503", async ({ page }) => {

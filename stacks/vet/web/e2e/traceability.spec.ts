@@ -11,16 +11,19 @@ import { test, expect, type Page, type Route } from "@playwright/test";
 const OP_TOKEN_KEY = "vet.opToken";
 const SIGNER = "0x00000000000000000000000000000000516ea001";
 const CLONE = "0x000000000000000000000000000000000c10e0a1";
-const TX = "0xaaaa1111";
+/** A well-formed 32-byte transaction hash — only these are chain-addressable. */
+const TX = `0x${"aa".repeat(32)}`;
+const TX2 = `0x${"bb".repeat(32)}`;
 
 /** The scoped, already-joined `/trace/activity` payload the backend would return for this operator. */
 const ACTIVITY = {
   events: [
     {
-      id: "0xaaaa1111:0",
+      id: `${TX}:0`,
       type: "rootIssued",
       actor: SIGNER,
       clone: CLONE,
+      contract: CLONE,
       recordType: "VACCINATION",
       root: "0x1111111111111111111111111111111111111111111111111111111111111111",
       txHash: TX,
@@ -31,19 +34,34 @@ const ACTIVITY = {
       local: { kind: "issuance", recordId: "rec-7", dogTagId: "7", status: "issued", label: "Rex annual" },
     },
     {
-      id: "0xbbbb2222:0",
+      id: `${TX2}:0`,
       type: "verified",
       actor: SIGNER,
-      txHash: "0xbbbb2222",
-      txUrl: "https://explorer.roax.net/tx/0xbbbb2222",
+      txHash: TX2,
+      txUrl: `https://explorer.roax.net/tx/${TX2}`,
       blockNumber: 11,
       blockTimestamp: 1_700_000_100,
       finality: "pending",
       local: null,
     },
+    {
+      // A scripted/demo indexer row: the hash is too short to be a transaction hash on any chain,
+      // yet the indexer still composed a live-looking txUrl for it. The UI must refuse to link it.
+      id: "0x0800:0",
+      type: "whitelisted",
+      actor: SIGNER,
+      contract: "0xaee540350292e49a9aedf19dd4c3bac6abee6c21",
+      recordType: "0x0ea3b61f198af15d1c1f1cd1bd926f52cb69cde62893f72fbb94e628c820321d",
+      txHash: "0x0800",
+      txUrl: "https://explorer.roax.net/tx/0x0800",
+      blockNumber: 8,
+      blockTimestamp: 1_700_000_200,
+      finality: "pending",
+      local: null,
+    },
   ],
-  total: 2,
-  inScope: 2,
+  total: 3,
+  inScope: 3,
   matched: 1,
   droppedOutOfScope: 0,
   scope: { label: "Seaport Vet", unscoped: false },
@@ -86,10 +104,10 @@ test("scoped feed joins own record and marks on-chain-only events", async ({ pag
   await page.goto("/traceability");
 
   const rows = page.getByTestId("trace-event-row");
-  await expect(rows).toHaveCount(2);
+  await expect(rows).toHaveCount(3);
 
   // reconciliation counts from the scoped feed.
-  await expect(page.getByTestId("trace-inscope")).toHaveText("2");
+  await expect(page.getByTestId("trace-inscope")).toHaveText("3");
   await expect(page.getByTestId("trace-matched")).toHaveText("1");
 
   // the rootIssued event is JOINED to this operator's own DB record.
@@ -104,6 +122,30 @@ test("scoped feed joins own record and marks on-chain-only events", async ({ pag
   // the verification event has no local record → shown as on-chain only.
   const verified = rows.filter({ has: page.getByText("Verified") });
   await expect(verified.getByTestId("trace-local-none")).toBeVisible();
+});
+
+test("a synthetic event is marked and never claims a transaction", async ({ page }) => {
+  await mockBackend(page);
+  await page.goto("/traceability");
+
+  const rows = page.getByTestId("trace-event-row");
+  const real = rows.filter({ hasText: "Root issued" });
+  await expect(real).toHaveAttribute("data-provenance", "onchain");
+  // The emitting contract is named by role and linked.
+  expect(await real.getByTestId("trace-contract-value-link").getAttribute("href")).toBe(
+    `https://explorer.roax.net/address/${CLONE}`,
+  );
+
+  const demo = rows.filter({ hasText: "Whitelisted" });
+  await expect(demo).toHaveAttribute("data-provenance", "synthetic");
+  await expect(demo.getByTestId("provenance-synthetic")).toBeVisible();
+  // No explorer anchor at all, despite the feed supplying a txUrl.
+  await expect(demo.getByTestId("trace-tx-link")).toHaveCount(0);
+  await expect(demo.getByTestId("trace-tx-link-inert")).toBeVisible();
+  // The hashed record-type key is LABELLED, never bare 32-byte hex.
+  await expect(demo.getByTestId("trace-details")).toContainText("record type key");
+
+  await expect(page.getByTestId("trace-synthetic-banner")).toContainText("1 of 3");
 });
 
 test("renders a first-class 'indexer not connected' state on 503", async ({ page }) => {

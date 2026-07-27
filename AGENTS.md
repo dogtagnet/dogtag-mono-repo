@@ -2201,3 +2201,44 @@ The delete confirmation resolves its own pet label, on BOTH ports: iOS inside
 `DeleteCredentialDialog` (via `List<Pet>.petLabel`). Never reintroduce a caller-supplied name
 parameter - two callers passing different fallbacks (`""` vs `"DogTag #<id>"`) is exactly how the
 same record came to be named two different ways depending on which screen raised the dialog.
+
+## On-chain provenance in the audit surfaces (government Oversight, vet Traceability)
+
+The oversight indexer's demo mode makes the activity feeds **entirely synthetic**, and nothing in the
+payload says so. `INDEXER_DEMO_MODE` / `DEMO_MODE` / `VITE_DEMO_MODE` (`stacks/indexer/api/src/main.rs`)
+swaps `AlloyLogSource` for a `MemLogSource` seeded by `demo_seed()`, which emits placeholder identifiers
+- `txHash` `0x0100`…`0x0800`, `blockHash` `0x01`…`0x08`, blocks 1-8, roots `0x1111…`/`0x2222…`. It also
+uses the REAL registry addresses, so the rows look plausible. Worse, `routes.rs` composes
+`txUrl = EXPLORER_BASE/tx/<hash>` **unconditionally**, so every synthetic row arrives carrying a
+live-looking `https://explorer.roax.net/tx/0x0800` that resolves to nothing.
+
+The government `/health` `demo` flag does NOT cover this: it is the API's ephemeral-store flag, and the
+topbar's `LIVE CHAIN` badge describes the ISSUANCE backend. A stack can therefore be truthfully live on
+chain 135 while its Oversight table is 100% scripted.
+
+The fix lives in `packages/ui/src/chain/` (`provenance.ts` + `ChainValue.tsx`), shared by BOTH portals so
+they cannot fork into separate dialects:
+
+- `chainProvenance(ev)` returns `synthetic` unless `txHash` is a well-formed 32-byte value. This is
+  arithmetic, not a demo-mode guess - an EVM transaction hash is keccak256 output, so `0x0800` cannot
+  address a transaction on any chain. It therefore also catches a single synthetic row inside an
+  otherwise-real feed, which a header badge cannot.
+- `txExplorerHref(ev)` returns `null` for a synthetic event **even when the API supplied a `txUrl`**;
+  callers render the hash inert rather than linking. Prefer the API's `txUrl` over composing one - the
+  deployment's `EXPLORER_BASE` need not be the ROAX default.
+- `eventDetailFields(ev)` labels every identifier. `recordType` arrives EITHER as a human label
+  (`TRAVEL_CLEARANCE`) or as its keccak key depending on whether the indexer's directory reversed it, so
+  the label follows the value's shape (`isHash32`).
+- `emittingContractRole(type)` names what `contract` is: it is NOT always the issuer clone -
+  `issuerCreated` comes from the factory, `whitelisted`/`delisted` from the IssuerRegistry, `verified`
+  from the verification registry.
+
+Two table-layout traps, both of which produced visibly broken output before being caught by screenshot:
+the `<TableHead>` order and the `<TableCell>` order are independent and silently render mismatched
+columns if you reorder one; and a `ChainValue` with an inline label cannot shrink (the label is
+`shrink-0`), so in a width-capped column its content overflows and collides with the next cell - pass
+`stacked` in dense columns. Verify layout by measuring
+`table.getBoundingClientRect().width - .overflow-x-auto.clientWidth` at a 1512px viewport, not by eye.
+
+The e2e fixtures must use well-formed 32-byte hashes or every row reads as synthetic; `oversight.spec.ts`
+and `traceability.spec.ts` were updated accordingly and now assert both provenance verdicts explicitly.

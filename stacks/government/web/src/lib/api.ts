@@ -225,9 +225,16 @@ export interface OversightLocalJoin {
 export interface OversightEvent {
   id: string;
   type: string;
+  /**
+   * The address that EMITTED the log. NOT always the issuer clone: `issuerCreated` comes from the
+   * factory, `whitelisted`/`delisted` from the IssuerRegistry, `verified` from the verification
+   * registry. This is the answer to "which smart contract".
+   */
   contract?: string;
   actor?: string;
   clone?: string;
+  /** `issuerCreated`: the human name the clone was registered under. */
+  name?: string;
   recordType?: string;
   root?: string;
   dogTagId?: string;
@@ -238,8 +245,13 @@ export interface OversightEvent {
   /** `verified` events: the consent window's proof-bound deadline (unix seconds). */
   deadline?: number;
   txHash?: string;
+  blockHash?: string;
   blockNumber?: number;
   blockTimestamp?: number;
+  /** The block timestamp as the chain reported it; equals `blockTimestamp` on a healthy index. */
+  onchainTs?: number;
+  /** Position of this log within its transaction — disambiguates two events in one tx. */
+  logIndex?: number;
   finality?: string;
   actorName?: string;
   cloneName?: string;
