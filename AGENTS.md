@@ -2299,3 +2299,43 @@ message points at the value's own hover text, which both portals render.
 
 The e2e fixtures must use well-formed 32-byte hashes or every row reads as synthetic; `oversight.spec.ts`
 and `traceability.spec.ts` were updated accordingly and now assert both provenance verdicts explicitly.
+
+### Running the portal Playwright specs by hand WRITES to a live backend
+
+`vite preview` **honours `server.proxy`** in these portals, so serving the app on your own port does
+NOT give you your own backend: `/api` on any port you serve from proxies to
+`VITE_GOV_API_PROXY || http://localhost:44832`. "My own port" is not "my own backend" - a crew that
+carefully picked a spare port still drove the captain's live government API on ROAX chain 135.
+
+Only ONE government spec mocks the backend. `e2e/oversight.spec.ts` intercepts with `page.route` +
+`fulfill` and makes no backend calls. `e2e/government.spec.ts`, `e2e/receipt.spec.ts` and
+`e2e/records-crud.spec.ts` are deliberately unmocked live-portal drivers: between them they issue
+credentials, edit, revoke and expire, each anchoring on-chain. So `npx playwright test` with **no file
+filter** writes real records to whatever backend the proxy points at. That has happened once (five
+records created, later revoked with captain authorisation).
+
+Two safe forms:
+
+    GOV_URL=http://localhost:<your-port> npx playwright test e2e/oversight.spec.ts
+    VITE_GOV_API_PROXY=http://127.0.0.1:9 npx vite preview --port <your-port> --strictPort
+
+Note that `government.spec.ts` reads `/api/health` through `page.request`, which BYPASSES `page.route`
+entirely - so "this spec mocks" is never by itself proof that nothing escapes to a real backend.
+
+All five `stacks/vet/web/e2e` specs mock, so the vet suite is safe unfiltered.
+
+Neither `playwright.config.ts` is in `pnpm test` or CI (both need a served portal + browsers). The
+practical consequence, seen for real: an assertion that could never pass sat in the tree and the
+pipeline's test step did not catch it. Every e2e assertion on these portals is only as good as
+someone remembering to run it by hand, so run the relevant spec before claiming it passes.
+
+### Reading credential state straight from chain 135
+
+`isValid(bytes32)` = `0x6a938567`, `isRevoked(bytes32)` = `0x4294857f`, `issuedAt(bytes32)` =
+`0x6240dded`, called on the per-recordType issuer clone (`TRAVEL_CLEARANCE`
+`0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F`, `EU_HEALTH_CERT`
+`0x421cacf2a526726635fe16ac2c26d3f95c7726de`) via `eth_call` against `https://devrpc.roax.net`. Useful
+to verify a revoke rather than trusting the API's echo.
+
+Confirmed by that read: **`expired` is a document-borne status with no on-chain effect**. A record the
+store reports as `expired` is still `isValid=true` on chain, so expiry alone does not revoke.
