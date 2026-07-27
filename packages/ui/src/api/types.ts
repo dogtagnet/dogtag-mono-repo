@@ -1012,14 +1012,29 @@ export type IssuerWhitelistState =
 /** How the issuing clone was arrived at. Anything but `resolved` means `issuerAddr` is a claim. */
 export type IssuerResolution = "resolved" | "noRecord" | "noFactoryConfigured" | "readFailed";
 
+/**
+ * Whether the document's own `issuer.documentStore` names the clone the factory resolved. Reported
+ * BESIDE the whitelist pillar rather than folded into it, because "the document named a different
+ * contract than the chain did" and "the signer is not authorised for this record type" are different
+ * accusations with different remedies. `notEvaluated` means no clone was resolved, so there was
+ * nothing authoritative to disagree with - not a failure.
+ */
+export type IssuerStoreAgreement = "matched" | "differs" | "notEvaluated";
+
 export interface ImportVerdict {
   valid: boolean;
   integrity: FragmentState;
   issuance: FragmentState;
   identity: FragmentState;
   ownership: FragmentState;
-  issuerWhitelistState: IssuerWhitelistState;
-  issuerResolution: IssuerResolution;
+  /**
+   * OPTIONAL for the same reason {@link VerifyCredentialResp.fragments.issuerWhitelistState} is: the
+   * backend is separately deployed, so a portal build newer than its API must degrade to an honest
+   * unknown rather than throw on a missing key.
+   */
+  issuerWhitelistState?: IssuerWhitelistState;
+  issuerResolution?: IssuerResolution;
+  issuerStoreAgreement?: IssuerStoreAgreement;
   /** The clone the on-chain reads were made against — the FACTORY's answer when one was available. */
   issuerAddr: string;
 }

@@ -1,6 +1,7 @@
 //! Contextual verification (impl §11.3 — supersedes §1.7).
 //!
-//! Validity = integrity AND issuance AND identity AND the factory-anchored issuer-whitelist pillar.
+//! Validity = integrity AND issuance AND identity AND the factory-anchored issuer-whitelist pillar
+//! AND the document's `issuer.documentStore` agreeing with the clone the factory named.
 //! `ownership` is a CONTEXTUAL 5th fragment: gates only the owner's self-import; NOT_APPLICABLE for
 //! third parties.
 //!
@@ -95,6 +96,37 @@ impl IssuerWhitelistState {
     }
 }
 
+/// Whether the document's own `issuer.documentStore` agrees with the clone the factory named.
+///
+/// A SEPARATE term from [`IssuerWhitelistState`], never folded into it: "the document named a
+/// different contract than the chain did" and "the signer is not authorised for this record type"
+/// are different accusations with different remedies, and vet-api already reports them apart as
+/// `issuer_mismatch` vs `issuer_not_whitelisted`.
+///
+/// Three states rather than a bool, for the same reason every other term here has explicit states:
+/// a bool spells "checked and agreed" and "never checked" identically, which is exactly how a
+/// dropped check comes to read as a satisfied one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuerStoreAgreement {
+    /// A clone was resolved and the document names it.
+    Matched,
+    /// A clone was resolved and the document names something else. An ABSENT or empty
+    /// `documentStore` lands here too: exempting it would buy nothing (the factory supplies the
+    /// address regardless) while letting a caller strip one field to skip the check.
+    Differs,
+    /// No clone was resolved, so there is nothing authoritative to disagree with. Not a failure —
+    /// the pillar above already gates `NoRecord` and `ReadFailed`, and `NoFactoryConfigured` is
+    /// deliberately non-gating.
+    NotEvaluated,
+}
+
+impl IssuerStoreAgreement {
+    /// May this term contribute to a pass? Only a definite `Differs` refuses.
+    pub fn permits_pass(self) -> bool {
+        !matches!(self, IssuerStoreAgreement::Differs)
+    }
+}
+
 /// `0x`-hex keccak256 of a record-type label — the `IssuerRegistry` whitelist key and the value a
 /// clone's immutable `recordType()` returns. MUST equal the backend's `chain::record_type_key`
 /// (pinned by `record_type_key_matches_the_vet_backend` in `stacks/vet/api`).
@@ -115,6 +147,10 @@ pub struct Verdict {
     /// The factory-anchored issuer-whitelist pillar. MANDATORY: only [`IssuerWhitelistState::Passed`]
     /// (or our own [`IssuerWhitelistState::UnavailableNoFactoryConfigured`] gap) permits a pass.
     pub issuer_whitelist: IssuerWhitelistState,
+    /// Whether the document's `issuer.documentStore` names the clone the factory resolved. Reported
+    /// separately from [`Verdict::issuer_whitelist`] so a caller can tell a contract mismatch from an
+    /// unauthorised signer; a [`IssuerStoreAgreement::Differs`] gates the verdict.
+    pub issuer_store: IssuerStoreAgreement,
     /// How [`Verdict::issuer_addr`] was arrived at. A caller MUST be able to tell "not evaluated"
     /// from "evaluated and passed", so this is reported explicitly and never as a silent absence.
     pub issuer_resolution: IssuerResolution,
@@ -329,6 +365,19 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
         .clone()
         .unwrap_or_else(|| doc.issuer.document_store.clone());
 
+    // The document names a different contract than the one the chain says issued this root. A
+    // definite authenticity failure, and deliberately its OWN term rather than a fold into the
+    // whitelist pillar: naming the wrong contract and employing an unauthorised signer are different
+    // accusations, and a caller must be able to act on which one it is.
+    let issuer_store = match resolved_clone.as_deref() {
+        // Nothing authoritative to disagree with. Not a failure.
+        None => IssuerStoreAgreement::NotEvaluated,
+        Some(clone) if clone.eq_ignore_ascii_case(doc.issuer.document_store.trim()) => {
+            IssuerStoreAgreement::Matched
+        }
+        Some(_) => IssuerStoreAgreement::Differs,
+    };
+
     let issuance = match opts.rpc.is_valid(&issuer_addr, root, confirmations) {
         Ok(true) => FragmentState::Valid,
         Ok(false) => FragmentState::Invalid,
@@ -438,7 +487,8 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
     let credential_valid = integrity == FragmentState::Valid
         && issuance == FragmentState::Valid
         && identity == FragmentState::Valid
-        && issuer_whitelist.permits_pass();
+        && issuer_whitelist.permits_pass()
+        && issuer_store.permits_pass();
 
     let ownership;
     let valid;
@@ -485,6 +535,7 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
         identity,
         ownership,
         issuer_whitelist,
+        issuer_store,
         issuer_resolution,
         issuer_addr,
     }
@@ -1170,18 +1221,20 @@ mod tests {
 
     /// The other half of TERM 5: tighten-ONLY. On an unanchored path both the contract and the
     /// expected answer come from the document, so a MATCH proves nothing and must promote nothing.
+    ///
+    /// The document's `documentStore` deliberately AGREES with the factory-resolved clone here
+    /// (`issuer()` sets it to `CLONE`), so TERM 6 is satisfied and this test isolates the
+    /// tighten-only property instead of resting it on a store mismatch. It previously used a HOSTILE
+    /// store and asserted `valid == true`, which pinned the missing TERM 6 as correct behaviour.
     #[test]
     fn a_matching_issuer_signer_claim_cannot_promote_an_unanchored_credential() {
         let mut doc = good_doc();
         let root = doc.signature.merkle_root.clone();
-        doc.issuer.document_store = HOSTILE.to_string();
         doc.protocol = Some(protocol_block(SIGNER));
-        // The attacker supplies BOTH sides: their contract reports `issuedBy == SIGNER`, and their
-        // envelope claims `SIGNER`. The two agree, and it buys nothing, because the factory HAS a
-        // record of this root and it names someone else.
         let chain = MockChain::genuine(&doc).with_hostile(HOSTILE, &root, true, SIGNER);
         let v = third_party(&doc, &chain);
         assert_eq!(v.issuer_addr.to_lowercase(), CLONE.to_lowercase());
+        assert_eq!(v.issuer_store, IssuerStoreAgreement::Matched);
         assert!(
             v.valid,
             "the real clone corroborates it, so this one is genuine"
@@ -1194,9 +1247,66 @@ mod tests {
             unanchored.issuer_whitelist,
             IssuerWhitelistState::Unresolved
         );
+        assert_eq!(
+            unanchored.issuer_store,
+            IssuerStoreAgreement::NotEvaluated,
+            "no clone resolved: nothing authoritative to disagree with"
+        );
         assert!(
             !unanchored.valid,
             "an agreeable claim never manufactures a pass"
+        );
+    }
+
+    /// TERM 6 — the document's `issuer.documentStore` must AGREE with the clone the factory named,
+    /// and a disagreement is reported as a STORE MISMATCH rather than as an unauthorised signer.
+    ///
+    /// This is the term the other four converged surfaces already enforce (vet-api's
+    /// `issuer_store_differs` -> status `issuer_mismatch`, government-api's `verify`,
+    /// `packages/ui`'s `cloneClaimsAgree`, mobile's `RoaxRpc.issuerWhitelistPillar`), and it was the
+    /// one the SDK was missing. Everything else about this credential is genuine — the factory
+    /// resolves the real clone, that clone reports the root valid, issued by a whitelisted signer for
+    /// the record type it declares — so the ONLY defect is the contract the envelope nominates.
+    ///
+    /// Mutation: drop `issuer_store.permits_pass()` from `credential_valid` -> this test goes red,
+    /// and no other test in this file changes.
+    #[test]
+    fn a_document_store_the_factory_did_not_name_is_refused_as_a_store_mismatch() {
+        let doc_genuine = good_doc();
+        let chain = MockChain::genuine(&doc_genuine);
+        assert!(
+            third_party(&doc_genuine, &chain).valid,
+            "control: the honest document names the clone the factory named"
+        );
+
+        let mut doc = doc_genuine.clone();
+        doc.issuer.document_store = HOSTILE.to_string();
+        assert_eq!(
+            check_integrity(&doc).0,
+            FragmentState::Valid,
+            "the swap is free: the issuer block is outside R"
+        );
+
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_store, IssuerStoreAgreement::Differs);
+        // Reported as a store mismatch, NOT as an unauthorised signer: the signer really is
+        // authorised, and saying otherwise would send the operator after the wrong remedy.
+        assert_eq!(
+            v.issuer_whitelist,
+            IssuerWhitelistState::Passed,
+            "the two accusations must stay distinguishable"
+        );
+        assert_eq!(v.issuance, FragmentState::Valid);
+        assert_eq!(v.identity, FragmentState::Valid);
+        assert!(!v.valid, "a contract the chain did not name refuses");
+
+        // An ABSENT store is a mismatch like any other — exempting it would let a caller strip one
+        // field to skip the check.
+        let mut stripped = doc_genuine.clone();
+        stripped.issuer.document_store = String::new();
+        assert_eq!(
+            third_party(&stripped, &chain).issuer_store,
+            IssuerStoreAgreement::Differs
         );
     }
 

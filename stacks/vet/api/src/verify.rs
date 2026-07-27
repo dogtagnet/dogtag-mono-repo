@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 
 use dogtag_standard::verify::{
     verify as sdk_verify, AdapterError, DnsAdapter, FragmentState, IssuerAnchor, IssuerResolution,
-    IssuerWhitelistState, RegistryAdapter, RpcAdapter, Verdict, VerifyMode, VerifyOpts,
+    IssuerStoreAgreement, IssuerWhitelistState, RegistryAdapter, RpcAdapter, Verdict, VerifyMode,
+    VerifyOpts,
 };
 use dogtag_standard::wrap::WrappedDoc;
 
@@ -68,6 +69,13 @@ pub fn verdict_json(v: &Verdict) -> Value {
         // `POST /verify/credential` (PR #96) so the two surfaces read identically.
         //   "passed" | "failed" | "unresolved" | "unavailableNoFactoryConfigured"
         "issuerWhitelistState": whitelist_state_str(v.issuer_whitelist),
+        // Whether the envelope's own `documentStore` names the clone the factory resolved. Reported
+        // BESIDE the pillar, never folded into it: "the document named a different contract than the
+        // chain did" and "the signer is not authorised" are different accusations with different
+        // remedies, exactly as `POST /verify/credential` keeps `issuer_mismatch` apart from
+        // `issuer_not_whitelisted`.
+        //   "matched" | "differs" | "notEvaluated"
+        "issuerStoreAgreement": store_agreement_str(v.issuer_store),
         //   "resolved" | "noRecord" | "noFactoryConfigured" | "readFailed"
         "issuerResolution": resolution_str(&v.issuer_resolution),
         // The clone the on-chain reads were ACTUALLY made against. With `issuerResolution` other
@@ -85,12 +93,59 @@ fn whitelist_state_str(s: IssuerWhitelistState) -> &'static str {
     }
 }
 
+fn store_agreement_str(s: IssuerStoreAgreement) -> &'static str {
+    match s {
+        IssuerStoreAgreement::Matched => "matched",
+        IssuerStoreAgreement::Differs => "differs",
+        IssuerStoreAgreement::NotEvaluated => "notEvaluated",
+    }
+}
+
 fn resolution_str(r: &IssuerResolution) -> &'static str {
     match r {
         IssuerResolution::Resolved => "resolved",
         IssuerResolution::NoRecord => "noRecord",
         IssuerResolution::NoFactoryConfigured => "noFactoryConfigured",
         IssuerResolution::ReadFailed => "readFailed",
+    }
+}
+
+/// How this deployment's `FACTORY_ADDR` classifies — the SINGLE source both factory-anchored
+/// surfaces read, so `POST /import/pull` (via the SDK adapter below) and `POST /verify/credential`
+/// cannot drift on what counts as "no factory" versus "a broken one".
+///
+/// They deliberately REACT differently — the handler answers HTTP 500, the SDK adapter returns an
+/// `Err` that surfaces as an indeterminate pillar — because the SDK returns a `Verdict` and has no
+/// 500/502 channel. What must never differ is the CLASSIFICATION, which is what lives here.
+pub(crate) enum FactoryConfig {
+    /// Unset, or the zero address: a deployment that deliberately has no factory. The pillar reports
+    /// itself unavailable and does NOT condemn the credential.
+    Absent,
+    /// Set, but not a well-formed contract address. Different in kind from absent: this deployment
+    /// INTENDED to check, and one fat-fingered character silently disabling a security pillar is
+    /// misconfigure-to-bypass reached by accident. It fails loudly on both surfaces.
+    Malformed,
+    /// A usable factory address.
+    Addr(String),
+}
+
+/// The one wording both surfaces report a [`FactoryConfig::Malformed`] with.
+pub(crate) const FACTORY_ADDR_MALFORMED: &str =
+    "FACTORY_ADDR is malformed: the issuer pillar cannot be evaluated, and this deployment is \
+     configured to evaluate it. Fix the address or unset it deliberately.";
+
+pub(crate) fn factory_config(factory_addr: &str) -> FactoryConfig {
+    let factory = factory_addr.trim();
+    let absent = factory.is_empty()
+        || (factory.len() == 42
+            && factory.starts_with("0x")
+            && factory[2..].bytes().all(|b| b == b'0'));
+    if absent {
+        FactoryConfig::Absent
+    } else if !valid_contract_addr(factory) {
+        FactoryConfig::Malformed
+    } else {
+        FactoryConfig::Addr(factory.to_string())
     }
 }
 
@@ -144,21 +199,13 @@ impl RpcAdapter for ChainRpcAdapter<'_> {
     /// refuses the credential, and `POST /import/pull` turns that into its 422. Neither degrades into
     /// the fail-open unavailable state, which is the property that matters.
     fn root_issuer(&self, merkle_root: &str) -> Result<IssuerAnchor, AdapterError> {
-        let factory = self.st.cfg.factory_addr.trim().to_string();
-        let absent = factory.is_empty()
-            || (factory.len() == 42
-                && factory.starts_with("0x")
-                && factory[2..].bytes().all(|b| b == b'0'));
-        if absent {
-            return Ok(IssuerAnchor::NoFactoryConfigured);
-        }
-        if !valid_contract_addr(&factory) {
-            return Err(AdapterError(
-                "FACTORY_ADDR is malformed: the issuer pillar cannot be evaluated, and this \
-                 deployment is configured to evaluate it. Fix the address or unset it deliberately."
-                    .to_string(),
-            ));
-        }
+        let factory = match factory_config(&self.st.cfg.factory_addr) {
+            FactoryConfig::Absent => return Ok(IssuerAnchor::NoFactoryConfigured),
+            FactoryConfig::Malformed => {
+                return Err(AdapterError(FACTORY_ADDR_MALFORMED.to_string()))
+            }
+            FactoryConfig::Addr(a) => a,
+        };
         let st = self.st.clone();
         let merkle_root = merkle_root.to_string();
         let resolved =
@@ -726,6 +773,17 @@ fn verify_key_from_purpose_word(purpose_word: &str) -> String {
     format!("0x{}", hex::encode(keccak256(&buf).0))
 }
 
+/// True for a well-formed, non-zero contract address (`0x` + exactly 40 hex digits, not all zero).
+///
+/// The zero check alone is NOT enough, and the gap is expensive. `chain::parse_addr` coerces an
+/// unparseable address to `Address::ZERO` (`h.parse::<Address>().unwrap_or(Address::ZERO)`), so a
+/// typo'd `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` would pass a non-zero-string test, consume the
+/// one-time bind token, and dispatch both `issue(R)` and `mintCustodial` at the zero address — txs
+/// that SUCCEED against a codeless address, so the failure only surfaces at the read-back, after gas
+/// is spent and the operator's QR is burned. Shape-check at the edge.
+///
+/// This is the ONE definition; `routes.rs` used to carry a byte-identical copy, which is how two
+/// surfaces required to hold the same posture become free to drift.
 pub(crate) fn valid_contract_addr(address: &str) -> bool {
     address.len() == 42
         && address.starts_with("0x")

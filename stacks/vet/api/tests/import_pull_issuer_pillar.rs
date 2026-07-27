@@ -27,7 +27,13 @@
 //!   * making `doc.issuer.document_store` the read target again — i.e. dropping the factory's
 //!     preference in `issuer_addr` — reds `a_forged_document_store_is_refused_by_identity_too`;
 //!   * returning `IssuerAnchor::NoFactoryConfigured` instead of `Err` for a MALFORMED
-//!     `FACTORY_ADDR` reds `a_malformed_factory_addr_refuses_rather_than_degrading_to_fail_open`.
+//!     `FACTORY_ADDR` reds `a_malformed_factory_addr_refuses_rather_than_degrading_to_fail_open`;
+//!   * dropping the `issuer_store.permits_pass()` term from `credential_valid` reds
+//!     `a_document_store_the_factory_did_not_name_is_refused_as_a_store_mismatch` in the SDK's own
+//!     test module — the only place a fake can make the nominated and factory-named contracts
+//!     disagree while every other pillar stays green (see the note below on why this file cannot
+//!     pin it);
+//!   * dropping the `verdict` object from the 422 body reds `a_refused_import_reports_why`.
 //!
 //! **Recorded because it is the honest result, not the convenient one:** merely pointing the
 //! `is_valid` CALL back at `doc.issuer.document_store` (while leaving `issuer_addr` resolved) does
@@ -45,7 +51,9 @@ mod common;
 
 use axum::http::StatusCode;
 use common::*;
-use dogtag_standard::verify::{FragmentState, IssuerResolution, IssuerWhitelistState};
+use dogtag_standard::verify::{
+    FragmentState, IssuerResolution, IssuerStoreAgreement, IssuerWhitelistState,
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use vet_api::chain::{record_type_key, MemChain};
@@ -265,6 +273,74 @@ async fn a_record_type_relabel_cannot_import() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "relabelled import: {b}"
     );
+    // The relabel is the pillar's failure, not a store mismatch: `documentStore` was untouched.
+    assert_eq!(b["verdict"]["issuerWhitelistState"], "failed", "{b}");
+    assert_eq!(b["verdict"]["issuerStoreAgreement"], "matched", "{b}");
+}
+
+/// A REFUSED import must tell the operator WHY, on the wire.
+///
+/// The route used to answer `!verdict.valid` with a bare `{"error": "third-party verify invalid"}`,
+/// which made the pillar states unreachable on the only path that needs them — a 200 always carries
+/// `valid: true`. So the `failed` / `unresolved` / `differs` cases could not be told apart by anyone
+/// consuming this API, and the groomer portal rendered one generic toast for a delisted issuer, a
+/// record-type relabel and our own malformed `FACTORY_ADDR` alike.
+///
+/// Mutation: drop the `verdict` object from the 422 body -> this goes red (as do the pillar-state
+/// assertions in the delisted / relabel / malformed tests above).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_import_reports_why() {
+    let d = boot_anchored().await;
+    let (_root, doc) = issue_doc(&d.app, &d.op, "1010").await;
+    d.mem
+        .delist(REGISTRY, &record_type_key("VACCINATION"), &d.backend);
+
+    let (s, b) = import_pull(&d.app, &d.op, doc).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+    // The existing error key is untouched, so anything already reading it keeps working...
+    assert_eq!(b["error"], "third-party verify invalid", "{b}");
+    // ...and the verdict rides along with it, in the SAME shape a 200 carries.
+    assert_eq!(b["verdict"]["valid"], false, "{b}");
+    assert_eq!(b["verdict"]["issuerWhitelistState"], "failed", "{b}");
+    assert_eq!(b["verdict"]["issuerResolution"], "resolved", "{b}");
+    assert_eq!(b["verdict"]["issuerStoreAgreement"], "matched", "{b}");
+    assert!(
+        b["verdict"]["integrity"].is_string(),
+        "the whole verdict, not a hand-picked subset: {b}"
+    );
+}
+
+/// The document names a contract the factory did not — a definite authenticity failure, and one that
+/// must be reported as a STORE MISMATCH rather than as an unauthorised signer.
+///
+/// This is the term the other four converged surfaces already enforced and the SDK did not
+/// (vet-api's own `POST /verify/credential` reports it as status `issuer_mismatch`). On THIS
+/// deployment the forged store is additionally refused by `identity` — see
+/// `a_forged_document_store_is_refused_by_identity_too` — so what this test pins is the REPORTING:
+/// an operator must be able to tell the two accusations apart, because their remedies differ.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forged_document_store_is_reported_as_a_store_mismatch_not_an_unauthorised_signer() {
+    let d = boot_anchored().await;
+    let (_root, doc) = issue_doc(&d.app, &d.op, "1011").await;
+    d.mem
+        .with_hostile_clone(HOSTILE, true, 42, HOSTILE, &record_type_key("VACCINATION"));
+
+    let mut forged = doc.clone();
+    forged["issuer"]["documentStore"] = json!(HOSTILE);
+    let (s, b) = import_pull(&d.app, &d.op, forged).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{b}");
+    assert_eq!(b["verdict"]["issuerStoreAgreement"], "differs", "{b}");
+    assert_ne!(
+        b["verdict"]["issuerWhitelistState"], "failed",
+        "the signer IS authorised; blaming it sends the operator after the wrong remedy: {b}"
+    );
+
+    let mut wrapped: dogtag_standard::wrap::WrappedDoc = serde_json::from_value(doc).unwrap();
+    wrapped.issuer.document_store = HOSTILE.to_string();
+    let v = vet_api::verify::third_party_verify(&d.state, &wrapped).await;
+    assert_eq!(v.issuer_store, IssuerStoreAgreement::Differs);
+    assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Passed);
+    assert!(!v.valid);
 }
 
 /// The pillar is MANDATORY: a credential whose issuing signer is not authorised for the record type
@@ -294,6 +370,10 @@ async fn a_delisted_issuing_signer_cannot_import() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "an unauthorised issuer must not import: {b}"
     );
+    // The refusal SAYS which pillar refused. Without this the operator gets one generic message for
+    // a delisted issuer, a relabel and our own broken config alike.
+    assert_eq!(b["verdict"]["issuerWhitelistState"], "failed", "{b}");
+    assert_eq!(b["verdict"]["issuerStoreAgreement"], "matched", "{b}");
 
     // A DEFINITE failure, not an honest-looking non-answer: that difference is the whole point.
     let wrapped: dogtag_standard::wrap::WrappedDoc = serde_json::from_value(doc).unwrap();
@@ -349,13 +429,15 @@ async fn an_unanchored_root_cannot_import_but_a_factoryless_verifier_still_can()
 }
 
 /// The naive forgery — point `issuer.documentStore` at a contract that answers however the attacker
-/// likes — is now refused for TWO independent reasons on this deployment, and the test asserts both
-/// so nobody later reads the anchor as redundant here.
+/// likes — is refused for THREE independent reasons on this deployment, and the test asserts them so
+/// nobody later reads the anchor as redundant here.
 ///
 /// Vet's identity pillar is a config stand-in pinned to this deployment's own clone address, which
 /// already refused this shape before the anchor existed. The anchor is what makes the refusal a
 /// property of the SDK rather than of one deployment's adapter wiring: `issuerAddr` proves the reads
-/// went to the factory-named clone and not to the contract the document nominated.
+/// went to the factory-named clone and not to the contract the document nominated. The third is the
+/// store-agreement term, pinned for its REPORTING by
+/// `a_forged_document_store_is_reported_as_a_store_mismatch_not_an_unauthorised_signer`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_forged_document_store_is_refused_by_identity_too() {
     let d = boot_anchored().await;
@@ -422,6 +504,10 @@ async fn a_malformed_factory_addr_refuses_rather_than_degrading_to_fail_open() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "a deployment that set the value intended to check: {b}"
     );
+    // Distinguishable on the wire from a delisted issuer: this refusal is OUR configuration fault,
+    // and an operator who cannot tell the two apart goes looking in the wrong place.
+    assert_eq!(b["verdict"]["issuerWhitelistState"], "unresolved", "{b}");
+    assert_eq!(b["verdict"]["issuerResolution"], "readFailed", "{b}");
 
     let wrapped: dogtag_standard::wrap::WrappedDoc = serde_json::from_value(doc).unwrap();
     let v = vet_api::verify::third_party_verify(&state, &wrapped).await;
@@ -472,6 +558,11 @@ async fn a_profile_document_was_already_refused_by_identity_and_still_is() {
         v.issuer_whitelist,
         IssuerWhitelistState::UnavailableNoFactoryConfigured,
         "the pillar is contributing nothing on this deployment"
+    );
+    assert_eq!(
+        v.issuer_store,
+        IssuerStoreAgreement::NotEvaluated,
+        "and neither is the store-agreement term — no clone was resolved to disagree with"
     );
     assert_eq!(
         v.identity,

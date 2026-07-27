@@ -12,6 +12,7 @@ import {
   type FragmentState,
   type ImportVerdict,
   type IssuerResolution,
+  type IssuerStoreAgreement,
   type IssuerWhitelistState,
 } from "@dogtag/ui";
 import type { CrmPet } from "@dogtag/ui";
@@ -259,6 +260,7 @@ function VerdictPanel({
         <IssuerWhitelistPillar
           state={verdict.issuerWhitelistState}
           resolution={verdict.issuerResolution}
+          store={verdict.issuerStoreAgreement}
         />
       </div>
       {accepted !== null && (
@@ -275,24 +277,35 @@ function VerdictPanel({
 }
 
 /**
- * The factory-anchored issuer-whitelist pillar.
+ * The factory-anchored issuer-whitelist pillar, plus the separate documentStore-agreement term.
  *
  * `Unresolved` reads as a WARNING rather than a neutral tile on purpose: an indeterminate pillar is
  * a failure to establish a claim, not a step that was harmlessly skipped, and it does fail the
  * import. `Not checked` is reserved for the one case that genuinely did not run and genuinely is not
  * evidence — this deployment having no `FACTORY_ADDR` — and it says so, rather than going quiet.
+ *
+ * A `differs` store is surfaced as its OWN refusal rather than recoloured into the pillar, because
+ * "the document named a contract the chain did not" sends the operator somewhere different from "the
+ * signer is not authorised". The backend keeps the two apart for the same reason.
+ *
+ * Every field is optional: the backend is deployed separately, so a portal newer than its API must
+ * degrade to an honest unknown instead of throwing on a missing key and blanking the whole panel.
  */
 function IssuerWhitelistPillar({
   state,
   resolution,
+  store,
 }: {
-  state: IssuerWhitelistState;
-  resolution: IssuerResolution;
+  state?: IssuerWhitelistState;
+  resolution?: IssuerResolution;
+  store?: IssuerStoreAgreement;
 }) {
-  const map: Record<
-    IssuerWhitelistState,
-    { variant: "success" | "danger" | "warning" | "neutral"; icon: typeof CheckCircle2; text: string }
-  > = {
+  type Tile = {
+    variant: "success" | "danger" | "warning" | "neutral";
+    icon: typeof CheckCircle2;
+    text: string;
+  };
+  const map: Record<IssuerWhitelistState, Tile> = {
     passed: { variant: "success", icon: CheckCircle2, text: "AUTHORISED" },
     failed: { variant: "danger", icon: XCircle, text: "NOT AUTHORISED" },
     unresolved: { variant: "warning", icon: HelpCircle, text: "UNRESOLVED" },
@@ -302,15 +315,26 @@ function IssuerWhitelistPillar({
       text: "NOT CHECKED",
     },
   };
-  const { variant, icon: Icon, text } = map[state];
-  const why =
-    state === "unavailableNoFactoryConfigured"
-      ? "this verifier has no factory configured"
-      : resolution === "noRecord"
-        ? "no factory clone claims this root"
-        : resolution === "readFailed"
-          ? "the anchor could not be read"
-          : null;
+  // Deliberately NOT the `NOT CHECKED` copy: that asserts the specific no-factory case, which a
+  // backend that reported nothing at all has told us nothing about.
+  const unreported: Tile = { variant: "warning", icon: HelpCircle, text: "UNKNOWN" };
+  // A store mismatch outranks the pillar in the headline, because it is the stronger and more
+  // specific accusation — the chain named a different contract than the document did.
+  const storeMismatch = store === "differs";
+  const mismatch: Tile = { variant: "danger", icon: XCircle, text: "ISSUER MISMATCH" };
+  const tile: Tile = storeMismatch ? mismatch : state ? map[state] : unreported;
+  const { variant, icon: Icon, text } = tile;
+  const why = storeMismatch
+    ? "the document names a contract the chain did not"
+    : !state
+      ? "this backend did not report the issuer pillar"
+      : state === "unavailableNoFactoryConfigured"
+        ? "this verifier has no factory configured"
+        : resolution === "noRecord"
+          ? "no factory clone claims this root"
+          : resolution === "readFailed"
+            ? "the anchor could not be read"
+            : null;
   return (
     <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
       <span className="text-sm text-onSurface">

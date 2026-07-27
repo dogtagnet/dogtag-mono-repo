@@ -1019,9 +1019,17 @@ async fn import_pull(
     };
     let verdict = crate::verify::third_party_verify(&st, &doc).await;
     if !verdict.valid {
-        return err(
+        // The verdict rides ALONG WITH the error, not instead of it. A bare `{error}` here made the
+        // pillar states unreachable on the only path that needs them: an operator whose import was
+        // refused by a delisted issuer, a record-type relabel, or our own malformed `FACTORY_ADDR`
+        // saw one generic message and could not tell the three apart. The `error` key is unchanged,
+        // so anything already reading it keeps working.
+        return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            "third-party verify invalid",
+            Json(json!({
+                "error": "third-party verify invalid",
+                "verdict": crate::verify::verdict_json(&verdict),
+            })),
         );
     }
     // upsert client cache keyed by dogTagId.
@@ -1074,9 +1082,10 @@ async fn verify_credential(
     // deployed and it will answer `isValid` however they like. The factory's write-once `rootIssuer[R]`
     // (`DogTagIssuerFactory.sol:19`, writable only from inside an `isClone` contract's `issue()`) is
     // authoritative, and it names the clone that issued THIS root.
-    let factory_cfg = st.cfg.factory_addr.trim().to_string();
     // Whether THIS deployment can evaluate the factory-anchored pillar at all — and, crucially, an
-    // ABSENT factory is distinguished from a MALFORMED one.
+    // ABSENT factory is distinguished from a MALFORMED one. The classification is
+    // `verify::factory_config`, shared with the SDK adapter that serves `POST /import/pull`, so the
+    // two surfaces cannot drift on what counts as "no factory" versus "a broken one".
     //
     // Absent (unset, or the zero address) is a deployment that deliberately has no factory: the pillar
     // reports itself unavailable and does not condemn the credential. A MALFORMED value is different
@@ -1084,29 +1093,28 @@ async fn verify_credential(
     // silently convert an intent-to-check into a no-check, which is the misconfigure-to-bypass path
     // this pillar's explicit states exist to prevent, and a fat-fingered address is a likelier
     // mistake than a deliberately absent one. So it fails LOUDLY, as a configuration fault, and
-    // returns no verdict at all rather than a fail-open one.
-    let factory_absent = factory_cfg.is_empty()
-        || (factory_cfg.len() == 42
-            && factory_cfg.starts_with("0x")
-            && factory_cfg[2..].bytes().all(|b| b == b'0'));
-    if !factory_absent && !crate::verify::valid_contract_addr(&factory_cfg) {
-        return err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "FACTORY_ADDR is malformed: the issuer pillar cannot be evaluated, and this deployment \
-             is configured to evaluate it. Fix the address or unset it deliberately.",
-        );
-    }
-    let factory_configured = !factory_absent;
+    // returns no verdict at all rather than a fail-open one. The REACTION is this handler's own: the
+    // SDK has no 500 channel and reports the same classification as an indeterminate pillar.
+    let factory_cfg = match crate::verify::factory_config(&st.cfg.factory_addr) {
+        crate::verify::FactoryConfig::Absent => None,
+        crate::verify::FactoryConfig::Malformed => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::verify::FACTORY_ADDR_MALFORMED,
+            )
+        }
+        crate::verify::FactoryConfig::Addr(a) => Some(a),
+    };
+    let factory_configured = factory_cfg.is_some();
     // THREE states, not two — and the distinction is the whole design.
     //   `noFactoryConfigured` = we never asked. That is OUR misconfiguration, not evidence about the
     //                           credential, so it must not condemn it.
     //   `noRecord`            = we DID ask and the chain has no record of this root. That IS evidence.
     // A READ FAILURE is neither, and is answered with 502 rather than folded into either: this handler
     // already refuses to turn an unreachable node into a verdict, and an anchor read is no different.
-    let (resolved_issuer, issuer_resolution) = if !factory_configured {
-        (None, "noFactoryConfigured")
-    } else {
-        match st.chain.root_issuer(&factory_cfg, &claimed_root).await {
+    let (resolved_issuer, issuer_resolution) = match factory_cfg.as_deref() {
+        None => (None, "noFactoryConfigured"),
+        Some(factory) => match st.chain.root_issuer(factory, &claimed_root).await {
             Ok(Some(a)) => (Some(a), "resolved"),
             Ok(None) => (None, "noRecord"),
             Err(e) => {
@@ -1115,7 +1123,7 @@ async fn verify_credential(
                     &format!("on-chain rootIssuer read failed: {e}"),
                 )
             }
-        }
+        },
     };
     // The address every verdict-deciding read below is made against. The factory's answer wins; the
     // document's own claim is the LAST resort, reached only when the factory has no record of the root
@@ -2244,10 +2252,13 @@ async fn profile_issue_custodial_bind(
     // Fail closed on an unconfigured OR MISCONFIGURED deployment BEFORE consuming the one-time token:
     // a half-wired owner-hidden stack must not burn the operator's QR (and, worse, must never mint without
     // a place to anchor the root). Both addresses are shape-checked, not merely tested for non-zero —
-    // see `valid_contract_addr` for why a malformed value would otherwise reach the chain as 0x0..0.
+    // see `verify::valid_contract_addr` for why a malformed value would otherwise reach the chain as
+    // 0x0..0.
     let sbt_addr = st.cfg.sbt_consent_addr.clone();
     let issuer_addr = st.cfg.profile_issuer_addr.clone();
-    if !valid_contract_addr(&sbt_addr) || !valid_contract_addr(&issuer_addr) {
+    if !crate::verify::valid_contract_addr(&sbt_addr)
+        || !crate::verify::valid_contract_addr(&issuer_addr)
+    {
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             "owner-hidden issuance not configured (SBT_CONSENT_ADDR / PROFILE_ISSUER_ADDR)",
@@ -2424,21 +2435,6 @@ async fn profile_issue_custodial_bind(
         "protocolVersion": dogtag_standard::wrap::LEVEL_B_VERSION,
         "status": "minting",
     }))
-}
-
-/// True for a well-formed, non-zero contract address (`0x` + exactly 40 hex digits, not all zero).
-///
-/// The zero check alone is NOT enough, and the gap is expensive. `chain::parse_addr` coerces an
-/// unparseable address to `Address::ZERO` (`h.parse::<Address>().unwrap_or(Address::ZERO)`), so a
-/// typo'd `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` would pass a non-zero-string test, consume the
-/// one-time bind token, and dispatch both `issue(R)` and `mintCustodial` at the zero address — txs
-/// that SUCCEED against a codeless address, so the failure only surfaces at the read-back, after gas
-/// is spent and the operator's QR is burned. Shape-check at the edge, mirroring [`valid_root_hex`].
-fn valid_contract_addr(a: &str) -> bool {
-    a.len() == 42
-        && a.starts_with("0x")
-        && a[2..].bytes().all(|b| b.is_ascii_hexdigit())
-        && a[2..].bytes().any(|b| b != b'0')
 }
 
 /// True for a 0x.. word that is not all zeros (an unset `profileRoot` reads back as 0x0..0).
