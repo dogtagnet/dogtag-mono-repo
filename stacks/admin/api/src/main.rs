@@ -74,12 +74,6 @@ async fn main() {
             "ADMIN_PROPOSE_ONLY",
             "ALLOW_UNAUTHORIZED_ADMIN_SIGNER",
         ]),
-        // POLICY only: whether a non-verified DNS check blocks whitelisting. The lookup is always real
-        // (see the `dns` wiring below) — `observe`/`skip` no longer fabricates a pass.
-        dns_enforce: !matches!(
-            env("DNS_CHECK", "doh").trim().to_ascii_lowercase().as_str(),
-            "observe" | "skip" | "off" | "false" | "0"
-        ),
     };
 
     // Fail-closed (audit H2): refuse to boot in production with an unset/dev-default ADMIN_PASSWORD or
@@ -174,10 +168,15 @@ async fn main() {
         "DNS_DOH_ENDPOINT",
         "https://cloudflare-dns.com/dns-query",
     )));
-    if !cfg.dns_enforce {
+    // `DNS_CHECK` is retired: the gate is ADVISORY for every deployment, so there is nothing left for
+    // the flag to select. Warn rather than ignore it silently — an operator who set `DNS_CHECK=skip`
+    // expecting a bypass should learn that the lookup now always runs and its real outcome is recorded.
+    if std::env::var("DNS_CHECK").is_ok() {
         tracing::warn!(
-            "DNS_CHECK is non-enforcing: the DNS TXT legitimacy lookup still RUNS and its real outcome \
-             is reported, but a non-verified result will not block whitelisting (demo only)"
+            "DNS_CHECK is ignored: the DNS legitimacy check is now ADVISORY for every deployment. The \
+             lookup always runs against the real domain; a non-verified outcome does not block \
+             whitelisting but requires the admin's explicit proceedWithoutDns and is recorded on the \
+             application."
         );
     }
 

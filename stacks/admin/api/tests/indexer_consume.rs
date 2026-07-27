@@ -48,6 +48,10 @@ fn application_row(app_id: &str, entity: &str, domain: &str, addrs: &[&str]) -> 
         license: None,
         document_store: "0xstore".into(),
         status: "approved".into(),
+        dns_state: "verified".into(),
+        dns_checked_at: 1,
+        dns_state_at_approval: "verified".into(),
+        dns_proceeded_unverified: false,
         whitelist_txs: vec![],
     }
 }

@@ -16,6 +16,8 @@ path = "src/lib.rs"
 
 [dependencies]
 dogtag-standard-rs = { path = "../../../crates/dogtag-standard-rs" }
+# Issuer↔domain DNS TXT binding: the normative convention + the three-state resolver.
+dogtag-dns-rs = { path = "../../../crates/dogtag-dns-rs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
