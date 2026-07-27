@@ -154,6 +154,7 @@ export {
   isRootValid,
   isRootRevoked,
   issuedAtOf,
+  type IsWhitelistedForArgs,
 } from "./wallet/contracts";
 export {
   verifyCredentialOnchain,

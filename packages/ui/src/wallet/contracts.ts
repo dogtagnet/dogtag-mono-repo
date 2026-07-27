@@ -126,20 +126,38 @@ export function roaxPublicClient(rpcUrl?: string): PublicClient {
 }
 
 /**
+ * Arguments for {@link isWhitelistedFor}. Exactly ONE of `recordTypeKey` or `recordType` must be
+ * supplied; the union makes neither (and both) a compile error. The registry answers a definite
+ * `false` for any key no clone holds, so a caller that names no record type would get a confident
+ * verdict on a question it never asked - the same "definite false for the wrong reason" the
+ * zero-address `issuedBy` case is deliberately routed to indeterminate instead.
+ */
+export type IsWhitelistedForArgs = {
+  registryAddr: string;
+  address: string;
+  rpcUrl?: string;
+} & (
+  | { recordTypeKey: string; recordType?: never }
+  | { recordType: string; recordTypeKey?: never }
+);
+
+/**
  * Reads IssuerRegistry.isWhitelistedFor(key, address).
  *
  * Pass `recordTypeKey` when the key came from the chain (a clone's own `recordType()`); pass
  * `recordType` to hash a label locally. The key form is what verification uses - the record type it
- * asks about must be the one the chain says the root has, not one read off the document.
+ * asks about must be the one the chain says the root has, not one read off the document. Supplying
+ * neither throws rather than inventing an empty key: refusing to ask is honest.
  */
-export async function isWhitelistedFor(args: {
-  registryAddr: string;
-  recordType?: string;
-  recordTypeKey?: string;
-  address: string;
-  rpcUrl?: string;
-}): Promise<boolean> {
-  const key = args.recordTypeKey ?? recordTypeKey(args.recordType ?? "");
+export async function isWhitelistedFor(args: IsWhitelistedForArgs): Promise<boolean> {
+  const key =
+    args.recordTypeKey ??
+    (args.recordType === undefined ? undefined : recordTypeKey(args.recordType));
+  if (key === undefined) {
+    throw new Error(
+      "isWhitelistedFor: exactly one of recordTypeKey or recordType is required - refusing to ask the registry about keccak256(\"\")",
+    );
+  }
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.registryAddr as Address,
     abi: ISSUER_REGISTRY_ABI,
