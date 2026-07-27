@@ -46,7 +46,7 @@ Setup keeps genesis only. Both fields prefill in demo mode - see
 [DEMO_CLICKS.md](./DEMO_CLICKS.md) for the literal clicks.
 `demo-up.sh` wires the governance signer-1 admin key (`contracts/.env` → `GOVERNANCE_PRIVATE_KEY`, passed to the central stack as `ADMIN_PRIVATE_KEY`) so it can broadcast `whitelistFor` - since Governance Phase-2 (2026-07-05, block 123835) this admin authority is signer-1 `0x8E27…F4A2`, NOT the old deployer EOA `0x119F…` (now zero governance roles).
 (The dog-tag `mintCustodial` is broadcast by the **vet** signer, not central.)
-It also sets `DNS_CHECK=skip` (bypasses DNS-TXT for the `.local` demo domains), and sets the QR host to the Mac LAN IP (see [§6 phone networking](#6-phone-networking-real-gotchas)).
+It sets the QR host to the Mac LAN IP (see [§6 phone networking](#6-phone-networking-real-gotchas)). There is no DNS bypass: the issuer DNS lookup is always REAL, and because a `.local` domain can never publish the TXT record, approve answers `409 dnsConfirmationRequired` and the portal offers a deliberate "Whitelist anyway" - see [ISSUER_DOMAIN_BINDING.md](./ISSUER_DOMAIN_BINDING.md).
 
 For corporate/VPN Wi-Fi, boot with a public tunnel so the phone can reach the vet from any network:
 ```bash
@@ -231,8 +231,12 @@ Backend issues fixed while bringing the system up live on ROAX - worth knowing:
   on-chain state, not just a submitted tx hash).
 - **The `VERIFY:` whitelist key** = `keccak256(abi.encode("VERIFY:", keccak256(label) mod r))` - the
   purpose is reduced mod BN254 `r` before keying (the registry stores/nullifies the same reduced value).
-- **`DNS_CHECK=skip`** bypasses DNS-TXT issuer verification for the `.local` demo domains; production
-  uses DNS-over-HTTPS (DoH).
+- **The issuer DNS check is ADVISORY and never faked.** `DNS_CHECK` is retired - it used to install a
+  checker that returned an unconditional pass, fabricating a result on the very gate that decides
+  whether an organisation is legitimate enough to whitelist. Every deployment now performs a real
+  DNS-over-HTTPS lookup; a non-verified observation does not block approval but requires the admin's
+  explicit `proceedWithoutDns`, and both the observation and the override are persisted
+  (`dnsStateAtApproval` / `dnsProceededUnverified`). `.local` demo domains always take that path.
 - The vet **wrap types ALL scalar leaves** (fixes "non-typed leaf at authorizedVet").
 
 General:

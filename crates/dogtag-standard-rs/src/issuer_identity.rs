@@ -1,5 +1,15 @@
-//! Asserting the DISPLAYED issuer domain against the root-covered one (audit-m9 recommendation 6) —
-//! mirror of `packages/dogtag-standard-ts/src/issuerIdentity.ts`.
+//! Asserting the DISPLAYED issuer domain against the root-covered one (audit-m9 recommendation 6).
+//!
+//! # Where the mirrors are — there is deliberately NO TypeScript leg
+//!
+//! The behavioural mirrors of this module are `IssuerIdentity.assertDomain` in
+//! `apps/ios/DogTag/IssuerDomainBinding.swift` and
+//! `apps/android/app/src/main/java/io/liberalize/dogtag/net/IssuerDomainBinding.kt`; keep the three in
+//! lockstep. `packages/dogtag-standard-ts` has no equivalent and no file was lost: the web portals do
+//! not run this assertion client-side at all — their backend runs it (`government-api`'s `/v1/verify`
+//! calls straight into this module) and ships the verdict as the `issuerDidAssertion` string, which
+//! `packages/ui` only renders. The mobile apps need their own copies because they have no backend in
+//! the loop by design (see the DNS-privacy note in `dogtag-dns-rs`).
 //!
 //! # The gap this closes
 //!

@@ -146,8 +146,7 @@ and the registry address.
 
 It then runs the backends + portals, setting their `.env` values **inline** (so there is **no `.env`
 file to edit for LOCAL** — see the [Environment knobs](#environment-knobs-local) table). Key inline
-settings: `VITE_DEMO_MODE=1` (autofill + demo buttons), `DNS_CHECK=skip` (no real domain to bind),
-`CONFIRMATIONS=1`, custody sealed to `.demo/{vet,groomer,prover}-custody.json` via `CUSTODY_SEAL_PATH`, the
+settings: `VITE_DEMO_MODE=1` (autofill + demo buttons), `CONFIRMATIONS=1`, custody sealed to `.demo/{vet,groomer,prover}-custody.json` via `CUSTODY_SEAL_PATH`, the
 QR host set to `LAN_IP` (or the `*_PUBLIC_URL` tunnels), and `CIRCUITS_BUILD_DIR=circuits/build` on the
 prover. The store is **MemStore** (records/sessions are ephemeral; only custody is sealed to disk).
 

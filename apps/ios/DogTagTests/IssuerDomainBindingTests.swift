@@ -103,6 +103,54 @@ final class IssuerDomainBindingTests: XCTestCase {
         XCTAssertEqual(IssuerBindingResolver.classifyDoh(["hello": "world"]), .couldNotCheck)
     }
 
+    /// A CNAME chain answers under the TARGET's name, so a lone record is accepted whatever name it
+    /// echoes — the resolver answered the question it was asked.
+    func test_a_single_record_is_accepted_even_when_the_echoed_name_differs() {
+        let s = IssuerBindingResolver.classifyDoh(
+            doh(0, [txt("somewhere-else.example", "\"Travel clearance issuance\"")]),
+            queriedName: "\(cloneLc)._dogtag.moh.gov.sg"
+        )
+        XCTAssertEqual(s, .verified(description: "Travel clearance issuance"))
+    }
+
+    /// With TWO OR MORE records the echoed name is the only way to tell which one answers OUR query, so
+    /// it must be matched. Taking whichever happened to be first would display an unrelated record (an
+    /// SPF line at a CNAME target, say) as this domain's description of the issuer. Rust's
+    /// `select_binding` is the normative rule; this pins the Swift port to it.
+    func test_multiple_records_require_the_echoed_name_to_match() {
+        let queried = "\(cloneLc)._dogtag.moh.gov.sg"
+        let mixed = [
+            txt("unrelated.example", "\"v=spf1 -all\""),
+            txt(queried, "\"Travel clearance issuance\""),
+        ]
+        XCTAssertEqual(
+            IssuerBindingResolver.classifyDoh(doh(0, mixed), queriedName: queried),
+            .verified(description: "Travel clearance issuance")
+        )
+        // ...and with no matching name among several, nothing here answers our query.
+        XCTAssertEqual(
+            IssuerBindingResolver.classifyDoh(
+                doh(0, [txt("a.example", "\"one\""), txt("b.example", "\"two\"")]),
+                queriedName: queried
+            ),
+            .notListed
+        )
+    }
+
+    /// DNS 0x20 randomises the echoed case, and a zone file may or may not carry the trailing root dot.
+    /// Neither may change the answer.
+    func test_the_echoed_name_match_ignores_case_and_the_trailing_dot() {
+        let queried = "\(cloneLc)._dogtag.moh.gov.sg"
+        let s = IssuerBindingResolver.classifyDoh(
+            doh(0, [
+                txt("unrelated.example", "\"v=spf1 -all\""),
+                txt("\(cloneLc.uppercased())._DogTag.MOH.gov.SG.", "\"Travel clearance issuance\""),
+            ]),
+            queriedName: queried
+        )
+        XCTAssertEqual(s, .verified(description: "Travel clearance issuance"))
+    }
+
     /// THE regression guard.
     func test_servfail_and_absence_differ() {
         let absent = IssuerBindingResolver.classifyDoh(doh(0))
@@ -141,6 +189,32 @@ final class IssuerDomainBindingTests: XCTestCase {
             "0000000000000000000000000000000000000000000000000000000000000020"
             + "00000000000000000000000000000000000000000000000000000000000000ff"
         XCTAssertNil(RoaxRpc.decodeAbiString(bad))
+    }
+
+    /// An offset/length word with a HIGH byte set must be REJECTED, not crash. The decoder previously
+    /// signalled "too large" with a `UInt64.max` sentinel that the caller fed straight to
+    /// `Int.init(_: UInt64)`, which TRAPS on overflow — so an `eth_call` reply carrying such a word
+    /// terminated the wallet while a credential detail sheet was open, rather than returning nil.
+    /// `eth_call` bodies are attacker-influenceable (the address comes from the document), so this is
+    /// reachable, not theoretical.
+    func test_decode_rejects_an_oversized_offset_or_length_without_trapping() {
+        let payload = String(repeating: "00", count: 32)
+        // offset with bit 63 set
+        let hugeOffset =
+            "0000000000000000000000000000000000000000000000008000000000000000" + payload
+        XCTAssertNil(RoaxRpc.decodeAbiString(hugeOffset))
+        // offset with a byte set above the low 4 (the reject band Kotlin's `beInt` already enforced)
+        let wideOffset =
+            "0000000000000000000000000000000000000000000000000000010000000000" + payload
+        XCTAssertNil(RoaxRpc.decodeAbiString(wideOffset))
+        // a sane offset, but a length word with bit 63 set
+        let hugeLength =
+            "0000000000000000000000000000000000000000000000000000000000000020"
+            + "0000000000000000000000000000000000000000000000008000000000000000"
+        XCTAssertNil(RoaxRpc.decodeAbiString(hugeLength))
+        // and the full-width word, which is what the old sentinel itself looked like
+        let allOnes = String(repeating: "ff", count: 32)
+        XCTAssertNil(RoaxRpc.decodeAbiString(allOnes + payload))
     }
 
     // MARK: - copy discipline

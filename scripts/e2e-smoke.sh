@@ -55,9 +55,25 @@ green "registered vet business"
 WL_PROBE=0x000000000000000000000000000000000000bEEF
 APPID=$(curl -fsS -X POST "$ADMIN/v1/issuer-applications" -H 'content-type: application/json' \
   -d "{\"issuerEntityId\":\"seaport-vet\",\"addresses\":[\"$WL_PROBE\"],\"recordTypes\":[\"VACCINATION\"],\"domain\":\"vet.local\",\"documentStore\":\"$VACC_CLONE\"}" | jqr .applicationId)
-APPR=$(curl -fsS --max-time 120 -X POST "$ADMIN/v1/issuer-applications/$APPID/approve" -H "authorization: Bearer $ATOK_C")
+# The DNS legitimacy check is ADVISORY, not blocking: a non-verified observation is answered with a 409
+# and needs the admin's EXPLICIT proceedWithoutDns. `vet.local` can NEVER publish the TXT record, so this
+# path is the one the demo always takes — send the confirmation rather than reintroduce a bypass switch.
+APPR=$(curl -fsS --max-time 120 -X POST "$ADMIN/v1/issuer-applications/$APPID/approve" \
+  -H "authorization: Bearer $ATOK_C" -H 'content-type: application/json' \
+  -d '{"proceedWithoutDns":true}')
 echo "  approve -> $APPR"
 [ "$(echo "$APPR" | jqr .status)" = approved ] || fail "approve"
+# EXERCISE the advisory path rather than merely surviving it: the override must be RECORDED, or it is
+# fail-open with extra steps. `dnsState` itself is left unpinned — a `.local` name resolves to notListed
+# or couldNotCheck depending on the resolver, and both are honest.
+APPR_DNS=$(echo "$APPR" | jqr .dnsState)
+[ "$(echo "$APPR" | jqr .dnsProceededUnverified)" = true ] \
+  || fail "approve did not record that it proceeded without a verified DNS observation (dnsState=$APPR_DNS)"
+case "$APPR_DNS" in
+  notListed|couldNotCheck) ;;
+  *) fail "approve reported dnsState=$APPR_DNS for vet.local, which cannot publish the record" ;;
+esac
+green "approve recorded the unverified DNS observation ($APPR_DNS) instead of fabricating a pass"
 VACC_KEY=$(cast keccak VACCINATION)
 [ "$(cast call "$IR" 'isWhitelistedFor(bytes32,address)(bool)' "$VACC_KEY" "$WL_PROBE" --rpc-url "$RPC")" = true ] \
   || fail "approve did not whitelist keccak256(VACCINATION) on-chain"

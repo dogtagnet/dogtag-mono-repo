@@ -30,8 +30,11 @@ REMOTE (Tier 2) **is**:
 - **TLS on a real domain.** Each stack runs **Caddy 2** ([`deploy/Caddyfile`](../deploy/Caddyfile)),
   which auto-issues a Let's Encrypt cert for that stack's `DOMAIN` and reverse-proxies to the internal
   nginx `web` service.
-- **Real DNS legitimacy.** `DNS_CHECK=doh` — issuer (and EXPORT groomer) legitimacy is verified via
-  Cloudflare **DNS-over-HTTPS** against a `dogtag-verify=` TXT record (§4, §7).
+- **Real DNS legitimacy.** Issuer (and EXPORT groomer) legitimacy is observed via Cloudflare
+  **DNS-over-HTTPS** against a `dogtag-verify=` TXT record (§4, §7). The lookup is always a REAL
+  resolution — there is no bypass switch — and for issuer approval it is **advisory**: it never blocks
+  whitelisting, but a non-verified observation requires the admin's explicit `proceedWithoutDns` and is
+  persisted on the application. See [ISSUER_DOMAIN_BINDING.md](./ISSUER_DOMAIN_BINDING.md).
 - **Manual / no autofill.** `VITE_DEMO_MODE` is **unset** — no prefilled forms, no demo buttons, no
   stashed seed. Operators type passwords and re-type the genesis challenge words by hand.
 
@@ -54,7 +57,7 @@ The single switch is **`VITE_DEMO_MODE`** (portal build-time flag): set = demo, 
 | Genesis seed | Stashed + auto-filled into confirm | Operator **reads + re-types** challenge words |
 | Storage | `MemStore` (records/sessions ephemeral; **restart = re-unlock** — custody seal in `.demo/*-custody.json`; records/sessions re-created) | `MongoStore` (persistent; back up the volume) |
 | Networking | LAN IP or cloudflared tunnel | Real domain + **TLS** (Caddy auto-HTTPS) |
-| DNS legitimacy | `DNS_CHECK=skip` (`.local`); phone groomer-DNS skipped | `DNS_CHECK=doh` + real `dogtag-verify=` TXT (issuer **and** EXPORT groomer, §4) |
+| DNS legitimacy | real DoH lookup either way — `.local` simply never resolves, so approve is confirmed with `proceedWithoutDns`; phone groomer-DNS skipped for local hosts | real `dogtag-verify=` TXT resolves (issuer **and** EXPORT groomer, §4) |
 | `/admin/*` exposure | On the main listener (single host) | **Loopback-isolated** + proxy-denied publicly |
 | Confirmations | `CONFIRMATIONS=1` | `CONFIRMATIONS=2` |
 | Prover-service | Started on `:41875` (consent server-prove fallback) | **Not started** - run it yourself (§8) |
@@ -177,7 +180,6 @@ Verified against `stacks/{admin,vet,groomer}/.env.example`.
 | `ADMIN_SIGNER_INDEX` | admin | HD signer index | `0` | `0` |
 | `ADMIN_PROPOSE_ONLY` (alias `ALLOW_UNAUTHORIZED_ADMIN_SIGNER`) | admin | **declares** that privileged writes are signed out-of-band, so a grant/revoke that broadcasts nothing is the intended outcome (`outcome:"proposed_by_design"`) rather than the wrong-key one (`proposed_unauthorized`). Reporting only — it never changes what is dispatched, and holdership is always read live from the chain | unset (`demo-up.sh` forwards it, and refuses to boot without it when the signer lacks `WHITELIST_ADMIN`) | set to `1` **only** when the hosted key is deliberately not the authority holder (Safe / offline governance signer) |
 | `ADMIN_REQUIRE_AUTHORITY` | admin | turns the boot authority check from a logged ERROR into a refusal to boot when the hosted signer holds **none** of the three control-plane authorities. Best-effort: the check is time-boxed, and an unreadable chain leaves the verdict `Unknown`, which never refuses | unset | `1` for a deployment whose hosted key is meant to execute (leave unset for a propose-only one) |
-| `DNS_CHECK` | all | issuer DNS legitimacy | `skip` (local) | **`doh`** (enforced by `remote-up.sh`) |
 | `CONFIRMATIONS` | all | reorg safety | `1` | **`2`** (enforced) |
 | `ADMIN_LOOPBACK_ONLY` | all | bind `/admin/*` to `127.0.0.1:ADMIN_PORT` | unset | **`1`** (enforced) |
 | `CORS_ALLOW_ORIGINS` | all | CORS allowlist | unset (permissive) | `https://<DOMAIN>` |
@@ -311,7 +313,7 @@ scripts/remote-up.sh
   `MONGO_URI`, `DOMAIN`, `ADMIN_PASSWORD`, `CENTRAL_HMAC_SECRET` (all stacks); plus `OPERATOR_PASSWORD`
   (business stacks); plus `ADMIN_PRIVATE_KEY` + `ADMIN_ADDRESS` (admin stack).
 - **Enforces** the hardening defaults: **`FEATURES=mongo`** (build-arg → MongoStore-capable image),
-  **`DNS_CHECK=doh`**, **`CONFIRMATIONS=2`**, **`ADMIN_LOOPBACK_ONLY=1`**.
+  **`CONFIRMATIONS=2`**, **`ADMIN_LOOPBACK_ONLY=1`**.
 - Builds each stack with `docker compose build --build-arg FEATURES=mongo`, then
   `docker compose up -d`. Caddy **auto-issues** the Let's Encrypt cert on first request and persists it
   in the `caddy_data` volume.
@@ -332,7 +334,7 @@ docker compose -f stacks/<x>/docker-compose.yml down         # stop
 > **STOP — these bypass `remote-up.sh`'s preflight.** Both `make up-<x>` (which is just
 > `cd stacks/<x> && docker compose up -d`) and the explicit `docker compose … up -d` skip
 > `remote-up.sh`'s `.env` validation (empty-secret + `VITE_DEMO_MODE` rejection) **and** its hardening
-> enforcement (`DNS_CHECK=doh` / `CONFIRMATIONS=2` / `ADMIN_LOOPBACK_ONLY=1`). (Compose hardcodes the
+> enforcement (`CONFIRMATIONS=2` / `ADMIN_LOOPBACK_ONLY=1`). (Compose hardcodes the
 > `FEATURES=mongo` build-arg, so the image is still MongoStore-capable — but nothing checks your
 > secrets or the demo flag.) Use them only for **inspection / per-stack restarts**; do the PRODUCTION
 > bring-up via **`scripts/remote-up.sh`**.
@@ -467,26 +469,37 @@ DOM=<DOMAIN>                          # this business's real domain
    ```bash
    dig +short TXT "$DOM" | grep -i "$(echo "$CLONE" | tr 'A-F' 'a-f')"   # must print the dogtag-verify= record
    ```
-5. **Central approves** (admin/loopback) — runs the **DoH DNS check, then on-chain `whitelistFor`**.
-   Reuse `$TOKEN` and `$APP_ID` from above:
+5. **Central approves** (admin/loopback) — runs the **DoH DNS observation, then on-chain
+   `whitelistFor`**. Reuse `$TOKEN` and `$APP_ID` from above:
    ```bash
    curl -fsS -X POST "$CENTRAL/v1/issuer-applications/$APP_ID/approve" \
-     -H "authorization: Bearer $TOKEN"
+     -H "authorization: Bearer $TOKEN" \
+     -H 'content-type: application/json' -d '{}'
    ```
-   Returns `{ "status":"approved", "whitelistTxs":[...] }`.
+   Returns `{ "status":"approved", "whitelistTxs":[...], "dnsState":"verified", … }`.
 
    **Verify.** Response `status` is `approved` and `whitelistTxs` is non-empty:
    ```bash
    curl -fsS -X POST "$CENTRAL/v1/issuer-applications/$APP_ID/approve" \
-     -H "authorization: Bearer $TOKEN" \
+     -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '{}' \
      | jq -e '.status=="approved" and (.whitelistTxs|length>0)'
    ```
 
-   **STOP if** approve returns `403 DNS TXT verification failed`:
-   - **Symptom:** approve fails before any on-chain tx.
-   - **Cause:** the `dogtag-verify=` TXT is missing, not yet propagated, or doesn't contain the
-     **lowercased** clone address.
-   - **Fix:** publish/correct the TXT (step 4), wait for propagation, re-approve.
+   **If** approve returns `409 {"error":"dnsConfirmationRequired", …}`:
+   - **What it means:** the DNS lookup did not come back `verified` — the `dogtag-verify=` TXT is
+     missing, not yet propagated, or doesn't contain the **lowercased** clone address. Nothing is
+     on-chain yet. This is a decision to make, not a failure: the check is ADVISORY and says nothing
+     about the organisation, whose legitimacy is the accreditation review's business.
+   - **Preferred:** publish/correct the TXT (step 4), wait for propagation, re-approve — the 409 body
+     carries the exact `expectedTxt` value and the observed `dnsState`.
+   - **Or proceed deliberately** (routine when an org is KYC-approved before its DNS team publishes).
+     Both the observation and the fact that you proceeded are PERSISTED on the application
+     (`dnsStateAtApproval` / `dnsProceededUnverified`), so it never reads as a clean pass:
+     ```bash
+     curl -fsS -X POST "$CENTRAL/v1/issuer-applications/$APP_ID/approve" \
+       -H "authorization: Bearer $TOKEN" \
+       -H 'content-type: application/json' -d '{"proceedWithoutDns":true}'
+     ```
 6. **Business custody genesis + unlock** (§6), operator login + backend signing mode, then
    **prepare → `issue(root)`** anchors the Merkle root on the business's clone, and **share** returns a
    one-time `/r/:token` URL for the QR.
@@ -513,9 +526,9 @@ domain `dogtag-verify=0x<groomer_relayer_lowercased>`.
 The phone resolves the QR host's domain via Cloudflare DoH and requires a TXT **containing**
 `dogtag-verify=<groomerAddr>`; if it's absent, the app **hard-stops and discloses nothing**. This is
 enforced for **real domains** (remote/prod) and **skipped for local hosts** (IP literal / `localhost` /
-`*.local` / LAN) — the LOCAL demo (`DNS_CHECK=skip`,
-[LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md)). It mirrors the issuer DoH convention in
-[`stacks/admin/api/src/dns.rs`](../stacks/admin/api/src/dns.rs).
+`*.local` / LAN) — see [LOCAL_DEPLOYMENT.md](./LOCAL_DEPLOYMENT.md). It mirrors the issuer DoH
+convention in [`stacks/admin/api/src/dns.rs`](../stacks/admin/api/src/dns.rs). Note this phone-side
+groomer gate is a HARD stop, unlike the advisory issuer-approval gate above; the two are separate.
 
 ---
 
@@ -648,7 +661,7 @@ captain-fill-in runbook).
 | `remote-up.sh` aborts: `VITE_DEMO_MODE is set … must be UNSET` | demo flag left in a stack `.env` | remove/unset `VITE_DEMO_MODE`, rebuild (§3, §5) |
 | `curl https://<DOMAIN>/health` → TLS / cert error | Caddy hasn't issued the cert (DNS or port 80 not ready) | fix the A record + open port 80 (§4); `… logs -f caddy` for the ACME error |
 | api container keeps restarting | `MONGO_URI` set but Mongo unreachable (fail-closed) | `… logs -f mongo` / `… logs -f api`; confirm `mongodb://mongo:27017/dogtag` (§3, §5) |
-| `/v1/issuer-applications/<id>/approve` → `403 DNS TXT verification failed` | `dogtag-verify=` TXT missing / not propagated / not lowercased | publish/correct the issuer TXT, wait, re-approve (§4, §7) |
+| `/v1/issuer-applications/<id>/approve` → `409 dnsConfirmationRequired` | `dogtag-verify=` TXT missing / not propagated / not lowercased — the check is advisory, so nothing is on-chain yet | publish/correct the issuer TXT, wait, re-approve; or re-send `{"proceedWithoutDns":true}` to whitelist anyway (recorded on the application) (§4, §7) |
 | phone hard-stops on EXPORT, discloses nothing | groomer host's `dogtag-verify=<relayer>` TXT missing/wrong (used a contract addr) | publish the TXT with the **lowercased groomer RELAYER wallet** address (§7) |
 | `/admin/*` route returns 403 from the internet | `ADMIN_LOOPBACK_ONLY=1` + Caddy edge-deny (by design) | run admin actions from the host or an allowlisted CIDR (§6) |
 | `/prove-consent` returns a prover-unavailable error | `CIRCUITS_BUILD_DIR` unset, artifacts missing/corrupt, or consent-zkey hash mismatch (fail-closed per request) | point `CIRCUITS_BUILD_DIR` at `consent_final.zkey` + `consent.r1cs` + `consent_js/consent.wasm`; restart the prover (§8) |

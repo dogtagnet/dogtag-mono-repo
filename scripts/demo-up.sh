@@ -203,7 +203,7 @@ INDEXER_DEMO_MODE=1 PORT=46001 VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
   SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY \
-  ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR DNS_CHECK=skip PORT=39742 \
+  ADMIN_PRIVATE_KEY=$ADMIN_PK ADMIN_ADDRESS=$ADMIN_ADDR PORT=39742 \
   ADMIN_PROPOSE_ONLY="$ADMIN_PROPOSE_ONLY" \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 # Every verifier/issuance process receives the same owner-hidden pair. PROFILE_ISSUER is a real
@@ -249,8 +249,19 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 # (TRAVEL_CLEARANCE_ISSUER_ADDR) — provision both with scripts/demo-provision-government.sh. Without
 # them the stack still runs live-read-only and /issue builds+persists via dry_run.
 # GOV_CHAIN_BACKEND=mem opts INTO simulation; /health then reports backend="simulated", chainId=null.
+# FACTORY_ADDR is LINK 1 of the issuer↔domain chain and is what makes verification resolve the issuing
+# clone from the chain's write-once `rootIssuer[R]`. Without it the government backend falls back to the
+# document's own `documentStore` for the `isValid` pillar, reads no on-chain issuer name at all, and
+# reports every binding as `unavailable` — i.e. the whole three-link chain is dark in the showcase, which
+# is precisely what this change removes. ISSUER_DOMAIN_REGISTRY_ADDR is resolved from the ledger and stays
+# at the zero address until one is deployed; that is the honest `unavailable`, not an invented address.
+GOV_ISSUER_DOMAIN_REGISTRY="${ISSUER_DOMAIN_REGISTRY_ADDR:-$(ledger_addr IssuerDomainRegistry)}"
+GOV_ISSUER_DOMAIN_REGISTRY="${GOV_ISSUER_DOMAIN_REGISTRY:-0x0000000000000000000000000000000000000000}"
 ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority" ISSUER_DOMAIN=gov.local \
   VERIFICATION_REGISTRY_ADDR=$VR \
+  FACTORY_ADDR=$FACTORY \
+  ISSUER_DOMAIN_REGISTRY_ADDR="$GOV_ISSUER_DOMAIN_REGISTRY" \
+  DNS_DOH_ENDPOINT="${DNS_DOH_ENDPOINT:-https://cloudflare-dns.com/dns-query}" \
   CHAIN_ID="$CHAIN_ID_EXPECTED" PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
   GOV_CHAIN_BACKEND="$GOV_CHAIN_BACKEND" \
   TRAVEL_CLEARANCE_ISSUER_ADDR="$TRAVEL_CLEARANCE_ISSUER_ADDR" GOV_SIGNER_KEY="$GOV_SIGNER_KEY" \
