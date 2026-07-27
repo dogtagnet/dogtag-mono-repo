@@ -575,3 +575,119 @@ class IssuerDomainBindingTest {
         )
     }
 }
+
+/**
+ * Which contract the binding describes — the sharper relabelling attack.
+ *
+ * The attack: relabel ONLY `issuer.documentStore` to point at ANOTHER authority's real, factory-deployed
+ * clone (clone addresses are public on-chain), and leave `data` untouched so integrity still passes.
+ * Link 1 (`isClone`) then PASSES — the target genuinely is a factory clone — and a resolver handed the
+ * document's claim directly renders that other authority's on-chain name, its claimed domain, and a green
+ * DNS badge.
+ *
+ * The defence is the factory's write-once `rootIssuer[R]`, which names the clone that issued THIS root.
+ * [IssuerBindingResolver.chooseClone] is that decision, kept pure so the property is assertable without a
+ * network. Mirror of `apps/ios/DogTagTests/IssuerDomainBindingTests.swift`'s
+ * `IssuerCloneResolutionTests`.
+ */
+class IssuerCloneResolutionTest {
+    private val ours = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+    private val otherAuthority = "0x00000000000000000000000000000000000000ee"
+
+    /**
+     * THE property. A document naming some other factory clone must not cause that clone to be the one
+     * the binding describes.
+     */
+    @Test
+    fun a_swapped_document_store_never_becomes_the_resolved_issuer() {
+        val choice = IssuerBindingResolver.chooseClone(RoaxRpc.AddressRead.Value(ours), otherAuthority)
+        assertEquals(ours, choice.address)
+        assertNotEquals(otherAuthority, choice.address)
+        assertEquals(IssuerCloneSource.RootIssuer, choice.source)
+        assertTrue("and the swap is REPORTED", choice.documentStoreDiffers)
+        assertFalse(choice.readFailed)
+    }
+
+    /** An agreeing document is not a disagreement, and address CASE is not evidence of one. */
+    @Test
+    fun an_agreeing_document_store_is_not_reported_as_a_difference() {
+        val choice = IssuerBindingResolver.chooseClone(
+            RoaxRpc.AddressRead.Value(ours),
+            "  0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F ",
+        )
+        assertEquals(ours, choice.address)
+        assertFalse(choice.documentStoreDiffers)
+    }
+
+    /**
+     * The factory answered, and its answer is "no record of this root". The document's claim is then the
+     * only thing available — used, but never labelled authoritative.
+     */
+    @Test
+    fun no_root_issuer_record_falls_back_to_the_document_and_says_so() {
+        val choice = IssuerBindingResolver.chooseClone(RoaxRpc.AddressRead.NoRecord, otherAuthority)
+        assertEquals(otherAuthority, choice.address)
+        assertEquals(IssuerCloneSource.DocumentClaim, choice.source)
+        assertFalse("silence is not disagreement", choice.documentStoreDiffers)
+        assertFalse(choice.readFailed)
+    }
+
+    /** A read we could not make is not "no record", and must not become a licence to trust the document. */
+    @Test
+    fun a_failed_root_issuer_read_is_not_an_absence() {
+        val choice =
+            IssuerBindingResolver.chooseClone(RoaxRpc.AddressRead.Failure("rpc 502"), otherAuthority)
+        assertTrue("the caller must report 'could not read', not proceed", choice.readFailed)
+        assertFalse(choice.documentStoreDiffers)
+    }
+
+    /**
+     * The line stays an observation: it says what the chain records, and passes no judgement on the
+     * credential, whose validity is proven on-chain separately.
+     */
+    @Test
+    fun the_swapped_store_line_is_factual_and_free_of_verdict_words() {
+        val line = IssuerBinding(documentStoreDiffers = true).documentStoreLine
+        assertEquals("The chain records a different issuing contract than this document names", line)
+        val lowered = line.orEmpty().lowercase()
+        val forbidden = listOf(
+            "verification failed", "failed", "failure", "invalid", "untrusted", "not trusted",
+            "warning", "danger", "insecure", "fraud", "fake", "suspicious", "unsafe", "error",
+            "rejected",
+        )
+        for (word in forbidden) {
+            assertFalse("\"$lowered\" contains \"$word\"", lowered.contains(word))
+        }
+        // Nothing to say when the two agree.
+        assertNull(IssuerBinding().documentStoreLine)
+    }
+
+    // ---- the address word ----------------------------------------------------------------------
+
+    @Test
+    fun decodes_a_right_aligned_address_word() {
+        val word = "0".repeat(24) + "b5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
+        assertEquals(ours, RoaxRpc.decodeAbiAddress(word))
+        assertEquals(ours, RoaxRpc.decodeAbiAddress("0x" + word.uppercase()))
+    }
+
+    /**
+     * An EMPTY result is what a call to an address with no code returns. It is not the zero address, and
+     * collapsing the two would turn "we could not ask" into a confident "no record".
+     */
+    @Test
+    fun an_unreadable_word_is_null_rather_than_a_guess() {
+        assertNull(RoaxRpc.decodeAbiAddress(""))
+        assertNull(RoaxRpc.decodeAbiAddress("0x00"))
+        // dirty high bytes: not an address word
+        assertNull(RoaxRpc.decodeAbiAddress("1".repeat(64)))
+        assertNull(RoaxRpc.decodeAbiAddress("z".repeat(64)))
+    }
+
+    @Test
+    fun the_zero_address_is_an_unset_slot() {
+        assertTrue(RoaxRpc.isZeroAddress("0x" + "0".repeat(40)))
+        assertFalse(RoaxRpc.isZeroAddress(ours))
+        assertFalse(RoaxRpc.isZeroAddress(""))
+    }
+}

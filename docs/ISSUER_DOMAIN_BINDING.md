@@ -105,6 +105,16 @@ Verification therefore resolves the issuer as: explicit operator override → `r
 This also means an **old credential resolves against the clone that issued it**, never against a successor: if a clone is superseded, credentials it issued remain legitimate and verification must not silently re-point.
 A document/chain disagreement is reported, never silently followed.
 
+**This binds every surface, including the phones.**
+A holder app that hands its resolver the document's `documentStore` leaves the attack open on the surface a border official actually holds: point it at *another authority's* real, factory-deployed clone and link 1 passes — that address genuinely is a clone — so the phone renders that authority's on-chain name, its claimed domain, and a green DNS badge.
+Both apps read `rootIssuer[R]` first (`RoaxRpc.rootIssuer`, three-state: a real address / the zero address meaning "no record" / a failed read), follow it when it resolves, and render "The chain records a different issuing contract than this document names" when it disagrees with the document.
+A **failed** `rootIssuer` read is not "no record": it reports `unavailable`, rather than becoming a licence to trust the document's claim unchecked.
+
+**A definite link-1 failure fails the verdict.**
+`isValid` is read from the resolved issuer, which falls back to the document's claim when the factory has no record of the root — so an attacker's own contract can answer it however it likes.
+Reporting `notFactoryDeployed` beside `verdict: true` is worse than not checking: it is checked, failed, and passed anyway.
+Only the **definite** negative fails; an unread provenance (no factory configured, or the read failed) is evidence of nothing and leaves the verdict alone, exactly as `couldNotCheck` is never treated as `notListed`.
+
 ## The states
 
 Six states, and no two may be collapsed.
@@ -179,6 +189,10 @@ Every on-chain read in one verification is **pinned to a single block**, read on
 So the DNS half is an **observation that can never be recomputed**, and it is labelled as such (`dnsObservation: "live" | "stored"`, `dnsHistorical: false`) alongside — never inside — the block anchor.
 A stored observation must never be presented as live, and a live one must never be presented as proving the past.
 
+`dnsObservation` is **derived from the observation's own `checkedAt`**, never stamped on.
+The resolver replays a cached answer for up to `CacheTtl::answer_max` (15 min) keeping its ORIGINAL timestamp — deliberately, so a surface can say how old the answer really is — so a hardcoded `"live"` printed "DNS checked just now" over a quarter-hour-old observation.
+The freshness window is **60 seconds**, the same threshold the TS renderer and both phones use, so the four legs agree on when "just now" stops being true.
+
 ## Who may write a binding
 
 `DogTagIssuer` clones have **no owner**: they are `Initializable` only, and all write authority is `IssuerRegistry.isWhitelistedFor(recordType, msg.sender)`.
@@ -237,6 +251,7 @@ State the **observation**, never a verdict:
 - `notADogTagIssuer` — red, its own mark, and it says nothing about DNS: "This contract was not deployed by the DogTag factory".
 - `couldNotCheck` — neutral: "We could not reach DNS to check this domain".
 - `noDomainClaimed` — neutral and unremarkable: "This issuer has published no domain on-chain".
+- a document/chain issuer disagreement — red, and still an observation: "The chain records a different issuing contract than this document names". It says what the chain records; it passes no judgement on the credential.
 
 **Never** write "VERIFICATION FAILED", "INVALID", "UNTRUSTED", "WARNING", or anything that reads as a judgement on the credential or the organisation.
 A missing DNS record means the domain owner has not published the binding.

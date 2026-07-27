@@ -15,7 +15,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, Bytes, B256, U256};
+use alloy::providers::RootProvider;
 use alloy::sol;
+use alloy::transports::BoxTransport;
 use async_trait::async_trait;
 
 pub const ROAX_CHAIN_ID: u64 = 135;
@@ -364,6 +366,19 @@ pub struct AlloyChain {
     pub rpc_url: String,
     pub chain_id: u64,
     signer: Option<alloy::signers::local::PrivateKeySigner>,
+    /// ONE connection, shared by every gasless read.
+    ///
+    /// Each read used to build its own provider, so a single `POST /v1/verify` — an UNAUTHENTICATED
+    /// route that now makes up to seven reads — cost seven connect+call round trips against our own
+    /// node, and an attacker varying the caller-supplied `documentStore` amortised none of it.
+    ///
+    /// `OnceCell` rather than eager construction so a node that is down at boot does not stop the
+    /// service, and a failed connect leaves the cell EMPTY (the next call retries) rather than poisoning
+    /// the client for the process's lifetime.
+    ///
+    /// Deliberately read-only: `send_call` keeps building its own wallet+fillers provider, because that
+    /// one carries a signer and a nonce filler whose state must not be shared with the read path.
+    read_provider: tokio::sync::OnceCell<RootProvider<BoxTransport>>,
 }
 
 impl AlloyChain {
@@ -372,7 +387,20 @@ impl AlloyChain {
             rpc_url,
             chain_id: ROAX_CHAIN_ID,
             signer: None,
+            read_provider: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// The shared read provider, connected on first use.
+    async fn provider(&self) -> Result<RootProvider<BoxTransport>, ChainError> {
+        self.read_provider
+            .get_or_try_init(|| async {
+                RootProvider::<BoxTransport>::connect_builtin(&self.rpc_url)
+                    .await
+                    .map_err(|e| ChainError::Rpc(e.to_string()))
+            })
+            .await
+            .cloned()
     }
     pub fn with_chain_id(mut self, chain_id: u64) -> Self {
         self.chain_id = chain_id;
@@ -417,11 +445,7 @@ impl ChainClient for AlloyChain {
         root: &str,
         at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let provider = self.provider().await?;
         let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
         let mut call = c.isValid(parse_b256(root));
         if let Some(b) = at_block {
@@ -439,11 +463,7 @@ impl ChainClient for AlloyChain {
         root: &str,
         at_block: Option<u64>,
     ) -> Result<U256, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let provider = self.provider().await?;
         let c = IDogTagIssuer::new(parse_addr(issuer_addr), provider);
         let mut call = c.issuedAt(parse_b256(root));
         if let Some(b) = at_block {
@@ -456,11 +476,8 @@ impl ChainClient for AlloyChain {
         Ok(r._0)
     }
     async fn block_number(&self) -> Result<u64, ChainError> {
-        use alloy::providers::{Provider, ProviderBuilder};
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        use alloy::providers::Provider;
+        let provider = self.provider().await?;
         provider
             .get_block_number()
             .await
@@ -472,11 +489,7 @@ impl ChainClient for AlloyChain {
         root: &str,
         at_block: Option<u64>,
     ) -> Result<Option<String>, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let provider = self.provider().await?;
         let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
         let mut call = c.rootIssuer(parse_b256(root));
         if let Some(b) = at_block {
@@ -497,11 +510,7 @@ impl ChainClient for AlloyChain {
         clone_addr: &str,
         at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let provider = self.provider().await?;
         let c = IDogTagIssuerFactory::new(parse_addr(factory_addr), provider);
         let mut call = c.isClone(parse_addr(clone_addr));
         if let Some(b) = at_block {
@@ -518,11 +527,7 @@ impl ChainClient for AlloyChain {
         clone_addr: &str,
         at_block: Option<u64>,
     ) -> Result<String, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let provider = self.provider().await?;
         let c = IDogTagIssuer::new(parse_addr(clone_addr), provider);
         let mut call = c.name();
         if let Some(b) = at_block {
@@ -540,11 +545,7 @@ impl ChainClient for AlloyChain {
         clone_addr: &str,
         at_block: Option<u64>,
     ) -> Result<Option<DomainClaim>, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let provider = self.provider().await?;
         let c = IIssuerDomainRegistry::new(parse_addr(domain_registry_addr), provider);
         let mut call = c.getBinding(parse_addr(clone_addr));
         if let Some(blk) = at_block {
@@ -573,11 +574,7 @@ impl ChainClient for AlloyChain {
         signer: &str,
         at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
-        use alloy::providers::ProviderBuilder;
-        let provider = ProviderBuilder::new()
-            .on_builtin(&self.rpc_url)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+        let provider = self.provider().await?;
         let c = IIssuerRegistry::new(parse_addr(registry_addr), provider);
         let mut call = c.isWhitelistedFor(parse_b256(record_type), parse_addr(signer));
         if let Some(b) = at_block {
@@ -690,6 +687,14 @@ struct MemChainInner {
     onchain_names: HashMap<String, String>,
     /// (factory_addr, clone_addr) -> whether the factory deployed it. Absent == not a clone.
     factory_clones: HashMap<(String, String), bool>,
+    /// read name -> the `at_block` that read was LAST asked for.
+    ///
+    /// The emulation ignores the anchor (there is no history to read), so without recording it no
+    /// hermetic test can tell a pinned read from an unpinned one — and "the response's `blockNumber` is
+    /// true for every read behind it" is exactly the claim that silently rots when a new read is added
+    /// without the parameter, or an existing one is passed `None`. Keyed by name rather than appended,
+    /// so a long-running demo backend (`GOV_CHAIN_BACKEND=mem`) cannot grow this without bound.
+    at_blocks: HashMap<&'static str, Option<u64>>,
     nonce: u64,
     clock: u64,
 }
@@ -705,6 +710,7 @@ impl Default for MemChainInner {
             onchain_names: HashMap::new(),
             factory_clones: HashMap::new(),
             root_issuers: HashMap::new(),
+            at_blocks: HashMap::new(),
             nonce: 0,
             clock: MEMCHAIN_CLOCK_BASE,
         }
@@ -789,6 +795,29 @@ impl MemChain {
             .copied()
             .unwrap_or(false)
     }
+    /// Record the anchor a pinned read was asked for. See [`MemChainInner::at_blocks`].
+    fn record_at_block(&self, what: &'static str, at_block: Option<u64>) {
+        self.inner
+            .lock()
+            .unwrap()
+            .at_blocks
+            .insert(what, at_block);
+    }
+
+    /// Every pinned read this client has served, and the `at_block` each was LAST asked for.
+    ///
+    /// The property worth asserting is that ONE verification is ONE consistent snapshot: every entry is
+    /// `Some(b)` for the same `b`, and that `b` is the `blockNumber` the response prints. An entry of
+    /// `None` is a read taken at `latest`, which makes that printed anchor a false claim.
+    pub fn recorded_at_blocks(&self) -> HashMap<&'static str, Option<u64>> {
+        self.inner.lock().unwrap().at_blocks.clone()
+    }
+
+    /// Forget the recorded anchors, so a test can scope its assertion to one request.
+    pub fn clear_recorded_at_blocks(&self) {
+        self.inner.lock().unwrap().at_blocks.clear();
+    }
+
     /// Whitelist a signer for a (registry, recordType, signer) tuple (test harness / demo bootstrap).
     pub fn whitelist(&self, registry: &str, record_type: &str, signer: &str) {
         self.inner.lock().unwrap().whitelist.insert(
@@ -822,8 +851,9 @@ impl ChainClient for MemChain {
         &self,
         issuer_addr: &str,
         root: &str,
-        _at_block: Option<u64>,
+        at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
+        self.record_at_block("isValid", at_block);
         let g = self.inner.lock().unwrap();
         let key = (issuer_addr.to_lowercase(), root.to_lowercase());
         let issued = g.issued.get(&key).copied().unwrap_or(0) != 0;
@@ -834,8 +864,9 @@ impl ChainClient for MemChain {
         &self,
         issuer_addr: &str,
         root: &str,
-        _at_block: Option<u64>,
+        at_block: Option<u64>,
     ) -> Result<U256, ChainError> {
+        self.record_at_block("issuedAt", at_block);
         let g = self.inner.lock().unwrap();
         let v = g
             .issued
@@ -852,30 +883,47 @@ impl ChainClient for MemChain {
         &self,
         factory_addr: &str,
         root: &str,
-        _at_block: Option<u64>,
+        at_block: Option<u64>,
     ) -> Result<Option<String>, ChainError> {
+        self.record_at_block("rootIssuer", at_block);
         let g = self.inner.lock().unwrap();
         Ok(g.root_issuers
             .get(&(factory_addr.to_lowercase(), root.to_lowercase()))
             .cloned())
     }
+    /// Link 1, and the ONE read where an unseeded pair must NOT default to `false`.
+    ///
+    /// `Ok(false)` here is a DEFINITE "the factory says it did not deploy this contract" — a verdict
+    /// pillar, and a categorically strong claim. A simulated chain has no knowledge of a real deployed
+    /// clone, so answering `false` for an address it was never told about manufactures that claim out of
+    /// nothing: pointing a `GOV_CHAIN_BACKEND=mem` stack at the real `FACTORY_ADDR` would fail every
+    /// legitimate credential. Same doctrine as [`SIMULATED_CHAIN_ID`] — the emulation may not assert real
+    /// facts it cannot have.
+    ///
+    /// A test that wants the definite negative seeds it: `set_factory_clone(factory, clone, false)`.
     async fn is_factory_clone(
         &self,
         factory_addr: &str,
         clone_addr: &str,
-        _at_block: Option<u64>,
+        at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
+        self.record_at_block("isClone", at_block);
         let g = self.inner.lock().unwrap();
-        Ok(g.factory_clones
+        g.factory_clones
             .get(&(factory_addr.to_lowercase(), clone_addr.to_lowercase()))
             .copied()
-            .unwrap_or(false))
+            .ok_or_else(|| {
+                ChainError::Other(
+                    "simulated chain has no factory-provenance record for this contract".into(),
+                )
+            })
     }
     async fn issuer_onchain_name(
         &self,
         clone_addr: &str,
-        _at_block: Option<u64>,
+        at_block: Option<u64>,
     ) -> Result<String, ChainError> {
+        self.record_at_block("name", at_block);
         let g = self.inner.lock().unwrap();
         Ok(g.onchain_names
             .get(&clone_addr.to_lowercase())
@@ -886,8 +934,9 @@ impl ChainClient for MemChain {
         &self,
         domain_registry_addr: &str,
         clone_addr: &str,
-        _at_block: Option<u64>,
+        at_block: Option<u64>,
     ) -> Result<Option<DomainClaim>, ChainError> {
+        self.record_at_block("domainOf", at_block);
         let g = self.inner.lock().unwrap();
         Ok(g.claimed_domains
             .get(&(
@@ -901,8 +950,9 @@ impl ChainClient for MemChain {
         registry_addr: &str,
         record_type: &str,
         signer: &str,
-        _at_block: Option<u64>,
+        at_block: Option<u64>,
     ) -> Result<bool, ChainError> {
+        self.record_at_block("isWhitelistedFor", at_block);
         let g = self.inner.lock().unwrap();
         Ok(g.whitelist
             .get(&(
@@ -1098,6 +1148,52 @@ mod tests {
             .expect("valid 32-byte key");
         assert!(signed.can_sign());
         assert!(signed.can_broadcast_real_tx());
+    }
+
+    /// The emulation may not assert a real fact it cannot have. `Ok(false)` from `isClone` is a DEFINITE
+    /// "the factory did not deploy this" and is a verdict pillar, so an address the simulation was never
+    /// told about must come back as a failed read, not as that claim — otherwise a `GOV_CHAIN_BACKEND=mem`
+    /// stack pointed at the real `FACTORY_ADDR` fails every legitimate credential.
+    #[tokio::test]
+    async fn memchain_never_invents_a_definite_provenance_answer() {
+        let c = MemChain::new();
+        let factory = "0x00000000000000000000000000000000000000fa";
+        let clone = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f";
+        assert!(
+            c.is_factory_clone(factory, clone, None).await.is_err(),
+            "an unseeded pair is 'we were never told', not 'the factory said no'"
+        );
+        // A test that WANTS the definite negative seeds it, and gets it.
+        c.set_factory_clone(factory, clone, false);
+        assert!(!c.is_factory_clone(factory, clone, None).await.unwrap());
+        c.set_factory_clone(factory, clone, true);
+        assert!(c.is_factory_clone(factory, clone, None).await.unwrap());
+    }
+
+    /// The anchor every pinned read was asked for is recorded, so "one verification is one consistent
+    /// snapshot" is assertable rather than merely stated. Keyed by read name, so a long-running demo
+    /// backend cannot grow it without bound.
+    #[tokio::test]
+    async fn memchain_records_the_anchor_each_pinned_read_was_asked_for() {
+        let c = MemChain::new();
+        let issuer = "0x1111111111111111111111111111111111111111";
+        let root = "0x2222222222222222222222222222222222222222222222222222222222222222";
+        assert!(c.recorded_at_blocks().is_empty());
+
+        let _ = c.is_valid(issuer, root, Some(42)).await;
+        let _ = c.issued_at(issuer, root, Some(42)).await;
+        let _ = c.is_whitelisted_for(issuer, "0x00", issuer, Some(42)).await;
+        let reads = c.recorded_at_blocks();
+        assert_eq!(reads.get("isValid"), Some(&Some(42)));
+        assert_eq!(reads.get("issuedAt"), Some(&Some(42)));
+        assert_eq!(reads.get("isWhitelistedFor"), Some(&Some(42)));
+
+        // An UNPINNED read is recorded as such — that is the regression the recording exists to catch.
+        let _ = c.is_valid(issuer, root, None).await;
+        assert_eq!(c.recorded_at_blocks().get("isValid"), Some(&None));
+
+        c.clear_recorded_at_blocks();
+        assert!(c.recorded_at_blocks().is_empty());
     }
 
     #[test]

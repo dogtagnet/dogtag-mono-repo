@@ -103,6 +103,7 @@ enum RoaxRpc {
     private static let isCloneSelector = functionSelector("isClone(address)")
     private static let domainOfSelector = functionSelector("domainOf(address)")
     private static let issuerNameSelector = functionSelector("name()")
+    private static let rootIssuerSelector = functionSelector("rootIssuer(bytes32)")
 
     /// Reading a dynamic `string` return has THREE outcomes, and collapsing any two of them is how a
     /// fail-open gets reintroduced:
@@ -116,6 +117,54 @@ enum RoaxRpc {
         case value(String)
         case noContract
         case failure(String)
+    }
+
+    /// Reading an `address` return has the same three outcomes, kept apart for the same reason:
+    ///   - `.value` — a real, non-zero address.
+    ///   - `.noRecord` — the mapping answered with the zero address, i.e. "no entry for this key". A
+    ///     definite answer, not a failure.
+    ///   - `.failure` — the RPC did not answer, or the body was not an address word (an empty result,
+    ///     which is what a call to an address with no code returns, lands here). Emphatically NOT
+    ///     "no record": a read we could not make is evidence of nothing.
+    enum AddressRead {
+        case value(String)
+        case noRecord
+        case failure(String)
+    }
+
+    /// `DogTagIssuerFactory.rootIssuer(root)` — the clone that ISSUED this root, write-once on-chain.
+    ///
+    /// THE authoritative answer to "which contract issued this credential". The document's
+    /// `issuer.documentStore` is only a claim, and pointing it at ANOTHER authority's genuine clone is
+    /// the sharper form of the relabelling attack: link 1 (`isClone`) passes because the target really is
+    /// a factory clone, so without this read the phone renders that other authority's on-chain identity.
+    static func rootIssuer(
+        rpcUrl: String, factory: String, root: String, atBlock: UInt64?
+    ) async -> AddressRead {
+        guard !factory.isEmpty, !root.isEmpty else { return .failure("missing factory/root") }
+        let data = rootIssuerSelector + pad32(root)
+        switch await ethCall(rpcUrl: rpcUrl, to: factory, data: data, atBlock: atBlock) {
+        case .failure(let e): return .failure(e)
+        case .success(let hex):
+            guard let addr = decodeAbiAddress(hex) else { return .failure("not an address word") }
+            return isZeroAddress(addr) ? .noRecord : .value(addr)
+        }
+    }
+
+    /// Decode a right-aligned 32-byte `address` word to lowercase `0x..`. Returns nil rather than
+    /// guessing for anything that is not one — including an EMPTY result (no contract at that address)
+    /// and a word with dirty high bytes.
+    static func decodeAbiAddress(_ hex: String) -> String? {
+        let h = (hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex).lowercased()
+        guard h.count == 64, h.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+        guard h.prefix(24).allSatisfy({ $0 == "0" }) else { return nil }
+        return "0x" + h.suffix(40)
+    }
+
+    /// The zero address, i.e. an unset mapping slot.
+    static func isZeroAddress(_ addr: String) -> Bool {
+        let h = addr.hasPrefix("0x") ? String(addr.dropFirst(2)) : addr
+        return !h.isEmpty && h.allSatisfy { $0 == "0" }
     }
 
     /// The current chain head, so every read in one verification can be pinned to ONE block. Against a

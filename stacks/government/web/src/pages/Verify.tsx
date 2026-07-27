@@ -44,6 +44,33 @@ function Frag({ label, v, testid }: { label: string; v: unknown; testid?: string
   );
 }
 
+/** Link 1 as a verdict pillar, rendered TRI-state.
+ *
+ *  Only `notFactoryDeployed` — the factory was asked and answered no — is a definite negative and is the
+ *  only value that fails the verdict. `unknown` (no factory configured, or the read failed) is evidence
+ *  of nothing and stays neutral, exactly as `couldNotCheck` never renders as `notListed`; colouring it
+ *  red would be a lie of emphasis, and would also cry wolf on every credential in a deployment that has
+ *  no `FACTORY_ADDR`. */
+function ProvenanceFrag({ v }: { v: unknown }) {
+  if (v === "factoryDeployed")
+    return (
+      <Badge data-testid="pillar-provenance" variant="success">
+        factory-deployed: yes
+      </Badge>
+    );
+  if (v === "notFactoryDeployed")
+    return (
+      <Badge data-testid="pillar-provenance" variant="danger">
+        factory-deployed: no
+      </Badge>
+    );
+  return (
+    <Badge data-testid="pillar-provenance" variant="neutral">
+      factory-deployed: not checked
+    </Badge>
+  );
+}
+
 /** How `/v1/verify` chose the contract it checked against — see the `issuerResolution` block. */
 interface IssuerResolution {
   source?: "operatorOverride" | "rootIssuer" | "documentClaim";
@@ -480,6 +507,7 @@ function PasteDocVerify({ health }: { health: Health | null }) {
             <Frag label="integrity" testid="pillar-integrity" v={frag?.integrity} />
             <Frag label="on-chain" testid="pillar-onchain" v={frag?.onchain} />
             <Frag label="issuer whitelist" testid="pillar-whitelist" v={frag?.issuerWhitelisted} />
+            <ProvenanceFrag v={frag?.issuerProvenance} />
           </div>
 
           <IssuerLine identity={identity} binding={binding} resolution={resolution} />

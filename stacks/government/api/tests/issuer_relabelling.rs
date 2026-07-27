@@ -715,10 +715,13 @@ async fn an_unread_provenance_also_withholds_the_on_chain_name() {
 /// `.block(...)` to the eth_call, because `MemChain` ignores the parameter. That is the ceiling of a
 /// hermetic test here, and it is the half that regresses: a new read added without the parameter, or a
 /// caller passing `None`, is exactly what makes the response's stated anchor a false claim.
+/// (read name, the `at_block` it was asked for), in call order.
+type PinnedReads = Vec<(&'static str, Option<u64>)>;
+
 #[derive(Clone)]
 struct PinRecordingChain {
     inner: MemChain,
-    asked: Arc<std::sync::Mutex<Vec<(&'static str, Option<u64>)>>>,
+    asked: Arc<std::sync::Mutex<PinnedReads>>,
 }
 
 impl PinRecordingChain {
@@ -731,7 +734,7 @@ impl PinRecordingChain {
     fn record(&self, what: &'static str, at_block: Option<u64>) {
         self.asked.lock().unwrap().push((what, at_block));
     }
-    fn reads(&self) -> Vec<(&'static str, Option<u64>)> {
+    fn reads(&self) -> PinnedReads {
         self.asked.lock().unwrap().clone()
     }
 }
@@ -901,4 +904,180 @@ async fn every_on_chain_read_in_a_verification_is_pinned_to_the_reported_block()
     let names: Vec<&str> = reads.iter().map(|(w, _)| *w).collect();
     assert!(names.contains(&"isValid"), "reads were {reads:?}");
     assert!(names.contains(&"isWhitelistedFor"), "reads were {reads:?}");
+}
+
+// -------------------------------------------------------------------------------------------------
+// (10) a PROVEN non-clone reaches the verdict
+// -------------------------------------------------------------------------------------------------
+
+/// Link 1 is a verdict pillar, not decoration.
+///
+/// `onchain_valid` is read from `issuer_addr`, which falls back to the document's own `documentStore`
+/// whenever the factory has no record of the root — so the attacker's contract answers `isValid` however
+/// it likes. Reporting `provenance: "notFactoryDeployed"` beside `verdict: true` is worse than not
+/// checking: it is checked, failed, and passed anyway, and the portal renders its VALID badge with the
+/// red provenance line beneath it.
+#[tokio::test]
+async fn a_proven_non_clone_fails_the_verdict() {
+    const ATTACKER: &str = "0x00000000000000000000000000000000000000ee";
+
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap().to_string();
+    // Everything the attacker controls checks out: their contract says the root is valid, `data` is
+    // untouched so integrity passes, and the issuer block is left genuine so the DID assertion matches.
+    chain.issue(ATTACKER, &root).await.expect("emulated issue");
+    chain.set_factory_clone(FACTORY, ATTACKER, false);
+
+    let mut forged = doc.clone();
+    forged["issuer"]["documentStore"] = json!(ATTACKER);
+
+    let app = government_api::router(st);
+    let (s, b) = verify(&app, forged).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["fragments"]["integrity"], true, "{b}");
+    assert_eq!(b["fragments"]["onchain"], true, "{b}");
+    assert_eq!(b["fragments"]["issuerDidAssertion"], "match", "{b}");
+    // ...and it still does not verify, because the contract is provably not factory-descended.
+    assert_eq!(
+        b["verdict"], false,
+        "a proven non-clone must not carry a passing verdict: {b}"
+    );
+    assert_eq!(
+        b["fragments"]["issuerProvenance"], "notFactoryDeployed",
+        "the response says WHICH pillar fell: {b}"
+    );
+}
+
+/// The other arm, and the one that must NOT change: an UNKNOWN provenance is evidence of nothing.
+///
+/// A deployment running without `FACTORY_ADDR` would otherwise start failing every legitimate
+/// credential — the same discipline as `couldNotCheck`, which is never rendered as `notListed`.
+#[tokio::test]
+async fn an_unknown_provenance_does_not_fail_the_verdict() {
+    let (mut st, chain) = state();
+    let mut cfg = (*st.cfg).clone();
+    cfg.factory_addr = "0x0000000000000000000000000000000000000000".into();
+    st.cfg = Arc::new(cfg);
+
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    assert_eq!(b["fragments"]["issuerProvenance"], "unknown", "{b}");
+    assert_eq!(
+        b["verdict"], true,
+        "a provenance we could not read is not a provenance failure: {b}"
+    );
+}
+
+/// And the ordinary case stays green: a genuine, factory-deployed clone verifies.
+#[tokio::test]
+async fn a_factory_deployed_clone_still_verifies() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let app = government_api::router(st);
+
+    let (_s, b) = verify(&app, doc).await;
+    assert_eq!(b["fragments"]["issuerProvenance"], "factoryDeployed", "{b}");
+    assert_eq!(b["verdict"], true, "{b}");
+}
+
+// -------------------------------------------------------------------------------------------------
+// (11) the DNS half's freshness is DERIVED, never asserted
+// -------------------------------------------------------------------------------------------------
+
+/// `BindingResolver` replays a cached answer keeping its ORIGINAL `checked_at`, deliberately, so a
+/// surface can say how old the observation really is. That is only worth anything if the wire field is
+/// derived from that timestamp: hardcoding `dnsObservation: "live"` printed "DNS checked just now" over
+/// an observation up to `CacheTtl::answer_max` (15 min) old.
+///
+/// The threshold itself is unit-tested against a stale timestamp in `routes::tests`; what this pins is
+/// the precondition — that a second verify inside the cache TTL really is a REPLAY of the first
+/// observation rather than a fresh look, so the field cannot be a constant and stay true.
+#[tokio::test]
+async fn a_cached_dns_observation_is_replayed_with_its_original_timestamp() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let app = government_api::router(st);
+
+    let (_s, first) = verify(&app, doc.clone()).await;
+    let (_s, second) = verify(&app, doc).await;
+
+    let seen_first = first["issuerDomainBinding"]["checkedAt"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the observation carries its own time: {}", first["issuerDomainBinding"]));
+    let seen_second = second["issuerDomainBinding"]["checkedAt"].as_u64().unwrap();
+    assert_eq!(
+        seen_first, seen_second,
+        "the second answer is a REPLAY of the first observation, not a fresh look"
+    );
+    // Both are seconds old here, so both are honestly live — the point is that the value tracks
+    // `checkedAt` rather than being stamped on.
+    assert_eq!(second["issuerDomainBinding"]["dnsObservation"], "live");
+    assert_eq!(second["issuerDomainBinding"]["dnsHistorical"], false);
+}
+
+// -------------------------------------------------------------------------------------------------
+// (12) one verification is ONE consistent snapshot — asserted against the shipped MemChain
+// -------------------------------------------------------------------------------------------------
+
+/// The same property `PinRecordingChain` above pins, but recorded by `MemChain` itself rather than by a
+/// wrapper local to this file — so ANY government test can assert it, and a future suite that drops the
+/// wrapper does not silently drop the guard with it.
+///
+/// A read taken at `latest` while the response prints `blockNumber: N` makes that anchor a false claim:
+/// a revoke landing between the head read and `isValid` yields a verdict that re-running at N
+/// contradicts.
+#[tokio::test]
+async fn memchain_records_that_every_read_used_the_reported_anchor() {
+    let (st, chain) = state();
+    let doc = genuine_doc();
+    seed(&chain, &doc).await;
+    let root = doc["signature"]["merkleRoot"].as_str().unwrap();
+    chain.set_root_issuer(FACTORY, root, CLONE);
+    // The seeding above issues through the write path, which reads nothing pinned; scope the assertion
+    // to the verification itself.
+    chain.clear_recorded_at_blocks();
+    let app = government_api::router(st);
+
+    let signer = chain.signer_address().unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/verify")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "wrapped_doc": doc, "signer_addr": signer })).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let b: Value = serde_json::from_slice(&bytes).unwrap();
+
+    let anchor = b["blockNumber"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("the response must carry the anchor it claims: {b}"));
+
+    let reads = chain.recorded_at_blocks();
+    assert!(
+        !reads.is_empty(),
+        "the verification must actually read the chain"
+    );
+    for (what, at) in &reads {
+        assert_eq!(
+            *at,
+            Some(anchor),
+            "`{what}` was not pinned to the reported anchor {anchor}; reads were {reads:?}"
+        );
+    }
+    // The two that DECIDE the verdict are the ones this test exists for.
+    assert!(reads.contains_key("isValid"), "reads were {reads:?}");
+    assert!(
+        reads.contains_key("isWhitelistedFor"),
+        "reads were {reads:?}"
+    );
 }

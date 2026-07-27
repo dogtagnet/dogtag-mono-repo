@@ -35,6 +35,10 @@ fn demo_state() -> (AppState, MemChain) {
         api_token: Some("dogtag-gov-demo-token".into()),
     };
     let chain = MemChain::new();
+    // The demo clone really was deployed by the DogTag factory. Seeded because link-1 provenance is a
+    // verdict pillar: an unseeded pair reads as a DEFINITE `notFactoryDeployed`, which fails the verdict
+    // — correctly, but it would make this suite about provenance rather than about the flow.
+    chain.set_factory_clone("0x00000000000000000000000000000000000000fa", ISSUER_ADDR, true);
     // whitelist the demo signer for TRAVEL_CLEARANCE so the issuer-identity pillar can be exercised.
     if let Some(signer) = chain.signer_address() {
         chain.whitelist(

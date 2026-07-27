@@ -92,14 +92,21 @@ fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
     // never observed. Served from a short TTL cache, so this is not a DNS lookup per render.
     var binding by remember { mutableStateOf(IssuerBinding()) }
     LaunchedEffect(cred.id) {
-        val clone = (doc?.documentStore ?: "").trim()
-        if (clone.isBlank()) return@LaunchedEffect
+        // The document's `documentStore` is passed as a CLAIM, not as the contract to check: the
+        // resolver reads the factory's write-once `rootIssuer[R]` first and follows that. Handing it the
+        // document's claim directly would leave the relabelling attack open on the one surface a border
+        // official actually holds — a swapped `documentStore` pointed at another authority's genuine
+        // clone passes `isClone` and renders that authority's on-chain identity.
+        val claimed = (doc?.documentStore ?: "").trim()
+        val root = (doc?.merkleRoot ?: "").ifBlank { cred.credentialRoot }
+        if (claimed.isBlank() && root.isBlank()) return@LaunchedEffect
         val roax = RoaxConfig.load(context)
         binding = IssuerBindingResolver.resolve(
             rpcUrl = AppConfig.ROAX_RPC,
             factory = roax.issuerFactory,
             domainRegistry = roax.issuerDomainRegistry,
-            clone = clone,
+            documentStore = claimed,
+            root = root,
         )
     }
 
@@ -384,6 +391,17 @@ fun DomainBindingLine(binding: IssuerBinding) {
             Icon(icon, null, tint = color, modifier = Modifier.size(13.dp))
             Spacer(Modifier.size(5.dp))
             Text(binding.line, fontSize = 11.sp, color = color, modifier = Modifier.weight(1f))
+        }
+        binding.documentStoreLine?.let { swapped ->
+            // The chain's write-once record disagrees with the document about which contract issued this
+            // credential. Reported, not followed: everything above was resolved from the chain's answer.
+            // Red, because — unlike the free-form name drift — this is a structured comparison against a
+            // write-once on-chain value.
+            Text(
+                swapped,
+                fontSize = 11.sp, color = c.danger,
+                modifier = Modifier.padding(start = 18.dp),
+            )
         }
         binding.publishedDescription?.let { published ->
             // The whole reason the TXT value is free-form: show what the domain chose to say.
