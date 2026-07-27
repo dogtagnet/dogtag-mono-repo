@@ -275,6 +275,12 @@ struct RoaxConfig {
     let chainId: Int
     let dogTagSbt: String
     let issuerRegistry: String
+    /// `DogTagIssuerFactory` — LINK 1 of the issuer↔domain chain (`isClone`). Empty means provenance
+    /// cannot be checked, and the binding reports "could not read" rather than claiming anything.
+    let issuerFactory: String
+    /// `IssuerDomainRegistry` — the clone's on-chain domain claim. Empty until deployed; the binding then
+    /// reports "could not read", never "no domain claimed".
+    let issuerDomainRegistry: String
     let poseidon6: String
     /// `ProtocolRegistry` is the discovery trust anchor. Empty until redeployment; verification then
     /// fails closed instead of inventing an address.
@@ -285,12 +291,15 @@ struct RoaxConfig {
               let data = try? Data(contentsOf: url),
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return RoaxConfig(chainId: 135, dogTagSbt: "", issuerRegistry: "",
+                              issuerFactory: "", issuerDomainRegistry: "",
                               poseidon6: "", protocolRegistry: "")
         }
         return RoaxConfig(
             chainId: (o["chainId"] as? Int) ?? 135,
             dogTagSbt: (o["DogTagSBT"] as? String) ?? "",
             issuerRegistry: (o["IssuerRegistry"] as? String) ?? "",
+            issuerFactory: (o["DogTagIssuerFactory"] as? String) ?? "",
+            issuerDomainRegistry: (o["IssuerDomainRegistry"] as? String) ?? "",
             poseidon6: (o["Poseidon6"] as? String) ?? "",
             protocolRegistry: (o["ProtocolRegistry"] as? String) ?? ""
         )
