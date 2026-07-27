@@ -75,7 +75,20 @@ fn civil_from_days(z0: i64) -> (i64, i64, i64) {
 
 fn days_in_month(y: i64, m: i64) -> i64 {
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][(m - 1) as usize]
+    [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ][(m - 1) as usize]
 }
 
 /// Add whole months to a days-since-epoch value, clamping the day-of-month.
@@ -130,7 +143,13 @@ fn compare_decimal(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     }
     let len = af.len().max(bf.len());
     let pad = |f: &str| -> String { format!("{:0<width$}", f, width = len) };
-    Some(pad(af).cmp(&pad(bf))).map(|o| if o == Ordering::Equal { Ordering::Equal } else { o })
+    Some(pad(af).cmp(&pad(bf))).map(|o| {
+        if o == Ordering::Equal {
+            Ordering::Equal
+        } else {
+            o
+        }
+    })
 }
 fn decimal_gte(a: &str, b: &str) -> bool {
     matches!(compare_decimal(a, b), Some(o) if o != std::cmp::Ordering::Less)
@@ -158,7 +177,9 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
                 e.push("@context[0] must be \"https://www.w3.org/ns/credentials/v2\"".into());
             }
             if !ctx.iter().any(|x| x.as_str() == Some(DOGTAG_CONTEXT_URI)) {
-                e.push(format!("@context must include DogTag context URI \"{DOGTAG_CONTEXT_URI}\""));
+                e.push(format!(
+                    "@context must include DogTag context URI \"{DOGTAG_CONTEXT_URI}\""
+                ));
             }
         }
     }
@@ -170,7 +191,14 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
         }
         _ => e.push("type must be an array".into()),
     }
-    for f in ["id", "issuer", "validFrom", "credentialSubject", "credentialSchema", "credentialStatus"] {
+    for f in [
+        "id",
+        "issuer",
+        "validFrom",
+        "credentialSubject",
+        "credentialSchema",
+        "credentialStatus",
+    ] {
         req_present(&mut e, c, f);
     }
     if let Some(d) = c.get("description") {
@@ -187,8 +215,14 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
     // --- legal/trust meta on every credential ---
     req_present(&mut e, c, "attestationType");
     let stt = ["accredited_authority", "licensed_vet", "self_attested"];
-    if !as_str(c, "signatureTrustTier").map(|s| stt.contains(&s)).unwrap_or(false) {
-        e.push(format!("signatureTrustTier must be one of {{{}}}", stt.join(", ")));
+    if !as_str(c, "signatureTrustTier")
+        .map(|s| stt.contains(&s))
+        .unwrap_or(false)
+    {
+        e.push(format!(
+            "signatureTrustTier must be one of {{{}}}",
+            stt.join(", ")
+        ));
     }
     if c.get("legalEffect").and_then(Value::as_str) != Some("evidentiary") {
         e.push("legalEffect must == \"evidentiary\"".into());
@@ -212,14 +246,24 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
                     Some(code) if code.is_string() => {
                         let s = code.as_str().unwrap();
                         if !(s.len() == 15 && s.bytes().all(|b| b.is_ascii_digit())) {
-                            e.push("credentialSubject.microchip.code must match ^[0-9]{15}$".into());
+                            e.push(
+                                "credentialSubject.microchip.code must match ^[0-9]{15}$".into(),
+                            );
                         }
                     }
                     _ => e.push("credentialSubject.microchip.code must be a string".into()),
                 }
                 let std = ["ISO_11784_11785", "OTHER"];
-                if !m.get("standard").and_then(Value::as_str).map(|s| std.contains(&s)).unwrap_or(false) {
-                    e.push(format!("credentialSubject.microchip.standard must be one of {{{}}}", std.join(", ")));
+                if !m
+                    .get("standard")
+                    .and_then(Value::as_str)
+                    .map(|s| std.contains(&s))
+                    .unwrap_or(false)
+                {
+                    e.push(format!(
+                        "credentialSubject.microchip.standard must be one of {{{}}}",
+                        std.join(", ")
+                    ));
                 }
                 if get(m, "implantDate").is_none() {
                     e.push("credentialSubject.microchip.implantDate is required".into());
@@ -231,18 +275,35 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
 
     // --- DOG_PROFILE ---
     if record_type == Some("DOG_PROFILE") {
-        for (f, label) in [("species", "species"), ("breedVbo", "breedVbo"), ("breedLabel", "breedLabel"), ("dateOfBirth", "dateOfBirth")] {
+        for (f, label) in [
+            ("species", "species"),
+            ("breedVbo", "breedVbo"),
+            ("breedLabel", "breedLabel"),
+            ("dateOfBirth", "dateOfBirth"),
+        ] {
             if get(subject, f).is_none() {
                 e.push(format!("credentialSubject.{label} is required"));
             }
         }
         let sex = ["male", "female"];
-        if !as_str(subject, "sex").map(|s| sex.contains(&s)).unwrap_or(false) {
-            e.push(format!("credentialSubject.sex must be one of {{{}}}", sex.join(", ")));
+        if !as_str(subject, "sex")
+            .map(|s| sex.contains(&s))
+            .unwrap_or(false)
+        {
+            e.push(format!(
+                "credentialSubject.sex must be one of {{{}}}",
+                sex.join(", ")
+            ));
         }
         let neu = ["intact", "neutered", "spayed"];
-        if !as_str(subject, "neuterStatus").map(|s| neu.contains(&s)).unwrap_or(false) {
-            e.push(format!("credentialSubject.neuterStatus must be one of {{{}}}", neu.join(", ")));
+        if !as_str(subject, "neuterStatus")
+            .map(|s| neu.contains(&s))
+            .unwrap_or(false)
+        {
+            e.push(format!(
+                "credentialSubject.neuterStatus must be one of {{{}}}",
+                neu.join(", ")
+            ));
         }
         // owner's official identity — OBJECT with three string sub-fields (keys must be present;
         // empty strings allowed for non-admin mint paths).
@@ -250,7 +311,9 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
             Some(oi) if oi.is_object() => {
                 for f in ["countryOfIdentification", "identification", "name"] {
                     if oi.get(f).and_then(Value::as_str).is_none() {
-                        e.push(format!("credentialSubject.ownerIdentity.{f} must be a string"));
+                        e.push(format!(
+                            "credentialSubject.ownerIdentity.{f} must be a string"
+                        ));
                     }
                 }
             }
@@ -267,10 +330,20 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
                             continue;
                         }
                         let u = ["kg", "lb"];
-                        if !w.get("unit").and_then(Value::as_str).map(|s| u.contains(&s)).unwrap_or(false) {
+                        if !w
+                            .get("unit")
+                            .and_then(Value::as_str)
+                            .map(|s| u.contains(&s))
+                            .unwrap_or(false)
+                        {
                             e.push(format!("{p}.unit must be one of {{{}}}", u.join(", ")));
                         }
-                        if !w.get("value").and_then(Value::as_str).map(is_decimal_string).unwrap_or(false) {
+                        if !w
+                            .get("value")
+                            .and_then(Value::as_str)
+                            .map(is_decimal_string)
+                            .unwrap_or(false)
+                        {
                             e.push(format!("{p}.value must be a decimal string"));
                         }
                         if get(w, "measuredOn").is_none() {
@@ -284,7 +357,17 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
 
     // --- VACCINATION (RabiesVaccinationCertificate) ---
     if is_rabies {
-        for f in ["vaccineProductCode", "vaccineProductName", "vaccineManufacturer", "batchLotNumber", "vaccinationDate", "validFrom", "validUntil", "nextDueDate", "authorizedVet"] {
+        for f in [
+            "vaccineProductCode",
+            "vaccineProductName",
+            "vaccineManufacturer",
+            "batchLotNumber",
+            "vaccinationDate",
+            "validFrom",
+            "validUntil",
+            "nextDueDate",
+            "authorizedVet",
+        ] {
             req_present(&mut e, c, f);
         }
         let series = ["primary", "booster"];
@@ -297,7 +380,11 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
 
         // microchip.implantDate <= vaccinationDate
         if let (Some(m), Some(vd)) = (microchip, vacc_date) {
-            if let Some(impl_d) = m.get("implantDate").and_then(Value::as_str).and_then(iso_date) {
+            if let Some(impl_d) = m
+                .get("implantDate")
+                .and_then(Value::as_str)
+                .and_then(iso_date)
+            {
                 if impl_d > vd {
                     e.push("microchip.implantDate must be <= vaccinationDate".into());
                 }
@@ -305,7 +392,9 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
         }
 
         // age at vaccination >= 12 weeks
-        if let (Some(dob), Some(vd)) = (as_str(subject, "dateOfBirth").and_then(iso_date), vacc_date) {
+        if let (Some(dob), Some(vd)) =
+            (as_str(subject, "dateOfBirth").and_then(iso_date), vacc_date)
+        {
             if vd - dob < 12 * 7 {
                 e.push("animal age at vaccination must be >= 12 weeks".into());
             }
@@ -335,11 +424,17 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
                     }
                     _ => e.push("titer.resultIUml must be a decimal string".into()),
                 }
-                match t.get("sampledAt").and_then(Value::as_str).and_then(iso_date) {
+                match t
+                    .get("sampledAt")
+                    .and_then(Value::as_str)
+                    .and_then(iso_date)
+                {
                     Some(sa) => {
                         if let Some(vd) = vacc_date {
                             if sa < vd + 30 {
-                                e.push("titer.sampledAt must be >= vaccinationDate + 30 days".into());
+                                e.push(
+                                    "titer.sampledAt must be >= vaccinationDate + 30 days".into(),
+                                );
                             }
                         }
                     }
@@ -352,12 +447,29 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
     // --- SERVICE_ATTESTATION ---
     if record_type == Some("SERVICE_ATTESTATION") {
         let at = ["service_dog", "emotional_support", "none"];
-        if !as_str(c, "assistanceType").map(|s| at.contains(&s)).unwrap_or(false) {
-            e.push(format!("assistanceType must be one of {{{}}}", at.join(", ")));
+        if !as_str(c, "assistanceType")
+            .map(|s| at.contains(&s))
+            .unwrap_or(false)
+        {
+            e.push(format!(
+                "assistanceType must be one of {{{}}}",
+                at.join(", ")
+            ));
         }
-        let itt = ["adi_accredited", "licensed_pro", "handler_self_attestation", "unverified_registry"];
-        if !as_str(c, "issuerTrustTier").map(|s| itt.contains(&s)).unwrap_or(false) {
-            e.push(format!("issuerTrustTier must be one of {{{}}}", itt.join(", ")));
+        let itt = [
+            "adi_accredited",
+            "licensed_pro",
+            "handler_self_attestation",
+            "unverified_registry",
+        ];
+        if !as_str(c, "issuerTrustTier")
+            .map(|s| itt.contains(&s))
+            .unwrap_or(false)
+        {
+            e.push(format!(
+                "issuerTrustTier must be one of {{{}}}",
+                itt.join(", ")
+            ));
         }
         req_present(&mut e, c, "taskDescription");
         let lc = ["ADA", "ACAA", "FHA"];
@@ -367,7 +479,10 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
                 Some(items) => {
                     for (i, ctx) in items.iter().enumerate() {
                         if !ctx.as_str().map(|s| lc.contains(&s)).unwrap_or(false) {
-                            e.push(format!("legalContext[{i}] must be one of {{{}}}", lc.join(", ")));
+                            e.push(format!(
+                                "legalContext[{i}] must be one of {{{}}}",
+                                lc.join(", ")
+                            ));
                         }
                     }
                 }
@@ -380,7 +495,10 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
 
     // --- jurisdiction-specific ---
     if record_type == Some("EU_HEALTH_CERT") {
-        match (as_str(c, "validFrom").and_then(iso_date), as_str(c, "validUntilEntry").and_then(iso_date)) {
+        match (
+            as_str(c, "validFrom").and_then(iso_date),
+            as_str(c, "validUntilEntry").and_then(iso_date),
+        ) {
             (Some(vf), Some(vue)) => {
                 if vue != vf + 10 {
                     e.push("EU_HEALTH_CERT: validUntilEntry must == validFrom + 10 days".into());
@@ -392,20 +510,34 @@ pub fn validate_schema(c: &Value) -> Result<(), Vec<String>> {
                 }
             }
         }
-        if let (Some(ov), Some(entry)) = (as_str(c, "onwardValid").and_then(iso_date), as_str(c, "validUntilEntry").and_then(iso_date)) {
+        if let (Some(ov), Some(entry)) = (
+            as_str(c, "onwardValid").and_then(iso_date),
+            as_str(c, "validUntilEntry").and_then(iso_date),
+        ) {
             if ov > add_months(entry, 4) {
                 e.push("EU_HEALTH_CERT: onwardValid must be <= entry + 4 months".into());
             }
         }
         if c.get("echinococcusRequired").and_then(Value::as_bool) == Some(true) {
-            let ok = c.get("treatmentBeforeEntry").and_then(Value::as_f64).map(|t| (24.0..=120.0).contains(&t)).unwrap_or(false);
+            let ok = c
+                .get("treatmentBeforeEntry")
+                .and_then(Value::as_f64)
+                .map(|t| (24.0..=120.0).contains(&t))
+                .unwrap_or(false);
             if !ok {
-                e.push("EU_HEALTH_CERT: echinococcus treatmentBeforeEntry must be within [24h, 120h]".into());
+                e.push(
+                    "EU_HEALTH_CERT: echinococcus treatmentBeforeEntry must be within [24h, 120h]"
+                        .into(),
+                );
             }
         }
     }
     if record_type == Some("CDC_IMPORT_FORM") {
-        let ok = c.get("ageMonthsAtEntry").and_then(Value::as_f64).map(|a| a >= 6.0).unwrap_or(false);
+        let ok = c
+            .get("ageMonthsAtEntry")
+            .and_then(Value::as_f64)
+            .map(|a| a >= 6.0)
+            .unwrap_or(false);
         if !ok {
             e.push("CDC_IMPORT_FORM: ageMonthsAtEntry must be >= 6".into());
         }
@@ -523,14 +655,20 @@ mod tests {
     #[test]
     fn fails_dog_profile_missing_owner_identity() {
         let mut c = valid_dog_profile();
-        c["credentialSubject"].as_object_mut().unwrap().remove("ownerIdentity");
+        c["credentialSubject"]
+            .as_object_mut()
+            .unwrap()
+            .remove("ownerIdentity");
         assert_violation(&c, "credentialSubject.ownerIdentity must be an object");
     }
 
     #[test]
     fn fails_dog_profile_missing_owner_identity_subfield() {
         let mut c = valid_dog_profile();
-        c["credentialSubject"]["ownerIdentity"].as_object_mut().unwrap().remove("name");
+        c["credentialSubject"]["ownerIdentity"]
+            .as_object_mut()
+            .unwrap()
+            .remove("name");
         assert_violation(&c, "credentialSubject.ownerIdentity.name must be a string");
     }
 
@@ -548,7 +686,10 @@ mod tests {
     fn assert_violation(c: &Value, needle: &str) {
         match validate_schema(c) {
             Ok(()) => panic!("expected validation to fail for: {needle}"),
-            Err(v) => assert!(v.iter().any(|m| m.contains(needle)), "violations {v:?} missing {needle:?}"),
+            Err(v) => assert!(
+                v.iter().any(|m| m.contains(needle)),
+                "violations {v:?} missing {needle:?}"
+            ),
         }
     }
 
@@ -641,7 +782,11 @@ mod tests {
             (2027, 1, 11),
         ] {
             let days = days_from_civil(y, m, d);
-            assert_eq!(civil_from_days(days), (y, m, d), "round-trip for {y}-{m}-{d}");
+            assert_eq!(
+                civil_from_days(days),
+                (y, m, d),
+                "round-trip for {y}-{m}-{d}"
+            );
         }
         // The epoch itself decodes correctly.
         assert_eq!(civil_from_days(0), (1970, 1, 1));
@@ -662,13 +807,25 @@ mod tests {
     fn add_months_clamps_day_of_month() {
         let ymd = |days| civil_from_days(days);
         // Jan 31 + 1mo clamps to leap-year Feb 29.
-        assert_eq!(ymd(add_months(days_from_civil(2024, 1, 31), 1)), (2024, 2, 29));
+        assert_eq!(
+            ymd(add_months(days_from_civil(2024, 1, 31), 1)),
+            (2024, 2, 29)
+        );
         // Jan 31 + 1mo clamps to common-year Feb 28.
-        assert_eq!(ymd(add_months(days_from_civil(2023, 1, 31), 1)), (2023, 2, 28));
+        assert_eq!(
+            ymd(add_months(days_from_civil(2023, 1, 31), 1)),
+            (2023, 2, 28)
+        );
         // +12mo crosses a year cleanly, no clamp.
-        assert_eq!(ymd(add_months(days_from_civil(2024, 1, 15), 12)), (2025, 1, 15));
+        assert_eq!(
+            ymd(add_months(days_from_civil(2024, 1, 15), 12)),
+            (2025, 1, 15)
+        );
         // Negative months walk backwards (and still clamp): Mar 31 -1mo -> Feb 29.
-        assert_eq!(ymd(add_months(days_from_civil(2024, 3, 31), -1)), (2024, 2, 29));
+        assert_eq!(
+            ymd(add_months(days_from_civil(2024, 3, 31), -1)),
+            (2024, 2, 29)
+        );
         // Adding zero months is identity.
         let d = days_from_civil(2024, 6, 28);
         assert_eq!(add_months(d, 0), d);
@@ -678,8 +835,14 @@ mod tests {
     fn iso_date_parses_and_rejects() {
         assert_eq!(iso_date("2024-01-11"), Some(days_from_civil(2024, 1, 11)));
         // Trailing time suffix (T... or space...) is ignored.
-        assert_eq!(iso_date("2024-01-11T10:30:00Z"), Some(days_from_civil(2024, 1, 11)));
-        assert_eq!(iso_date("2024-01-11 extra"), Some(days_from_civil(2024, 1, 11)));
+        assert_eq!(
+            iso_date("2024-01-11T10:30:00Z"),
+            Some(days_from_civil(2024, 1, 11))
+        );
+        assert_eq!(
+            iso_date("2024-01-11 extra"),
+            Some(days_from_civil(2024, 1, 11))
+        );
         // Out-of-range month / day.
         assert_eq!(iso_date("2024-13-01"), None);
         assert_eq!(iso_date("2024-01-32"), None);

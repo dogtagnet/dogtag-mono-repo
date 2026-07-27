@@ -127,7 +127,9 @@ fn merkle_vectors_parity() {
 #[test]
 fn inclusion_vectors_parity() {
     let v = load();
-    let arr = v["inclusion"].as_array().expect("testvectors.json missing `inclusion` — run gen-vectors");
+    let arr = v["inclusion"]
+        .as_array()
+        .expect("testvectors.json missing `inclusion` — run gen-vectors");
     let mut checked = 0usize;
     let mut negatives = 0usize;
     let mut max_promotes = 0u64;
@@ -145,7 +147,9 @@ fn inclusion_vectors_parity() {
             if st.get("promote").and_then(|x| x.as_bool()) == Some(true) {
                 steps.push(ProofStep::Promote);
             } else {
-                steps.push(ProofStep::Sibling(fr_from_hex32(st["sibling"].as_str().unwrap())));
+                steps.push(ProofStep::Sibling(fr_from_hex32(
+                    st["sibling"].as_str().unwrap(),
+                )));
             }
         }
 
@@ -157,7 +161,16 @@ fn inclusion_vectors_parity() {
         }
         max_promotes = max_promotes.max(m["promotes"].as_u64().unwrap_or(0));
     }
-    assert!(checked >= 100, "expected the full shared inclusion vector set (got {checked})");
-    assert!(negatives >= 3, "expected negative (reject) vectors (got {negatives})");
-    assert!(max_promotes >= 2, "shared vectors must exercise multi-level promotion");
+    assert!(
+        checked >= 100,
+        "expected the full shared inclusion vector set (got {checked})"
+    );
+    assert!(
+        negatives >= 3,
+        "expected negative (reject) vectors (got {negatives})"
+    );
+    assert!(
+        max_promotes >= 2,
+        "shared vectors must exercise multi-level promotion"
+    );
 }

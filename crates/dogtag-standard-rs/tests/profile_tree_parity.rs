@@ -39,7 +39,9 @@ const DEVICE_ROOT: &str = concat!(
 
 fn fixture() -> Value {
     let raw = std::fs::read_to_string(FIXTURE).unwrap_or_else(|e| {
-        panic!("read {FIXTURE}: {e} - regenerate with `node circuits/scripts/gen-consent-fixture.mjs`")
+        panic!(
+            "read {FIXTURE}: {e} - regenerate with `node circuits/scripts/gen-consent-fixture.mjs`"
+        )
     });
     serde_json::from_str(&raw).unwrap()
 }
@@ -80,10 +82,11 @@ fn rust_device_built_root_equals_the_circuits_verified_root() {
     let owner_secret =
         fr_from_hex("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
 
-    let prv: [u8; 32] = hex::decode("0001020304050607080900010203040506070809000102030405060708090001")
-        .unwrap()
-        .try_into()
-        .unwrap();
+    let prv: [u8; 32] =
+        hex::decode("0001020304050607080900010203040506070809000102030405060708090001")
+            .unwrap()
+            .try_into()
+            .unwrap();
     let key = consent_key_from_raw_prv(&prv);
     let key_hash = poseidon(&[key.ax, key.ay]);
 
@@ -146,15 +149,17 @@ fn the_owner_secret_reproduces_the_fixtures_nullifier() {
 
     // dogTagId is the CANONICAL field `field_of_value(Integer(handle))` — the fixture (regenerated
     // by M7 P0) binds the canonical field, not the raw `424242n` handle (ZK cross-check §2).
-    let dog_tag_id = field_of_value(&dogtag_standard::types::TypedScalar::Integer("424242".to_string()))
-        .expect("canonical dogTagId field");
+    let dog_tag_id = field_of_value(&dogtag_standard::types::TypedScalar::Integer(
+        "424242".to_string(),
+    ))
+    .expect("canonical dogTagId field");
     let nullifier = poseidon(&[
         Fr::from(DS_NULLIFIER),
         owner_secret,
-        dog_tag_id,                                           // dogTagId (canonical field)
-        fr_from_hex(f["purpose"].as_str().unwrap()),          // purpose
-        fr_from_hex(f["relayer"].as_str().unwrap()),          // relayer (uint160)
-        Fr::from(99u64),                                      // consentNonce
+        dog_tag_id,                                  // dogTagId (canonical field)
+        fr_from_hex(f["purpose"].as_str().unwrap()), // purpose
+        fr_from_hex(f["relayer"].as_str().unwrap()), // relayer (uint160)
+        Fr::from(99u64),                             // consentNonce
     ]);
 
     assert_eq!(

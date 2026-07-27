@@ -2125,3 +2125,66 @@ flow (`AppointmentDetail.tsx`) and the ad-hoc one (`Verify.tsx`), so a verificat
 thing however it was started. It offers NO mode/disclosure choice: the retired ZK-vs-Normal selector
 was removed from `VerifyFlow` when the backend collapsed to the single owner-hidden submit route, and
 `stacks/groomer/web/e2e/verify.spec.ts` asserts neither "Mode" nor "Normal" appears.
+
+### The issuer↔domain DNS binding — read `docs/ISSUER_DOMAIN_BINDING.md` before touching it
+
+The normative convention, the three-link verification chain, the six states and the display rules all
+live in `docs/ISSUER_DOMAIN_BINDING.md`. Four things there are counter-intuitive enough to restate:
+
+**The DoH classification rule is duplicated in three languages on purpose.** Rust
+(`dogtag-dns-rs::classify_txt`), Swift (`IssuerBindingResolver.classifyDoh`) and Kotlin (same name) each
+run in a different process with no shared runtime. All three carry the same unit tests over the same DoH
+bodies. If you change one, change all three — a phone and a portal disagreeing about whether a domain
+published a record is worse than either answer.
+
+**`DogTagIssuer` clones have no owner.** They are `Initializable` only; all write authority is
+`IssuerRegistry.isWhitelistedFor`. `createIssuer` salts a clone with `keccak256(recordType, business)`
+and never stores `business`, so the clone→business relationship is verifiable only via
+`factory.predictIssuer(recordType, candidate) == clone` — one-way (verify, not enumerate), which is
+exactly what an authorization check needs. This is why `IssuerDomainRegistry` is a new additive contract:
+a field on the clone would need a new impl, `factory.implementation` is `immutable` so that means a new
+factory, and `VerificationRegistryConsent.rootIndex` is `immutable` too — a new factory strands
+`rootIssuer[R]` at `address(0)` and breaks owner-hidden consent for every credential issued after it.
+That is a protocol-wide v2 hiding behind a one-field change.
+
+**`business` frequently defaults to the operator's own signer.** `resolve_business`
+(`stacks/admin/api/src/routes.rs`) falls back to the admin signer when the caller omits it, and
+`scripts/demo-provision-government.sh` does exactly that. So for existing clones, "the spawning business"
+tier authorizes the OPERATOR, not the organisation — which is why `domainAdmin[clone]` exists. Create new
+clones with an explicit, organisation-controlled `business` address.
+
+**The ROAX dev node serves archive queries.** Verified empirically (Geth v1.15.10): `eth_call name()` at
+head−5000 returns full historical state and `eth_getStorageAt` at head−100000 answers without a
+missing-trie-node error. Block-pinned reads are therefore reproducible, and the block anchor in a
+verification response is real rather than decorative. DNS, by contrast, has NO history — a TXT record is
+only ever observable now — so the DNS half of a binding is labelled `dnsObservation` / `dnsHistorical:
+false` and must never be presented as proving the past.
+
+### Android JVM unit tests and `org.json`
+
+`android.jar` ships `org.json` as a stub whose every method throws `"Method … not mocked"`, so any pure
+unit test over a JSON-parsing code path fails for a toolchain reason rather than a code one.
+`app/build.gradle.kts` therefore puts the REAL `org.json:json` on the unit-test classpath. That is the
+same library the device provides at runtime, not a fake — tests exercise actual parsing behaviour. If you
+add a pure test that touches `JSONObject` and it explodes with "not mocked", the dependency is missing,
+not your code.
+
+### Regenerating `apps/ios/DogTag.xcodeproj` without dropping the prover artifacts
+
+`project.yml` globs `sources: - path: DogTag`, so xcodegen picks up new Swift files automatically — but
+`consent_final.zkey` and `consent.graph` are **gitignored** and absent from a fresh worktree, while the
+committed `project.pbxproj` references both. Running `xcodegen generate` on a checkout that lacks them
+silently strips those resource references, and the app then builds without its proving artifacts.
+
+Vendor them (or `touch` placeholders) BEFORE generating, then verify the diff is purely additive:
+
+```sh
+cd apps/ios && touch DogTag/consent_final.zkey DogTag/consent.graph
+xcodegen generate
+grep -o 'consent_final.zkey\|consent.graph' DogTag.xcodeproj/project.pbxproj | sort -u   # both present
+git diff --stat DogTag.xcodeproj/project.pbxproj                                          # insertions only
+rm DogTag/consent_final.zkey DogTag/consent.graph
+```
+
+The host-less `DogTagTests` target lists sources INDIVIDUALLY and must stay Foundation-only (no FFI), so
+adding a file there means checking its whole import closure.

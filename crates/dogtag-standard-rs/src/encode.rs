@@ -29,7 +29,11 @@ pub fn canonical_integer(s: &str) -> Result<String, DogTagError> {
     if !is_integer(s) {
         return Err(DogTagError::InvalidInteger(s.to_string()));
     }
-    Ok(if s == "-0" { "0".to_string() } else { s.to_string() })
+    Ok(if s == "-0" {
+        "0".to_string()
+    } else {
+        s.to_string()
+    })
 }
 
 /// Canonical decimal over the INPUT STRING, never a float (A1/A2).
@@ -40,7 +44,10 @@ pub fn canonical_decimal(s: &str) -> Result<String, DogTagError> {
         Some((i, f)) => (i, Some(f)),
         None => (body, None),
     };
-    let int_ok = int_part == "0" || (!int_part.is_empty() && int_part.as_bytes()[0] != b'0' && int_part.bytes().all(|c| c.is_ascii_digit()));
+    let int_ok = int_part == "0"
+        || (!int_part.is_empty()
+            && int_part.as_bytes()[0] != b'0'
+            && int_part.bytes().all(|c| c.is_ascii_digit()));
     let frac_ok = match frac_part {
         Some(f) => !f.is_empty() && f.bytes().all(|c| c.is_ascii_digit()),
         None => true,

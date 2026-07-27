@@ -125,7 +125,11 @@ impl Store for MongoStore {
     }
     async fn peek_export_token(&self, token: &str) -> Option<String> {
         let coll: Collection<Document> = self.db.collection("export_tokens");
-        let d = coll.find_one(doc! { "token": token }).await.ok().flatten()?;
+        let d = coll
+            .find_one(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
         if now_secs() > d.get_i64("exp").unwrap_or(0) as u64 {
             None
         } else {

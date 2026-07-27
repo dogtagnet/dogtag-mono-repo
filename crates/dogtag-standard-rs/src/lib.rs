@@ -7,19 +7,19 @@
 
 pub mod encode;
 pub mod field;
+pub mod flatten;
+pub mod issuer_identity;
 pub mod leaf;
 pub mod merkle;
 pub mod poseidon;
-pub mod types;
-pub mod util;
-pub mod flatten;
-pub mod wrap;
-pub mod verify;
-pub mod issuer_identity;
-pub mod schema;
 /// Public-signal index constants for both circuits. Read every `pub[n]` through these, never through
 /// a bare literal - the two orders differ from index 3 on and nothing else catches the mix-up.
 pub mod public_signals;
+pub mod schema;
+pub mod types;
+pub mod util;
+pub mod verify;
+pub mod wrap;
 
 pub use field::{bytes_to_field, to_hex32};
 pub use leaf::hash_leaf;
@@ -34,8 +34,8 @@ pub mod blake512;
 // The ONE per-tag KDF preimage builder shared by every seed-derived owner-control secret (owner
 // secret, reserved-leaf salts, per-tag consent key). Internal: a second builder is the drift that
 // once let the consent key stay seed-only while its siblings were already per-tag.
-mod kdf;
 pub mod eddsa;
+mod kdf;
 
 // Level-B M5 - the DEVICE-side per-tag profile tree (3 reserved owner-control leaves + attribute
 // leaves -> R) and the recoverable, seed-derived owner-secret. Additive: builds on
@@ -71,4 +71,3 @@ pub mod consent_assemble;
 pub mod prover_ffi;
 
 uniffi::setup_scaffolding!();
-

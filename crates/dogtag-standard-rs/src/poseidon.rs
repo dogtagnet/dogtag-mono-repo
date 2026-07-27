@@ -34,7 +34,11 @@ pub fn poseidon(inputs: &[Fr]) -> Fr {
 /// Forbids 32-byte widening: any input longer than 31 bytes is rejected rather than reduced,
 /// so the encoding can never wrap mod r and silently diverge from circom (§11.10(f)).
 pub fn from_be_limb(limb: &[u8]) -> Fr {
-    assert!(limb.len() <= 31, "limb must be <= 31 bytes (got {})", limb.len());
+    assert!(
+        limb.len() <= 31,
+        "limb must be <= 31 bytes (got {})",
+        limb.len()
+    );
     // A <=31-byte big-endian value is < 2^248 < p, so the modular reduction is the identity.
     Fr::from_be_bytes_mod_order(limb)
 }
@@ -62,8 +66,7 @@ mod tests {
         let r = poseidon(&[Fr::from(1u64), Fr::from(2u64)]);
         let hex = hex::encode(to_be_bytes32(&r));
         assert_eq!(
-            hex,
-            "115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a",
+            hex, "115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a",
             "circomlib anchor poseidon([1,2]) mismatch"
         );
     }

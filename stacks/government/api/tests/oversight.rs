@@ -178,7 +178,10 @@ async fn verified_event_joins_credentialed_tag_by_onchain_dog_tag_id() {
     issue_one(&state).await; // dog_tag_id "7", receiptId committed + stored
 
     let onchain_id = government_api::trace::onchain_dog_tag_id_decimal("7").unwrap();
-    assert_ne!(onchain_id, "7", "the event id is the field-hash, not the handle");
+    assert_ne!(
+        onchain_id, "7",
+        "the event id is the field-hash, not the handle"
+    );
     state.feed = Arc::new(MemFeed::new().with_events(json!({
         "events": [
             // The tag the authority credentialed, verified by SOME relayer (another business).
@@ -208,7 +211,10 @@ async fn verified_event_joins_credentialed_tag_by_onchain_dog_tag_id() {
     assert_eq!(s, StatusCode::OK, "{b}");
     let events = b["events"].as_array().unwrap();
     assert_eq!(events.len(), 2);
-    assert_eq!(b["matched"], 1, "only the credentialed tag's verification joins");
+    assert_eq!(
+        b["matched"], 1,
+        "only the credentialed tag's verification joins"
+    );
 
     let own = events.iter().find(|e| e["id"] == "0xv:0").unwrap();
     assert_eq!(own["local"]["kind"], "issuance");
