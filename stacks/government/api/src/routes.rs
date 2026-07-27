@@ -583,11 +583,15 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     // The clone the envelope CLAIMS, kept only to detect that it disagrees with the chain.
     let claimed_clone = doc.issuer.document_store.trim().to_string();
     // Both claims are compared against the factory's answer; neither can substitute for it.
+    //
+    // An ABSENT claim is a mismatch like any other. Exempting a blank `documentStore` would buy
+    // nothing - the factory supplies the address regardless - while letting a caller strip the one
+    // field to skip the misrepresentation check entirely, then have the chain's answer backfilled
+    // into the response and the audit row. The other two surfaces already refuse it.
     let clone_claims_agree = match &resolved_clone {
         None => true,
         Some(actual) => {
-            let envelope_ok =
-                claimed_clone.is_empty() || actual.eq_ignore_ascii_case(&claimed_clone);
+            let envelope_ok = actual.eq_ignore_ascii_case(&claimed_clone);
             let expected_ok = match expected_clone {
                 Some(want) => actual.eq_ignore_ascii_case(want),
                 None => true,
