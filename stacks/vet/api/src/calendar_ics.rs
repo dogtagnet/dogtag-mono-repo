@@ -21,10 +21,14 @@
 //! deployed stack every subscriber poll writes the credential to those logs in plaintext, on the
 //! provider's own polling schedule, indefinitely. A header- or query-borne credential would not be
 //! exposed that way; a calendar client can present neither. This is inherent to the design and is the
-//! residual risk it accepts. Two mitigations, both real: switch the log off for this path wherever
-//! the proxy is ours (`stacks/groomer/web/nginx.conf` does exactly that for `^/api/calendar/feed/`),
-//! and ROTATE — one click mints a new secret and kills the old URL, which is why rotation is a
-//! first-class action here and not a recovery procedure.
+//! residual risk it accepts. Two mitigations, both real, neither of which closes it. First, the
+//! shipped reverse proxies suppress it: BOTH `stacks/groomer/web/nginx.conf` and
+//! `stacks/vet/web/nginx.conf` set `access_log off` for a feed READ — both, because
+//! [`ics_feed_router`] is merged for every role, so a vet stack serves a feed too. That is the limit
+//! of this repo's reach: a CDN, tunnel or load balancer in FRONT of them logs the full URI by default
+//! and is configured somewhere else entirely. Second, ROTATE — one click mints a new secret and kills
+//! the old URL. That is why rotation is a first-class action here rather than a recovery procedure:
+//! it is the only mitigation that still works when the exposure is a log this code does not own.
 //!
 //! WHERE THE PARSER IS. `.ics` FILES are parsed in the BROWSER, not here — this crate has no
 //! timezone database, and `TZID=Europe/London` cannot be resolved to a UTC instant without one.

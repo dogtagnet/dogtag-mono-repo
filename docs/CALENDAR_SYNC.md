@@ -45,10 +45,15 @@ token, but the token is a URL path segment and the request URI is what a reverse
 records in its access log by default — so every subscriber poll writes the credential to those logs
 in plaintext, on the provider's polling schedule, indefinitely. A header- or query-borne credential
 would not be exposed this way; a calendar client can present neither, which is the whole reason the
-secret is in the path. `stacks/groomer/web/nginx.conf` sets `access_log off` for
-`^/api/calendar/feed/` so the proxy we control does not do it, but anything in front of it (today, a
-Cloudflare tunnel) still will unless configured otherwise. Rotation is the mitigation, which is why
-it is a one-click action rather than a recovery procedure.
+secret is in the path.
+Both shipped nginx configs — `stacks/groomer/web/nginx.conf` and `stacks/vet/web/nginx.conf`, since
+the feed route is mounted for every role — set `access_log off` for a feed read, matched on the
+token's exact shape (64 lowercase hex characters, optionally `.ics`-suffixed).
+`POST /calendar/feed/rotate` and any wrong-shaped token keep normal logging: neither carries a valid
+credential, and that is where a probe still shows up.
+Anything in front of those proxies (today, a Cloudflare tunnel) records the full URI unless
+configured otherwise, and is outside this repo.
+Rotation is the mitigation, which is why it is a one-click action rather than a recovery procedure.
 
 **What the feed does not give you, stated plainly:**
 
