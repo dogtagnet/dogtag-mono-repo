@@ -159,14 +159,28 @@ export function ClientDetail() {
           )}
 
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted">Pets</p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted">Pets</p>
+              <Link to={`/pets?clientId=${client.clientId}`} className="text-xs text-primary hover:underline">
+                Manage pets
+              </Link>
+            </div>
             {client.pets.length === 0 ? (
               <p className="text-sm text-muted">No pets recorded.</p>
             ) : (
               <div className="grid gap-3 sm:grid-cols-2">
+                {/*
+                  Owner -> pet: each card opens the pet's own page, where its details, DogTag,
+                  credentials and on-chain history are managed. The pets directory closes the loop in
+                  the other direction.
+                */}
                 {client.pets.map((p) => (
-                  <div key={p.petId} className="rounded-md border border-border p-3 text-sm">
-                    <p className="font-medium text-onSurface">{p.name}</p>
+                  <Link
+                    key={p.petId}
+                    to={`/pets/${p.petId}`}
+                    className="block rounded-md border border-border p-3 text-sm transition-colors hover:border-primary hover:bg-surface-muted/50"
+                  >
+                    <p className="font-medium text-primary">{p.name}</p>
                     <p className="text-muted">
                       {[p.breed, p.sex, p.dateOfBirth].filter(Boolean).join(" · ") || "—"}
                     </p>
@@ -178,7 +192,7 @@ export function ClientDetail() {
                       </p>
                     )}
                     {p.notes && <p className="mt-2 text-muted">{p.notes}</p>}
-                  </div>
+                  </Link>
                 ))}
               </div>
             )}

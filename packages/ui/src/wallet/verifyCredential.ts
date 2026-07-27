@@ -1,4 +1,9 @@
-import { checkIntegrity, toHex32, type WrappedDoc } from "@dogtag/standard";
+// Submodule imports rather than the `@dogtag/standard` barrel — see the note in
+// `../chain/tagDiscovery.ts`. The barrel drags in `consent.ts` -> `circomlibjs`, which references the
+// Node `Buffer` global at module init and so throws in a browser; verification needs none of it.
+import { checkIntegrity } from "@dogtag/standard/verify";
+import { toHex32 } from "@dogtag/standard/field";
+import type { WrappedDoc } from "@dogtag/standard/types";
 import type { VerifyCredentialResp } from "../api/types";
 import {
   DEPLOYED_ADDRESSES,

@@ -564,6 +564,58 @@ async fn verification_history_filters_by_client_appointment_purpose_and_status()
     let _ = v1_id;
 }
 
+#[tokio::test]
+async fn verification_history_filters_by_pet_not_just_by_owner() {
+    // `?petId=` was parsed off the query string and then never applied, so it returned the UNFILTERED
+    // history. That is worse than an ignored filter: a caller asking for one pet's checks got every
+    // pet's, and a pet page rendering them would state that THIS pet was verified about verifications
+    // belonging to its sibling. One owner with two pets is the case that catches it — a `clientId`
+    // filter cannot tell the two apart.
+    let (app, op) = verify_app().await;
+    let (s, c) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({
+            "name": "Alice Tan",
+            "pets": [{ "name": "Rex" }, { "name": "Milo" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{c}");
+    let client_id = c["clientId"].as_str().unwrap().to_string();
+    let rex = c["pets"][0]["petId"].as_str().unwrap().to_string();
+    let milo = c["pets"][1]["petId"].as_str().unwrap().to_string();
+
+    let rex_appt = make_appointment(&app, &op, &client_id, &rex, 1_800_000_000, "Full groom").await;
+    let milo_appt = make_appointment(&app, &op, &client_id, &milo, 1_800_086_400, "Bath").await;
+    let (_, v_rex) = start_verify_session(&app, &op, Some(&rex_appt)).await;
+    let (_, v_milo) = start_verify_session(&app, &op, Some(&milo_appt)).await;
+
+    // Both belong to the same owner, so the owner filter cannot separate them.
+    let (_, b) = call(&app, "GET", &format!("/verifications?clientId={client_id}"), Some(&op), None).await;
+    assert_eq!(b["total"], 2, "both checks are this owner's: {b}");
+
+    let (s, b) = call(&app, "GET", &format!("/verifications?petId={rex}"), Some(&op), None).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["total"], 1, "?petId= must narrow to ONE pet's checks: {b}");
+    assert_eq!(b["rows"][0]["verificationId"], v_rex["sessionId"].as_str().unwrap());
+    assert_eq!(b["rows"][0]["petId"], rex.as_str());
+
+    let (_, b) = call(&app, "GET", &format!("/verifications?petId={milo}"), Some(&op), None).await;
+    assert_eq!(b["total"], 1, "{b}");
+    assert_eq!(b["rows"][0]["verificationId"], v_milo["sessionId"].as_str().unwrap());
+
+    // A pet with no checks must come back EMPTY rather than falling back to the whole history.
+    let (_, b) = call(&app, "GET", "/verifications?petId=no-such-pet", Some(&op), None).await;
+    assert_eq!(b["total"], 0, "an unmatched petId must not silently list everything: {b}");
+
+    // A blank filter is still no filter, as everywhere else.
+    let (_, b) = call(&app, "GET", "/verifications?petId=", Some(&op), None).await;
+    assert_eq!(b["total"], 2, "?petId= (blank) must not filter: {b}");
+}
+
 /// Rename a client, echoing their one pet under a new name.
 async fn rename_to_alice_lim(app: &axum::Router, op: &str, client_id: &str, pet_id: &str) {
     let (s, b) = call(

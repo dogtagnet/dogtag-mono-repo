@@ -27,7 +27,9 @@ export function Settings() {
       .issuerSigners()
       .then((r) => {
         if (cancelled) return;
-        setWhitelist(r.matrix);
+        // Locked custody answers `{signers: []}` - no matrix at all, so default rather than
+        // pushing `undefined` into a list this page then maps over.
+        setWhitelist(r.matrix ?? []);
         setBackendSigner(r.activeSigner || undefined);
       })
       .catch(() => {

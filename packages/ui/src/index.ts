@@ -97,6 +97,37 @@ export {
   type TxRefProps,
 } from "./chain/ChainValue";
 
+// on-chain DogTag discovery — bounded, cancellable scan of what exists against one tag
+export {
+  discoverTag,
+  chunkRanges,
+  isOwnSigner,
+  onchainDogTagId,
+  resolveDogTagId,
+  tagStatusLabel,
+  roaxTagDiscoveryReader,
+  DISCOVERY_ADDRESSES,
+  DEFAULT_LOOKBACK_BLOCKS,
+  DEFAULT_CHUNK_BLOCKS,
+  TAG_STATUS_LABELS,
+  attributeSigner,
+  type SignerAttribution,
+  type DiscoverTagArgs,
+  type DiscoveryAddresses,
+  type DiscoveryCoverage,
+  type DiscoveryProgress,
+  type DiscoveredEvent,
+  type DiscoveredMint,
+  type DiscoveredStatusChange,
+  type DiscoveredBurn,
+  type DiscoveredVerification,
+  type DiscoveredProfileCredential,
+  type ResolvedDogTagId,
+  type TagDiscoveryReader,
+  type TagDiscoveryResult,
+  type TagStatusLabel,
+} from "./chain/tagDiscovery";
+
 export { createWalletConfig, roaxNetwork, type WalletConfigOptions } from "./wallet/config";
 export {
   DEPLOYED_ADDRESSES,

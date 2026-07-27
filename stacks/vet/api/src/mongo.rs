@@ -9,9 +9,10 @@ use mongodb::options::IndexOptions;
 use mongodb::{Client as MongoClient, Collection, Database, IndexModel};
 
 use crate::store::{
-    clamp_limit, Appointment, AppointmentQuery, ApptReplica, Client, ClientQuery, CustodyBlob,
-    GcalEventMap, GcalSyncState, IssuerSettings, Page, ProfileIssueSession, Record, Store,
-    VerificationLog, VerificationQuery, VerifySession,
+    clamp_limit, Appointment, AppointmentQuery, ApptReplica, Client, ClientPet, ClientQuery,
+    CustodyBlob, GcalEventMap, GcalSyncState, IssuerSettings, Page, PetQuery, PetRow,
+    ProfileIssueSession, Record, Store, StoreReadError, VerificationLog, VerificationQuery,
+    VerifySession,
 };
 
 pub struct MongoStore {
@@ -56,6 +57,14 @@ impl MongoStore {
         // the list sort.
         clients.create_index(plain(doc! { "searchKey": 1 })).await?;
         clients.create_index(plain(doc! { "updatedAt": -1 })).await?;
+        // A pet is addressed in its own right (`/pets/{petId}`) but stored inside its owner, so the
+        // by-id lookup is a multikey seek into the embedded array rather than a top-level key.
+        clients.create_index(plain(doc! { "pets.petId": 1 })).await?;
+        // Same shape, and now on a HOT path: the one-pet-per-tag check runs `try_find_pets_by_dog_tag`
+        // once per tagged pet on `POST /clients` and `PUT /clients/{id}`, the CRM's most frequent
+        // writes. Unindexed each of those is a collection scan that also deserializes every matching
+        // client document; indexed it is a multikey seek.
+        clients.create_index(plain(doc! { "pets.dogTagId": 1 })).await?;
 
         let appts: Collection<Document> = self.db.collection("crm_appointments");
         appts.create_index(unique(doc! { "appointmentId": 1 })).await?;
@@ -86,6 +95,7 @@ impl MongoStore {
         verifs.create_index(unique(doc! { "verificationId": 1 })).await?;
         verifs.create_index(plain(doc! { "createdAt": -1 })).await?;
         verifs.create_index(plain(doc! { "clientId": 1, "createdAt": -1 })).await?;
+        verifs.create_index(plain(doc! { "petId": 1, "createdAt": -1 })).await?;
         verifs.create_index(plain(doc! { "appointmentId": 1, "createdAt": -1 })).await?;
         verifs.create_index(plain(doc! { "status": 1, "createdAt": -1 })).await?;
         verifs.create_index(plain(doc! { "purpose": 1, "createdAt": -1 })).await?;
@@ -556,6 +566,123 @@ impl Store for MongoStore {
         Page { rows, total }
     }
 
+    // ---- shop CRM: pets ----
+    ///
+    /// `$unwind` is what makes this a PETS query rather than a clients query: it emits one document
+    /// per pet, so the `$match`/`$sort`/`$skip`/`$limit` after it filter, order and page PETS. That is
+    /// the whole reason this cannot be folded over `list_clients` — `total` has to count pets, and a
+    /// client page boundary falls between clients, not between pets.
+    async fn list_pets(&self, q: &PetQuery) -> Page<PetRow> {
+        let mut pipeline: Vec<Document> = Vec::new();
+        // Narrow BEFORE the unwind when an owner is given, so the index on `clientId` still applies
+        // and one client's pets never require expanding the whole collection.
+        if let Some(owner) = eq_filter("clientId", q.client_id.as_deref()) {
+            pipeline.push(doc! { "$match": owner });
+        }
+        pipeline.push(doc! { "$unwind": "$pets" });
+        // The per-pet needle, mirroring `PetRow::search_key`: the pet's own fields plus the OWNER's
+        // name. `$ifNull` on every part is load-bearing — `$concat` returns null if ANY argument is
+        // null, so one absent `dogTagId` would otherwise blank the whole key and make the pet
+        // unsearchable by any term at all.
+        pipeline.push(doc! { "$addFields": {
+            "petSearchKey": { "$toLower": { "$concat": [
+                { "$ifNull": ["$pets.name", ""] }, " ",
+                { "$ifNull": ["$pets.species", ""] }, " ",
+                { "$ifNull": ["$pets.breed", ""] }, " ",
+                { "$ifNull": ["$pets.sex", ""] }, " ",
+                { "$ifNull": ["$pets.dogTagId", ""] }, " ",
+                { "$ifNull": ["$name", ""] },
+            ] } },
+        } });
+        if let Some(needle) = field_search_filter("petSearchKey", q.q.as_deref()) {
+            pipeline.push(doc! { "$match": needle });
+        }
+        // Same total order as MemStore. `pets.petId` last is load-bearing: siblings share their
+        // owner's `updatedAt` exactly, so without it two page requests could order them differently
+        // and the pager would repeat some rows while skipping others.
+        pipeline.push(doc! { "$sort": { "updatedAt": -1, "clientId": 1, "pets.petId": 1 } });
+        // One round trip for both halves: `$facet` runs the page and the count over the same
+        // post-filter stream, so `total` can never disagree with the rows it describes.
+        pipeline.push(doc! { "$facet": {
+            "rows": [
+                { "$skip": q.offset as i64 },
+                { "$limit": clamp_limit(q.limit) as i64 },
+            ],
+            "total": [ { "$count": "n" } ],
+        } });
+
+        let coll: Collection<Document> = self.db.collection("crm_clients");
+        let facet = match coll.aggregate(pipeline).await {
+            Ok(mut cur) => {
+                use futures::StreamExt;
+                match cur.next().await {
+                    Some(Ok(d)) => d,
+                    _ => return Page { rows: Vec::new(), total: 0 },
+                }
+            }
+            Err(_) => return Page { rows: Vec::new(), total: 0 },
+        };
+        let total = facet
+            .get_array("total")
+            .ok()
+            .and_then(|a| a.first().cloned())
+            .and_then(|v| v.as_document().and_then(|d| d.get_i32("n").ok()).map(|n| n as u64))
+            .unwrap_or(0);
+        let rows = facet
+            .get_array("rows")
+            .map(|a| a.iter().filter_map(|v| v.as_document().and_then(pet_row_from_unwound)).collect())
+            .unwrap_or_default();
+        Page { rows, total }
+    }
+
+    async fn try_get_pet(&self, pet_id: &str) -> Result<Option<PetRow>, StoreReadError> {
+        // An elemMatch-free query is correct here because `pets.petId` is unique across the
+        // collection - but that is ENFORCED, not merely assumed. `build_pet` mints the uuid whenever
+        // a caller omits one, and the client routes, the only place an id arrives from outside,
+        // reject a payload pet whose id repeats within the request or resolves to another client's
+        // pet (`crm::reject_foreign_pet_ids`). Without that check this query would return whichever
+        // document matched first and every `/pets/{id}` write would address an arbitrary animal.
+        //
+        // Enforcement rests on this read FAILING CLOSED, which is why the fallible form is the real
+        // one: an errored driver call that collapsed to `None` would tell the guard the id is free
+        // and admit the very duplicate it is there to refuse.
+        let found: Option<Client> = self
+            .crm_clients()
+            .find_one(doc! { "pets.petId": pet_id })
+            .await
+            .map_err(|e| StoreReadError(e.to_string()))?;
+        Ok(found.and_then(|c| c.pets.iter().find(|p| p.pet_id == pet_id).map(|p| c.pet_row(p))))
+    }
+
+    /// The `pets.dogTagId` match selects CLIENTS holding a matching pet, so the per-pet filter is
+    /// re-applied in Rust: a client with two pets matches on either, and returning the sibling too
+    /// would name the wrong pet in the link conflict this feeds.
+    ///
+    /// A cursor error mid-stream is an ERROR, not a short list: half the holders of a tag is
+    /// indistinguishable from none of them to the guard reading it, and "none" is what admits a
+    /// second pet onto the tag.
+    async fn try_find_pets_by_dog_tag(
+        &self,
+        dog_tag_id: &str,
+    ) -> Result<Vec<PetRow>, StoreReadError> {
+        use futures::StreamExt;
+        let mut out = Vec::new();
+        let mut cur = self
+            .crm_clients()
+            .find(doc! { "pets.dogTagId": dog_tag_id })
+            .await
+            .map_err(|e| StoreReadError(e.to_string()))?;
+        while let Some(next) = cur.next().await {
+            let c = next.map_err(|e| StoreReadError(e.to_string()))?;
+            for p in c.pets.iter().filter(|p| p.dog_tag_id.as_deref() == Some(dog_tag_id)) {
+                out.push(c.pet_row(p));
+            }
+        }
+        // Same total order as MemStore, so the conflict message names the same pet on either store.
+        out.sort_by(|a, b| a.pet.pet_id.cmp(&b.pet.pet_id));
+        Ok(out)
+    }
+
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment) {
         let _ = self
@@ -628,6 +755,7 @@ impl Store for MongoStore {
         let filter = merge(vec![
             search_filter(q.q.as_deref()),
             eq_filter("clientId", q.client_id.as_deref()),
+            eq_filter("petId", q.pet_id.as_deref()),
             eq_filter("appointmentId", q.appointment_id.as_deref()),
             eq_filter("status", q.status.as_deref()),
             eq_filter("purpose", q.purpose.as_deref()),
@@ -667,19 +795,45 @@ fn merge(clauses: Vec<Option<Document>>) -> Document {
 /// The regex is UNANCHORED by design (an operator searching "lim" must find "Alice Lim"), so this
 /// clause is a scan over `searchKey` and the index on that field cannot bound it.
 fn search_filter(q: Option<&str>) -> Option<Document> {
+    field_search_filter("searchKey", q)
+}
+
+/// [`search_filter`] against an arbitrary field, for the pets pipeline — whose needle field
+/// (`petSearchKey`) is computed per pet by an `$addFields` stage rather than stored on the document.
+/// One implementation so pet search cannot drift from client/appointment search in its escaping or
+/// its every-term-must-match semantics.
+fn field_search_filter(field: &str, q: Option<&str>) -> Option<Document> {
     let needle = q?.trim().to_lowercase();
     if needle.is_empty() {
         return None;
     }
     let clauses: Vec<Document> = needle
         .split_whitespace()
-        .map(|term| doc! { "searchKey": { "$regex": regex_escape(term) } })
+        .map(|term| doc! { field: { "$regex": regex_escape(term) } })
         .collect();
     if clauses.is_empty() {
         None
     } else {
         Some(doc! { "$and": clauses })
     }
+}
+
+/// Map one `$unwind`-ed client document (exactly one pet in `pets`) to a [`PetRow`].
+///
+/// Returns `None` for a row whose embedded pet will not deserialize, matching [`collect_page`]'s
+/// rule: one malformed legacy document must not blank the operator's whole list.
+fn pet_row_from_unwound(d: &Document) -> Option<PetRow> {
+    let pet: ClientPet = d
+        .get_document("pets")
+        .ok()
+        .and_then(|p| mongodb::bson::from_document(p.clone()).ok())?;
+    Some(PetRow {
+        pet,
+        client_id: d.get_str("clientId").unwrap_or_default().to_string(),
+        client_name: d.get_str("name").unwrap_or_default().to_string(),
+        // `updatedAt` is written as an i64; a legacy row that lacks it sorts last rather than failing.
+        owner_updated_at: d.get_i64("updatedAt").unwrap_or(0) as u64,
+    })
 }
 
 /// Escape the PCRE metacharacters so a user-typed needle is matched literally.
