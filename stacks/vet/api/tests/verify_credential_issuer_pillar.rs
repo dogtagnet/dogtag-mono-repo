@@ -9,11 +9,18 @@
 //! Every read is now anchored to the factory's write-once `rootIssuer[R]`, and the pillar is mandatory:
 //! only a definite `true` may contribute to a pass.
 //!
-//! MUTATION-CHECKED, and each mutation kills a DIFFERENT test — the two halves of the fix are pinned
-//! independently rather than by one test that would go red for either reason:
+//! MUTATION-CHECKED, and each mutation kills a DIFFERENT test — the three independent halves of the
+//! fix are pinned separately rather than by one test that would go red for any of them:
 //!   * restoring `issuer_whitelisted.unwrap_or(true)` reds `a_forged_document_store_cannot_verify`;
 //!   * restoring the old `body.issuer_addr`-first resolution order reds
-//!     `an_operator_supplied_issuer_addr_cannot_select_the_answering_contract`.
+//!     `an_operator_supplied_issuer_addr_cannot_select_the_answering_contract`;
+//!   * deleting the `&& !issuer_store_differs` verdict term reds
+//!     `a_rewritten_document_store_on_an_anchored_root_is_a_mismatch`.
+//!
+//! That third one exists because the first test cannot reach it: there the factory has NO record of
+//! the root, so `resolved_issuer` is `None` and `issuer_store_differs` is `false`. The single-field
+//! forgery against a GENUINELY anchored root is a different path, and it is the one where every other
+//! pillar passes.
 
 mod common;
 
@@ -262,6 +269,50 @@ async fn an_expected_signer_can_only_tighten() {
     assert_eq!(b["verdict"], true, "{b}");
 }
 
+/// The stated repro in its most direct form: the root IS genuinely anchored to the real clone, and
+/// the attacker rewrites ONLY `issuer.documentStore` — one field, outside the Merkle root.
+///
+/// Distinct from `a_forged_document_store_cannot_verify`, which exercises the `noRecord` path (there
+/// `resolved_issuer` is `None`, so `issuer_store_differs` is false and the pillar fails instead). This
+/// is the only case that pins the `!issuer_store_differs` verdict term: without it the credential
+/// would pass, because the factory-resolved clone answers honestly and the pillar is satisfied — the
+/// document simply lies about who issued it, and nothing else would notice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewritten_document_store_on_an_anchored_root_is_a_mismatch() {
+    let (app, op, _backend, mem) = boot().await;
+    let (_id, root, mut doc) = issue_doc(&app, &op, "49").await;
+    // Genuinely anchored: the factory names the real clone, which really did issue this root, and its
+    // originator really is whitelisted. Every pillar below is satisfied.
+    mem.set_root_issuer(FACTORY_ADDR, &root, ISSUER);
+    mem.with_hostile_clone(
+        HOSTILE,
+        true,
+        1_700_000_000,
+        ATTACKER_SIGNER,
+        &record_type_key("VACCINATION"),
+    );
+    // The single-field forgery.
+    doc["issuer"]["documentStore"] = Value::String(HOSTILE.to_string());
+
+    let b = verify(&app, &op, serde_json::json!({ "wrappedDoc": doc })).await;
+
+    // The pillar itself PASSES — the honest clone vouches for the root. The refusal has to come from
+    // the envelope disagreeing with the chain about who issued it.
+    assert_eq!(b["fragments"]["issuerWhitelistState"], "passed", "{b}");
+    assert_eq!(b["fragments"]["onchain"], true, "{b}");
+    assert_eq!(b["fragments"]["integrity"], true, "{b}");
+    // ...and it does.
+    assert_eq!(b["fragments"]["documentStoreDiffers"], true, "{b}");
+    assert_eq!(
+        b["verdict"], false,
+        "a document that misnames its issuer must not verify: {b}"
+    );
+    assert_eq!(b["status"], "issuer_mismatch", "{b}");
+    // Reads went to the real clone regardless of what the envelope named.
+    assert_eq!(b["issuerAddr"], ISSUER, "{b}");
+    assert_eq!(b["documentStore"], HOSTILE, "{b}");
+}
+
 /// A signer the registry does not whitelist is a DEFINITE failure, distinct from an unresolved one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unwhitelisted_on_chain_signer_fails_the_pillar() {
@@ -326,4 +377,49 @@ async fn an_unconfigured_factory_reports_unavailable_and_never_passed() {
     assert_eq!(b["fragments"]["issuerWhitelisted"], Value::Null, "{b}");
     // And our own misconfiguration does not condemn the credential.
     assert_eq!(b["verdict"], true, "{b}");
+}
+
+/// A MALFORMED `FACTORY_ADDR` is a configuration FAULT, not a deployment that chose to have no
+/// factory. It must not degrade into the fail-open `unavailableNoFactoryConfigured` state: that would
+/// turn one fat-fingered character into a silently disabled security pillar — the
+/// misconfigure-to-bypass path these explicit states exist to prevent. A deployment that set the
+/// value INTENDED to check, so failing to check is a fault worth refusing to answer over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_factory_addr_fails_loudly_instead_of_open() {
+    let mem = MemChain::new();
+    let mut state = state_with(
+        Arc::new(mem.clone()),
+        "memchain".to_string(),
+        REGISTRY.to_string(),
+        ISSUER.to_string(),
+        "vet.example".to_string(),
+        1,
+    );
+    let mut cfg = (*state.cfg).clone();
+    // Truncated by one character — exactly the mistake an operator actually makes.
+    cfg.factory_addr = "0x00000000000000000000000000000000000000f".to_string();
+    state.cfg = Arc::new(cfg);
+    let app = vet_api::router(state);
+    let (_admin, op, backend) = boot_custody(&app).await;
+    let rt = record_type_key("VACCINATION");
+    mem.whitelist(REGISTRY, &rt, &backend);
+    mem.set_record_type(ISSUER, &rt);
+
+    let (_id, _root, doc) = issue_doc(&app, &op, "50").await;
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/verify/credential",
+        Some(&op),
+        Some(serde_json::json!({ "wrappedDoc": doc })),
+    )
+    .await;
+
+    assert_eq!(
+        s,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a malformed factory must not yield a verdict at all: {b}"
+    );
+    // Emphatically NOT a pass dressed up as an unavailable pillar.
+    assert_eq!(b["verdict"], Value::Null, "{b}");
 }

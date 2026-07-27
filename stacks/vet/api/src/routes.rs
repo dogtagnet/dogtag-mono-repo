@@ -1075,8 +1075,28 @@ async fn verify_credential(
     // (`DogTagIssuerFactory.sol:19`, writable only from inside an `isClone` contract's `issue()`) is
     // authoritative, and it names the clone that issued THIS root.
     let factory_cfg = st.cfg.factory_addr.trim().to_string();
-    // Whether THIS deployment can evaluate the factory-anchored pillar at all.
-    let factory_configured = crate::verify::valid_contract_addr(&factory_cfg);
+    // Whether THIS deployment can evaluate the factory-anchored pillar at all — and, crucially, an
+    // ABSENT factory is distinguished from a MALFORMED one.
+    //
+    // Absent (unset, or the zero address) is a deployment that deliberately has no factory: the pillar
+    // reports itself unavailable and does not condemn the credential. A MALFORMED value is different
+    // in kind — that deployment INTENDED to check. Folding it into "no factory configured" would
+    // silently convert an intent-to-check into a no-check, which is the misconfigure-to-bypass path
+    // this pillar's explicit states exist to prevent, and a fat-fingered address is a likelier
+    // mistake than a deliberately absent one. So it fails LOUDLY, as a configuration fault, and
+    // returns no verdict at all rather than a fail-open one.
+    let factory_absent = factory_cfg.is_empty()
+        || (factory_cfg.len() == 42
+            && factory_cfg.starts_with("0x")
+            && factory_cfg[2..].bytes().all(|b| b == b'0'));
+    if !factory_absent && !crate::verify::valid_contract_addr(&factory_cfg) {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "FACTORY_ADDR is malformed: the issuer pillar cannot be evaluated, and this deployment \
+             is configured to evaluate it. Fix the address or unset it deliberately.",
+        );
+    }
+    let factory_configured = !factory_absent;
     // THREE states, not two — and the distinction is the whole design.
     //   `noFactoryConfigured` = we never asked. That is OUR misconfiguration, not evidence about the
     //                           credential, so it must not condemn it.
