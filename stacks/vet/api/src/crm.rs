@@ -269,6 +269,9 @@ async fn create_client(
         return err(StatusCode::BAD_REQUEST, "name is required");
     }
     let pets: Vec<ClientPet> = body.pets.iter().map(build_pet).collect();
+    if let Some(conflict) = reject_foreign_pet_ids(&st.store, &pets, None).await {
+        return conflict;
+    }
     if let Some(conflict) = reject_dog_tag_conflicts(&st.store, &pets, None).await {
         return conflict;
     }
@@ -346,6 +349,11 @@ async fn update_client(
         return err(StatusCode::BAD_REQUEST, "name is required");
     }
     let pets: Vec<ClientPet> = body.pets.iter().map(build_pet).collect();
+    if let Some(conflict) =
+        reject_foreign_pet_ids(&st.store, &pets, Some(&existing.client_id)).await
+    {
+        return conflict;
+    }
     if let Some(conflict) =
         reject_dog_tag_conflicts(&st.store, &pets, Some(&existing.client_id)).await
     {
@@ -562,6 +570,56 @@ async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -
 /// unchanged, grafting a second pet onto one petId AND one tag. So the stored pet must belong to the
 /// client being written, and a create grandfathers nothing at all - every pet in a create payload is
 /// new by definition, so it has no prior record to be unchanged from.
+/// Every pet id in the payload must address an animal this write is allowed to address.
+///
+/// `build_pet` mints a `pet_id` only when the caller omits one, and echoing an existing id is what
+/// preserves a pet's identity across an edit - the appointment and verification rows point at it - so
+/// the client routes are the one place a pet id arrives from OUTSIDE. Unchecked, a payload can name
+/// another client's pet id and seat a second animal under it, and `pet_id` is an ADDRESS: `get_pet`
+/// resolves it to whichever client the store reaches first (`HashMap` order in `MemStore`, the first
+/// matching document in Mongo), so `GET`/`DELETE /pets/{id}` and every [`mutate_pet`] write would
+/// then act on an arbitrary one of the two. An operator linking a tag from the pet page could tag the
+/// WRONG ANIMAL - and which animal a credential belongs to is the one thing this product asserts.
+///
+/// Deliberately INDEPENDENT of `dog_tag_id`: [`reject_dog_tag_conflicts`] skips an untagged pet at
+/// its first guard, so folding this into that loop would leave the untagged payload - the whole gap -
+/// unchecked.
+///
+/// Two payload shapes still pass, and must: an id that resolves to nothing (a caller-supplied id for
+/// a genuinely new pet, which `build_pet` already tolerates), and an id belonging to the client being
+/// written, which is the ordinary echo.
+async fn reject_foreign_pet_ids(
+    store: &Arc<dyn Store>,
+    pets: &[ClientPet],
+    client_id: Option<&str>,
+) -> Option<Resp> {
+    for (i, p) in pets.iter().enumerate() {
+        if let Some(twin) = pets[..i].iter().find(|q| q.pet_id == p.pet_id) {
+            return Some(err(
+                StatusCode::CONFLICT,
+                &format!(
+                    "Pet id {} is listed on two pets in this request ({} and {}). A pet id addresses one animal, so give each pet its own.",
+                    p.pet_id, twin.name, p.name
+                ),
+            ));
+        }
+        let Some(stored) = store.get_pet(&p.pet_id).await else {
+            continue;
+        };
+        if client_id.is_some_and(|owner| stored.client_id == owner) {
+            continue;
+        }
+        return Some(err(
+            StatusCode::CONFLICT,
+            &format!(
+                "Pet id {} already belongs to {} ({}). A pet id addresses one animal, so it cannot be reused on another owner's record.",
+                p.pet_id, stored.pet.name, stored.client_name
+            ),
+        ));
+    }
+    None
+}
+
 async fn reject_dog_tag_conflicts(
     store: &Arc<dyn Store>,
     pets: &[ClientPet],
