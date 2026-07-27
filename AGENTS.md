@@ -1020,14 +1020,43 @@ The leaf is read through ONE three-tier chain, because three issuers write it th
 whose schema field is DOTLESS so it lands as a SIBLING of `credentialSubject`, not a child).
 Earlier tiers win; emptiness is tested on the UNWRAPPED value so a present-but-empty tier falls through;
 a document with none of the three still makes NO expiry claim.
-The same chain is carried by `stacks/owner/web/src/lib/receipt.ts` so the three surfaces cannot drift -
-though tier 3 is unreachable there, since `buildReceipt` returns null for anything that is not
-TRAVEL_CLEARANCE or EU_HEALTH_CERT.
-Note the owner wallet's card/detail path resolves expiry separately, through `lib/credential.ts`'s
-`summarize`, whose own (wider, five-entry) chain already included the top-level leaf.
+`stacks/owner/web/src/lib/receipt.ts:256` carries the identical chain so the three surfaces cannot
+drift, but read that line together with its gate: `buildReceipt` returns `null` at `receipt.ts:178` for
+any record type outside `RECEIPT_TYPES` (`receipt.ts:15`, exactly TRAVEL_CLEARANCE and EU_HEALTH_CERT),
+so **tier 3 is UNREACHABLE on web today**.
+It is kept there deliberately, against the day that gate is relaxed - not because it is live.
 
-**Known gap, deliberately out of scope of the mobile work:** `packages/ui/src/domain/CredentialVerifyPanel.tsx`
+**Known gap 1 - owner-web renders no expiry STATUS for a VACCINATION, and that is a recorded scope
+decision, not an oversight.**
+The trail, so nobody has to re-derive it:
+`isReceiptType` is checked into `receiptCapable` at `CredentialCard.tsx:19` (same gate at
+`CredentialDetail.tsx:48`), and `receiptStatus = receiptCapable ? deriveStatus(...) : null` at
+`CredentialCard.tsx:34`.
+For a VACCINATION that gate is false, so `deriveStatus` never runs and the `cred-receipt-status` badge
+is never rendered; the card falls through to the plain `Valid until <date>` row at
+`CredentialCard.tsx:64-66`, which prints a past date with no expired treatment.
+`lib/credential.ts:119-125` (`summarize`) DOES resolve the value - its five-entry chain already ends in
+the bare `"validUntil"` - but nothing anywhere consumes that value as a STATUS.
+Do not read "summarize resolves it" as "web handles vaccination expiry"; those are different claims and
+only the first is true.
+Net behaviour as shipped: a lapsed rabies vaccination badges amber EXPIRED on both mobile apps, and
+owner-web shows a plain `Valid until <past date>` with no status badge at all.
+
+Why this was recorded rather than fixed: the defect this branch exists to close is a surface CLAIMING a
+credential is valid when it has lapsed.
+Mobile did exactly that and is now fixed.
+owner-web has never claimed anything for a VACCINATION - the badge is gated off entirely - and silence
+is not a false claim, so with mobile fixed there is no over-claim left on either surface, which was the
+bar.
+What remains, badging vaccination expiry on a card that deliberately carries no status today, is a
+FEATURE addition rather than a correctness fix.
+Closing it means RAISING web (deriving EXPIRED from `summarize`'s `validUntil` independently of
+receipt-capability), never backing out the mobile rule.
+
+**Known gap 2, deliberately out of scope of the mobile work:** `packages/ui/src/domain/CredentialVerifyPanel.tsx`
 reads NO expiry leaf at all and reports an expired-but-unrevoked root as valid (audit rec 7's web half).
+This is a different surface from gap 1 and fails a different way: gap 1 stays silent, this one asserts
+validity.
 
 ### Building / verifying UI changes
 - Build: `xcodebuild build -project apps/ios/DogTag.xcodeproj -scheme DogTag -sdk iphonesimulator
