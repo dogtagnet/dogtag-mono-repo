@@ -15,7 +15,7 @@ use admin_api::auth::JwtKeys;
 use admin_api::business::{BusinessClient, MockBusinessClient};
 use admin_api::chain::{ChainClient, MemChain};
 use admin_api::crypto::{KeyVault, MemVault};
-use admin_api::dns::{DnsChecker, MockDnsChecker};
+use admin_api::dns::{DnsChecker, DnsError};
 use admin_api::indexer::{MemFeed, OversightFeed};
 use admin_api::store::MemStore;
 
@@ -43,6 +43,7 @@ pub fn hermetic_state() -> (AppState, MemChain, MemVault, MockBusinessClient) {
         admin_password_hash: admin_api::auth::hash_password(ADMIN_PW),
         admin_signer_index: 0,
         propose_only: false,
+        dns_enforce: true,
     };
     let state = AppState {
         store: Arc::new(MemStore::new()),
@@ -80,6 +81,18 @@ pub fn hermetic_state_propose_only() -> (AppState, MemChain, MemVault, MockBusin
     cfg.propose_only = true;
     state.cfg = Arc::new(cfg);
     (state, chain, vault, business)
+}
+
+/// `hermetic_state()` with a caller-chosen DNS outcome and enforcement policy, so a test can drive all
+/// three real outcomes of the legitimacy gate (published / definitively absent / did-not-resolve)
+/// against both an enforcing and a non-enforcing deployment.
+pub fn hermetic_state_with_dns(dns: Arc<dyn DnsChecker>, enforce: bool) -> (AppState, MemChain) {
+    let (mut state, chain, _vault, _business) = hermetic_state();
+    state.dns = dns;
+    let mut cfg = (*state.cfg).clone();
+    cfg.dns_enforce = enforce;
+    state.cfg = Arc::new(cfg);
+    (state, chain)
 }
 
 /// Issue a request and return (status, json body).
@@ -173,4 +186,44 @@ pub async fn signup(app: &axum::Router, email: &str, wallet: &str) -> (String, S
         b["ownerId"].as_str().unwrap().to_string(),
         b["token"].as_str().unwrap().to_string(),
     )
+}
+
+// -------------------------------------------------------------------------------------------------
+// MockDnsChecker — a TEST-ONLY programmable DNS verdict.
+// -------------------------------------------------------------------------------------------------
+
+/// A `DnsChecker` that returns a programmed outcome, for hermetic tests.
+///
+/// This deliberately lives in the TEST crate, not in `admin_api::dns`. It used to be a `pub` type in
+/// the shipped library and `main.rs` constructed it whenever `DNS_CHECK=skip` was set — a fabricated
+/// PASS on the gate that decides whether an organisation is legitimate enough to be whitelisted. Test
+/// doubles belong to tests; the shipped path now always performs a real resolution and `DNS_CHECK`
+/// selects enforcement policy only.
+pub struct MockDnsChecker {
+    outcome: Result<bool, ()>,
+}
+
+impl MockDnsChecker {
+    /// The domain publishes the expected record.
+    pub fn ok() -> Self {
+        MockDnsChecker { outcome: Ok(true) }
+    }
+    /// The records were fetched and the expected one is definitively ABSENT.
+    pub fn not_published() -> Self {
+        MockDnsChecker { outcome: Ok(false) }
+    }
+    /// The lookup did not resolve — proves nothing either way.
+    pub fn could_not_check() -> Self {
+        MockDnsChecker { outcome: Err(()) }
+    }
+}
+
+#[async_trait::async_trait]
+impl DnsChecker for MockDnsChecker {
+    async fn txt_contains(&self, _domain: &str, _expected_token: &str) -> Result<bool, DnsError> {
+        match self.outcome {
+            Ok(v) => Ok(v),
+            Err(()) => Err(DnsError::Lookup("mock: lookup did not resolve".to_string())),
+        }
+    }
 }

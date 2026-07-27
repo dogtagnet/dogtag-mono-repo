@@ -711,12 +711,35 @@ async fn approve_application(
         }
     }
     // verify the business's DNS TXT BEFORE whitelisting (architecture §13.3 H).
+    //
+    // The lookup ALWAYS runs and its real outcome is always what gets reported. `dns_enforce` decides
+    // only whether a non-verified outcome BLOCKS — it never turns one outcome into another. The three
+    // outcomes stay distinct: published, definitively absent, and did-not-resolve.
     let token = crate::dns::expected_txt(&app_rec.document_store);
-    match st.dns.txt_contains(&app_rec.domain, &token).await {
-        Ok(true) => {}
-        Ok(false) => return err(StatusCode::FORBIDDEN, "DNS TXT verification failed"),
-        Err(e) => return err(StatusCode::BAD_GATEWAY, &format!("dns: {e}")),
-    }
+    let dns_outcome = match st.dns.txt_contains(&app_rec.domain, &token).await {
+        Ok(true) => "published",
+        Ok(false) => {
+            if st.cfg.dns_enforce {
+                return err(StatusCode::FORBIDDEN, "DNS TXT verification failed");
+            }
+            tracing::warn!(
+                domain = %app_rec.domain,
+                "DNS TXT legitimacy record is NOT published; proceeding because DNS_CHECK is non-enforcing"
+            );
+            "notPublished"
+        }
+        Err(e) => {
+            if st.cfg.dns_enforce {
+                return err(StatusCode::BAD_GATEWAY, &format!("dns: {e}"));
+            }
+            tracing::warn!(
+                domain = %app_rec.domain,
+                error = %format!("{e}"),
+                "DNS TXT legitimacy lookup did NOT resolve; proceeding because DNS_CHECK is non-enforcing"
+            );
+            "couldNotCheck"
+        }
+    };
     // for EACH (address, recordType): admin signer calls whitelistFor(keccak256(recordType), address).
     let mut txs = Vec::new();
     for addr in &app_rec.addresses {
@@ -807,6 +830,10 @@ async fn approve_application(
         "whitelistTxs": txs,
         "issuerRoleGranted": issuer_role_granted,
         "issuerRoleTxHash": issuer_role_txs.first().cloned(),
+        // The REAL outcome of the legitimacy lookup, always reported. "published" is the only one that
+        // ever satisfies an enforcing deployment; the other two appear only when DNS_CHECK is
+        // non-enforcing, and they say what actually happened rather than implying a pass.
+        "dnsCheck": dns_outcome,
     }))
 }
 
