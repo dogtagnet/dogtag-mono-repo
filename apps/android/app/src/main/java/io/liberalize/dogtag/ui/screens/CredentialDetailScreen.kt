@@ -393,16 +393,14 @@ fun DomainBindingLine(binding: IssuerBinding) {
                 modifier = Modifier.padding(start = 18.dp),
             )
         }
-        binding.blockNumber?.let { block ->
-            if (binding.state != IssuerBindingState.Pending) {
-                // A "verified" with no "when" is not auditable against a world where DNS changes. DNS
-                // itself has no history, so the DNS half can only ever be a live observation.
-                Text(
-                    "Chain read at block $block \u00B7 DNS checked just now",
-                    fontSize = 10.sp, color = c.muted,
-                    modifier = Modifier.padding(start = 18.dp),
-                )
-            }
+        binding.provenanceLine()?.let { provenance ->
+            // A "verified" with no "when" is not auditable against a world where DNS changes. The DNS
+            // clause appears only when a DNS query really ran \u2014 see `provenanceLine`.
+            Text(
+                provenance,
+                fontSize = 10.sp, color = c.muted,
+                modifier = Modifier.padding(start = 18.dp),
+            )
         }
     }
 }

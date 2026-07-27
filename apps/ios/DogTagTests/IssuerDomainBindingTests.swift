@@ -217,6 +217,75 @@ final class IssuerDomainBindingTests: XCTestCase {
         XCTAssertNil(RoaxRpc.decodeAbiString(allOnes + payload))
     }
 
+    // MARK: - provenance line
+
+    private func bound(
+        _ state: IssuerBindingState, block: UInt64? = 283207, checkedAt: Date? = Date()
+    ) -> IssuerBinding {
+        var b = IssuerBinding()
+        b.state = state
+        b.domain = "moh.gov.sg"
+        b.blockNumber = block
+        b.checkedAt = checkedAt
+        return b
+    }
+
+    /// THE fabrication guard. The resolver returns for these three states BEFORE link 3, so no DNS query
+    /// was ever fired — a line claiming DNS was checked is exactly the "we did not look rendered as we
+    /// looked" the three-state design exists to prevent. The chain clause still renders: that read DID
+    /// happen.
+    func test_no_dns_clause_for_states_that_never_queried_dns() {
+        for state in [IssuerBindingState.notADogTagIssuer, .unavailable, .noDomainClaimed] {
+            // `checkedAt` is deliberately supplied: even a stray timestamp must not license the claim.
+            let line = bound(state).provenanceLine()
+            XCTAssertNotNil(line, "\(state)")
+            XCTAssertFalse(line!.contains("DNS"), "\(state): \(line!)")
+            XCTAssertTrue(line!.contains("chain read at block 283207"), "\(state): \(line!)")
+        }
+    }
+
+    func test_dns_bearing_states_do_report_the_dns_observation() {
+        let states: [IssuerBindingState] = [
+            .verified(description: "Travel clearance issuance"), .notListed, .couldNotCheck,
+        ]
+        for state in states {
+            let line = bound(state).provenanceLine()
+            XCTAssertNotNil(line, "\(state)")
+            XCTAssertTrue(line!.contains("DNS checked just now"), "\(state): \(line!)")
+            XCTAssertTrue(line!.contains("DNS has no history"), "\(state): \(line!)")
+        }
+    }
+
+    /// Answers are cached for 15 minutes keeping their ORIGINAL timestamp, so "just now" would be a
+    /// false claim on a re-render. A stale observation says it was recorded earlier.
+    func test_a_cached_observation_is_not_described_as_just_now() {
+        let b = bound(.notListed, checkedAt: Date(timeIntervalSince1970: 1_000_000))
+        let line = b.provenanceLine(now: Date(timeIntervalSince1970: 1_000_600))!
+        XCTAssertTrue(line.contains("DNS as recorded earlier"), line)
+        XCTAssertFalse(line.contains("just now"), line)
+    }
+
+    /// A DNS-bearing state with no timestamp cannot say WHEN, so it says nothing about DNS at all.
+    func test_a_dns_state_without_a_timestamp_makes_no_dns_claim() {
+        let line = bound(.notListed, checkedAt: nil).provenanceLine()!
+        XCTAssertFalse(line.contains("DNS"), line)
+    }
+
+    /// Nothing to anchor and nothing observed: say nothing rather than imply either.
+    func test_says_nothing_rather_than_implying_an_anchor_it_does_not_have() {
+        XCTAssertNil(bound(.pending, block: nil, checkedAt: nil).provenanceLine())
+        XCTAssertNil(IssuerBinding.pending.provenanceLine())
+    }
+
+    func test_provenance_line_uses_no_verdict_or_alarm_words() {
+        for state in allStates {
+            let line = (bound(state).provenanceLine() ?? "").lowercased()
+            for word in ["failed", "invalid", "untrusted", "warning", "error"] {
+                XCTAssertFalse(line.contains(word), "\(state): \(line)")
+            }
+        }
+    }
+
     // MARK: - copy discipline
 
     private func binding(_ state: IssuerBindingState, domain: String = "moh.gov.sg") -> IssuerBinding {

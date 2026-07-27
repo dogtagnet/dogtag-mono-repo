@@ -123,6 +123,49 @@ data class IssuerBinding(
             IssuerBindingState.Pending -> BindingTone.Pending
             else -> BindingTone.Neutral
         }
+
+    /**
+     * Did this answer actually involve a DNS query? Only these three states reach link 3 — the resolver
+     * returns before it for a provenance failure, an unreadable claim, or no claim at all.
+     *
+     * Mirror of the TS `hasDnsHalf`; the three legs must agree or one surface claims a lookup another
+     * knows never happened.
+     */
+    val hasDnsHalf: Boolean
+        get() = when (state) {
+            is IssuerBindingState.Verified,
+            IssuerBindingState.NotListed,
+            IssuerBindingState.CouldNotCheck,
+            -> true
+            else -> false
+        }
+
+    /**
+     * Which block the chain half came from, and — ONLY when a DNS query really ran — when DNS was
+     * observed. Null when there is nothing honest to say.
+     *
+     * Saying "DNS checked just now" in a state that never queried DNS is precisely the fabrication the
+     * three-state design exists to prevent, so the DNS clause is gated on [hasDnsHalf] AND on having a
+     * real [checkedAt]. Answers are cached, keeping their ORIGINAL timestamp, so a stale one says "as
+     * recorded earlier" rather than claiming a fresh look.
+     *
+     * Mirror of the TS `bindingProvenanceLine` and of the Swift `provenanceLine`.
+     */
+    fun provenanceLine(now: Long = System.currentTimeMillis()): String? {
+        val parts = ArrayList<String>(2)
+        blockNumber?.let { parts.add("chain read at block $it") }
+        val seen = checkedAt
+        if (hasDnsHalf && seen != null) {
+            parts.add(
+                if (now - seen < 60_000L) {
+                    "DNS checked just now (DNS has no history, so it cannot be re-checked for the past)"
+                } else {
+                    "DNS as recorded earlier (DNS has no history, so it cannot be re-checked for the past)"
+                },
+            )
+        }
+        return if (parts.isEmpty()) null else parts.joinToString(" · ")
+    }
 }
 
 object IssuerBindingResolver {
@@ -149,7 +192,9 @@ object IssuerBindingResolver {
         val addr = clone.trim().lowercase()
         val dom = domain.trim().lowercase().trim('.')
         if (addr.length != 42 || !addr.startsWith("0x")) return null
-        if (!addr.drop(2).all { it.isDigit() || it in 'a'..'f' }) return null
+        // Strict ASCII hex: `Char.isDigit()` is Unicode-aware and would accept e.g. an Arabic-Indic
+        // digit, which the Swift and Rust legs do not.
+        if (!addr.drop(2).all { it in '0'..'9' || it in 'a'..'f' }) return null
         if (!dom.contains('.') || dom.contains('/') || dom.contains(':')) return null
         if (dom.any { it.isWhitespace() }) return null
         return "$addr.$LABEL.$dom"

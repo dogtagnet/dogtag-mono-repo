@@ -599,7 +599,11 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
     let recomputed_hex = dogtag_standard::to_hex32(&recomputed);
 
     // 2) on-chain status — DogTagIssuer.isValid(root) over ROAX (gasless read).
-    let onchain_valid = match st.chain.is_valid(&issuer_addr, &claimed_root).await {
+    let onchain_valid = match st
+        .chain
+        .is_valid(&issuer_addr, &claimed_root, at_block)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             return err(
@@ -615,7 +619,7 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             let rt_key = app::record_type_key(&record_type);
             match st
                 .chain
-                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, signer)
+                .is_whitelisted_for(&st.cfg.issuer_registry_addr, &rt_key, signer, at_block)
                 .await
             {
                 Ok(v) => Some(v),
@@ -1277,7 +1281,7 @@ async fn verify_session_start(
     let verify_key = crate::verify::verify_key(&body.purpose);
     match st
         .chain
-        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &verify_key, &relayer)
+        .is_whitelisted_for(&st.cfg.issuer_registry_addr, &verify_key, &relayer, None)
         .await
     {
         Ok(true) => {}
@@ -1635,7 +1639,7 @@ async fn resolve_receipt_status(st: &AppState, receipt_id: &str) -> Result<Recei
     // authoritative issuance instant (arch DP-2 — issuance date derived from the chain, not a leaf).
     let onchain_valid = st
         .chain
-        .is_valid(&cred.issuer_addr, &cred.root)
+        .is_valid(&cred.issuer_addr, &cred.root, None)
         .await
         .map_err(|e| {
             err(
@@ -1645,7 +1649,7 @@ async fn resolve_receipt_status(st: &AppState, receipt_id: &str) -> Result<Recei
         })?;
     let issued_at = st
         .chain
-        .issued_at(&cred.issuer_addr, &cred.root)
+        .issued_at(&cred.issuer_addr, &cred.root, None)
         .await
         .map(|u| u.try_into().unwrap_or(0u64))
         .unwrap_or(0);

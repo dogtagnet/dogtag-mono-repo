@@ -80,15 +80,17 @@ impl ChainClient for LiveLikeChain {
         &self,
         issuer_addr: &str,
         root: &str,
+        at_block: Option<u64>,
     ) -> Result<bool, government_api::chain::ChainError> {
-        self.0.is_valid(issuer_addr, root).await
+        self.0.is_valid(issuer_addr, root, at_block).await
     }
     async fn issued_at(
         &self,
         issuer_addr: &str,
         root: &str,
+        at_block: Option<u64>,
     ) -> Result<alloy::primitives::U256, government_api::chain::ChainError> {
-        self.0.issued_at(issuer_addr, root).await
+        self.0.issued_at(issuer_addr, root, at_block).await
     }
     async fn block_number(&self) -> Result<u64, government_api::chain::ChainError> {
         Ok(1)
@@ -131,9 +133,10 @@ impl ChainClient for LiveLikeChain {
         registry_addr: &str,
         record_type: &str,
         signer: &str,
+        at_block: Option<u64>,
     ) -> Result<bool, government_api::chain::ChainError> {
         self.0
-            .is_whitelisted_for(registry_addr, record_type, signer)
+            .is_whitelisted_for(registry_addr, record_type, signer, at_block)
             .await
     }
     async fn issue(

@@ -192,8 +192,10 @@ pub async fn signup(app: &axum::Router, email: &str, wallet: &str) -> (String, S
 /// This deliberately lives in the TEST crate, not in `admin_api::dns`. It used to be a `pub` type in
 /// the shipped library and `main.rs` constructed it whenever `DNS_CHECK=skip` was set — a fabricated
 /// PASS on the gate that decides whether an organisation is legitimate enough to be whitelisted. Test
-/// doubles belong to tests; the shipped path now always performs a real resolution and `DNS_CHECK`
-/// selects enforcement policy only.
+/// doubles belong to tests; the shipped path now always performs a real resolution. There is no
+/// enforce-vs-observe switch to select either: the gate is ADVISORY for every deployment, a
+/// non-verified observation needs the admin's explicit `proceedWithoutDns` and is recorded, and
+/// `DNS_CHECK` is retired (accepted only so `main` can warn an operator who still sets it).
 pub struct MockDnsChecker {
     outcome: Result<bool, ()>,
 }

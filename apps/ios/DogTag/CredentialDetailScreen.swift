@@ -323,10 +323,10 @@ struct DomainBindingLine: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.leading, 15)
             }
-            if let block = binding.blockNumber, binding.state != .pending {
-                // A "verified" with no "when" is not auditable against a world where DNS changes. DNS
-                // itself has no history, so the DNS half can only ever be a live observation.
-                Text("Chain read at block \(String(block)) · DNS checked just now")
+            if let provenance = binding.provenanceLine() {
+                // A "verified" with no "when" is not auditable against a world where DNS changes. The
+                // DNS clause appears only when a DNS query really ran — see `provenanceLine`.
+                Text(provenance)
                     .font(.system(size: 10)).foregroundColor(c.muted)
                     .padding(.leading, 15)
             }
