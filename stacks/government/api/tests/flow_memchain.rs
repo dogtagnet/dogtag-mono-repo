@@ -23,6 +23,7 @@ fn demo_state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
         issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
         dns_doh_endpoint: String::new(),
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
@@ -89,7 +90,30 @@ impl ChainClient for LiveLikeChain {
     ) -> Result<alloy::primitives::U256, government_api::chain::ChainError> {
         self.0.issued_at(issuer_addr, root).await
     }
-    async fn issuer_onchain_name(&self, _clone_addr: &str) -> Result<String, government_api::chain::ChainError> {
+    async fn block_number(&self) -> Result<u64, government_api::chain::ChainError> {
+        Ok(1)
+    }
+    async fn root_issuer(
+        &self,
+        _factory_addr: &str,
+        _root: &str,
+        _at_block: Option<u64>,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        Ok(None)
+    }
+    async fn is_factory_clone(
+        &self,
+        _factory_addr: &str,
+        _clone_addr: &str,
+        _at_block: Option<u64>,
+    ) -> Result<bool, government_api::chain::ChainError> {
+        Ok(true)
+    }
+    async fn issuer_onchain_name(
+        &self,
+        _clone_addr: &str,
+        _at_block: Option<u64>,
+    ) -> Result<String, government_api::chain::ChainError> {
         Ok(String::new())
     }
     /// This harness's issuer claims no on-chain domain, which is the normal day-one state.
@@ -97,7 +121,8 @@ impl ChainClient for LiveLikeChain {
         &self,
         _domain_registry_addr: &str,
         _clone_addr: &str,
-    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        _at_block: Option<u64>,
+    ) -> Result<Option<government_api::chain::DomainClaim>, government_api::chain::ChainError> {
         Ok(None)
     }
 

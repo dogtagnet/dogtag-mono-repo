@@ -68,6 +68,18 @@ interface IDogTagIssuerView {
 ///      not the organisation. Already-salted clones cannot be re-salted, so `domainAdmin` is how an
 ///      existing issuer gets genuine self-service.
 ///
+/// # The write side of a THREE-LINK CHAIN
+///
+/// A binding is only worth anything if the contract it names actually came from the DogTag factory:
+/// otherwise anyone can deploy their own contract, claim a domain for it, publish a matching TXT record
+/// and present as "verified" — DNS would agree, this registry would agree, and none of it would mean
+/// anything, because that contract never passed through the KYC-gated `createIssuer`.
+///
+/// Every write here therefore requires `factory.isClone(clone)`, so a binding for a non-clone cannot be
+/// STORED at all. That is necessary but not sufficient: a verifier must ALSO re-check provenance at
+/// verification time rather than trusting that this registry once did. A stored binding is a CLAIM, and
+/// an app should not inherit trust it did not verify itself.
+///
 /// # What this contract deliberately does NOT hold
 ///
 /// The human-readable DESCRIPTION is not stored here. It is the DNS record's VALUE, written by whoever
@@ -91,9 +103,18 @@ contract IssuerDomainRegistry {
     IIssuerRegistryRoles public immutable issuerRegistry;
 
     /// @notice A published issuer→domain claim. `updatedAt == 0` means "no binding" (see contract doc).
+    ///
+    /// Both a TIMESTAMP and a BLOCK NUMBER are stored, and they answer different questions. The
+    /// timestamp is what a human reads; the block is what makes the claim REPRODUCIBLE. Because DNS
+    /// changes over time and a clone may be superseded, "this issuer claims moh.gov.sg" is only
+    /// meaningful with a block anchor: with `updatedAtBlock` a verifier can ask "what domain did this
+    /// clone claim at block N" — via an `eth_call` pinned to N — rather than only "what does it claim
+    /// now". A verification that says "verified" without saying WHEN, against a mutable world, is not
+    /// auditable.
     struct Binding {
         string domain; // canonical lowercase DNS name, e.g. "moh.gov.sg"
         uint64 updatedAt; // block.timestamp of the write; 0 == no binding published
+        uint64 updatedAtBlock; // block.number of the write — the anchor for historical queries
         address setBy; // which authority actually wrote it (audit trail for the admin console)
     }
 
@@ -109,7 +130,7 @@ contract IssuerDomainRegistry {
     address[] public boundClones;
     mapping(address => bool) private _listed;
 
-    event DomainSet(address indexed clone, string domain, address indexed setBy);
+    event DomainSet(address indexed clone, string domain, address indexed setBy, uint64 atBlock);
     event DomainCleared(address indexed clone, address indexed clearedBy);
     event DomainAdminSet(address indexed clone, address indexed admin, address indexed setBy);
 
@@ -161,12 +182,17 @@ contract IssuerDomainRegistry {
         if (!canSetDomain(clone, msg.sender)) revert NotAuthorized();
         _requireValidDomain(domain);
 
-        _bindings[clone] = Binding({domain: domain, updatedAt: uint64(block.timestamp), setBy: msg.sender});
+        _bindings[clone] = Binding({
+            domain: domain,
+            updatedAt: uint64(block.timestamp),
+            updatedAtBlock: uint64(block.number),
+            setBy: msg.sender
+        });
         if (!_listed[clone]) {
             _listed[clone] = true;
             boundClones.push(clone);
         }
-        emit DomainSet(clone, domain, msg.sender);
+        emit DomainSet(clone, domain, msg.sender, uint64(block.number));
     }
 
     /// @notice Withdraw `clone`'s domain claim (the issuer moved domains, or the binding was wrong).

@@ -30,6 +30,7 @@ fn demo_state() -> AppState {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        factory_addr: "0x00000000000000000000000000000000000000fa".into(),
         issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
         dns_doh_endpoint: String::new(),
         verification_registry_addr: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B".into(),

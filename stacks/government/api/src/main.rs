@@ -62,6 +62,8 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
+        // LINK 1 of the issuer↔domain chain: the factory that KYC-gated this clone into existence.
+        factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         // The ADDITIVE issuer↔domain claim registry. Deliberately NOT resolved from the credential
         // document: the point of reading the domain from the chain is that a relabelled document cannot
         // move it, so the registry address must come from deployment config, at the same trust level as
