@@ -21,6 +21,15 @@ pub struct Config {
     pub deployment_url: String,
     pub rpc_url: String,
     pub issuer_registry_addr: String,
+    /// The `DogTagIssuerFactory` (env `FACTORY_ADDR`) whose write-once `rootIssuer[R]` index resolves
+    /// which clone issued a given root.
+    ///
+    /// This is what makes `POST /verify/credential` answerable at all: the document's own
+    /// `issuer.documentStore` sits OUTSIDE the Merkle root, so reading `isValid` against it lets a
+    /// forged document nominate the contract that vouches for it. Unset (or zero) means this
+    /// deployment cannot evaluate the factory-anchored issuer pillar, which is reported as
+    /// `unavailableNoFactoryConfigured` rather than silently passing.
+    pub factory_addr: String,
     /// Owner-hidden `VerificationRegistryConsent` address (env
     /// `VERIFICATION_REGISTRY_CONSENT_ADDR`) — the sole verification submit target.
     pub verification_registry_consent_addr: String,
@@ -351,6 +360,7 @@ mod tests {
             deployment_url: String::new(),
             rpc_url: String::new(),
             issuer_registry_addr: String::new(),
+            factory_addr: String::new(),
             verification_registry_consent_addr: String::new(),
             issuer_addrs: std::collections::HashMap::new(),
             issuer_name: "Test Vet".to_string(),

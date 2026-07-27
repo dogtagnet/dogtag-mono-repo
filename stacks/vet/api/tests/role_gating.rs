@@ -67,6 +67,7 @@ fn cfg_for_role(business_type: &str) -> Config {
         deployment_url: "http://localhost:43618".to_string(),
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
+        factory_addr: String::new(),
         issuer_addrs,
         issuer_name: "Pampered Paws".to_string(),
         issuer_domain: "groomer.local".to_string(),

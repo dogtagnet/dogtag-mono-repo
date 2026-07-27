@@ -33,6 +33,12 @@ pub const SBT_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000dd";
 pub const PROFILE_ISSUER_ADDR: &str = "0x00000000000000000000000000000000000000ee";
 /// `VerificationRegistryConsent` — the sole owner-hidden submit target.
 pub const VREG_CONSENT_ADDR: &str = "0x00000000000000000000000000000000000000ff";
+/// The `DogTagIssuerFactory` whose write-once `rootIssuer[R]` index anchors the mandatory
+/// issuer-whitelist pillar. Configured here rather than left empty on purpose: an unconfigured
+/// factory makes that pillar report itself UNAVAILABLE, so a harness that omitted it would quietly
+/// stop exercising the pillar at all. Pair it with `MemChain::with_factory(FACTORY_ADDR)` so
+/// issuances register under the same index a real `issue()` writes.
+pub const FACTORY_ADDR: &str = "0x00000000000000000000000000000000000000fa";
 
 /// Build an AppState with the given chain client + issuer/registry addresses.
 pub fn state_with(
@@ -49,6 +55,7 @@ pub fn state_with(
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url,
         issuer_registry_addr,
+        factory_addr: FACTORY_ADDR.to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain,
@@ -95,6 +102,7 @@ pub fn state_for_calendar(
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
+        factory_addr: FACTORY_ADDR.to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),
@@ -136,6 +144,7 @@ pub fn state_with_seal_path(seal_path: String, store: Arc<MemStore>) -> AppState
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: "0x00000000000000000000000000000000000000aa".to_string(),
+        factory_addr: FACTORY_ADDR.to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),
         issuer_domain: "vet.example".to_string(),

@@ -159,6 +159,7 @@ fn cfg_for_build() -> vet_api::app::Config {
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: "memchain".to_string(),
         issuer_registry_addr: REGISTRY.to_string(),
+        factory_addr: String::new(),
         verification_registry_consent_addr: VREG_CONSENT_ADDR.to_string(),
         issuer_addrs,
         issuer_name: "DogTag Vet".to_string(),

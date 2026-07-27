@@ -208,9 +208,13 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   run admin-api ":39742" "$ROOT/target/release/admin-api"
 # Every verifier/issuance process receives the same owner-hidden pair. PROFILE_ISSUER is a real
 # factory clone: roots are issue(R)'d there, while mintCustodial seals the same R on the SBT.
+# FACTORY_ADDR goes to every vet-api instance because all three serve POST /verify/credential, whose
+# issuer-whitelist pillar resolves the issuing clone from the factory's write-once rootIssuer[R]. A
+# deployment without it cannot evaluate that pillar and reports it `unavailableNoFactoryConfigured` -
+# which is honest, but leaves a forged issuer.documentStore refused by nothing but integrity.
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
-  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER FACTORY_ADDR=$FACTORY \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Seaport Vet" ISSUER_DOMAIN=vet.local \
   BUSINESS_ID=biz-vet CONFIRMATIONS=1 PORT=41874 DEPLOYMENT_URL="${VET_PUBLIC_URL:-http://$LAN_IP:41874}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
@@ -218,7 +222,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   run vet-api ":41874" "$ROOT/target/release/vet-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
-  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER FACTORY_ADDR=$FACTORY \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="Pampered Paws" ISSUER_DOMAIN=groomer.local \
   BUSINESS_ID=biz-groomer BUSINESS_TYPE=groomer CONFIRMATIONS=1 PORT=43618 DEPLOYMENT_URL="${GROOMER_PUBLIC_URL:-http://$LAN_IP:43618}" \
   INDEXER_API_BASE=http://localhost:46001 INDEXER_SCOPED_TOKEN=dogtag-indexer-vet-demo-token \
@@ -233,7 +237,7 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 # then point the phone's `prover_api` pref at that URL (demo-prepare-phone.sh / Settings).
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
-  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER \
+  SBT_CONSENT_ADDR=$SBT PROFILE_ISSUER_ADDR=$PROFILE_ISSUER FACTORY_ADDR=$FACTORY \
   VACCINATION_ISSUER_ADDR=$VACC_CLONE ISSUER_NAME="DogTag Prover" ISSUER_DOMAIN=prover.local \
   BUSINESS_ID=biz-prover CONFIRMATIONS=1 PORT=41875 DEPLOYMENT_URL="${PROVER_PUBLIC_URL:-http://$LAN_IP:41875}" \
   CIRCUITS_BUILD_DIR="$ROOT/circuits/build" \
