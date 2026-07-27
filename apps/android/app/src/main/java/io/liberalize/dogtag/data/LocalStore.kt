@@ -64,6 +64,33 @@ class LocalStore(context: Context) {
         saveCreds(cur)
     }
 
+    /**
+     * Replace a stored credential in place, keyed by id. Used by the on-chain refresh to write back
+     * a re-read verdict. A no-op if the record was deleted while the refresh was in flight.
+     */
+    fun updateCredential(cred: Credential) {
+        val cur = _credentials.value.toMutableList()
+        val idx = cur.indexOfFirst { it.id == cred.id }
+        if (idx < 0) return
+        cur[idx] = cred
+        _credentials.value = cur
+        saveCreds(cur)
+    }
+
+    /**
+     * Remove ONE credential from THIS device. Local only: it does not revoke anything on-chain and
+     * does not touch the issuer's copy of the record. Removes a single entry even in the impossible
+     * case of a store holding duplicate ids, so a delete can never take a sibling with it.
+     */
+    fun deleteCredential(id: String) {
+        val cur = _credentials.value.toMutableList()
+        val idx = cur.indexOfFirst { it.id == id }
+        if (idx < 0) return
+        cur.removeAt(idx)
+        _credentials.value = cur
+        saveCreds(cur)
+    }
+
     fun credentialsFor(dogTagId: String?): List<Credential> =
         if (dogTagId == null) _credentials.value
         else _credentials.value.filter { it.dogTagId == dogTagId }

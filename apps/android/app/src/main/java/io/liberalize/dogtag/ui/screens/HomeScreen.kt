@@ -97,7 +97,11 @@ fun HomeScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
             PetPhotoCard(onScan)
 
             val petCreds = creds.filter { it.dogTagId == pet.dogTagId }
-            SectionTitle("Credentials", "${petCreds.size} total")
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { SectionTitle("Credentials", "${petCreds.size} total") }
+                Spacer(Modifier.size(8.dp))
+                RefreshAllButton(petCreds)
+            }
             if (petCreds.isEmpty()) {
                 EmptyState(
                     "No credentials yet",
@@ -243,13 +247,16 @@ private fun GroupCard(
                 Row(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surface)
                         .clickable { onOpen(cred) }.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Top,
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(cred.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
                         Text("${cred.recordType} · ${cred.verdict}", fontSize = 12.sp, color = c.muted)
                         if (cred.issuer.isNotBlank()) Text(cred.issuer, fontSize = 11.sp, color = c.muted)
+                        Text(cred.importedAtLabel, fontSize = 11.sp, color = c.muted)
+                        CredentialStatusLine(cred)
                     }
+                    RefreshCredentialButton(cred)
                     Icon(Icons.Filled.ChevronRight, "Open", tint = c.muted)
                 }
             }

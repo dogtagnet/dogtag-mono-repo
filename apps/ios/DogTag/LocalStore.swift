@@ -88,6 +88,23 @@ final class LocalStore: ObservableObject {
         return credentials.filter { $0.dogTagId == id }
     }
 
+    /// Replace a stored credential in place, keyed by id. Used by the on-chain refresh to write back
+    /// a re-read verdict. A no-op if the record was deleted while the refresh was in flight.
+    func updateCredential(_ cred: Credential) {
+        guard let idx = credentials.firstIndex(where: { $0.id == cred.id }) else { return }
+        credentials[idx] = cred
+        save(credentials, to: credsURL)
+    }
+
+    /// Remove ONE credential from THIS device. Local only: it does not revoke anything on-chain and
+    /// does not touch the issuer's copy of the record. Removes a single entry even in the impossible
+    /// case of a store holding duplicate ids, so a delete can never take a sibling with it.
+    func deleteCredential(id: String) {
+        guard let idx = credentials.firstIndex(where: { $0.id == id }) else { return }
+        credentials.remove(at: idx)
+        save(credentials, to: credsURL)
+    }
+
     // ---- pet display name ----------------------------------------------------------------------
 
     /// The best display name for the pet owning `dogTagId`:
@@ -222,5 +239,61 @@ private extension UIImage {
         return UIGraphicsImageRenderer(size: target, format: format).image { _ in
             draw(in: CGRect(origin: .zero, size: target))
         }
+    }
+}
+
+/// Shared state for on-chain status refreshes, so every surface that shows a verdict (Home,
+/// Documents, Travel, the credential detail) reports the SAME three distinguishable states for a
+/// given record: checking now, checked (with the answer and its age), or could-not-check (with why).
+///
+/// The outcome itself is persisted on the credential; this only holds what is in flight.
+@MainActor
+final class RefreshCenter: ObservableObject {
+    static let shared = RefreshCenter()
+
+    /// Credential ids with a check currently running.
+    @Published private(set) var inFlight: Set<String> = []
+    /// How many records are left in a running "refresh all" (0 when no batch is running).
+    @Published private(set) var batchRemaining: Int = 0
+
+    private var roax: RoaxConfig?
+
+    private init() {}
+
+    func isChecking(_ cred: Credential) -> Bool { inFlight.contains(cred.id) }
+    var isBatchRunning: Bool { batchRemaining > 0 }
+
+    /// Re-read one credential's on-chain status and persist the result.
+    func refresh(_ cred: Credential) async {
+        guard !inFlight.contains(cred.id) else { return }
+        inFlight.insert(cred.id)
+        defer { inFlight.remove(cred.id) }
+
+        let config = resolvedRoax()
+        // The integrity pillar is a synchronous FFI call, so the whole check runs off the main actor
+        // to keep the list scrolling while it works.
+        let updated = await Task.detached(priority: .userInitiated) {
+            await CredentialRefresher.refreshed(cred, roax: config)
+        }.value
+        LocalStore.shared.updateCredential(updated)
+    }
+
+    /// Re-read a whole list, one record at a time so the RPC is not hammered and the remaining count
+    /// stays meaningful. A second call while a batch is running is ignored.
+    func refreshAll(_ creds: [Credential]) async {
+        guard batchRemaining == 0, !creds.isEmpty else { return }
+        batchRemaining = creds.count
+        defer { batchRemaining = 0 }
+        for cred in creds {
+            await refresh(cred)
+            batchRemaining -= 1
+        }
+    }
+
+    private func resolvedRoax() -> RoaxConfig {
+        if let r = roax { return r }
+        let r = RoaxConfig.load()
+        roax = r
+        return r
     }
 }

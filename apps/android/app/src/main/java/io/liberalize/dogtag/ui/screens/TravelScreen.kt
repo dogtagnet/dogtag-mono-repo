@@ -82,7 +82,11 @@ fun TravelScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
 
         PetFilterRow(pets, filterPetId) { filterPetId = it }
 
-        SectionTitle("Travel records", "${travel.size}")
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { SectionTitle("Travel records", "${travel.size}") }
+            Spacer(Modifier.size(8.dp))
+            RefreshAllButton(travel)
+        }
         if (travel.isEmpty()) {
             Text("No travel records for this dog yet.", fontSize = 13.sp, color = c.muted)
         }
@@ -90,7 +94,7 @@ fun TravelScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.surface)
                     .clickable { onOpen(cred) }.padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Top,
             ) {
                 Box(Modifier.size(38.dp).clip(CircleShape).background(c.surfaceVariant), contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.Description, cred.title, tint = c.accent, modifier = Modifier.size(18.dp))
@@ -100,9 +104,15 @@ fun TravelScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
                     Text(cred.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
                     val petName = pets.firstOrNull { it.dogTagId == cred.dogTagId }?.name ?: "DogTag #${cred.dogTagId}"
                     Text("$petName · ${cred.recordType}", fontSize = 12.sp, color = c.muted)
+                    Text(cred.importedAtLabel, fontSize = 11.sp, color = c.muted)
+                    CredentialStatusLine(cred)
                 }
-                Text(cred.verdict, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                    color = if (cred.verdict == "VALID") c.success else if (cred.verdict == "INVALID") c.danger else c.muted)
+                Spacer(Modifier.size(8.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    VerdictBadge(cred.verdict)
+                    Spacer(Modifier.size(4.dp))
+                    RefreshCredentialButton(cred)
+                }
             }
         }
         Spacer(Modifier.size(24.dp))

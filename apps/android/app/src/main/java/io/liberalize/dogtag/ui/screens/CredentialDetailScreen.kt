@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material3.Icon
@@ -39,8 +40,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.CredentialGroup
+import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.WrappedDoc
 import io.liberalize.dogtag.ui.DogTagTheme
 
@@ -49,16 +52,22 @@ import io.liberalize.dogtag.ui.DogTagTheme
  * issuer domain, recordType), and every decoded Merkle leaf (the underlying record fields).
  */
 @Composable
-fun CredentialDetailScreen(cred: Credential, onBack: () -> Unit) {
+fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
+    val c = DogTagTheme.colors
+    val context = LocalContext.current
+    val scroll = rememberScrollState()
+    val store = remember(context) { LocalStore.get(context) }
+    val stored by store.credentials.collectAsStateWithLifecycle()
+    // Always render the STORED record, not the copy this screen was opened with, so a refresh
+    // landing while it is up is reflected here too. Falls back to the opened copy if it was deleted.
+    val cred = stored.firstOrNull { it.id == opened.id } ?: opened
+    var pendingDelete by remember { mutableStateOf(false) }
     var showReceipt by remember { mutableStateOf(false) }
     if (showReceipt) {
         TravelReceiptScreen(cred, onBack = { showReceipt = false })
         return
     }
 
-    val c = DogTagTheme.colors
-    val context = LocalContext.current
-    val scroll = rememberScrollState()
     val doc = remember(cred.wrappedDocJson) {
         runCatching { WrappedDoc(cred.wrappedDocJson) }.getOrNull()
     }
@@ -112,6 +121,29 @@ fun CredentialDetailScreen(cred: Credential, onBack: () -> Unit) {
             }
         }
 
+        // Status + provenance: what the chain last said, how old that answer is, and when this phone
+        // took the record in. The refresh button re-reads the chain right here.
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Status", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.muted,
+                    modifier = Modifier.weight(1f),
+                )
+                RefreshCredentialButton(cred)
+            }
+            CredentialStatusLine(cred, fontSize = 13)
+            KeyValueRow("Imported", cred.importedAtValue)
+            Text(
+                "Refreshing re-reads this record's anchor on ROAX. If the chain cannot be reached the " +
+                    "status becomes UNVERIFIED with the reason: not being able to check is not the same " +
+                    "as checking and finding it good.",
+                fontSize = 11.sp, color = c.muted,
+            )
+        }
+
         // On-chain card.
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
@@ -154,7 +186,28 @@ fun CredentialDetailScreen(cred: Credential, onBack: () -> Unit) {
                 fontSize = 12.sp, color = c.muted,
             )
         }
+
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                .background(c.danger.copy(alpha = 0.12f))
+                .clickable { pendingDelete = true }
+                .padding(vertical = 13.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.Delete, null, tint = c.danger, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.size(8.dp))
+            Text("Delete from this phone", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.danger)
+        }
         Spacer(Modifier.size(24.dp))
+    }
+
+    if (pendingDelete) {
+        DeleteCredentialDialog(
+            cred = cred,
+            onDismiss = { pendingDelete = false },
+            onConfirm = { pendingDelete = false; store.deleteCredential(cred.id); onBack() },
+        )
     }
 }
 

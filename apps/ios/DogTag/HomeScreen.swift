@@ -54,7 +54,10 @@ struct HomeScreen: View {
                         petPhotoCard(pet)
                         petIdentity(pet)
                         let petCreds = store.credentials.filter { $0.dogTagId == pet.dogTagId }
-                        SectionTitle(text: "Credentials", trailing: "\(petCreds.count) total")
+                        HStack {
+                            SectionTitle(text: "Credentials", trailing: "\(petCreds.count) total")
+                            RefreshAllButton(credentials: petCreds)
+                        }
                         if petCreds.isEmpty {
                             EmptyStateCard(title: "No credentials yet",
                                            message: "Scan a vet's QR to import a record for \(pet.name).",
@@ -192,17 +195,26 @@ struct HomeScreen: View {
             .buttonStyle(.plain)
             if expanded == group {
                 ForEach(items) { cred in
-                    Button { detailCred = cred } label: {
-                        HStack {
-                            CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
-                            Spacer()
-                            VerdictBadge(verdict: cred.verdict)
-                            Image(systemName: "chevron.right").foregroundColor(c.muted).font(.system(size: 12))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
-                    }.buttonStyle(.plain)
+                    HStack(alignment: .top, spacing: 6) {
+                        Button { detailCred = cred } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
+                                    if !cred.issuer.isEmpty { Text(cred.issuer).font(.system(size: 11)).foregroundColor(c.muted) }
+                                    Text(cred.importedAtLabel).font(.system(size: 11)).foregroundColor(c.muted)
+                                    CredentialStatusLine(cred: cred)
+                                }
+                                Spacer(minLength: 0)
+                                VerdictBadge(verdict: cred.verdict)
+                                Image(systemName: "chevron.right").foregroundColor(c.muted).font(.system(size: 12))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        RefreshCredentialButton(cred: cred)
+                    }
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
                 }
             }
         }

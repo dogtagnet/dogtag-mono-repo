@@ -85,6 +85,21 @@ data class Credential(
     val credentialRoot: String,  // signature.merkleRoot (0x..) — what consent signs over
     val verdict: String,         // "VALID" / "INVALID" / "UNVERIFIED"
     val wrappedDocJson: String,  // the full wrapped doc (for re-verify + disclosure)
+
+    // ---- provenance / freshness (all nullable: records stored before these shipped have none) ----
+
+    /**
+     * When THIS device stored the record ([Stamp] ISO-8601 UTC). Two records of the same type are
+     * otherwise indistinguishable in a list, so this is what tells them apart for the owner.
+     */
+    val importedAt: String? = null,
+    /**
+     * When the on-chain status behind [verdict] was last determined, successfully or not. Written
+     * together with [verdict] + [verdictReason] so all three always describe the SAME check.
+     */
+    val lastCheckedAt: String? = null,
+    /** Short human explanation of [verdict] - above all, why it is not VALID. */
+    val verdictReason: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -98,6 +113,46 @@ data class Credential(
         put("credentialRoot", credentialRoot)
         put("verdict", verdict)
         put("wrappedDocJson", wrappedDocJson)
+        if (importedAt != null) put("importedAt", importedAt)
+        if (lastCheckedAt != null) put("lastCheckedAt", lastCheckedAt)
+        if (verdictReason != null) put("verdictReason", verdictReason)
+    }
+
+    /**
+     * When this record landed on this phone, bare. Records stored before import stamping shipped
+     * carry no stamp: say so plainly rather than inventing a date.
+     */
+    val importedAtValue: String get() = Stamp.parse(importedAt)?.let { Stamp.absolute(it) } ?: "Unknown"
+
+    /** The same, as a standalone list line. */
+    val importedAtLabel: String
+        get() = if (Stamp.parse(importedAt) == null) "Import date unknown" else "Imported $importedAtValue"
+
+    /**
+     * How fresh [verdict] is. A verdict is frozen at the moment it was read off the chain, so a
+     * record revoked since then still reads VALID until it is refreshed - this is what makes that
+     * staleness visible instead of silent.
+     */
+    val lastCheckedLabel: String
+        get() = Stamp.parse(lastCheckedAt)?.let { "Checked ${Stamp.relative(it)}" } ?: "Not checked on-chain yet"
+
+    /** The freshness line, plus the reason whenever the verdict is anything other than VALID. */
+    val statusLine: String
+        get() = if (verdict != "VALID" && !verdictReason.isNullOrBlank()) {
+            "$lastCheckedLabel · $verdictReason"
+        } else {
+            lastCheckedLabel
+        }
+
+    /**
+     * Body of the delete confirmation. It leads with the details that tell two same-type records
+     * apart, so the owner can see WHICH one is about to go, then states plainly what deleting does.
+     * Deleting is local: it must not read as a revocation, because it is not one.
+     */
+    fun deleteConfirmationMessage(petName: String): String {
+        val which = if (petName.isBlank()) importedAtLabel else "$importedAtLabel · $petName"
+        return which + "\n\nThis removes the copy stored on this phone. The record is not revoked, " +
+            "nothing changes on-chain, and the issuer still holds their copy."
     }
 
     companion object {
@@ -114,8 +169,58 @@ data class Credential(
             credentialRoot = o.optString("credentialRoot"),
             verdict = o.optString("verdict", "UNVERIFIED"),
             wrappedDocJson = o.optString("wrappedDocJson"),
+            importedAt = o.optString("importedAt", "").ifBlank { null },
+            lastCheckedAt = o.optString("lastCheckedAt", "").ifBlank { null },
+            verdictReason = o.optString("verdictReason", "").ifBlank { null },
         )
     }
+}
+
+/**
+ * ISO-8601 (UTC, whole seconds) stamping and human display for the credential timestamps. iOS writes
+ * the identical shape ("2026-07-27T14:32:10Z"), so the two stores stay readable across ports.
+ */
+object Stamp {
+    /** The current instant, in the stored form. */
+    fun now(): String = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString()
+
+    /** Parse a stored stamp. null for absent/unparseable. */
+    fun parse(raw: String?): java.time.Instant? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching { java.time.Instant.parse(raw) }.getOrNull()
+    }
+
+    /**
+     * Absolute local date + time, e.g. "27 Jul 2026, 14:32". Used where the exact moment is the
+     * point (which of two look-alike records is which).
+     */
+    fun absolute(instant: java.time.Instant): String = ABSOLUTE.format(instant)
+
+    /**
+     * Relative age, e.g. "just now" / "5 minutes ago" / "3 days ago". Used for freshness, where the
+     * distinction that matters is "checked seconds ago" vs "checked last week".
+     */
+    fun relative(instant: java.time.Instant): String {
+        val seconds = java.time.Duration.between(instant, java.time.Instant.now()).seconds
+        if (seconds < 60) return "just now"
+        val minutes = seconds / 60
+        if (minutes < 60) return plural(minutes, "minute")
+        val hours = minutes / 60
+        if (hours < 24) return plural(hours, "hour")
+        val days = hours / 24
+        if (days < 7) return plural(days, "day")
+        val weeks = days / 7
+        if (weeks < 5) return plural(weeks, "week")
+        val months = days / 30
+        return if (months < 12) plural(months, "month") else plural(days / 365, "year")
+    }
+
+    private fun plural(n: Long, unit: String): String = "$n $unit${if (n == 1L) "" else "s"} ago"
+
+    private val ABSOLUTE: java.time.format.DateTimeFormatter =
+        java.time.format.DateTimeFormatter
+            .ofLocalizedDateTime(java.time.format.FormatStyle.MEDIUM, java.time.format.FormatStyle.SHORT)
+            .withZone(java.time.ZoneId.systemDefault())
 }
 
 /**

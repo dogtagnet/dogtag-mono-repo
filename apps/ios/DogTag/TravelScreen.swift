@@ -34,24 +34,41 @@ struct TravelScreen: View {
                         onScan: onScan)
                 } else {
                     PetFilterRow(pets: store.pets, selectedId: filterPetId) { filterPetId = $0 }
-                    SectionTitle(text: "Travel records", trailing: "\(travel.count)")
+                    HStack {
+                        SectionTitle(text: "Travel records", trailing: "\(travel.count)")
+                        RefreshAllButton(credentials: travel)
+                    }
                     if travel.isEmpty {
                         Text("No travel records for this dog yet.").font(.system(size: 13)).foregroundColor(c.muted)
                     }
                     ForEach(travel) { cred in
-                        Button { detailCred = cred } label: {
-                            HStack {
-                                ZStack {
-                                    Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
-                                    Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                        HStack(alignment: .top, spacing: 10) {
+                            Button { detailCred = cred } label: {
+                                HStack(alignment: .top, spacing: 12) {
+                                    ZStack {
+                                        Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
+                                        Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
+                                        if !cred.issuer.isEmpty {
+                                            Text(cred.issuer).font(.system(size: 11)).foregroundColor(c.muted)
+                                        }
+                                        Text(cred.importedAtLabel).font(.system(size: 11)).foregroundColor(c.muted)
+                                        CredentialStatusLine(cred: cred)
+                                    }
+                                    Spacer(minLength: 0)
                                 }
-                                CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
-                                Spacer()
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+
+                            VStack(alignment: .trailing, spacing: 8) {
                                 VerdictBadge(verdict: cred.verdict)
+                                RefreshCredentialButton(cred: cred)
                             }
-                            .padding(14)
-                            .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
-                        }.buttonStyle(.plain)
+                        }
+                        .padding(14)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
                     }
                 }
                 Spacer(minLength: 24)

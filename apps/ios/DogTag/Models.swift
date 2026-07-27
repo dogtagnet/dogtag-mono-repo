@@ -63,6 +63,95 @@ struct Credential: Identifiable, Codable, Equatable {
     var credentialRoot: String    // signature.merkleRoot (0x..) — what consent signs over
     var verdict: String           // "VALID" / "INVALID" / "UNVERIFIED"
     var wrappedDocJson: String    // the full wrapped doc (for re-verify + disclosure)
+
+    // ---- provenance / freshness (all optional: records stored before these shipped have none) ----
+
+    /// When THIS device stored the record (`Stamp` ISO-8601 UTC). Two records of the same type are
+    /// otherwise indistinguishable in a list, so this is what tells them apart for the owner.
+    var importedAt: String?
+    /// When the on-chain status behind `verdict` was last determined, successfully or not. Written
+    /// together with `verdict` + `verdictReason` so all three always describe the SAME check.
+    var lastCheckedAt: String?
+    /// Short human explanation of `verdict` - above all, why it is not VALID.
+    var verdictReason: String?
+}
+
+/// ISO-8601 (UTC, whole seconds) stamping and human display for the credential timestamps. Android
+/// writes the identical shape ("2026-07-27T14:32:10Z"), so the two stores stay readable across ports.
+enum Stamp {
+    /// The current instant, in the stored form.
+    static func now() -> String { writer.string(from: Date()) }
+
+    /// Parse a stored stamp, tolerating a fractional-seconds variant. nil for absent/unparseable.
+    static func parse(_ raw: String?) -> Date? {
+        guard let raw = raw, !raw.isEmpty else { return nil }
+        return writer.date(from: raw) ?? fractional.date(from: raw)
+    }
+
+    /// Absolute local date + time, e.g. "27 Jul 2026 at 14:32". Used where the exact moment is the
+    /// point (which of two look-alike records is which).
+    static func absolute(_ date: Date) -> String { absoluteFormatter.string(from: date) }
+
+    /// Relative age, e.g. "just now" / "5 minutes ago" / "3 days ago". Used for freshness, where the
+    /// distinction that matters is "checked seconds ago" vs "checked last week".
+    static func relative(_ date: Date) -> String {
+        Date().timeIntervalSince(date) < 60 ? "just now" : relativeFormatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    private static let writer: ISO8601DateFormatter = ISO8601DateFormatter()
+    private static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let absoluteFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
+}
+
+extension Credential {
+    /// When this record landed on this phone, bare. Records stored before import stamping shipped
+    /// carry no stamp: say so plainly rather than inventing a date.
+    var importedAtValue: String {
+        guard let d = Stamp.parse(importedAt) else { return "Unknown" }
+        return Stamp.absolute(d)
+    }
+
+    /// The same, as a standalone list line.
+    var importedAtLabel: String {
+        Stamp.parse(importedAt) == nil ? "Import date unknown" : "Imported \(importedAtValue)"
+    }
+
+    /// How fresh `verdict` is. A verdict is frozen at the moment it was read off the chain, so a
+    /// record revoked since then still reads VALID until it is refreshed - this is what makes that
+    /// staleness visible instead of silent.
+    var lastCheckedLabel: String {
+        guard let d = Stamp.parse(lastCheckedAt) else { return "Not checked on-chain yet" }
+        return "Checked \(Stamp.relative(d))"
+    }
+
+    /// The freshness line, plus the reason whenever the verdict is anything other than VALID.
+    var statusLine: String {
+        guard verdict != "VALID", let why = verdictReason, !why.isEmpty else { return lastCheckedLabel }
+        return "\(lastCheckedLabel) · \(why)"
+    }
+
+    /// Body of the delete confirmation. It leads with the details that tell two same-type records
+    /// apart, so the owner can see WHICH one is about to go, then states plainly what deleting does.
+    /// Deleting is local: it must not read as a revocation, because it is not one.
+    func deleteConfirmationMessage(petLabel: String) -> String {
+        let which = petLabel.isEmpty ? importedAtLabel : "\(importedAtLabel) · \(petLabel)"
+        return which + "\n\nThis removes the copy stored on this phone. The record is not revoked, "
+            + "nothing changes on-chain, and the issuer still holds their copy."
+    }
 }
 
 /// A thin, typed view over a wrapped-doc JSON (§1.4 WrappedDoc). Extracts the fields the app needs;

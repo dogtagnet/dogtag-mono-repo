@@ -6,7 +6,14 @@ struct CredentialDetailScreen: View {
     @Environment(\.dogTagColors) var c
     @Environment(\.dismiss) var dismiss
     @ObservedObject private var store = LocalStore.shared
-    let cred: Credential
+    let opened: Credential
+    @State private var pendingDelete: Credential? = nil
+
+    init(cred: Credential) { self.opened = cred }
+
+    /// Always render the STORED record, not the copy this sheet was opened with, so a refresh landing
+    /// while the sheet is up is reflected here too. Falls back to the opened copy if it was deleted.
+    private var cred: Credential { store.credentials.first { $0.id == opened.id } ?? opened }
 
     @State private var showReceipt = false
 
@@ -17,6 +24,7 @@ struct CredentialDetailScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                statusCard
 
                 // Travel credentials get the CDC-modeled receipt as their "present to an official"
                 // surface (holder-controlled selective disclosure + PII-free public-status QR).
@@ -92,6 +100,7 @@ struct CredentialDetailScreen: View {
                     Text("\(n) field(s) redacted (selective disclosure)")
                         .font(.system(size: 12)).foregroundColor(c.muted)
                 }
+                deleteRow
                 Spacer(minLength: 24)
             }
             .padding(20)
@@ -100,6 +109,41 @@ struct CredentialDetailScreen: View {
         .sheet(isPresented: $showReceipt) {
             TravelReceiptView(cred: cred).environment(\.dogTagColors, c)
         }
+        .confirmDeleteCredential($pendingDelete) { cred in
+            store.deleteCredential(id: cred.id)
+            dismiss()
+        }
+    }
+
+    /// Status + provenance: what the chain last said, how old that answer is, and when this phone
+    /// took the record in. The refresh button re-reads the chain right here.
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("STATUS").font(.system(size: 11, weight: .bold)).foregroundColor(c.muted)
+                Spacer()
+                RefreshCredentialButton(cred: cred)
+            }
+            CredentialStatusLine(cred: cred, fontSize: 13)
+            KeyValueRow(label: "Imported", value: cred.importedAtValue)
+            Text("Refreshing re-reads this record's anchor on ROAX. If the chain cannot be reached the status becomes UNVERIFIED with the reason: not being able to check is not the same as checking and finding it good.")
+                .font(.system(size: 11)).foregroundColor(c.muted)
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
+    }
+
+    private var deleteRow: some View {
+        Button { pendingDelete = cred } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "trash").font(.system(size: 14))
+                Text("Delete from this phone").font(.system(size: 14, weight: .semibold))
+            }
+            .foregroundColor(c.danger)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(c.danger.opacity(0.12)))
+        }.buttonStyle(.plain)
     }
 
     private var header: some View {

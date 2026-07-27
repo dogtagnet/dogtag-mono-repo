@@ -4,9 +4,11 @@ import UniformTypeIdentifiers
 struct DocumentsScreen: View {
     @Environment(\.dogTagColors) var c
     @ObservedObject private var store = LocalStore.shared
+    @ObservedObject private var refresher = RefreshCenter.shared
     let onScan: () -> Void
     @State private var filterPetId: String? = nil   // nil == All pets
     @State private var detailCred: Credential? = nil
+    @State private var pendingDelete: Credential? = nil
 
     private var shown: [Credential] {
         filterPetId == nil ? store.credentials : store.credentials.filter { $0.dogTagId == filterPetId }
@@ -24,7 +26,10 @@ struct DocumentsScreen: View {
                         onScan: onScan)
                 } else {
                     PetFilterRow(pets: store.pets, selectedId: filterPetId) { filterPetId = $0 }
-                    SectionTitle(text: "Records", trailing: "\(shown.count)")
+                    HStack {
+                        SectionTitle(text: "Records", trailing: "\(shown.count)")
+                        RefreshAllButton(credentials: shown)
+                    }
                     if shown.isEmpty {
                         Text("No records for this dog yet.").font(.system(size: 13)).foregroundColor(c.muted)
                     } else {
@@ -41,19 +46,36 @@ struct DocumentsScreen: View {
                         }
                     }
                     ForEach(shown) { cred in
-                        Button { detailCred = cred } label: {
-                            HStack {
-                                ZStack {
-                                    Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
-                                    Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                        HStack(alignment: .top, spacing: 10) {
+                            Button { detailCred = cred } label: {
+                                HStack(alignment: .top, spacing: 12) {
+                                    ZStack {
+                                        Circle().fill(c.surfaceVariant).frame(width: 38, height: 38)
+                                        Image(systemName: "doc.text").foregroundColor(c.accent).font(.system(size: 16))
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
+                                        if !cred.issuer.isEmpty {
+                                            Text(cred.issuer).font(.system(size: 11)).foregroundColor(c.muted)
+                                        }
+                                        Text(cred.importedAtLabel).font(.system(size: 11)).foregroundColor(c.muted)
+                                        CredentialStatusLine(cred: cred)
+                                    }
+                                    Spacer(minLength: 0)
                                 }
-                                CredentialLabel(cred: cred, petName: store.petDisplayName(for: cred))
-                                Spacer()
+                                .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+
+                            VStack(alignment: .trailing, spacing: 8) {
                                 VerdictBadge(verdict: cred.verdict)
+                                HStack(spacing: 2) {
+                                    RefreshCredentialButton(cred: cred)
+                                    DeleteCredentialButton(cred: cred) { pendingDelete = cred }
+                                }
                             }
-                            .padding(14)
-                            .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
-                        }.buttonStyle(.plain)
+                        }
+                        .padding(14)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(c.surface))
                     }
                 }
                 Spacer(minLength: 24)
@@ -62,6 +84,9 @@ struct DocumentsScreen: View {
         }
         .sheet(item: $detailCred) { cred in
             CredentialDetailScreen(cred: cred).environment(\.dogTagColors, c)
+        }
+        .confirmDeleteCredential($pendingDelete) { cred in
+            store.deleteCredential(id: cred.id)
         }
     }
 }
@@ -188,5 +213,140 @@ enum DocumentExport {
     private static func sanitize(_ s: String) -> String {
         let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789-_")
         return String(s.lowercased().map { allowed.contains($0) ? $0 : "-" })
+    }
+}
+
+// ---- shared status / refresh / delete affordances (Documents, Travel, Home, detail) --------------
+
+/// The freshness of a record's verdict, and why it reads the way it does. Three distinguishable
+/// states: a check in flight, a completed check with its age, and a check that could not reach the
+/// chain (which shows UNVERIFIED plus the reason, never VALID).
+struct CredentialStatusLine: View {
+    @Environment(\.dogTagColors) var c
+    let cred: Credential
+    @ObservedObject private var refresher = RefreshCenter.shared
+    var fontSize: CGFloat = 11
+
+    init(cred: Credential, fontSize: CGFloat = 11) {
+        self.cred = cred
+        self.fontSize = fontSize
+    }
+
+    var body: some View {
+        if refresher.isChecking(cred) {
+            HStack(spacing: 5) {
+                ProgressView().scaleEffect(0.6).frame(width: 10, height: 10)
+                Text("Checking on-chain…").font(.system(size: fontSize)).foregroundColor(c.muted)
+            }
+        } else {
+            Text(cred.statusLine)
+                .font(.system(size: fontSize))
+                .foregroundColor(cred.verdict == "INVALID" ? c.danger : c.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Re-read ONE record's status from the chain.
+struct RefreshCredentialButton: View {
+    @Environment(\.dogTagColors) var c
+    let cred: Credential
+    @ObservedObject private var refresher = RefreshCenter.shared
+
+    var body: some View {
+        let checking = refresher.isChecking(cred)
+        Button {
+            Task { await refresher.refresh(cred) }
+        } label: {
+            ZStack {
+                if checking {
+                    ProgressView().scaleEffect(0.7)
+                } else {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(c.accent)
+                }
+            }
+            .frame(width: 32, height: 32)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(checking)
+        .accessibilityLabel("Refresh \(cred.title) from the chain")
+    }
+}
+
+/// Re-read every record currently listed.
+struct RefreshAllButton: View {
+    @Environment(\.dogTagColors) var c
+    let credentials: [Credential]
+    @ObservedObject private var refresher = RefreshCenter.shared
+
+    var body: some View {
+        let running = refresher.isBatchRunning
+        Button {
+            Task { await refresher.refreshAll(credentials) }
+        } label: {
+            HStack(spacing: 5) {
+                if running {
+                    ProgressView().scaleEffect(0.6).frame(width: 10, height: 10)
+                    Text("Checking \(refresher.batchRemaining) left")
+                } else {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                    Text("Refresh all")
+                }
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(c.accent)
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Capsule().fill(c.surfaceVariant))
+        }
+        .buttonStyle(.plain)
+        .disabled(running || credentials.isEmpty)
+        .opacity(credentials.isEmpty ? 0.5 : 1)
+    }
+}
+
+/// Delete affordance. The destructive act itself is always behind `confirmDeleteCredential`.
+struct DeleteCredentialButton: View {
+    @Environment(\.dogTagColors) var c
+    let cred: Credential
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            Image(systemName: "trash").font(.system(size: 14))
+                .foregroundColor(c.muted)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Delete \(cred.title)")
+    }
+}
+
+extension View {
+    /// The single home of the delete confirmation, so the wording cannot drift between the surfaces
+    /// that offer it. The copy is deliberately local-only: deleting removes this phone's copy and
+    /// nothing else.
+    /// The label is resolved HERE, off the shared store, rather than passed in: a caller-supplied
+    /// name is what let the two surfaces name the same record differently.
+    func confirmDeleteCredential(
+        _ pending: Binding<Credential?>,
+        onDelete: @escaping (Credential) -> Void
+    ) -> some View {
+        confirmationDialog(
+            pending.wrappedValue.map { "Delete \($0.title)?" } ?? "Delete this document?",
+            isPresented: Binding(
+                get: { pending.wrappedValue != nil },
+                set: { if !$0 { pending.wrappedValue = nil } }),
+            titleVisibility: .visible,
+            presenting: pending.wrappedValue
+        ) { cred in
+            Button("Delete from this phone", role: .destructive) { onDelete(cred) }
+            Button("Cancel", role: .cancel) {}
+        } message: { cred in
+            Text(cred.deleteConfirmationMessage(petLabel: PetLabel.line(
+                name: LocalStore.shared.petDisplayName(for: cred), dogTagId: cred.dogTagId)))
+        }
     }
 }

@@ -2125,3 +2125,79 @@ flow (`AppointmentDetail.tsx`) and the ad-hoc one (`Verify.tsx`), so a verificat
 thing however it was started. It offers NO mode/disclosure choice: the retired ZK-vs-Normal selector
 was removed from `VerifyFlow` when the backend collapsed to the single owner-hidden submit route, and
 `stacks/groomer/web/e2e/verify.spec.ts` asserts neither "Mode" nor "Normal" appears.
+
+## Mobile: exercising either app's UI without a scan flow
+
+Both apps persist to two plain JSON files (`pets.json`, `credentials.json`) in the app's private
+directory, and read them at startup, so a UI state can be staged directly instead of driving a QR
+import. On the iOS simulator:
+
+```bash
+DATA=$(xcrun simctl get_app_container <udid> io.liberalize.dogtag data)   # write $DATA/Documents/*.json
+```
+
+Records whose `wrappedDocJson` is hand-written will fail the offline integrity check and never reach
+the on-chain branch. Generate genuinely valid ones with `wrapDocument` from
+`packages/dogtag-standard-ts` (the TS mirror of the Rust canonicalization) - scalars must be typed,
+e.g. `{tag: 2, value: "…"}`.
+
+**A worktree's `DogTagFFI.xcframework` can be stale**, and it reads as a source break. It is
+gitignored, so it does not update with a checkout. If the Swift build fails with
+`cannot find 'uniffi_dogtag_standard_checksum_func_…' in scope` in `dogtag_standard.swift`, the
+vendored xcframework predates the committed UniFFI bindings - rebuild it (see "Building the mobile
+(iOS) holder app") rather than editing the bindings. Compare the two symbol sets first:
+
+```bash
+comm -13 \
+  <(grep -o "uniffi_dogtag_standard_checksum_func_[a-z0-9_]*" \
+      apps/ios/DogTagFFI.xcframework/ios-arm64-simulator/Headers/dogtag_standardFFI.h | sort -u) \
+  <(grep -o "uniffi_dogtag_standard_checksum_func_[a-z0-9_]*" \
+      apps/ios/DogTag/dogtag_standard.swift | sort -u)
+```
+
+Empty output means the header covers the bindings. The FFI is arm64-only, so build the simulator
+slice with `ARCHS=arm64` (a generic-simulator build fails to link x86_64).
+
+## Verification verdicts are point-in-time, and must not fail open
+
+A stored `Credential.verdict` is whatever the chain said at import; it does not track later
+revocations. `CredentialRefresher` (iOS `RecordImporter.swift`, Android `data/CredentialRefresher.kt`)
+re-reads it, and `lastCheckedAt` is what makes an old answer visibly old.
+
+When a chain read is inconclusive the verdict is **UNVERIFIED with the reason, never VALID** - not
+being able to check is not the same as checking and finding the record good, and the whole point of
+a revocation check is that distinction. `verdict`, `verdictReason` and `lastCheckedAt` are always
+written together so they describe the same check. Two anchor shapes exist: an ordinary record is
+anchored in a DogTagIssuer clone (`isValid(root)`), while a `DOG_PROFILE` is anchored in the
+DogTagSBT (`profileRoot(dogTagId)`), so any re-check has to branch on `issuer.documentStore`.
+
+The SBT branch checks the profile root ONLY. There is deliberately no owner comparison: the tag is
+custodial under the owner-hidden model, so `ownerOf` is the neutral custodian and says nothing about
+the holder - the retired mobile `RoaxRpc.ownerOf`/`Net.swift` reads went with the owner-revealing
+layer. Never reintroduce an ownership check here to "strengthen" the refresh; it would fail every
+legitimately-held tag.
+
+**The no-fail-open rule cuts BOTH ways: an unestablished answer must not be stamped INVALID either.**
+Asserting INVALID from a read that never resolved tells an owner their genuine credential is bad,
+which is the exact mirror of the fail-open. Two SBT-branch traps, both fixed and both easy to
+reintroduce: (1) `dogTagIdFieldHex` THROWS for a non-decimal handle, and the importer stores a
+32-hex share token as `dogTagId` whenever the wrapped doc carries none - so never fall back to the
+raw handle, which `padUint` silently mangles into a lookup of an unset slot; UNVERIFIED "this dog
+tag id could not be resolved on-chain" is the answer. (2) An UNSET `profileRoot` slot returns an
+all-zero 32-byte word that passes every well-formedness guard, so a never-anchored tag would compare
+as a mismatch; all-zero is UNVERIFIED "no profile root is anchored on-chain for this dog tag", and
+INVALID is reserved for a real non-zero root that genuinely differs. Both reason strings are
+byte-identical across the two ports on purpose - string drift is how the two refreshers diverged
+before. An EMPTY/short return is deliberately NOT distinguished: both `RoaxRpc.profileRoot`
+implementations collapse it to nil, so it already lands on UNVERIFIED, just with the
+could-not-reach-the-chain reason.
+Known drift hazard, accepted: on Android the unset-slot predicate now lives in TWO places -
+`CredentialRefresher`'s inline `drop(2).all { it == '0' }` and `RoaxRpc.classifyProfileRoot`
+(which the scan-time poll uses) - because the helper folds a null RPC read and an unset slot into
+one `Pending` while the refresher needs a distinct reason string for each; revise both together.
+
+The delete confirmation resolves its own pet label, on BOTH ports: iOS inside
+`confirmDeleteCredential` (via `LocalStore.petDisplayName` + `PetLabel.line`) and Android inside
+`DeleteCredentialDialog` (via `List<Pet>.petLabel`). Never reintroduce a caller-supplied name
+parameter - two callers passing different fallbacks (`""` vs `"DogTag #<id>"`) is exactly how the
+same record came to be named two different ways depending on which screen raised the dialog.
