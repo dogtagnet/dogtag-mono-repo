@@ -110,12 +110,9 @@ impl JwtKeys {
     /// can fail closed.
     pub fn from_seed_hex(seed_hex: &str) -> Result<Self, String> {
         let s = seed_hex.trim();
-        let raw =
-            hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| format!("not hex: {e}"))?;
-        let bytes: [u8; 32] = raw
-            .as_slice()
-            .try_into()
-            .map_err(|_| format!("expected 32 bytes, got {}", raw.len()))?;
+        let raw = hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| format!("not hex: {e}"))?;
+        let bytes: [u8; 32] =
+            raw.as_slice().try_into().map_err(|_| format!("expected 32 bytes, got {}", raw.len()))?;
         let signing = SigningKey::from_bytes(&bytes);
         let verifying = signing.verifying_key();
         Ok(JwtKeys { signing, verifying })
@@ -375,14 +372,8 @@ mod tests {
         let a = JwtKeys::from_seed_hex(&seed).unwrap();
         let b = JwtKeys::from_seed_hex(&seed).unwrap();
         let claims = ShareClaims {
-            iss: "i".into(),
-            sub: "s".into(),
-            aud: "dogtag-business".into(),
-            scope: "read:credential".into(),
-            iat: now(),
-            nbf: now(),
-            exp: now() + 180,
-            jti: "j".into(),
+            iss: "i".into(), sub: "s".into(), aud: "dogtag-business".into(),
+            scope: "read:credential".into(), iat: now(), nbf: now(), exp: now() + 180, jti: "j".into(),
         };
         let token = sign_jwt(&a, &claims);
         let decoded: ShareClaims = verify_jwt(&b, &token, 30).expect("cross-instance verify");
@@ -390,10 +381,7 @@ mod tests {
         let other = JwtKeys::from_seed_hex(&("cd".repeat(32))).unwrap();
         assert!(verify_jwt::<ShareClaims>(&other, &token, 30).is_err());
         assert!(JwtKeys::from_seed_hex("zz").is_err());
-        assert!(
-            JwtKeys::from_seed_hex(&"ab".repeat(16)).is_err(),
-            "wrong length"
-        );
+        assert!(JwtKeys::from_seed_hex(&"ab".repeat(16)).is_err(), "wrong length");
     }
 
     #[test]

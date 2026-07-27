@@ -17,10 +17,7 @@ pub fn field_of_value(s: &TypedScalar) -> Result<Fr, DogTagError> {
 /// hashLeaf — Poseidon(DS_LEAF, fieldOf(keyPath), fieldOf(salt), fieldOf(typeTag), fieldOf(value)).
 pub fn hash_leaf(keypath: &str, salt: &[u8], s: &TypedScalar) -> Result<Fr, DogTagError> {
     if salt.len() != 16 {
-        return Err(DogTagError::Other(format!(
-            "salt must be 16 bytes (got {})",
-            salt.len()
-        )));
+        return Err(DogTagError::Other(format!("salt must be 16 bytes (got {})", salt.len())));
     }
     Ok(poseidon(&[
         Fr::from(DS_LEAF),

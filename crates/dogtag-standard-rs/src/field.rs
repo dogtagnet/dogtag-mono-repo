@@ -30,11 +30,7 @@ pub fn bytes_to_field(x: &[u8]) -> Fr {
 
 /// Pack bytes that fit one field directly (<= 31 bytes), big-endian: salt(16B), addresses(uint160).
 pub fn field_from_scalar_bytes(x: &[u8]) -> Fr {
-    assert!(
-        x.len() <= 31,
-        "scalar bytes must be <= 31 (got {})",
-        x.len()
-    );
+    assert!(x.len() <= 31, "scalar bytes must be <= 31 (got {})", x.len());
     from_be_limb(x)
 }
 

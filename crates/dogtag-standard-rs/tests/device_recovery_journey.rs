@@ -60,32 +60,19 @@ fn a_lost_phone_is_recovered_by_the_phrase_plus_the_credential() {
     println!("\n=== DAY 1 - the owner's phone builds the tag tree (nothing leaves the device) ===");
     println!("  dogTagId (decimal handle) : {TAG_DEC}");
     println!("  dogTagId (canonical field): {tag_hex}");
-    println!(
-        "  owner-secret [DEVICE-ONLY]: {}",
-        original.owner_secret_hex
-    );
+    println!("  owner-secret [DEVICE-ONLY]: {}", original.owner_secret_hex);
     println!("  consent key Ax [DEVICE-ONLY]: {}", original.ax_hex);
-    println!(
-        "  R  --> handed to the issuer, sealed as profileRoot: {}",
-        original.root_hex
-    );
+    println!("  R  --> handed to the issuer, sealed as profileRoot: {}", original.root_hex);
 
     // --- Day 2: the phone is lost. Documents/dogtag-owner-secrets.json is backup-excluded, so
     //            NOTHING device-local survives. The owner has their 24 words + the credential.
     let recovered = build(PHRASE_SEED, credential_attributes());
     println!("\n=== DAY 2 - phone lost. New phone: 24-word phrase + the issued credential ===");
-    println!(
-        "  owner-secret re-derived   : {}",
-        recovered.owner_secret_hex
-    );
+    println!("  owner-secret re-derived   : {}", recovered.owner_secret_hex);
     println!("  R rebuilt                 : {}", recovered.root_hex);
     println!(
         "  --> tag recovered: {}",
-        if recovered.root_hex == original.root_hex {
-            "YES - R matches profileRoot"
-        } else {
-            "NO"
-        }
+        if recovered.root_hex == original.root_hex { "YES - R matches profileRoot" } else { "NO" }
     );
 
     assert_eq!(
@@ -118,10 +105,7 @@ fn a_lost_phone_is_recovered_by_the_phrase_plus_the_credential() {
         attacker.owner_secret_hex, original.owner_secret_hex,
         "a different seed must never derive this tag's owner-secret"
     );
-    assert_ne!(
-        attacker.root_hex, original.root_hex,
-        "a different seed must not rebuild R"
-    );
+    assert_ne!(attacker.root_hex, original.root_hex, "a different seed must not rebuild R");
 
     // --- The precise documented limit: the phrase ALONE is not enough ---------------------------
     // The owner restores the phrase but cannot produce the credential, so they guess the attributes.
@@ -130,10 +114,7 @@ fn a_lost_phone_is_recovered_by_the_phrase_plus_the_credential() {
     without_credential[0].salt_hex = "0xffffffffffffffffffffffffffffffff".to_string();
     let guessed = build(PHRASE_SEED, without_credential);
     println!("\n=== The RIGHT phrase, but the credential is gone (attribute salts unknown) ===");
-    println!(
-        "  owner-secret re-derived   : {} (correct - it is seed-derived)",
-        guessed.owner_secret_hex
-    );
+    println!("  owner-secret re-derived   : {} (correct - it is seed-derived)", guessed.owner_secret_hex);
     println!("  R rebuilt                 : {}", guessed.root_hex);
     println!("  --> R does NOT match profileRoot: the phrase ALONE does not restore the tag.");
     println!("      This is the documented limit (docs/MOBILE_OWNER_SECRET.md): seed + credential == same R.\n");
