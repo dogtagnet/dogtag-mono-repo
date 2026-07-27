@@ -24,6 +24,7 @@ import {
   type VerifyHistoryItem,
   type VerifySessionStart,
 } from "../lib/api";
+import { deadlineFromTtl, mmss, useCountdown } from "../lib/countdown";
 
 function Frag({ label, v, testid }: { label: string; v: unknown; testid?: string }) {
   if (v === null || v === undefined)
@@ -41,23 +42,11 @@ function Frag({ label, v, testid }: { label: string; v: unknown; testid?: string
 
 type Phase = "idle" | "starting" | "awaiting" | "verified" | "error" | "failed";
 
-/** Countdown for the export token, measured from `ttlSecs` at response receipt — not from
- *  `expiresAt - Date.now()`, which would be wrong by whatever the browser/server clock skew is. */
-function useCountdown(session: VerifySessionStart | null): number {
-  const [remaining, setRemaining] = useState(0);
-  useEffect(() => {
-    if (!session) return;
-    const deadline = Date.now() + session.ttlSecs * 1000;
-    const tick = () => setRemaining(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [session]);
-  return remaining;
-}
-
-function mmss(secs: number): string {
-  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+/** A started verify session and the moment its export token lapses, held as ONE value so a session is
+ *  never carried without the countdown that governs it. */
+interface ActiveSession {
+  started: VerifySessionStart;
+  deadline: number;
 }
 
 /**
@@ -73,11 +62,11 @@ function OwnerHiddenVerifyFlow({ health }: { health: Health | null }) {
     `${VERIFY_PURPOSES[0].value}|${VERIFY_PURPOSES[0].recordType}`,
   );
   const [phase, setPhase] = useState<Phase>("idle");
-  const [session, setSession] = useState<VerifySessionStart | null>(null);
+  const [session, setSession] = useState<ActiveSession | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const remaining = useCountdown(phase === "awaiting" ? session : null);
+  const remaining = useCountdown(phase === "awaiting" ? (session?.deadline ?? null) : null);
   const selected = VERIFY_PURPOSES.find((p) => `${p.value}|${p.recordType}` === choice);
 
   const stopPolling = useCallback(() => {
@@ -119,9 +108,10 @@ function OwnerHiddenVerifyFlow({ health }: { health: Health | null }) {
     setPhase("starting");
     setError(null);
     setTxHash(null);
+    setSession(null);
     try {
       const started = await verifySessionStart(selected.value, selected.recordType);
-      setSession(started);
+      setSession({ started, deadline: deadlineFromTtl(started.ttlSecs) });
       setPhase("awaiting");
       beginPolling(started.sessionId);
     } catch (cause) {
@@ -216,7 +206,7 @@ function OwnerHiddenVerifyFlow({ health }: { health: Health | null }) {
           </Badge>
           {remaining > 0 ? (
             <>
-              <QrCode value={session.qrUrl} caption={session.qrUrl} />
+              <QrCode value={session.started.qrUrl} caption={session.started.qrUrl} />
               <Badge
                 variant={remaining <= 60 ? "warning" : "neutral"}
                 data-testid="verify-qr-countdown"

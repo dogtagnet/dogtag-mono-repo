@@ -11,29 +11,13 @@ import {
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { shareRecord, type QrToken } from "../lib/api";
+import { deadlineFromTtl, mmss, useCountdown } from "../lib/countdown";
 
-/** The live countdown for a one-time QR token.
- *
- *  Counted from `ttlSecs` measured at RESPONSE RECEIPT, not `expiresAt - Date.now()`: the two clocks
- *  are the backend's and the browser's, and even a few seconds of skew would show a wrong (or already
- *  expired) timer on a QR that is perfectly good. `expiresAt` is still shown as the underlying fact. */
-function useCountdown(token: QrToken | null): number {
-  const [remaining, setRemaining] = useState(0);
-  useEffect(() => {
-    if (!token) return;
-    const deadline = Date.now() + token.ttlSecs * 1000;
-    const tick = () => setRemaining(Math.max(0, Math.ceil((deadline - Date.now()) / 1000)));
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, [token]);
-  return remaining;
-}
-
-function mmss(secs: number): string {
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
+/** A minted token and the moment it lapses, held as ONE value so a token is never carried without the
+ *  countdown that governs it. */
+interface Minted {
+  token: QrToken;
+  deadline: number;
 }
 
 export interface ShareQrTarget {
@@ -59,26 +43,26 @@ export function ShareQrDialog({
   target: ShareQrTarget | null;
   onClose: () => void;
 }) {
-  const [token, setToken] = useState<QrToken | null>(null);
+  const [minted, setMinted] = useState<Minted | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const remaining = useCountdown(token);
-  const expired = token !== null && remaining === 0;
+  const remaining = useCountdown(minted?.deadline ?? null);
+  const expired = minted !== null && remaining === 0;
 
   const root = target?.root ?? null;
   useEffect(() => {
     if (!root) {
-      setToken(null);
+      setMinted(null);
       setError(null);
       return;
     }
     let cancelled = false;
     setBusy(true);
     setError(null);
-    setToken(null);
+    setMinted(null);
     shareRecord(root)
       .then((t) => {
-        if (!cancelled) setToken(t);
+        if (!cancelled) setMinted({ token: t, deadline: deadlineFromTtl(t.ttlSecs) });
       })
       .catch((e) => {
         if (!cancelled) setError(String(e instanceof Error ? e.message : e));
@@ -96,7 +80,8 @@ export function ShareQrDialog({
     setBusy(true);
     setError(null);
     try {
-      setToken(await shareRecord(root));
+      const t = await shareRecord(root);
+      setMinted({ token: t, deadline: deadlineFromTtl(t.ttlSecs) });
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     } finally {
@@ -121,11 +106,11 @@ export function ShareQrDialog({
           </Badge>
         )}
 
-        {busy && !token && <p className="py-6 text-sm text-muted">Minting a one-time token…</p>}
+        {busy && !minted && <p className="py-6 text-sm text-muted">Minting a one-time token…</p>}
 
-        {token && !expired && (
+        {minted && !expired && (
           <div className="flex flex-col items-center gap-3">
-            <QrCode value={token.qrUrl} caption={token.qrUrl} />
+            <QrCode value={minted.token.qrUrl} caption={minted.token.qrUrl} />
             <Badge variant={remaining <= 30 ? "warning" : "neutral"} data-testid="share-qr-countdown">
               expires in {mmss(remaining)}
             </Badge>
