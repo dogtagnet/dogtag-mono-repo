@@ -36,7 +36,7 @@ import {
   useDebounced,
   useList,
 } from "../app/crm";
-import { formatDate, formatSlot, startOfDayFromInput } from "../lib/time";
+import { addDays, formatDate, formatSlot, startOfDayFromInput } from "../lib/time";
 
 /** Sentinel for "no status filter" — a Select cannot hold an empty-string value. */
 const ANY = "any";
@@ -56,9 +56,11 @@ export function Appointments() {
   const q = useDebounced(search);
 
   // The date inputs are inclusive days; `to` becomes the START of the day AFTER, because the
-  // backend window is half-open [from, to). Without that, "to = today" would exclude today.
+  // backend window is half-open [from, to). Without that, "to = today" would exclude today. That
+  // next day is stepped with `addDays`, never `+ 86_400`: a DST day is 23h or 25h, so a fixed step
+  // would clip the selected end date's last hour or spill an hour of the day after into it.
   const from = fromDate ? startOfDayFromInput(fromDate) : undefined;
-  const to = toDate ? startOfDayFromInput(toDate) + 86_400 : undefined;
+  const to = toDate ? addDays(startOfDayFromInput(toDate), 1) : undefined;
 
   const { page, loading, error } = useList<CrmAppointment>(
     () =>

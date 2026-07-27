@@ -34,7 +34,7 @@ import {
   useDebounced,
   useList,
 } from "../app/crm";
-import { formatDateTime, startOfDayFromInput } from "../lib/time";
+import { addDays, formatDateTime, startOfDayFromInput } from "../lib/time";
 import { VERIFY_PURPOSES } from "./verifyPurposes";
 
 const ANY = "any";
@@ -63,9 +63,10 @@ export function Verifications() {
   const [offset, setOffset] = useState(0);
   const q = useDebounced(search);
 
-  // inclusive day inputs -> the backend's half-open [from, to) window
+  // inclusive day inputs -> the backend's half-open [from, to) window; `addDays` not `+ 86_400`,
+  // because a DST day is 23h or 25h and a fixed step lands the bound off local midnight
   const from = fromDate ? startOfDayFromInput(fromDate) : undefined;
-  const to = toDate ? startOfDayFromInput(toDate) + 86_400 : undefined;
+  const to = toDate ? addDays(startOfDayFromInput(toDate), 1) : undefined;
 
   const { page, loading, error } = useList<CrmVerification>(
     () =>

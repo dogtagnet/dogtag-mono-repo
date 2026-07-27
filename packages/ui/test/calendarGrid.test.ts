@@ -200,6 +200,30 @@ describe("every grid cell is a true local midnight", () => {
     expect(calendarBad).toBeLessThanOrEqual(fixedBad);
   });
 
+  it("holds for the exclusive upper bound of an inclusive-day range query", () => {
+    // The date filters and the dashboard's "today" window are half-open [from, to), where `to` is
+    // the start of the day AFTER the selected one. A fixed `+ DAY_SECS` step puts that bound at
+    // 23:00 on a fall-back day, silently dropping the selected day's last hour of bookings.
+    let fixedBad = 0;
+    let calendarBad = 0;
+    for (let y = 2024; y <= 2030; y += 1) {
+      for (let m = 0; m < 12; m += 1) {
+        for (let day = 1; day <= 28; day += 1) {
+          const from = startOfDay(Math.floor(new Date(y, m, day, 12).getTime() / 1000));
+          const to = addDays(from, 1);
+          if (!isLocalMidnight(from + DAY_SECS)) fixedBad += 1;
+          if (!isLocalMidnight(to)) calendarBad += 1;
+          // the day's last booking must still be inside the window
+          const late = Math.floor(new Date(y, m, day, 23, 30).getTime() / 1000);
+          expect(late).toBeGreaterThanOrEqual(from);
+          expect(late).toBeLessThan(to);
+        }
+      }
+    }
+    expect(calendarBad).toBe(0);
+    expect(calendarBad).toBeLessThanOrEqual(fixedBad);
+  });
+
   it("keeps a booking on the day after a spring-forward inside its cell (Europe/London)", () => {
     // The exact case that was dropped: 10:00 local on Mon 30 Mar 2026, the day after the UK
     // transition. Constructed from its known UTC instant (BST = UTC+1) so the assertion holds

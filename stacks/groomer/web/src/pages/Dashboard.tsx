@@ -12,7 +12,7 @@ import type { ComponentType } from "react";
 import { Link } from "react-router-dom";
 import { useApp } from "../app/AppContext";
 import { AppointmentStatusBadge, ListPlaceholder, useList } from "../app/crm";
-import { DAY_SECS, formatSlot, nowSec, startOfDay } from "../lib/time";
+import { addDays, formatSlot, nowSec, startOfDay } from "../lib/time";
 
 const QUICK_LINKS: {
   href: string;
@@ -63,8 +63,11 @@ export function Dashboard() {
   const { api } = useApp();
   const todayStart = startOfDay(nowSec());
 
+  // `addDays`, never `+ DAY_SECS`: a local day is 23h or 25h across a DST transition, so a fixed
+  // step would end the window at 23:00 (dropping today's last hour of bookings) or at 01:00
+  // tomorrow (pulling tomorrow's early ones onto today).
   const { page, loading, error } = useList<CrmAppointment>(
-    () => api.listAppointments({ from: todayStart, to: todayStart + DAY_SECS, limit: 50 }),
+    () => api.listAppointments({ from: todayStart, to: addDays(todayStart, 1), limit: 50 }),
     [todayStart],
   );
 
