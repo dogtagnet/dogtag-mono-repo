@@ -84,8 +84,9 @@ interface ChainState {
 }
 
 /**
- * Intercept the ROAX public RPC and answer the verify reads by selector. Every other JSON-RPC
- * method (eth_chainId, wagmi bootstrap calls) is answered benignly so the app still boots. Returns a
+ * Intercept the ROAX public RPC and answer the verify reads by selector. Non-`eth_call` methods
+ * (eth_chainId, wagmi bootstrap) are answered benignly so the app still boots, but an `eth_call` this
+ * fake does not model is a hard FAILURE naming the selector - never a fabricated zero word. Returns a
  * mutable list of every URL the page requested, so the test can assert the operator relay was NOT hit.
  */
 async function mockRoaxRpc(page: Page, state: ChainState): Promise<string[]> {
@@ -105,22 +106,72 @@ async function mockRoaxRpc(page: Page, state: ChainState): Promise<string[]> {
       if (sel === SEL.issuedAt) return answer(msg.id, uintWord(state.issuedAt));
       if (sel === SEL.issuedBy) return answer(msg.id, addressWord(state.issuedBy));
       if (sel === SEL.isWhitelistedFor) return answer(msg.id, boolWord(state.isWhitelistedFor));
-      return answer(msg.id, boolWord(false));
+      // NO SILENT DEFAULT. This used to answer any unmodelled read with a zero word, and that is
+      // precisely how the mock went stale: when the shipped path grew the factory `rootIssuer`
+      // lookup, the fake invented a zero address for it and the suite reported a plausible-but-wrong
+      // verdict instead of naming the gap - the same "an unanswered check counted as a passed one"
+      // shape the mandatory issuer-whitelist pillar exists to close. A throwing route handler is
+      // reported by Playwright as an unhandled error, so the selector lands in front of whoever
+      // added the read.
+      throw new Error(
+        `verify-credential e2e: unmodelled eth_call selector ${sel}. The verify path makes a chain ` +
+          `read this mock does not model - add it to SEL/ChainState instead of letting the fake ` +
+          `invent an answer for it. (calldata: ${data})`,
+      );
     }
+    // Non-`eth_call` methods are wagmi/viem bootstrap noise that the verify path never reads, so an
+    // empty word keeps the app booting; only the reads above decide a verdict.
     return answer(msg.id, "0x");
   };
 
   await page.route("https://devrpc.roax.net/**", async (route: Route) => {
     const body = route.request().postDataJSON();
-    const json = Array.isArray(body) ? body.map(handleOne) : handleOne(body);
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify(json) });
+    const batch: { id?: unknown }[] = Array.isArray(body) ? body : [body];
+    const send = (replies: unknown[]) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(Array.isArray(body) ? replies : replies[0]),
+      });
+    let replies: unknown[];
+    try {
+      replies = batch.map(handleOne);
+    } catch (e) {
+      // Still answer the request - as a JSON-RPC error, which viem surfaces immediately rather than
+      // retrying the way it would a network-level abort - so the page fails fast and the test does
+      // not sit out its 60s timeout before the rethrow below is reported. Only the mapping is
+      // guarded: wrapping the fulfill too would let a "Route is already handled!" from the second
+      // fulfill replace the selector message this exists to deliver.
+      const error = { code: -32000, message: (e as Error).message };
+      await send(batch.map((m) => ({ jsonrpc: "2.0", id: m?.id ?? null, error })));
+      throw e;
+    }
+    await send(replies);
   });
 
   return requestedUrls;
 }
 
 test.beforeEach(async ({ page }) => {
-  // Get past the portal Login gate (portal-level auth is unrelated to the verify action).
+  // Get past the portal Login gate (portal-level auth is unrelated to the verify action). The seeded
+  // token only survives if the portal's own backend probes succeed, so stub `/api/` benignly the way
+  // every sibling vet spec does - otherwise a real (or absent) vet-api answers 401 and the shared
+  // client's stale-session hook clears the token mid-test, dropping the page back to "Sign in".
+  // Verification itself never touches the backend; that is what `assertNoOperatorRelay` proves, and
+  // this stub keeps that assertion honest by recording any relay call instead of hiding it.
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route: Route) => {
+    const path = new URL(route.request().url()).pathname.replace(/^\/api/, "");
+    // Shapes the page's own panels destructure. A bare `{}` for these crashes the render, which
+    // would take the verify panel down with it.
+    if (path === "/settings/signing-mode") return route.fulfill({ json: { signingMode: "backend" } });
+    if (path === "/verify/history") return route.fulfill({ json: { verifications: [] } });
+    if (path === "/issuer/signers") return route.fulfill({ json: { signers: [] } });
+    // Same rule as the RPC fake above, for the same reason: a catch-all `{}` is an invented answer,
+    // and CLAUDE.md records that exact pattern silently redirecting sibling vet specs to `/unlock`
+    // instead of the page under test. Name the path rather than guess a shape for it.
+    const message = `verify-credential e2e: unmodelled backend path ${path} - give it a shape the page can destructure.`;
+    await route.fulfill({ status: 501, json: { error: message } });
+    throw new Error(message);
+  });
   await page.addInitScript(([k]) => window.localStorage.setItem(k as string, "op-token-e2e"), [
     OP_TOKEN_KEY,
   ]);
