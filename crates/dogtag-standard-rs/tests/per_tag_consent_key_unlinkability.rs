@@ -58,7 +58,10 @@ fn one_wallet_two_tags_get_independent_consent_keys() {
     let milo = register("424243", "Milo");
 
     println!("\n=== One wallet (one recovery phrase), two dog tags ===\n");
-    println!("{:<24} {:<24} {:<24}", "", "tag 424242 (Rex)", "tag 424243 (Milo)");
+    println!(
+        "{:<24} {:<24} {:<24}",
+        "", "tag 424242 (Rex)", "tag 424243 (Milo)"
+    );
     for (label, a, b) in [
         ("consent Ax", &rex.ax_hex, &milo.ax_hex),
         ("consent Ay", &rex.ay_hex, &milo.ay_hex),
@@ -68,10 +71,18 @@ fn one_wallet_two_tags_get_independent_consent_keys() {
             &rex.consent_key_leaf_hex,
             &milo.consent_key_leaf_hex,
         ),
-        ("owner secret", &rex.owner_secret_hex, &milo.owner_secret_hex),
+        (
+            "owner secret",
+            &rex.owner_secret_hex,
+            &milo.owner_secret_hex,
+        ),
         ("profile root R", &rex.root_hex, &milo.root_hex),
     ] {
-        let verdict = if a == b { "SHARED  <-- cross-linkable" } else { "independent" };
+        let verdict = if a == b {
+            "SHARED  <-- cross-linkable"
+        } else {
+            "independent"
+        };
         println!("{label:<24} {:<24} {:<24} {verdict}", short(a), short(b));
     }
 

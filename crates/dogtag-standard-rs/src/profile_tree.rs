@@ -244,7 +244,8 @@ pub fn build_profile_tree(
     let owner_address_field = field_from_scalar_bytes(owner_address);
     let key_hash = poseidon(&[consent.ax, consent.ay]);
 
-    let owner_address_leaf = hash_reserved_leaf(KP_OWNER_ADDRESS, &owner_salt, owner_address_field)?;
+    let owner_address_leaf =
+        hash_reserved_leaf(KP_OWNER_ADDRESS, &owner_salt, owner_address_field)?;
     let consent_key_leaf = hash_reserved_leaf(KP_CONSENT_KEY, &key_salt, key_hash)?;
     let owner_secret_leaf = hash_reserved_leaf(KP_OWNER_SECRET, &secret_salt, owner_secret)?;
 
@@ -430,7 +431,10 @@ mod tests {
     fn reserved_key_path_fields_match_the_pinned_circuit_constants() {
         for (kp, want) in RESERVED_KEY_PATH_FIELDS {
             let got = be_bytes_to_dec(&to_be_bytes32(&field_of_keypath(kp)));
-            assert_eq!(got, want, "fieldOfKeyPath({kp}) drifted from consent.circom");
+            assert_eq!(
+                got, want,
+                "fieldOfKeyPath({kp}) drifted from consent.circom"
+            );
         }
     }
 
@@ -448,7 +452,10 @@ mod tests {
             recovered.owner_secret, first.owner_secret,
             "owner-secret must regenerate from the seed"
         );
-        assert_eq!(recovered.root, first.root, "same seed must rebuild the same R");
+        assert_eq!(
+            recovered.root, first.root,
+            "same seed must rebuild the same R"
+        );
         // The whole owner-control core, not just the secret.
         assert_eq!(recovered.ax, first.ax);
         assert_eq!(recovered.ay, first.ay);
@@ -457,7 +464,10 @@ mod tests {
         assert_eq!(recovered.secret_salt, first.secret_salt);
 
         // And the standalone KDF agrees with what the builder embedded.
-        assert_eq!(derive_owner_secret(SEED, tag_id()).unwrap(), first.owner_secret);
+        assert_eq!(
+            derive_owner_secret(SEED, tag_id()).unwrap(),
+            first.owner_secret
+        );
     }
 
     #[test]
@@ -472,8 +482,13 @@ mod tests {
     #[test]
     fn a_different_seed_yields_a_different_secret_and_root() {
         let a = build_profile_tree(SEED, tag_id(), &addr(), &attrs()).unwrap();
-        let b = build_profile_tree(b"a completely different wallet seed", tag_id(), &addr(), &attrs())
-            .unwrap();
+        let b = build_profile_tree(
+            b"a completely different wallet seed",
+            tag_id(),
+            &addr(),
+            &attrs(),
+        )
+        .unwrap();
         assert_ne!(a.owner_secret, b.owner_secret);
         assert_ne!(a.root, b.root);
     }
@@ -494,7 +509,10 @@ mod tests {
     fn the_same_seed_yields_independent_consent_keys_per_tag() {
         let a = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, Fr::from(1u64));
         let b = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, Fr::from(2u64));
-        assert_ne!(a.prv, b.prv, "consent private key must be bound to dogTagId");
+        assert_ne!(
+            a.prv, b.prv,
+            "consent private key must be bound to dogTagId"
+        );
         assert_ne!(a.ax, b.ax, "consent Ax must be bound to dogTagId");
         assert_ne!(a.ay, b.ay, "consent Ay must be bound to dogTagId");
 
@@ -517,7 +535,10 @@ mod tests {
         let tree = build_profile_tree(SEED, id, &addr(), &attrs()).unwrap();
 
         let per_tag = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, id);
-        assert_eq!(tree.consent_prv, per_tag.prv, "tree must use the per-tag consent key");
+        assert_eq!(
+            tree.consent_prv, per_tag.prv,
+            "tree must use the per-tag consent key"
+        );
 
         let other_tag = crate::eddsa::derive_babyjub_consent_key_per_tag(SEED, Fr::from(999u64));
         assert_ne!(
@@ -614,7 +635,10 @@ mod tests {
         tampered.extend(identity_attrs());
         tampered.last_mut().unwrap().value = TypedScalar::Str("FORGED".to_string());
         let other = build_profile_tree(SEED, tag_id(), &addr(), &tampered).unwrap();
-        assert_ne!(t.root, other.root, "identity values must be committed into R");
+        assert_ne!(
+            t.root, other.root,
+            "identity values must be committed into R"
+        );
     }
 
     fn identity_attrs() -> Vec<AttributeLeaf> {
@@ -645,7 +669,7 @@ mod tests {
     fn the_owner_prefix_guard_rejects_collisions_and_admits_identity() {
         // Rejected: anything under `owner.` that is not under `owner.identity.`.
         for kp in [
-            "owner.address",     // the reserved leaves themselves, still rejected
+            "owner.address", // the reserved leaves themselves, still rejected
             "owner.consentKey",
             "owner.secret",
             "owner.delegateKey", // a FUTURE control leaf must not be squattable today
@@ -707,7 +731,11 @@ mod tests {
     #[test]
     fn all_three_reserved_leaves_are_included_in_the_root() {
         let t = build_profile_tree(SEED, tag_id(), &addr(), &attrs()).unwrap();
-        for leaf in [t.owner_address_leaf, t.consent_key_leaf, t.owner_secret_leaf] {
+        for leaf in [
+            t.owner_address_leaf,
+            t.consent_key_leaf,
+            t.owner_secret_leaf,
+        ] {
             let proof = merkle_proof(&t.tree.layers, leaf);
             assert_eq!(process_proof(&proof, leaf), t.root);
         }

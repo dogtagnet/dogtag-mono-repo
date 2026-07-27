@@ -6,8 +6,8 @@
 //! call through the generated bindings). The JVM-level repeat lives in apps/android.
 
 use dogtag_standard::ffi::{
-    build_merkle_root_hex, bytes_to_field_hex, hash_leaf_hex, hash_node_hex, verify_inclusion_proof_hex,
-    verify_integrity, wrap_document_json,
+    build_merkle_root_hex, bytes_to_field_hex, hash_leaf_hex, hash_node_hex,
+    verify_inclusion_proof_hex, verify_integrity, wrap_document_json,
 };
 use serde_json::Value;
 
@@ -111,7 +111,9 @@ fn ffi_wrap_then_verify_integrity_valid() {
 #[test]
 fn ffi_inclusion_vectors_parity() {
     let v = vectors();
-    let arr = v["inclusion"].as_array().expect("testvectors.json missing `inclusion`");
+    let arr = v["inclusion"]
+        .as_array()
+        .expect("testvectors.json missing `inclusion`");
     let mut checked = 0usize;
     let mut negatives = 0usize;
     for m in arr {
@@ -136,14 +138,24 @@ fn ffi_inclusion_vectors_parity() {
             .collect();
         let got = verify_inclusion_proof_hex(key_path, salt_hex, tag, value, proof_steps, root_hex)
             .expect("verify_inclusion_proof_hex");
-        assert_eq!(got, want, "FFI inclusion {}: got={got} want={want}", m["name"]);
+        assert_eq!(
+            got, want,
+            "FFI inclusion {}: got={got} want={want}",
+            m["name"]
+        );
         checked += 1;
         if !want {
             negatives += 1;
         }
     }
-    assert!(checked >= 100, "expected the full shared inclusion vector set (got {checked})");
-    assert!(negatives >= 3, "expected negative (reject) vectors (got {negatives})");
+    assert!(
+        checked >= 100,
+        "expected the full shared inclusion vector set (got {checked})"
+    );
+    assert!(
+        negatives >= 3,
+        "expected negative (reject) vectors (got {negatives})"
+    );
 }
 
 /// `hash_node_hex` is the Poseidon3 node primitive the foreign verifiers fold with. For a 2-leaf
@@ -157,13 +169,21 @@ fn ffi_hash_node_hex_matches_vectors() {
         .iter()
         .find(|m| m["name"] == "size_2")
         .expect("size_2 merkle vector");
-    let leaves: Vec<String> =
-        m["leaf_hexes"].as_array().unwrap().iter().map(|h| h.as_str().unwrap().to_string()).collect();
+    let leaves: Vec<String> = m["leaf_hexes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h.as_str().unwrap().to_string())
+        .collect();
     let (a, b) = (leaves[0].clone(), leaves[1].clone());
     let root = m["root_hex"].as_str().unwrap();
     let got = hash_node_hex(a.clone(), b.clone()).expect("hash_node_hex");
     assert_eq!(got, root, "hash_node_hex(a,b) must equal the 2-leaf root");
-    assert_eq!(got, hash_node_hex(b, a).expect("hash_node_hex"), "hash_node must be commutative");
+    assert_eq!(
+        got,
+        hash_node_hex(b, a).expect("hash_node_hex"),
+        "hash_node must be commutative"
+    );
 }
 
 #[test]

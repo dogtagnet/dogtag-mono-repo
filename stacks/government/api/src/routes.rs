@@ -315,7 +315,7 @@ async fn health(State(st): State<AppState>) -> Resp {
         "canSign": st.chain.can_broadcast_real_tx(),
         "signer": (!simulated).then(|| signer.clone()).flatten(),
         // The MemChain stand-in address, surfaced under a name that cannot be mistaken for a real key.
-        "simulatedSigner": simulated.then(|| signer).flatten(),
+        "simulatedSigner": simulated.then_some(signer).flatten(),
         "issuers": {
             app::TRAVEL_CLEARANCE: st.cfg.issuer_addr_for(app::TRAVEL_CLEARANCE),
             app::EU_HEALTH_CERT: st.cfg.issuer_addr_for(app::EU_HEALTH_CERT),
@@ -803,7 +803,11 @@ async fn resolve_issuer_domain_binding(
             "detail": "no DogTagIssuerFactory configured, so clone provenance cannot be checked",
         });
     }
-    match st.chain.is_factory_clone(factory, clone_addr, at_block).await {
+    match st
+        .chain
+        .is_factory_clone(factory, clone_addr, at_block)
+        .await
+    {
         Ok(true) => {}
         // A definitive "this contract was not deployed by the DogTag factory". Its own state.
         Ok(false) => {
@@ -880,14 +884,14 @@ async fn resolve_issuer_domain_binding(
         // When the issuer last CHANGED its domain claim, and at which block — so "what did this clone
         // claim at block N" is answerable rather than only "what does it claim now".
         obj.insert("claimUpdatedAt".into(), json!(claimed.updated_at));
-        obj.insert("claimUpdatedAtBlock".into(), json!(claimed.updated_at_block));
+        obj.insert(
+            "claimUpdatedAtBlock".into(),
+            json!(claimed.updated_at_block),
+        );
         obj.insert("claimSetBy".into(), json!(claimed.set_by));
         // This DNS answer was observed live and cannot be re-derived for any past block.
         obj.insert("dnsObservation".into(), json!("live"));
-        obj.insert(
-            "dnsHistorical".into(),
-            json!(false),
-        );
+        obj.insert("dnsHistorical".into(), json!(false));
     }
     out
 }
@@ -1162,7 +1166,10 @@ async fn verify_session_start(
         return e;
     }
     if body.purpose.trim().is_empty() || body.record_type.trim().is_empty() {
-        return err(StatusCode::BAD_REQUEST, "purpose and recordType are required");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "purpose and recordType are required",
+        );
     }
     let relayer = match st.chain.signer_address() {
         Some(a) if st.chain.can_sign() && !a.is_empty() => a,
@@ -1247,10 +1254,7 @@ async fn verify_session_resolve(State(st): State<AppState>, Path(token): Path<St
     // M7 P4 (§5.2) CONVENIENCE tier: platform-OWNED, UNVERIFIED claims. The app validates these against
     // the on-chain ProtocolRegistry / signed-manifest anchor before trusting any of them — and REFUSES
     // the whole flow if they are absent, so this block is mandatory, not decorative.
-    let issuer_clone = st
-        .cfg
-        .issuer_addr_for(&s.record_type)
-        .unwrap_or_default();
+    let issuer_clone = st.cfg.issuer_addr_for(&s.record_type).unwrap_or_default();
     let claims = app::convenience_claims(&st.cfg, st.chain.chain_id(), &issuer_clone, &s.purpose);
     ok(json!({
         "sessionId": s.session_id,

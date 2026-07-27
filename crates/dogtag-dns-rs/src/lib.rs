@@ -95,12 +95,19 @@ pub fn txt_name(clone_addr: &str, domain: &str) -> Option<String> {
     }
     // The address label must be a 0x-prefixed 20-byte hex string: it is the record's identity, so a
     // malformed one would query a name no domain owner could ever have published.
-    if !(addr.len() == 42 && addr.starts_with("0x") && addr[2..].bytes().all(|b| b.is_ascii_hexdigit())) {
+    if !(addr.len() == 42
+        && addr.starts_with("0x")
+        && addr[2..].bytes().all(|b| b.is_ascii_hexdigit()))
+    {
         return None;
     }
     // A bare single label is never a resolvable issuer domain, and anything with a scheme, path, port
     // or whitespace is not a name at all.
-    if !dom.contains('.') || dom.contains('/') || dom.contains(':') || dom.contains(char::is_whitespace) {
+    if !dom.contains('.')
+        || dom.contains('/')
+        || dom.contains(':')
+        || dom.contains(char::is_whitespace)
+    {
         return None;
     }
 
@@ -273,7 +280,11 @@ impl BindingResolver {
     /// `endpoint` is a DoH JSON endpoint, e.g. `https://cloudflare-dns.com/dns-query`. An empty
     /// endpoint is a configuration error and makes every lookup report
     /// [`CouldNotCheckReason::NoResolver`] rather than silently passing or failing.
-    pub fn new(transport: Box<dyn DohTransport>, endpoint: impl Into<String>, ttl: CacheTtl) -> Self {
+    pub fn new(
+        transport: Box<dyn DohTransport>,
+        endpoint: impl Into<String>,
+        ttl: CacheTtl,
+    ) -> Self {
         BindingResolver {
             transport,
             endpoint: endpoint.into(),
@@ -284,7 +295,11 @@ impl BindingResolver {
 
     /// The default production resolver: reqwest + Cloudflare DoH + default TTLs.
     pub fn production(endpoint: impl Into<String>) -> Self {
-        Self::new(Box::new(ReqwestDoh::default()), endpoint, CacheTtl::default())
+        Self::new(
+            Box::new(ReqwestDoh::default()),
+            endpoint,
+            CacheTtl::default(),
+        )
     }
 
     /// Resolve the binding for `clone_addr` under the on-chain-claimed `domain`.
@@ -344,8 +359,7 @@ impl BindingResolver {
             // Honour the zone's own TTL when it is shorter than our cap, but never dip below the floor
             // — a 1-second TTL must not become a DNS lookup per render.
             _ => match check.answer_ttl {
-                Some(t) => Duration::from_secs(t)
-                    .clamp(self.ttl.answer_min, self.ttl.answer_max),
+                Some(t) => Duration::from_secs(t).clamp(self.ttl.answer_min, self.ttl.answer_max),
                 None => self.ttl.answer_max,
             },
         };
@@ -367,11 +381,18 @@ impl BindingResolver {
     /// too, so there is exactly one DoH client and one Status-branching rule in the codebase.
     ///
     /// Returns the parsed records plus the smallest advertised TTL, when the zone gave one.
-    pub async fn lookup_txt(&self, name: &str) -> Result<(Vec<TxtRecord>, Option<u64>), CouldNotCheckReason> {
+    pub async fn lookup_txt(
+        &self,
+        name: &str,
+    ) -> Result<(Vec<TxtRecord>, Option<u64>), CouldNotCheckReason> {
         if self.endpoint.trim().is_empty() {
             return Err(CouldNotCheckReason::NoResolver);
         }
-        let sep = if self.endpoint.contains('?') { '&' } else { '?' };
+        let sep = if self.endpoint.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
         let url = format!("{}{}name={}&type=TXT", self.endpoint, sep, urlencode(name));
 
         let (code, body) = self
@@ -439,26 +460,26 @@ pub struct TxtRecord {
 /// definitive-absence / non-answer distinction in the `Result`:
 ///
 /// * `Ok(non-empty)` — records were fetched and exist.
-/// * `Ok(empty)`     — records were fetched and there are none (NOERROR/NODATA, or NXDOMAIN). A
-///                     DEFINITIVE absence.
-/// * `Err(reason)`   — no answer was obtained (SERVFAIL/REFUSED, unparseable body, not a DoH answer).
+/// * `Ok(empty)` — records were fetched and there are none (NOERROR/NODATA, or NXDOMAIN). A DEFINITIVE
+///   absence.
+/// * `Err(reason)` — no answer was obtained (SERVFAIL/REFUSED, unparseable body, not a DoH answer).
 ///
 /// This is the single Status-branching rule in the codebase. Both the issuer↔domain binding
 /// ([`classify`]) and the apex `dogtag-verify=` onboarding gate go through it, so neither can drift
 /// back into treating a resolver failure as an absence.
 pub fn classify_txt(body: &str) -> Result<Vec<TxtRecord>, CouldNotCheckReason> {
-    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| CouldNotCheckReason::Transport {
-        detail: format!("unparseable dns-json: {e}"),
-    })?;
+    let json: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| CouldNotCheckReason::Transport {
+            detail: format!("unparseable dns-json: {e}"),
+        })?;
 
     // `Status` is an RCODE. An ABSENT Status is not "no error" — it means this is not a DoH JSON answer,
     // and reading it as NOERROR would turn a wrong-endpoint misconfiguration into a confident "absent".
-    let status = json
-        .get("Status")
-        .and_then(|s| s.as_u64())
-        .ok_or_else(|| CouldNotCheckReason::Transport {
+    let status = json.get("Status").and_then(|s| s.as_u64()).ok_or_else(|| {
+        CouldNotCheckReason::Transport {
             detail: "dns-json has no Status field".to_string(),
-        })?;
+        }
+    })?;
 
     match status {
         0 => {}                     // NOERROR — inspect the answers below.
@@ -521,7 +542,10 @@ fn select_binding(records: &[TxtRecord], queried_name: &str) -> Option<String> {
     if records.len() == 1 {
         return Some(records[0].value.clone());
     }
-    records.iter().find(|r| r.name == want).map(|r| r.value.clone())
+    records
+        .iter()
+        .find(|r| r.name == want)
+        .map(|r| r.value.clone())
 }
 
 /// Join a DoH TXT `data` value into the string the zone actually published.
@@ -559,7 +583,9 @@ fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
             other => out.push_str(&format!("%{other:02X}")),
         }
     }
@@ -597,7 +623,11 @@ mod tests {
     #[test]
     fn txt_name_tolerates_a_trailing_dot_and_padding() {
         assert_eq!(
-            txt_name("  0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F ", " MOH.GOV.SG. ").unwrap(),
+            txt_name(
+                "  0xB5D6654d8B29096C8fcf71d24bbe6f6de86c5F9F ",
+                " MOH.GOV.SG. "
+            )
+            .unwrap(),
             format!("{CLONE_LC}._dogtag.moh.gov.sg")
         );
     }
@@ -754,7 +784,12 @@ mod tests {
         }
     }
 
-    fn resolver_with(body: &str, code: u16, fail: Option<&str>, calls: Arc<AtomicUsize>) -> BindingResolver {
+    fn resolver_with(
+        body: &str,
+        code: u16,
+        fail: Option<&str>,
+        calls: Arc<AtomicUsize>,
+    ) -> BindingResolver {
         BindingResolver::new(
             Box::new(StubTransport {
                 body: body.to_string(),
@@ -845,7 +880,11 @@ mod tests {
                 reason: CouldNotCheckReason::NoResolver
             }
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "no query is fired with no resolver");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no query is fired with no resolver"
+        );
     }
 
     #[tokio::test]
@@ -867,12 +906,21 @@ mod tests {
     async fn a_second_check_is_served_from_cache() {
         let name = format!("{CLONE_LC}._dogtag.moh.gov.sg");
         let calls = Arc::new(AtomicUsize::new(0));
-        let r = resolver_with(&doh(0, &txt_answer(&name, "\\\"x\\\"")), 200, None, calls.clone());
+        let r = resolver_with(
+            &doh(0, &txt_answer(&name, "\\\"x\\\"")),
+            200,
+            None,
+            calls.clone(),
+        );
 
         let first = r.check(CLONE, "moh.gov.sg").await;
         let second = r.check(CLONE, "moh.gov.sg").await;
 
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "one lookup, not one per render");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "one lookup, not one per render"
+        );
         assert_eq!(first, second);
         assert_eq!(
             first.checked_at, second.checked_at,
@@ -884,7 +932,12 @@ mod tests {
     async fn casing_of_the_query_does_not_split_the_cache() {
         let name = format!("{CLONE_LC}._dogtag.moh.gov.sg");
         let calls = Arc::new(AtomicUsize::new(0));
-        let r = resolver_with(&doh(0, &txt_answer(&name, "\\\"x\\\"")), 200, None, calls.clone());
+        let r = resolver_with(
+            &doh(0, &txt_answer(&name, "\\\"x\\\"")),
+            200,
+            None,
+            calls.clone(),
+        );
 
         r.check(CLONE, "moh.gov.sg").await; // EIP-55 mixed case
         r.check(CLONE_LC, "MOH.GOV.SG").await; // lowercase addr, uppercase domain
@@ -896,7 +949,12 @@ mod tests {
     async fn clear_cache_forces_a_fresh_lookup() {
         let name = format!("{CLONE_LC}._dogtag.moh.gov.sg");
         let calls = Arc::new(AtomicUsize::new(0));
-        let r = resolver_with(&doh(0, &txt_answer(&name, "\\\"x\\\"")), 200, None, calls.clone());
+        let r = resolver_with(
+            &doh(0, &txt_answer(&name, "\\\"x\\\"")),
+            200,
+            None,
+            calls.clone(),
+        );
 
         r.check(CLONE, "moh.gov.sg").await;
         r.clear_cache();
@@ -946,7 +1004,11 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(20)).await;
         r.check(CLONE, "moh.gov.sg").await;
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "floored to answer_min, not re-queried");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "floored to answer_min, not re-queried"
+        );
     }
 
     #[test]
@@ -987,6 +1049,9 @@ mod tests {
             reason: CouldNotCheckReason::ResolverError { dns_status: 2 },
         })
         .unwrap();
-        assert_eq!(c, r#"{"state":"couldNotCheck","reason":{"resolverError":{"dnsStatus":2}}}"#);
+        assert_eq!(
+            c,
+            r#"{"state":"couldNotCheck","reason":{"resolverError":{"dnsStatus":2}}}"#
+        );
     }
 }

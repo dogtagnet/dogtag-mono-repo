@@ -97,10 +97,18 @@ fn build(
 fn a_lost_owner_secret_is_recovered_by_re_issuing_a_fresh_tag() {
     let old_tag_hex = dog_tag_id_field_hex(OLD_TAG_DEC.to_string()).unwrap();
     let new_tag_hex = dog_tag_id_field_hex(NEW_TAG_DEC.to_string()).unwrap();
-    assert_ne!(old_tag_hex, new_tag_hex, "the issuer must allocate a DIFFERENT dogTagId");
+    assert_ne!(
+        old_tag_hex, new_tag_hex,
+        "the issuer must allocate a DIFFERENT dogTagId"
+    );
 
     // --- Day 1: the owner's phone builds tag A locally; the issuer seals R_A as profileRoot(A) ----
-    let old = build(PHRASE_SEED, OLD_TAG_DEC, OWNER_ADDR, old_credential_attributes());
+    let old = build(
+        PHRASE_SEED,
+        OLD_TAG_DEC,
+        OWNER_ADDR,
+        old_credential_attributes(),
+    );
     println!("\n=== DAY 1 - the owner's phone builds tag A (dogTagId {OLD_TAG_DEC}) ===");
     println!("  owner-secret A [DEVICE-ONLY]: {}", old.owner_secret_hex);
     println!("  R_A --> sealed as profileRoot(A): {}", old.root_hex);
@@ -120,7 +128,10 @@ fn a_lost_owner_secret_is_recovered_by_re_issuing_a_fresh_tag() {
         reissued_credential_attributes(),
     );
     println!("\n=== RE-ISSUE (D3) - fresh custodial issuance under NEW dogTagId {NEW_TAG_DEC} ===");
-    println!("  owner-secret B [DEVICE-ONLY]: {}", reissued.owner_secret_hex);
+    println!(
+        "  owner-secret B [DEVICE-ONLY]: {}",
+        reissued.owner_secret_hex
+    );
     println!("  R_B --> sealed as profileRoot(B): {}", reissued.root_hex);
 
     // The re-issued tag is a genuinely fresh, independent credential.
@@ -165,7 +176,10 @@ fn a_lost_owner_secret_is_recovered_by_re_issuing_a_fresh_tag() {
         reissued_credential_attributes(),
     );
     println!("\n=== RE-ISSUE from a BRAND-NEW wallet (the phrase was gone too) ===");
-    println!("  owner-secret : {}", reissued_fresh_wallet.owner_secret_hex);
+    println!(
+        "  owner-secret : {}",
+        reissued_fresh_wallet.owner_secret_hex
+    );
     println!("  R            : {}", reissued_fresh_wallet.root_hex);
     assert_ne!(
         reissued_fresh_wallet.owner_secret_hex, old.owner_secret_hex,
