@@ -234,9 +234,14 @@ export function Receipt() {
                 </div>
               )}
               <div className="receipt-verify-body">
-                <div className="receipt-verify-title">Scan to confirm live status on-chain</div>
+                <div className="receipt-verify-title">
+                  {receipt.publicStatusUrl
+                    ? "Scan to confirm live status on-chain"
+                    : "No public status page for this receipt"}
+                </div>
                 <div className="receipt-verify-url" data-testid="receipt-public-url">
-                  {receipt.publicStatusUrl || "—"}
+                  {receipt.publicStatusUrl ||
+                    "This credential's issuer published no reachable status URL. Confirm it against the on-chain record below."}
                 </div>
 
                 <div className="receipt-live" data-testid="receipt-live">

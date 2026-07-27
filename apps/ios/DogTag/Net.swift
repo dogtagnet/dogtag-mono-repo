@@ -124,6 +124,55 @@ enum RoaxRpc {
         }
     }
 
+    /// `DogTagIssuer.issuedBy(root)` → the H-1 originator that actually called `issue(root)` on this
+    /// clone, or nil when the clone never issued it (the on-chain zero address) or the read did not
+    /// resolve. Selector DERIVED from the signature, never a constant (see `isValidSelector`).
+    static func issuedBy(rpcUrl: String, documentStore: String, root: String) async -> String? {
+        guard !documentStore.isEmpty, !root.isEmpty else { return nil }
+        let data = issuedBySelector + pad32(root)
+        switch await ethCall(rpcUrl: rpcUrl, to: documentStore, data: data) {
+        case let .success(hex):
+            // address is right-aligned in a 32-byte word; all-zero == never issued here.
+            guard hex.count >= 40, hex.contains(where: { $0 != "0" }) else { return nil }
+            return "0x" + hex.suffix(40).lowercased()
+        case .failure: return nil
+        }
+    }
+
+    private static let issuedBySelector = functionSelector("issuedBy(bytes32)")
+
+    /// The ISSUER-WHITELIST pillar for a held credential, resolved end-to-end on-chain.
+    ///
+    /// The document's `issuer` block is NOT covered by the Merkle root, so `name`, `domain` and - the
+    /// sharp one - `documentStore` are attacker-controlled: relabel a genuine credential's authority,
+    /// or point `documentStore` at a contract you control that returns true from `isValid`, and both
+    /// the integrity recompute and the issuance read still pass. This pillar is what catches that.
+    ///
+    /// It asks the chain who issued the root (`issuedBy`, set to `msg.sender` under `onlyWhitelisted`)
+    /// and whether THAT signer is whitelisted for this record type in the registry from the app's own
+    /// bundled `roax.json` - never an address named by the document, or the attacker supplies both
+    /// sides of the question. `.unknown` means the pillar did not resolve; a caller must treat that as
+    /// indeterminate, never as a pass.
+    static func issuerWhitelistPillar(
+        rpcUrl: String, issuerRegistry: String, documentStore: String, root: String, recordType: String
+    ) async -> Result {
+        guard !issuerRegistry.isEmpty else { return .unknown("no IssuerRegistry configured") }
+        guard !recordType.isEmpty else { return .unknown("document declares no recordType") }
+        guard let signer = await issuedBy(rpcUrl: rpcUrl, documentStore: documentStore, root: root) else {
+            return .unknown("issuer clone reports no issuer for this root")
+        }
+        return await isWhitelistedFor(
+            rpcUrl: rpcUrl, issuerRegistry: issuerRegistry,
+            key: recordTypeKey(recordType), signer: signer)
+    }
+
+    /// `keccak256(recordType utf8)` — the `IssuerRegistry` whitelist key, and the same value the
+    /// clone's own `recordType()` holds. Mirrors the backend `record_type_key` and the web
+    /// `recordTypeKey`; verified against `cast keccak "TRAVEL_CLEARANCE"` on chain 135.
+    static func recordTypeKey(_ recordType: String) -> String {
+        "0x" + Keccak256.digest(Data(recordType.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// `VerificationRegistry.consumed(nullifier)` → true once the relayer's `recordVerificationZK`
     /// (or the legacy path) has landed on-chain for this nullifier. This is the CANONICAL completion
     /// signal for the async export/verify flow: the groomer host records in the background, so the

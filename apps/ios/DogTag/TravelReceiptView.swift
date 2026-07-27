@@ -84,12 +84,19 @@ struct TravelReceiptView: View {
     }
     private var isTravel: Bool { (cred.recordType.isEmpty ? (doc?.recordType ?? "") : cred.recordType).uppercased().contains("TRAVEL") }
 
-    /// Public PII-free status URL the QR encodes: `https://<issuerDomain>/r/<receiptId>`. The gov web
-    /// app serves `/r/:receiptId` at the credential's issuer domain (the same `did:web` host).
+    /// Public PII-free status URL the QR encodes: `<protocol.statusBaseUrl>/r/<receiptId>`.
+    ///
+    /// The base comes from the document's `protocol` block, stamped at issuance from the issuer's
+    /// `DEPLOYMENT_URL` — the only host in the document a phone can actually reach. It deliberately
+    /// does NOT fall back to `issuer.domain`: that is a `did:web` identity, and the shipped default
+    /// `gov.example` is RFC-2606 reserved (NXDOMAIN), so every QR built from it encoded a dead link
+    /// that a border official would read as a working live-status check.
+    ///
+    /// "" when the issuer stamped no base — including every document issued before it did. The card
+    /// then renders no QR and says so, rather than printing a URL that resolves to nothing.
     private var publicStatusUrl: String {
-        let domain = (doc?.issuerDomain ?? "").trimmingCharacters(in: .whitespaces)
-        guard !domain.isEmpty, !receiptId.isEmpty else { return "" }
-        let base = domain.hasPrefix("http") ? domain : "https://\(domain)"
+        let base = doc?.statusBaseUrl ?? ""
+        guard !base.isEmpty, !receiptId.isEmpty else { return "" }
         return "\(base)/r/\(receiptId)"
     }
 
@@ -403,9 +410,13 @@ struct TravelReceiptView: View {
                             .background(Color.white).cornerRadius(6)
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Scan to confirm live status on-chain")
+                        Text(publicStatusUrl.isEmpty
+                             ? "No public status page for this receipt"
+                             : "Scan to confirm live status on-chain")
                             .font(.system(size: 13, weight: .semibold)).foregroundColor(c.onBackground)
-                        Text(publicStatusUrl.isEmpty ? "Public status page unavailable (no receipt id / issuer domain)." : publicStatusUrl)
+                        Text(publicStatusUrl.isEmpty
+                             ? "This credential's issuer published no reachable status URL. Confirm it against the on-chain record below."
+                             : publicStatusUrl)
                             .font(.system(size: 11)).foregroundColor(c.muted).lineLimit(3)
                         Text("The public page shows NO personal data — only the live VALID / EXPIRED / REVOKED verdict and provenance.")
                             .font(.system(size: 10)).foregroundColor(c.muted)

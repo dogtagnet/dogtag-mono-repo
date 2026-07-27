@@ -99,7 +99,9 @@ async fn government_verifies_a_vet_issued_credential() {
     // 1) VET role: issue a VACCINATION credential + anchor its root on the (emulated) chain, and
     //    whitelist the vet signer for VACCINATION (what the admin approve flow does on-chain).
     let (root, wrapped) = vet_issue_vaccination("7");
-    let chain = MemChain::new();
+    // The vet's own signer anchors, so the emulated clone records `issuedBy[root] = VET_SIGNER` just
+    // as the real one records `msg.sender` — that is the address the whitelist pillar resolves.
+    let chain = MemChain::new().with_signer(VET_SIGNER);
     chain
         .issue(VACC_CLONE, &root)
         .await
