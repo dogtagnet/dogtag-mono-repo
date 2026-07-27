@@ -799,8 +799,28 @@ export interface ActivityEvent {
   actorName?: string | null;
   /** admin-directory business name for `clone`, when resolvable. */
   cloneName?: string | null;
-  /** ready-to-click explorer link for the anchoring tx (from the indexer). */
+  /**
+   * The indexer's ready-to-click explorer link for the anchoring tx. Composed UNCONDITIONALLY from
+   * `EXPLORER_BASE` (`stacks/indexer/api/src/routes.rs`), so its presence is NOT evidence that the
+   * transaction exists - a scripted feed's `0x0800` arrives carrying one too. Never link it directly;
+   * go through `txExplorerHref`, which withholds it unless `txHash` is a well-formed 32-byte value.
+   */
   txUrl?: string | null;
+  /**
+   * The owner-blind `Verified` payload. The admin backend proxies the indexer's `/v1/events` body
+   * verbatim (`admin_activity` in `stacks/admin/api/src/routes.rs` only inserts directory names), so
+   * these arrive on the wire already - they were simply never declared, which left the audit table's
+   * Details column empty for the one event type whose identifiers are all it has.
+   * See `IndexedEvent` in `stacks/indexer/api/src/events.rs`.
+   */
+  /** keccak/BN254 purpose key (`verified`); hashed, so prefer a joined human label where one exists. */
+  purpose?: string | null;
+  /** the one-time verification nullifier (`verified`) - a Poseidon image, unlinkable. */
+  nullifier?: string | null;
+  /** the proof-bound consent deadline in unix SECONDS (`verified`). */
+  deadline?: number | null;
+  /** the event's own on-chain `ts` (`rootIssued`/`rootRevoked`/`verified`), == the emit block time. */
+  onchainTs?: number | null;
 }
 /** GET /v1/admin/activity - newest-first, paginated, unscoped feed. */
 export interface ActivityResp {
