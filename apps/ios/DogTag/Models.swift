@@ -147,8 +147,8 @@ extension Credential {
     /// Body of the delete confirmation. It leads with the details that tell two same-type records
     /// apart, so the owner can see WHICH one is about to go, then states plainly what deleting does.
     /// Deleting is local: it must not read as a revocation, because it is not one.
-    func deleteConfirmationMessage(petName: String) -> String {
-        let which = petName.isEmpty ? importedAtLabel : "\(importedAtLabel) · \(petName)"
+    func deleteConfirmationMessage(petLabel: String) -> String {
+        let which = petLabel.isEmpty ? importedAtLabel : "\(importedAtLabel) · \(petLabel)"
         return which + "\n\nThis removes the copy stored on this phone. The record is not revoked, "
             + "nothing changes on-chain, and the issuer still holds their copy."
     }

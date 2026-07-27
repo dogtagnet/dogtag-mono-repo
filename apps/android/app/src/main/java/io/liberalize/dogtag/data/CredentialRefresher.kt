@@ -64,7 +64,9 @@ object CredentialRefresher {
         if (roax.dogTagSbt.isBlank() || cred.dogTagId.isBlank()) {
             return stamped.marked("UNVERIFIED", "this record carries no on-chain anchor to re-check")
         }
-        // The SBT is keyed by the canonical `field_of_value(dogTagId)`, not the raw handle.
+        // The SBT is keyed by the canonical `field_of_value(dogTagId)`, not the raw handle. Without
+        // that key there is no lookup to make, so the record is UNVERIFIED - never looked up under
+        // the raw handle, which reads an unset slot and would read as a mismatch.
         val onchainId = try {
             java.math.BigInteger(dogTagIdFieldHex(cred.dogTagId).removePrefix("0x"), 16).toString()
         } catch (e: Exception) {
@@ -74,6 +76,13 @@ object CredentialRefresher {
             ?: return stamped.marked(
                 "UNVERIFIED", "could not reach the chain (DogTagSBT profileRoot read failed)",
             )
+        // An all-zero word is the UNSET slot: the tag is not anchored (yet), which is not the same
+        // answer as an anchored root that disagrees with ours. Only the latter is INVALID.
+        if (onchainRoot.drop(2).all { it == '0' }) {
+            return stamped.marked(
+                "UNVERIFIED", "no profile root is anchored on-chain for this dog tag",
+            )
+        }
         if (!onchainRoot.equals(root, ignoreCase = true)) {
             return stamped.marked(
                 "INVALID", "the dog tag's on-chain profile root no longer matches this record",

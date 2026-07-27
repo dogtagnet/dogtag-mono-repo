@@ -14,10 +14,6 @@ struct DocumentsScreen: View {
         filterPetId == nil ? store.credentials : store.credentials.filter { $0.dogTagId == filterPetId }
     }
 
-    private func petName(for cred: Credential) -> String {
-        store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? "DogTag #\(cred.dogTagId)"
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -89,7 +85,7 @@ struct DocumentsScreen: View {
         .sheet(item: $detailCred) { cred in
             CredentialDetailScreen(cred: cred).environment(\.dogTagColors, c)
         }
-        .confirmDeleteCredential($pendingDelete, petName: petName) { cred in
+        .confirmDeleteCredential($pendingDelete) { cred in
             store.deleteCredential(id: cred.id)
         }
     }
@@ -332,9 +328,10 @@ extension View {
     /// The single home of the delete confirmation, so the wording cannot drift between the surfaces
     /// that offer it. The copy is deliberately local-only: deleting removes this phone's copy and
     /// nothing else.
+    /// The label is resolved HERE, off the shared store, rather than passed in: a caller-supplied
+    /// name is what let the two surfaces name the same record differently.
     func confirmDeleteCredential(
         _ pending: Binding<Credential?>,
-        petName: @escaping (Credential) -> String,
         onDelete: @escaping (Credential) -> Void
     ) -> some View {
         confirmationDialog(
@@ -348,7 +345,8 @@ extension View {
             Button("Delete from this phone", role: .destructive) { onDelete(cred) }
             Button("Cancel", role: .cancel) {}
         } message: { cred in
-            Text(cred.deleteConfirmationMessage(petName: petName(cred)))
+            Text(cred.deleteConfirmationMessage(petLabel: PetLabel.line(
+                name: LocalStore.shared.petDisplayName(for: cred), dogTagId: cred.dogTagId)))
         }
     }
 }

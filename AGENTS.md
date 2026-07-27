@@ -2176,3 +2176,18 @@ custodial under the owner-hidden model, so `ownerOf` is the neutral custodian an
 the holder - the retired mobile `RoaxRpc.ownerOf`/`Net.swift` reads went with the owner-revealing
 layer. Never reintroduce an ownership check here to "strengthen" the refresh; it would fail every
 legitimately-held tag.
+
+**The no-fail-open rule cuts BOTH ways: an unestablished answer must not be stamped INVALID either.**
+Asserting INVALID from a read that never resolved tells an owner their genuine credential is bad,
+which is the exact mirror of the fail-open. Two SBT-branch traps, both fixed and both easy to
+reintroduce: (1) `dogTagIdFieldHex` THROWS for a non-decimal handle, and the importer stores a
+32-hex share token as `dogTagId` whenever the wrapped doc carries none - so never fall back to the
+raw handle, which `padUint` silently mangles into a lookup of an unset slot; UNVERIFIED "this dog
+tag id could not be resolved on-chain" is the answer. (2) An UNSET `profileRoot` slot returns an
+all-zero 32-byte word that passes every well-formedness guard, so a never-anchored tag would compare
+as a mismatch; all-zero is UNVERIFIED "no profile root is anchored on-chain for this dog tag", and
+INVALID is reserved for a real non-zero root that genuinely differs. Both reason strings are
+byte-identical across the two ports on purpose - string drift is how the two refreshers diverged
+before. An EMPTY/short return is deliberately NOT distinguished: both `RoaxRpc.profileRoot`
+implementations collapse it to nil, so it already lands on UNVERIFIED, just with the
+could-not-reach-the-chain reason.

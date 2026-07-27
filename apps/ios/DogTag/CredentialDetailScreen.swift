@@ -20,10 +20,6 @@ struct CredentialDetailScreen: View {
     private var doc: WrappedDoc? { WrappedDoc(json: cred.wrappedDocJson) }
     private var fields: [WrappedDoc.DecodedField] { doc?.decodedFields() ?? [] }
 
-    private var petName: String {
-        store.pets.first { $0.dogTagId == cred.dogTagId }?.name ?? ""
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -113,7 +109,7 @@ struct CredentialDetailScreen: View {
         .sheet(isPresented: $showReceipt) {
             TravelReceiptView(cred: cred).environment(\.dogTagColors, c)
         }
-        .confirmDeleteCredential($pendingDelete, petName: { _ in petName }) { cred in
+        .confirmDeleteCredential($pendingDelete) { cred in
             store.deleteCredential(id: cred.id)
             dismiss()
         }
