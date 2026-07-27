@@ -62,11 +62,20 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
-        // Unified owner-hidden verification-registry routing key.
-        verification_registry_addr: env(
-            "VERIFICATION_REGISTRY_ADDR",
-            "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
-        ),
+        // Unified owner-hidden verification registry: both the routing key stamped in the M7 `protocol`
+        // block AND the submit target when this authority records a consent proof as a VERIFIER. The
+        // sibling stacks name the SAME contract `VERIFICATION_REGISTRY_CONSENT_ADDR`, so accept that as
+        // an alias — a compose file that sets only the sibling name must not silently fall back to the
+        // baked default and then have every phone scan refuse on an anchor mismatch.
+        verification_registry_addr: std::env::var("VERIFICATION_REGISTRY_ADDR")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("VERIFICATION_REGISTRY_CONSENT_ADDR")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .unwrap_or_else(|| "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B".to_string()),
         travel_clearance_issuer_addr: env(
             "TRAVEL_CLEARANCE_ISSUER_ADDR",
             "0x0000000000000000000000000000000000000000",
@@ -112,6 +121,16 @@ async fn main() {
                 mem.whitelist(
                     &cfg.issuer_registry_addr,
                     &government_api::app::record_type_key(rt),
+                    &signer,
+                );
+            }
+            // ...and for the VERIFY: purposes the portal offers, so the owner-hidden QR flow is
+            // demoable too. `VERIFY:` is a namespace SEPARATE from the issuer record types above: on a
+            // live deployment these are granted by the admin apply→approve flow, never by this stack.
+            for purpose in government_api::app::VERIFY_PURPOSES {
+                mem.whitelist(
+                    &cfg.issuer_registry_addr,
+                    &government_api::verify::verify_key(purpose),
                     &signer,
                 );
             }

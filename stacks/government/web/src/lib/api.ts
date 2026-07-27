@@ -74,7 +74,105 @@ export interface Health {
    * entirely on older backends, so consumers must fail OPEN when a key is missing.
    */
   issuers?: Record<string, string | null>;
+  /** `IssuerRegistry` — where the `VERIFY:<purpose>` whitelist is read from. */
+  issuerRegistry?: string;
+  /** The unified owner-hidden verification registry this authority submits consent proofs to. */
+  verificationRegistry?: string;
+  /** The host the QR codes point at. Must be reachable from the OWNER'S PHONE, not just this box. */
+  deploymentUrl?: string;
 }
+
+// ---- phone handoff: one-time QR tokens (mirrors the vet/groomer contract exactly) ----
+
+/** A minted one-time QR token. `ttlSecs` is the countdown basis; `expiresAt` is the fact to show. */
+export interface QrToken {
+  qrUrl: string;
+  ttlSecs: number;
+  expiresAt: number;
+}
+
+/** `POST /v1/records/:root/share` — mint a one-time record-share QR the owner scans to import. */
+export async function shareRecord(root: string): Promise<QrToken> {
+  const { status, json } = await apiPost(`/v1/records/${root}/share`, {}, { auth: true });
+  if (status !== 200) throw new Error(json?.error || `HTTP ${status}`);
+  return json as QrToken;
+}
+
+export interface VerifySessionStart extends QrToken {
+  sessionId: string;
+  purpose: string;
+  recordType: string;
+  relayer: string;
+}
+
+/** `POST /verify/session/start` — begin an owner-hidden verify session and get its QR.
+ *
+ *  Throws with the backend's own message so the portal can render the honest refusal (notably
+ *  "relayer not whitelisted for this purpose" when this authority's signer has not been granted the
+ *  `VERIFY:<purpose>` namespace on-chain). */
+export async function verifySessionStart(
+  purpose: string,
+  recordType: string,
+): Promise<VerifySessionStart> {
+  const { status, json } = await apiPost(
+    "/verify/session/start",
+    { purpose, recordType },
+    { auth: true },
+  );
+  if (status !== 200) throw new Error(json?.error || `HTTP ${status}`);
+  return json as VerifySessionStart;
+}
+
+export interface VerifySessionStatus {
+  status: "pending" | "recording" | "recorded" | "error" | string;
+  txHash?: string | null;
+  nullifier?: string | null;
+  disclosedKeyPaths?: string[];
+}
+
+/** `GET /verify/session/:id` — poll a verify session (operator-gated; the phone polls with `?token=`). */
+export async function verifySessionStatus(sessionId: string): Promise<VerifySessionStatus> {
+  return (await apiGet(`/verify/session/${sessionId}`)) as VerifySessionStatus;
+}
+
+/** One owner-hidden verification this authority recorded. Proof metadata only — never owner identity. */
+export interface VerifyHistoryItem {
+  sessionId: string;
+  relayer: string;
+  purpose: string;
+  recordType: string;
+  status: string;
+  txHash?: string | null;
+  explorerUrl?: string | null;
+  nullifier?: string | null;
+  disclosedKeyPaths?: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** `GET /verify/history` — the owner-hidden verification audit log. */
+export async function verifyHistory(): Promise<VerifyHistoryItem[]> {
+  const json = await apiGet("/verify/history");
+  return (json.verifications as VerifyHistoryItem[]) ?? [];
+}
+
+/** The `VERIFY:<purpose>` namespaces this portal offers. Mirrors `government_api::app::VERIFY_PURPOSES`;
+ *  `travel_check` is the border/port-of-entry check, a label already in circulation across the portals
+ *  so an owner's consent receipt renders it by name rather than as a bare field hash.
+ *
+ *  Both entries share one purpose and differ only in the record type the owner is asked to present. */
+export const VERIFY_PURPOSES = [
+  {
+    value: "travel_check",
+    recordType: "VACCINATION",
+    label: "Travel check — rabies vaccination",
+  },
+  {
+    value: "travel_check",
+    recordType: "EU_HEALTH_CERT",
+    label: "Travel check — EU health certificate",
+  },
+] as const;
 
 /** A persisted government credential as returned by GET /v1/records (serde camelCase). */
 export interface GovRecord {

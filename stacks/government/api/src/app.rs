@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use dogtag_standard::discovery::ConvenienceClaims;
 use dogtag_standard::wrap::{wrap_document, IssuerMeta, ProtocolMeta, WrappedDoc, LEVEL_B_VERSION};
 use serde_json::{json, Value};
 
@@ -22,6 +23,16 @@ pub const EU_HEALTH_CERT: &str = "EU_HEALTH_CERT";
 pub fn is_supported_record_type(rt: &str) -> bool {
     matches!(rt, TRAVEL_CLEARANCE | EU_HEALTH_CERT)
 }
+
+/// The `VERIFY:<purpose>` namespaces this authority verifies under, when acting as a VERIFIER rather
+/// than an issuer. `travel_check` is the border/port-of-entry check — an existing label already in
+/// circulation across the portals (see `stacks/owner/web/src/lib/consents.ts`), so an owner's consent
+/// receipt renders it by name rather than as a bare field hash.
+///
+/// Verify capability is granted ON-CHAIN through the admin apply→approve flow
+/// (`whitelistFor(VERIFY:<purpose>, signer)`), NEVER by this list: naming a purpose here only means the
+/// portal offers it. An unwhitelisted signer is refused at session start with a 403.
+pub const VERIFY_PURPOSES: &[&str] = &["travel_check"];
 
 #[derive(Clone)]
 pub struct Config {
@@ -105,6 +116,30 @@ pub fn protocol_meta(cfg: &Config, issuer_clone: &str, issuer_signer: &str) -> P
         verification_registry: cfg.verification_registry_addr.clone(),
         issuer_clone: issuer_clone.to_string(),
         issuer_signer: issuer_signer.to_string(),
+    }
+}
+
+/// Assemble the M7 §5.2 CONVENIENCE tier for the owner's device: platform-OWNED, UNVERIFIED claims
+/// read straight from THIS deployment's config.
+///
+/// To the consuming app these are CLAIMS, not authority (§1.2 trust boundary). The app MUST resolve the
+/// dogtag `ProtocolRegistry` / signed-manifest anchor and call `dogtag_standard::discovery::validate`
+/// before trusting `{version, registry, chainId}`, so a lying platform — government included — cannot
+/// steer a proof onto an attacker registry. Mirror of vet-api's `app::convenience_claims`; the field set
+/// is what both phone apps parse out of `GET /x/{token}` (`unverifiedClaims`), and the owner-hidden flow
+/// REFUSES outright when it is absent.
+pub fn convenience_claims(
+    cfg: &Config,
+    chain_id: u64,
+    issuer_clone: &str,
+    purpose: &str,
+) -> ConvenienceClaims {
+    ConvenienceClaims {
+        protocol_version: LEVEL_B_VERSION.to_string(),
+        chain_id,
+        verification_registry: cfg.verification_registry_addr.clone(),
+        issuer_clone: issuer_clone.to_string(),
+        purpose: purpose.to_string(),
     }
 }
 

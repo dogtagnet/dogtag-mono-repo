@@ -66,6 +66,21 @@ sol! {
     contract IIssuerRegistry {
         function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
     }
+
+    /// The unified owner-hidden verification registry. The government records a
+    /// proof-of-verification here as any other VERIFIER does — same contract, same four-arg
+    /// `recordVerificationZK`, same `VERIFY:<purpose>` gating. Mirror of the `sol!` block in
+    /// `stacks/vet/api/src/chain.rs`; the ABI must stay byte-identical or the calldata drifts.
+    #[sol(rpc)]
+    contract IVerificationRegistryConsent {
+        function recordVerificationZK(
+            uint256[2] a,
+            uint256[2][2] b,
+            uint256[2] c,
+            uint256[7] pub
+        ) external;
+        function consumed(bytes32 nf) external view returns (bool);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +149,18 @@ pub trait ChainClient: Send + Sync {
     /// on-chain soft-invalidation: the root stays issued-history but `isValid` flips to false). Awaits
     /// the receipt so a subsequent `is_valid` read reflects the revocation. Returns the tx hash.
     async fn revoke(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError>;
+    /// `VerificationRegistryConsent.recordVerificationZK(a,b,c,pub)` FROM the government signer — the
+    /// authority recording an owner-hidden proof-of-verification. The registry itself re-checks the
+    /// Groth16 proof, `relayer == msg.sender`, the `VERIFY:<purpose>` whitelist, the
+    /// `R == profileRoot(dogTagId)` binding and the nullifier, so this is a plain signed send.
+    async fn record_verification_zk_consent(
+        &self,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError>;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -176,6 +203,44 @@ pub fn revoke_calldata(root: &str) -> String {
 /// The block-explorer link for a tx hash, per the ROAX explorer scheme (`/tx/<hash>`).
 pub fn explorer_tx_url(tx_hash: &str) -> String {
     format!("https://explorer.roax.net/tx/{tx_hash}")
+}
+
+/// Parse a proof scalar that may arrive as a decimal string (snarkjs) or `0x` hex. Unparseable input
+/// folds to zero — the registry's own verifier rejects it, and panicking on a client-supplied field
+/// would turn a bad request into a 500. Mirror of vet-api's `parse_u256_dec_or_hex`.
+fn parse_u256_dec_or_hex(s: &str) -> U256 {
+    let t = s.trim();
+    if let Some(h) = t.strip_prefix("0x") {
+        U256::from_str_radix(h, 16).unwrap_or(U256::ZERO)
+    } else {
+        U256::from_str_radix(t, 10).unwrap_or(U256::ZERO)
+    }
+}
+
+/// ABI-encode `recordVerificationZK(a,b,c,pub)` from decimal-or-hex proof components.
+///
+/// No `recordType`/`deadline` parameters: both are public signals inside `pub`, proof-bound. The
+/// four-arg shape and the argument order are pinned by a test against the selector the vet stack
+/// sends, so the two verifiers can never drift apart on the same registry.
+pub fn record_verification_zk_consent_calldata(
+    a: &[String; 2],
+    b: &[[String; 2]; 2],
+    c: &[String; 2],
+    pub_signals: &[String; 7],
+) -> String {
+    use alloy::sol_types::SolCall;
+    let g = |s: &str| parse_u256_dec_or_hex(s);
+    let mut pub_arr: [U256; 7] = [U256::ZERO; 7];
+    for (slot, s) in pub_arr.iter_mut().zip(pub_signals.iter()) {
+        *slot = g(s);
+    }
+    let call = IVerificationRegistryConsent::recordVerificationZKCall {
+        a: [g(&a[0]), g(&a[1])],
+        b: [[g(&b[0][0]), g(&b[0][1])], [g(&b[1][0]), g(&b[1][1])]],
+        c: [g(&c[0]), g(&c[1])],
+        r#pub: pub_arr,
+    };
+    format!("0x{}", hex::encode(call.abi_encode()))
 }
 
 // --------------------------------------------------------------------------------------------
@@ -286,6 +351,17 @@ impl ChainClient for AlloyChain {
     async fn revoke(&self, issuer_addr: &str, root: &str) -> Result<SentTx, ChainError> {
         self.send_call(issuer_addr, &revoke_calldata(root)).await
     }
+    async fn record_verification_zk_consent(
+        &self,
+        registry_addr: &str,
+        a: &[String; 2],
+        b: &[[String; 2]; 2],
+        c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError> {
+        let calldata = record_verification_zk_consent_calldata(a, b, c, pub_signals);
+        self.send_call(registry_addr, &calldata).await
+    }
 }
 
 impl AlloyChain {
@@ -360,6 +436,8 @@ struct MemChainInner {
     revoked: HashMap<(String, String), u64>,
     /// (registry_addr, record_type, signer) -> whitelisted.
     whitelist: HashMap<(String, String, String), bool>,
+    /// (registry_addr, nullifier) consumed by a recordVerificationZK — the emulated replay guard.
+    consumed: HashMap<(String, String), bool>,
     nonce: u64,
     clock: u64,
 }
@@ -370,6 +448,7 @@ impl Default for MemChainInner {
             issued: HashMap::new(),
             revoked: HashMap::new(),
             whitelist: HashMap::new(),
+            consumed: HashMap::new(),
             nonce: 0,
             clock: MEMCHAIN_CLOCK_BASE,
         }
@@ -400,6 +479,17 @@ impl MemChain {
     pub fn with_signer(mut self, addr: &str) -> Self {
         self.signer = addr.to_lowercase();
         self
+    }
+    /// Has a nullifier already been consumed on the emulated registry? (test harness — the replay
+    /// guard the real `VerificationRegistryConsent` enforces on-chain.)
+    pub fn is_consumed(&self, registry: &str, nullifier: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .consumed
+            .get(&(registry.to_lowercase(), nullifier.to_lowercase()))
+            .copied()
+            .unwrap_or(false)
     }
     /// Whitelist a signer for a (registry, recordType, signer) tuple (test harness / demo bootstrap).
     pub fn whitelist(&self, registry: &str, record_type: &str, signer: &str) {
@@ -497,6 +587,35 @@ impl ChainClient for MemChain {
             block_number,
         })
     }
+    /// Emulates the registry's nullifier consume/replay guard only. The Groth16 verification itself has
+    /// no in-memory equivalent, so MemChain accepts any well-formed proof: the ZK soundness of this
+    /// path is exercised against the real contract (`contracts/test`), never here.
+    async fn record_verification_zk_consent(
+        &self,
+        registry_addr: &str,
+        _a: &[String; 2],
+        _b: &[[String; 2]; 2],
+        _c: &[String; 2],
+        pub_signals: &[String; 7],
+    ) -> Result<SentTx, ChainError> {
+        use dogtag_standard::public_signals::level_b as P;
+        let nullifier = format!(
+            "0x{}",
+            hex::encode(parse_u256_dec_or_hex(&pub_signals[P::NULLIFIER]).to_be_bytes::<32>())
+        );
+        let mut g = self.inner.lock().unwrap();
+        let key = (registry_addr.to_lowercase(), nullifier);
+        if g.consumed.get(&key).copied().unwrap_or(false) {
+            return Err(ChainError::Other("NullifierUsed".into()));
+        }
+        g.consumed.insert(key, true);
+        g.clock += 12;
+        g.nonce += 1;
+        Ok(SentTx {
+            tx_hash: format!("0x{:064x}", g.nonce),
+            block_number: Some(1_000 + g.nonce),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -539,6 +658,51 @@ mod tests {
         // isValid flips to false, but issuedAt (the historical anchor) stays intact.
         assert!(!c.is_valid(issuer, root).await.unwrap());
         assert!(!c.issued_at(issuer, root).await.unwrap().is_zero());
+    }
+
+    /// The selector the vet/groomer stacks send for the same registry call. Pinned literally: if the
+    /// `sol!` ABI here ever drifts from theirs, the government's verifications would revert on the
+    /// shared `VerificationRegistryConsent` and this test fails first.
+    #[test]
+    fn record_verification_zk_selector_matches_the_shared_registry_abi() {
+        let a = ["1".to_string(), "2".to_string()];
+        let b = [
+            ["3".to_string(), "4".to_string()],
+            ["5".to_string(), "6".to_string()],
+        ];
+        let c = ["7".to_string(), "8".to_string()];
+        let pubs: [String; 7] = std::array::from_fn(|i| i.to_string());
+        let cd = record_verification_zk_consent_calldata(&a, &b, &c, &pubs);
+        // keccak("recordVerificationZK(uint256[2],uint256[2][2],uint256[2],uint256[7])")[0..4]
+        assert_eq!(&cd[2..10], "dd080593", "calldata: {cd}");
+        // 4-byte selector + 8 static proof words + 7 public signals, all inline (no dynamic tails).
+        assert_eq!(cd.len(), 2 + 8 + (8 + 7) * 64, "calldata: {cd}");
+    }
+
+    #[tokio::test]
+    async fn memchain_consent_record_consumes_the_nullifier_once() {
+        let c = MemChain::new();
+        let registry = "0x4444444444444444444444444444444444444444";
+        let a = ["1".to_string(), "2".to_string()];
+        let b = [
+            ["3".to_string(), "4".to_string()],
+            ["5".to_string(), "6".to_string()],
+        ];
+        let cc = ["7".to_string(), "8".to_string()];
+        // pub[3] is the nullifier (frozen output order).
+        let pubs: [String; 7] = std::array::from_fn(|i| if i == 3 { "99".into() } else { "1".into() });
+        assert!(!c.is_consumed(registry, &format!("0x{:064x}", 99)));
+        let tx = c
+            .record_verification_zk_consent(registry, &a, &b, &cc, &pubs)
+            .await
+            .unwrap();
+        assert!(tx.tx_hash.starts_with("0x"));
+        assert!(c.is_consumed(registry, &format!("0x{:064x}", 99)));
+        // replay of the same nullifier is refused, as the registry refuses it on-chain.
+        assert!(c
+            .record_verification_zk_consent(registry, &a, &b, &cc, &pubs)
+            .await
+            .is_err());
     }
 
     #[test]
