@@ -236,8 +236,8 @@ function HowToSubscribe({ url }: { url: string }) {
       <div>
         <p className="font-semibold text-onSurface">Apple Calendar</p>
         <p className="text-muted">
-          File → New Calendar Subscription, paste the address. Set "Auto-refresh" to how often you
-          want it checked. Or open{" "}
+          File → New Calendar Subscription, paste the address, then choose how often it should
+          refresh. Or open{" "}
           <a href={webcal} className="text-primary hover:underline">
             this webcal link
           </a>
@@ -248,8 +248,8 @@ function HowToSubscribe({ url }: { url: string }) {
         <p className="font-semibold text-onSurface">Google Calendar</p>
         <p className="text-muted">
           Other calendars → From URL, paste the address. Google needs the address to be reachable
-          from the internet, and refreshes it on its own schedule — often only every few hours, which
-          it does not let you change.
+          from the internet, and refreshes on its own schedule rather than one you set — expect a new
+          booking to take a while to show up there, sometimes hours.
         </p>
       </div>
       <div>

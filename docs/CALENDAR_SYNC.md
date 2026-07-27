@@ -22,9 +22,15 @@ groomer portal.
 
 | Provider | Subscribes to an ICS URL? | How |
 | --- | --- | --- |
-| **Apple Calendar** | Yes | File → New Calendar Subscription, or a `webcal://` link. Refresh interval is user-configurable, down to every 5 minutes. Works against a `localhost` URL. |
-| **Google Calendar** | Yes | Other calendars → From URL. Requires a PUBLICLY reachable URL. Refresh is on Google's schedule and is not configurable — historically hours, not minutes. |
+| **Apple Calendar** | Yes | File → New Calendar Subscription, or a `webcal://` link. The refresh interval is chosen by the subscriber. |
+| **Google Calendar** | Yes | Other calendars → From URL. Needs a PUBLICLY reachable URL. Refresh is on Google's own schedule rather than the subscriber's, and can lag by hours. |
 | **Luma** | Yes | Added as an external calendar subscription in calendar settings. |
+
+> The per-provider details in this document — refresh behaviour, API terms, verification
+> requirements — are the state of things as understood when it was written, and providers change
+> them without notice. Treat them as the shape of the problem, not as current fact: re-check each
+> against the provider's own documentation before scoping work that depends on it. What IS verified
+> here is everything about this repo's own code, which the test suites pin.
 
 Implementation: `stacks/vet/api/src/ics.rs` (pure RFC 5545 serialization) and
 `stacks/vet/api/src/calendar_ics.rs` (routes, identity, dedup).
@@ -38,9 +44,10 @@ The portal says this at the point the operator copies the link, and rotation is 
 
 - **It is one direction.** Bookings made in DogTag appear in the subscribed calendar.
   An event created, moved or deleted in Google, Apple or Luma does **not** come back.
-- **Refresh is the subscriber's decision.** The feed asks for `REFRESH-INTERVAL:PT15M`; Google in
-  particular ignores that and polls on its own cadence, so a booking made now can take hours to
-  appear in a Google-subscribed calendar. Apple honours a user-set interval and is far quicker.
+- **Refresh is the subscriber's decision, not ours.** The feed asks for `REFRESH-INTERVAL:PT15M`, but
+  that is advisory and a subscriber may poll on whatever cadence it likes. Google is the one to plan
+  around: it does not expose the interval to the user, and a booking made now can take hours to show
+  up in a Google-subscribed calendar. Apple lets the subscriber choose.
 - **The window is bounded.** 90 days back, 400 days forward, capped at 2000 events. Exceeding the cap
   emits a visible marker event in the calendar itself rather than truncating quietly.
 
@@ -117,42 +124,47 @@ This matters before scoping stage (b), because a good deal of Google two-way syn
 
 | Piece | What it means |
 | --- | --- |
-| **Cloud project + OAuth consent screen** | A Google Cloud project per deployment, or one shared project with each shop as a user. A shared project using the `calendar.events` scope is a RESTRICTED scope: Google requires an annual third-party security assessment (CASA) before it can be published beyond 100 test users. That is a recurring cost and a recurring calendar deadline, not a one-off. |
-| **Token storage + refresh** | Refresh tokens encrypted at rest (the custody seal is the pattern to follow). Access tokens minted per request and cached. Refresh tokens can be revoked by the user at any time, so every call needs a "re-consent required" path that surfaces in the portal. |
-| **Webhook channels** | `events.watch` gives push notifications, but channels expire and must be renewed on a schedule. The endpoint must be publicly reachable over HTTPS with a verified domain, which a self-hosted shop behind a home router does not have. Fallback: poll `events.list` with `syncToken` on a timer, which is what the existing engine already does on demand. |
+| **Cloud project + OAuth verification** | A Google Cloud project per deployment, or one shared project with every shop as a user of it. Calendar scopes sit in Google's sensitive/restricted tiers, and an app cannot be published past the unverified test-user cap without going through Google's verification; the restricted tier additionally requires a periodic third-party security assessment. **Which tier `calendar.events` falls in, and what verification currently costs in money and elapsed time, must be checked against Google's own policy** — this is the item most likely to decide whether native Google sync is feasible at all for a self-hosted product, and it is not something to assume from memory. |
+| **Token storage + refresh** | Refresh tokens encrypted at rest (the custody seal is the pattern to follow). Access tokens minted per request and cached. A user can revoke the grant at any time, so every call needs a "re-consent required" path that surfaces in the portal. |
+| **Webhook channels** | `events.watch` gives push notifications, but channels expire and must be renewed on a schedule, and the endpoint has to be publicly reachable over HTTPS — which a self-hosted shop behind a home router is not. Fallback: poll `events.list` with `syncToken` on a timer, which is what the existing engine already does on demand. |
 | **The collection bridge** | Map `store::Appointment` ⇄ Google events, keeping the existing `dogtag.owned` / `dogtag.apptId` / `dogtag.rev` extended-property tagging so echoes stay distinguishable from human edits. |
 | **Conflict resolution** | See §4. |
 
 Realistic scope: the client is largely written; storage, refresh, the collection bridge, the webhook
-endpoint and its renewal, the portal UI, and conflict resolution are not. The CASA assessment is the
-item most likely to be the actual blocker for a product that ships to third-party shops.
+endpoint and its renewal, the portal UI, and conflict resolution are not. OAuth verification is the
+item most likely to be the actual blocker for a product that ships to third-party shops, and it is
+the first thing to check rather than the last.
 
 ### 3.2 Apple Calendar
 
-Apple has no public REST calendar API. Two-way means **CalDAV** (RFC 4791) against iCloud:
+Apple has no public REST calendar API for third parties. Two-way against iCloud means **CalDAV**
+(RFC 4791):
 
-- Basic auth with an **app-specific password** the shop generates in their Apple ID settings — a
-  credential DogTag would then store and be responsible for. There is no OAuth, no scoping, and an
-  app-specific password grants iCloud access beyond calendars.
+- Authentication is an **app-specific password** the shop generates in their Apple ID settings — a
+  long-lived credential DogTag would then store and be responsible for. There is no OAuth flow and
+  no per-service scoping to lean on, so **what an app-specific password actually grants access to
+  should be established before deciding this is acceptable**; storing one on a shop's behalf is a
+  posture question, not an implementation detail.
 - Discovery via `PROPFIND` on the principal URL, then the calendar-home set, then each collection.
-- Change detection via `sync-collection` (RFC 6578) sync tokens, or `getctag` polling. There is no
-  push; polling is the only option.
+- Change detection via `sync-collection` (RFC 6578) sync tokens, or `getctag` polling. CalDAV has no
+  push, so polling is the mechanism.
 - Writes are `PUT`s of whole `VEVENT` bodies with `If-Match` ETags for optimistic concurrency.
-- iCloud's CalDAV behaviour is undocumented and has changed without notice.
+- iCloud's CalDAV endpoint is not covered by a published Apple specification, so behaviour has to be
+  discovered and re-verified rather than read.
 
 Realistic scope: a CalDAV client is a meaningful piece of work in its own right, and the
-credential-handling posture (storing an app-specific password that unlocks more than calendars) is
-the part to argue about before any of the code.
+credential-handling posture is the part to settle before any of the code.
 
 ### 3.3 Luma
 
-- Luma's public API is oriented around events and guests for a Luma calendar, not around being a
-  general two-way sync target for an external booking system.
-- API-key auth, so token refresh is not an issue, but key storage is.
-- Luma's own ICS subscription support is the intended integration path for exactly this case.
+- Luma's public API is built around running events and guest lists on a Luma calendar. Whether it
+  can serve as a general two-way sync target for an external booking system needs checking against
+  its current API docs; ICS subscription is what it documents for bringing an outside calendar in,
+  which is the case here.
+- API-key auth, so there is no token refresh to build — but key storage is still on us.
 
-Realistic scope: the smallest of the three, and also the one where ICS is most clearly the
-intended answer rather than a workaround.
+Realistic scope: the smallest of the three, and the one where ICS is most likely the intended answer
+rather than a workaround.
 
 ---
 
@@ -195,7 +207,8 @@ Calendar or a shorter-polling client, not OAuth. If the complaint is "I moved an
 phone and DogTag didn't know", that is a real signal for stage (b), and it points at Google first
 (where most of the client already exists) rather than at all three.
 
-Before starting stage (b), the three questions to answer are: who pays for and maintains Google's
-annual CASA assessment; whether storing an Apple app-specific password is acceptable given it grants
-more than calendar access; and which of the §4.2 conflict answers the shop actually wants. None of
-those are engineering questions.
+Before starting stage (b), three questions need answers, and none of them are engineering questions:
+what Google's current verification tier and cost actually are for the calendar scope we would need;
+whether storing an Apple app-specific password on a shop's behalf is an acceptable posture once we
+know what it grants; and which of the §4.2 conflict answers the shop actually wants when two people
+edit the same booking. The first two are provider facts to go and check, not to assume.
