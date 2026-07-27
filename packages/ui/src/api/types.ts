@@ -994,12 +994,49 @@ export interface GovernanceAuthority {
 // ---- import verdict (3 authenticity pillars + contextual ownership) ----
 export type FragmentState = "VALID" | "INVALID" | "ERROR" | "NOT_APPLICABLE";
 /** Shape of ImportPullResp.verdict from the vet/groomer backend `verify::verdict_json`. */
+/**
+ * The factory-anchored issuer-whitelist pillar's outcome. It is NOT a `FragmentState`, because a
+ * caller must be able to tell "we never asked" apart from "we asked and it passed" — a pillar that
+ * never ran must never render as one that succeeded.
+ *
+ * `unavailableNoFactoryConfigured` is the ONLY non-`passed` state that does not fail the credential:
+ * it means this verifier has no `FACTORY_ADDR`, which is our own gap and not evidence about the
+ * document. `unresolved` (we asked, and could not establish an answer) DOES fail it.
+ */
+export type IssuerWhitelistState =
+  | "passed"
+  | "failed"
+  | "unresolved"
+  | "unavailableNoFactoryConfigured";
+
+/** How the issuing clone was arrived at. Anything but `resolved` means `issuerAddr` is a claim. */
+export type IssuerResolution = "resolved" | "noRecord" | "noFactoryConfigured" | "readFailed";
+
+/**
+ * Whether the document's own `issuer.documentStore` names the clone the factory resolved. Reported
+ * BESIDE the whitelist pillar rather than folded into it, because "the document named a different
+ * contract than the chain did" and "the signer is not authorised for this record type" are different
+ * accusations with different remedies. `notEvaluated` means no clone was resolved, so there was
+ * nothing authoritative to disagree with - not a failure.
+ */
+export type IssuerStoreAgreement = "matched" | "differs" | "notEvaluated";
+
 export interface ImportVerdict {
   valid: boolean;
   integrity: FragmentState;
   issuance: FragmentState;
   identity: FragmentState;
   ownership: FragmentState;
+  /**
+   * OPTIONAL for the same reason {@link VerifyCredentialResp.fragments.issuerWhitelistState} is: the
+   * backend is separately deployed, so a portal build newer than its API must degrade to an honest
+   * unknown rather than throw on a missing key.
+   */
+  issuerWhitelistState?: IssuerWhitelistState;
+  issuerResolution?: IssuerResolution;
+  issuerStoreAgreement?: IssuerStoreAgreement;
+  /** The clone the on-chain reads were made against — the FACTORY's answer when one was available. */
+  issuerAddr: string;
 }
 
 // --------------------------------------------------------------------------------------------

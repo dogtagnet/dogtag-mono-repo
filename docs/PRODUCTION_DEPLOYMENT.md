@@ -120,6 +120,7 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 #   FACTORY_ADDR=...                    # ALL  (DogTagIssuerFactory. admin: createIssuer/predictIssuer
 #                                       #   + Ownable owner. vet/groomer: a SECURITY setting - its
 #                                       #   write-once rootIssuer[R] is what tells POST /verify/credential
+#                                       #   AND POST /import/pull (the SDK-backed third-party verify)
 #                                       #   which clone really issued a credential, instead of believing
 #                                       #   the document's own issuer.documentStore, which sits OUTSIDE
 #                                       #   the Merkle root and is therefore attacker-chosen. Unset ->

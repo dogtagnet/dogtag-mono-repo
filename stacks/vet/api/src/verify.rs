@@ -4,8 +4,9 @@ use axum::{http::StatusCode, Json};
 use serde_json::{json, Value};
 
 use dogtag_standard::verify::{
-    verify as sdk_verify, AdapterError, DnsAdapter, FragmentState, RegistryAdapter, RpcAdapter,
-    Verdict, VerifyMode, VerifyOpts,
+    verify as sdk_verify, AdapterError, DnsAdapter, FragmentState, IssuerAnchor, IssuerResolution,
+    IssuerStoreAgreement, IssuerWhitelistState, RegistryAdapter, RpcAdapter, Verdict, VerifyMode,
+    VerifyOpts,
 };
 use dogtag_standard::wrap::WrappedDoc;
 
@@ -62,7 +63,90 @@ pub fn verdict_json(v: &Verdict) -> Value {
         "issuance": fragment(v.issuance),
         "identity": fragment(v.identity),
         "ownership": fragment(v.ownership),
+        // The factory-anchored issuer-whitelist pillar, reported EXPLICITLY. A caller must be able
+        // to tell "not evaluated" from "evaluated and passed" — a pillar that never ran must never
+        // read as one that succeeded, and a silent absence would be exactly that. Same vocabulary as
+        // `POST /verify/credential` (PR #96) so the two surfaces read identically.
+        //   "passed" | "failed" | "unresolved" | "unavailableNoFactoryConfigured"
+        "issuerWhitelistState": whitelist_state_str(v.issuer_whitelist),
+        // Whether the envelope's own `documentStore` names the clone the factory resolved. Reported
+        // BESIDE the pillar, never folded into it: "the document named a different contract than the
+        // chain did" and "the signer is not authorised" are different accusations with different
+        // remedies, exactly as `POST /verify/credential` keeps `issuer_mismatch` apart from
+        // `issuer_not_whitelisted`.
+        //   "matched" | "differs" | "notEvaluated"
+        "issuerStoreAgreement": store_agreement_str(v.issuer_store),
+        //   "resolved" | "noRecord" | "noFactoryConfigured" | "readFailed"
+        "issuerResolution": resolution_str(&v.issuer_resolution),
+        // The clone the on-chain reads were ACTUALLY made against. With `issuerResolution` other
+        // than "resolved" this is the document's own unverified claim.
+        "issuerAddr": v.issuer_addr,
     })
+}
+
+fn whitelist_state_str(s: IssuerWhitelistState) -> &'static str {
+    match s {
+        IssuerWhitelistState::Passed => "passed",
+        IssuerWhitelistState::Failed => "failed",
+        IssuerWhitelistState::Unresolved => "unresolved",
+        IssuerWhitelistState::UnavailableNoFactoryConfigured => "unavailableNoFactoryConfigured",
+    }
+}
+
+fn store_agreement_str(s: IssuerStoreAgreement) -> &'static str {
+    match s {
+        IssuerStoreAgreement::Matched => "matched",
+        IssuerStoreAgreement::Differs => "differs",
+        IssuerStoreAgreement::NotEvaluated => "notEvaluated",
+    }
+}
+
+fn resolution_str(r: &IssuerResolution) -> &'static str {
+    match r {
+        IssuerResolution::Resolved => "resolved",
+        IssuerResolution::NoRecord => "noRecord",
+        IssuerResolution::NoFactoryConfigured => "noFactoryConfigured",
+        IssuerResolution::ReadFailed => "readFailed",
+    }
+}
+
+/// How this deployment's `FACTORY_ADDR` classifies — the SINGLE source both factory-anchored
+/// surfaces read, so `POST /import/pull` (via the SDK adapter below) and `POST /verify/credential`
+/// cannot drift on what counts as "no factory" versus "a broken one".
+///
+/// They deliberately REACT differently — the handler answers HTTP 500, the SDK adapter returns an
+/// `Err` that surfaces as an indeterminate pillar — because the SDK returns a `Verdict` and has no
+/// 500/502 channel. What must never differ is the CLASSIFICATION, which is what lives here.
+pub(crate) enum FactoryConfig {
+    /// Unset, or the zero address: a deployment that deliberately has no factory. The pillar reports
+    /// itself unavailable and does NOT condemn the credential.
+    Absent,
+    /// Set, but not a well-formed contract address. Different in kind from absent: this deployment
+    /// INTENDED to check, and one fat-fingered character silently disabling a security pillar is
+    /// misconfigure-to-bypass reached by accident. It fails loudly on both surfaces.
+    Malformed,
+    /// A usable factory address.
+    Addr(String),
+}
+
+/// The one wording both surfaces report a [`FactoryConfig::Malformed`] with.
+pub(crate) const FACTORY_ADDR_MALFORMED: &str =
+    "FACTORY_ADDR is malformed: the issuer pillar cannot be evaluated, and this deployment is \
+     configured to evaluate it. Fix the address or unset it deliberately.";
+
+pub(crate) fn factory_config(factory_addr: &str) -> FactoryConfig {
+    let factory = factory_addr.trim();
+    let absent = factory.is_empty()
+        || (factory.len() == 42
+            && factory.starts_with("0x")
+            && factory[2..].bytes().all(|b| b == b'0'));
+    if absent {
+        FactoryConfig::Absent
+    } else if !valid_contract_addr(factory) {
+        FactoryConfig::Malformed
+    } else {
+        FactoryConfig::Addr(factory.to_string())
+    }
 }
 
 struct ChainRpcAdapter<'a> {
@@ -70,25 +154,99 @@ struct ChainRpcAdapter<'a> {
     rt: tokio::runtime::Handle,
 }
 
+impl ChainRpcAdapter<'_> {
+    /// Run one async chain read from inside the SDK's synchronous adapter contract.
+    fn blocking<T, F>(&self, f: F) -> Result<T, AdapterError>
+    where
+        F: std::future::Future<Output = Result<T, crate::chain::ChainError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        tokio::task::block_in_place(|| self.rt.block_on(f).map_err(|e| AdapterError(e.to_string())))
+    }
+}
+
 impl RpcAdapter for ChainRpcAdapter<'_> {
     fn is_valid(
         &self,
-        document_store: &str,
+        issuer_addr: &str,
         merkle_root: &str,
         _conf: u32,
     ) -> Result<bool, AdapterError> {
         let st = self.st.clone();
-        let document_store = document_store.to_string();
-        let merkle_root = merkle_root.to_string();
-        tokio::task::block_in_place(|| {
-            self.rt
-                .block_on(async move { st.chain.is_valid(&document_store, &merkle_root).await })
-                .map_err(|e| AdapterError(e.to_string()))
-        })
+        let (issuer_addr, merkle_root) = (issuer_addr.to_string(), merkle_root.to_string());
+        self.blocking(async move { st.chain.is_valid(&issuer_addr, &merkle_root).await })
     }
 
     fn owner_of(&self, _dog_tag_id: &str) -> Result<String, AdapterError> {
-        Err(AdapterError("ownerOf not used for third-party verification".to_string()))
+        Err(AdapterError(
+            "ownerOf not used for third-party verification".to_string(),
+        ))
+    }
+
+    /// The factory address comes from THIS DEPLOYMENT'S config and from nowhere else — never from
+    /// the document, never from the caller. That is the whole point: an address an attacker can name
+    /// is an address that cannot anchor anything.
+    ///
+    /// Absent (unset, or the zero address) is a deployment that deliberately has no factory: the
+    /// pillar reports itself unavailable and does not condemn the credential. MALFORMED is different
+    /// in kind — that deployment INTENDED to check, and one fat-fingered character silently
+    /// disabling a security pillar is misconfigure-to-bypass reached by accident. It is therefore an
+    /// `Err`, which the SDK reports as `ReadFailed` and which GATES.
+    ///
+    /// **Divergence from `POST /verify/credential` (PR #96), stated rather than implied.** That
+    /// handler answers a malformed `FACTORY_ADDR` with HTTP 500 and no verdict. The SDK has no 502/500
+    /// channel — it returns a `Verdict` — so the same posture arrives as an indeterminate pillar that
+    /// refuses the credential, and `POST /import/pull` turns that into its 422. Neither degrades into
+    /// the fail-open unavailable state, which is the property that matters.
+    fn root_issuer(&self, merkle_root: &str) -> Result<IssuerAnchor, AdapterError> {
+        let factory = match factory_config(&self.st.cfg.factory_addr) {
+            FactoryConfig::Absent => return Ok(IssuerAnchor::NoFactoryConfigured),
+            FactoryConfig::Malformed => {
+                return Err(AdapterError(FACTORY_ADDR_MALFORMED.to_string()))
+            }
+            FactoryConfig::Addr(a) => a,
+        };
+        let st = self.st.clone();
+        let merkle_root = merkle_root.to_string();
+        let resolved =
+            self.blocking(async move { st.chain.root_issuer(&factory, &merkle_root).await })?;
+        Ok(match resolved {
+            Some(clone) => IssuerAnchor::Resolved(clone),
+            // We ASKED and the chain has no record of this root. Evidence about the credential.
+            None => IssuerAnchor::NoRecord,
+        })
+    }
+
+    fn issued_by(
+        &self,
+        issuer_addr: &str,
+        merkle_root: &str,
+    ) -> Result<Option<String>, AdapterError> {
+        let st = self.st.clone();
+        let (issuer_addr, merkle_root) = (issuer_addr.to_string(), merkle_root.to_string());
+        self.blocking(async move { st.chain.issued_by(&issuer_addr, &merkle_root).await })
+    }
+
+    fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, AdapterError> {
+        let st = self.st.clone();
+        let issuer_addr = issuer_addr.to_string();
+        self.blocking(async move { st.chain.issuer_record_type(&issuer_addr).await })
+    }
+
+    /// The registry address is this deployment's own, for the same reason the factory's is.
+    fn is_whitelisted_for(
+        &self,
+        record_type_key: &str,
+        signer: &str,
+    ) -> Result<bool, AdapterError> {
+        let st = self.st.clone();
+        let registry = st.cfg.issuer_registry_addr.clone();
+        let (record_type_key, signer) = (record_type_key.to_string(), signer.to_string());
+        self.blocking(async move {
+            st.chain
+                .is_whitelisted_for(&registry, &record_type_key, &signer)
+                .await
+        })
     }
 }
 
@@ -183,9 +341,7 @@ fn parse_client_proof(v: &Value) -> Result<ClientProof, String> {
         return Err("b: expected len 2".to_string());
     }
     let row = |i: usize| -> Result<[String; 2], String> {
-        let r = bv[i]
-            .as_array()
-            .ok_or_else(|| format!("b[{i}]: !array"))?;
+        let r = bv[i].as_array().ok_or_else(|| format!("b[{i}]: !array"))?;
         if r.len() != 2 {
             return Err(format!("b[{i}]: expected len 2"));
         }
@@ -366,16 +522,13 @@ pub async fn consent_submit_levelb(
     // §1.3.4): a bare envelope is a replayable bearer credential, but bound here it inherits the
     // proof's relayer/deadline/nullifier scope. All checks run BEFORE any gas is spent; a bad
     // disclosure rejects the whole submission. Nothing disclosed ever reaches the chain.
-    let disclosed_key_paths = match verify_profile_disclosure_submission(st, body, &pubs, &pub_u).await
-    {
-        Ok(kps) => kps,
-        Err(e) => return e,
-    };
+    let disclosed_key_paths =
+        match verify_profile_disclosure_submission(st, body, &pubs, &pub_u).await {
+            Ok(kps) => kps,
+            Err(e) => return e,
+        };
 
-    let nullifier = format!(
-        "0x{}",
-        hex::encode(pub_u[P::NULLIFIER].to_be_bytes::<32>())
-    );
+    let nullifier = format!("0x{}", hex::encode(pub_u[P::NULLIFIER].to_be_bytes::<32>()));
     let record_type_word = format!(
         "0x{}",
         hex::encode(pub_u[P::RECORD_TYPE].to_be_bytes::<32>())
@@ -543,7 +696,10 @@ async fn verify_profile_disclosure_submission(
 
     // (3) on-chain anchor: R == profileRoot(dogTagId) on the owner-hidden SBT.
     let root_hex = format!("0x{}", hex::encode(pub_u[P::ROOT].to_be_bytes::<32>()));
-    let onchain_id = format!("0x{}", hex::encode(pub_u[P::DOG_TAG_ID].to_be_bytes::<32>()));
+    let onchain_id = format!(
+        "0x{}",
+        hex::encode(pub_u[P::DOG_TAG_ID].to_be_bytes::<32>())
+    );
     if valid_contract_addr(&st.cfg.sbt_consent_addr) {
         match st
             .chain
@@ -617,6 +773,17 @@ fn verify_key_from_purpose_word(purpose_word: &str) -> String {
     format!("0x{}", hex::encode(keccak256(&buf).0))
 }
 
+/// True for a well-formed, non-zero contract address (`0x` + exactly 40 hex digits, not all zero).
+///
+/// The zero check alone is NOT enough, and the gap is expensive. `chain::parse_addr` coerces an
+/// unparseable address to `Address::ZERO` (`h.parse::<Address>().unwrap_or(Address::ZERO)`), so a
+/// typo'd `SBT_CONSENT_ADDR` / `PROFILE_ISSUER_ADDR` would pass a non-zero-string test, consume the
+/// one-time bind token, and dispatch both `issue(R)` and `mintCustodial` at the zero address — txs
+/// that SUCCEED against a codeless address, so the failure only surfaces at the read-back, after gas
+/// is spent and the operator's QR is burned. Shape-check at the edge.
+///
+/// This is the ONE definition; `routes.rs` used to carry a byte-identical copy, which is how two
+/// surfaces required to hold the same posture become free to drift.
 pub(crate) fn valid_contract_addr(address: &str) -> bool {
     address.len() == 42
         && address.starts_with("0x")

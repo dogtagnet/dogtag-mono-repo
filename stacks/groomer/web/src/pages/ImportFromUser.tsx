@@ -11,6 +11,9 @@ import {
   useToast,
   type FragmentState,
   type ImportVerdict,
+  type IssuerResolution,
+  type IssuerStoreAgreement,
+  type IssuerWhitelistState,
 } from "@dogtag/ui";
 import type { CrmPet } from "@dogtag/ui";
 import { CheckCircle2, HelpCircle, PawPrint, ScanLine, XCircle } from "lucide-react";
@@ -239,15 +242,26 @@ function VerdictPanel({
         </Badge>
       </div>
       <p className="text-xs text-muted">
-        The three authenticity pillars define validity for everyone. <em>Ownership</em> is a
-        contextual fourth fragment — <code>NOT_APPLICABLE</code> for a third-party groomer importing
-        a customer's record.
+        The authenticity pillars define validity for everyone. <em>Ownership</em> is a contextual
+        fragment — <code>NOT_APPLICABLE</code> for a third-party groomer importing a customer's
+        record.
       </p>
       <div className="grid gap-2 sm:grid-cols-2">
         <Pillar label="Integrity" state={verdict.integrity} />
         <Pillar label="Issuance" state={verdict.issuance} />
         <Pillar label="Identity (DNS)" state={verdict.identity} />
         <Pillar label="Ownership" state={verdict.ownership} />
+        {/*
+          Rendered even though it is not a FragmentState, because without it a credential refused
+          SOLELY by this pillar would show four green tiles beside an INVALID badge with nothing
+          explaining why. Its four states are kept distinct for the same reason the wire keeps them
+          distinct: "not evaluated" must never look like "passed".
+        */}
+        <IssuerWhitelistPillar
+          state={verdict.issuerWhitelistState}
+          resolution={verdict.issuerResolution}
+          store={verdict.issuerStoreAgreement}
+        />
       </div>
       {accepted !== null && (
         <p className="text-sm">
@@ -258,6 +272,79 @@ function VerdictPanel({
           )}
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The factory-anchored issuer-whitelist pillar, plus the separate documentStore-agreement term.
+ *
+ * `Unresolved` reads as a WARNING rather than a neutral tile on purpose: an indeterminate pillar is
+ * a failure to establish a claim, not a step that was harmlessly skipped, and it does fail the
+ * import. `Not checked` is reserved for the one case that genuinely did not run and genuinely is not
+ * evidence — this deployment having no `FACTORY_ADDR` — and it says so, rather than going quiet.
+ *
+ * A `differs` store is surfaced as its OWN refusal rather than recoloured into the pillar, because
+ * "the document named a contract the chain did not" sends the operator somewhere different from "the
+ * signer is not authorised". The backend keeps the two apart for the same reason.
+ *
+ * Every field is optional: the backend is deployed separately, so a portal newer than its API must
+ * degrade to an honest unknown instead of throwing on a missing key and blanking the whole panel.
+ */
+function IssuerWhitelistPillar({
+  state,
+  resolution,
+  store,
+}: {
+  state?: IssuerWhitelistState;
+  resolution?: IssuerResolution;
+  store?: IssuerStoreAgreement;
+}) {
+  type Tile = {
+    variant: "success" | "danger" | "warning" | "neutral";
+    icon: typeof CheckCircle2;
+    text: string;
+  };
+  const map: Record<IssuerWhitelistState, Tile> = {
+    passed: { variant: "success", icon: CheckCircle2, text: "AUTHORISED" },
+    failed: { variant: "danger", icon: XCircle, text: "NOT AUTHORISED" },
+    unresolved: { variant: "warning", icon: HelpCircle, text: "UNRESOLVED" },
+    unavailableNoFactoryConfigured: {
+      variant: "neutral",
+      icon: HelpCircle,
+      text: "NOT CHECKED",
+    },
+  };
+  // Deliberately NOT the `NOT CHECKED` copy: that asserts the specific no-factory case, which a
+  // backend that reported nothing at all has told us nothing about.
+  const unreported: Tile = { variant: "warning", icon: HelpCircle, text: "UNKNOWN" };
+  // A store mismatch outranks the pillar in the headline, because it is the stronger and more
+  // specific accusation — the chain named a different contract than the document did.
+  const storeMismatch = store === "differs";
+  const mismatch: Tile = { variant: "danger", icon: XCircle, text: "ISSUER MISMATCH" };
+  const tile: Tile = storeMismatch ? mismatch : state ? map[state] : unreported;
+  const { variant, icon: Icon, text } = tile;
+  const why = storeMismatch
+    ? "the document names a contract the chain did not"
+    : !state
+      ? "this backend did not report the issuer pillar"
+      : state === "unavailableNoFactoryConfigured"
+        ? "this verifier has no factory configured"
+        : resolution === "noRecord"
+          ? "no factory clone claims this root"
+          : resolution === "readFailed"
+            ? "the anchor could not be read"
+            : null;
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2">
+      <span className="text-sm text-onSurface">
+        Issuer whitelist
+        {why && <span className="block text-xs text-muted">{why}</span>}
+      </span>
+      <Badge variant={variant}>
+        <Icon className="h-3 w-3" />
+        {text}
+      </Badge>
     </div>
   );
 }

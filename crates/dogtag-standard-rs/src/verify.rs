@@ -1,14 +1,22 @@
-//! Three-pillar contextual verification (impl §11.3 — supersedes §1.7) —
-//! mirror of packages/dogtag-standard-ts/src/verify.ts.
+//! Contextual verification (impl §11.3 — supersedes §1.7).
 //!
-//! Validity = integrity AND issuance AND identity (the 3 authenticity pillars). `ownership` is a
-//! CONTEXTUAL 4th fragment: gates only the owner's self-import; NOT_APPLICABLE for third parties.
+//! Validity = integrity AND issuance AND identity AND the factory-anchored issuer-whitelist pillar
+//! AND the document's `issuer.documentStore` agreeing with the clone the factory named.
+//! `ownership` is a CONTEXTUAL 5th fragment: gates only the owner's self-import; NOT_APPLICABLE for
+//! third parties.
+//!
+//! **This is NO LONGER a mirror of `packages/dogtag-standard-ts/src/verify.ts`.** That file still
+//! carries the pre-#97 shape (every read against `doc.issuer.documentStore`, `issuedBy` compared to
+//! `doc.protocol.issuerSigner`, `catch -> VALID`). It has no production consumer — only its own unit
+//! test — so it was recorded rather than re-implemented here; see AGENTS.md. Do not read either file
+//! as evidence about the other until they are reconciled.
 //!
 //! The TS network adapters are async; in Rust they are modeled as synchronous TRAITS whose
 //! methods return `Result<_, AdapterError>` (an `Err` signals a transient ERROR, matching the
 //! TS `try { ... } catch { state = "ERROR" }` shape). Only the pure `check_integrity` pillar and
 //! the contextual `verify` orchestration shape are implemented here.
 use ark_bn254::Fr;
+use sha3::{Digest, Keccak256};
 
 use crate::merkle::build_merkle;
 use crate::wrap::{flatten_data, from_hex32, leaf_from_packed, WrappedDoc};
@@ -22,6 +30,113 @@ pub enum FragmentState {
     NotApplicable,
 }
 
+/// What this verifier's own factory answered for a root — the adapter-facing anchor result.
+///
+/// `doc.issuer.documentStore` sits OUTSIDE the Merkle root, so it is chosen by whoever built the
+/// document. Reading `isValid`/`issuedBy`/`recordType` against it is asking the suspect for its own
+/// references. The verifier's OWN `DogTagIssuerFactory.rootIssuer[R]` is write-once and writable only
+/// from inside an `isClone` contract's `issue()`, so it names the clone that issued THIS root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IssuerAnchor {
+    /// The factory names this clone as the issuer of the root.
+    Resolved(String),
+    /// We ASKED and the factory has no record of this root. Evidence ABOUT the credential.
+    NoRecord,
+    /// This verifier has NO factory configured, so we never asked. OUR gap, not evidence.
+    NoFactoryConfigured,
+}
+
+/// How the issuing clone was arrived at, as REPORTED on the verdict. Mirrors [`IssuerAnchor`] plus
+/// the case the adapter signals with `Err`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuerResolution {
+    /// This verifier's factory names a clone for this root. Every read below is made against it.
+    Resolved,
+    /// We ASKED and the factory has no record of this root. That is evidence ABOUT the credential.
+    NoRecord,
+    /// This verifier has NO factory configured, so we never asked. That is OUR gap, not evidence
+    /// about the credential, and it must not condemn it.
+    NoFactoryConfigured,
+    /// The question could not be put to the chain at all — an unreachable node, or a deployment
+    /// whose configured factory address is malformed. Neither a pass nor evidence: it gates.
+    ReadFailed,
+}
+
+/// The issuer-whitelist pillar's outcome. Deliberately NOT a [`FragmentState`]: `NotApplicable`
+/// already means "does not gate" for `ownership`, and folding "we never asked" into it would make
+/// our own misconfiguration indistinguishable in kind from a deliberate skip.
+///
+/// The vocabulary is the one vet-api's `POST /verify/credential` already puts on the wire as
+/// `issuerWhitelistState` (PR #96), so the two surfaces read identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuerWhitelistState {
+    /// Resolved, and the on-chain originator is whitelisted for the clone's own record type.
+    Passed,
+    /// Resolved, and NOT authorised (or the envelope relabelled the record type): a real failure.
+    Failed,
+    /// Indeterminate — the anchor, the originator or the whitelist read could not be established.
+    /// Never a pass. This is where `NoRecord` and `ReadFailed` land: both gate.
+    Unresolved,
+    /// We never asked, because this verifier has no factory configured. The ONLY non-`Passed` state
+    /// that does not gate the verdict.
+    UnavailableNoFactoryConfigured,
+}
+
+impl IssuerWhitelistState {
+    /// May this pillar contribute to a pass?
+    ///
+    /// Only a DEFINITE `Passed` does — plus the one case that is OUR gap rather than evidence about
+    /// the credential. Everything else is indeterminate, and an indeterminate pillar is a failure to
+    /// establish a claim, never a neutral skipped step.
+    pub fn permits_pass(self) -> bool {
+        matches!(
+            self,
+            IssuerWhitelistState::Passed | IssuerWhitelistState::UnavailableNoFactoryConfigured
+        )
+    }
+}
+
+/// Whether the document's own `issuer.documentStore` agrees with the clone the factory named.
+///
+/// A SEPARATE term from [`IssuerWhitelistState`], never folded into it: "the document named a
+/// different contract than the chain did" and "the signer is not authorised for this record type"
+/// are different accusations with different remedies, and vet-api already reports them apart as
+/// `issuer_mismatch` vs `issuer_not_whitelisted`.
+///
+/// Three states rather than a bool, for the same reason every other term here has explicit states:
+/// a bool spells "checked and agreed" and "never checked" identically, which is exactly how a
+/// dropped check comes to read as a satisfied one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssuerStoreAgreement {
+    /// A clone was resolved and the document names it.
+    Matched,
+    /// A clone was resolved and the document names something else. An ABSENT or empty
+    /// `documentStore` lands here too: exempting it would buy nothing (the factory supplies the
+    /// address regardless) while letting a caller strip one field to skip the check.
+    Differs,
+    /// No clone was resolved, so there is nothing authoritative to disagree with. Not a failure —
+    /// the pillar above already gates `NoRecord` and `ReadFailed`, and `NoFactoryConfigured` is
+    /// deliberately non-gating.
+    NotEvaluated,
+}
+
+impl IssuerStoreAgreement {
+    /// May this term contribute to a pass? Only a definite `Differs` refuses.
+    pub fn permits_pass(self) -> bool {
+        !matches!(self, IssuerStoreAgreement::Differs)
+    }
+}
+
+/// `0x`-hex keccak256 of a record-type label — the `IssuerRegistry` whitelist key and the value a
+/// clone's immutable `recordType()` returns. MUST equal the backend's `chain::record_type_key`
+/// (pinned by `record_type_key_matches_the_vet_backend` in `stacks/vet/api`).
+pub fn record_type_key(record_type: &str) -> String {
+    format!(
+        "0x{}",
+        hex::encode(Keccak256::digest(record_type.as_bytes()))
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub valid: bool,
@@ -29,6 +144,20 @@ pub struct Verdict {
     pub issuance: FragmentState,
     pub identity: FragmentState,
     pub ownership: FragmentState,
+    /// The factory-anchored issuer-whitelist pillar. MANDATORY: only [`IssuerWhitelistState::Passed`]
+    /// (or our own [`IssuerWhitelistState::UnavailableNoFactoryConfigured`] gap) permits a pass.
+    pub issuer_whitelist: IssuerWhitelistState,
+    /// Whether the document's `issuer.documentStore` names the clone the factory resolved. Reported
+    /// separately from [`Verdict::issuer_whitelist`] so a caller can tell a contract mismatch from an
+    /// unauthorised signer; a [`IssuerStoreAgreement::Differs`] gates the verdict.
+    pub issuer_store: IssuerStoreAgreement,
+    /// How [`Verdict::issuer_addr`] was arrived at. A caller MUST be able to tell "not evaluated"
+    /// from "evaluated and passed", so this is reported explicitly and never as a silent absence.
+    pub issuer_resolution: IssuerResolution,
+    /// The clone the on-chain reads were ACTUALLY made against. With
+    /// `issuer_resolution != Resolved` this is the document's own unverified claim, which is exactly
+    /// why the fragments above cannot carry a verdict on their own.
+    pub issuer_addr: String,
 }
 
 /// A transient adapter failure -> the corresponding fragment becomes ERROR.
@@ -36,24 +165,58 @@ pub struct Verdict {
 pub struct AdapterError(pub String);
 
 /// Network adapters are injected so the core SDK stays pure/offline (mobile + server share it).
+///
+/// **No method here has a default implementation, deliberately.** `issued_by` used to default to
+/// `Err(..)` = "unwired", which the orchestration then read as "skip the check" — so the one
+/// implementor that never wired it silently ran with the provenance check dead and nothing said so.
+/// A required method makes the compiler force every implementor to decide, and removes "unwired" as
+/// a concept: a deployment with no factory says so with [`IssuerResolution::NoFactoryConfigured`].
 pub trait RpcAdapter {
-    /// DogTagIssuer.isValid(root) at >= `confirmations` blocks. Err -> transient ERROR.
+    /// DogTagIssuer.isValid(root) at >= `confirmations` blocks, against the RESOLVED clone.
+    /// Err -> transient ERROR.
     fn is_valid(
         &self,
-        document_store: &str,
+        issuer_addr: &str,
         merkle_root: &str,
         confirmations: u32,
     ) -> Result<bool, AdapterError>;
     /// DogTagSBT.ownerOf(dogTagId). Err -> transient ERROR.
     fn owner_of(&self, dog_tag_id: &str) -> Result<String, AdapterError>;
 
-    /// DogTagIssuer.issuedBy(root) - the authoritative signer that issued `R` (== `clone.issuedBy[R]`),
-    /// used to validate the envelope's `protocol.issuerSigner` *claim* (§4.3). Default: unwired => `Err`,
-    /// which makes the additive issuer-signer check skip (base validity still governs). Live per-backend
-    /// eth-calls are the later verify-path hardening brick (M7 P5); the SDK enforces it whenever wired.
-    fn issued_by(&self, _document_store: &str, _merkle_root: &str) -> Result<String, AdapterError> {
-        Err(AdapterError("issued_by not wired".to_string()))
-    }
+    /// `DogTagIssuerFactory.rootIssuer(R)` read against THIS VERIFIER'S OWN configured factory.
+    ///
+    /// It takes no factory address on purpose: an address the caller or the document could name is
+    /// an address an attacker can name, which is the very substitution this anchor exists to close.
+    /// The implementor supplies its own from configuration, or reports
+    /// [`IssuerResolution::NoFactoryConfigured`].
+    ///
+    /// `Ok(NoRecord)` ("we asked, the chain has no record") and `Ok(NoFactoryConfigured)` ("we never
+    /// asked") are distinct because only the first is evidence about the credential.
+    fn root_issuer(&self, merkle_root: &str) -> Result<IssuerAnchor, AdapterError>;
+
+    /// `DogTagIssuer.issuedBy(root)` — the originator that actually called `issue(root)` on this
+    /// clone, or `Ok(None)` when the clone never issued it (the on-chain zero address).
+    ///
+    /// `issue()` is `onlyWhitelisted` (`DogTagIssuer.sol:40,55`), so a genuinely issued root's
+    /// originator was whitelisted for its record type at issuance by construction. This is what lets
+    /// the pillar resolve its own signer instead of trusting one the document names.
+    fn issued_by(
+        &self,
+        issuer_addr: &str,
+        merkle_root: &str,
+    ) -> Result<Option<String>, AdapterError>;
+
+    /// `DogTagIssuer.recordType()` — the clone's own immutable record-type key, fixed by the
+    /// factory's `createIssuer` at KYC time, or `Ok(None)` for the zero word (uninitialized / not a
+    /// clone). Read from the RESOLVED clone so the whitelist question is asked about the record type
+    /// the CHAIN says this root belongs to, never the one the envelope claims.
+    fn issuer_record_type(&self, issuer_addr: &str) -> Result<Option<String>, AdapterError>;
+
+    /// `IssuerRegistry.isWhitelistedFor(recordTypeKey, signer)` against THIS VERIFIER'S OWN
+    /// registry — same reasoning as [`RpcAdapter::root_issuer`]: the registry address is never
+    /// supplied by the document or the caller.
+    fn is_whitelisted_for(&self, record_type_key: &str, signer: &str)
+        -> Result<bool, AdapterError>;
 }
 
 pub trait DnsAdapter {
@@ -179,36 +342,127 @@ fn dog_tag_id_of(doc: &WrappedDoc) -> Option<String> {
 /// Full contextual verify (impl §11.3).
 pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
     let confirmations = opts.confirmations.unwrap_or(5);
+    let root = &doc.signature.merkle_root;
     let integrity = check_integrity(doc).0;
 
-    let issuance = match opts.rpc.is_valid(
-        &doc.issuer.document_store,
-        &doc.signature.merkle_root,
-        confirmations,
-    ) {
+    // ── The anchor: WHICH contract answers for this credential ────────────────────────────────
+    //
+    // `issuer.documentStore` is only the document's CLAIM. The `issuer` block sits OUTSIDE the
+    // Merkle root, so an attacker can point it at a contract they deployed and it will answer
+    // `isValid`/`issuedBy`/`recordType` however they like. This asks the verifier's OWN factory
+    // instead — `rootIssuer[R]` is write-once and only an `isClone` contract can write it.
+    let (issuer_resolution, resolved_clone) = match opts.rpc.root_issuer(root) {
+        Ok(IssuerAnchor::Resolved(a)) => (IssuerResolution::Resolved, Some(a)),
+        Ok(IssuerAnchor::NoRecord) => (IssuerResolution::NoRecord, None),
+        Ok(IssuerAnchor::NoFactoryConfigured) => (IssuerResolution::NoFactoryConfigured, None),
+        Err(_) => (IssuerResolution::ReadFailed, None),
+    };
+    // The address every read below is made against. The factory's answer wins; the document's own
+    // claim is the LAST resort, reached only when the factory named nobody — and in every one of
+    // those cases except `NoFactoryConfigured` the mandatory pillar is indeterminate, so nothing
+    // read from that contract can produce a pass.
+    let issuer_addr = resolved_clone
+        .clone()
+        .unwrap_or_else(|| doc.issuer.document_store.clone());
+
+    // The document names a different contract than the one the chain says issued this root. A
+    // definite authenticity failure, and deliberately its OWN term rather than a fold into the
+    // whitelist pillar: naming the wrong contract and employing an unauthorised signer are different
+    // accusations, and a caller must be able to act on which one it is.
+    let issuer_store = match resolved_clone.as_deref() {
+        // Nothing authoritative to disagree with. Not a failure.
+        None => IssuerStoreAgreement::NotEvaluated,
+        Some(clone) if clone.eq_ignore_ascii_case(doc.issuer.document_store.trim()) => {
+            IssuerStoreAgreement::Matched
+        }
+        Some(_) => IssuerStoreAgreement::Differs,
+    };
+
+    let issuance = match opts.rpc.is_valid(&issuer_addr, root, confirmations) {
         Ok(true) => FragmentState::Valid,
         Ok(false) => FragmentState::Invalid,
         Err(_) => FragmentState::Error,
     };
 
-    // M7 provenance (§4.2/§4.3): a stamped `protocol.issuerSigner` is only the envelope's CLAIM of
-    // who issued; validate it against the authoritative on-chain `clone.issuedBy[R]`. A wrong/forged
-    // claim fails closed (issuance -> INVALID). This can only make verification STRICTER - the on-chain
-    // validity re-derivation above still targets `doc.issuer.document_store`, NEVER the untrusted
-    // block, so a forged `protocol` block can neither reroute validation nor make an invalid record
-    // verify. Skipped when the block is absent (pre-M7) or the adapter is unwired (`Err`) - the base
-    // validity governs. Wiring live per-backend `issuedBy` reads is the later hardening brick (M7 P5).
+    // ── The issuer-whitelist pillar — MANDATORY, and SELF-RESOLVING ───────────────────────────
+    //
+    // It asks the chain WHO issued the root (`issuedBy`, set to `msg.sender` under `onlyWhitelisted`,
+    // `DogTagIssuer.sol:40,55`) and checks THAT signer against THIS verifier's registry. Never an
+    // address the document names, or the attacker supplies both sides of the question.
+    //
+    // Only a definite `Passed` may contribute to a pass; see [`IssuerWhitelistState::permits_pass`].
+    let claimed_rt_key = record_type_key(&doc.issuer.record_type);
+    let (issuer_whitelist, onchain_signer) = match &resolved_clone {
+        None => (
+            match issuer_resolution {
+                // We never asked. OUR misconfiguration, not evidence about the credential.
+                IssuerResolution::NoFactoryConfigured => {
+                    IssuerWhitelistState::UnavailableNoFactoryConfigured
+                }
+                // `NoRecord` = we asked and the chain has no record of this root: that IS evidence,
+                // so it gates. `ReadFailed` = we could not ask: not evidence either way, and by the
+                // standing rule it is not a pass — so it gates too, just never as a `Failed`.
+                _ => IssuerWhitelistState::Unresolved,
+            },
+            None,
+        ),
+        Some(clone) => match opts.rpc.issued_by(clone, root) {
+            Err(_) => (IssuerWhitelistState::Unresolved, None),
+            // The clone the factory named never issued this root: indeterminate, never a pass.
+            Ok(None) => (IssuerWhitelistState::Unresolved, None),
+            Ok(Some(signer)) => match opts.rpc.issuer_record_type(clone) {
+                Err(_) => (IssuerWhitelistState::Unresolved, Some(signer)),
+                // Uninitialized, or not a clone at all.
+                Ok(None) => (IssuerWhitelistState::Unresolved, Some(signer)),
+                // The envelope claims a record type the CHAIN does not agree this clone issues.
+                // `issuer.recordType` is outside the Merkle root, so relabelling a genuine
+                // credential across types is free — and it is the whole point of the label. Binding
+                // the claim to the clone's own immutable `recordType()` is what refuses it.
+                Ok(Some(chain_rt_key)) if !chain_rt_key.eq_ignore_ascii_case(&claimed_rt_key) => {
+                    (IssuerWhitelistState::Failed, Some(signer))
+                }
+                // Ask about the record type the CLONE declares, not the one the envelope claims,
+                // so a relabelled credential is never checked against the wrong whitelist key.
+                Ok(Some(chain_rt_key)) => (
+                    match opts.rpc.is_whitelisted_for(&chain_rt_key, &signer) {
+                        Ok(true) => IssuerWhitelistState::Passed,
+                        Ok(false) => IssuerWhitelistState::Failed,
+                        Err(_) => IssuerWhitelistState::Unresolved,
+                    },
+                    Some(signer),
+                ),
+            },
+        },
+    };
+
+    // ── M7 provenance (§4.2/§4.3): the `protocol` block is a routing hint, NEVER authority ─────
+    //
+    // A stamped `protocol.issuerSigner` is only the envelope's CLAIM of who issued. It is validated
+    // against the on-chain originator — and it is evaluated on EVERY path, not only the
+    // factory-resolved one. Folding it inside the resolved branch would silently drop a check that
+    // DID run and could fail a verdict, on exactly the factory-less deployments where it is the last
+    // check standing; that regression is the one PR #96 had to undo.
+    //
+    // It may only ever TIGHTEN. On an unanchored path both the contract and the expected answer come
+    // from the document, so a MATCH there proves nothing and promotes nothing — but a MISMATCH is
+    // still a definite failure, and refusing to draw it would discard the honest case where
+    // `documentStore` is real and only the claim was forged.
+    //
+    // The old `Err(_) => Valid` fail-open is gone: a read that could not run is not a pass.
     let issuance = match (&doc.protocol, issuance) {
         (Some(p), FragmentState::Valid) => {
-            match opts
-                .rpc
-                .issued_by(&doc.issuer.document_store, &doc.signature.merkle_root)
-            {
-                Ok(onchain) if onchain.eq_ignore_ascii_case(&p.issuer_signer) => {
-                    FragmentState::Valid
-                }
-                Ok(_) => FragmentState::Invalid,
-                Err(_) => FragmentState::Valid,
+            let onchain: Result<Option<String>, AdapterError> = match &resolved_clone {
+                // Already read against the anchor above; reuse it rather than ask twice.
+                Some(_) => Ok(onchain_signer.clone()),
+                None => opts.rpc.issued_by(&issuer_addr, root),
+            };
+            match onchain {
+                Ok(Some(s)) if s.eq_ignore_ascii_case(&p.issuer_signer) => FragmentState::Valid,
+                Ok(Some(_)) => FragmentState::Invalid,
+                // The chain reports no originator for this root (or the read failed), so the claim
+                // names a signer nothing corroborates. Not a pass — but not evidence of forgery
+                // either, so ERROR rather than INVALID.
+                Ok(None) | Err(_) => FragmentState::Error,
             }
         }
         (_, other) => other,
@@ -232,7 +486,9 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
 
     let credential_valid = integrity == FragmentState::Valid
         && issuance == FragmentState::Valid
-        && identity == FragmentState::Valid;
+        && identity == FragmentState::Valid
+        && issuer_whitelist.permits_pass()
+        && issuer_store.permits_pass();
 
     let ownership;
     let valid;
@@ -278,6 +534,10 @@ pub fn verify(doc: &WrappedDoc, opts: &VerifyOpts) -> Verdict {
         issuance,
         identity,
         ownership,
+        issuer_whitelist,
+        issuer_store,
+        issuer_resolution,
+        issuer_addr,
     }
 }
 
@@ -382,18 +642,145 @@ mod tests {
     // is mapped to AdapterError so an `Err` arm models a transient adapter
     // failure exactly as the trait contract requires.
 
-    struct MockRpc {
-        is_valid_res: Result<bool, ()>,
-        owner_res: Result<String, ()>,
+    use std::collections::{HashMap, HashSet};
+
+    /// An ADDRESS-KEYED fake chain.
+    ///
+    /// The mock this replaces ignored the contract address entirely (`fn is_valid(&self, _ds: &str,
+    /// ..)`), so it could not represent "the hostile contract answers `true` while the clone the
+    /// factory named answers `false`" — every forged-issuer test written against it would have
+    /// passed for the wrong reason. That exact false negative has now bitten this repo three times
+    /// (#94's `MemChain::issue` hardcoding `issued_by`, #96's need for a first-class `HostileClone`),
+    /// so this fake is address-keyed from the start and every read below takes the contract it is
+    /// asked of seriously.
+    #[derive(Default)]
+    struct MockChain {
+        /// Does this VERIFIER have a factory configured at all? `false` models the deployment that
+        /// deliberately has none — "we never asked", not "we asked and got nothing".
+        has_factory: bool,
+        /// The verifier's own factory index: root -> the clone it names. Absent while `has_factory`
+        /// is set == the factory has NO RECORD of this root, which is evidence about the credential.
+        root_issuers: HashMap<String, String>,
+        /// (contract, root) -> `isValid`. Absent == false.
+        is_valid: HashMap<(String, String), bool>,
+        /// (contract, root) -> `issuedBy`. Absent == the zero address == never issued HERE.
+        issued_by: HashMap<(String, String), String>,
+        /// contract -> its immutable `recordType()` key.
+        record_types: HashMap<String, String>,
+        /// (recordTypeKey, signer) whitelisted in THIS verifier's registry.
+        whitelist: HashSet<(String, String)>,
+        owner: Option<String>,
+        /// Reads forced to fail, modelling a transient adapter error per read kind.
+        failing: HashSet<&'static str>,
     }
-    impl RpcAdapter for MockRpc {
-        fn is_valid(&self, _ds: &str, _root: &str, _conf: u32) -> Result<bool, AdapterError> {
-            self.is_valid_res.map_err(|_| AdapterError("rpc".into()))
+
+    impl MockChain {
+        /// A chain on which `doc` is exactly what it claims to be: the verifier's factory names
+        /// `CLONE` for the root, `CLONE` issued it from `SIGNER`, declares record type
+        /// `VACCINATION`, and `SIGNER` is whitelisted for that type. Every test below starts here
+        /// and breaks ONE thing, so a failure names the term it broke.
+        fn genuine(doc: &WrappedDoc) -> Self {
+            let root = doc.signature.merkle_root.to_lowercase();
+            let rt = record_type_key("VACCINATION");
+            let mut c = MockChain {
+                has_factory: true,
+                owner: Some(OWNER.to_string()),
+                ..Default::default()
+            };
+            c.root_issuers.insert(root.clone(), CLONE.to_lowercase());
+            c.is_valid
+                .insert((CLONE.to_lowercase(), root.clone()), true);
+            c.issued_by
+                .insert((CLONE.to_lowercase(), root), SIGNER.to_lowercase());
+            c.record_types.insert(CLONE.to_lowercase(), rt.clone());
+            c.whitelist.insert((rt, SIGNER.to_lowercase()));
+            c
+        }
+        /// Install a contract the factory never deployed, answering with attacker-chosen values.
+        fn with_hostile(mut self, addr: &str, root: &str, is_valid: bool, issued_by: &str) -> Self {
+            let k = (addr.to_lowercase(), root.to_lowercase());
+            self.is_valid.insert(k.clone(), is_valid);
+            self.issued_by.insert(k, issued_by.to_lowercase());
+            self.record_types
+                .insert(addr.to_lowercase(), record_type_key("VACCINATION"));
+            self
+        }
+        fn no_factory(mut self) -> Self {
+            self.has_factory = false;
+            self.root_issuers.clear();
+            self
+        }
+        /// The factory is configured but has NO RECORD of this root.
+        fn no_record(mut self) -> Self {
+            self.root_issuers.clear();
+            self
+        }
+        fn failing(mut self, what: &'static str) -> Self {
+            self.failing.insert(what);
+            self
+        }
+        fn without_whitelist(mut self) -> Self {
+            self.whitelist.clear();
+            self
+        }
+        fn with_valid_at(mut self, addr: &str, root: &str, v: bool) -> Self {
+            self.is_valid
+                .insert((addr.to_lowercase(), root.to_lowercase()), v);
+            self
+        }
+        fn owner(mut self, o: Option<&str>) -> Self {
+            self.owner = o.map(str::to_string);
+            self
+        }
+        fn check(&self, what: &'static str) -> Result<(), AdapterError> {
+            if self.failing.contains(what) {
+                Err(AdapterError(format!("{what} read failed")))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl RpcAdapter for MockChain {
+        fn is_valid(&self, issuer_addr: &str, root: &str, _c: u32) -> Result<bool, AdapterError> {
+            self.check("is_valid")?;
+            Ok(*self
+                .is_valid
+                .get(&(issuer_addr.to_lowercase(), root.to_lowercase()))
+                .unwrap_or(&false))
         }
         fn owner_of(&self, _id: &str) -> Result<String, AdapterError> {
-            self.owner_res
+            self.check("owner_of")?;
+            self.owner
                 .clone()
-                .map_err(|_| AdapterError("rpc".into()))
+                .ok_or_else(|| AdapterError("ownerOf".into()))
+        }
+        fn root_issuer(&self, root: &str) -> Result<IssuerAnchor, AdapterError> {
+            self.check("root_issuer")?;
+            if !self.has_factory {
+                return Ok(IssuerAnchor::NoFactoryConfigured);
+            }
+            Ok(match self.root_issuers.get(&root.to_lowercase()) {
+                Some(a) => IssuerAnchor::Resolved(a.clone()),
+                None => IssuerAnchor::NoRecord,
+            })
+        }
+        fn issued_by(&self, addr: &str, root: &str) -> Result<Option<String>, AdapterError> {
+            self.check("issued_by")?;
+            Ok(self
+                .issued_by
+                .get(&(addr.to_lowercase(), root.to_lowercase()))
+                .cloned())
+        }
+        fn issuer_record_type(&self, addr: &str) -> Result<Option<String>, AdapterError> {
+            self.check("issuer_record_type")?;
+            Ok(self.record_types.get(&addr.to_lowercase()).cloned())
+        }
+        fn is_whitelisted_for(&self, rt: &str, signer: &str) -> Result<bool, AdapterError> {
+            self.check("is_whitelisted_for")?;
+            Ok(self
+                .whitelist
+                .contains(&(rt.to_lowercase(), signer.to_lowercase())))
         }
     }
 
@@ -418,6 +805,54 @@ mod tests {
 
     // sample_credential's dogTagId value is "42"; owner_of receives that id.
     const OWNER: &str = "0xAbC0000000000000000000000000000000000001";
+
+    use crate::wrap::{ProtocolMeta, LEVEL_B_VERSION};
+
+    /// The clone the FACTORY names for the root — and, in `issuer()`, also the document's own
+    /// `documentStore`, so an honest document has the two agreeing.
+    const CLONE: &str = "0x0000000000000000000000000000000000000001";
+    /// A contract the factory never deployed, deployed by whoever built the forged document.
+    const HOSTILE: &str = "0x000000000000000000000000000000000000ba0b";
+    /// The signer that actually issued R on-chain (== `clone.issuedBy[R]`).
+    const SIGNER: &str = "0x00000000000000000000000000000000000515e6";
+
+    fn protocol_block(issuer_signer: &str) -> ProtocolMeta {
+        ProtocolMeta {
+            chain_id: 135,
+            version: LEVEL_B_VERSION.to_string(),
+            verification_registry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
+            issuer_clone: issuer().document_store,
+            issuer_signer: issuer_signer.to_string(),
+            status_base_url: None,
+        }
+    }
+
+    fn opts_for<'a>(
+        chain: &'a MockChain,
+        dns: &'a MockDns,
+        registry: &'a MockRegistry,
+        mode: VerifyMode,
+        wallet: Option<String>,
+    ) -> VerifyOpts<'a> {
+        VerifyOpts {
+            rpc: chain,
+            dns,
+            registry,
+            mode,
+            user_wallet_address: wallet,
+            confirmations: None,
+        }
+    }
+
+    /// Third-party verify against a chain, with both identity sources agreeing.
+    fn third_party(doc: &WrappedDoc, chain: &MockChain) -> Verdict {
+        let dns = MockDns(Ok(true));
+        let registry = MockRegistry(Ok(true));
+        verify(
+            doc,
+            &opts_for(chain, &dns, &registry, VerifyMode::ThirdParty, None),
+        )
+    }
 
     /// Stamping `protocol.statusBaseUrl` into an ALREADY-ISSUED document must not disturb its anchored
     /// root. This is the premise the receipt-QR fix rests on: `check_integrity` folds only `data` plus
@@ -454,45 +889,49 @@ mod tests {
         assert_eq!(back.protocol.unwrap().status_base_url, None);
     }
 
+    // --- the baseline: a genuine credential still passes every pillar --------------------------
+
     #[test]
     fn self_import_all_pillars_valid() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::SelfImport,
-            user_wallet_address: Some(OWNER.to_lowercase()), // case-insensitive match
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let chain = MockChain::genuine(&doc);
+        let dns = MockDns(Ok(true));
+        let registry = MockRegistry(Ok(true));
+        let v = verify(
+            &doc,
+            &opts_for(
+                &chain,
+                &dns,
+                &registry,
+                VerifyMode::SelfImport,
+                Some(OWNER.to_lowercase()), // case-insensitive match
+            ),
+        );
         assert_eq!(v.integrity, FragmentState::Valid);
         assert_eq!(v.issuance, FragmentState::Valid);
         assert_eq!(v.identity, FragmentState::Valid);
         assert_eq!(v.ownership, FragmentState::Valid);
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Passed);
+        assert_eq!(v.issuer_resolution, IssuerResolution::Resolved);
         assert!(v.valid);
     }
 
     #[test]
     fn self_import_owner_mismatch_gates_validity() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::SelfImport,
-            user_wallet_address: Some("0xdead".to_string()),
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let chain = MockChain::genuine(&doc);
+        let dns = MockDns(Ok(true));
+        let registry = MockRegistry(Ok(true));
+        let v = verify(
+            &doc,
+            &opts_for(
+                &chain,
+                &dns,
+                &registry,
+                VerifyMode::SelfImport,
+                Some("0xdead".to_string()),
+            ),
+        );
         assert_eq!(v.ownership, FragmentState::Invalid);
         assert!(!v.valid); // credential pillars valid, but ownership gates self-import
     }
@@ -500,19 +939,19 @@ mod tests {
     #[test]
     fn self_import_owner_lookup_error_is_error_not_invalid() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Err(()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::SelfImport,
-            user_wallet_address: Some(OWNER.to_string()),
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let chain = MockChain::genuine(&doc).owner(None);
+        let dns = MockDns(Ok(true));
+        let registry = MockRegistry(Ok(true));
+        let v = verify(
+            &doc,
+            &opts_for(
+                &chain,
+                &dns,
+                &registry,
+                VerifyMode::SelfImport,
+                Some(OWNER.to_string()),
+            ),
+        );
         assert_eq!(v.ownership, FragmentState::Error);
         assert!(!v.valid);
     }
@@ -520,19 +959,7 @@ mod tests {
     #[test]
     fn third_party_without_wallet_is_not_applicable_and_does_not_gate() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let v = third_party(&doc, &MockChain::genuine(&doc));
         assert_eq!(v.ownership, FragmentState::NotApplicable);
         assert!(v.valid); // third-party validity = credential pillars only
     }
@@ -540,19 +967,19 @@ mod tests {
     #[test]
     fn third_party_owner_mismatch_does_not_gate_validity() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: Some("0xother".to_string()),
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let chain = MockChain::genuine(&doc);
+        let dns = MockDns(Ok(true));
+        let registry = MockRegistry(Ok(true));
+        let v = verify(
+            &doc,
+            &opts_for(
+                &chain,
+                &dns,
+                &registry,
+                VerifyMode::ThirdParty,
+                Some("0xother".to_string()),
+            ),
+        );
         assert_eq!(v.ownership, FragmentState::Invalid);
         assert!(v.valid); // ownership Invalid but still valid for third parties
     }
@@ -560,19 +987,9 @@ mod tests {
     #[test]
     fn issuance_false_makes_invalid() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(false),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let root = doc.signature.merkle_root.clone();
+        let chain = MockChain::genuine(&doc).with_valid_at(CLONE, &root, false);
+        let v = third_party(&doc, &chain);
         assert_eq!(v.issuance, FragmentState::Invalid);
         assert!(!v.valid);
     }
@@ -580,19 +997,8 @@ mod tests {
     #[test]
     fn issuance_adapter_error_is_error_state() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Err(()),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let chain = MockChain::genuine(&doc).failing("is_valid");
+        let v = third_party(&doc, &chain);
         assert_eq!(v.issuance, FragmentState::Error);
         assert!(!v.valid);
     }
@@ -600,20 +1006,14 @@ mod tests {
     #[test]
     fn identity_requires_both_txt_and_registry() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        };
+        let chain = MockChain::genuine(&doc);
         // TXT matches but registry does not know -> Invalid (not Error)
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(false)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let dns = MockDns(Ok(true));
+        let registry = MockRegistry(Ok(false));
+        let v = verify(
+            &doc,
+            &opts_for(&chain, &dns, &registry, VerifyMode::ThirdParty, None),
+        );
         assert_eq!(v.identity, FragmentState::Invalid);
         assert!(!v.valid);
     }
@@ -621,19 +1021,13 @@ mod tests {
     #[test]
     fn identity_adapter_error_is_error_state() {
         let doc = good_doc();
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Err(())), // transient DNS failure
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let chain = MockChain::genuine(&doc);
+        let dns = MockDns(Err(())); // transient DNS failure
+        let registry = MockRegistry(Ok(true));
+        let v = verify(
+            &doc,
+            &opts_for(&chain, &dns, &registry, VerifyMode::ThirdParty, None),
+        );
         assert_eq!(v.identity, FragmentState::Error);
         assert!(!v.valid);
     }
@@ -641,7 +1035,7 @@ mod tests {
     #[test]
     fn tampered_doc_invalid_integrity_gates_all_modes() {
         let mut doc = good_doc();
-        // tamper dogTagId value so integrity recomputation fails
+        // tamper a value so integrity recomputation fails
         let subj = doc.data["credentialSubject"].as_object_mut().unwrap();
         let packed = subj["name"].as_str().unwrap();
         let parts: Vec<&str> = packed.splitn(3, ':').collect();
@@ -649,19 +1043,8 @@ mod tests {
             "name".to_string(),
             Value::String(format!("{}:{}:Max", parts[0], parts[1])),
         );
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        };
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
+        let chain = MockChain::genuine(&doc);
+        let v = third_party(&doc, &chain);
         assert_eq!(v.integrity, FragmentState::Invalid);
         assert!(!v.valid);
     }
@@ -677,64 +1060,350 @@ mod tests {
         assert_eq!(check_integrity(&doc).0, FragmentState::Invalid);
     }
 
-    // --- M7 provenance: the `protocol` block is a routing hint, NEVER authority (§4.2/§4.3) ----
+    // === the forged-issuer sweep, SDK surface ==================================================
     //
-    // A stamped `protocol.issuerSigner` is only the envelope's CLAIM of who issued; verify()
-    // validates it against the authoritative on-chain `clone.issuedBy[R]` (here the injected
-    // `issued_by`). A wrong/forged claim must NOT make a record verify.
+    // `issuer.documentStore` sits OUTSIDE the Merkle root, so it is chosen by whoever built the
+    // document. Every read that decides a verdict is now made against the clone THIS VERIFIER'S OWN
+    // factory names for the root, and the issuer-whitelist pillar is mandatory.
+    //
+    // Each test below breaks exactly ONE term of that, so a red test names the term it pins. The
+    // mutation table in the PR body is generated from these.
 
-    use crate::wrap::{ProtocolMeta, LEVEL_B_VERSION};
+    /// TERM 1 — `is_valid` is read against the FACTORY-RESOLVED clone, never `issuer.documentStore`.
+    ///
+    /// The forgery: deploy a contract that answers `isValid = true` for an arbitrary root and point
+    /// `issuer.documentStore` at it. The factory has a record of this root and names a DIFFERENT
+    /// clone, which answers `false`. Asking the document which contract to believe is asking the
+    /// suspect for its own references.
+    ///
+    /// Mutation: read `is_valid` against `doc.issuer.document_store` again -> this test goes red.
+    #[test]
+    fn a_forged_document_store_cannot_verify() {
+        let mut doc = good_doc();
+        let root = doc.signature.merkle_root.clone();
+        doc.issuer.document_store = HOSTILE.to_string();
+        // The hostile contract says everything the attacker wants; the real clone says the root was
+        // never validly issued.
+        let chain = MockChain::genuine(&doc)
+            .with_hostile(HOSTILE, &root, true, SIGNER)
+            .with_valid_at(CLONE, &root, false);
 
-    /// The signer that actually issued R on-chain (== `clone.issuedBy[R]`).
-    const SIGNER: &str = "0x00000000000000000000000000000000000515e6";
+        // The hostile contract genuinely would have answered `true` — this is the attack, not an
+        // unrelated failure.
+        assert!(
+            chain.is_valid(HOSTILE, &root, 1).unwrap(),
+            "the fake must be able to model a lying contract, or this test proves nothing"
+        );
 
-    struct MockRpcSigner {
-        is_valid: bool,
-        issued_by: String,
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_addr.to_lowercase(), CLONE.to_lowercase());
+        assert_eq!(v.issuance, FragmentState::Invalid);
+        assert!(!v.valid);
     }
-    impl RpcAdapter for MockRpcSigner {
-        fn is_valid(&self, _ds: &str, _root: &str, _c: u32) -> Result<bool, AdapterError> {
-            Ok(self.is_valid)
-        }
-        fn owner_of(&self, _id: &str) -> Result<String, AdapterError> {
-            Err(AdapterError("ownerOf unused (third-party)".into()))
-        }
-        fn issued_by(&self, _ds: &str, _root: &str) -> Result<String, AdapterError> {
-            Ok(self.issued_by.clone())
-        }
+
+    /// TERM 2 — the issuer-whitelist pillar is MANDATORY: only a definite `Passed` may contribute.
+    ///
+    /// Everything else about this credential is genuine and on-chain-valid; the only defect is that
+    /// the address that issued it is not authorised for the record type. Before this change the SDK
+    /// had no such pillar at all, so this verified.
+    ///
+    /// Mutation: make `permits_pass` accept `Failed` (or drop the `permits_pass()` term from
+    /// `credential_valid`) -> this test goes red.
+    #[test]
+    fn an_unwhitelisted_issuing_signer_refuses_an_otherwise_valid_credential() {
+        let doc = good_doc();
+        let chain = MockChain::genuine(&doc).without_whitelist();
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.integrity, FragmentState::Valid);
+        assert_eq!(
+            v.issuance,
+            FragmentState::Valid,
+            "the chain says it is valid"
+        );
+        assert_eq!(v.identity, FragmentState::Valid);
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Failed);
+        assert!(!v.valid, "the pillar is mandatory, so this cannot pass");
     }
 
-    fn protocol_block(issuer_signer: &str) -> ProtocolMeta {
-        ProtocolMeta {
-            chain_id: 135,
-            version: LEVEL_B_VERSION.to_string(),
-            verification_registry: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".to_string(),
-            issuer_clone: issuer().document_store,
-            issuer_signer: issuer_signer.to_string(),
-            status_base_url: None,
-        }
+    /// TERM 3 — `noFactoryConfigured` (we never asked) and `noRecord` (we asked, the chain has no
+    /// record) are DIFFERENT, and only the second is evidence about the credential.
+    ///
+    /// This is the distinction #94 ruled on and #96 carried. Our own misconfiguration must not
+    /// condemn a credential; a chain that has never heard of the root must.
+    ///
+    /// Mutation: fold `NoRecord` into the non-gating branch (return
+    /// `UnavailableNoFactoryConfigured` for it) -> the `no_record` half goes red.
+    #[test]
+    fn no_record_is_evidence_but_no_factory_configured_is_only_our_own_gap() {
+        let doc = good_doc();
+
+        // We asked; the chain has no record of this root.
+        let asked = third_party(&doc, &MockChain::genuine(&doc).no_record());
+        assert_eq!(asked.issuer_resolution, IssuerResolution::NoRecord);
+        assert_eq!(asked.issuer_whitelist, IssuerWhitelistState::Unresolved);
+        assert!(
+            !asked.valid,
+            "the chain has no record of this root: evidence"
+        );
+
+        // We never asked, because this verifier has no factory configured.
+        let never = third_party(&doc, &MockChain::genuine(&doc).no_factory());
+        assert_eq!(
+            never.issuer_resolution,
+            IssuerResolution::NoFactoryConfigured
+        );
+        assert_eq!(
+            never.issuer_whitelist,
+            IssuerWhitelistState::UnavailableNoFactoryConfigured
+        );
+        assert!(
+            never.valid,
+            "OUR misconfiguration is not evidence about the credential"
+        );
     }
 
-    fn provenance_opts<'a>(rpc: &'a MockRpcSigner) -> VerifyOpts<'a> {
-        VerifyOpts {
-            rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        }
+    /// TERM 4 — the whitelist question is keyed on the record type the CLONE declares, and an
+    /// envelope that claims a different one is a definite failure.
+    ///
+    /// `issuer.recordType` is outside the Merkle root, so relabelling a genuine credential across
+    /// types costs nothing — and the label is the entire point of the credential. Before this change
+    /// `verify()` never read `recordType` at all, so a rabies certificate could be presented as a
+    /// travel clearance and every pillar still passed.
+    ///
+    /// Mutation: key the whitelist read on the ENVELOPE's `claimed_rt_key` and drop the
+    /// clone-vs-envelope comparison -> this test goes red.
+    #[test]
+    fn a_record_type_relabel_is_refused() {
+        let mut doc = good_doc();
+        assert_eq!(doc.issuer.record_type, "VACCINATION");
+        let chain = MockChain::genuine(&doc);
+        // The genuine credential passes.
+        assert!(third_party(&doc, &chain).valid);
+
+        // Relabel it. Nothing inside `R` changes, so integrity still reconciles.
+        doc.issuer.record_type = "TRAVEL_CLEARANCE".to_string();
+        assert_eq!(
+            check_integrity(&doc).0,
+            FragmentState::Valid,
+            "the relabel is free: recordType is outside R"
+        );
+
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Failed);
+        assert!(!v.valid);
     }
+
+    /// TERM 5 — the `protocol.issuerSigner` claim is checked on EVERY path, not only the
+    /// factory-resolved one, and it may only TIGHTEN.
+    ///
+    /// This is the regression PR #96 had to undo on its own branch: folding an operator/envelope
+    /// assertion inside the factory-resolved branch silently discards a check that DID run and COULD
+    /// fail a verdict, on exactly the factory-less deployments where it is the last check standing.
+    ///
+    /// Mutation: evaluate the provenance comparison only when `resolved_clone.is_some()` -> this
+    /// test goes red while `a_forged_document_store_cannot_verify` stays green.
+    #[test]
+    fn a_factoryless_deployment_still_refuses_a_forged_issuer_signer_claim() {
+        let mut doc = good_doc();
+        doc.protocol = Some(protocol_block("0x00000000000000000000000000000000deadbeef"));
+        // No factory: the pillar reports itself unavailable and cannot condemn anything...
+        let chain = MockChain::genuine(&doc).no_factory();
+        let v = third_party(&doc, &chain);
+        assert_eq!(
+            v.issuer_whitelist,
+            IssuerWhitelistState::UnavailableNoFactoryConfigured
+        );
+        // ...but the envelope's own claim about who issued is still checked against the chain, and
+        // it does not match. A capability that worked before must not be lost to an unavailable one.
+        assert_eq!(v.issuance, FragmentState::Invalid);
+        assert!(!v.valid);
+    }
+
+    /// The other half of TERM 5: tighten-ONLY. On an unanchored path both the contract and the
+    /// expected answer come from the document, so a MATCH proves nothing and must promote nothing.
+    ///
+    /// The document's `documentStore` deliberately AGREES with the factory-resolved clone here
+    /// (`issuer()` sets it to `CLONE`), so TERM 6 is satisfied and this test isolates the
+    /// tighten-only property instead of resting it on a store mismatch. It previously used a HOSTILE
+    /// store and asserted `valid == true`, which pinned the missing TERM 6 as correct behaviour.
+    #[test]
+    fn a_matching_issuer_signer_claim_cannot_promote_an_unanchored_credential() {
+        let mut doc = good_doc();
+        let root = doc.signature.merkle_root.clone();
+        doc.protocol = Some(protocol_block(SIGNER));
+        let chain = MockChain::genuine(&doc).with_hostile(HOSTILE, &root, true, SIGNER);
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_addr.to_lowercase(), CLONE.to_lowercase());
+        assert_eq!(v.issuer_store, IssuerStoreAgreement::Matched);
+        assert!(
+            v.valid,
+            "the real clone corroborates it, so this one is genuine"
+        );
+
+        // Now the same agreement on a chain whose factory has NO record: still not a pass.
+        let unanchored = third_party(&doc, &chain.no_record());
+        assert_eq!(unanchored.issuer_resolution, IssuerResolution::NoRecord);
+        assert_eq!(
+            unanchored.issuer_whitelist,
+            IssuerWhitelistState::Unresolved
+        );
+        assert_eq!(
+            unanchored.issuer_store,
+            IssuerStoreAgreement::NotEvaluated,
+            "no clone resolved: nothing authoritative to disagree with"
+        );
+        assert!(
+            !unanchored.valid,
+            "an agreeable claim never manufactures a pass"
+        );
+    }
+
+    /// TERM 6 — the document's `issuer.documentStore` must AGREE with the clone the factory named,
+    /// and a disagreement is reported as a STORE MISMATCH rather than as an unauthorised signer.
+    ///
+    /// This is the term the other four converged surfaces already enforce (vet-api's
+    /// `issuer_store_differs` -> status `issuer_mismatch`, government-api's `verify`,
+    /// `packages/ui`'s `cloneClaimsAgree`, mobile's `RoaxRpc.issuerWhitelistPillar`), and it was the
+    /// one the SDK was missing. Everything else about this credential is genuine — the factory
+    /// resolves the real clone, that clone reports the root valid, issued by a whitelisted signer for
+    /// the record type it declares — so the ONLY defect is the contract the envelope nominates.
+    ///
+    /// Mutation: drop `issuer_store.permits_pass()` from `credential_valid` -> this test goes red,
+    /// and no other test in this file changes.
+    #[test]
+    fn a_document_store_the_factory_did_not_name_is_refused_as_a_store_mismatch() {
+        let doc_genuine = good_doc();
+        let chain = MockChain::genuine(&doc_genuine);
+        assert!(
+            third_party(&doc_genuine, &chain).valid,
+            "control: the honest document names the clone the factory named"
+        );
+
+        let mut doc = doc_genuine.clone();
+        doc.issuer.document_store = HOSTILE.to_string();
+        assert_eq!(
+            check_integrity(&doc).0,
+            FragmentState::Valid,
+            "the swap is free: the issuer block is outside R"
+        );
+
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_store, IssuerStoreAgreement::Differs);
+        // Reported as a store mismatch, NOT as an unauthorised signer: the signer really is
+        // authorised, and saying otherwise would send the operator after the wrong remedy.
+        assert_eq!(
+            v.issuer_whitelist,
+            IssuerWhitelistState::Passed,
+            "the two accusations must stay distinguishable"
+        );
+        assert_eq!(v.issuance, FragmentState::Valid);
+        assert_eq!(v.identity, FragmentState::Valid);
+        assert!(!v.valid, "a contract the chain did not name refuses");
+
+        // An ABSENT store is a mismatch like any other — exempting it would let a caller strip one
+        // field to skip the check.
+        let mut stripped = doc_genuine.clone();
+        stripped.issuer.document_store = String::new();
+        assert_eq!(
+            third_party(&stripped, &chain).issuer_store,
+            IssuerStoreAgreement::Differs
+        );
+    }
+
+    /// A read that could not run is never a pass — and never a `Failed` either. It is its own state.
+    #[test]
+    fn an_anchor_read_failure_is_indeterminate_not_a_pass_and_not_a_failure() {
+        let doc = good_doc();
+        let chain = MockChain::genuine(&doc).failing("root_issuer");
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_resolution, IssuerResolution::ReadFailed);
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Unresolved);
+        assert_ne!(
+            v.issuer_whitelist,
+            IssuerWhitelistState::Failed,
+            "we could not ask; that is not evidence of forgery"
+        );
+        assert!(!v.valid);
+    }
+
+    /// The whitelist read itself failing is indeterminate too — not a silent pass.
+    #[test]
+    fn a_whitelist_read_failure_is_unresolved_not_passed() {
+        let doc = good_doc();
+        let chain = MockChain::genuine(&doc).failing("is_whitelisted_for");
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Unresolved);
+        assert!(!v.valid);
+    }
+
+    /// The clone the factory named never issued this root — indeterminate, never a pass.
+    #[test]
+    fn a_clone_that_never_issued_the_root_leaves_the_pillar_unresolved() {
+        let mut doc = good_doc();
+        let root = doc.signature.merkle_root.clone();
+        doc.issuer.document_store = CLONE.to_string();
+        let mut chain = MockChain::genuine(&doc);
+        chain
+            .issued_by
+            .remove(&(CLONE.to_lowercase(), root.to_lowercase()));
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_resolution, IssuerResolution::Resolved);
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Unresolved);
+        assert!(!v.valid);
+    }
+
+    /// A clone with no declared `recordType()` (uninitialized, or not a clone) cannot be asked the
+    /// whitelist question at all: indeterminate, never a pass.
+    #[test]
+    fn a_clone_with_no_declared_record_type_leaves_the_pillar_unresolved() {
+        let doc = good_doc();
+        let mut chain = MockChain::genuine(&doc);
+        chain.record_types.remove(&CLONE.to_lowercase());
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuer_whitelist, IssuerWhitelistState::Unresolved);
+        assert!(!v.valid);
+    }
+
+    /// "Not evaluated" and "evaluated and passed" must never be the same value on the wire.
+    /// This is the whole reason the pillar has an explicit state rather than an `Option<bool>`.
+    #[test]
+    fn not_evaluated_is_distinguishable_from_passed() {
+        let doc = good_doc();
+        let passed = third_party(&doc, &MockChain::genuine(&doc)).issuer_whitelist;
+        let unavailable =
+            third_party(&doc, &MockChain::genuine(&doc).no_factory()).issuer_whitelist;
+        let unresolved = third_party(&doc, &MockChain::genuine(&doc).no_record()).issuer_whitelist;
+
+        assert_eq!(passed, IssuerWhitelistState::Passed);
+        assert_ne!(unavailable, passed);
+        assert_ne!(unresolved, passed);
+        assert_ne!(unavailable, unresolved);
+        // ...and only the one that is OUR gap declines to gate.
+        assert!(passed.permits_pass());
+        assert!(unavailable.permits_pass());
+        assert!(!unresolved.permits_pass());
+        assert!(!IssuerWhitelistState::Failed.permits_pass());
+    }
+
+    /// `record_type_key` is the cross-boundary tie to the on-chain whitelist key. Pinned against a
+    /// literal produced INDEPENDENTLY (`cast keccak VACCINATION`) so a hashing drift cannot silently
+    /// make every whitelist question ask about nothing and read as an honest `Unresolved`.
+    /// `record_type_key_matches_the_vet_backend` (stacks/vet/api) pins the other side of the tie.
+    #[test]
+    fn record_type_key_is_keccak256_of_the_label() {
+        assert_eq!(
+            record_type_key("VACCINATION"),
+            "0x6510790a1a3e04db26bd73ea6246e7e8defb25eb4281f709e29decd6b8ca0561"
+        );
+    }
+
+    // --- M7 provenance: the `protocol` block is a routing hint, NEVER authority (§4.2/§4.3) ----
 
     #[test]
     fn provenance_matching_issuer_signer_verifies() {
         let mut doc = good_doc();
         doc.protocol = Some(protocol_block(SIGNER)); // claim == on-chain issuedBy[R]
-        let rpc = MockRpcSigner {
-            is_valid: true,
-            issued_by: SIGNER.to_string(),
-        };
-        let v = verify(&doc, &provenance_opts(&rpc));
+        let v = third_party(&doc, &MockChain::genuine(&doc));
         assert_eq!(v.issuance, FragmentState::Valid);
         assert!(v.valid);
     }
@@ -742,69 +1411,53 @@ mod tests {
     #[test]
     fn provenance_wrong_issuer_signer_does_not_verify() {
         // The load-bearing property: a forged `issuerSigner` claim must NOT make the record verify,
-        // even though the record is otherwise on-chain-valid (is_valid == true). Provenance is a
-        // routing hint, never authority.
+        // even though the record is otherwise on-chain-valid. Provenance is a routing hint, never
+        // authority.
         let mut doc = good_doc();
         doc.protocol = Some(protocol_block("0x00000000000000000000000000000000deadbeef"));
-        let rpc = MockRpcSigner {
-            is_valid: true,
-            issued_by: SIGNER.to_string(),
-        };
-        let v = verify(&doc, &provenance_opts(&rpc));
+        let v = third_party(&doc, &MockChain::genuine(&doc));
         assert_eq!(v.issuance, FragmentState::Invalid);
         assert!(!v.valid);
     }
 
     #[test]
     fn provenance_absent_block_verifies_unchanged() {
-        // §4.4 back-compat: a pre-M7 record (no `protocol` block) verifies exactly as before -
+        // §4.4 back-compat: a pre-M7 record (no `protocol` block) verifies exactly as before —
         // the additive issuer-signer check is skipped entirely.
         let doc = good_doc(); // protocol == None
         assert!(doc.protocol.is_none());
-        let rpc = MockRpcSigner {
-            is_valid: true,
-            issued_by: SIGNER.to_string(),
-        };
-        let v = verify(&doc, &provenance_opts(&rpc));
+        let v = third_party(&doc, &MockChain::genuine(&doc));
         assert_eq!(v.issuance, FragmentState::Valid);
         assert!(v.valid);
     }
 
+    /// REPLACES `provenance_unwired_adapter_skips_check_not_fails`, which asserted a behaviour that
+    /// no longer exists.
+    ///
+    /// `issued_by` used to default to `Err(..)` = "unwired", and the orchestration read that as
+    /// "skip the check, base validity governs" — a fail-open. It is now a REQUIRED trait method, so
+    /// "unwired" is not a state an implementor can be in by accident, and a read that genuinely
+    /// fails is ERROR: not a pass.
     #[test]
-    fn provenance_unwired_adapter_skips_check_not_fails() {
-        // If the on-chain read is unwired (the default `issued_by` -> Err), the additive check is
-        // skipped and base validity governs - a stamped block never regresses an unwired backend.
+    fn provenance_read_failure_is_error_not_a_silent_pass() {
         let mut doc = good_doc();
-        doc.protocol = Some(protocol_block("0xanything"));
-        let rpc = MockRpc {
-            is_valid_res: Ok(true),
-            owner_res: Ok(OWNER.to_string()),
-        }; // no issued_by
-        let opts = VerifyOpts {
-            rpc: &rpc,
-            dns: &MockDns(Ok(true)),
-            registry: &MockRegistry(Ok(true)),
-            mode: VerifyMode::ThirdParty,
-            user_wallet_address: None,
-            confirmations: None,
-        };
-        let v = verify(&doc, &opts);
-        assert_eq!(v.issuance, FragmentState::Valid);
-        assert!(v.valid);
+        doc.protocol = Some(protocol_block(SIGNER));
+        let chain = MockChain::genuine(&doc).failing("issued_by");
+        let v = third_party(&doc, &chain);
+        assert_eq!(v.issuance, FragmentState::Error);
+        assert!(!v.valid);
     }
 
     #[test]
     fn provenance_matching_block_cannot_rescue_onchain_invalid_record() {
         // The literal acceptance property: a forged/present block must NOT make an INVALID record
         // verify. Even a block whose issuerSigner MATCHES on-chain cannot rescue a record the chain
-        // reports invalid (is_valid == false) - the additive check only ever tightens.
+        // reports invalid — the additive check only ever tightens.
         let mut doc = good_doc();
+        let root = doc.signature.merkle_root.clone();
         doc.protocol = Some(protocol_block(SIGNER)); // claim == on-chain, yet base validity is false
-        let rpc = MockRpcSigner {
-            is_valid: false,
-            issued_by: SIGNER.to_string(),
-        };
-        let v = verify(&doc, &provenance_opts(&rpc));
+        let chain = MockChain::genuine(&doc).with_valid_at(CLONE, &root, false);
+        let v = third_party(&doc, &chain);
         assert_eq!(v.issuance, FragmentState::Invalid);
         assert!(!v.valid);
     }
@@ -821,11 +1474,7 @@ mod tests {
             Value::String(format!("{}:{}:Max", parts[0], parts[1])),
         );
         doc.protocol = Some(protocol_block(SIGNER));
-        let rpc = MockRpcSigner {
-            is_valid: true,
-            issued_by: SIGNER.to_string(),
-        };
-        let v = verify(&doc, &provenance_opts(&rpc));
+        let v = third_party(&doc, &MockChain::genuine(&doc));
         assert_eq!(v.integrity, FragmentState::Invalid);
         assert!(!v.valid);
     }

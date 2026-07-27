@@ -1,6 +1,26 @@
 // Three-pillar contextual verification (impl §11.3 — supersedes §1.7).
 // Validity = integrity AND issuance AND identity (the 3 authenticity pillars). `ownership` is a
 // CONTEXTUAL 4th fragment: gates only the owner's self-import; NOT_APPLICABLE for third parties.
+//
+// ⚠ KNOWN GAP — THIS FILE HAS DIVERGED FROM THE RUST SDK, AND CARRIES THE FORGED-ISSUER WEAKNESS.
+//
+// `crates/dogtag-standard-rs/src/verify.rs` no longer matches this file. It anchors every
+// verdict-deciding read to the verifier's OWN `DogTagIssuerFactory.rootIssuer(R)` and carries a
+// MANDATORY issuer-whitelist pillar. This file still:
+//   1. reads `isValid` / `issuedBy` against `doc.issuer.documentStore` — a field OUTSIDE the Merkle
+//      root, therefore chosen by whoever built the document;
+//   2. compares `issuedBy` to `doc.protocol.issuerSigner`, a SECOND field outside the root, so the
+//      document supplies both the contract and the expected answer;
+//   3. falls OPEN on a read error (`catch { issuance = "VALID" }`);
+//   4. never reads `recordType`, so relabelling a credential across record types is free.
+// Reproduction (derived from code, NOT executed): deploy a contract whose `isValid(R)` returns true
+// and whose `issuedBy(R)` returns any address A; set `issuer.documentStore` to that contract and
+// `protocol.issuerSigner` to A. `issuance` folds to VALID.
+//
+// It was recorded rather than fixed because this orchestration has NO production consumer — apps
+// import `checkIntegrity` from this module, never `verify` — so the only caller is its own unit
+// test. Do NOT wire `verify()` from this file into a product surface before reconciling it with the
+// Rust implementation. Tracked in AGENTS.md.
 import {buildMerkle} from "./merkle.js";
 import {flattenData, leafFromPacked} from "./wrap.js";
 import {fromHex32, toHex32, type Field} from "./field.js";
