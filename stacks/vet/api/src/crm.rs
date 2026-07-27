@@ -538,14 +538,22 @@ async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -
 ///
 /// The set after the write is (every OTHER client's pets) + (this payload's pets), so that is what
 /// is checked, and it is checked BEFORE anything is written so a rejected pet never leaves a
-/// half-applied client. Two consequences fall out of taking the payload as the client's complete
+/// half-applied client. Three consequences fall out of taking the payload as the client's complete
 /// new pet list rather than diffing it:
 ///
 ///  - Stored pets of `client_id` are skipped - the payload REPLACES them. That is what makes the
 ///    ordinary edit (echo every petId, tags unchanged) a non-conflict, and it also lets a tag move
 ///    between the owner's own pets in a single save.
 ///  - The payload is checked against ITSELF, since two of its pets can carry one tag with neither
-///    of them stored yet - a case no lookup against the store could see.
+///    of them stored yet - a case no lookup against the store could see. That check is
+///    unconditional: two pets carrying one tag in a single write is the merge itself arriving,
+///    whichever of them held it before.
+///  - What is validated is the DELTA, not the state. A pet whose STORED record already carries the
+///    tag it is submitting is grandfathered, because this rule postdates the data: a store written
+///    before it can already hold two pets on one tag, and without this an operator fixing a phone
+///    number would be refused over a DogTag they never touched, on a conflict they cannot resolve
+///    from that form. Only a tag that is NEW or CHANGED for a pet is a claim, and every claim is
+///    still checked - so no fresh duplicate can be introduced by any route.
 async fn reject_dog_tag_conflicts(
     store: &Arc<dyn Store>,
     pets: &[ClientPet],
@@ -565,12 +573,22 @@ async fn reject_dog_tag_conflicts(
             ));
         }
         let held = store.find_pets_by_dog_tag(tag).await;
-        if let Some(other) = held
+        let Some(other) = held
             .into_iter()
             .find(|r| client_id.is_none_or(|id| r.client_id != id))
-        {
-            return Some(dog_tag_conflict(tag, &other));
+        else {
+            continue;
+        };
+        // Reached only when the write WOULD be refused, so the grandfather lookup costs a store
+        // read on the rare rejecting path rather than on every tagged pet of every client write.
+        let unchanged = store
+            .get_pet(&p.pet_id)
+            .await
+            .is_some_and(|stored| stored.pet.dog_tag_id.as_deref() == Some(tag));
+        if unchanged {
+            continue;
         }
+        return Some(dog_tag_conflict(tag, &other));
     }
     None
 }

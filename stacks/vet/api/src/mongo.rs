@@ -59,6 +59,11 @@ impl MongoStore {
         // A pet is addressed in its own right (`/pets/{petId}`) but stored inside its owner, so the
         // by-id lookup is a multikey seek into the embedded array rather than a top-level key.
         clients.create_index(plain(doc! { "pets.petId": 1 })).await?;
+        // Same shape, and now on a HOT path: the one-pet-per-tag check runs `find_pets_by_dog_tag`
+        // once per tagged pet on `POST /clients` and `PUT /clients/{id}`, the CRM's most frequent
+        // writes. Unindexed each of those is a collection scan that also deserializes every matching
+        // client document; indexed it is a multikey seek.
+        clients.create_index(plain(doc! { "pets.dogTagId": 1 })).await?;
 
         let appts: Collection<Document> = self.db.collection("crm_appointments");
         appts.create_index(unique(doc! { "appointmentId": 1 })).await?;
