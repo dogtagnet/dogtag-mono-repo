@@ -62,6 +62,15 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
+        // The ADDITIVE issuer↔domain claim registry. Deliberately NOT resolved from the credential
+        // document: the point of reading the domain from the chain is that a relabelled document cannot
+        // move it, so the registry address must come from deployment config, at the same trust level as
+        // ISSUER_REGISTRY_ADDR and the RPC URL.
+        issuer_domain_registry_addr: env(
+            "ISSUER_DOMAIN_REGISTRY_ADDR",
+            "0x0000000000000000000000000000000000000000",
+        ),
+        dns_doh_endpoint: env("DNS_DOH_ENDPOINT", "https://cloudflare-dns.com/dns-query"),
         // Unified owner-hidden verification registry: both the routing key stamped in the M7 `protocol`
         // block AND the submit target when this authority records a consent proof as a VERIFIER. The
         // sibling stacks name the SAME contract `VERIFICATION_REGISTRY_CONSENT_ADDR`, so accept that as
@@ -185,10 +194,16 @@ async fn main() {
     // indexer's `unscoped:true` bearer); otherwise DisabledFeed → the /v1/oversight/* surfaces 503.
     let feed: Arc<dyn OversightFeed> = build_feed();
 
+    // The server-side DNS resolver, shared so its TTL cache is shared. There is no fixture behind it:
+    // every binding state a client sees is a real resolution or a real failure.
+    let dns = Arc::new(dogtag_dns_rs::BindingResolver::production(
+        cfg.dns_doh_endpoint.clone(),
+    ));
     let state = AppState {
         store,
         chain,
         cfg: Arc::new(cfg),
+        dns,
         feed,
     };
 

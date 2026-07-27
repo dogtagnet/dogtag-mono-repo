@@ -208,6 +208,38 @@ pub struct IssuerApplication {
     pub status: String, // "pending" | "approved" | "rejected"
     /// per (address,recordType) tx hashes recorded on approval.
     pub whitelist_txs: Vec<String>,
+
+    // ---- DNS legitimacy trace (advisory gate) ----
+    //
+    // The DNS check is ADVISORY: it never blocks onboarding, because a real organisation is often
+    // KYC-approved days before its DNS team publishes anything, and a hard block pushes operators
+    // toward exactly the fabricated-pass shortcut that was removed from this stack.
+    //
+    // What makes an advisory gate safe rather than fail-open is that proceeding leaves a TRACE. The
+    // pair below is split deliberately:
+    //
+    //   * `dns_state_at_approval` / `dns_proceeded_unverified` are IMMUTABLE history — what was
+    //     observed at the moment of whitelisting, and whether the admin knowingly went ahead. This is
+    //     what lets a dashboard show "whitelisted while DNS was unverified" instead of rendering such
+    //     an issuer identically to one that passed cleanly.
+    //   * `dns_state` / `dns_checked_at` are the LATEST observation, and are meant to be re-written by
+    //     the (future) daily re-check job. When an organisation's record finally appears, the cron
+    //     flips this to `verified` with no admin re-doing anything — which is the payoff of recording
+    //     the state rather than gating on it.
+    /// Latest observed DNS state: "verified" | "notListed" | "couldNotCheck". Empty == never checked.
+    /// Safe for the future daily cron to overwrite.
+    #[serde(rename = "dnsState", default)]
+    pub dns_state: String,
+    /// Unix seconds of the observation in `dns_state` (0 == never checked).
+    #[serde(rename = "dnsCheckedAt", default)]
+    pub dns_checked_at: u64,
+    /// IMMUTABLE: the state observed at the instant whitelisting happened. Never overwritten by the
+    /// re-check job, so the history of "what did we know when we granted this?" survives.
+    #[serde(rename = "dnsStateAtApproval", default)]
+    pub dns_state_at_approval: String,
+    /// IMMUTABLE: the admin explicitly confirmed and proceeded despite a non-verified observation.
+    #[serde(rename = "dnsProceededUnverified", default)]
+    pub dns_proceeded_unverified: bool,
 }
 
 // ---- appointments ----

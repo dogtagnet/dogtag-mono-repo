@@ -30,6 +30,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use dogtag_standard::issuer_identity::{assert_issuer_domain, IssuerDomainAssertion};
 use dogtag_standard::verify::{check_integrity, FragmentState};
 use dogtag_standard::wrap::WrappedDoc;
 use serde::Deserialize;
@@ -577,9 +578,35 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
         None => None,
     };
 
+    // 4) issuer IDENTITY, in two independent halves (audit-m9 findings 3/4 + recommendation 6).
+    //
+    // (a) Has the document been relabelled? `issuer.domain`/`issuer.name` sit OUTSIDE the Merkle root,
+    //     so a genuine credential can be re-badged as any authority and still pass integrity + isValid.
+    //     The root-covered `data.issuer` DID is the true identity; assert the two agree.
+    let did_assertion = assert_issuer_domain(&doc);
+
+    // (b) Which domain does the ISSUING CONTRACT itself claim, and does that domain's DNS zone name
+    //     this contract back? The claim is read from the chain, never from the document — that is what
+    //     makes it unforgeable by relabelling. The DNS half is resolved SERVER-SIDE (see AppState::dns).
+    //
+    //     Four outcomes are kept distinct all the way to the client, and none of them is a boolean:
+    //       - no registry configured / read failed  -> unavailable  (we do not know)
+    //       - registry read, no claim               -> noDomainClaimed (normal on day one)
+    //       - claim + DNS record present            -> verified, with the domain's own description
+    //       - claim + DNS says absent / unreachable  -> notListed / couldNotCheck
+    let issuer_domain_json = resolve_issuer_domain_binding(&st, &issuer_addr).await;
+
     // Verdict: integrity + on-chain issuance are the required authenticity pillars here; the issuer
     // whitelist, when supplied, must also pass (architecture §5 authenticity pillars).
-    let verdict = integrity_valid && onchain_valid && issuer_whitelisted.unwrap_or(true);
+    //
+    // A positive DID MISMATCH also fails the verdict: it is proof the issuer block was rewritten after
+    // issuance, which is exactly the attack the audit demonstrated. `NotAssertable` deliberately does
+    // NOT fail it and does NOT contribute a pass either — a document that simply carries no root-covered
+    // DID is not evidence of forgery, and the surfaces report it as un-asserted rather than verified.
+    let verdict = integrity_valid
+        && onchain_valid
+        && issuer_whitelisted.unwrap_or(true)
+        && !did_assertion.is_mismatch();
 
     let rec = VerificationRecord {
         id: uuid::Uuid::new_v4().to_string(),
@@ -604,9 +631,84 @@ async fn verify(State(st): State<AppState>, Json(body): Json<VerifyBody>) -> Res
             "integrity": integrity_valid,
             "onchain": onchain_valid,
             "issuerWhitelisted": issuer_whitelisted,
+            // "match" | "mismatch" | "notAssertable" — never a boolean, so a client cannot read an
+            // un-assertable identity as a verified one.
+            "issuerDidAssertion": did_assertion.as_str(),
         },
+        // The DISPLAYED issuer identity, with everything a surface needs to be honest about it.
+        "issuerIdentity": issuer_identity_json(&doc, &did_assertion),
+        "issuerDomainBinding": issuer_domain_json,
         "verificationId": rec.id,
     }))
+}
+
+/// The issuer block a surface may render, plus the root-covered value it was checked against.
+///
+/// `displayDomain` is what the DOCUMENT says and is safe to show only alongside `assertion`. When the
+/// assertion is `mismatch`, `rootCoveredDomain` is the domain that was actually issued against and is
+/// the one a surface should treat as true.
+fn issuer_identity_json(doc: &WrappedDoc, assertion: &IssuerDomainAssertion) -> Value {
+    let (root_covered, displayed_conflict) = match assertion {
+        IssuerDomainAssertion::Match { domain } => (Some(domain.clone()), false),
+        IssuerDomainAssertion::Mismatch {
+            root_covered,
+            displayed: _,
+        } => (Some(root_covered.clone()), true),
+        IssuerDomainAssertion::NotAssertable => (None, false),
+    };
+    json!({
+        "displayName": doc.issuer.name,
+        "displayDomain": doc.issuer.domain,
+        "rootCoveredDomain": root_covered,
+        "assertion": assertion.as_str(),
+        // A blunt flag for the UI: the document's issuer block contradicts what was issued.
+        "relabelled": displayed_conflict,
+    })
+}
+
+/// Read the clone's on-chain domain claim and resolve the DNS half of the binding.
+///
+/// Every state is a real observation. Nothing here synthesizes an outcome, and the four cases stay
+/// mutually distinguishable on the wire:
+///
+/// * `unavailable`      — no `IssuerDomainRegistry` configured, or the read failed. We do not know.
+/// * `noDomainClaimed`  — the registry answered and this clone claims no domain. Normal on day one.
+/// * everything else    — a real DNS resolution: `verified` / `notListed` / `couldNotCheck`.
+async fn resolve_issuer_domain_binding(st: &AppState, clone_addr: &str) -> Value {
+    let registry = st.cfg.issuer_domain_registry_addr.trim();
+    if registry.is_empty() || registry.eq_ignore_ascii_case("0x0000000000000000000000000000000000000000") {
+        return json!({
+            "state": "unavailable",
+            "detail": "no IssuerDomainRegistry configured for this deployment",
+        });
+    }
+
+    let claimed = match st.chain.issuer_claimed_domain(registry, clone_addr).await {
+        Ok(Some(d)) => d,
+        // The registry answered: this issuer has published no domain claim. Unremarkable.
+        Ok(None) => return json!({ "state": "noDomainClaimed" }),
+        // The READ failed — which is not the same as "no claim", and must not be shown as one.
+        Err(e) => {
+            return json!({
+                "state": "unavailable",
+                "detail": format!("on-chain domain claim read failed: {e}"),
+            })
+        }
+    };
+
+    let check = st.dns.check(clone_addr, &claimed).await;
+    let mut out = serde_json::to_value(&check).unwrap_or_else(|_| json!({}));
+    // Flatten the tagged status up one level so a client reads a single `state` field for all four
+    // cases rather than having to branch on nesting depth first.
+    if let (Some(obj), Ok(status)) = (out.as_object_mut(), serde_json::to_value(&check.status)) {
+        obj.remove("status");
+        if let Some(status_obj) = status.as_object() {
+            for (k, v) in status_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    out
 }
 
 // --------------------------------------------------------------------------------------------

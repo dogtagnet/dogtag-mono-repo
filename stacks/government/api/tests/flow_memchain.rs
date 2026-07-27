@@ -23,6 +23,8 @@ fn demo_state() -> (AppState, MemChain) {
         rpc_url: "https://devrpc.roax.net".into(),
         chain_id: 135,
         issuer_registry_addr: REGISTRY_ADDR.into(),
+        issuer_domain_registry_addr: "0x00000000000000000000000000000000000000dd".into(),
+        dns_doh_endpoint: String::new(),
         verification_registry_addr: "0xb9B313C17fD8725Bb50A7f41121ac4Cf5F4fec87".into(),
         travel_clearance_issuer_addr: ISSUER_ADDR.into(),
         eu_health_cert_issuer_addr: "0x0000000000000000000000000000000000000000".into(),
@@ -45,6 +47,7 @@ fn demo_state() -> (AppState, MemChain) {
         store,
         chain: Arc::new(chain.clone()),
         cfg: Arc::new(cfg),
+        dns: std::sync::Arc::new(dogtag_dns_rs::BindingResolver::production(String::new())),
         feed: Arc::new(government_api::oversight::DisabledFeed),
     };
     (state, chain)
@@ -86,6 +89,15 @@ impl ChainClient for LiveLikeChain {
     ) -> Result<alloy::primitives::U256, government_api::chain::ChainError> {
         self.0.issued_at(issuer_addr, root).await
     }
+    /// This harness's issuer claims no on-chain domain, which is the normal day-one state.
+    async fn issuer_claimed_domain(
+        &self,
+        _domain_registry_addr: &str,
+        _clone_addr: &str,
+    ) -> Result<Option<String>, government_api::chain::ChainError> {
+        Ok(None)
+    }
+
     async fn is_whitelisted_for(
         &self,
         registry_addr: &str,
