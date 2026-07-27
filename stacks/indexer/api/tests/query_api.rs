@@ -33,7 +33,6 @@ fn b32(seed: u8) -> String {
 fn cfg() -> Config {
     Config {
         rpc_url: "mem://".into(),
-        chain_id: 135,
         factory_addr: FACTORY.to_ascii_lowercase(),
         registry_addr: REGISTRY.to_ascii_lowercase(),
         verification_registry_consent_addr: VREG.to_ascii_lowercase(),

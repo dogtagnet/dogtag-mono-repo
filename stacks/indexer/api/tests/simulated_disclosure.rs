@@ -105,10 +105,9 @@ impl LogSource for LiveFake {
 fn cfg() -> Config {
     Config {
         rpc_url: "mem://".into(),
-        // Deliberately the REAL ROAX id, in config, on both paths. This is the trap: the old code read
-        // `chainId` from here, so a simulated indexer inherited `135` and looked live. A simulated
-        // source must now report `null` DESPITE this being set to 135.
-        chain_id: 135,
+        // `Config` carries NO chain id at all any more. That was the trap: the old code read `chainId`
+        // from here, so a simulated indexer inherited the configured `135` and looked live. The id now
+        // has exactly one home - the source object - and a simulated source has none to give.
         factory_addr: "0x00000000000000000000000000000000000fac70".into(),
         registry_addr: "0x0000000000000000000000000000000000c0ce61".into(),
         verification_registry_consent_addr: "0x0000000000000000000000000000000000c05e61".into(),
@@ -269,6 +268,9 @@ async fn shipped_sources_declare_their_backend() {
         SIMULATED_CHAIN_ID,
         "a simulated source must never report a real EIP-155 id"
     );
+    // A live source's id is whatever the operator asserted via `CHAIN_ID`; nothing here (and nothing
+    // in the handlers) checks it against the node. What the source object guarantees is the other
+    // half - that a SIMULATED source cannot echo a real network id, whatever the operator configured.
     assert_eq!(
         AlloyLogSource::new("https://devrpc.roax.net")
             .with_chain_id(135)

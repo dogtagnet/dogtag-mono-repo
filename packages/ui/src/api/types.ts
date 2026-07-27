@@ -799,7 +799,8 @@ export interface ActivityStats {
 }
 /** GET /v1/admin/activity/status - indexer progress + finality watermark (chain-health card). */
 export interface IndexerStatus {
-  chainId: number;
+  /** the indexed chain's id, or null when the indexer is serving a simulated source. */
+  chainId: number | null;
   /** current chain head block (null when the RPC is unreachable). */
   headBlock: number | null;
   /** latest block the indexer treats as finalized. */

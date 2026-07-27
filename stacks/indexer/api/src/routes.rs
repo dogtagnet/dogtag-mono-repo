@@ -156,25 +156,32 @@ fn render_event(st: &AppState, ev: &IndexedEvent) -> Value {
 /// `GET /health` - no auth. Liveness plus, critically, an HONEST statement of which event surface
 /// this indexer is serving.
 ///
-/// The reported `chainId` is read from the LOG SOURCE, never from `CHAIN_ID` config. A demo-mode
+/// The reported `chainId` comes from the LOG SOURCE OBJECT rather than from `Config`. A demo-mode
 /// indexer used to inherit the configured `135` and report `{"ok":true,"chainId":135}` - byte-identical
 /// to a live one - while serving a scripted in-memory log with FABRICATED block numbers, merkle roots
 /// and `txUrl` links to transactions that do not exist. Nothing in the response let an operator, or the
 /// consoles that consume it, tell the difference. Now:
 ///   - `backend`   - "live" | "simulated" (authoritative, from the source in use)
 ///   - `simulated` - the same fact as a boolean, for UI badges
-///   - `chainId`   - the real id when live, `null` when simulated (never a network it is not on)
+///   - `chainId`   - the live source's id, `null` when simulated (never a network it is not on)
+///
+/// Sourcing the id from the object is what makes the SIMULATED case structurally sound: a scripted
+/// source has no network id to give, so it cannot echo a real one however `CHAIN_ID` is set. The LIVE
+/// case is weaker and this claim stops there: `main.rs` builds `AlloyLogSource::with_chain_id` from the
+/// `CHAIN_ID` env var, so a live id is still OPERATOR-ASSERTED and is never checked against the node -
+/// point `ROAX_RPC` at another network while leaving `CHAIN_ID=135` and this still answers `135`.
 ///
 /// Both keys are emitted on BOTH paths. A flag present only when simulated would make its absence
 /// ambiguous between "live" and "a build too old to tell you" - i.e. "could not check" rendering as
 /// its own neighbour, which is the failure this endpoint exists to prevent.
 async fn health(State(st): State<AppState>) -> impl IntoResponse {
-    let simulated = st.source.is_simulated();
+    let backend = st.source.backend();
+    let simulated = backend.is_simulated();
     Json(json!({
         "ok": true,
         // Null rather than a real id when simulated - this source is on no network at all.
         "chainId": (!simulated).then(|| st.source.chain_id()),
-        "backend": st.source.backend().as_str(),
+        "backend": backend.as_str(),
         "simulated": simulated,
     }))
 }
@@ -188,7 +195,8 @@ async fn health(State(st): State<AppState>) -> impl IntoResponse {
 /// them, because they are a faithful report of the source actually in use.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
-    let simulated = st.source.is_simulated();
+    let backend = st.source.backend();
+    let simulated = backend.is_simulated();
     let cursor = st.store.get_cursor().await;
     let head = st.source.head_block().await.ok();
     // Report the live finalized watermark + whether it comes from the chain's finality tag or the
@@ -208,7 +216,7 @@ async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<V
     Ok(Json(json!({
         // Null rather than a real id when simulated - see the `/health` doc above.
         "chainId": (!simulated).then(|| st.source.chain_id()),
-        "backend": st.source.backend().as_str(),
+        "backend": backend.as_str(),
         "simulated": simulated,
         "headBlock": head,
         "finalizedBlock": finalized_block,
