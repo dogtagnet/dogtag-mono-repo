@@ -619,8 +619,12 @@ impl Store for MongoStore {
     }
 
     async fn get_pet(&self, pet_id: &str) -> Option<PetRow> {
-        // An elemMatch-free query is correct here: `pets.petId` is unique across the collection (it
-        // is a minted uuid), so the matching client holds exactly one pet with this id.
+        // An elemMatch-free query is correct here because `pets.petId` is unique across the
+        // collection - but that is ENFORCED, not merely assumed. `build_pet` mints the uuid whenever
+        // a caller omits one, and the client routes, the only place an id arrives from outside,
+        // reject a payload pet whose id repeats within the request or resolves to another client's
+        // pet (`crm::reject_foreign_pet_ids`). Without that check this query would return whichever
+        // document matched first and every `/pets/{id}` write would address an arbitrary animal.
         let c: Client = self
             .crm_clients()
             .find_one(doc! { "pets.petId": pet_id })

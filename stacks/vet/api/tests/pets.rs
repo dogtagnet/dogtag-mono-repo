@@ -821,6 +821,111 @@ async fn editing_a_client_cannot_grandfather_itself_onto_another_clients_pet_id(
 }
 
 #[tokio::test]
+async fn editing_a_client_cannot_seat_an_untagged_pet_on_another_clients_pet_id() {
+    let (app, op) = pets_app().await;
+    let (_, alice) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }]))
+            .await;
+    let (bob, _) = make_client_with_pets(&app, &op, "Bob Lim", json!([{ "name": "Milo" }])).await;
+
+    // NO dogTagId, which is the whole point: the tag conflict check skips an untagged pet at its
+    // first guard, so pet-id ownership has to be checked independently of it. A petId is an ADDRESS
+    // here, and two pets under one id makes every /pets/{id} write land on an arbitrary animal.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "pets": [{ "petId": alice[0], "name": "Fake" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "an untagged foreign petId must be refused: {b}");
+    assert!(b["error"].as_str().unwrap_or_default().contains("Rex"), "{b}");
+
+    // The id still resolves to Alice's pet, and nothing was half-applied to Bob.
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["clientName"], "Alice Tan");
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["name"], "Rex");
+    let (_, bobs) = call(&app, "GET", &format!("/pets?clientId={bob}"), Some(&op), None).await;
+    assert_eq!(bobs["total"], 1, "Bob keeps only his own pet: {bobs}");
+    assert_eq!(bobs["rows"][0]["name"], "Milo");
+}
+
+#[tokio::test]
+async fn creating_a_client_cannot_seat_an_untagged_pet_on_another_clients_pet_id() {
+    let (app, op) = pets_app().await;
+    let (_, alice) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex" }])).await;
+
+    // On create there is no client yet, so ANY petId that already resolves belongs to someone else.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({
+            "name": "Mallory Quek",
+            "pets": [{ "petId": alice[0], "name": "Fake" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert!(b["error"].as_str().unwrap_or_default().contains("Rex"), "{b}");
+
+    let (_, found) = call(&app, "GET", "/clients?q=Mallory", Some(&op), None).await;
+    assert_eq!(found["total"], 0, "a refused create must not half-apply: {found}");
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["clientName"], "Alice Tan");
+}
+
+#[tokio::test]
+async fn one_request_cannot_put_two_pets_under_the_same_pet_id() {
+    let (app, op) = pets_app().await;
+
+    // Neither id is stored yet, so no lookup could catch this - and the result would be one client
+    // holding two animals under a single address, which `mutate_pet` resolves by first match.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({
+            "name": "Alice Tan",
+            "pets": [
+                { "petId": "pet-same-id", "name": "Rex" },
+                { "petId": "pet-same-id", "name": "Milo" },
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    let msg = b["error"].as_str().unwrap_or_default();
+    assert!(msg.contains("Rex") && msg.contains("Milo"), "both pets must be named: {b}");
+}
+
+#[tokio::test]
+async fn a_caller_supplied_pet_id_that_belongs_to_nobody_is_still_accepted() {
+    let (app, op) = pets_app().await;
+
+    // The ownership check must not become a mint-only rule: an id that resolves to nothing is a
+    // genuinely new pet, which `build_pet` has always tolerated.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({
+            "name": "Alice Tan",
+            "pets": [{ "petId": "pet-brand-new", "name": "Rex" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    assert_eq!(b["pets"][0]["petId"], "pet-brand-new");
+}
+
+#[tokio::test]
 async fn a_client_edit_that_echoes_a_tag_it_does_not_render_keeps_it() {
     let (app, op) = pets_app().await;
     let (client_id, pets) =
