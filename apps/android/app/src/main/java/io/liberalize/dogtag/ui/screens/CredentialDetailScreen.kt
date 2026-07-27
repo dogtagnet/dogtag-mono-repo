@@ -21,13 +21,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Domain
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,10 +47,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.CredentialGroup
 import io.liberalize.dogtag.data.LocalStore
+import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.WrappedDoc
+import io.liberalize.dogtag.net.BindingTone
+import io.liberalize.dogtag.net.IssuerBinding
+import io.liberalize.dogtag.net.IssuerBindingResolver
+import io.liberalize.dogtag.net.IssuerBindingState
 import io.liberalize.dogtag.ui.DogTagTheme
 
 /**
@@ -72,6 +84,22 @@ fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
         runCatching { WrappedDoc(cred.wrappedDocJson) }.getOrNull()
     }
     val fields = remember(doc) { doc?.decodedFields().orEmpty() }
+
+    // The issuer↔domain binding. Starts Pending and is filled by a REAL resolution — never pre-filled
+    // with a guess, because flashing "no domain claimed" and then flipping would show a state that was
+    // never observed. Served from a short TTL cache, so this is not a DNS lookup per render.
+    var binding by remember { mutableStateOf(IssuerBinding()) }
+    LaunchedEffect(cred.id) {
+        val clone = (doc?.documentStore ?: "").trim()
+        if (clone.isBlank()) return@LaunchedEffect
+        val roax = RoaxConfig.load(context)
+        binding = IssuerBindingResolver.resolve(
+            rpcUrl = AppConfig.ROAX_RPC,
+            factory = roax.issuerFactory,
+            domainRegistry = roax.issuerDomainRegistry,
+            clone = clone,
+        )
+    }
 
     Column(
         Modifier.fillMaxSize().background(c.background).verticalScroll(scroll).padding(20.dp),
@@ -152,8 +180,38 @@ fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
             Text("On-chain", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = c.muted)
             val root = doc?.merkleRoot?.ifBlank { cred.credentialRoot } ?: cred.credentialRoot
             MonoCopyRow(context, "Merkle root", root)
-            val domain = doc?.issuerDomain ?: ""
-            if (domain.isNotBlank()) KeyValueRow("Issuer domain", domain)
+
+            // The issuer, as it may honestly be shown: the ON-CHAIN name and the ON-CHAIN domain. The
+            // credential's own `issuer` block is outside the Merkle root, so it is never presented as the
+            // issuer — only as a stated disagreement. That is what stops a relabelled document from
+            // displaying a fabricated authority.
+            val docName = (doc?.issuerName ?: "").trim()
+            val docDomain = (doc?.issuerDomain ?: "").trim()
+            val chainName = binding.onchainName.trim()
+            if (chainName.isNotBlank()) {
+                KeyValueRow("Issuer", chainName)
+                if (docName.isNotBlank() && normaliseName(docName) != normaliseName(chainName)) {
+                    Text(
+                        "The document names a different issuer: \u201C$docName\u201D",
+                        fontSize = 11.sp, color = c.danger,
+                    )
+                }
+            } else if (docName.isNotBlank()) {
+                // A fallback is never presented as authoritative.
+                KeyValueRow("Issuer (from document)", docName)
+            }
+            if (binding.domain.isNotBlank()) {
+                KeyValueRow("Issuer domain", binding.domain)
+                if (docDomain.isNotBlank() && !docDomain.equals(binding.domain, ignoreCase = true)) {
+                    Text(
+                        "The document claims the domain \u201C$docDomain\u201D",
+                        fontSize = 11.sp, color = c.danger,
+                    )
+                }
+            } else if (docDomain.isNotBlank()) {
+                KeyValueRow("Issuer domain (from document)", docDomain)
+            }
+            DomainBindingLine(binding)
             val rt = doc?.recordType ?: cred.recordType
             if (rt.isNotBlank()) KeyValueRow("Record type", rt)
             Text(
@@ -258,5 +316,66 @@ private fun DetailVerdictBadge(verdict: String) {
     }
     Box(Modifier.clip(CircleShape).background(bg).padding(horizontal = 12.dp, vertical = 5.dp)) {
         Text(verdict, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
+    }
+}
+
+/** Casefold + collapse whitespace, for comparing free-form issuer labels. A padding difference is not
+ *  evidence of anything, and flagging it would cry wolf on legitimate credentials. */
+private fun normaliseName(s: String): String =
+    s.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ").lowercase()
+
+/**
+ * The badge: ONE compact line beside the issuer, not a panel.
+ *
+ * `Verified` is a small green check plus the factual line, with the description the domain owner
+ * published. `NotListed` is the symmetric red line — same size, same placement, same register. A
+ * provenance failure gets its own mark and its own words. Everything we simply do not know stays neutral,
+ * because a resolver timeout is evidence of nothing.
+ *
+ * Nothing here reads as a judgement on the credential or the organisation: a missing DNS record means the
+ * domain owner has not published the binding, and the credential's validity is proven separately
+ * on-chain.
+ */
+@Composable
+fun DomainBindingLine(binding: IssuerBinding) {
+    val c = DogTagTheme.colors
+    val color = when (binding.tone) {
+        BindingTone.Positive -> c.success
+        BindingTone.Negative -> c.danger
+        BindingTone.Neutral, BindingTone.Pending -> c.muted
+    }
+    val icon = when (binding.state) {
+        is IssuerBindingState.Verified -> Icons.Filled.Check
+        IssuerBindingState.NotADogTagIssuer -> Icons.Filled.Domain
+        IssuerBindingState.NotListed -> Icons.Filled.RemoveCircleOutline
+        IssuerBindingState.Pending -> Icons.Filled.MoreHoriz
+        else -> Icons.Filled.Info
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(icon, null, tint = color, modifier = Modifier.size(13.dp))
+            Spacer(Modifier.size(5.dp))
+            Text(binding.line, fontSize = 11.sp, color = color, modifier = Modifier.weight(1f))
+        }
+        binding.publishedDescription?.let { published ->
+            // The whole reason the TXT value is free-form: show what the domain chose to say.
+            Text(
+                "Domain says: \u201C$published\u201D",
+                fontSize = 11.sp, color = c.muted,
+                modifier = Modifier.padding(start = 18.dp),
+            )
+        }
+        binding.blockNumber?.let { block ->
+            if (binding.state != IssuerBindingState.Pending) {
+                // A "verified" with no "when" is not auditable against a world where DNS changes. DNS
+                // itself has no history, so the DNS half can only ever be a live observation.
+                Text(
+                    "Chain read at block $block \u00B7 DNS checked just now",
+                    fontSize = 10.sp, color = c.muted,
+                    modifier = Modifier.padding(start = 18.dp),
+                )
+            }
+        }
     }
 }
