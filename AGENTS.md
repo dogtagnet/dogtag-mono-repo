@@ -2191,3 +2191,13 @@ byte-identical across the two ports on purpose - string drift is how the two ref
 before. An EMPTY/short return is deliberately NOT distinguished: both `RoaxRpc.profileRoot`
 implementations collapse it to nil, so it already lands on UNVERIFIED, just with the
 could-not-reach-the-chain reason.
+Known drift hazard, accepted: on Android the unset-slot predicate now lives in TWO places -
+`CredentialRefresher`'s inline `drop(2).all { it == '0' }` and `RoaxRpc.classifyProfileRoot`
+(which the scan-time poll uses) - because the helper folds a null RPC read and an unset slot into
+one `Pending` while the refresher needs a distinct reason string for each; revise both together.
+
+The delete confirmation resolves its own pet label, on BOTH ports: iOS inside
+`confirmDeleteCredential` (via `LocalStore.petDisplayName` + `PetLabel.line`) and Android inside
+`DeleteCredentialDialog` (via `List<Pet>.petLabel`). Never reintroduce a caller-supplied name
+parameter - two callers passing different fallbacks (`""` vs `"DogTag #<id>"`) is exactly how the
+same record came to be named two different ways depending on which screen raised the dialog.

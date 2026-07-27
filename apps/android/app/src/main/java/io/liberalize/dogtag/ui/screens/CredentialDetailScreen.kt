@@ -58,7 +58,6 @@ fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
     val scroll = rememberScrollState()
     val store = remember(context) { LocalStore.get(context) }
     val stored by store.credentials.collectAsStateWithLifecycle()
-    val pets by store.pets.collectAsStateWithLifecycle()
     // Always render the STORED record, not the copy this screen was opened with, so a refresh
     // landing while it is up is reflected here too. Falls back to the opened copy if it was deleted.
     val cred = stored.firstOrNull { it.id == opened.id } ?: opened
@@ -206,7 +205,6 @@ fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
     if (pendingDelete) {
         DeleteCredentialDialog(
             cred = cred,
-            petName = pets.firstOrNull { it.dogTagId == cred.dogTagId }?.name ?: "",
             onDismiss = { pendingDelete = false },
             onConfirm = { pendingDelete = false; store.deleteCredential(cred.id); onBack() },
         )

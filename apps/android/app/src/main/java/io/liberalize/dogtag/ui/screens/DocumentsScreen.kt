@@ -62,9 +62,6 @@ fun DocumentsScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
     var pendingDelete by remember { mutableStateOf<Credential?>(null) }
     val shown = if (filterPetId == null) creds else creds.filter { it.dogTagId == filterPetId }
 
-    fun petName(cred: Credential) =
-        pets.firstOrNull { it.dogTagId == cred.dogTagId }?.name ?: "DogTag #${cred.dogTagId}"
-
     Box(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp),
@@ -107,7 +104,8 @@ fun DocumentsScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
                         Text(cred.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
                         Text("${cred.group.title} · ${cred.recordType}", fontSize = 12.sp, color = c.muted)
                         // The dog plus who issued it: both help tell two same-type records apart.
-                        val owner = if (cred.issuer.isBlank()) petName(cred) else "${petName(cred)} · ${cred.issuer}"
+                        val who = pets.petLabel(cred)
+                        val owner = if (cred.issuer.isBlank()) who else "$who · ${cred.issuer}"
                         Text(owner, fontSize = 11.sp, color = c.muted)
                         Text(cred.importedAtLabel, fontSize = 11.sp, color = c.muted)
                         CredentialStatusLine(cred)
@@ -134,7 +132,6 @@ fun DocumentsScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
         pendingDelete?.let { cred ->
             DeleteCredentialDialog(
                 cred = cred,
-                petName = petName(cred),
                 onDismiss = { pendingDelete = null },
                 onConfirm = { store.deleteCredential(cred.id); pendingDelete = null },
             )
@@ -270,23 +267,32 @@ internal fun RefreshAllButton(credentials: List<Credential>) {
     }
 }
 
+/** Which dog a record belongs to: the synced pet's name, else the bare dog-tag handle. */
+internal fun List<Pet>.petLabel(cred: Credential): String =
+    firstOrNull { it.dogTagId == cred.dogTagId }?.name ?: "DogTag #${cred.dogTagId}"
+
 /**
  * The single home of the delete confirmation, so the wording cannot drift between the surfaces that
  * offer it. The copy is deliberately local-only: deleting removes this phone's copy and nothing else.
+ *
+ * The pet label is resolved HERE, off the shared store, rather than passed in: a caller-supplied
+ * name is what let the two surfaces name the same record differently.
  */
 @Composable
 internal fun DeleteCredentialDialog(
     cred: Credential,
-    petName: String,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
     val c = DogTagTheme.colors
+    val context = LocalContext.current
+    val store = remember(context) { LocalStore.get(context) }
+    val pets by store.pets.collectAsStateWithLifecycle()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = c.surface,
         title = { Text("Delete ${cred.title}?", color = c.onBackground) },
-        text = { Text(cred.deleteConfirmationMessage(petName), fontSize = 13.sp, color = c.muted) },
+        text = { Text(cred.deleteConfirmationMessage(pets.petLabel(cred)), fontSize = 13.sp, color = c.muted) },
         confirmButton = {
             TextButton(onClick = onConfirm) {
                 Text("Delete from this phone", color = c.danger, fontWeight = FontWeight.SemiBold)
