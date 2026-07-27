@@ -137,8 +137,8 @@ data class Credential(
         get() = Stamp.parse(lastCheckedAt)?.let { "Checked ${Stamp.relative(it)}" } ?: "Not checked on-chain yet"
 
     /**
-     * The document's own `credentialSubject.validity.validUntil` leaf, or null when it makes no
-     * expiry claim.
+     * The document's own expiry leaf (see [WrappedDoc.validUntil]), or null when it makes no expiry
+     * claim.
      *
      * DERIVED from the stored document rather than persisted alongside [verdict], deliberately. A
      * persisted copy would be absent on every record imported before this shipped, so the expiry rule
@@ -147,7 +147,10 @@ data class Credential(
      * value, and a second stored copy could only ever drift from it.
      *
      * `by lazy` so a list render parses each document at most once. It is not a constructor property,
-     * so it stays out of the generated `equals`/`hashCode` and cannot affect Compose recomposition.
+     * so it stays out of the generated `equals`/`hashCode` — pinned by
+     * `CredentialExpiryFromDocTest.theDerivedFieldDoesNotDisturbDataClassEquality`, and that is the
+     * whole of what is established here. Whether the added `Lazy` backing field changes how the
+     * Compose compiler infers this type's STABILITY is a separate question and is NOT verified.
      */
     val validUntil: String? by lazy {
         runCatching { WrappedDoc(wrappedDocJson).validUntil }.getOrNull()?.ifBlank { null }
@@ -297,22 +300,39 @@ class WrappedDoc(val json: String) {
     val statusBaseUrl: String get() = protocolObj.optString("statusBaseUrl", "").trim().trimEnd('/')
 
     /**
-     * `credentialSubject.validity.validUntil` — the last day this credential claims to be good for.
+     * The last day this credential claims to be good for, whichever leaf its record type writes it in:
+     * `credentialSubject.validity.validUntil` first, else the FLAT `credentialSubject.rabiesValidUntil`.
+     *
+     * The two leaves exist because the shapes differ per record type: `TRAVEL_CLEARANCE` carries a
+     * nested `validity` block, while `EU_HEALTH_CERT` has no `validity` block at all and states its
+     * window as the flat Annex-IV `rabiesValidUntil`. The preference chain is unconditional — it is
+     * NOT branched on `recordType` — so it mirrors the owner wallet's already-shipped rule
+     * (`stacks/owner/web/src/lib/receipt.ts`) exactly and covers any future type using the flat leaf.
+     * Without it a lapsed EU health certificate badged a full-strength green VALID while the same
+     * document read EXPIRED on the web wallet.
      *
      * ROOT-COVERED, so it is tamper-evident: an owner cannot extend their own credential without
      * breaking integrity. It is also the ONLY expiry the protocol has — `DogTagIssuer.sol` carries no
-     * expiry concept at all — so every surface that renders a validity claim has to read this leaf or
+     * expiry concept at all — so every surface that renders a validity claim has to read this or
      * silently ignore expiry, which is what all four list badges used to do.
      *
-     * Blank when the document carries no validity window. Leaves are packed `"<salt>:<tag>:<value>"`.
+     * Emptiness is tested on the UNWRAPPED value, not the packed leaf, so a present-but-empty
+     * `validity.validUntil` still falls through rather than suppressing the fallback.
+     *
+     * Blank when the document claims no validity window at all — never the same as an expired one.
+     * Leaves are packed `"<salt>:<tag>:<value>"`.
      */
     val validUntil: String
-        get() = data.optJSONObject("credentialSubject")
-            ?.optJSONObject("validity")
-            ?.optString("validUntil", "")
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { WrappedDoc.parseLeaf("validity.validUntil", it).value }
-            ?: ""
+        get() {
+            val cs = data.optJSONObject("credentialSubject") ?: return ""
+            fun unwrap(keyPath: String, raw: String?): String? = raw
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { WrappedDoc.parseLeaf(keyPath, it).value }
+                ?.takeIf { it.isNotEmpty() }
+            return unwrap("validity.validUntil", cs.optJSONObject("validity")?.optString("validUntil", ""))
+                ?: unwrap("rabiesValidUntil", cs.optString("rabiesValidUntil", ""))
+                ?: ""
+        }
 
     /** Best-effort dogTagId extraction from the data tree (data.credentialSubject.dogTagId leaf). */
     val dogTagId: String

@@ -29,15 +29,19 @@ import Foundation
 /// strength of a non-answer is exactly the laundering #94 closed on the refresh path, pointed at the
 /// badge instead. Age may only make a claim weaker, never a record look better.
 ///
-/// EXPIRED sits above staleness because expiry needs no chain access: `validity.validUntil` is a
-/// Merkle-covered leaf of the stored document, so it is tamper-evident and knowable offline. It cannot
-/// itself go stale, which makes it strictly more informative than "I could not check".
+/// EXPIRED sits above staleness because expiry needs no chain access: the validity leaf (see
+/// `WrappedDoc.validUntil`) is Merkle-covered by the stored document, so it is tamper-evident and
+/// knowable offline. It cannot itself go stale, which makes it strictly more informative than "I could
+/// not check".
 ///
 /// Pure and clock-injected on purpose: no `Date()` inside, no SwiftUI types, no JSON.
 ///
 /// Mirrors Android `VerdictDisplay` in VerdictDisplay.kt, branch for branch - see the PR body's table.
-/// Android's twin is behaviourally tested and mutation-checked; this port has NO test target able to
-/// reach it, so it is written to be a line-by-line mirror rather than a second implementation.
+/// Both twins are behaviourally tested and mutation-checked: this file is Foundation-only precisely so
+/// the host-less `DogTagTests` bundle compiles it directly, and `VerdictDisplayTests` pins every branch
+/// below case for case against Android's `VerdictBadgeStalenessTest` + `CredentialExpiryFromDocTest`.
+/// It is still written as a line-by-line mirror rather than a second implementation, so any change to
+/// the rule moves BOTH ports and BOTH case lists together.
 enum VerdictDisplay {
 
     /// How long a chain-read verdict may be presented as a live claim before the badge stops asserting

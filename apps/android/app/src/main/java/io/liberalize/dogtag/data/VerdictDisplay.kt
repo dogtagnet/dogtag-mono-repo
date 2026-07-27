@@ -35,13 +35,15 @@ import java.time.format.DateTimeFormatter
  * strength of a non-answer is exactly the laundering #94 closed on the refresh path, pointed at the
  * badge instead. Age may only make a claim weaker, never a record look better.
  *
- * EXPIRED sits above staleness because expiry needs no chain access: `validity.validUntil` is a
- * Merkle-covered leaf of the stored document, so it is tamper-evident and knowable offline. It cannot
- * itself go stale, which makes it strictly more informative than "I could not check".
+ * EXPIRED sits above staleness because expiry needs no chain access: the validity leaf (see
+ * [WrappedDoc.validUntil]) is Merkle-covered by the stored document, so it is tamper-evident and
+ * knowable offline. It cannot itself go stale, which makes it strictly more informative than "I could
+ * not check".
  *
  * Pure and clock-injected on purpose: no `Instant.now()` inside, no Android types, no JSON. That is
- * what lets a plain JUnit test drive every branch including the exact boundary, and what makes the iOS
- * port a line-by-line mirror of tested logic rather than a second implementation of the same rule.
+ * what lets a plain JUnit test drive every branch including the exact boundary — and the iOS port is
+ * Foundation-only for exactly the same reason, so `VerdictDisplayTests` pins it in the host-less
+ * bundle. Neither side is an untested mirror of the other; both are covered, case for case.
  *
  * Mirrors iOS `VerdictDisplay` in VerdictDisplay.swift.
  */

@@ -55,6 +55,10 @@ class CredentialExpiryFromDocTest {
     private val lapsed = ""","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2026-06-30"}"""
     private val current = ""","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2027-06-30"}"""
 
+    /** EU_HEALTH_CERT has NO `validity` block: its window is the flat Annex-IV `rabiesValidUntil`. */
+    private val rabiesLapsed = ""","rabiesValidUntil":"dd:2:2026-06-30""""
+    private val rabiesCurrent = ""","rabiesValidUntil":"dd:2:2027-06-30""""
+
     /** The packed leaf is unwrapped to its bare value, exactly as the receipt sheet reads it. */
     @Test
     fun readsThePackedValidUntilLeaf() {
@@ -129,8 +133,61 @@ class CredentialExpiryFromDocTest {
         assertEquals("VALID", broken.badge(now).label)
     }
 
-    /** `by lazy` must stay out of the generated equality, or Compose would lose recomposition
-     *  skipping on the type that drives every list. */
+    /**
+     * EU_HEALTH_CERT carries NO `validity` block at all — the government API issues its window as the
+     * flat Annex-IV `credentialSubject.rabiesValidUntil` leaf. Reading only the nested leaf exempted
+     * the whole record type from the rule, so a lapsed EU health certificate badged a full-strength
+     * green VALID on Documents, Home, Travel and the detail header. `CredentialGroup` maps
+     * EU_HEALTH_CERT to Travel, so those records really do reach the badged surfaces.
+     */
+    @Test
+    fun aLapsedEuHealthCertificateExpiresFromTheFlatRabiesLeaf() {
+        val cred = credential(rabiesLapsed)
+        assertEquals("2026-06-30", cred.validUntil)
+        assertEquals("EXPIRED", cred.badge(now).label)
+        assertEquals(VerdictDisplay.Tone.WARNING, cred.badge(now).tone)
+    }
+
+    /** …and one still inside its rabies window is untouched, exactly as for the nested leaf. */
+    @Test
+    fun anEuHealthCertificateInsideItsWindowIsUnaffected() {
+        assertEquals("2027-06-30", credential(rabiesCurrent).validUntil)
+        assertEquals("VALID", credential(rabiesCurrent).badge(now).label)
+    }
+
+    /**
+     * Precedence, asserted in BOTH directions — a one-directional test passes by accident under a
+     * reversed implementation. `validity.validUntil` wins whenever it is present, mirroring the web
+     * wallet's `pick("validity.validUntil") || pick("rabiesValidUntil")`.
+     */
+    @Test
+    fun theNestedValidityLeafWinsWhenBothArePresent() {
+        assertEquals("2027-06-30", credential(current + rabiesLapsed).validUntil)
+        assertEquals("VALID", credential(current + rabiesLapsed).badge(now).label)
+
+        assertEquals("2026-06-30", credential(lapsed + rabiesCurrent).validUntil)
+        assertEquals("EXPIRED", credential(lapsed + rabiesCurrent).badge(now).label)
+    }
+
+    /**
+     * The non-answer rule, kept intact through the fallback: a document carrying NEITHER leaf still
+     * claims nothing. Manufacturing an expiry out of missing data is the same defect inverted.
+     *
+     * A present-but-empty nested leaf must fall THROUGH to the flat one rather than suppress it —
+     * emptiness is tested on the unwrapped value, not on the packed `"<salt>:<tag>:<value>"` string.
+     */
+    @Test
+    fun anEmptyNestedLeafFallsThroughRatherThanSuppressingTheFallback() {
+        assertNull(credential("").validUntil)
+        assertEquals("VALID", credential("").badge(now).label)
+
+        val emptyNested = ""","validity":{"validUntil":"cc:2:"}"""
+        assertNull(credential(emptyNested).validUntil)
+        assertEquals("2026-06-30", credential(emptyNested + rabiesLapsed).validUntil)
+    }
+
+    /** `by lazy` must stay out of the generated equality: forcing it on one instance may not make two
+     *  otherwise-identical records compare unequal. */
     @Test
     fun theDerivedFieldDoesNotDisturbDataClassEquality() {
         val a = credential(lapsed)

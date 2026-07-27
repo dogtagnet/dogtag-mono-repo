@@ -126,11 +126,17 @@ struct TravelReceiptView: View {
         }
     }
 
+    /// The SHARED expiry leaf, not a private `pick("validity.validUntil")`. This sheet renders
+    /// `EU_HEALTH_CERT` too (`CredentialGroup` maps it to Travel), and that type states its window in the
+    /// flat Annex-IV `rabiesValidUntil` with no `validity` block at all — so picking the nested leaf here
+    /// left the pill claiming VALID on a document the list badge had already called EXPIRED.
+    private var validUntilValue: String { doc?.validUntil ?? "" }
+
     /// THE single implementation of "is this expired", shared with the list badges. It lived here as a
     /// private comparison, which is how this sheet came to be the only mobile surface that enforced
     /// expiry at all: one rule with one implementation cannot be half-adopted.
     private var validUntilLapsed: Bool {
-        VerdictDisplay.lapsed(pick("validity.validUntil"), now: Date())
+        VerdictDisplay.lapsed(validUntilValue, now: Date())
     }
     private var effLabel: String {
         switch effective { case .valid: return "VALID"; case .expired: return "EXPIRED"
@@ -300,7 +306,7 @@ struct TravelReceiptView: View {
                 .font(.system(size: 18, weight: .bold)).foregroundColor(c.onBackground)
             row("Date of issuance", issuanceDate.isEmpty ? "—" : issuanceDate)
             row(isTrue("validity.multipleEntries") ? "Valid for multiple entries until" : "Valid until",
-                pick("validity.validUntil").isEmpty ? "—" : pick("validity.validUntil"))
+                validUntilValue.isEmpty ? "—" : validUntilValue)
             row("Dog Tag ID (SBT)", "#\(pick("dogTagId").isEmpty ? cred.dogTagId : pick("dogTagId"))")
         }
     }

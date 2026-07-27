@@ -188,6 +188,10 @@ final class VerdictDisplayTests: XCTestCase {
     private let lapsedBlock = ##","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2026-06-30"}"##
     private let currentBlock = ##","validity":{"issuedOn":"bb:2:2026-01-01","validUntil":"cc:2:2027-06-30"}"##
 
+    /// EU_HEALTH_CERT has NO `validity` block: its window is the flat Annex-IV `rabiesValidUntil`.
+    private let rabiesLapsedBlock = ##","rabiesValidUntil":"dd:2:2026-06-30""##
+    private let rabiesCurrentBlock = ##","rabiesValidUntil":"dd:2:2027-06-30""##
+
     private func credential(_ validityBlock: String, verdict: String = "VALID") -> Credential {
         Credential(
             id: "rec-1",
@@ -256,6 +260,49 @@ final class VerdictDisplayTests: XCTestCase {
             line.hasSuffix("· expired 2026-06-30 · could not reach the chain (rpc 502)"),
             line
         )
+    }
+
+    /// EU_HEALTH_CERT carries NO `validity` block at all — the government API issues its window as the
+    /// flat Annex-IV `credentialSubject.rabiesValidUntil` leaf. Reading only the nested leaf exempted the
+    /// whole record type from the rule, so a lapsed EU health certificate badged a full-strength green
+    /// VALID on Documents, Home, Travel and the detail header. `CredentialGroup` maps EU_HEALTH_CERT to
+    /// Travel, so those records really do reach the badged surfaces.
+    func test_aLapsedEuHealthCertificateExpiresFromTheFlatRabiesLeaf() {
+        let cred = credential(rabiesLapsedBlock)
+        XCTAssertEqual(cred.validUntil, "2026-06-30")
+        XCTAssertEqual(cred.badge(now: now).label, "EXPIRED")
+        XCTAssertEqual(cred.badge(now: now).tone, .warning)
+    }
+
+    /// …and one still inside its rabies window is untouched, exactly as for the nested leaf.
+    func test_anEuHealthCertificateInsideItsWindowIsUnaffected() {
+        XCTAssertEqual(credential(rabiesCurrentBlock).validUntil, "2027-06-30")
+        XCTAssertEqual(credential(rabiesCurrentBlock).badge(now: now).label, "VALID")
+    }
+
+    /// Precedence, asserted in BOTH directions — a one-directional test passes by accident under a
+    /// reversed implementation. `validity.validUntil` wins whenever it is present, mirroring the web
+    /// wallet's `pick("validity.validUntil") || pick("rabiesValidUntil")`.
+    func test_theNestedValidityLeafWinsWhenBothArePresent() {
+        XCTAssertEqual(credential(currentBlock + rabiesLapsedBlock).validUntil, "2027-06-30")
+        XCTAssertEqual(credential(currentBlock + rabiesLapsedBlock).badge(now: now).label, "VALID")
+
+        XCTAssertEqual(credential(lapsedBlock + rabiesCurrentBlock).validUntil, "2026-06-30")
+        XCTAssertEqual(credential(lapsedBlock + rabiesCurrentBlock).badge(now: now).label, "EXPIRED")
+    }
+
+    /// The non-answer rule, kept intact through the fallback: a document carrying NEITHER leaf still
+    /// claims nothing. Manufacturing an expiry out of missing data is the same defect inverted.
+    ///
+    /// A present-but-empty nested leaf must fall THROUGH to the flat one rather than suppress it —
+    /// emptiness is tested on the unwrapped value, not on the packed `"<salt>:<tag>:<value>"` string.
+    func test_anEmptyNestedLeafFallsThroughRatherThanSuppressingTheFallback() {
+        XCTAssertNil(credential("").validUntil)
+        XCTAssertEqual(credential("").badge(now: now).label, "VALID")
+
+        let emptyNested = ##","validity":{"validUntil":"cc:2:"}"##
+        XCTAssertNil(credential(emptyNested).validUntil)
+        XCTAssertEqual(credential(emptyNested + rabiesLapsedBlock).validUntil, "2026-06-30")
     }
 
     /// A record whose document cannot be parsed has no expiry claim, and must not blow up a list render

@@ -138,7 +138,7 @@ extension Credential {
         return "Checked \(Stamp.relative(d))"
     }
 
-    /// The document's own `credentialSubject.validity.validUntil` leaf, or nil when it makes no expiry
+    /// The document's own expiry leaf (see `WrappedDoc.validUntil`), or nil when it makes no expiry
     /// claim.
     ///
     /// DERIVED from the stored document rather than persisted alongside `verdict`, deliberately. A
@@ -148,8 +148,9 @@ extension Credential {
     /// value, and a second stored copy could only ever drift from it.
     ///
     /// Mirrors Android `Credential.validUntil`, which memoizes with `by lazy`; a Swift `struct` in a
-    /// `Codable` store has no equivalent, so this parses on access. The lists are short and the parse
-    /// is the same one the detail and receipt screens already do per record.
+    /// `Codable` store has no equivalent, so this parses on access. Every caller that needs it more
+    /// than once in a single pass therefore binds it to a local first — the list screens are not lazy,
+    /// so a re-read per use multiplies whole-document parses across the whole list on every render.
     var validUntil: String? {
         guard let doc = WrappedDoc(json: wrappedDocJson) else { return nil }
         return doc.validUntil.isEmpty ? nil : doc.validUntil
@@ -166,8 +167,9 @@ extension Credential {
     /// Expiry is named here as well as on the badge because `EXPIRED` alone does not say WHEN, and an
     /// owner looking at a lapsed record is usually about to ask exactly that.
     func statusLine(now: Date = Date()) -> String {
+        let until = validUntil
         var parts = [lastCheckedLabel]
-        if VerdictDisplay.lapsed(validUntil, now: now), let until = validUntil {
+        if VerdictDisplay.lapsed(until, now: now), let until {
             parts.append("expired \(until.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10))")
         }
         if verdict != "VALID", let why = verdictReason, !why.isEmpty { parts.append(why) }
@@ -232,19 +234,38 @@ struct WrappedDoc {
         return s
     }
 
-    /// `credentialSubject.validity.validUntil` — the last day this credential claims to be good for.
+    /// The last day this credential claims to be good for, whichever leaf its record type writes it in:
+    /// `credentialSubject.validity.validUntil` first, else the FLAT `credentialSubject.rabiesValidUntil`.
+    ///
+    /// The two leaves exist because the shapes differ per record type: `TRAVEL_CLEARANCE` carries a
+    /// nested `validity` block, while `EU_HEALTH_CERT` has no `validity` block at all and states its
+    /// window as the flat Annex-IV `rabiesValidUntil`. The preference chain is unconditional — it is NOT
+    /// branched on `recordType` — so it mirrors the owner wallet's already-shipped rule
+    /// (`stacks/owner/web/src/lib/receipt.ts`) exactly and covers any future type using the flat leaf.
+    /// Without it a lapsed EU health certificate badged a full-strength green VALID while the same
+    /// document read EXPIRED on the web wallet.
     ///
     /// ROOT-COVERED, so it is tamper-evident: an owner cannot extend their own credential without
     /// breaking integrity. It is also the ONLY expiry the protocol has — `DogTagIssuer.sol` carries no
-    /// expiry concept at all — so every surface that renders a validity claim has to read this leaf or
+    /// expiry concept at all — so every surface that renders a validity claim has to read this or
     /// silently ignore expiry, which is what all four list badges used to do.
     ///
-    /// "" when the document carries no validity window. Leaves are packed `"<salt>:<tag>:<value>"`.
+    /// Emptiness is tested on the UNWRAPPED value, not the packed leaf, so a present-but-empty
+    /// `validity.validUntil` still falls through rather than suppressing the fallback.
+    ///
+    /// "" when the document claims no validity window at all — never the same as an expired one. Leaves
+    /// are packed `"<salt>:<tag>:<value>"`.
     var validUntil: String {
-        let cs = data["credentialSubject"] as? [String: Any]
-        let validity = cs?["validity"] as? [String: Any]
-        guard let raw = validity?["validUntil"] as? String, !raw.isEmpty else { return "" }
-        return WrappedDoc.parseLeaf(keyPath: "validity.validUntil", raw: raw).value
+        guard let cs = data["credentialSubject"] as? [String: Any] else { return "" }
+        func unwrap(_ keyPath: String, _ raw: Any?) -> String? {
+            guard let packed = raw as? String, !packed.isEmpty else { return nil }
+            let value = WrappedDoc.parseLeaf(keyPath: keyPath, raw: packed).value
+            return value.isEmpty ? nil : value
+        }
+        let validity = cs["validity"] as? [String: Any]
+        return unwrap("validity.validUntil", validity?["validUntil"])
+            ?? unwrap("rabiesValidUntil", cs["rabiesValidUntil"])
+            ?? ""
     }
 
     var dogTagId: String {

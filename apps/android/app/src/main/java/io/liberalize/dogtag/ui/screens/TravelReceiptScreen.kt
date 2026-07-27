@@ -80,7 +80,11 @@ fun TravelReceiptScreen(cred: Credential, onBack: () -> Unit) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val scroll = rememberScrollState()
-    val amber = Color(0xFFB45309)
+    // The amber "expired" accent. The theme's own `warning` token rather than a second hardcoded
+    // #b45309 — the list badges paint EXPIRED from that token, and a literal here would guarantee the
+    // two drifted (and would ignore dark mode, as this one did: light `warning` IS #b45309, dark is
+    // #f59e0b, so only the dark rendering changes). Mirrors iOS `TravelReceiptView.amber`.
+    val amber = c.warning
     val slate = Color(0xFF334155)
 
     val doc = remember(cred.wrappedDocJson) { runCatching { WrappedDoc(cred.wrappedDocJson) }.getOrNull() }
@@ -101,7 +105,11 @@ fun TravelReceiptScreen(cred: Credential, onBack: () -> Unit) {
     val isTravel = (cred.recordType.ifBlank { doc?.recordType ?: "" }).uppercase().contains("TRAVEL")
     val receiptId = pick("receiptId")
     val issuanceDate = pick("validity.issuedOn").ifBlank { cred.issuedOn }
-    val validUntil = pick("validity.validUntil")
+    // The SHARED expiry accessor, not a private `pick("validity.validUntil")`. This sheet renders
+    // EU_HEALTH_CERT too (CredentialGroup maps it to Travel), and that type states its window in the
+    // flat Annex-IV `rabiesValidUntil` with no `validity` block at all — so picking the nested leaf
+    // here left the pill claiming VALID on a document the list badge had already called EXPIRED.
+    val validUntil = doc?.validUntil ?: ""
 
     // Public PII-free status URL: <protocol.statusBaseUrl>/r/<receiptId>.
     //
