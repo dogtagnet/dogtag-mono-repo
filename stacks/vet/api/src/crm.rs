@@ -268,6 +268,10 @@ async fn create_client(
     if body.name.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "name is required");
     }
+    let pets: Vec<ClientPet> = body.pets.iter().map(build_pet).collect();
+    if let Some(conflict) = reject_dog_tag_conflicts(&st.store, &pets, None).await {
+        return conflict;
+    }
     let ts = now();
     let mut c = Client {
         client_id: uuid::Uuid::new_v4().to_string(),
@@ -276,7 +280,7 @@ async fn create_client(
         phone: body.phone.trim().to_string(),
         address: body.address.trim().to_string(),
         notes: body.notes,
-        pets: body.pets.iter().map(build_pet).collect(),
+        pets,
         created_at: ts,
         updated_at: ts,
         search_key: String::new(),
@@ -302,7 +306,16 @@ fn build_pet(p: &PetBody) -> ClientPet {
         sex: p.sex.trim().to_string(),
         date_of_birth: p.date_of_birth.trim().to_string(),
         notes: p.notes.clone(),
-        dog_tag_id: p.dog_tag_id.clone().filter(|s| !s.trim().is_empty()),
+        // TRIMMED, like every other field here and like `link_pet_dogtag`. The tag is compared as an
+        // exact string by both `find_pets_by_dog_tag` and the held-document cache lookup, so storing
+        // a pasted " 4" would silently defeat the one-pet-per-tag guard AND miss the credential
+        // filed under "4" - one stray character reintroducing two separate bugs.
+        dog_tag_id: p
+            .dog_tag_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     }
 }
 
@@ -332,6 +345,12 @@ async fn update_client(
     if body.name.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "name is required");
     }
+    let pets: Vec<ClientPet> = body.pets.iter().map(build_pet).collect();
+    if let Some(conflict) =
+        reject_dog_tag_conflicts(&st.store, &pets, Some(&existing.client_id)).await
+    {
+        return conflict;
+    }
     let mut c = Client {
         client_id: existing.client_id,
         name: body.name.trim().to_string(),
@@ -339,7 +358,7 @@ async fn update_client(
         phone: body.phone.trim().to_string(),
         address: body.address.trim().to_string(),
         notes: body.notes,
-        pets: body.pets.iter().map(build_pet).collect(),
+        pets,
         created_at: existing.created_at,
         updated_at: now(),
         search_key: String::new(),
@@ -499,15 +518,61 @@ struct PetDogTagBody {
 /// digit the realistic way in. Excluding `self_pet_id` is what keeps re-recording a tag a pet already
 /// holds idempotent rather than a self-conflict.
 ///
-/// NOT an invariant over every write path: `POST /clients` and `PUT /clients/{id}` carry pets inline
-/// and are whole-document writes, so they can still seat a duplicate. The two PET routes that attach
-/// a tag ([`create_pet`] and [`link_pet_dogtag`]) both go through here.
+/// For the SURGICAL pet routes ([`create_pet`], [`link_pet_dogtag`]), which write one pet. The
+/// whole-document client routes need [`reject_dog_tag_conflicts`] instead, because their payload
+/// replaces the owner's entire pet list.
 async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -> Option<PetRow> {
     store
         .find_pets_by_dog_tag(tag)
         .await
         .into_iter()
         .find(|r| r.pet.pet_id != self_pet_id)
+}
+
+/// The same one-pet-per-tag rule, for the WHOLE-DOCUMENT client routes.
+///
+/// `POST /clients` and `PUT /clients/{id}` carry pets inline - and the groomer's client form has a
+/// DogTag field, so this is the likelier place an operator types one than the pet page is. A guard
+/// covering only the pet routes would be worse than none: it reads as an enforced invariant while
+/// the main way in stays open, so every downstream reader trusts something untrue.
+///
+/// The set after the write is (every OTHER client's pets) + (this payload's pets), so that is what
+/// is checked, and it is checked BEFORE anything is written so a rejected pet never leaves a
+/// half-applied client. Two consequences fall out of taking the payload as the client's complete
+/// new pet list rather than diffing it:
+///
+///  - Stored pets of `client_id` are skipped - the payload REPLACES them. That is what makes the
+///    ordinary edit (echo every petId, tags unchanged) a non-conflict, and it also lets a tag move
+///    between the owner's own pets in a single save.
+///  - The payload is checked against ITSELF, since two of its pets can carry one tag with neither
+///    of them stored yet - a case no lookup against the store could see.
+async fn reject_dog_tag_conflicts(
+    store: &Arc<dyn Store>,
+    pets: &[ClientPet],
+    client_id: Option<&str>,
+) -> Option<Resp> {
+    for (i, p) in pets.iter().enumerate() {
+        let Some(tag) = p.dog_tag_id.as_deref() else {
+            continue;
+        };
+        if let Some(twin) = pets[..i].iter().find(|q| q.dog_tag_id.as_deref() == Some(tag)) {
+            return Some(err(
+                StatusCode::CONFLICT,
+                &format!(
+                    "DogTag {tag} is listed on two pets in this request ({} and {}). A tag identifies one animal, so give each pet its own id.",
+                    twin.name, p.name
+                ),
+            ));
+        }
+        let held = store.find_pets_by_dog_tag(tag).await;
+        if let Some(other) = held
+            .into_iter()
+            .find(|r| client_id.is_none_or(|id| r.client_id != id))
+        {
+            return Some(dog_tag_conflict(tag, &other));
+        }
+    }
+    None
 }
 
 /// The 409 for a tag another pet already holds. NAMES that pet and its owner, because that is what
