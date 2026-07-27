@@ -51,10 +51,10 @@ enum RecordImporter {
         // NO FAIL-OPEN: an unreachable RPC means we did not check, which is NOT the same as checking
         // and finding the record good. It records UNVERIFIED with the reason, never VALID.
         let integrityOk = integrity == "VALID"
-        // `var` only so the issuer-whitelist pillar below can tighten it; the mapping itself is
-        // left exactly as the refresh-from-chain work wrote it.
+        // `var` only so the issuer-whitelist pillar below can tighten the pair; the mapping arms
+        // themselves are left exactly as the refresh-from-chain work wrote them.
         var verdict: String
-        let reason: String
+        var reason: String
         if !integrityOk {
             verdict = "INVALID"
             reason = "the record's contents do not match its signed Merkle root"
@@ -78,7 +78,8 @@ enum RecordImporter {
             rpcUrl: rpcUrl, issuerRegistry: roax.issuerRegistry,
             issuerFactory: roax.issuerFactory,
             documentStore: doc.documentStore, root: doc.merkleRoot, recordType: doc.recordType)
-        verdict = foldIssuerWhitelist(verdict, whitelist)
+        // Same fold the refresh path uses - see `IssuerWhitelist`. Moves the reason with the verdict.
+        (verdict, reason) = IssuerWhitelist.fold(verdict, reason, whitelist)
 
         let chainNote: String
         switch onchain {
@@ -128,11 +129,57 @@ enum RecordImporter {
     /// - `.unknown` the pillar did not resolve. An unanswered check is never a passed check, so a
     ///              would-be VALID degrades to UNVERIFIED; anything already worse stands.
     static func foldIssuerWhitelist(_ verdict: String, _ pillar: RoaxRpc.Result) -> String {
+        IssuerWhitelist.fold(verdict, "", pillar).verdict
+    }
+}
+
+/// THE issuer-whitelist decision. Both surfaces that produce a verdict - import and refresh - go
+/// through here, deliberately.
+///
+/// They did not always. `CredentialRefresher` derived its own verdict from `isValid` alone, with no
+/// whitelist pillar, so the first refresh UPGRADED a credential that import had correctly recorded as
+/// UNVERIFIED back to VALID. The feature added so a revocation could reach the user was, on that
+/// path, laundering an unverified credential into a trusted one - worse than the original fail-open,
+/// which at least never overwrote a correct negative with a positive. Two parallel implementations of
+/// one verdict rule is how that happened, so there is now exactly one.
+enum IssuerWhitelist {
+    /// Fold the pillar into a (verdict, reason) pair. MONOTONE: strictly downward, never upward, so
+    /// it can only tighten whatever the integrity + issuance pillars already decided. The reason moves
+    /// with the verdict - a degraded verdict carrying the old "anchored on ROAX and not revoked" text
+    /// would be an over-claiming explanation stapled to a correct verdict.
+    static func fold(
+        _ verdict: String, _ reason: String, _ pillar: RoaxRpc.Result
+    ) -> (verdict: String, reason: String) {
         switch pillar {
-        case .valid: return verdict
-        case .invalid: return "INVALID"
-        case .unknown: return verdict == "VALID" ? "UNVERIFIED" : verdict
+        case .valid:
+            return (verdict, reason)
+        case .invalid:
+            return ("INVALID", "the address that issued this record is not authorised to issue this record type")
+        case let .unknown(r):
+            guard verdict == "VALID" else { return (verdict, reason) }
+            return ("UNVERIFIED", "could not establish who issued this record (\(r))")
         }
+    }
+
+    /// Resolve the pillar on-chain and fold it, in one call. `pillar` is injectable so a test can
+    /// drive the rule without a live RPC.
+    static func evaluate(
+        verdict: String, reason: String,
+        rpcUrl: String, roax: RoaxConfig,
+        documentStore: String, root: String, recordType: String,
+        pillar: RoaxRpc.Result? = nil
+    ) async -> (verdict: String, reason: String) {
+        // Spelled out rather than `??`: that operator takes an autoclosure, which cannot be `async`.
+        let resolved: RoaxRpc.Result
+        if let pillar = pillar {
+            resolved = pillar
+        } else {
+            resolved = await RoaxRpc.issuerWhitelistPillar(
+                rpcUrl: rpcUrl, issuerRegistry: roax.issuerRegistry,
+                issuerFactory: roax.dogTagIssuerFactory,
+                documentStore: documentStore, root: root, recordType: recordType)
+        }
+        return fold(verdict, reason, resolved)
     }
 }
 
@@ -171,11 +218,27 @@ enum CredentialRefresher {
         // 2. ISSUANCE (on-chain). Two anchor shapes: an ordinary record is anchored in a DogTagIssuer
         // clone (isValid(root)); a DOG_PROFILE is anchored in the DogTagSBT itself (profileRoot).
         if !doc.documentStore.isEmpty {
+            let (v, r): (String, String)
             switch await RoaxRpc.isValid(rpcUrl: rpcUrl, documentStore: doc.documentStore, root: root) {
-            case .valid: return out.marked("VALID", "anchored on ROAX and not revoked")
-            case .invalid: return out.marked("INVALID", "revoked or no longer anchored on ROAX")
-            case let .unknown(r): return out.marked("UNVERIFIED", "could not reach the chain (\(r))")
+            case .valid: (v, r) = ("VALID", "anchored on ROAX and not revoked")
+            case .invalid: (v, r) = ("INVALID", "revoked or no longer anchored on ROAX")
+            case let .unknown(reason): (v, r) = ("UNVERIFIED", "could not reach the chain (\(reason))")
             }
+            // 3. ISSUER WHITELIST - the SAME mandatory pillar import runs, through the SAME fold.
+            //
+            // Without it this path answered VALID from `isValid` alone, which meant the first refresh
+            // silently UPGRADED a credential import had correctly marked UNVERIFIED for an unresolved
+            // issuer. A refresh may lower a verdict, and may raise one only as far as the pillars
+            // actually establish - never past them.
+            //
+            // Scoped to the clone path deliberately: the DOG_PROFILE branch below anchors in the SBT,
+            // where `rootIssuer`/`issuedBy` do not exist, so applying the pillar there would resolve
+            // indeterminate and turn every profile refresh into UNVERIFIED - the same over-claiming
+            // mistake inverted.
+            let (fv, fr) = await IssuerWhitelist.evaluate(
+                verdict: v, reason: r, rpcUrl: rpcUrl, roax: roax,
+                documentStore: doc.documentStore, root: root, recordType: doc.recordType)
+            return out.marked(fv, fr)
         }
 
         guard !roax.dogTagSbt.isEmpty, !cred.dogTagId.isEmpty else {

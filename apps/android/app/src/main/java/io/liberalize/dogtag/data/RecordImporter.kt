@@ -175,9 +175,61 @@ object RecordImporter {
      * - [RoaxRpc.Result.Unknown] the pillar did not resolve. An unanswered check is never a passed
      *   check, so a would-be VALID degrades to UNVERIFIED; anything already worse stands.
      */
-    fun foldIssuerWhitelist(verdict: String, pillar: RoaxRpc.Result): String = when (pillar) {
-        is RoaxRpc.Result.Valid -> verdict
-        is RoaxRpc.Result.Invalid -> "INVALID"
-        is RoaxRpc.Result.Unknown -> if (verdict == "VALID") "UNVERIFIED" else verdict
+    fun foldIssuerWhitelist(verdict: String, pillar: RoaxRpc.Result): String =
+        IssuerWhitelist.fold(verdict, "", pillar).first
+}
+
+/**
+ * THE issuer-whitelist decision. Both surfaces that produce a verdict — import and refresh — go
+ * through here, deliberately.
+ *
+ * They did not always. [CredentialRefresher] derived its own verdict from `isValid` alone, with no
+ * whitelist pillar, so the first refresh UPGRADED a credential that import had correctly recorded as
+ * UNVERIFIED back to VALID. The feature added so a revocation could reach the user was, on that path,
+ * laundering an unverified credential into a trusted one — worse than the original fail-open, which
+ * at least never overwrote a correct negative with a positive. Two parallel implementations of one
+ * verdict rule is how that happened, so there is now exactly one.
+ *
+ * Mirrors iOS `IssuerWhitelist` in RecordImporter.swift.
+ */
+object IssuerWhitelist {
+
+    /**
+     * Fold the pillar into a (verdict, reason) pair. MONOTONE: strictly downward, never upward, so it
+     * can only tighten what the integrity + issuance pillars already decided. The reason moves WITH
+     * the verdict — a degraded verdict still carrying "anchored on ROAX and not revoked" would be an
+     * over-claiming explanation stapled to a correct verdict.
+     */
+    fun fold(verdict: String, reason: String, pillar: RoaxRpc.Result): Pair<String, String> =
+        when (pillar) {
+            is RoaxRpc.Result.Valid -> verdict to reason
+            is RoaxRpc.Result.Invalid ->
+                "INVALID" to "the address that issued this record is not authorised to issue this record type"
+            is RoaxRpc.Result.Unknown ->
+                if (verdict == "VALID") {
+                    "UNVERIFIED" to "could not establish who issued this record (${pillar.reason})"
+                } else {
+                    verdict to reason
+                }
+        }
+
+    /**
+     * Resolve the pillar on-chain and fold it, in one call. [pillar] is injectable so a test can
+     * drive the rule without a live RPC.
+     */
+    suspend fun evaluate(
+        verdict: String,
+        reason: String,
+        rpcUrl: String,
+        roax: RoaxConfig,
+        documentStore: String,
+        root: String,
+        recordType: String,
+        pillar: RoaxRpc.Result? = null,
+    ): Pair<String, String> {
+        val resolved = pillar ?: RoaxRpc.issuerWhitelistPillar(
+            rpcUrl, roax.issuerRegistry, roax.dogTagIssuerFactory, documentStore, root, recordType,
+        )
+        return fold(verdict, reason, resolved)
     }
 }
