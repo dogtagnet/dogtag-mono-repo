@@ -763,6 +763,64 @@ async fn a_grandfathered_tag_does_not_license_a_new_duplicate_on_any_route() {
 }
 
 #[tokio::test]
+async fn creating_a_client_cannot_grandfather_itself_onto_another_clients_pet_id() {
+    let (app, op) = pets_app().await;
+    let (_, alice) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }]))
+            .await;
+
+    // `build_pet` honours a caller-supplied petId on the client routes - deliberately, since echoing
+    // it is what preserves a pet's identity across an edit. So a payload can NAME another client's
+    // pet, and if the grandfather exemption matched on petId alone this would read its own brand new
+    // claim on tag "4" as "unchanged" and admit it: two clients, one petId, one tag.
+    let (s, b) = call(
+        &app,
+        "POST",
+        "/clients",
+        Some(&op),
+        Some(json!({
+            "name": "Mallory Quek",
+            "pets": [{ "petId": alice[0], "name": "Fake", "dogTagId": "4" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "a create grandfathers nothing: {b}");
+    assert!(b["error"].as_str().unwrap_or_default().contains("Rex"), "{b}");
+
+    // Alice still holds the tag, and her pet id still resolves to HER pet.
+    let (_, found) = call(&app, "GET", "/clients?q=Mallory", Some(&op), None).await;
+    assert_eq!(found["total"], 0, "the refused client must not exist: {found}");
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["clientName"], "Alice Tan");
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["dogTagId"], "4");
+}
+
+#[tokio::test]
+async fn editing_a_client_cannot_grandfather_itself_onto_another_clients_pet_id() {
+    let (app, op) = pets_app().await;
+    let (_, alice) =
+        make_client_with_pets(&app, &op, "Alice Tan", json!([{ "name": "Rex", "dogTagId": "4" }]))
+            .await;
+    let (bob, _) = make_client_with_pets(&app, &op, "Bob Lim", json!([{ "name": "Milo" }])).await;
+
+    // Same bypass from the update side: Bob's payload names Alice's pet. The exemption is only for a
+    // pet of the client being written, so a stranger's stored record can never excuse this claim.
+    let (s, b) = call(
+        &app,
+        "PUT",
+        &format!("/clients/{bob}"),
+        Some(&op),
+        Some(json!({
+            "name": "Bob Lim",
+            "pets": [{ "petId": alice[0], "name": "Fake", "dogTagId": "4" }],
+        })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert!(b["error"].as_str().unwrap_or_default().contains("Rex"), "{b}");
+    assert_eq!(get_pet(&app, &op, &alice[0]).await["clientName"], "Alice Tan");
+}
+
+#[tokio::test]
 async fn a_client_edit_that_echoes_a_tag_it_does_not_render_keeps_it() {
     let (app, op) = pets_app().await;
     let (client_id, pets) =

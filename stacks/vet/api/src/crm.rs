@@ -554,6 +554,14 @@ async fn conflicting_pet(store: &Arc<dyn Store>, tag: &str, self_pet_id: &str) -
 ///    number would be refused over a DogTag they never touched, on a conflict they cannot resolve
 ///    from that form. Only a tag that is NEW or CHANGED for a pet is a claim, and every claim is
 ///    still checked - so no fresh duplicate can be introduced by any route.
+///
+/// That exemption is bounded by OWNERSHIP, and has to be: `build_pet` honours a caller-supplied
+/// `petId` on both client routes (deliberately - echoing it is what preserves a pet's identity and
+/// the appointment and verification rows pointing at it). A payload naming ANOTHER client's petId
+/// would otherwise find that stranger's pet already holding the tag and read its own claim as
+/// unchanged, grafting a second pet onto one petId AND one tag. So the stored pet must belong to the
+/// client being written, and a create grandfathers nothing at all - every pet in a create payload is
+/// new by definition, so it has no prior record to be unchanged from.
 async fn reject_dog_tag_conflicts(
     store: &Arc<dyn Store>,
     pets: &[ClientPet],
@@ -581,10 +589,12 @@ async fn reject_dog_tag_conflicts(
         };
         // Reached only when the write WOULD be refused, so the grandfather lookup costs a store
         // read on the rare rejecting path rather than on every tagged pet of every client write.
-        let unchanged = store
-            .get_pet(&p.pet_id)
-            .await
-            .is_some_and(|stored| stored.pet.dog_tag_id.as_deref() == Some(tag));
+        let unchanged = match client_id {
+            None => false,
+            Some(owner) => store.get_pet(&p.pet_id).await.is_some_and(|stored| {
+                stored.client_id == owner && stored.pet.dog_tag_id.as_deref() == Some(tag)
+            }),
+        };
         if unchanged {
             continue;
         }
