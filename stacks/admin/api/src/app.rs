@@ -40,6 +40,15 @@ pub struct Config {
     /// changes how an outcome is REPORTED - never whether an action is dispatched, and never who holds
     /// an authority, which is always read live from the chain.
     pub propose_only: bool,
+    /// Whether a non-verified DNS legitimacy check BLOCKS whitelisting (`DNS_CHECK`, default `doh` =
+    /// enforce; `observe`/`skip` = do not block).
+    ///
+    /// This flag governs POLICY only. The lookup itself is always a real DoH resolution and its real
+    /// outcome is always reported — this is deliberately not the old `DNS_CHECK=skip`, which installed
+    /// a checker that fabricated `Ok(true)` on the gate that decides whether an organisation is
+    /// legitimate. A non-enforcing deployment now says "DNS said X and we proceeded anyway" instead of
+    /// "DNS said yes".
+    pub dns_enforce: bool,
 }
 
 /// The shared application state.
