@@ -138,10 +138,42 @@ extension Credential {
         return "Checked \(Stamp.relative(d))"
     }
 
-    /// The freshness line, plus the reason whenever the verdict is anything other than VALID.
-    var statusLine: String {
-        guard verdict != "VALID", let why = verdictReason, !why.isEmpty else { return lastCheckedLabel }
-        return "\(lastCheckedLabel) · \(why)"
+    /// The document's own expiry leaf (see `WrappedDoc.validUntil`), or nil when it makes no expiry
+    /// claim.
+    ///
+    /// DERIVED from the stored document rather than persisted alongside `verdict`, deliberately. A
+    /// persisted copy would be absent on every record imported before this shipped, so the expiry rule
+    /// would silently not apply to exactly the old records most likely to have lapsed. Deriving also
+    /// keeps a single source of truth: the leaf is inside the Merkle root, so it is the tamper-evident
+    /// value, and a second stored copy could only ever drift from it.
+    ///
+    /// Mirrors Android `Credential.validUntil`, which memoizes with `by lazy`; a Swift `struct` in a
+    /// `Codable` store has no equivalent, so this parses on access. Every caller that needs it more
+    /// than once in a single pass therefore binds it to a local first — the list screens are not lazy,
+    /// so a re-read per use multiplies whole-document parses across the whole list on every render.
+    var validUntil: String? {
+        guard let doc = WrappedDoc(json: wrappedDocJson) else { return nil }
+        return doc.validUntil.isEmpty ? nil : doc.validUntil
+    }
+
+    /// What the badge may claim right now - see `VerdictDisplay`.
+    func badge(now: Date = Date()) -> VerdictDisplay.Badge {
+        VerdictDisplay.badge(verdict: verdict, lastCheckedAt: lastCheckedAt, validUntil: validUntil, now: now)
+    }
+
+    /// The freshness line, then the expiry whenever the validity window has closed, then the reason
+    /// whenever the verdict is anything other than VALID.
+    ///
+    /// Expiry is named here as well as on the badge because `EXPIRED` alone does not say WHEN, and an
+    /// owner looking at a lapsed record is usually about to ask exactly that.
+    func statusLine(now: Date = Date()) -> String {
+        let until = validUntil
+        var parts = [lastCheckedLabel]
+        if VerdictDisplay.lapsed(until, now: now), let until {
+            parts.append("expired \(until.trimmingCharacters(in: .whitespacesAndNewlines).prefix(10))")
+        }
+        if verdict != "VALID", let why = verdictReason, !why.isEmpty { parts.append(why) }
+        return parts.joined(separator: " · ")
     }
 
     /// Body of the delete confirmation. It leads with the details that tell two same-type records
@@ -200,6 +232,47 @@ struct WrappedDoc {
         var s = ((protocolObj["statusBaseUrl"] as? String) ?? "").trimmingCharacters(in: .whitespaces)
         while s.hasSuffix("/") { s.removeLast() }
         return s
+    }
+
+    /// The last day this credential claims to be good for, whichever of the THREE leaf shapes its record
+    /// type writes it in, in this preference order:
+    ///
+    ///  1. `credentialSubject.validity.validUntil` — `TRAVEL_CLEARANCE` (nested `validity` block)
+    ///  2. `credentialSubject.rabiesValidUntil`    — `EU_HEALTH_CERT` (flat Annex-IV leaf, no `validity`)
+    ///  3. `validUntil` at the TOP LEVEL of `data` — `VACCINATION` (outside `credentialSubject` entirely)
+    ///
+    /// Three shapes because three issuers build `data` differently. Tier 3 is the one that looks like a
+    /// typo and is not: `RABIES_VACCINATION` declares a DOTLESS `{ path: "validUntil" }`
+    /// (`packages/ui/src/schema/recordTypes.ts`), `buildFieldsObject` therefore puts it at the top level
+    /// of `fields`, and `vet-api`'s `build_vc` clones `fields` verbatim into `data` — so it is a sibling
+    /// of `credentialSubject`, never a child. That is why this reads `data` directly for tier 3 and must
+    /// NOT be gated on `credentialSubject` being present.
+    ///
+    /// The chain is unconditional — never branched on `recordType` — so a new record type reusing any of
+    /// these shapes is covered on arrival, and a fourth shape goes here rather than at a call site.
+    ///
+    /// ROOT-COVERED, so it is tamper-evident: an owner cannot extend their own credential without
+    /// breaking integrity. It is also the ONLY expiry the protocol has — `DogTagIssuer.sol` carries no
+    /// expiry concept at all — so every surface that renders a validity claim has to read this or
+    /// silently ignore expiry, which is what all four list badges used to do.
+    ///
+    /// Emptiness is tested on the UNWRAPPED value, not the packed leaf, so a present-but-empty earlier
+    /// tier still falls through rather than suppressing the later ones.
+    ///
+    /// "" when the document claims no validity window at all — never the same as an expired one. Leaves
+    /// are packed `"<salt>:<tag>:<value>"`.
+    var validUntil: String {
+        func unwrap(_ keyPath: String, _ raw: Any?) -> String? {
+            guard let packed = raw as? String, !packed.isEmpty else { return nil }
+            let value = WrappedDoc.parseLeaf(keyPath: keyPath, raw: packed).value
+            return value.isEmpty ? nil : value
+        }
+        let cs = data["credentialSubject"] as? [String: Any]
+        let validity = cs?["validity"] as? [String: Any]
+        return unwrap("validity.validUntil", validity?["validUntil"])
+            ?? unwrap("rabiesValidUntil", cs?["rabiesValidUntil"])
+            ?? unwrap("validUntil", data["validUntil"])
+            ?? ""
     }
 
     var dogTagId: String {

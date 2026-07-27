@@ -549,7 +549,7 @@ private fun ExportPanel(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(cred.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
-                    Text("${cred.group.title} · ${cred.verdict}", fontSize = 11.sp, color = c.muted)
+                    Text("${cred.group.title} · ${cred.badge().label}", fontSize = 11.sp, color = c.muted)
                 }
             }
         }

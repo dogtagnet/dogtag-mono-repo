@@ -250,7 +250,7 @@ struct CredentialDetailScreen: View {
                 Text(cred.displayTypeLabel)
                     .font(.system(size: 20, weight: .bold)).foregroundColor(c.onBackground)
                 Spacer()
-                VerdictBadge(verdict: cred.verdict)
+                VerdictBadge(cred: cred)
             }
             // Which pet: name (synced Pet or the DOG_PROFILE credential) + dogTagId — never a bare type.
             // The dogTagId stays tap-to-copy (InlineCopyText), as the operator relies on copying it.

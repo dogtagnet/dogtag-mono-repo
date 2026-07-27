@@ -63,7 +63,7 @@ struct TravelScreen: View {
                             }.buttonStyle(.plain)
 
                             VStack(alignment: .trailing, spacing: 8) {
-                                VerdictBadge(verdict: cred.verdict)
+                                VerdictBadge(cred: cred)
                                 RefreshCredentialButton(cred: cred)
                             }
                         }

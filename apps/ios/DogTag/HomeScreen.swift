@@ -205,7 +205,7 @@ struct HomeScreen: View {
                                     CredentialStatusLine(cred: cred)
                                 }
                                 Spacer(minLength: 0)
-                                VerdictBadge(verdict: cred.verdict)
+                                VerdictBadge(cred: cred)
                                 Image(systemName: "chevron.right").foregroundColor(c.muted).font(.system(size: 12))
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

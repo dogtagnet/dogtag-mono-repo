@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -44,6 +45,7 @@ import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.Pet
 import io.liberalize.dogtag.data.RefreshCenter
+import io.liberalize.dogtag.data.VerdictDisplay
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
 import kotlinx.coroutines.launch
@@ -112,7 +114,7 @@ fun DocumentsScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
                     }
                     Spacer(Modifier.size(8.dp))
                     Column(horizontalAlignment = Alignment.End) {
-                        VerdictBadge(cred.verdict)
+                        VerdictBadge(cred)
                         Spacer(Modifier.size(4.dp))
                         Row {
                             RefreshCredentialButton(cred)
@@ -166,16 +168,45 @@ private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+/**
+ * The one place a badge tone becomes colour. Both badge sizes and the status line read it, so the
+ * palette cannot drift between the surfaces the way the verdict RULE once drifted between import and
+ * refresh.
+ *
+ * NEUTRAL is deliberately the same muted chip UNVERIFIED already wears: "I could not check" and "I
+ * have not checked recently" are the same claim about evidence, and neither may borrow the colour of
+ * VALID or of INVALID.
+ */
 @Composable
-internal fun VerdictBadge(verdict: String) {
+internal fun badgeForeground(tone: VerdictDisplay.Tone): Color {
     val c = DogTagTheme.colors
-    val (bg, fg) = when (verdict) {
-        "VALID" -> c.success.copy(alpha = 0.18f) to c.success
-        "INVALID" -> c.danger.copy(alpha = 0.18f) to c.danger
-        else -> c.surfaceVariant to c.muted
+    return when (tone) {
+        VerdictDisplay.Tone.POSITIVE -> c.success
+        VerdictDisplay.Tone.WARNING -> c.warning
+        VerdictDisplay.Tone.NEGATIVE -> c.danger
+        VerdictDisplay.Tone.NEUTRAL -> c.muted
     }
-    Box(Modifier.clip(CircleShape).background(bg).padding(horizontal = 10.dp, vertical = 4.dp)) {
-        Text(verdict, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = fg)
+}
+
+@Composable
+private fun badgeBackground(tone: VerdictDisplay.Tone): Color =
+    if (tone == VerdictDisplay.Tone.NEUTRAL) DogTagTheme.colors.surfaceVariant
+    else badgeForeground(tone).copy(alpha = 0.18f)
+
+/**
+ * A record's on-chain standing, discounted by how long ago it was actually established. Takes the
+ * whole [Credential] rather than a verdict string on purpose: the badge cannot be rendered honestly
+ * from the verdict alone, and passing only the verdict is what let five surfaces claim VALID off a
+ * check run days earlier.
+ */
+@Composable
+internal fun VerdictBadge(cred: Credential) {
+    val badge = cred.badge()
+    Box(
+        Modifier.clip(CircleShape).background(badgeBackground(badge.tone))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        Text(badge.label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = badgeForeground(badge.tone))
     }
 }
 
@@ -200,11 +231,19 @@ internal fun CredentialStatusLine(cred: Credential, fontSize: Int = 11) {
             Text("Checking on-chain…", fontSize = fontSize.sp, color = c.muted)
         }
     } else {
-        Text(
-            cred.statusLine,
-            fontSize = fontSize.sp,
-            color = if (cred.verdict == "INVALID") c.danger else c.muted,
-        )
+        // Driven by the SAME tone as the badge beside it, so the loud claim and the quiet one cannot
+        // disagree. Only the two negatives take a colour - a green sub-line under every healthy record
+        // would just be noise, and a stale record must stay visually quiet rather than reassuring.
+        //
+        // ONE clock read for both, so the tone and the text can never straddle a UTC midnight and
+        // disagree about whether the record is expired.
+        val now = java.time.Instant.now()
+        val tone = cred.badge(now).tone
+        val colour = when (tone) {
+            VerdictDisplay.Tone.NEGATIVE, VerdictDisplay.Tone.WARNING -> badgeForeground(tone)
+            else -> c.muted
+        }
+        Text(cred.statusLine(now), fontSize = fontSize.sp, color = colour)
     }
 }
 

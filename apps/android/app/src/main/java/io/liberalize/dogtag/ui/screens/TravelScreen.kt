@@ -109,7 +109,7 @@ fun TravelScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
                 }
                 Spacer(Modifier.size(8.dp))
                 Column(horizontalAlignment = Alignment.End) {
-                    VerdictBadge(cred.verdict)
+                    VerdictBadge(cred)
                     Spacer(Modifier.size(4.dp))
                     RefreshCredentialButton(cred)
                 }

@@ -33,8 +33,10 @@ struct TravelReceiptView: View {
     /// `remember(publicUrl)` + `Dispatchers.Default`), so reveal-toggles never regenerate it inline.
     @State private var qr: UIImage? = nil
 
-    // Amber warning accent (no semantic token for "expired/withheld"; matches the web #b45309).
-    private let amber = Color(hex: 0xB45309)
+    /// The amber "expired / withheld" accent. Now the theme's own `warning` token rather than a third
+    /// hardcoded #b45309 — the list badges need the same colour for the same state, and a literal here
+    /// would guarantee they drifted (and would ignore dark mode, as this one did).
+    private var amber: Color { c.warning }
 
     init(cred: Credential) {
         self.cred = cred
@@ -103,8 +105,14 @@ struct TravelReceiptView: View {
     // MARK: - effective status
 
     /// The receipt verdict, derived like the web `effectiveStatus`: a live revoke wins, then a lapsed
-    /// validity window, else VALID. When the chain is unreachable we fall back to the stored integrity
-    /// verdict and flag the read as unconfirmed (never a hard fail).
+    /// validity window, else VALID. When the chain is unreachable we fall back to the stored verdict —
+    /// but ONLY while that stored verdict is still fresh.
+    ///
+    /// That freshness gate is the fix. This pill previously read a green VALID off `cred.verdict`
+    /// whenever the chain was unreachable, no matter how old that stored answer was, while the sub-line
+    /// underneath said "On-chain status unconfirmed" — two contradictory claims on one screen, and the
+    /// loud one was the one that could be wrong. An unreachable chain plus a stale stored answer is
+    /// exactly "I could not check", and `.unknown` is what that looks like.
     private enum Eff { case valid, expired, revoked, unknown }
     private var effective: Eff {
         switch live {
@@ -113,14 +121,22 @@ struct TravelReceiptView: View {
             return validUntilLapsed ? .expired : .valid
         case .unknown:
             if validUntilLapsed { return .expired }
-            return cred.verdict == "VALID" ? .valid : .unknown
+            let fresh = VerdictDisplay.isFresh(cred.lastCheckedAt, now: Date())
+            return cred.verdict == "VALID" && fresh ? .valid : .unknown
         }
     }
+
+    /// The SHARED expiry leaf, not a private `pick("validity.validUntil")`. This sheet renders
+    /// `EU_HEALTH_CERT` too (`CredentialGroup` maps it to Travel), and that type states its window in the
+    /// flat Annex-IV `rabiesValidUntil` with no `validity` block at all — so picking the nested leaf here
+    /// left the pill claiming VALID on a document the list badge had already called EXPIRED.
+    private var validUntilValue: String { doc?.validUntil ?? "" }
+
+    /// THE single implementation of "is this expired", shared with the list badges. It lived here as a
+    /// private comparison, which is how this sheet came to be the only mobile surface that enforced
+    /// expiry at all: one rule with one implementation cannot be half-adopted.
     private var validUntilLapsed: Bool {
-        let vu = pick("validity.validUntil")
-        guard vu.count >= 10 else { return false }
-        let today = ISO8601DateFormatter.dateOnly(Date())
-        return vu.prefix(10) < today.prefix(10)   // ISO YYYY-MM-DD compares lexically
+        VerdictDisplay.lapsed(validUntilValue, now: Date())
     }
     private var effLabel: String {
         switch effective { case .valid: return "VALID"; case .expired: return "EXPIRED"
@@ -290,7 +306,7 @@ struct TravelReceiptView: View {
                 .font(.system(size: 18, weight: .bold)).foregroundColor(c.onBackground)
             row("Date of issuance", issuanceDate.isEmpty ? "—" : issuanceDate)
             row(isTrue("validity.multipleEntries") ? "Valid for multiple entries until" : "Valid until",
-                pick("validity.validUntil").isEmpty ? "—" : pick("validity.validUntil"))
+                validUntilValue.isEmpty ? "—" : validUntilValue)
             row("Dog Tag ID (SBT)", "#\(pick("dogTagId").isEmpty ? cred.dogTagId : pick("dogTagId"))")
         }
     }
@@ -507,18 +523,6 @@ private struct ShareSheet: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
-}
-
-/// ISO date-only formatter helper (YYYY-MM-DD) for the validity-window comparison.
-private extension ISO8601DateFormatter {
-    static func dateOnly(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .iso8601)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: date)
-    }
 }
 
 /// Round specific corners (used for the letterhead's top corners).

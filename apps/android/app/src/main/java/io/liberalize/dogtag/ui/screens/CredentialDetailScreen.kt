@@ -52,6 +52,7 @@ import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.CredentialGroup
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.RoaxConfig
+import io.liberalize.dogtag.data.VerdictDisplay
 import io.liberalize.dogtag.data.WrappedDoc
 import io.liberalize.dogtag.net.BindingTone
 import io.liberalize.dogtag.net.IssuerBinding
@@ -135,7 +136,7 @@ fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
                     fontSize = 20.sp, fontWeight = FontWeight.Bold, color = c.onBackground,
                     modifier = Modifier.weight(1f),
                 )
-                DetailVerdictBadge(cred.verdict)
+                DetailVerdictBadge(cred)
             }
             val rt = cred.recordType.ifBlank { doc?.recordType ?: "" }
             if (rt.isNotBlank()) Text(rt, fontSize = 13.sp, color = c.muted)
@@ -340,16 +341,20 @@ private fun MonoCopyRow(context: Context, label: String, value: String) {
     }
 }
 
+/** The detail header's badge. Same decision and same palette as the list badge, one size larger — the
+ *  two used to be independent `when` blocks over the raw verdict string, which is two places for one
+ *  rule to live. */
 @Composable
-private fun DetailVerdictBadge(verdict: String) {
-    val c = DogTagTheme.colors
-    val (bg, fg) = when (verdict) {
-        "VALID" -> c.success.copy(alpha = 0.18f) to c.success
-        "INVALID" -> c.danger.copy(alpha = 0.18f) to c.danger
-        else -> c.surfaceVariant to c.muted
+private fun DetailVerdictBadge(cred: Credential) {
+    val badge = cred.badge()
+    val fg = badgeForeground(badge.tone)
+    val bg = if (badge.tone == VerdictDisplay.Tone.NEUTRAL) {
+        DogTagTheme.colors.surfaceVariant
+    } else {
+        fg.copy(alpha = 0.18f)
     }
     Box(Modifier.clip(CircleShape).background(bg).padding(horizontal = 12.dp, vertical = 5.dp)) {
-        Text(verdict, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
+        Text(badge.label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = fg)
     }
 }
 

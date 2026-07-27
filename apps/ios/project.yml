@@ -65,6 +65,11 @@ targets:
       # Models is Foundation-only (JSONSerialization) and carries `rootCoveredIssuerLeaf`, which the DID
       # assertion reads. SwiftUI lives in the screens, not here.
       - path: DogTag/Models.swift
+      # VerdictDisplay is Foundation-only: the pure badge decision (staleness + expiry ordering) with an
+      # injected clock and no SwiftUI, no JSON, no FFI. #94 filed extracting it precisely so this bundle
+      # could pin the verdict rules the way RoaxRpcSelectorTest pins Android; Models.swift above already
+      # depends on it, so it must be here regardless.
+      - path: DogTag/VerdictDisplay.swift
       # LocalDataSweep is Foundation-only by design so the destructive reset actions' file removal
       # (staging-sibling sweep, idempotence, partial-failure reporting) is covered here; the callers
       # that pull in Keychain/FFI/SwiftUI live in AppReset and the stores.

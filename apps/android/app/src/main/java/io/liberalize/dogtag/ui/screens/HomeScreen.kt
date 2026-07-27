@@ -251,12 +251,24 @@ private fun GroupCard(
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(cred.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = c.onBackground)
-                        Text("${cred.recordType} · ${cred.verdict}", fontSize = 12.sp, color = c.muted)
+                        Text(cred.recordType, fontSize = 12.sp, color = c.muted)
                         if (cred.issuer.isNotBlank()) Text(cred.issuer, fontSize = 11.sp, color = c.muted)
                         Text(cred.importedAtLabel, fontSize = 11.sp, color = c.muted)
                         CredentialStatusLine(cred)
                     }
-                    RefreshCredentialButton(cred)
+                    Spacer(Modifier.size(8.dp))
+                    // The standing gets the same badge it gets on every other surface, matching iOS's
+                    // Home row. It used to be appended to the record-type line as muted grey text,
+                    // which rendered INVALID in exactly the colour VALID got, on the first screen the
+                    // owner sees.
+                    //
+                    // Stacked over the refresh button rather than beside it, as Documents already does:
+                    // three trailing items in one Row would eat the label column's width on a narrow
+                    // phone, and the widest badge here ("VALID · STALE") is wider than any that shipped.
+                    Column(horizontalAlignment = Alignment.End) {
+                        VerdictBadge(cred)
+                        RefreshCredentialButton(cred)
+                    }
                     Icon(Icons.Filled.ChevronRight, "Open", tint = c.muted)
                 }
             }

@@ -67,7 +67,7 @@ struct DocumentsScreen: View {
                             }.buttonStyle(.plain)
 
                             VStack(alignment: .trailing, spacing: 8) {
-                                VerdictBadge(verdict: cred.verdict)
+                                VerdictBadge(cred: cred)
                                 HStack(spacing: 2) {
                                     RefreshCredentialButton(cred: cred)
                                     DeleteCredentialButton(cred: cred) { pendingDelete = cred }
@@ -143,18 +143,35 @@ struct CredentialLabel: View {
     }
 }
 
+/// The one place a badge tone becomes colour. Every surface's badge and its status line read it, so
+/// the palette cannot drift between them the way the verdict RULE once drifted between import and
+/// refresh.
+///
+/// `.neutral` is deliberately the same muted chip UNVERIFIED already wears: "I could not check" and "I
+/// have not checked recently" are the same claim about evidence, and neither may borrow the colour of
+/// VALID or of INVALID.
+func badgeForeground(_ tone: VerdictDisplay.Tone, _ c: DogTagColors) -> Color {
+    switch tone {
+    case .positive: return c.success
+    case .warning: return c.warning
+    case .negative: return c.danger
+    case .neutral: return c.muted
+    }
+}
+
+/// A record's on-chain standing, discounted by how long ago it was actually established. Takes the
+/// whole `Credential` rather than a verdict string on purpose: the badge cannot be rendered honestly
+/// from the verdict alone, and passing only the verdict is what let five surfaces claim VALID off a
+/// check run days earlier.
 struct VerdictBadge: View {
     @Environment(\.dogTagColors) var c
-    let verdict: String
+    let cred: Credential
+
     var body: some View {
-        let (bg, fg): (Color, Color) = {
-            switch verdict {
-            case "VALID": return (c.success.opacity(0.18), c.success)
-            case "INVALID": return (c.danger.opacity(0.18), c.danger)
-            default: return (c.surfaceVariant, c.muted)
-            }
-        }()
-        return Text(verdict).font(.system(size: 10, weight: .bold)).foregroundColor(fg)
+        let badge = cred.badge()
+        let fg = badgeForeground(badge.tone, c)
+        let bg = badge.tone == .neutral ? c.surfaceVariant : fg.opacity(0.18)
+        return Text(badge.label).font(.system(size: 10, weight: .bold)).foregroundColor(fg)
             .padding(.horizontal, 10).padding(.vertical, 4)
             .background(Capsule().fill(bg))
     }
@@ -239,9 +256,17 @@ struct CredentialStatusLine: View {
                 Text("Checking on-chain…").font(.system(size: fontSize)).foregroundColor(c.muted)
             }
         } else {
-            Text(cred.statusLine)
+            // Driven by the SAME tone as the badge beside it, so the loud claim and the quiet one
+            // cannot disagree. Only the two negatives take a colour - a green sub-line under every
+            // healthy record would just be noise, and a stale record must stay visually quiet rather
+            // than reassuring.
+            // ONE clock read for both, so the tone and the text can never straddle a UTC midnight and
+            // disagree about whether the record is expired.
+            let now = Date()
+            let tone = cred.badge(now: now).tone
+            Text(cred.statusLine(now: now))
                 .font(.system(size: fontSize))
-                .foregroundColor(cred.verdict == "INVALID" ? c.danger : c.muted)
+                .foregroundColor(tone == .negative || tone == .warning ? badgeForeground(tone, c) : c.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

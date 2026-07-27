@@ -39,6 +39,9 @@ data class DogTagColors(
     val muted: Color,
     val outline: Color,
     val success: Color,
+    /** A definite but non-fatal negative: an EXPIRED credential is not revoked, and must not wear the
+     *  same colour as one. Mirrors the amber the travel receipt already uses for its EXPIRED pill. */
+    val warning: Color,
     val danger: Color,
     // Credential-group tints (health / service / travel cards on Home).
     val healthTint: Color,
@@ -71,6 +74,7 @@ private fun tokensFor(id: ThemeId, dark: Boolean): DogTagColors {
             muted = Color(0xFF9AA0AC),
             outline = Color(0xFF2C313C),
             success = Color(0xFF45C97B),
+            warning = Color(0xFFF59E0B),
             danger = Color(0xFFFF6B6B),
             healthTint = Color(0xFF3A1F22),
             serviceTint = Color(0xFF15301F),
@@ -89,6 +93,7 @@ private fun tokensFor(id: ThemeId, dark: Boolean): DogTagColors {
             muted = Color(0xFF6B7180),
             outline = Color(0xFFE2E5EE),
             success = Color(0xFF1B7F3B),
+            warning = Color(0xFFB45309),
             danger = Color(0xFFD23B3B),
             healthTint = Color(0xFFFDECEC),
             serviceTint = Color(0xFFE7F6EE),

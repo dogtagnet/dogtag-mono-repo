@@ -248,7 +248,12 @@ export function buildReceipt(doc: WrappedDoc): ReceiptModel | null {
     // Issuance DATE is derived from the `validity.issuedOn`/`validFrom` leaf (the authoritative
     // on-chain `issuedAt[R]` is the canonical source; the holder wallet reads the leaf, offline).
     issuanceDate: pick("validity.issuedOn") || pick("validity.validFrom"),
-    validUntil: pick("validity.validUntil") || pick("rabiesValidUntil"),
+    // The same three-tier chain the native holders read (`WrappedDoc.validUntil`): the nested
+    // TRAVEL_CLEARANCE block, then EU_HEALTH_CERT's flat Annex-IV leaf, then VACCINATION's TOP-LEVEL
+    // `data.validUntil` — which `pick` cannot reach, since it prefixes `credentialSubject.`, so tier 3
+    // goes through `envelope`. Unreachable for VACCINATION today (this function returns null above for
+    // any type that is neither travel nor health); it is here so the three surfaces cannot drift.
+    validUntil: pick("validity.validUntil") || pick("rabiesValidUntil") || envelope("validUntil"),
     multipleEntries: isTrue("validity.multipleEntries"),
     departureBinding: pick("validity.countryOfDepartureBinding"),
     dogTagId: pick("dogTagId"),

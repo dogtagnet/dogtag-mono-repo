@@ -217,7 +217,7 @@ deliberately: both mobile apps hard-code these paths and must need no government
 The pet-owner HOLDER apps (iOS `apps/ios/DogTag`, Android `apps/android`) render a held `TRAVEL_CLEARANCE` credential as the same CDC receipt the web portal shows, produced LOCALLY from the stored `wrappedDocJson`. Structure + sharp edges:
 - **`obfuscate()` is now in the mobile FFI.** `crates/dogtag-standard-rs/src/ffi.rs` exposes `obfuscate_document_json(wrapped_doc_json, key_paths) -> String` (UniFFI → Swift `obfuscateDocumentJson(wrappedDocJson:keyPaths:)`, Kotlin `obfuscateDocumentJson(wrappedDocJson, keyPaths)`). It wraps `wrap::obfuscate` (already existed, just wasn't surfaced): moves each named leaf's hash into `privacy.obfuscated[]` and drops the cleartext, leaving the Merkle root == on-chain root R UNCHANGED. So the phone builds a PII-free presentation copy with ZERO new ceremony — it's the merkle selective-disclosure proof, NOT a ZK proof. `credentialSubject.dogTagId` must never be obfuscated (`verify.rs` rejects it). Key paths are the FULL dotted path incl. the `credentialSubject.` prefix.
 - **Regenerating the bindings is MANDATORY after any FFI change.** The committed `apps/ios/DogTag/dogtag_standard.swift` and `apps/android/app/src/main/java/uniffi/dogtag_standard/dogtag_standard.kt` carry UniFFI contract CHECKSUMS; if they don't match the freshly-built `.so`/`.a` the app traps at the first FFI call. Android CI rebuilds only the `.so` (cargo-ndk) and bundles the committed `.kt` as-is — it does NOT regenerate it — so you MUST regenerate + commit both. Build the host dylib WITH `--features prover` (else the consent prover surface - `proveConsent`/`ProofFfi` - drops out and the ABI shifts), then `cargo run --features prover,uniffi/cli --release --bin uniffi-bindgen -- generate --library target/release/libdogtag_standard.dylib --language {swift,kotlin} --out-dir <tmp>` and copy both outputs over the committed files (the generator output matches the committed style; the diff is additive).
-- **`TravelReceiptView.swift` / `TravelReceiptScreen.kt`** mirror `stacks/government/web/src/pages/Receipt.tsx` 1:1 (Section A/B/C labels, sex+neutered combine, humanize, empty-row omission). Reached from `CredentialDetailScreen` via a "Show travel receipt" button gated on `group == .travel`. They decode `credentialSubject` leaves into a dotted-path→value map from `WrappedDoc.decodedFields()` (strip the `credentialSubject.` prefix), render the effectiveStatus banner (live `RoaxRpc.isValid` → REVOKED wins, then lapsed `validity.validUntil` → EXPIRED, else VALID; chain-unreachable falls back to the stored integrity verdict), and a Verification block with a QR.
+- **`TravelReceiptView.swift` / `TravelReceiptScreen.kt`** mirror `stacks/government/web/src/pages/Receipt.tsx` 1:1 (Section A/B/C labels, sex+neutered combine, humanize, empty-row omission). Reached from `CredentialDetailScreen` via a "Show travel receipt" button gated on `group == .travel`. They decode `credentialSubject` leaves into a dotted-path→value map from `WrappedDoc.decodedFields()` (strip the `credentialSubject.` prefix), render the effectiveStatus banner, and a Verification block with a QR. The banner is: live `RoaxRpc.isValid` → REVOKED wins, then a lapsed window → EXPIRED, else VALID. Expiry comes from the SHARED `WrappedDoc.validUntil` three-tier chain (`credentialSubject.validity.validUntil`, then the flat `credentialSubject.rabiesValidUntil`, then TOP-LEVEL `data.validUntil`) — never a private `pick("validity.validUntil")`, which is how the receipts once claimed VALID on documents the list badges already called EXPIRED. The chain-unreachable arm does NOT fall back to the stored verdict unconditionally: it requires that stored VALID to still be FRESH (`VerdictDisplay.isFresh`) before painting a green pill, and degrades to UNCONFIRMED otherwise.
 - **The QR is PII-free and points at `<protocol.statusBaseUrl>/r/<receiptId>`** — the public status page PR-1 built. This is a NEW, deliberate exception to the "QR generation removed" rule in `QR.swift` (that removal was for the one-time verification-JWT presentation QR; a status-page URL leaks nothing). iOS draws it with CoreImage `CIFilter.qrCodeGenerator` (no dep); Android with `com.google.zxing:core` (added to `app/build.gradle.kts` — ML Kit only SCANS, it can't ENCODE).
 - **NEVER build that QR from `issuer.domain`.** All three renderers (iOS `TravelReceiptView.publicStatusUrl`, Android `TravelReceiptScreen`, owner-web `lib/receipt.ts::publicStatusUrl`) once did, and every QR ever issued encoded `https://gov.example/r/<id>` — NXDOMAIN. `issuer.domain` is a **`did:web` IDENTITY**: a stable name that need not resolve and need not serve anything, and its shipped default is RFC-2606 reserved. The reachable base is `protocol.statusBaseUrl`, stamped at issuance from the issuing stack's `DEPLOYMENT_URL` (`government/api/src/app.rs::status_base_url`) — the same rule `qr_base` already applied to the share QR. **The two fixes that look tempting and are both wrong:** pointing `ISSUER_DOMAIN` at a tunnel/deployment host (that writes a rotating hostname into an identity the DNS-binding work is about to make load-bearing), and falling back to `issuer.domain` when the base is absent (a real `did:web` host like `moh.gov.sg` resolves but does not serve `/r/`, so the fallback trades NXDOMAIN for a 404 that looks even more legitimate). A document with no base has **no status page**: render no QR and say so. `protocol` sits OUTSIDE the Merkle root (`check_integrity` folds only `data` + `privacy.obfuscated`), so stamping it disturbs no anchored `R` — pinned by `stamping_a_status_base_url_does_not_move_the_merkle_root`. **`status_base_url` also REFUSES to stamp a base no phone could resolve** — RFC-2606/6761 placeholders (`*.example`, `example.com/net/org`, `*.invalid`, `*.test`) and `localhost`/`*.localhost` — because the shipped `.env.example` is itself `https://gov.example.com`, and a stamped placeholder would draw a QR on every renderer that goes nowhere while still reading as a live check, permanently, in the holder's own copy. Plain IPs and tunnel hostnames must keep passing: `scripts/demo-up.sh` stamps the LAN IP, which is the normal demo path. Consequence: a `localhost`-configured stack issues credentials with **no** receipt QR — that is the honest degradation, not a bug.
 - **Selective disclosure is holder-controlled.** Section-A person-PII leaves default to WITHHELD; per-field reveal toggles flip them; `dogTagId` + Section B/C default visible. "Share redacted" runs `obfuscateDocumentJson` over the withheld leaves and hands the redacted `wrappedDoc` to the OS share sheet (iOS `UIActivityViewController`, Android `ACTION_SEND`). Withheld rows render as "— withheld by holder —". NO ZK on this path; the on-device Groth16 prover stays reserved for the separate anonymous verification-record flow.
@@ -756,8 +756,10 @@ maestro test apps/ios/maestro/zk_e2e.yaml   # Groth16 proving is slow; the flow 
   building for a *device* destination fails until you add an `aarch64-apple-ios` slice (+ signing). The
   e2e runs on the Simulator, which needs no Apple team.
 - **Generated `DogTag.xcodeproj` is committed** — it is produced by `xcodegen` from
-  `apps/ios/project.yml`; re-run `xcodegen` (don't hand-edit the project) after adding/removing source
-  files, and commit the regenerated `project.pbxproj`. **Trap:** `xcodegen` enumerates the `DogTag/`
+  `apps/ios/project.yml`; after adding/removing source files, either re-run `xcodegen` (having vendored
+  the prover pair first, see the trap below) or apply the reviewed hand-edit recipe under "Building /
+  verifying UI changes", and commit the result together with the matching `project.yml` change.
+  **Trap:** `xcodegen` enumerates the `DogTag/`
   folder, so regenerating in a checkout that has NOT vendored the referenced prover resources
   (gitignored) silently DROPS their Copy-Bundle-Resources entries from the committed `pbxproj`.
   The committed `pbxproj` references the CONSENT pair (`consent_final.zkey` + `consent.graph`; the
@@ -989,14 +991,93 @@ An already-installed app keeps proving against its **baked** key until you do, s
 - The live consent circuit (`DogTagConsent(6)`) proves reserved-leaf INCLUSION PATHS in a depth-6 tree (~64 leaves max), so record size no longer gates the ZK path; note there is deliberately no leaf-count guard in `build_profile_tree` (see "Known-uncovered surfaces").
 - A record's leaf count still == `WrappedDoc.decodedFields().count`, which flattens `data` identically to the SDK's `flatten_data` (both skip empty collections and count only string leaves).
 
+### What a credential badge is allowed to claim (mobile)
+
+`VerdictDisplay` (`data/VerdictDisplay.kt`, `DogTag/VerdictDisplay.swift`) is the ONE decision behind
+every mobile badge, and it is a pure function with an injected clock so both platforms' tests can drive
+every branch.
+The ordering is INVALID, then EXPIRED, then a VALID older than `FRESH_FOR`/`freshFor` (1 hour) shown as
+`VALID · STALE` in the neutral chip, then VALID, then anything else as-is.
+
+Two invariants, both of which this repo has broken before, in opposite directions:
+
+- **Age may only weaken a claim.** An established INVALID is never softened by staleness. That is
+  #94's "a non-answer may not raise severity" rule pointed at the badge instead of the fold, and it is
+  what a future "just grey out anything stale" simplification would silently undo.
+- **A stale answer never renders as INVALID.** "I have not looked recently" is its own state and must
+  not borrow either neighbour's colour, which is why the label keeps the prior answer and the tone goes
+  neutral rather than the label collapsing to a bare `STALE`.
+
+`validUntil` is DERIVED from the stored `wrappedDocJson` (`WrappedDoc.validUntil`), never persisted
+beside the verdict.
+A persisted column would be absent on every record imported before it shipped, so the expiry rule would
+skip exactly the oldest records, and it would be a second source of truth able to drift from the
+Merkle-covered leaf that is the only tamper-evident one.
+
+The leaf is read through ONE three-tier chain, because three issuers write it three different ways:
+`credentialSubject.validity.validUntil` (TRAVEL_CLEARANCE), the flat `credentialSubject.rabiesValidUntil`
+(EU_HEALTH_CERT, which has no `validity` block at all), then TOP-LEVEL `data.validUntil` (VACCINATION,
+whose schema field is DOTLESS so it lands as a SIBLING of `credentialSubject`, not a child).
+Earlier tiers win; emptiness is tested on the UNWRAPPED value so a present-but-empty tier falls through;
+a document with none of the three still makes NO expiry claim.
+`stacks/owner/web/src/lib/receipt.ts:256` carries the identical chain so the three surfaces cannot
+drift, but read that line together with its gate: `buildReceipt` returns `null` at `receipt.ts:178` for
+any record type outside `RECEIPT_TYPES` (`receipt.ts:15`, exactly TRAVEL_CLEARANCE and EU_HEALTH_CERT),
+so **tier 3 is UNREACHABLE on web today**.
+It is kept there deliberately, against the day that gate is relaxed - not because it is live.
+
+**Known gap 1 - owner-web renders no expiry STATUS for a VACCINATION, and that is a recorded scope
+decision, not an oversight.**
+The trail, so nobody has to re-derive it:
+`isReceiptType` is checked into `receiptCapable` at `CredentialCard.tsx:19` (same gate at
+`CredentialDetail.tsx:48`), and `receiptStatus = receiptCapable ? deriveStatus(...) : null` at
+`CredentialCard.tsx:34`.
+For a VACCINATION that gate is false, so `deriveStatus` never runs and the `cred-receipt-status` badge
+is never rendered; the card falls through to the plain `Valid until <date>` row at
+`CredentialCard.tsx:64-66`, which prints a past date with no expired treatment.
+`lib/credential.ts:119-125` (`summarize`) DOES resolve the value - its five-entry chain already ends in
+the bare `"validUntil"` - but nothing anywhere consumes that value as a STATUS.
+Do not read "summarize resolves it" as "web handles vaccination expiry"; those are different claims and
+only the first is true.
+Net behaviour as shipped: a lapsed rabies vaccination badges amber EXPIRED on both mobile apps, and
+owner-web shows a plain `Valid until <past date>` with no status badge at all.
+
+Why this was recorded rather than fixed: the defect this branch exists to close is a surface CLAIMING a
+credential is valid when it has lapsed.
+Mobile did exactly that and is now fixed.
+owner-web has never claimed anything for a VACCINATION - the badge is gated off entirely - and silence
+is not a false claim, so with mobile fixed there is no over-claim left on either surface, which was the
+bar.
+What remains, badging vaccination expiry on a card that deliberately carries no status today, is a
+FEATURE addition rather than a correctness fix.
+Closing it means RAISING web (deriving EXPIRED from `summarize`'s `validUntil` independently of
+receipt-capability), never backing out the mobile rule.
+
+**Known gap 2, deliberately out of scope of the mobile work:** `packages/ui/src/domain/CredentialVerifyPanel.tsx`
+reads NO expiry leaf at all and reports an expired-but-unrevoked root as valid (audit rec 7's web half).
+This is a different surface from gap 1 and fails a different way: gap 1 stays silent, this one asserts
+validity.
+
 ### Building / verifying UI changes
 - Build: `xcodebuild build -project apps/ios/DogTag.xcodeproj -scheme DogTag -sdk iphonesimulator
   -destination 'id=<sim-udid>' CODE_SIGNING_ALLOWED=NO`. SourceKit single-file diagnostics report
   cross-file symbols (Credential, LocalStore, …) as "not found" — those are false positives; only the
   full `xcodebuild` result is authoritative.
 - Do NOT re-run xcodegen (`project.yml`) casually: it silently drops the vendored prover resources
-  (consent_final.zkey / consent.graph) from the pbxproj. Prefer editing existing `.swift`
-  files over adding new ones so the pbxproj (which lists sources individually) needs no regen.
+  (consent_final.zkey / consent.graph) from the pbxproj.
+  Folding a new view or type into an existing `.swift` avoids the question entirely and is still the
+  cheapest option for a pure-UI change.
+- **When a new source file IS the right call, hand-edit the pbxproj rather than regenerating.**
+  Extracting pure logic into its own file is often worth it precisely because the host-less test target
+  can then cover it (see "iOS unit tests"), and that must not be blocked by the xcodegen trap.
+  The generated pbxproj is regular enough to patch safely: for one source, add a `PBXFileReference`, a
+  `PBXBuildFile` per target that compiles it, an entry in the owning `PBXGroup`'s `children`, and an
+  entry in each target's `Sources` build phase, with fresh 24-hex ids that do not already appear in the
+  file.
+  Then make the same change in `project.yml` so a later regeneration agrees.
+  Verify with `plutil -lint apps/ios/DogTag.xcodeproj/project.pbxproj`, confirm
+  `grep -c 'consent_final.zkey\|consent.graph'` is unchanged (that count is the trap's canary), and
+  build + test both schemes.
 - To eyeball record lists without a backend: install to a booted sim, write `pets.json` +
   `credentials.json` into the app's `get_app_container … data`/Documents dir, relaunch, screenshot.
 
@@ -1117,14 +1198,11 @@ easy to trust by mistake.)
 ### iOS unit tests (`apps/ios/DogTagTests`)
 
 There **is** now an XCTest target. It is deliberately **host-less and FFI-free**: it lists the
-self-contained sources it covers directly (`sources: [DogTagTests, DogTag/QrPayload.swift,
-DogTag/PublicSignalIndex.swift, DogTag/ZkeyAsset.swift, DogTag/AnchorResolver.swift,
-DogTag/LocalDataSweep.swift, DogTag/Wallet.swift` + Wallet's closure
-`Secp256k1`/`BigUInt`/`Keccak256`/`Wordlist`]` in `project.yml` - keep this list in step with
-that file) rather than
-using `@testable import DogTag`, because the app module links
-`DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core. That
-keeps the suite runnable on a plain checkout:
+self-contained sources it covers directly, rather than using `@testable import DogTag`, because the app
+module links `DogTagFFI.xcframework`, which is gitignored and absent until someone builds the Rust core.
+`apps/ios/project.yml`'s `DogTagTests.sources` is the authority for that list, with a comment per entry
+explaining why it is FFI-free; do not restate it here, because a second copy only drifts.
+That keeps the suite runnable on a plain checkout:
 
 ```
 cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
@@ -1133,6 +1211,22 @@ cd apps/ios && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests \
 
 Adding a source here that transitively imports the FFI will break that property — extract the pure
 logic instead.
+
+**Extracting pure logic so it lands here is the standard move, not a last resort.** `VerdictDisplay.swift`
+is the worked example: the badge decision (verdict + staleness + expiry ordering) is a pure function of
+its inputs with an injected clock, no SwiftUI and no JSON, so `VerdictDisplayTests` pins all of it and
+the same case list runs on both platforms. Before that extraction the iOS half of every verdict change
+shipped on a written "it mirrors Android" argument (see #94's PR body). Anything that decides what a
+user is told is worth this treatment; the cost is one new file plus the pbxproj hand-edit recipe under
+"Building / verifying UI changes".
+
+**A full iOS app build IS reachable locally**, contrary to what earlier PR bodies recorded. Copy
+`circuits/build/consent_final.zkey` and `circuits/build/consent.graph` into `apps/ios/DogTag/` (both
+gitignored, so nothing is committed), then
+`xcodebuild build -scheme DogTag -destination 'platform=iOS Simulator,name=<device>,OS=latest' ARCHS=arm64
+ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO`. Without them the build fails with `lstat(...consent_final.zkey):
+No such file or directory` and nothing else, which reads as "the app cannot be built here" but is only
+the two missing artifacts. `ARCHS=arm64` matters: the xcframework carries no x86_64 slice.
 
 **Host-less also means NO Keychain.** A bundle with no host application has no
 keychain-access-group entitlement, so every `SecItemAdd`/`SecItemDelete` in it returns
