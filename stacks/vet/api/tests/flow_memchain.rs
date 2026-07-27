@@ -13,7 +13,11 @@ const ISSUER: &str = "0x00000000000000000000000000000000000000bb";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_issuance_share_revoke_flow() {
-    let mem = MemChain::new();
+    // Anchored to the SAME factory the harness config names, so `issue()` registers `rootIssuer[R]`
+    // exactly as a real clone does (`DogTagIssuer.sol:56`). Without this the mandatory
+    // issuer-whitelist pillar would resolve `unresolved` and the direct-verify assertions below would
+    // silently stop testing a pass.
+    let mem = MemChain::new().with_factory(FACTORY_ADDR);
     let chain = Arc::new(mem.clone());
     let state = state_with(
         chain,
@@ -31,6 +35,10 @@ async fn full_issuance_share_revoke_flow() {
     // admin whitelists the backend signer for VACCINATION on-chain (emulated).
     let rt = record_type_key("VACCINATION");
     mem.whitelist(REGISTRY, &rt, &backend_addr);
+    // The clone's own immutable `recordType()`, as the factory's `createIssuer` fixes it. The pillar
+    // asks the CHAIN which record type a root belongs to rather than trusting the envelope, so a clone
+    // that never declared one leaves the pillar indeterminate.
+    mem.set_record_type(ISSUER, &rt);
 
     // --- settings: backend mode (default), confirm GET ---
     let (s, b) = call(&app, "GET", "/settings/signing-mode", Some(&op), None).await;
@@ -124,6 +132,13 @@ async fn full_issuance_share_revoke_flow() {
     assert_eq!(b["fragments"]["issued"], true);
     assert_eq!(b["fragments"]["revoked"], false);
     assert_eq!(b["fragments"]["issuerWhitelisted"], true);
+    // The pillar was EVALUATED, not skipped. `issuerWhitelisted: true` alone cannot tell those apart.
+    assert_eq!(b["fragments"]["issuerWhitelistState"], "passed");
+    // Resolved through the factory's write-once index, never through the document's own claim.
+    assert_eq!(b["issuerResolution"], "resolved");
+    assert_eq!(b["issuerAddr"], ISSUER);
+    // The signer is the one the CHAIN recorded in `issuedBy[R]`, not the one the caller asserted.
+    assert_eq!(b["signerAddr"], backend_addr.to_lowercase());
 
     // --- reused short token => 404 (one-time, deleted after first use) ---
     let (s, _b) = call(&app, "GET", &format!("/r/{token}"), None, None).await;

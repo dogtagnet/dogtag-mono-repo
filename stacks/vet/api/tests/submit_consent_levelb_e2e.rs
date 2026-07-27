@@ -318,6 +318,7 @@ fn state_for(rpc: &str, st: &Stack) -> AppState {
         deployment_url: "http://localhost:41874".to_string(),
         rpc_url: rpc.to_string(),
         issuer_registry_addr: st.registry.clone(),
+        factory_addr: String::new(),
         verification_registry_consent_addr: st.verification_consent.clone(),
         issuer_addrs: std::collections::HashMap::new(),
         issuer_name: "DogTag Vet".to_string(),

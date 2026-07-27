@@ -117,7 +117,16 @@ For **each** of `stacks/admin/.env`, `stacks/vet/.env`, `stacks/groomer/.env`, s
 #                                       #   relay target)
 #   SBT_ADDR=...                        # admin  (DogTagSBTConsent as the governance target -
 #                                       #   ISSUER_ROLE administration only; admin does not issue tags)
-#   FACTORY_ADDR=...                    # admin  (DogTagIssuerFactory — createIssuer/predictIssuer + Ownable owner)
+#   FACTORY_ADDR=...                    # ALL  (DogTagIssuerFactory. admin: createIssuer/predictIssuer
+#                                       #   + Ownable owner. vet/groomer: a SECURITY setting - its
+#                                       #   write-once rootIssuer[R] is what tells POST /verify/credential
+#                                       #   which clone really issued a credential, instead of believing
+#                                       #   the document's own issuer.documentStore, which sits OUTSIDE
+#                                       #   the Merkle root and is therefore attacker-chosen. Unset ->
+#                                       #   that pillar reports unavailableNoFactoryConfigured and a
+#                                       #   forged document is refused by nothing but integrity.
+#                                       #   Malformed -> the route answers 500 instead of failing open.
+#                                       #   Set it on every VERIFYING deployment, the groomer included)
 #   VACCINATION_ISSUER_ADDR=...         # vet only  (per-recordType clone; 0x0…0 for pure verifiers)
 # Leave VITE_DEMO_MODE UNSET (remote-up.sh rejects it).
 ```

@@ -42,6 +42,11 @@ async fn main() {
             "ISSUER_REGISTRY_ADDR",
             "0x0000000000000000000000000000000000000000",
         ),
+        // LINK 1 of every credential verdict: the factory's write-once `rootIssuer[R]` names the
+        // clone that issued a root, so `POST /verify/credential` never has to believe the
+        // document's own `issuer.documentStore`. Left at zero, that pillar reports itself
+        // UNAVAILABLE rather than passing — see `Config::factory_addr`.
+        factory_addr: env("FACTORY_ADDR", "0x0000000000000000000000000000000000000000"),
         verification_registry_consent_addr: env(
             "VERIFICATION_REGISTRY_CONSENT_ADDR",
             "0x0000000000000000000000000000000000000000",

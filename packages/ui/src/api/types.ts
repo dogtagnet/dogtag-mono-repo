@@ -274,20 +274,52 @@ export interface ImportPullResp {
 export interface VerifyCredentialReq {
   /** WrappedDoc JSON as produced by a DogTag issuer. */
   wrappedDoc: Record<string, unknown>;
-  /** Optional DogTagIssuer clone override; defaults to wrappedDoc.issuer.documentStore. */
+  /**
+   * OPTIONAL *expected* DogTagIssuer clone. It can only TIGHTEN. The clone every read is made against
+   * is the one the FACTORY names for this root, so this asserts an expectation and does NOT select a
+   * contract - a caller able to nominate the contract that answers for a credential would reopen the
+   * forgery the issuer pillar exists to close.
+   */
   issuerAddr?: string;
-  /** Optional issuer signer address for the IssuerRegistry whitelist pillar. */
+  /**
+   * OPTIONAL *expected* issuing signer. The whitelist pillar resolves its own signer from
+   * `issuedBy(root)`; supplying this only adds the stricter assertion that the on-chain originator is
+   * this address.
+   */
   signerAddr?: string;
 }
 export interface VerifyCredentialResp {
   verdict: boolean;
-  /** Current direct-check status from integrity + chain reads. */
-  status: "valid" | "revoked" | "not_issued" | "integrity_failed" | "invalid";
+  /**
+   * Current direct-check status. The `issuer_*` arms exist so a failed or unevaluated issuer pillar
+   * cannot leave this reading "valid" beside `verdict: false`.
+   */
+  status:
+    | "valid"
+    | "revoked"
+    | "not_issued"
+    | "integrity_failed"
+    | "invalid"
+    | "issuer_mismatch"
+    | "issuer_not_whitelisted"
+    | "issuer_unresolved";
   recordType: string;
   root: string;
   recomputedRoot: string;
+  /** The clone the reads were actually made against (see `issuerResolution`). */
   issuerAddr: string;
+  /**
+   * How `issuerAddr` was arrived at. Anything other than `"resolved"` means it is the document's own
+   * unverified claim, so the chain fragments below cannot carry a verdict on their own.
+   */
+  issuerResolution?: "resolved" | "noRecord" | "noFactoryConfigured";
+  /** The document's claimed `issuer.documentStore`, echoed for comparison. */
+  documentStore?: string;
+  /** The signer the CHAIN recorded in `issuedBy[R]` - never one the caller supplied. */
   signerAddr?: string | null;
+  /** The caller's assertions, echoed. Neither selects which contract answers. */
+  expectedSignerAddr?: string | null;
+  expectedIssuerAddr?: string | null;
   /** Unix seconds as a decimal string from DogTagIssuer.issuedAt(root). */
   issuedAt: string;
   checkedAt: number;
@@ -297,6 +329,39 @@ export interface VerifyCredentialResp {
     issued: boolean;
     revoked: boolean;
     issuerWhitelisted?: boolean | null;
+    /**
+     * Why `issuerWhitelisted` is what it is. A caller MUST be able to tell "not evaluated because this
+     * verifier has no factory configured" from "evaluated and passed" - a pillar that never ran must
+     * never read as one that succeeded, which is exactly what `null` alone used to imply.
+     */
+    issuerWhitelistState?:
+      | "passed"
+      | "failed"
+      | "unresolved"
+      | "unavailableNoFactoryConfigured";
+    /** The envelope names a contract the chain disagrees with. */
+    documentStoreDiffers?: boolean;
+    /** The caller's expected-clone assertion disagrees with the factory-resolved clone. */
+    expectedIssuerDiffers?: boolean;
+    /**
+     * What became of the caller's expected-clone assertion. `expectedIssuerDiffers` spells "held" and
+     * "could not be checked" the same way (`false`), which is how a dropped check reads as a
+     * satisfied one - this says which it was.
+     */
+    expectedIssuerState?: "notAsserted" | "matched" | "differs" | "notEvaluated";
+    /**
+     * What became of the caller's expected-signer assertion. It may only ever TIGHTEN: `differs` and
+     * `unanchoredNotWhitelisted` are definite failures folded into the pillar, while
+     * `unanchoredUnconfirmed` (no clone resolved, but the asserted address is whitelisted for the
+     * claimed record type) deliberately promotes nothing - being whitelisted does not show that
+     * address issued THIS root.
+     */
+    expectedSignerState?:
+      | "notAsserted"
+      | "matched"
+      | "differs"
+      | "unanchoredNotWhitelisted"
+      | "unanchoredUnconfirmed";
   };
 }
 export interface VerifySessionStartReq {

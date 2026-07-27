@@ -33,12 +33,19 @@ export interface CredentialVerifyPanelProps {
   reader?: IssuerChainReader;
 }
 
+// Every status the API can return needs a label here: an unmapped one renders blank, which reads as
+// "nothing wrong" for exactly the states that ARE something wrong. The `issuer_*` arms come from the
+// factory-anchored issuer pillar, and each says something different - "the envelope names the wrong
+// contract", "the signer is not authorised", "we could not establish who issued this at all".
 const STATUS_LABEL: Record<VerifyCredentialResp["status"], string> = {
   valid: "Valid",
   revoked: "Revoked",
   not_issued: "Not issued",
   integrity_failed: "Integrity failed",
   invalid: "Invalid",
+  issuer_mismatch: "Issuer mismatch",
+  issuer_not_whitelisted: "Issuer not authorised",
+  issuer_unresolved: "Issuer unverified",
 };
 
 export function CredentialVerifyPanel({
