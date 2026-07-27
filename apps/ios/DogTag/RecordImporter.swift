@@ -43,13 +43,20 @@ enum RecordImporter {
         // 3. ISSUANCE pillar (on-chain isValid via ROAX RPC).
         let onchain = await RoaxRpc.isValid(rpcUrl: rpcUrl, documentStore: doc.documentStore, root: doc.merkleRoot)
 
+        // NO FAIL-OPEN: an unreachable RPC means we did not check, which is NOT the same as checking
+        // and finding the record good. It records UNVERIFIED with the reason, never VALID.
         let integrityOk = integrity == "VALID"
         let verdict: String
-        switch onchain {
-        case _ where !integrityOk: verdict = "INVALID"
-        case .invalid: verdict = "INVALID"
-        case .valid: verdict = "VALID"
-        case .unknown: verdict = "VALID"   // integrity passed; chain unreachable -> accept with caveat
+        let reason: String
+        if !integrityOk {
+            verdict = "INVALID"
+            reason = "the record's contents do not match its signed Merkle root"
+        } else {
+            switch onchain {
+            case .valid: verdict = "VALID"; reason = "anchored on ROAX and not revoked"
+            case .invalid: verdict = "INVALID"; reason = "revoked or not anchored on ROAX"
+            case let .unknown(r): verdict = "UNVERIFIED"; reason = "could not reach the chain (\(r))"
+            }
         }
 
         let chainNote: String
@@ -74,9 +81,82 @@ enum RecordImporter {
             issuedOn: "",
             credentialRoot: doc.merkleRoot,
             verdict: verdict,
-            wrappedDocJson: wrappedJson
+            wrappedDocJson: wrappedJson,
+            importedAt: Stamp.now(),
+            lastCheckedAt: Stamp.now(),
+            verdictReason: reason
         )
         return ImportResult(ok: verdict != "INVALID", verdict: verdict, detail: detail, credential: cred)
     }
 
+}
+
+/// Re-reads the on-chain status of an ALREADY-STORED credential and returns an updated copy.
+///
+/// Without this the verdict is frozen at import: a record REVOKED afterwards keeps showing whatever
+/// it showed on the day it was scanned, forever. A refresh recomputes both pillars from what the
+/// phone already holds - INTEGRITY offline over the stored wrapped doc, and ISSUANCE as a live read
+/// on ROAX - and stamps `lastCheckedAt` so the answer's age is visible.
+///
+/// It NEVER fails open. If the chain cannot be reached the result is UNVERIFIED with the reason:
+/// "I could not check" is not "I checked and it is fine", and on a revocation check that distinction
+/// is the whole point.
+enum CredentialRefresher {
+    static func refreshed(
+        _ cred: Credential, roax: RoaxConfig, rpcUrl: String = AppConfig.roaxRpc
+    ) async -> Credential {
+        var out = cred
+        out.lastCheckedAt = Stamp.now()
+
+        guard let doc = WrappedDoc(json: cred.wrappedDocJson) else {
+            return out.marked("UNVERIFIED", "the stored document could not be read")
+        }
+
+        // 1. INTEGRITY (offline) - the stored doc must still hash to its own signed root.
+        let integrity = (try? verifyIntegrity(wrappedDocJson: cred.wrappedDocJson)) ?? "INVALID"
+        guard integrity == "VALID" else {
+            return out.marked("INVALID", "the record's contents do not match its signed Merkle root")
+        }
+
+        let root = doc.merkleRoot.isEmpty ? cred.credentialRoot : doc.merkleRoot
+        guard !root.isEmpty else {
+            return out.marked("UNVERIFIED", "this record carries no Merkle root to look up")
+        }
+
+        // 2. ISSUANCE (on-chain). Two anchor shapes: an ordinary record is anchored in a DogTagIssuer
+        // clone (isValid(root)); a DOG_PROFILE is anchored in the DogTagSBT itself (profileRoot).
+        if !doc.documentStore.isEmpty {
+            switch await RoaxRpc.isValid(rpcUrl: rpcUrl, documentStore: doc.documentStore, root: root) {
+            case .valid: return out.marked("VALID", "anchored on ROAX and not revoked")
+            case .invalid: return out.marked("INVALID", "revoked or no longer anchored on ROAX")
+            case let .unknown(r): return out.marked("UNVERIFIED", "could not reach the chain (\(r))")
+            }
+        }
+
+        guard !roax.dogTagSbt.isEmpty, !cred.dogTagId.isEmpty else {
+            return out.marked("UNVERIFIED", "this record carries no on-chain anchor to re-check")
+        }
+        // The SBT is keyed by the canonical `field_of_value(dogTagId)`, not the raw handle.
+        let onchainId = (try? dogTagIdFieldHex(dogTagIdDec: cred.dogTagId)) ?? cred.dogTagId
+        guard let onchainRoot = await RoaxRpc.profileRoot(
+            rpcUrl: rpcUrl, dogTagSbt: roax.dogTagSbt, dogTagId: onchainId) else {
+            return out.marked("UNVERIFIED", "could not reach the chain (DogTagSBT profileRoot read failed)")
+        }
+        guard onchainRoot.lowercased() == root.lowercased() else {
+            return out.marked("INVALID", "the dog tag's on-chain profile root no longer matches this record")
+        }
+        // The tag is custodial (owner-hidden), so there is no on-chain owner to compare against - the
+        // profile-root match IS the anchor check, and the reason says exactly which check ran.
+        return out.marked("VALID", "the dog tag's on-chain profile root matches this record")
+    }
+}
+
+private extension Credential {
+    /// Write a verdict and its reason together, so the pair can never drift apart.
+    func marked(_ verdict: String, _ reason: String) -> Credential {
+        var out = self
+        out.verdict = verdict
+        out.verdictReason = reason
+        return out
+    }
 }

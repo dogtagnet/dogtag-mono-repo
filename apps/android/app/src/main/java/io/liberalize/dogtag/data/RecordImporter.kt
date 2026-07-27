@@ -76,12 +76,16 @@ object RecordImporter {
         // 3. ISSUANCE pillar (on-chain isValid via ROAX RPC).
         val onchain = RoaxRpc.isValid(rpcUrl, doc.documentStore, doc.merkleRoot)
 
+        // NO FAIL-OPEN: an unreachable RPC means we did not check, which is NOT the same as checking
+        // and finding the record good. It records UNVERIFIED with the reason, never VALID.
         val integrityOk = integrity == "VALID"
-        val verdict = when {
-            !integrityOk -> "INVALID"
-            onchain is RoaxRpc.Result.Invalid -> "INVALID"
-            onchain is RoaxRpc.Result.Valid -> "VALID"
-            else -> "VALID"   // integrity passed; chain unreachable -> accept with caveat
+        val (verdict, reason) = when {
+            !integrityOk ->
+                "INVALID" to "the record's contents do not match its signed Merkle root"
+            onchain is RoaxRpc.Result.Invalid -> "INVALID" to "revoked or not anchored on ROAX"
+            onchain is RoaxRpc.Result.Valid -> "VALID" to "anchored on ROAX and not revoked"
+            else -> "UNVERIFIED" to
+                "could not reach the chain (${(onchain as RoaxRpc.Result.Unknown).reason})"
         }
 
         val chainNote = when (onchain) {
@@ -105,6 +109,9 @@ object RecordImporter {
             credentialRoot = doc.merkleRoot,
             verdict = verdict,
             wrappedDocJson = wrappedJson,
+            importedAt = Stamp.now(),
+            lastCheckedAt = Stamp.now(),
+            verdictReason = reason,
         )
         return ImportResult(verdict != "INVALID", verdict, detail, cred)
     }
