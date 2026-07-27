@@ -46,6 +46,7 @@ export {
 export {
   bindingExplanation,
   bindingLine,
+  bindingProvenanceLine,
   bindingTone,
   displayIssuerName,
   expectedTxtName,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bindingExplanation,
   bindingLine,
+  bindingProvenanceLine,
   bindingTone,
   displayIssuerName,
   expectedTxtName,
@@ -12,6 +13,7 @@ import {
 
 const ALL_STATES: IssuerDomainBindingState[] = [
   "verified",
+  "notADogTagIssuer",
   "notListed",
   "couldNotCheck",
   "noDomainClaimed",
@@ -34,6 +36,12 @@ describe("tone", () => {
     expect(bindingTone("couldNotCheck")).toBe("neutral");
     expect(bindingTone("couldNotCheck")).not.toBe("negative");
     expect(bindingTone("couldNotCheck")).not.toBe("positive");
+  });
+
+  // Link 1 failing is a categorically stronger statement than a missing DNS record. It is red, like
+  // notListed, but its COPY must not be confusable — see the copy-discipline block.
+  it("gives a provenance failure a negative tone", () => {
+    expect(bindingTone("notADogTagIssuer")).toBe("negative");
   });
 
   it("keeps the other unknown states neutral too", () => {
@@ -122,6 +130,16 @@ describe("copy discipline", () => {
     expect(text).toContain("proven on-chain");
   });
 
+  // The captain's instruction: a non-clone must NEVER render as merely "not listed in DNS". The two are
+  // different claims about different things.
+  it("never describes a provenance failure in terms of DNS", () => {
+    const line = bindingLine(b("notADogTagIssuer"));
+    expect(line).toBe("This contract was not deployed by the DogTag factory");
+    expect(line.toLowerCase()).not.toContain("dns");
+    expect(line.toLowerCase()).not.toContain("listed");
+    expect(line).not.toBe(bindingLine(b("notListed")));
+  });
+
   it("gives every state distinct copy, so no two states read the same", () => {
     const lines = ALL_STATES.map((s) => bindingLine(b(s)));
     expect(new Set(lines).size).toBe(ALL_STATES.length);
@@ -187,5 +205,50 @@ describe("displayIssuerName", () => {
 
   it("degrades to a neutral placeholder rather than an empty string", () => {
     expect(displayIssuerName(null)).toEqual({ name: "Unknown issuer", authoritative: false });
+  });
+});
+
+describe("bindingProvenanceLine", () => {
+  // A verdict without a "when" is not auditable against a mutable world.
+  it("names the block the chain half was read at", () => {
+    expect(bindingProvenanceLine(b("verified", { blockNumber: 283207 }))).toContain(
+      "chain read at block 283207",
+    );
+  });
+
+  // THE asymmetry. Chain state is reproducible with an archive node; DNS has no history at all, so a
+  // DNS answer can only be recorded, never recomputed. The copy must say so rather than let a reader
+  // assume the DNS half is as replayable as the chain half.
+  it("states that DNS has no history and cannot be re-checked for the past", () => {
+    const live = bindingProvenanceLine(b("verified", { blockNumber: 1, dnsObservation: "live" }))!;
+    expect(live).toContain("DNS checked just now");
+    expect(live).toContain("DNS has no history");
+  });
+
+  it("distinguishes a recorded observation from a live one", () => {
+    const stored = bindingProvenanceLine(b("verified", { blockNumber: 1, dnsObservation: "stored" }))!;
+    expect(stored).toContain("as recorded earlier");
+    expect(stored).not.toContain("just now");
+  });
+
+  it("claims no DNS provenance for states that never made a DNS query", () => {
+    for (const s of ["notADogTagIssuer", "noDomainClaimed", "unavailable"] as const) {
+      const line = bindingProvenanceLine(b(s, { blockNumber: 5 }));
+      expect(line, s).not.toContain("DNS");
+    }
+  });
+
+  it("says nothing rather than implying an anchor it does not have", () => {
+    expect(bindingProvenanceLine({ state: "noDomainClaimed" })).toBeNull();
+    expect(bindingProvenanceLine({ state: "noDomainClaimed", blockNumber: null })).toBeNull();
+  });
+
+  it("uses no verdict or alarm words", () => {
+    for (const s of ALL_STATES) {
+      const line = (bindingProvenanceLine(b(s, { blockNumber: 9 })) ?? "").toLowerCase();
+      for (const word of ["failed", "invalid", "untrusted", "warning", "error"]) {
+        expect(line, `${s}: ${line}`).not.toContain(word);
+      }
+    }
   });
 });
