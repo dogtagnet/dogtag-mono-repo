@@ -198,6 +198,31 @@ describe("haversineKm - totality (the reason for `atan2` over `asin`)", () => {
     expect(d).toBeGreaterThan(0);
     expect(d).toBeCloseTo(0.00011119, 8);
   });
+
+  it("never returns NaN for an out-of-range latitude either", () => {
+    // An out-of-range coordinate reaches this at all because `haversineKm` is DELIBERATELY a total
+    // primitive: `isValidLatLng` is the separate gate its callers use, so the range check lives at
+    // the call site rather than here (see the note on `isValidLatLng`). The contract this function
+    // states is "never NaN for any finite input", and a latitude past the pole is finite.
+    //
+    // Past +-90 the `cos(phi1) * cos(phi2)` term turns negative, so it can cancel the first term to
+    // a few ulps BELOW zero and make `sqrt(h)` NaN - the other side of the rounding the `1 - h` root
+    // was already guarded against. 94N/0 is 86N/180 walked over the pole, hence the 0 km.
+    const overThePole = haversineKm(P(94, 0), P(86, 180));
+    expect(Number.isNaN(overThePole)).toBe(false);
+    expect(overThePole).toBeCloseTo(0, 6);
+
+    for (const [lat, lng] of [
+      [200, 0], [-200, 0], [91, 0], [270, 45], [120, -170], [95, 0],
+    ] as const) {
+      for (const other of [P(0, 0), P(85, 180), P(-45, 90), P(89.9, -12)]) {
+        const d = haversineKm(P(lat, lng), other);
+        expect(Number.isNaN(d), `NaN at ${lat},${lng}`).toBe(false);
+        expect(d).toBeGreaterThanOrEqual(0);
+        expect(d).toBeLessThanOrEqual(MAX_DISTANCE_KM + 1e-6);
+      }
+    }
+  });
 });
 
 describe("isValidLatLng", () => {
@@ -571,6 +596,19 @@ describe("unitSystemForRegion", () => {
     // "in" is the legacy code for Indonesian, not India; "us" alone is a region and IS imperial.
     expect(unitSystemForRegion("in-ID")).toBe("metric");
     expect(unitSystemForRegion("us")).toBe("imperial");
+  });
+
+  it("reads the region from the region POSITION, not from wherever the letters happen to match", () => {
+    // The discriminating case, and the only one here that can fail. Every other case above passes
+    // even when the whole tag is scanned, because no ISO-639 code collides with US/GB/LR/MM - so
+    // they pin the outcome without pinning the rule. Here "us" sits in the LANGUAGE position of a
+    // French tag and must be ignored; "FR" is the real region, so this is metric.
+    expect(unitSystemForRegion("us-FR")).toBe("metric");
+    expect(unitSystemForRegion("gb-FR")).toBe("metric");
+    expect(unitSystemForRegion("mm-Latn-SG")).toBe("metric");
+    // And the region position still decides when it IS imperial, whatever the language says.
+    expect(unitSystemForRegion("fr-US")).toBe("imperial");
+    expect(unitSystemForRegion("de-Latn-GB")).toBe("imperial");
   });
 });
 

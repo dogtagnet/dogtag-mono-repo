@@ -45,14 +45,18 @@ const IMPERIAL_REGIONS = new Set(["US", "GB", "LR", "MM"]);
 export function unitSystemForRegion(regionOrLocale: string | null | undefined): UnitSystem {
   if (!regionOrLocale) return "metric";
   const parts = regionOrLocale.split(/[-_]/);
-  for (const part of parts) {
-    if (part.length === 2 && /^[A-Za-z]{2}$/.test(part)) {
-      if (IMPERIAL_REGIONS.has(part.toUpperCase())) return "imperial";
-    }
+  // In a BCP-47 tag the FIRST subtag is the language, never a region, so the scan starts at 1. That
+  // skip is the rule, not an optimisation: "us-FR" is French written in some language tagged "us",
+  // and reading the leading subtag as a region would call it imperial on the strength of a language
+  // code. Nothing collides today (no ISO-639 code equals US/GB/LR/MM), which is exactly what makes
+  // scanning from 0 a trap - adding `AS` or `MS` to the set would silently make Assamese and Malay
+  // imperial, and no existing case would go red.
+  for (const part of parts.slice(1)) {
+    if (/^[A-Za-z]{2}$/.test(part) && IMPERIAL_REGIONS.has(part.toUpperCase())) return "imperial";
   }
   // A bare two-letter tag is ambiguous between language and region ("in" is Indonesian, not India).
-  // Only the first subtag of a multi-part tag is a language, so a single-part input is treated as a
-  // region - which is what a caller passing `"US"` means.
+  // With no language subtag ahead of it there is nothing to disambiguate against, so a single-part
+  // input is read as a region - which is what a caller passing `"US"` means.
   if (parts.length === 1 && parts[0] && IMPERIAL_REGIONS.has(parts[0].toUpperCase())) {
     return "imperial";
   }

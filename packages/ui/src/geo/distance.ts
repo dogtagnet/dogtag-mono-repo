@@ -87,13 +87,21 @@ export function haversineKm(a: LatLng, b: LatLng): number {
   const dPhi = toRad(b.lat - a.lat);
   const dLambda = toRad(b.lng - a.lng);
 
-  const h =
+  const raw =
     Math.sin(dPhi / 2) ** 2 +
     Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) ** 2;
 
-  // The total form. `Math.max(0, 1 - h)` guards the other side of the same rounding: `h` can land
-  // marginally above 1, which would make `1 - h` negative and `sqrt` NaN.
-  return 2 * EARTH_RADIUS_KM * Math.atan2(Math.sqrt(h), Math.sqrt(Math.max(0, 1 - h)));
+  // Clamp ONCE, before either root, so both are guarded by the same line. Guarding one side only is
+  // how a totality claim rots: `h` can land marginally above 1 (making `1 - h` negative), and for a
+  // latitude outside +-90 the `cos phi1 * cos phi2` term goes negative and can cancel the first term
+  // to a few ulps BELOW zero, which makes `sqrt(h)` itself NaN. Neither is reachable through
+  // `withinRadiusKm` or `sortByDistance`, both of which gate on `isValidLatLng` first - but this
+  // function is exported with a totality contract over any finite input, so it honours it here
+  // rather than relying on its callers. Valid coordinates keep `h` in [0, 1], so the clamp is inert
+  // for every real input and the parity fixture is untouched.
+  const h = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+
+  return 2 * EARTH_RADIUS_KM * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
 /**
