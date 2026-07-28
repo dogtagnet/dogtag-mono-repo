@@ -9,14 +9,31 @@ disable_project_settings: false
 
 commands:
   # Check-only tools: no formatter writes, generators, codegen, or binding sync.
+  # ensure-ts-prereqs.sh runs before the tsc invocations because @dogtag/ui resolves
+  # @dogtag/standard's types from the SDK's gitignored dist/: on the pipeline's fresh
+  # per-run worktree the checks below cannot run at all until dependencies are installed
+  # and the SDK is built. It satisfies that itself, and when it cannot it fails with a
+  # cause-specific next step and an explicit statement that nothing ran, instead of a
+  # `Command "tsc" not found` that reads like a flaky code finding. It calls a branch
+  # defect a code finding and reserves the environment label for a missing toolchain or a
+  # proven network/store fault, so neither mistake can be made from its output.
+  # The checks themselves are unchanged; the prerequisites cost ~1.3s on a warm
+  # tree and ~6.1s on a cold one. The document guard stays first: it needs no
+  # node_modules and should fail closed on a dirty worktree before any install runs.
   lint: >-
     bash scripts/check-no-mistakes-document-guard.sh &&
+    bash scripts/ensure-ts-prereqs.sh --sdk-dist &&
     pnpm --filter @dogtag/standard exec tsc -p tsconfig.json --noEmit &&
     pnpm --filter @dogtag/ui typecheck
   # A bounded baseline, not the full Cargo/Foundry/circuit/mobile/e2e suite.
   # With user intent, v1.40.0 still launches the test evidence agent as well.
+  # Same cold-worktree trap, same remedy: without the prerequisites vitest is not installed
+  # and the step fails with `vitest: command not found` / ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL.
+  # No --sdk-dist here, because these tests import the SDK source rather than its built dist/.
   test: >-
     bash scripts/test-no-mistakes-document-guard.sh &&
+    bash scripts/test-ensure-ts-prereqs.sh &&
+    bash scripts/ensure-ts-prereqs.sh &&
     pnpm --filter @dogtag/standard test
 
 document:
