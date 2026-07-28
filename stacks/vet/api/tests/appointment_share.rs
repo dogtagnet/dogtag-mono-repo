@@ -134,12 +134,19 @@ async fn get_raw(app: &axum::Router, path: &str) -> (StatusCode, String, String,
 /// those exact values, so they cannot pass by accident on a term that also appears in a path or a
 /// fixture name.
 async fn make_appointment(app: &axum::Router, op: &str, service: &str) -> String {
-    made(app, op, service).await.0
+    made(app, op, service).await.appt_id
 }
 
-/// As [`make_appointment`], also returning the ids an edit needs — `PUT /appointments/{id}` takes a
-/// FULL replacement body, so a test that cancels or moves a booking has to resend them.
-async fn made(app: &axum::Router, op: &str, service: &str) -> (String, String, String) {
+/// A booking and the ids an edit has to resend: `PUT /appointments/{id}` takes a FULL replacement
+/// body, not a patch.
+struct Booking {
+    appt_id: String,
+    client_id: String,
+    pet_id: String,
+}
+
+/// As [`make_appointment`], also returning the ids an edit needs.
+async fn made(app: &axum::Router, op: &str, service: &str) -> Booking {
     let (s, b) = call(
         app,
         "POST",
@@ -169,11 +176,11 @@ async fn made(app: &axum::Router, op: &str, service: &str) -> (String, String, S
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "create appointment: {b}");
-    (
-        b["appointmentId"].as_str().unwrap().to_string(),
+    Booking {
+        appt_id: b["appointmentId"].as_str().unwrap().to_string(),
         client_id,
         pet_id,
-    )
+    }
 }
 
 /// Re-send a booking with one field changed. The route replaces the whole row, so every field the
@@ -182,13 +189,16 @@ async fn made(app: &axum::Router, op: &str, service: &str) -> (String, String, S
 async fn edit(
     app: &axum::Router,
     op: &str,
-    appt_id: &str,
-    client_id: &str,
-    pet_id: &str,
+    who: &Booking,
     start_at: u64,
     end_at: u64,
     status: &str,
 ) {
+    let Booking {
+        appt_id,
+        client_id,
+        pet_id,
+    } = who;
     let (s, b) = call(
         app,
         "PUT",
@@ -515,20 +525,11 @@ async fn the_page_states_the_time_in_utc_for_a_reader_with_no_javascript() {
 #[tokio::test]
 async fn a_cancelled_booking_publishes_as_cancelled_and_the_page_does_not_offer_a_bare_add() {
     let (app, op, _) = app().await;
-    let (id, client_id, pet_id) = made(&app, &op, "Full groom").await;
+    let booking = made(&app, &op, "Full groom").await;
+    let id = booking.appt_id.clone();
     let token = share(&app, &op, &id).await["token"].as_str().unwrap().to_string();
 
-    edit(
-        &app,
-        &op,
-        &id,
-        &client_id,
-        &pet_id,
-        1_772_020_800,
-        1_772_024_400,
-        "cancelled",
-    )
-    .await;
+    edit(&app, &op, &booking, 1_772_020_800, 1_772_024_400, "cancelled").await;
 
     let (s, _, _, ics) = get_raw(&app, &format!("/a/{token}.ics")).await;
     assert_eq!(s, StatusCode::OK);
@@ -558,7 +559,8 @@ async fn the_page_is_never_cached_so_it_cannot_show_a_state_the_booking_has_left
     // "Scheduled" beside a working "Add to calendar" for something the shop has cancelled. Nothing
     // else about a 200 text/html response stops a browser or an intermediary caching it heuristically.
     let (app, op, _) = app().await;
-    let (id, client_id, pet_id) = made(&app, &op, "Full groom").await;
+    let booking = made(&app, &op, "Full groom").await;
+    let id = booking.appt_id.clone();
     let token = share(&app, &op, &id).await["token"].as_str().unwrap().to_string();
 
     for path in [format!("/a/{token}"), format!("/a/{token}.ics")] {
@@ -574,7 +576,7 @@ async fn the_page_is_never_cached_so_it_cannot_show_a_state_the_booking_has_left
     }
 
     // ...and the state really does change under the same URL, which is what makes caching harmful.
-    edit(&app, &op, &id, &client_id, &pet_id, 1_772_020_800, 1_772_024_400, "cancelled").await;
+    edit(&app, &op, &booking, 1_772_020_800, 1_772_024_400, "cancelled").await;
     let (_, _, _, page) = get_raw(&app, &format!("/a/{token}")).await;
     assert_eq!(state_pill(&page), Some("Cancelled".to_string()), "{page}");
 }
@@ -656,6 +658,40 @@ async fn an_unreadable_store_says_it_could_not_check_and_claims_nothing_else() {
 }
 
 #[tokio::test]
+async fn an_unreadable_store_never_tells_the_client_their_link_is_invalid() {
+    // The TOKEN lookup runs BEFORE the booking read, and the copy it fails into instructs the client
+    // to throw the link away ("not valid or has expired — ask the shop for a new one"). Collapsing a
+    // driver fault into that is the worst version of this defect: it destroys a working link on the
+    // strength of a read that never happened. The token used here is VALID throughout.
+    let (app, op, store) = app().await;
+    let id = make_appointment(&app, &op, "Full groom").await;
+    let token = share(&app, &op, &id).await["token"].as_str().unwrap().to_string();
+
+    store.set_fail_appointment_reads(true);
+
+    let (s, _, _, page) = get_raw(&app, &format!("/a/{token}")).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "not the 404 for an unknown link");
+    assert_eq!(state_pill(&page), Some("Could not check".to_string()), "{page}");
+    let lower = page.to_lowercase();
+    assert!(
+        !lower.contains("not valid") && !lower.contains("ask the shop for a new one"),
+        "an unreadable store must not tell the client to discard a good link:\n{page}"
+    );
+
+    // ...and the same on the `.ics`, which a subscribing calendar polls.
+    let (s, _, _, body) = get_raw(&app, &format!("/a/{token}.ics")).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!body.contains("not valid"), "{body}");
+
+    // The counter-assertion: with the store readable, a GENUINELY unknown token still 404s as
+    // "not valid" — so the assertions above pin the branch, not the absence of the message.
+    store.set_fail_appointment_reads(false);
+    let (s, _, _, unknown) = get_raw(&app, &format!("/a/{}", "e".repeat(32))).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert!(unknown.contains("not valid"), "{unknown}");
+}
+
+#[tokio::test]
 async fn an_unreadable_store_never_publishes_a_calendar_body_at_all() {
     // A tombstone here would cancel a booking that may be perfectly live; the last-known event would
     // state a slot this process did not read. 503 is the only truthful answer.
@@ -709,7 +745,8 @@ async fn moving_a_booking_republishes_the_same_uid_with_a_higher_sequence() {
     // `created_at` reproduces the real case — a shop moves a booking well after taking it — instead
     // of racing the clock. The EDIT itself still goes through the real route.
     let (app, op, store) = app().await;
-    let (id, client_id, pet_id) = made(&app, &op, "Full groom").await;
+    let booking = made(&app, &op, "Full groom").await;
+    let id = booking.appt_id.clone();
     {
         use vet_api::store::Store as _;
         let mut a = store.get_appointment(&id).await.expect("seeded booking");
@@ -726,12 +763,12 @@ async fn moving_a_booking_republishes_the_same_uid_with_a_higher_sequence() {
     let seq_before = sequence_of(&before);
 
     let moved = 1_772_020_800u64 + 86_400;
-    edit(&app, &op, &id, &client_id, &pet_id, moved, moved + 3600, "scheduled").await;
+    edit(&app, &op, &booking, moved, moved + 3600, "scheduled").await;
 
     let (_, _, _, after) = get_raw(&app, &format!("/a/{token}.ics")).await;
     assert!(after.contains("DTSTART:20260226T120000Z\r\n"), "the new slot: {after}");
     assert!(
-        after.lines().any(|l| l.to_string() == uid),
+        after.lines().any(|l| l == uid),
         "the UID must be STABLE or the client gets a second event.\nbefore: {uid}\nafter:\n{after}"
     );
     assert!(

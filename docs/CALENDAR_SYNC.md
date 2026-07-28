@@ -193,6 +193,17 @@ This is why the module reads through `Store::try_get_appointment` rather than th
 form, whose collapsed error would have told a client their booking was gone on the strength of a read
 that never happened.
 
+**Sharing is additive and cannot be taken back.**
+Every mint issues a NEW token — the portal dialog mints on each open, so opening it three times leaves
+three live URLs for one booking — and there is no revoke: each link resolves for 180 days past the
+slot.
+That is a deliberate difference from the feed, which makes rotation first-class because its URL
+exposes the shop's *entire* schedule. This one names a single appointment and carries neither the
+client's name nor the shop's notes, so a leaked line costs one booking, while breaking a link a client
+is relying on to find their appointment is the larger risk.
+If that trade stops holding, revocation belongs here as an explicit action — not as a shorter expiry,
+which would silently strand working links.
+
 **Not in scope here.** The handoff has no client-initiated actions: a client cannot confirm, cancel or
 reschedule from this page. It states what the shop's book says and hands it over.
 

@@ -927,8 +927,17 @@ pub trait Store: Send + Sync {
     /// Resolve a client-handoff token. NON-consuming, and deliberately so: the client opens the page,
     /// then downloads the `.ics` from it, then may re-open it weeks later to see whether the booking
     /// still stands — a one-time token (the `/r/` record-share shape) would break at step two.
-    /// `None` for a token that is unknown or past its expiry.
-    async fn peek_appointment_share(&self, token: &str) -> Option<AppointmentShare>;
+    ///
+    /// FALLIBLE for the same reason as [`Store::try_get_appointment`], and it matters MORE here: this
+    /// lookup runs FIRST, so a driver fault collapsed to `None` would render the "this link is not
+    /// valid or has expired, ask the shop for a new one" page — telling a client to throw away a link
+    /// that is perfectly good, on the strength of a read that never happened.
+    ///
+    /// `Ok(None)` means the read succeeded and the token is unknown or past its expiry.
+    async fn try_peek_appointment_share(
+        &self,
+        token: &str,
+    ) -> Result<Option<AppointmentShare>, StoreReadError>;
 
     // ---- shop CRM: verification history ----
     async fn put_verification_log(&self, v: VerificationLog);
@@ -1035,7 +1044,9 @@ pub struct MemStore {
     /// would be reachable only against a real Mongo that happens to be down, which in practice means
     /// never tested, which is how a wrong-state renderer ships.
     ///
-    /// Deliberately narrow: it affects [`Store::try_get_appointment`] and nothing else.
+    /// Covers BOTH reads that page performs — [`Store::try_peek_appointment_share`] (the token) and
+    /// [`Store::try_get_appointment`] (the booking) — because the token lookup runs first, and a
+    /// switch that only reached the second would leave the first's collapse untested. Nothing else.
     fail_appointment_reads: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -1517,18 +1528,32 @@ impl Store for MemStore {
             .appointment_shares
             .insert(token.to_string(), share);
     }
-    async fn peek_appointment_share(&self, token: &str) -> Option<AppointmentShare> {
+    async fn try_peek_appointment_share(
+        &self,
+        token: &str,
+    ) -> Result<Option<AppointmentShare>, StoreReadError> {
+        // Gated on the SAME switch as `try_get_appointment`: this lookup runs first on the client
+        // handoff, so both reads on that path have to be failable from one place or the "could not
+        // check" tests would only ever exercise the second one.
+        if self
+            .fail_appointment_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreReadError("injected appointment read failure".to_string()));
+        }
         let inner = self.inner.read().unwrap();
-        let share = inner.appointment_shares.get(token)?;
+        let Some(share) = inner.appointment_shares.get(token) else {
+            return Ok(None);
+        };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        if now > share.expires_at {
+        Ok(if now > share.expires_at {
             None
         } else {
             Some(share.clone())
-        }
+        })
     }
     async fn appointment_by_external_uid(&self, external_uid: &str) -> Option<Appointment> {
         if external_uid.is_empty() {

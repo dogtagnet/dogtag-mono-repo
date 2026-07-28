@@ -51,6 +51,17 @@
 //! was minted — a 404 there would leave a subscriber's stale event standing forever with nothing but
 //! a sync error to explain it.
 //!
+//! SHARING IS ADDITIVE AND CANNOT BE TAKEN BACK, which is a deliberate difference from the shop
+//! feed and is stated here because nothing else says it. Every mint issues a NEW token — the portal
+//! dialog mints on each open, so an operator who opens it three times has three live URLs for one
+//! booking — and there is no revoke: each link resolves for [`SHARE_TTL_AFTER_END`] past the slot.
+//! The feed makes rotation a first-class action because its URL exposes the shop's ENTIRE schedule;
+//! this one names a single appointment and carries neither the client's name nor the shop's notes,
+//! so the blast radius of a leaked line is one booking, and the cost of getting revocation wrong —
+//! breaking a link a client is relying on to find their appointment — is the larger risk. If that
+//! trade stops holding (links shared onward, a shop wanting to un-share), revocation belongs here
+//! as an explicit action, not as a shorter expiry that would silently strand working links.
+//!
 //! AND WHEN THE STORE CANNOT BE READ, that is its own answer. It is not a cancellation and it is not
 //! a confirmation: the page says it could not check, in those words, and offers no add-to-calendar
 //! affordance it cannot stand behind. This is why the module reads through
@@ -524,18 +535,29 @@ async fn handoff(State(st): State<AppState>, Path(raw): Path<String>) -> Respons
     let wants_ics = raw.ends_with(".ics");
     let token = raw.strip_suffix(".ics").unwrap_or(&raw);
 
-    let Some(share) = st.store.peek_appointment_share(token).await else {
-        return if wants_ics {
-            // No token means no UID, so there is nothing to tombstone — this really is a 404.
-            (
-                StatusCode::NOT_FOUND,
-                [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                "This appointment link is not valid or has expired.",
-            )
-                .into_response()
-        } else {
-            not_found_page()
-        };
+    // The TOKEN lookup, and it is the read where a collapsed error does the most damage: it runs
+    // first, and the "not valid" copy below tells the client to DISCARD the link. Answering that on
+    // a driver fault would throw away a perfectly good link on the strength of a read that never
+    // happened, so an unreadable store takes the same "could not check" branch as everything else.
+    let share = match st.store.try_peek_appointment_share(token).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return if wants_ics {
+                // No token means no UID, so there is nothing to tombstone — this really is a 404.
+                (
+                    StatusCode::NOT_FOUND,
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    "This appointment link is not valid or has expired.",
+                )
+                    .into_response()
+            } else {
+                not_found_page()
+            };
+        }
+        Err(StoreReadError(e)) => {
+            tracing::warn!(error = %e, "appointment handoff: share-token read failed");
+            return unreadable_response(wants_ics, &st.cfg.issuer_name);
+        }
     };
 
     let ts = now();
@@ -560,22 +582,27 @@ async fn handoff(State(st): State<AppState>, Path(raw): Path<String>) -> Respons
                 deleted_page(&shop, token)
             }
         }
-        Resolved::Unreadable => {
-            if wants_ics {
-                // 503, and NO calendar body. Publishing a tombstone here would cancel a booking that
-                // may be perfectly live; publishing the last-known event would state a slot this
-                // process did not read. A subscriber treats 503 as "try later", which is the truth.
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                    "Could not check this appointment right now. This does NOT mean it was \
-                     cancelled — please try again shortly.",
-                )
-                    .into_response()
-            } else {
-                unreadable_page(&shop)
-            }
-        }
+        Resolved::Unreadable => unreadable_response(wants_ics, &shop),
+    }
+}
+
+/// The one "could not check" answer, shared by BOTH reads this route performs (the token and the
+/// booking), so neither can drift into rendering an unreadable store as something else.
+///
+/// For the `.ics`: 503 and NO calendar body. Publishing a tombstone here would cancel a booking that
+/// may be perfectly live; publishing the last-known event would state a slot this process did not
+/// read. A subscriber treats 503 as "try later", which is exactly the truth.
+fn unreadable_response(wants_ics: bool, shop: &str) -> Response {
+    if wants_ics {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "Could not check this appointment right now. This does NOT mean it was cancelled — \
+             please try again shortly.",
+        )
+            .into_response()
+    } else {
+        unreadable_page(shop)
     }
 }
 
