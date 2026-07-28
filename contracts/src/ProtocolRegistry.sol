@@ -126,7 +126,7 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     struct ArtifactSet {
         bytes32 artifactSetId; // keccak256("dogtag-levelb-artifacts/1") — the map key, non-zero
         bytes32 zkeySha256; // FETCH pin for the zkey (mandatory; NOT the VK)
-        bytes32 witnessMobileSha256; // FETCH pin for the .graph (0 == unpinned: not committed, §3.5)
+        bytes32 witnessMobileSha256; // FETCH pin for the .graph (0 == unpinned, §3.5 — optional, unlike the zkey)
         bytes32 witnessServerR1csSha256; // FETCH pin for the .r1cs
         bytes32 witnessServerWasmSha256; // FETCH pin for the .wasm
         string artifactBaseUrl; // where the bytes live (any host; integrity via the pins)
@@ -135,8 +135,10 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
         bool active; // deprecateArtifactSet flips this false; the record is never deleted
     }
 
-    /// @notice artifactSetId -> the published ArtifactSet. NOTE: the auto-getter OMITS the string
-    /// members (`artifactBaseUrl`, `minAppVersion`); read the FULL record via [`getArtifactSet`].
+    /// @notice artifactSetId -> the published ArtifactSet. NOTE: the auto-getter answers an UNKNOWN id
+    /// with a zeroed record rather than reverting, so a resolver must read via [`getArtifactSet`],
+    /// which fails closed. The auto-getter is the right call only when a zeroed record is itself the
+    /// answer you want - probing whether an id has ever been published.
     mapping(bytes32 => ArtifactSet) public artifactSets;
 
     /// @notice Every artifactSetId ever published — the enumerable list. Deprecated sets stay.
@@ -259,9 +261,9 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
     function proposeArtifactSet(ArtifactSet calldata a) external onlyRole(PUBLISHER_ROLE) {
         require(a.artifactSetId != 0, "artifactSetId=0");
         // The zkey is the ceremony-bound artifact; a set with no zkey pin is unrepresentable (a
-        // swapped key would silently prove against the wrong VK). The graph pin MAY be 0 (the .graph is
-        // not committed — the mobile resolver pins it from the anchor at fetch time; §3.5), so it is
-        // deliberately NOT required here.
+        // swapped key would silently prove against the wrong VK). The graph pin MAY be 0 (§3.5): a
+        // deployment may publish its contract set before it has a graph identity to attest, and the
+        // window between the two must be representable, so it is deliberately NOT required here.
         require(a.zkeySha256 != 0, "zkeySha256=0");
 
         _pendingArtifactSet[a.artifactSetId] = a;
@@ -373,9 +375,10 @@ contract ProtocolRegistry is AccessControlDefaultAdminRules {
         return c;
     }
 
-    /// @notice The FULL published artifact record for `id`, including the string members the
-    /// auto-getter omits. THIS is the axis an artifact/app-gate resolver — anything fetching a zkey or
-    /// enforcing `minAppVersion` — must read.
+    /// @notice The published artifact record for `id`, REVERTING when there is none — unlike the
+    /// `artifactSets` auto-getter, which answers a zeroed record. THIS is the axis an artifact/app-gate
+    /// resolver — anything fetching a zkey or enforcing `minAppVersion` — must read, because a zeroed
+    /// record would read as an unpinned set at version "" rather than as "no such set".
     function getArtifactSet(bytes32 id) external view returns (ArtifactSet memory) {
         ArtifactSet memory a = artifactSets[id];
         require(a.artifactSetId != 0, "unknown artifact set");

@@ -4,20 +4,39 @@ This runbook covers ONE change: moving the owner-hidden witness graph (`consent.
 **unpinned** to **pinned**, on-chain and in the descriptor, as a single atomic step.
 
 It is written to be executed by the operator who holds the publisher key.
-Nothing in this file has been run.
+
+**STATUS: EXECUTED on ROAX (chainId 135) on 2026-07-28.**
+The graph is pinned on chain and in the descriptor, both sides in the same change.
+What follows is kept as the procedure for the NEXT rotation, annotated with what the first run found.
+
+| | |
+|---|---|
+| decision | in-place re-publish of `dogtag-levelb-artifacts/1` (NOT `…-artifacts/2`) |
+| `proposeArtifactSet` | `0xa72f8a3bfcdf07f75c85e91cc5ae175dd255bdbfe03c497e609b480e36343576` (block 292176) |
+| `executeArtifactSet` | `0xf052f1ffcdb511fd50b5cc800864aefb8c84c366494dd69600d35ac525928f7c` (block 292176) |
+| signer | governance `0x8E27E117…` (holds `PUBLISHER_ROLE`; the deployer EOA does not) |
+| script | `contracts/script/PinConsentWitnessGraph.s.sol` - artifact axis ONLY, two transactions |
+| read back | `witnessMobileSha256 == 0x2f74d26b…f793`, `artifactSetId` unchanged, `active` still true |
+| collateral | `ContractSet` untouched (`publishedAt` still `1784787356`), `artifactSetCount` still 1, binding unchanged |
+
+The re-publish restamped the artifact set's own `publishedAt` from `1784787356` to `1785254312`.
+That is inherent to re-publishing and is why the original stamp is recorded here - it is otherwise gone.
 
 ---
 
 ## Why this is a runbook and not a code change
 
-The graph is now committed and its bytes are attested in-repo
+The graph is committed and its bytes are attested in-repo
 (`dogtag_prover::artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256`, enforced by
 `graph_file_matches_attested_sha256`).
 That closes the "which graph did this app prove with?" gap for anyone reading the repo.
 
-What it does **not** do is put the graph's identity on-chain.
-The published `ArtifactSet` still carries `witnessMobileSha256 = 0`, which
+What it did **not** do was put the graph's identity on-chain: before the run recorded above, the
+published `ArtifactSet` carried `witnessMobileSha256 = 0`, which
 `contracts/src/ProtocolRegistry.sol:129` defines as *unpinned*.
+It now carries `2f74d26b…f793`, so that gap is closed for a reader of the CHAIN too.
+The paragraphs below are why the two had to move together, and they govern the next rotation exactly
+as they governed this one.
 
 The descriptor field and the on-chain field are in **deliberate lockstep**, and the coupling is
 load-bearing:
@@ -94,33 +113,100 @@ In `crates/dogtag-prover-rs/src/artifact.rs`, inside `LEVEL_B_V1_DESCRIPTOR`:
 `descriptor_graph_pin_agrees_with_the_file` then enforces descriptor↔file agreement automatically —
 a stale or hand-typed hash fails there rather than in the field.
 
-One test asserts the CURRENT unpinned state and must be updated in the same commit:
+Assertions of the OLD unpinned state must move in the same commit. Update each to assert the new
+truth; do **not** relax one into accepting either state - that would retire the only check keeping the
+two sides in lockstep. The 2026-07-28 run touched:
 
-- `crates/dogtag-prover-rs/src/manifest.rs` — `manifest_pins_come_from_the_descriptor` asserts
-  `m.witness_mobile_sha256 == None`. It becomes
-  `Some(artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256)`.
+- `crates/dogtag-prover-rs/src/manifest.rs` - `manifest_pins_come_from_the_descriptor` asserted
+  `m.witness_mobile_sha256 == None`; it became `Some(artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256)`
+  (the exact hash, not `is_some()`).
+- `apps/ios/DogTagTests/AnchorResolverTests.swift` - `testDecodeArtifactSetGolden`'s golden blob is
+  documented as the EXACT bytes `getActiveArtifactSet` returns, so its head-word 2 and the comment
+  calling the graph "published 0/unpinned" both went stale. Substituting the real hash is offset-safe
+  (a fixed-width head word) and nothing asserts on it - `AnchorResolver` decodes only `artifactSetId`,
+  `minAppVersion` and `active`.
+- `apps/android/app/src/test/java/io/liberalize/dogtag/net/AnchorResolverTest.kt` -
+  `decodeArtifactSetGolden` is a byte-for-byte MIRROR of the iOS golden, and that mutual mirroring is
+  the point: it is what stops the two platforms silently disagreeing about what the chain returns. So
+  it moves in the same commit, with the identical substitution and the identical comment. Check the
+  two blobs still match each other, not just that each parses.
 
-Update it to assert the new truth. Do **not** relax it into accepting either state — that would
-retire the only check that keeps the two sides in lockstep.
+Two that deliberately did NOT change, so a future run does not "fix" them:
+
+- `crates/dogtag-prover-rs/src/artifact.rs` - `descriptor_graph_pin_agrees_with_the_file` already
+  handled both arms; the `Some` arm simply became the live one. Keep the `None` arm: a rotation passes
+  back through it.
+- `contracts/test/ProtocolRegistry.t.sol` - `test_propose_allows_unpinned_graph` passes its own local
+  `bytes32(0)` and asserts the CONTRACT still accepts an unpinned graph. That property is unchanged by
+  what ROAX happens to publish.
+
+Verify with `cargo test -p dogtag-prover-rs` **and** `cargo test -p vet-api --test discovery_validation`
+(the reconcile path). If the mobile goldens moved, run BOTH mirrors - the iOS `DogTagTests` scheme and
+`cd apps/android && gradle test --tests '*AnchorResolverTest'` - since running only one is how the two
+platforms come apart.
+
+### Ordering
+
+Publish on chain FIRST, read the set back, then land the descriptor. The reverse leaves the signed
+manifest advertising a pin the chain does not carry, which every reconcile reports as a conflict.
+The window between the two is real but currently harmless - nothing in production consumes the
+reconcile path - so close it in the same task rather than relying on that.
 
 ## Step 2 — publish the artifact set on-chain
 
-`PublishProtocolVersions.s.sol` takes every pin from a mandatory env var (no stale-network
-fallbacks). The only value that changes is `CONSENT_WITNESS_MOBILE_SHA256`, which is currently `0`:
+**Do NOT use `PublishProtocolVersions.s.sol` for this.** It is the FIRST-ROLLOUT script and publishes
+the version on BOTH axes plus the binding: its Propose phase sends `proposeContractSet` +
+`proposeArtifactSet` + `proposeArtifactBinding` and its Execute phase the three matching executes -
+**six transactions**, four of which re-publish a `ContractSet` and a binding that a graph pin does not
+change. That is not cosmetic: `executeContractSet` restamps `publishedAt` and re-emits
+`ContractSetPublished`, rewriting the trio's on-chain provenance for a change that moves no trio
+address. (The command previously printed here also named no contract and no phase, so it could not
+have run as written.)
+
+Use `contracts/script/PinConsentWitnessGraph.s.sol`, which sends exactly **two** transactions, both on
+the artifact axis. It takes every pin from a mandatory env var (no stale-network fallbacks); the only
+value that changes is `CONSENT_WITNESS_MOBILE_SHA256`.
+
+Its guard is the part worth keeping: because a re-publish restates ALL of the set's fields, the script
+reads the CURRENT on-chain record and refuses to broadcast unless every field except
+`witnessMobileSha256` is unchanged and the graph is currently unpinned. A stale env var therefore
+cannot rewrite a pin or the base URL under cover of "pinning the graph", and the script is structurally
+incapable of performing a rotation.
 
 ```bash
 cd contracts
 
+export PROTOCOL_REGISTRY=0xf5492A671E69b1A13f7Fd123C021830eB1ea8081   # deployments/roax.json
 export CONSENT_ZKEY_SHA256=0xf83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868
 export CONSENT_WITNESS_MOBILE_SHA256=0x2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793
 export CONSENT_R1CS_SHA256=0x828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7
 export CONSENT_WASM_SHA256=0x482debcff5a4325c008dd00e4476bba011d0a706da955e3129d114f996a913e6
-export DOGTAG_ARTIFACTS_URL=...   # unchanged; must match what is already published
+export DOGTAG_ARTIFACTS_URL=https://artifacts.dogtag.io/levelb1   # must match what is already published
 
-forge script script/PublishProtocolVersions.s.sol \
+forge script script/PinConsentWitnessGraph.s.sol:PinConsentWitnessGraph \
   --rpc-url "${ROAX_RPC:-https://devrpc.roax.net}" \
-  --broadcast
+  --broadcast --legacy --private-key "$GOVERNANCE_PRIVATE_KEY"
 ```
+
+ROAX needs `--legacy`, and the signer must hold `PUBLISHER_ROLE` - that is the governance key
+`0x8E27E117…`, **not** the deployer EOA, which does not hold it. Note `PUBLISHER_ROLE` is
+`keccak256("PUBLISHER")`, not `keccak256("PUBLISHER_ROLE")`; deriving it from the variable name gives a
+role nobody holds and makes a correctly-configured signer look unauthorized.
+
+Where the publish timelock is non-zero the script proposes only, prints the ETA, and says the pin is
+NOT live until a later `executeArtifactSet`. ROAX was deployed with the zero-timelock testnet opt-in
+(`PUBLISH_TIMELOCK() == 0`, verified on the deployed contract), so both ran back to back.
+
+**Under a real delay, finish the operation by re-running the same command** at or after the printed
+ETA. The script branches on `artifactSetEta`: no proposal staged means propose (and, at zero timelock,
+execute); a staged proposal whose ETA has elapsed means EXECUTE only; a staged proposal still inside
+its window aborts without broadcasting. The branch is load-bearing rather than a convenience -
+`proposeArtifactSet` recomputes `artifactSetEta = block.timestamp + PUBLISH_TIMELOCK`, so a script that
+re-proposed unconditionally would silently restart the full delay every time the operator tried to
+finish, and never execute. Because the execute path runs whatever an earlier run staged, and a pending
+proposal's contents are not readable on chain, the script re-reads the whole set afterwards and
+requires every field to equal what this run built; `forge script` simulates before broadcasting, so a
+mismatch stops the transactions rather than reporting on them after the fact.
 
 Confirm the remaining three hashes still match the descriptor before broadcasting — they are
 unchanged by this work, but publishing re-states all four:
@@ -130,32 +216,54 @@ shasum -a 256 circuits/build/consent_final.zkey circuits/build/consent.r1cs \
               circuits/build/consent_js/consent.wasm
 ```
 
-### Rotation, not mutation
+### Rotation, not mutation - RESOLVED: in-place re-publish
 
 Whether this is an in-place re-publish of `dogtag-levelb-artifacts/1` or a NEW
-`…-artifacts/2` + re-pointed binding is a protocol-lifecycle decision, and it is the reason this
-step is not scripted here.
+`…-artifacts/2` + re-pointed binding is a protocol-lifecycle decision, and it is why this step was
+left unscripted.
 
-`ProtocolVersions.sol` documents the intended shape: *"Rotating a zkey means authoring a NEW artifact
-set (`…-artifacts/2`) and re-pointing the binding."*
-Pinning the graph does not change any artifact's bytes — it only publishes an identity that was
-previously omitted — so an in-place re-publish is defensible.
-But if the deployed registry treats a published set as immutable, this needs `…-artifacts/2` and a
-binding update, and then `artifactSetId` changes, which the apps DO decode
-(`AnchorResolver.kt` / `.swift` read `artifactSetId` and `minAppVersion`).
+**For a graph PIN it is an in-place re-publish**, decided 2026-07-28 on this evidence:
 
-**Check the deployed registry's publish semantics before choosing.** Getting this wrong is the one
-step here that can strand an app on an anchor it cannot resolve.
+* The deployed registry does NOT treat a published set as immutable. `executeArtifactSet` assigns
+  `artifactSets[id] = a` unconditionally and uses `isNew` only to decide whether to append to
+  `artifactSetList`; `ArtifactSetPublished(id, isNew)` exists precisely to tell a re-publish from a
+  first publication, and `contractSetList`'s own doc says "a swap-republish does not duplicate its id".
+* That was confirmed against the DEPLOYED bytecode, not just the source, by rehearsing the exact two
+  transactions on an `anvil --fork-url` of ROAX before broadcasting: the set came back with the graph
+  pinned, `artifactSetId` unchanged, `artifactSetCount` still 1, the binding untouched and the
+  `ContractSet` untouched. The live run then reproduced that read-back exactly.
+* Pinning changes NO artifact's bytes - it publishes an identity that was previously omitted - so
+  nothing an app fetches is different afterwards.
+* `…-artifacts/2` would MOVE `artifactSetId`, which both mobile `AnchorResolver`s decode, and would
+  require a binding update. That is real strand-the-app risk bought for no benefit.
+
+**A genuine zkey/circuit rotation is still `…-artifacts/2` + a re-pointed binding**, exactly as
+`ProtocolVersions.sol` says - different bytes, so apps must be able to tell the sets apart. Do not
+generalise the in-place decision above beyond the pin-an-omitted-identity case.
+
+**Check the deployed registry's publish semantics before choosing**, rather than inheriting this
+answer: it is a property of the deployed instance, and getting it wrong is the one step here that can
+strand an app on an anchor it cannot resolve. A fork rehearsal answers it empirically in minutes.
 
 ## Step 3 — verify
 
 ```bash
 cargo test -p dogtag-prover-rs                       # descriptor + manifest agree
-cd contracts && forge test --match-contract ProtocolRegistry
+cargo test -p vet-api --test discovery_validation    # the reconcile path
+cd contracts && forge test --match-contract 'ProtocolRegistry|PinConsentWitnessGraph'
+
+# BOTH mobile goldens, if either moved - they are byte-for-byte mirrors of each other, and running
+# only one is exactly how the two platforms come apart.
+cd apps/ios     && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests -destination 'id=<sim-udid>'
+cd apps/android && gradle test --tests '*AnchorResolverTest'
 ```
 
 Then read the published set back from the chain and confirm `witnessMobileSha256` is the value
 above, not `0`.
+
+Re-running `PinConsentWitnessGraph` after a COMPLETED pin refuses with `graph already pinned - a
+change here is a ROTATION`. That is the guard reporting the work is done, not a failure - the script
+admits only the unpinned→pinned transition, so a finished set has nothing left for it to do.
 
 ---
 

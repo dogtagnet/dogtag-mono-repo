@@ -238,9 +238,11 @@ ls -l apps/ios/DogTag/consent_final.zkey \
 ls -l apps/ios/DogTag/consent.graph \
       apps/android/app/src/main/assets/consent.graph
 # → consent.graph ~1.5 MB (the committed graph is 1546215 bytes,
-#   sha256 2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793 — attested in-repo by
-#   dogtag_prover::artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256. It is still unpinned ON-CHAIN
-#   (witnessMobileSha256 == 0); see ARTIFACT_PIN_RUNBOOK.md for publishing it)
+#   sha256 2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793 - attested in-repo by
+#   dogtag_prover::artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256 AND published ON-CHAIN since 2026-07-28
+#   as the artifact set's witnessMobileSha256. Published is not enforced: nothing on the device hashes
+#   the bundled graph, so this is still a vendoring check you must actually run. Rotating the graph
+#   moves the repo constant and the on-chain field together - see ARTIFACT_PIN_RUNBOOK.md)
 ```
 
 **STOP if** any path is missing or 0 bytes - `circuits/build/consent_final.zkey` or the graph is

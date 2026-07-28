@@ -26,6 +26,7 @@
 > | DogTagIssuerFactory | `0xED20269E3eBF0119739aaB5258741F3aEb49F140` |
 > | DogTagIssuerImpl | `0xe4aC139eB257C309Ec448C116A6F657Dab5590BA` |
 > | ProtocolRegistry (two-axis discovery anchor; zero-timelock testnet instance; `dogtag-levelb/1` published + active) | `0xf5492A671E69b1A13f7Fd123C021830eB1ea8081` |
+> | IssuerDomainRegistry (on-chain half of the issuer↔domain binding; deployed but **EMPTY** - `boundCloneCount == 0`, so every clone's on-chain domain claim still reads `unavailable` until one is published) | `0xD3B121FEaCde93b95288912EAdbB10824550FdBF` |
 > | ConsentKeyRegistry (RETIRED; the consent key is now a per-tag leaf inside the tree - no on-chain key registry) | `0xA74DDe4a9b5b5b9045D9244907dE5d84C75BD671` |
 > | Poseidon6 (deployed with the retired owner-revealing set; historical) | `0x58091F2320c78ed6c6D1C02CB7E5c7578f1349db` |
 > | VerificationRegistry (RETIRED owner-revealing registry; source deleted; final instance kept for historical reads) | `0x4E2f0996e1CB4E24F1053346f3da2186906835E8` |

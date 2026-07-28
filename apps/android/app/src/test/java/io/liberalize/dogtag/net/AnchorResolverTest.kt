@@ -136,7 +136,7 @@ class AnchorResolverTest {
             "0000000000000000000000000000000000000000000000000000000000000020" + // outer offset
             "e28963a343070ded2096ce5abf4596f17a74bc8a813da8266cd8032a57fe6938" + // artifactSetId
             "f83a111fcf233f42bc1c9e7282796a7eca3a9a52760ad7e35c0036b8eb36c868" + // zkeySha256
-            "0000000000000000000000000000000000000000000000000000000000000000" + // witnessMobileSha (0)
+            "2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793" + // witnessMobileSha (pinned)
             "828e2923a159b04f2de421d4b447f8c85356677f4f83a5af55b42eb2b4f9b6b7" + // witnessR1csSha
             "482debcff5a4325c008dd00e4476bba011d0a706da955e3129d114f996a913e6" + // witnessWasmSha
             "0000000000000000000000000000000000000000000000000000000000000120" + // artifactBaseUrl off (288)
@@ -151,6 +151,13 @@ class AnchorResolverTest {
         val a = AnchorResolver.decodeArtifactSet(hex)
         assertEquals("1.4.0", a?.minAppVersion)
         assertEquals(true, a?.active)
+        // The graph pin is PINNED on chain as of 2026-07-28, so head-word 2 carries the real
+        // `witnessMobileSha256` here rather than 0. Nothing asserts it: `AnchorResolver` decodes only
+        // `artifactSetId`, `minAppVersion` and `active`, which is exactly why pinning it changed no app
+        // behaviour. It is carried at full width so the head-word OFFSETS this test exists to pin stay
+        // faithful to what `getActiveArtifactSet` now returns.
+        // The artifactSetId is keccak(dogtag-levelb-artifacts/1) - UNCHANGED by the in-place re-publish,
+        // which is what kept already-shipped apps resolvable.
         assertEquals("0xe28963a343070ded2096ce5abf4596f17a74bc8a813da8266cd8032a57fe6938", a?.artifactSetId)
     }
 }

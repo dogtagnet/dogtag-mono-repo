@@ -758,8 +758,10 @@ contract ProtocolRegistryTest is Test {
         reg.proposeArtifactSet(a);
     }
 
-    /// The graph pin is DELIBERATELY allowed to be 0 (unpinned — the .graph is not committed), unlike
-    /// the mandatory zkey pin. Publishing with witnessMobileSha256 == 0 must succeed.
+    /// The graph pin is DELIBERATELY allowed to be 0 (unpinned), unlike the mandatory zkey pin —
+    /// publishing before a graph identity is attested must stay representable. Asserted against this
+    /// fixture's OWN local zero, so it pins a property of the CONTRACT and is unaffected by whatever
+    /// ROAX happens to publish (which is pinned, as of 2026-07-28).
     function test_propose_allows_unpinned_graph() public {
         ProtocolRegistry.ArtifactSet memory a = _artifacts();
         assertEq(a.witnessMobileSha256, bytes32(0), "fixture leaves the graph unpinned");

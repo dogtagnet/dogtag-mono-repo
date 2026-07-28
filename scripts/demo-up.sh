@@ -257,14 +257,21 @@ ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
 # clone from the chain's write-once `rootIssuer[R]`. Without it the government backend falls back to the
 # document's own `documentStore` for the `isValid` pillar, reads no on-chain issuer name at all, and
 # reports every binding as `unavailable` — i.e. the whole three-link chain is dark in the showcase, which
-# is precisely what this change removes. ISSUER_DOMAIN_REGISTRY_ADDR is resolved from the ledger and stays
-# at the zero address until one is deployed; that is the honest `unavailable`, not an invented address.
-GOV_ISSUER_DOMAIN_REGISTRY="${ISSUER_DOMAIN_REGISTRY_ADDR:-$(ledger_addr IssuerDomainRegistry)}"
-GOV_ISSUER_DOMAIN_REGISTRY="${GOV_ISSUER_DOMAIN_REGISTRY:-0x0000000000000000000000000000000000000000}"
+# is precisely what this change removes. ISSUER_DOMAIN_REGISTRY_ADDR is resolved from the ledger, which
+# now carries a deployed IssuerDomainRegistry, so the on-chain-claim link is READ rather than skipped. The
+# zero-address fallback is retained for a ledger that has no such key: that is the honest `unavailable`,
+# not an invented address. Note a deployed-but-EMPTY registry still renders `unavailable` for every clone
+# until a domain is bound - deploying the contract publishes no claims by itself.
+# NOT government-scoped despite where it is first used: there is ONE IssuerDomainRegistry for the
+# protocol, and the admin portal's verification bench reads the SAME address (see the admin-web line
+# below). Keeping one variable is what stops the two surfaces disagreeing about which registry is
+# authoritative.
+ISSUER_DOMAIN_REGISTRY="${ISSUER_DOMAIN_REGISTRY_ADDR:-$(ledger_addr IssuerDomainRegistry)}"
+ISSUER_DOMAIN_REGISTRY="${ISSUER_DOMAIN_REGISTRY:-0x0000000000000000000000000000000000000000}"
 ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority" ISSUER_DOMAIN=gov.local \
   VERIFICATION_REGISTRY_ADDR=$VR \
   FACTORY_ADDR=$FACTORY \
-  ISSUER_DOMAIN_REGISTRY_ADDR="$GOV_ISSUER_DOMAIN_REGISTRY" \
+  ISSUER_DOMAIN_REGISTRY_ADDR="$ISSUER_DOMAIN_REGISTRY" \
   DNS_DOH_ENDPOINT="${DNS_DOH_ENDPOINT:-https://cloudflare-dns.com/dns-query}" \
   CHAIN_ID="$CHAIN_ID_EXPECTED" PORT=44832 DEPLOYMENT_URL="${GOV_PUBLIC_URL:-http://$LAN_IP:44832}" \
   GOV_CHAIN_BACKEND="$GOV_CHAIN_BACKEND" \
@@ -274,7 +281,13 @@ ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR ISSUER_NAME="Example Competent Authority"
   run government-api ":44832" "$ROOT/target/release/government-api"
 
 echo "Starting portals (vite dev):"
-run admin-web ":39741" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/admin-web dev
+# The verification bench reads VITE_ISSUER_DOMAIN_REGISTRY_ADDR and has NO fallback by design, so
+# without this the bench's on-chain-domain row reports "could not run" in the showcase no matter what
+# an issuer has published. VITE_* is inlined by vite at startup, so a portal already running when this
+# address changes needs a restart to pick it up.
+run admin-web ":39741" env VITE_DEMO_MODE=1 \
+  VITE_ISSUER_DOMAIN_REGISTRY_ADDR="$ISSUER_DOMAIN_REGISTRY" \
+  pnpm --filter @dogtag/admin-web dev
 run vet-web    ":41873" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/vet-web dev
 run groomer-web ":43617" env VITE_DEMO_MODE=1 VITE_DOGTAG_ISSUER_ADDR="$VACC_CLONE" pnpm --filter @dogtag/groomer-web dev
 run government-web ":44831" env VITE_DEMO_MODE=1 pnpm --filter @dogtag/government-web dev
