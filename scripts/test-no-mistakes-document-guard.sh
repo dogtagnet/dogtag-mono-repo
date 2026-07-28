@@ -77,13 +77,16 @@ raise "test command" unless config.dig("commands", "test").is_a?(String) &&
 # `Command "tsc"/"vitest" not found` back into something that reads like a flaky code finding,
 # and approving past it would sign off a step that never executed. lint needs --sdk-dist
 # because @dogtag/ui resolves @dogtag/standard's types from the SDK's gitignored dist/.
-raise "lint prerequisites" unless config.dig("commands", "lint").include?("ensure-ts-prereqs.sh --sdk-dist")
-raise "test prerequisites" unless config.dig("commands", "test").include?("ensure-ts-prereqs.sh")
+# The needles carry the "scripts/" segment deliberately: a bare "ensure-ts-prereqs.sh" is a
+# substring of the neighbouring "scripts/test-ensure-ts-prereqs.sh" invocation, so it would
+# pass even after the prerequisite call itself were deleted - an assertion that cannot fail.
+raise "lint prerequisites" unless config.dig("commands", "lint").include?("scripts/ensure-ts-prereqs.sh --sdk-dist")
+raise "test prerequisites" unless config.dig("commands", "test").include?("scripts/ensure-ts-prereqs.sh")
 # The document guard needs no node_modules and fails closed on a dirty worktree, so it must
 # stay ahead of any install.
 raise "guard runs before prerequisites" unless
   config.dig("commands", "lint").index("check-no-mistakes-document-guard.sh") <
-    config.dig("commands", "lint").index("ensure-ts-prereqs.sh")
+    config.dig("commands", "lint").index("scripts/ensure-ts-prereqs.sh")
 raise "write-mode lint" if config.dig("commands", "lint").match?(/(?:^|\s)(?:--write|-w)(?:\s|$)/)
 raise "auto_fix" unless %w[review document lint].all? { |step| config.dig("auto_fix", step) == 0 }
 raise "commit template" unless config.dig("commit", "fix_message") ==

@@ -12,9 +12,12 @@ commands:
   # ensure-ts-prereqs.sh runs before the tsc invocations because @dogtag/ui resolves
   # @dogtag/standard's types from the SDK's gitignored dist/: on the pipeline's fresh
   # per-run worktree the checks below cannot run at all until dependencies are installed
-  # and the SDK is built. It satisfies that itself, and when it cannot it fails with the
-  # exact remedy instead of a `Command "tsc" not found` that reads like a flaky code
-  # finding. The checks themselves are unchanged; the prerequisites cost ~1.3s on a warm
+  # and the SDK is built. It satisfies that itself, and when it cannot it fails with a
+  # cause-specific next step and an explicit statement that nothing ran, instead of a
+  # `Command "tsc" not found` that reads like a flaky code finding. It calls a branch
+  # defect a code finding and reserves the environment label for a missing toolchain or a
+  # proven network/store fault, so neither mistake can be made from its output.
+  # The checks themselves are unchanged; the prerequisites cost ~1.3s on a warm
   # tree and ~6.1s on a cold one. The document guard stays first: it needs no
   # node_modules and should fail closed on a dirty worktree before any install runs.
   lint: >-

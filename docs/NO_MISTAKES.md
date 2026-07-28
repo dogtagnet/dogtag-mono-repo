@@ -26,10 +26,16 @@ Since the pipeline creates a fresh worktree per run, lint previously failed on e
 
 That is a trap rather than an inconvenience.
 Both messages read like an environmental blip, so the obvious response is to approve past them, and approving past them signs off a step that never executed.
-The step now installs its own prerequisites, and when it cannot it exits `78` with the exact remedy - `pnpm install --frozen-lockfile && pnpm --filter @dogtag/standard build` - plus an explicit statement that nothing was checked.
+The step now installs its own prerequisites, and when it cannot it says which side the failure is on.
 
-Failures are classified rather than blanketed, so the inverse error is closed too.
-A stale `pnpm-lock.yaml` or an SDK that fails to compile are reported as code findings carrying tsc's own diagnostics, never relabelled as a missing prerequisite.
+Failures are classified rather than blanketed, so the inverse error is closed too - and that error is the worse one, because stamping a branch defect "environment" teaches a reader to wave through a genuine break.
+Exit `78` and the "THE CHECK DID NOT RUN" banner are reserved for what can be PROVEN environmental: a toolchain the branch cannot influence (no repository, or pnpm absent from `PATH`), and an install failure whose own output carries a named network, registry, store, permission or disk signature such as `ERR_PNPM_NO_OFFLINE_TARBALL`, `ERR_PNPM_META_FETCH_FAIL`, `ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, `ETIMEDOUT`, `EACCES` or `ENOSPC`.
+Each of those prints a next step that addresses its own cause - install the pinned pnpm, or restore registry and store access - never the command that just failed, which a reader following it would only watch fail again.
+
+Everything else exits `1` as a code finding carrying pnpm's or tsc's real diagnostics: any other install failure, a stale `pnpm-lock.yaml`, an SDK that fails to compile, a binary still missing after install reported success, and a missing `dist/index.d.ts` after the SDK build reported success.
+The last two are code findings precisely because the install or build succeeding proves the environment worked, so what is still absent implicates this branch's devDependencies, lockfile or tsconfig.
+No path exits `0`, so no classification decision can quietly turn into a green result.
+
 `--frozen-lockfile` is load-bearing: an install able to rewrite the tracked lockfile would dirty the worktree and fail the next run's Document guard with a fresh confusing error.
 The Document guard stays ahead of the prerequisites because it needs no `node_modules` and should fail closed on a dirty worktree before any install runs.
 

@@ -56,8 +56,16 @@ This is a trap, not just a chore.
 The no-mistakes pipeline creates a fresh worktree per run, so the failure fired on essentially every run, and `tsc not found` reads like an environmental blip.
 The obvious response is to approve past it, and approving past it signs off a lint step that **never executed** - a check that did not run counted as a check that passed, which is the same defect class this repo spent a week closing in the product.
 
-`commands.lint` and `commands.test` therefore call `scripts/ensure-ts-prereqs.sh`, which satisfies the prerequisites itself and, when it cannot, exits **78** naming the exact remedy instead of a confusing `tsc not found`.
-Failures are deliberately classified so the inverse mistake cannot happen either: a stale `pnpm-lock.yaml` or an SDK that fails to compile are reported as **code findings** carrying tsc's own diagnostics, never relabelled as a missing prerequisite.
+`commands.lint` and `commands.test` therefore call `scripts/ensure-ts-prereqs.sh`, which satisfies the prerequisites itself and, when it cannot, says so with a cause-specific next step instead of a confusing `tsc not found`.
+
+**The environment label is deliberately NARROW, and that narrowness is the point.**
+Exit **78** and the "THE CHECK DID NOT RUN" banner are reserved for the two things that can be PROVEN environmental: a toolchain the branch cannot influence (no repository, or pnpm absent from PATH), and an install failure whose own output carries a named network, registry, store, permission or disk signature (`ERR_PNPM_NO_OFFLINE_TARBALL`, `ERR_PNPM_META_FETCH_FAIL`, `ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, `ETIMEDOUT`, `EACCES`, `ENOSPC`), which is named in the message so a later misclassification is diagnosable from the log alone.
+**Everything else exits 1 as a code finding** carrying pnpm's or tsc's real diagnostics: any other install failure (a `workspace:*` dependency naming a package that does not exist, a malformed `package.json`), a stale `pnpm-lock.yaml`, an SDK that fails to compile, a binary still missing after install reported success, and a missing `dist/index.d.ts` after the SDK build reported success.
+Those last two are code findings because a successful install or build proves the environment worked, so what is still absent implicates the branch's devDependencies, lockfile or tsconfig - and `pnpm --filter @dogtag/ui typecheck` would then genuinely fail.
+
+That split closes the inverse mistake, which is the worse one: stamping a branch defect "environment" teaches a reader to wave through a genuine break, and a fixed remedy that is literally the command that just failed confirms the wrong diagnosis when they follow it.
+So no path prints a canned remedy it cannot deliver on, and no path exits 0.
+The binary probe is per caller - `--sdk-dist` (lint) requires `tsc`, the no-flag caller (test) requires `vitest` - because each is the exact artifact whose absence produced that caller's own cold-worktree failure.
 The prerequisites cost ~1.3s on a warm tree and ~6.1s on a cold one, and leave the worktree clean because everything they write is gitignored.
 Never "fix" a prerequisite failure by deleting the check it guards.
 
