@@ -221,7 +221,8 @@ panels use, and the reads are made against the real chain.
 
 ### F1. Get a record into the box
 
-The bench takes a **wrapped credential JSON**. Two reliable ways to get one:
+The bench takes a **wrapped credential JSON**. The government portal is the one reliable source of one,
+and the wallet route below builds on it rather than replacing it:
 
 - **Government portal (:44831) → Issue** → pick **TRAVEL_CLEARANCE** → fill → issue → click
   **Copy wrapped document**.
@@ -236,8 +237,13 @@ The bench takes a **wrapped credential JSON**. Two reliable ways to get one:
   whitelisted government signer. `EU_HEALTH_CERT` may have no clone provisioned, in which case issuing
   it only dry-runs the same way.
 - **Owner wallet (:45931)** → open a held credential → **Share a redacted copy** →
-  **Copy redacted credential**. Useful on its own: redaction leaves the Merkle root untouched, so the
-  bench still passes the redacted copy.
+  **Copy redacted credential**. Useful on its own: redaction leaves the Merkle root untouched, so a
+  redacted copy of an **anchored** credential still passes every on-chain row.
+  That qualifier is the prerequisite: the held credential has to be one from a real issuance, so paste
+  the government JSON from the bullet above into the wallet's **Receive a credential** box first.
+  The wallet's two **Fill sample** buttons are the only zero-setup way to fill it, and their documents
+  were never anchored on any chain, so benching a redacted copy of one fails the on-chain rows in exactly
+  the way the dry-run case above describes.
 
 The vet portal has **no** copy-the-document button, on Issue or on Records, so on this deployment there is
 no vet JSON to paste and a vet-issued VACCINATION does not reach the bench by either route above.
@@ -316,7 +322,8 @@ tells you what is currently applied.
 
 ### F4. The row that fails while the verdict stays valid
 
-Issue a record with a **past** "Valid until" (§C, the note) and bench it.
+Issue a record with a **past** "Valid until" (§C, the note), then get it into the bench by the vet route
+from §F1: **Records** → the row's **QR** → paste that URL into **QR share link** → **Fetch**.
 You get **Verifier verdict: valid** sitting above a red *"Is this credential still within its validity
 window?"* row.
 
@@ -329,6 +336,7 @@ rows are reported next to it so you can see them without them silently changing 
 
 For the opposite case, revoke the record and bench it again: *"Has the issuer revoked this credential?"*
 turns **Fail** and the verdict goes **not valid**.
+Click the row's **QR** once more for that second run, since the first **Fetch** consumed the token.
 Revoking is vet portal → **Records** → the row's **Revoke** button, which asks you to confirm ("Revoke
 this credential on chain? It stays on record (as revoked) and remains verifiable."). The government
 portal's Records page has the same action for its own records. Nothing is deleted either way: the row
@@ -463,8 +471,12 @@ whitelisted to VERIFY, not to issue, and adding or removing a tag here only edit
 > a loopback address the handoff deliberately withholds the QR and explains that a client's phone would
 > not reach the link, so scanning one would fail or land somewhere else entirely. The link itself is
 > still shown and still works on this machine.
-> `demo-up.sh` sets that to your Mac's LAN IP, so you normally get a QR; you will hit the loopback case
-> only if you started a backend by hand.
+> **The failure to watch for on a `demo-up.sh` stack is the opposite one.** Only a loopback
+> `DEPLOYMENT_URL` is withheld like this, and the script defaults `LAN_IP` to an address baked into it
+> rather than detecting your Mac's, documenting `LAN_IP=192.168.x.x scripts/demo-up.sh` as the override.
+> A LAN address is not loopback, so if the baked-in one is not your Mac's current address the QR is drawn
+> exactly as normal and the phone simply cannot reach it.
+> Check the host in the link shown beside the QR before concluding the handoff is broken.
 
 ---
 
@@ -478,9 +490,12 @@ address, and label it. The three places this appears:
 - vet portal → **Traceability**
 
 Start with the government and vet ones.
-`demo-up.sh` passes `INDEXER_API_BASE` to the vet, groomer and government backends but not to admin-api,
-which defaults to no feed at all and answers those routes 503, so admin → Activity shows its
-indexer-not-configured state rather than rows unless your `contracts/.env` exports that variable.
+`demo-up.sh` passes the indexer's base and token to the vet, groomer and government backends but not to
+admin-api, which defaults to no feed at all and answers those routes 503, so on a stock stack
+admin → Activity shows its indexer-not-configured state rather than rows.
+Wiring it needs **both** `INDEXER_API_BASE` and `INDEXER_OVERSIGHT_TOKEN`, not the base alone: admin-api
+builds the feed from the base and defaults the bearer to empty, and logs its own warning that the indexer
+will 401 without the token.
 
 Each row carries either **chain-addressable**, whose transaction hash is a working
 `explorer.roax.net/tx/...` link, or **not chain-addressable**, whose hash is rendered as inert text with
