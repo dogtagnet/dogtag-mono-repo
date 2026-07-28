@@ -47,17 +47,33 @@ import {ProtocolVersions} from "./ProtocolVersions.sol";
 ///   forge script script/PinConsentWitnessGraph.s.sol:PinConsentWitnessGraph \
 ///     --rpc-url $ROAX_RPC --broadcast --legacy --private-key $GOVERNANCE_PRIVATE_KEY
 contract PinConsentWitnessGraph is Script {
+    /// @notice The CLI entry point: read the mandatory env, then hand off to [`pin`].
+    ///
+    /// Deliberately nothing but the env read. `vm.setEnv`/`vm.envAddress` are process-global
+    /// (`std::env`), and forge runs test contracts in parallel, so a test driving the operation
+    /// through here would race any sibling suite that sets the same names - `PROTOCOL_REGISTRY` is
+    /// shared with `DeployProtocolRegistry.t.sol` and points at a different registry there. Keeping
+    /// the behaviour in [`pin`], which takes its inputs as arguments, is what lets the tests exercise
+    /// it without touching the environment at all.
     function run() external {
-        ProtocolRegistry reg = ProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY"));
-        bytes32 id = ProtocolVersions.levelBArtifactsId();
-
-        ProtocolRegistry.ArtifactSet memory next = ProtocolVersions.levelBArtifacts(
-            vm.envBytes32("CONSENT_ZKEY_SHA256"),
-            vm.envBytes32("CONSENT_WITNESS_MOBILE_SHA256"),
-            vm.envBytes32("CONSENT_R1CS_SHA256"),
-            vm.envBytes32("CONSENT_WASM_SHA256"),
-            vm.envString("DOGTAG_ARTIFACTS_URL")
+        pin(
+            ProtocolRegistry(vm.envAddress("PROTOCOL_REGISTRY")),
+            ProtocolVersions.levelBArtifacts(
+                vm.envBytes32("CONSENT_ZKEY_SHA256"),
+                vm.envBytes32("CONSENT_WITNESS_MOBILE_SHA256"),
+                vm.envBytes32("CONSENT_R1CS_SHA256"),
+                vm.envBytes32("CONSENT_WASM_SHA256"),
+                vm.envString("DOGTAG_ARTIFACTS_URL")
+            )
         );
+    }
+
+    /// @notice The whole operation, with every input explicit.
+    ///
+    /// The set id is NOT a parameter: it is always `ProtocolVersions.levelBArtifactsId()`, so no
+    /// caller can redirect this script onto a different artifact set.
+    function pin(ProtocolRegistry reg, ProtocolRegistry.ArtifactSet memory next) public {
+        bytes32 id = ProtocolVersions.levelBArtifactsId();
 
         requireOnlyTheGraphPinMoves(reg, id, next);
 

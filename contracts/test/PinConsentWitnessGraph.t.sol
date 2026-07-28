@@ -190,13 +190,13 @@ contract PinConsentWitnessGraphTest is Test {
     function test_rerun_after_the_eta_executes_instead_of_restarting_the_delay() public {
         (PinConsentWitnessGraph timelocked, ProtocolRegistry timelockedReg) = _timelockedFixture();
 
-        timelocked.run(); // run 1: proposes only
+        timelocked.pin(timelockedReg, _next()); // run 1: proposes only
         uint256 eta = timelockedReg.artifactSetEta(id);
         assertGt(eta, block.timestamp, "run 1 must stage a proposal, not publish");
         assertEq(timelockedReg.getArtifactSet(id).witnessMobileSha256, bytes32(0), "not pinned yet");
 
         vm.warp(eta);
-        timelocked.run(); // run 2: executes the ripened proposal
+        timelocked.pin(timelockedReg, _next()); // run 2: executes the ripened proposal
 
         assertEq(timelockedReg.artifactSetEta(id), 0, "the proposal must be consumed, not re-staged");
         assertEq(timelockedReg.getArtifactSet(id).witnessMobileSha256, GRAPH, "run 2 must publish the pin");
@@ -208,19 +208,25 @@ contract PinConsentWitnessGraphTest is Test {
     function test_rerun_inside_the_window_refuses_rather_than_re_proposing() public {
         (PinConsentWitnessGraph timelocked, ProtocolRegistry timelockedReg) = _timelockedFixture();
 
-        timelocked.run();
+        timelocked.pin(timelockedReg, _next());
         uint256 eta = timelockedReg.artifactSetEta(id);
 
         vm.warp(eta - 1);
         vm.expectRevert(bytes("proposal pending - re-run after the printed ETA to execute"));
-        timelocked.run();
+        timelocked.pin(timelockedReg, _next());
 
         assertEq(timelockedReg.artifactSetEta(id), eta, "the staged ETA must not move");
     }
 
-    /// A registry with a REAL delay, published unpinned, with the script's env wired to pin it.
+    /// A registry with a REAL delay, published unpinned.
     ///
-    /// `PUBLISHER_ROLE` goes to `DEFAULT_SENDER`, not to this test contract: `run()` publishes inside
+    /// The operation is driven through `pin(reg, next)` rather than `run()` SO THAT this suite sets no
+    /// environment: `vm.setEnv` is process-global and forge runs test contracts in parallel, so wiring
+    /// `PROTOCOL_REGISTRY` here would race `DeployProtocolRegistry.t.sol`, which sets the same name to
+    /// a different registry. That race would not merely fail an assertion - it would point a script at
+    /// the wrong registry.
+    ///
+    /// `PUBLISHER_ROLE` goes to `DEFAULT_SENDER`, not to this test contract: `pin` publishes inside
     /// `vm.startBroadcast()`, so the calls arrive from forge's broadcast sender however the test was
     /// invoked. Granting the role to `address(this)` compiles and then fails as `AccessControl…`,
     /// which reads as a role bug rather than the harness detail it is.
@@ -233,13 +239,6 @@ contract PinConsentWitnessGraphTest is Test {
         vm.warp(block.timestamp + 2 days);
         timelockedReg.executeArtifactSet(id);
         vm.stopPrank();
-
-        vm.setEnv("PROTOCOL_REGISTRY", vm.toString(address(timelockedReg)));
-        vm.setEnv("CONSENT_ZKEY_SHA256", vm.toString(ZKEY));
-        vm.setEnv("CONSENT_WITNESS_MOBILE_SHA256", vm.toString(GRAPH));
-        vm.setEnv("CONSENT_R1CS_SHA256", vm.toString(R1CS));
-        vm.setEnv("CONSENT_WASM_SHA256", vm.toString(WASM));
-        vm.setEnv("DOGTAG_ARTIFACTS_URL", BASE_URL);
 
         return (new PinConsentWitnessGraph(), timelockedReg);
     }
