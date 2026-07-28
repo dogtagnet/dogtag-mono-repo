@@ -170,6 +170,7 @@ export { useRoaxChain, type UseRoaxChainResult } from "./wallet/useRoaxChain";
 export {
   runVerificationBench,
   recordingReader,
+  docFromShareResponse,
   validUntilOf,
   todayIso,
   type BenchCheck,

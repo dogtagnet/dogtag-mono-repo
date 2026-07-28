@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { DEPLOYED_ADDRESSES, recordTypeKey } from "../src/wallet/contracts";
 import type { IssuerChainReader } from "../src/wallet/verifyCredential";
 import {
+  docFromShareResponse,
   runVerificationBench,
   validUntilOf,
   type BenchCheck,
@@ -203,7 +204,7 @@ describe("the three-state contract", () => {
       await bench(doc, { ...genuineChain(doc), failing: new Set(["rootIssuer"] as const) }),
       await bench(doc, { ...genuineChain(doc), rootIssuers: {} }),
       await bench(asRecord({ nonsense: true }), genuineChain(doc)),
-      await bench(validDoc().data ? stripValidUntil(doc) : doc, genuineChain(doc)),
+      await bench(stripValidUntil(doc), genuineChain(doc)),
     ];
     let couldNotRunSeen = 0;
     for (const r of reports) {
@@ -404,8 +405,15 @@ describe("the expiry check", () => {
   it("fails a lapsed window and passes a live one, comparing ISO dates as plain strings", async () => {
     const lapsed = validDoc("2020-05-01");
     const live = validDoc("2027-01-11");
-    expect(check(await bench(lapsed, genuineChain(lapsed)), "not-expired").outcome).toBe("fail");
+    const lapsedReport = await bench(lapsed, genuineChain(lapsed));
+    expect(check(lapsedReport, "not-expired").outcome).toBe("fail");
     expect(check(await bench(live, genuineChain(live)), "not-expired").outcome).toBe("pass");
+    // The CLEAN expired case: genuinely lapsed and untampered. Without this, nothing in the suite
+    // separates "expired" from "someone edited the window", and the two have different remedies.
+    expect(check(lapsedReport, "integrity").outcome).toBe("pass");
+    expect(check(lapsedReport, "anchored-on-chain").outcome).toBe("pass");
+    // And it is on-chain VALID while being expired - the whole reason expiry needs its own row.
+    expect(lapsedReport.verdict).toBe(true);
   });
 
   it("could-not-run - never pass - for a document carrying no validity window", async () => {
@@ -551,5 +559,89 @@ describe("the mutations trip the specific check that catches them", () => {
         expect(u.why.length).toBeGreaterThan(20);
       }
     }
+  });
+});
+
+// ── the verdict's scope, stated rather than left to be inferred ─────────────────────────────────
+
+describe("which rows the verifier's verdict folds in", () => {
+  it("marks expiry and the issuer-domain rows as reported BESIDE the verdict, not inside it", async () => {
+    const doc = validDoc();
+    const r = await bench(doc, genuineChain(doc), {
+      domainRegistryAddr: DOMAIN_REGISTRY,
+      domainClaimReader: domainReader(ISSUER.domain),
+    });
+    const gates = Object.fromEntries(r.checks.map((c) => [c.id, c.gatesVerdict]));
+    expect(gates).toEqual({
+      integrity: true,
+      "issuer-descends-from-factory": true,
+      "document-names-issuing-contract": true,
+      "issuer-whitelisted": true,
+      "anchored-on-chain": true,
+      "not-revoked": true,
+      "not-expired": false,
+      "issuer-domain-claim": false,
+      "issuer-domain-dns": false,
+    });
+  });
+
+  it("a valid verdict over a red row happens ONLY where the row is marked as not gating", async () => {
+    // This is the property that stops the page reading as self-contradictory: every red row sitting
+    // under a `true` verdict must be one the verifier genuinely does not consider.
+    const lapsed = validDoc("2020-05-01");
+    const r = await bench(lapsed, genuineChain(lapsed), {
+      domainRegistryAddr: DOMAIN_REGISTRY,
+      domainClaimReader: domainReader("somewhere-else.example"),
+    });
+    expect(r.verdict).toBe(true);
+    const redAndGating = r.checks.filter((c) => c.outcome === "fail" && c.gatesVerdict);
+    expect(redAndGating.map((c) => c.id)).toEqual([]);
+    // ...and there really ARE red rows, or this asserts nothing.
+    expect(r.checks.filter((c) => c.outcome === "fail").map((c) => c.id).sort()).toEqual([
+      "issuer-domain-claim",
+      "not-expired",
+    ]);
+  });
+
+  it("a refused verdict is always explained by at least one row marked as gating", async () => {
+    // The other direction, and the dangerous one. The test above only constrains `verdict: true`, so a
+    // GATING row mislabelled as "not in the verdict" would slip past it - and that mislabelling is what
+    // would let a red integrity row be excused on the page as merely informational.
+    const doc = validDoc();
+    const cases: BenchReport[] = [
+      // integrity red
+      await bench(tamperCoveredField.apply(asRecord(doc))!.doc, genuineChain(doc)),
+      // whitelist red
+      await bench(doc, { ...genuineChain(doc), whitelist: new Set<string>() }),
+      // anchor red
+      await bench(doc, { ...genuineChain(doc), rootIssuers: {} }),
+      // store-agreement red
+      await bench(repointDocumentStore.apply(asRecord(doc))!.doc, withHostile(genuineChain(doc), doc)),
+    ];
+    for (const r of cases) {
+      expect(r.verdict).toBe(false);
+      const blocking = r.checks.filter((c) => c.gatesVerdict && c.outcome !== "pass");
+      expect(
+        blocking.map((c) => c.id),
+        "a false verdict with no gating row to explain it means the page cannot say why",
+      ).not.toEqual([]);
+    }
+  });
+});
+
+describe("docFromShareResponse", () => {
+  it("unwraps both envelope spellings and passes a bare document through", () => {
+    const doc = { data: {}, signature: {} };
+    expect(docFromShareResponse({ wrappedDoc: doc })).toBe(doc);
+    expect(docFromShareResponse({ wrapped_doc: doc })).toBe(doc);
+    expect(docFromShareResponse(doc)).toBe(doc);
+  });
+
+  it("does not mistake a non-object envelope value for the document", () => {
+    // `{wrappedDoc: "..."}` must fall through to the body rather than returning a string as the doc.
+    const body = { wrappedDoc: "not-an-object" };
+    expect(docFromShareResponse(body)).toBe(body);
+    expect(docFromShareResponse(null)).toEqual({});
+    expect(docFromShareResponse("nope")).toEqual({});
   });
 });

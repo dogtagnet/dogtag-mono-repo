@@ -9,6 +9,7 @@ import {
   CardTitle,
   Input,
   Label,
+  docFromShareResponse,
   runVerificationBench,
   useToast,
   type BenchCheck,
@@ -56,10 +57,19 @@ function CheckRow({ check }: { check: BenchCheck }) {
     <div className="border-b border-border py-4 last:border-b-0" data-testid={`check-${check.id}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-2xl text-sm font-medium text-onSurface">{check.question}</p>
-        <Badge variant={variant} data-testid={`outcome-${check.id}`}>
-          <Icon className="h-3.5 w-3.5" />
-          {label}
-        </Badge>
+        <div className="flex items-center gap-2">
+          {/* Which rows the verifier's verdict folds in. Without this a red expiry row under a green
+              banner reads as a self-contradiction rather than the real property it is. */}
+          {!check.gatesVerdict && (
+            <span className="text-xs text-muted" data-testid={`beside-${check.id}`}>
+              not in the verdict
+            </span>
+          )}
+          <Badge variant={variant} data-testid={`outcome-${check.id}`}>
+            <Icon className="h-3.5 w-3.5" />
+            {label}
+          </Badge>
+        </div>
       </div>
       <p className="mt-1.5 text-sm text-muted">{check.finding}</p>
 
@@ -126,8 +136,9 @@ function VerdictBanner({ report }: { report: BenchReport }) {
       <div>
         <p className="font-semibold text-onSurface">{ok ? "Verifier verdict: valid" : "Verifier verdict: not valid"}</p>
         <p className="text-sm text-muted">
-          Copied verbatim from the same verification path the wallet and the verify panel use. The rows
-          below are that path&apos;s own reasoning, not a second opinion.
+          Copied verbatim from the same verification path the wallet and the verify panel use. It covers
+          integrity, on-chain status and the issuer pillar - NOT expiry or the issuer domain, which are
+          reported below as their own rows. Read both.
         </p>
       </div>
     </div>
@@ -251,7 +262,7 @@ export function VerificationBench() {
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const body = (await res.json()) as Record<string, unknown>;
       // Share endpoints return either the wrapped doc itself or an envelope carrying it.
-      const doc = (body.wrappedDoc ?? body.wrapped_doc ?? body) as Record<string, unknown>;
+      const doc = docFromShareResponse(body);
       const text = JSON.stringify(doc, null, 2);
       setRaw(text);
       setApplied([]);
@@ -364,7 +375,12 @@ export function VerificationBench() {
                 One row per check.{" "}
                 {report.blockNumber === null
                   ? "The chain head could not be read, so the on-chain reads used `latest` and this report is NOT reproducible."
-                  : `Every on-chain read was pinned to block ${report.blockNumber.toString()}.`}
+                  : `Every on-chain read was pinned to block ${report.blockNumber.toString()}.`}{" "}
+                Rows marked <span className="font-medium">not in the verdict</span> are reported beside
+                it rather than folded into it - the verifier&apos;s verdict is integrity, on-chain
+                status and the issuer pillar only. That is why an expired credential can be
+                on-chain-valid: the chain records anchoring and revocation, and has no concept of a
+                validity window.
               </CardDescription>
             </CardHeader>
             <CardContent className="pt-0">

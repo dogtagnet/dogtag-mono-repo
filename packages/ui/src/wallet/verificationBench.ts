@@ -63,6 +63,33 @@ export type BenchCheckId =
   | "issuer-domain-claim"
   | "issuer-domain-dns";
 
+/**
+ * Which checks the VERIFIER'S OWN verdict folds in, and which are reported beside it.
+ *
+ * `verifyCredentialOnchain` computes `integrity && onchain && issuerWhitelisted === true`. Expiry and
+ * the issuer-domain checks feed none of that, so an expired-but-anchored credential legitimately
+ * produces `verdict: true` with a red expiry row - the captain's own point that an expired credential
+ * is on-chain-valid. Stating which rows gate is what stops that reading as a self-contradiction: a
+ * surface that showed a green banner over a red row without saying why would be leaving the reader to
+ * derive the reason, on the one page whose entire product is not making them do that.
+ *
+ * `anchored-on-chain` and `not-revoked` DO gate: they are the decomposition of the verifier's single
+ * `onchain` term (`isValid == issuedAt != 0 && !isRevoked`), split apart so the row can say which half
+ * objected.
+ */
+const GATES_VERDICT: Record<BenchCheckId, boolean> = {
+  integrity: true,
+  "issuer-descends-from-factory": true,
+  "document-names-issuing-contract": true,
+  "issuer-whitelisted": true,
+  "anchored-on-chain": true,
+  "not-revoked": true,
+  // Reported BESIDE the verdict, never folded into it.
+  "not-expired": false,
+  "issuer-domain-claim": false,
+  "issuer-domain-dns": false,
+};
+
 /** One thing that was read, and from where. Rendered verbatim so a reader can reproduce it by hand. */
 export interface EvidenceLine {
   label: string;
@@ -76,6 +103,11 @@ export interface BenchCheck {
   /** The check as a plain-language question, not a jargon label. */
   question: string;
   outcome: CheckOutcome;
+  /**
+   * Whether the VERIFIER'S verdict folds this check in. A `false` row can be red while the verdict is
+   * `true` - see {@link GATES_VERDICT} for why that is a real property and not a contradiction.
+   */
+  gatesVerdict: boolean;
   /** A one-line statement of what was observed. Always present, for every outcome. */
   finding: string;
   /**
@@ -243,6 +275,24 @@ export function validUntilOf(doc: Record<string, unknown>): { keyPath: string; v
   return null;
 }
 
+/**
+ * Pull the wrapped document out of whatever a share endpoint returned.
+ *
+ * A DogTag credential QR encodes a share URL, and the endpoints behind those URLs are not uniform:
+ * some return the `WrappedDoc` directly, others wrap it as `wrappedDoc` (web) or `wrapped_doc` (the
+ * Rust routes' serde name). Returning the body unchanged when neither key is present is what lets a
+ * bare-document endpoint work; it is NOT a guess about validity - a body that is not a document simply
+ * fails the checks below and says so.
+ */
+export function docFromShareResponse(body: unknown): Record<string, unknown> {
+  if (!isObject(body)) return {} as Record<string, unknown>;
+  for (const key of ["wrappedDoc", "wrapped_doc"]) {
+    const inner = body[key];
+    if (isObject(inner)) return inner;
+  }
+  return body;
+}
+
 /** The last read of `method`, or `undefined` when it was never attempted. */
 function lastRead(reads: ChainRead[], method: ChainRead["method"]): ChainRead | undefined {
   for (let i = reads.length - 1; i >= 0; i--) {
@@ -301,7 +351,7 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
     source: blockNumber === null ? "offline" : "eth_call blockNumber",
   };
 
-  const checks: BenchCheck[] = [
+  const checks: Array<Omit<BenchCheck, "gatesVerdict">> = [
     integrityCheck(doc, response),
     ...issuerAnchorChecks(reads, documentStore, factoryAddr, claimedRoot, blockLine, verifierError),
     whitelistCheck(reads, response, registryAddr, blockLine, verifierError),
@@ -315,11 +365,13 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
   );
 
   return {
+    // Stamped centrally so a newly added check cannot silently omit it; `GATES_VERDICT` is exhaustive
+    // over `BenchCheckId`, so the compiler requires an answer for every check that exists.
+    checks: checks.map((c) => ({ ...c, gatesVerdict: GATES_VERDICT[c.id] })),
     verdict: response ? response.verdict : null,
     response,
     verifierError,
     blockNumber,
-    checks,
     reads,
   };
 }
@@ -332,7 +384,7 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
 function integrityCheck(
   doc: Record<string, unknown>,
   response: VerifyCredentialResp | null,
-): BenchCheck {
+): Omit<BenchCheck, "gatesVerdict"> {
   const question = "Is the document's content intact - does it still hash to the root it claims?";
   const claimed = isObject(doc.signature) ? str(doc.signature.merkleRoot) : "";
 
@@ -397,7 +449,7 @@ function issuerAnchorChecks(
   claimedRoot: string,
   blockLine: EvidenceLine,
   verifierError: string | null,
-): BenchCheck[] {
+): Array<Omit<BenchCheck, "gatesVerdict">> {
   const anchorQ = "Was this issued by a contract that genuinely descends from the DogTag factory?";
   const agreeQ = "Does the document name the same contract the factory says issued it?";
   const read = lastRead(reads, "rootIssuer");
@@ -523,7 +575,7 @@ function whitelistCheck(
   registryAddr: string,
   blockLine: EvidenceLine,
   verifierError: string | null,
-): BenchCheck {
+): Omit<BenchCheck, "gatesVerdict"> {
   const question = "Was the signer that issued this whitelisted for this record type?";
   const signerRead = lastRead(reads, "issuedBy");
   const rtRead = lastRead(reads, "recordType");
@@ -625,7 +677,7 @@ function anchoredCheck(
   response: VerifyCredentialResp | null,
   reads: ChainRead[],
   verifierError: string | null,
-): BenchCheck {
+): Omit<BenchCheck, "gatesVerdict"> {
   const question = "Is this root actually anchored on-chain by its issuing contract?";
   if (!response) {
     return {
@@ -657,7 +709,7 @@ function revokedCheck(
   response: VerifyCredentialResp | null,
   reads: ChainRead[],
   verifierError: string | null,
-): BenchCheck {
+): Omit<BenchCheck, "gatesVerdict"> {
   const question = "Has the issuer revoked this credential?";
   if (!response) {
     return {
@@ -702,7 +754,7 @@ function revokedCheck(
  * backend's record-status view folds absence into "not expired"; that is a different question - the
  * lifecycle of a stored record, not a check of a presented one.)
  */
-function expiryCheck(doc: Record<string, unknown>, today: string): BenchCheck {
+function expiryCheck(doc: Record<string, unknown>, today: string): Omit<BenchCheck, "gatesVerdict"> {
   const question = "Is this credential still within its validity window?";
   let found: { keyPath: string; value: string } | null = null;
   try {
@@ -748,7 +800,7 @@ async function domainChecks(
   reads: ChainRead[],
   claimedDomain: string,
   blockLine: EvidenceLine,
-): Promise<BenchCheck[]> {
+): Promise<Array<Omit<BenchCheck, "gatesVerdict">>> {
   // NOTE the absent parameter: the document's own `documentStore` is deliberately NOT in scope here.
   // The domain claim is read from the clone the FACTORY named, and having the document's address
   // available would make reading the claim off it a one-character mistake.
@@ -762,7 +814,7 @@ async function domainChecks(
 
   // The DNS half is never performed here. It reports could-not-run ALWAYS, with the reason, rather
   // than being omitted - a check a surface cannot make is exactly what this bench exists to say aloud.
-  const dnsCheck: BenchCheck = {
+  const dnsCheck: Omit<BenchCheck, "gatesVerdict"> = {
     id: "issuer-domain-dns",
     question: dnsQ,
     outcome: "could-not-run",
