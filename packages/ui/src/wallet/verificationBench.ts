@@ -34,6 +34,30 @@ import {
  * {@link recordingReader} and OBSERVES the reads it makes: which contract was asked, what it answered,
  * and at which block. Every "evidence" line below is a recorded observation, never a recomputation.
  *
+ * # THE INVARIANT
+ *
+ * NO ROW MAY ASSERT AN OUTCOME OR AN EVIDENCE LINE FROM A VALUE THE RECORDER NEVER OBSERVED.
+ *
+ * `verifyCredentialOnchain` short-circuits when the factory resolves no clone: it fills
+ * `[issuedAt, onchainValid, revoked]` with `[0n, false, false]` having made NO chain access at all, and
+ * sets `issuerAddr` to the document's own `documentStore`. Those defaults are ABSENCE OF EVIDENCE. Read
+ * as evidence they produce the exact collapse this surface exists to prevent - a green "not revoked"
+ * row citing a read never made, against an address the rest of the codebase deliberately refuses to
+ * trust.
+ *
+ * Patching the rows that happen to be wrong today would fix the instance; the invariant makes the whole
+ * class impossible. A bench that fabricates an evidence line is worse than a bench that is merely
+ * wrong, because it hands the reader a citation for a read that never happened - and citations are the
+ * entire product of this surface.
+ *
+ * It is enforced structurally rather than by review: a chain citation can only be built by
+ * {@link readEvidence}, which takes the recorded {@link ChainRead} itself rather than an address and a
+ * method name a caller assembled. With no read in the log there is nothing to pass, so the citation
+ * cannot be written. {@link readBackedCheck} applies the same rule to outcomes: a row whose licensing
+ * read is absent or failed reports `could-not-run` naming the read that never happened. Nothing is lost
+ * by this - when no clone resolves, `issuer-descends-from-factory` already reports a definite FAIL,
+ * which is the honest place for that signal.
+ *
  * # Why "could not run" is a first-class outcome here
  *
  * `verifyCredentialOnchain` fails CLOSED: a read that throws rejects the whole promise, so there is no
@@ -246,33 +270,75 @@ export function todayIso(at: Date = new Date()): string {
 }
 
 /**
+ * THE canonical three-tier `validUntil` chain, in precedence order. One list, three issuers:
+ *
+ *  1. `credentialSubject.validity.validUntil` - TRAVEL_CLEARANCE's nested CDC validity block.
+ *  2. `credentialSubject.rabiesValidUntil`    - EU_HEALTH_CERT's flat Annex-IV leaf. It has no
+ *     `validity` block at all, so a chain that omits this tier reports every EU health certificate as
+ *     carrying no validity window - on the one surface built to expose expiry.
+ *  3. `validUntil` - VACCINATION's schema field is DOTLESS, so it lands as a SIBLING of
+ *     `credentialSubject` at the top level of `data`, never as a child of it.
+ *
+ * `credentialSubject.validUntil` is deliberately NOT in the list: no issuer emits it.
+ *
+ * The same chain is implemented in `stacks/owner/web/src/lib/receipt.ts` and in both mobile
+ * `WrappedDoc.validUntil` ports, explicitly so the surfaces cannot drift about when a credential has
+ * lapsed. Move all of them together or none.
+ */
+export const VALID_UNTIL_KEYPATHS = [
+  "credentialSubject.validity.validUntil",
+  "credentialSubject.rabiesValidUntil",
+  "validUntil",
+] as const;
+
+export interface ValidityWindow {
+  keyPath: string;
+  /** The unpacked leaf value, exactly as the document carries it - blank and malformed included. */
+  value: string;
+  /**
+   * Whether `value` can be compared. A leaf that is present but blank or not ISO-shaped is NOT a
+   * lapsed window: `today > ""` is true for every date, so comparing it would accuse a credential
+   * whose window was simply left empty at issuance.
+   */
+  usable: boolean;
+}
+
+/** `YYYY-MM-DD`, optionally with a time suffix - the shape a plain-string date compare is sound on. */
+function isIsoDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}/.test(value);
+}
+
+/**
  * The credential's validity window, unpacked from the Merkle-covered `data`.
  *
- * The keyPath precedence mirrors the government backend's own lookup
- * (`credentialSubject.validity.validUntil`, then `credentialSubject.validUntil`); the bare top-level
- * `validUntil` is the third form, which the rabies schema defines. Reading all three is what stops the
- * check silently reporting "no window" for a document that plainly has one.
+ * Walks {@link VALID_UNTIL_KEYPATHS} and returns the first USABLE tier. Emptiness is tested on the
+ * UNWRAPPED value, so a present-but-blank tier falls through to the next - matching the canonical
+ * chain's own behaviour. When a tier is present but no tier is usable, the first present one is
+ * returned with `usable: false`, so the check can say "the window is unreadable" rather than the
+ * different and untrue "this document carries no window".
  *
  * The value is a PACKED `salt:tag:value` leaf, so it is unpacked with the SDK's own `parsePacked`
  * rather than by splitting on `:` here - the value itself may contain colons.
  */
-export function validUntilOf(doc: Record<string, unknown>): { keyPath: string; value: string } | null {
+export function validUntilOf(doc: Record<string, unknown>): ValidityWindow | null {
   const flat = flattenData(doc.data);
-  for (const keyPath of [
-    "credentialSubject.validity.validUntil",
-    "credentialSubject.validUntil",
-    "validUntil",
-  ]) {
+  let firstPresent: ValidityWindow | null = null;
+  for (const keyPath of VALID_UNTIL_KEYPATHS) {
     const entry = flat.find(([kp]) => kp === keyPath);
     if (!entry) continue;
+    let value: string;
     try {
-      return { keyPath, value: parsePacked(entry[1]).valueRest };
+      value = parsePacked(entry[1]).valueRest.trim();
     } catch {
-      // A leaf too malformed to unpack is not a validity window. Fall through to the next keyPath;
-      // if none unpacks, the check reports could-not-run rather than guessing a date.
+      // A leaf too malformed to unpack carries no readable date, but the document DOES claim a window
+      // here - so it is recorded as present-and-unusable rather than treated as absent.
+      firstPresent ??= { keyPath, value: "", usable: false };
+      continue;
     }
+    if (value && isIsoDate(value)) return { keyPath, value, usable: true };
+    firstPresent ??= { keyPath, value, usable: false };
   }
-  return null;
+  return firstPresent;
 }
 
 /**
@@ -307,13 +373,116 @@ function isZeroAddr(v: string | undefined): boolean {
 }
 
 /**
+ * The ONLY way to cite a chain read as evidence, and the mechanism behind THE INVARIANT above.
+ *
+ * It takes the recorded {@link ChainRead} rather than an address and a method name the caller
+ * assembled, so a citation for a read that was never made cannot be written: there is no read to pass.
+ * The value and the contract both come off the observation, never off the verifier's response - which
+ * reports `issuerAddr` as `resolvedClone ?? documentStore` and so cannot say which of the two answered.
+ *
+ * Every source it emits ends `on <contract>`; nothing else in this module produces that shape, which is
+ * what lets a test assert generically that no cited contract is absent from the recorded reads.
+ */
+function readEvidence(label: string, read: ChainRead, call: string): EvidenceLine {
+  return {
+    label,
+    value:
+      read.outcome === "ok"
+        ? (read.value ?? "")
+        : `(unanswered - the read failed: ${read.error ?? "unknown error"})`,
+    source: `${call} on ${read.contract}`,
+  };
+}
+
+/**
+ * Why a row backed by `method` could not assert anything, phrased from what the recorder actually saw.
+ *
+ * The three cases are kept apart because their remedies are: a read that FAILED is a chain we could not
+ * reach, a read that was NEVER MADE against a resolved clone is a verifier that stopped earlier, and a
+ * read never made because no clone resolved is the case where the document's own `documentStore` was
+ * deliberately not asked in the factory's place.
+ */
+function unobservedReason(
+  reads: ChainRead[],
+  read: ChainRead | undefined,
+  method: ChainRead["method"],
+  verifierError: string | null,
+): string {
+  if (read?.outcome === "failed") {
+    return `The chain read \`${method}\` against ${read.contract} failed: ${read.error ?? "unknown error"}`;
+  }
+  if (!read) {
+    const anchor = lastRead(reads, "rootIssuer");
+    if (anchor?.outcome === "ok" && (isZeroAddr(anchor.value) || !anchor.value)) {
+      return `No factory-deployed contract was resolved for this root, so \`${method}\` was never asked of anything. The contract the document names was deliberately NOT asked in its place, so nothing is known either way.`;
+    }
+    return (
+      failedReadReason(reads) ??
+      (verifierError
+        ? `The verifier stopped before \`${method}\` was read: ${verifierError}`
+        : `No \`${method}\` read was made.`)
+    );
+  }
+  return (
+    failedReadReason(reads) ??
+    (verifierError ? `The verifier stopped before this check: ${verifierError}` : "The check was not reached.")
+  );
+}
+
+/**
+ * A row licensed by ONE observed chain read: it may assert only when that read is in the log and
+ * succeeded, and its evidence is built from the read itself. See THE INVARIANT at the top of the file.
+ *
+ * The verdict still comes from the verifier's own response - `decide` reads its fragments rather than
+ * recomputing them - so this gates whether a claim may be made, not what the claim is.
+ */
+function readBackedCheck(args: {
+  id: BenchCheckId;
+  question: string;
+  method: ChainRead["method"];
+  call: string;
+  label: string;
+  reads: ChainRead[];
+  response: VerifyCredentialResp | null;
+  verifierError: string | null;
+  /** The finding when the row cannot run - what was NOT established. */
+  unestablished: string;
+  decide(response: VerifyCredentialResp): { outcome: "pass" | "fail"; finding: string };
+}): Omit<BenchCheck, "gatesVerdict"> {
+  const read = lastRead(args.reads, args.method);
+  const evidence = read ? [readEvidence(args.label, read, args.call)] : [];
+  if (!read || read.outcome !== "ok" || !args.response) {
+    return {
+      id: args.id,
+      question: args.question,
+      outcome: "could-not-run",
+      finding: args.unestablished,
+      couldNotRunReason: unobservedReason(args.reads, read, args.method, args.verifierError),
+      evidence,
+    };
+  }
+  const decided = args.decide(args.response);
+  return {
+    id: args.id,
+    question: args.question,
+    outcome: decided.outcome,
+    finding: decided.finding,
+    evidence,
+  };
+}
+
+/**
  * Run the bench: the real verifier, observed.
  *
  * Never throws for a bad record - a malformed envelope, an unreachable chain and a forged credential
  * are all REPORTED, because "the bench crashed" tells an operator nothing about which check objected.
  */
 export async function runVerificationBench(input: BenchInput): Promise<BenchReport> {
-  const doc = input.wrappedDoc;
+  // A JSON primitive, an array or `null` is a record too, and the page's whole purpose is that ANY of
+  // them can be thrown at it. Reaching straight for `input.wrappedDoc.issuer` threw a TypeError out of
+  // the call, which the contract above forbids and which the page could only render as a dead button.
+  // An empty object flows through every check below and is REPORTED - malformed envelope, no verdict.
+  const doc = isObject(input.wrappedDoc) ? input.wrappedDoc : {};
   const blockNumber = input.blockNumber ?? null;
   const factoryAddr = input.factoryAddr?.trim() || DEPLOYED_ADDRESSES.DogTagIssuerFactory;
   const registryAddr = input.registryAddr?.trim() || DEPLOYED_ADDRESSES.IssuerRegistry;
@@ -353,7 +522,7 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
 
   const checks: Array<Omit<BenchCheck, "gatesVerdict">> = [
     integrityCheck(doc, response),
-    ...issuerAnchorChecks(reads, documentStore, factoryAddr, claimedRoot, blockLine, verifierError),
+    ...issuerAnchorChecks(reads, documentStore, claimedRoot, blockLine, verifierError),
     whitelistCheck(reads, response, registryAddr, blockLine, verifierError),
     anchoredCheck(response, reads, verifierError),
     revokedCheck(response, reads, verifierError),
@@ -445,7 +614,6 @@ function integrityCheck(
 function issuerAnchorChecks(
   reads: ChainRead[],
   documentStore: string,
-  factoryAddr: string,
   claimedRoot: string,
   blockLine: EvidenceLine,
   verifierError: string | null,
@@ -484,9 +652,13 @@ function issuerAnchorChecks(
     ];
   }
 
+  // The factory address comes off the READ, not off the config value the caller passed: the two are
+  // the same only if the read really went where the caller intended, and that is the fact worth citing.
+  // The factory address comes off the READ, not off the config value the caller passed: the two are
+  // the same only if the read really went where the caller intended, and that is the fact worth citing.
   const factoryLine: EvidenceLine = {
     label: "Factory asked",
-    value: factoryAddr,
+    value: read.contract,
     source: "DogTagIssuerFactory.rootIssuer(root) - this client's own configured factory",
   };
   const rootLine: EvidenceLine = { label: "Root asked about", value: claimedRoot, source: "document signature.merkleRoot" };
@@ -581,25 +753,22 @@ function whitelistCheck(
   const rtRead = lastRead(reads, "recordType");
   const wlRead = lastRead(reads, "isWhitelistedFor");
 
+  // The registry line is emitted only when the registry was ACTUALLY consulted. Stating "Registry
+  // asked" unconditionally cited a read that, on every unresolved-clone path, was never made.
   const evidence: EvidenceLine[] = [
-    { label: "Registry asked", value: registryAddr, source: "IssuerRegistry.isWhitelistedFor(recordTypeKey, signer)" },
+    wlRead
+      ? readEvidence("Registry answer", wlRead, "IssuerRegistry.isWhitelistedFor(recordTypeKey, signer)")
+      : {
+          label: "Registry",
+          value: `not consulted (${registryAddr})`,
+          source: "no isWhitelistedFor read was made - see the reason below",
+        },
   ];
-  if (signerRead?.outcome === "ok") {
-    evidence.push({
-      label: "Signer the chain names",
-      value: signerRead.value ?? "",
-      source: `DogTagIssuer.issuedBy(root) on ${signerRead.contract}`,
-    });
+  if (signerRead) {
+    evidence.push(readEvidence("Signer the chain names", signerRead, "DogTagIssuer.issuedBy(root)"));
   }
-  if (rtRead?.outcome === "ok") {
-    evidence.push({
-      label: "Record type the contract declares",
-      value: rtRead.value ?? "",
-      source: `DogTagIssuer.recordType() on ${rtRead.contract}`,
-    });
-  }
-  if (wlRead?.outcome === "ok") {
-    evidence.push({ label: "Registry answer", value: wlRead.value ?? "", source: `on ${wlRead.contract}` });
+  if (rtRead) {
+    evidence.push(readEvidence("Record type the contract declares", rtRead, "DogTagIssuer.recordType()"));
   }
   evidence.push(blockLine);
 
@@ -678,31 +847,23 @@ function anchoredCheck(
   reads: ChainRead[],
   verifierError: string | null,
 ): Omit<BenchCheck, "gatesVerdict"> {
-  const question = "Is this root actually anchored on-chain by its issuing contract?";
-  if (!response) {
-    return {
-      id: "anchored-on-chain",
-      question,
-      outcome: "could-not-run",
-      finding: "The anchoring timestamp was not established.",
-      couldNotRunReason:
-        failedReadReason(reads) ??
-        (verifierError ? `The verifier stopped before this check: ${verifierError}` : "The check was not reached."),
-      evidence: [],
-    };
-  }
-  const issued = response.fragments.issued;
-  return {
+  return readBackedCheck({
     id: "anchored-on-chain",
-    question,
-    outcome: issued ? "pass" : "fail",
-    finding: issued
-      ? "The issuing contract records an anchoring timestamp for this root."
-      : "The issuing contract has never anchored this root (issuedAt is 0).",
-    evidence: [
-      { label: "issuedAt", value: response.issuedAt, source: `DogTagIssuer.issuedAt(root) on ${response.issuerAddr}` },
-    ],
-  };
+    question: "Is this root actually anchored on-chain by its issuing contract?",
+    method: "issuedAt",
+    call: "DogTagIssuer.issuedAt(root)",
+    label: "issuedAt",
+    reads,
+    response,
+    verifierError,
+    unestablished: "The anchoring timestamp was not established.",
+    decide: (resp) => ({
+      outcome: resp.fragments.issued ? "pass" : "fail",
+      finding: resp.fragments.issued
+        ? "The issuing contract records an anchoring timestamp for this root."
+        : "The issuing contract has never anchored this root (issuedAt is 0).",
+    }),
+  });
 }
 
 function revokedCheck(
@@ -710,32 +871,24 @@ function revokedCheck(
   reads: ChainRead[],
   verifierError: string | null,
 ): Omit<BenchCheck, "gatesVerdict"> {
-  const question = "Has the issuer revoked this credential?";
-  if (!response) {
-    return {
-      id: "not-revoked",
-      question,
-      outcome: "could-not-run",
-      finding: "Revocation status was not established.",
-      couldNotRunReason:
-        failedReadReason(reads) ??
-        (verifierError ? `The verifier stopped before this check: ${verifierError}` : "The check was not reached."),
-      evidence: [],
-    };
-  }
-  const revoked = response.fragments.revoked;
-  return {
+  return readBackedCheck({
     id: "not-revoked",
-    question,
+    question: "Has the issuer revoked this credential?",
+    method: "isRevoked",
+    call: "DogTagIssuer.isRevoked(root)",
+    label: "isRevoked",
+    reads,
+    response,
+    verifierError,
+    unestablished: "Revocation status was not established.",
     // The check PASSES when the credential is NOT revoked - the question is phrased as the risk.
-    outcome: revoked ? "fail" : "pass",
-    finding: revoked
-      ? "The issuing contract has revoked this root."
-      : "The issuing contract has not revoked this root.",
-    evidence: [
-      { label: "isRevoked", value: String(revoked), source: `DogTagIssuer.isRevoked(root) on ${response.issuerAddr}` },
-    ],
-  };
+    decide: (resp) => ({
+      outcome: resp.fragments.revoked ? "fail" : "pass",
+      finding: resp.fragments.revoked
+        ? "The issuing contract has revoked this root."
+        : "The issuing contract has not revoked this root.",
+    }),
+  });
 }
 
 /**
@@ -756,7 +909,7 @@ function revokedCheck(
  */
 function expiryCheck(doc: Record<string, unknown>, today: string): Omit<BenchCheck, "gatesVerdict"> {
   const question = "Is this credential still within its validity window?";
-  let found: { keyPath: string; value: string } | null = null;
+  let found: ValidityWindow | null = null;
   try {
     found = validUntilOf(doc);
   } catch {
@@ -771,6 +924,24 @@ function expiryCheck(doc: Record<string, unknown>, today: string): Omit<BenchChe
       couldNotRunReason:
         "No `validUntil` field is present in the Merkle-covered data, so there is no expiry claim to test.",
       evidence: [{ label: "Today (UTC)", value: today, source: "offline" }],
+    };
+  }
+  if (!found.usable) {
+    // A blank or non-ISO leaf is UNREADABLE, not lapsed. `today > ""` is true for every date, so
+    // comparing it would accuse a credential whose window was simply left empty at issuance - the same
+    // could-not-run-rendered-as-an-answer collapse the absent case above already refuses.
+    return {
+      id: "not-expired",
+      question,
+      outcome: "could-not-run",
+      finding: "This document's validity window is present but unreadable.",
+      couldNotRunReason: `The \`${found.keyPath}\` leaf carries ${
+        found.value ? `\`${found.value}\`, which is not an ISO YYYY-MM-DD date` : "no value at all"
+      }, so there is no window this check can compare today against.`,
+      evidence: [
+        { label: "validUntil", value: found.value || "(blank)", source: `document data.${found.keyPath}` },
+        { label: "Today (UTC)", value: today, source: "offline" },
+      ],
     };
   }
   const expired = today > found.value;

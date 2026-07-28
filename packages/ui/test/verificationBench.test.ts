@@ -15,6 +15,7 @@ import {
   docFromShareResponse,
   runVerificationBench,
   validUntilOf,
+  VALID_UNTIL_KEYPATHS,
   type BenchCheck,
   type BenchCheckId,
   type BenchReport,
@@ -48,21 +49,74 @@ const ISSUER: IssuerMeta = {
   recordType: "VACCINATION",
 };
 
-/** A wrapped doc carrying a validity window; deterministic salts so the root is stable across runs. */
-function validDoc(validUntil = "2027-01-11"): WrappedDoc {
+/** Deterministic salts, so a fixture's root is stable across runs. */
+function fixedSalts() {
   let seq = 0;
-  const fixedSalt = () => new Uint8Array(16).fill(++seq);
+  return () => new Uint8Array(16).fill(++seq);
+}
+
+/**
+ * TIER 1 of the canonical validUntil chain: TRAVEL_CLEARANCE's nested CDC `validity` block.
+ *
+ * The fixture deliberately carries a REAL issuer's shape. It used to write a bare
+ * `credentialSubject.validUntil`, which no issuer emits - so the suite agreed with the bench about a
+ * keyPath that exists nowhere else, and could not have noticed the chain being wrong.
+ */
+function validDoc(validUntil = "2027-01-11"): WrappedDoc {
   return wrapDocument(
     {
       credentialSubject: {
         dogTagId: { tag: TypeTag.Integer, value: "42" },
         name: { tag: TypeTag.String, value: "Rex" },
-        validUntil: { tag: TypeTag.String, value: validUntil },
+        validity: { validUntil: { tag: TypeTag.String, value: validUntil } },
       },
     },
     ISSUER,
-    fixedSalt,
+    fixedSalts(),
   );
+}
+
+/** TIER 2: EU_HEALTH_CERT's flat Annex-IV leaf. This record type has NO `validity` block at all. */
+function euHealthCertDoc(rabiesValidUntil = "2029-01-14"): WrappedDoc {
+  return wrapDocument(
+    {
+      credentialSubject: {
+        dogTagId: { tag: TypeTag.Integer, value: "42" },
+        species: { tag: TypeTag.String, value: "dog" },
+        rabiesValidUntil: { tag: TypeTag.String, value: rabiesValidUntil },
+      },
+    },
+    ISSUER,
+    fixedSalts(),
+  );
+}
+
+/**
+ * TIER 3: VACCINATION's schema field is DOTLESS, so the leaf lands as a SIBLING of
+ * `credentialSubject` at the top level of `data` - never as a child of it.
+ */
+function vaccinationDoc(validUntil = "2027-06-30"): WrappedDoc {
+  return wrapDocument(
+    {
+      credentialSubject: { dogTagId: { tag: TypeTag.Integer, value: "42" } },
+      validUntil: { tag: TypeTag.String, value: validUntil },
+    },
+    ISSUER,
+    fixedSalts(),
+  );
+}
+
+/** Overwrite a packed leaf's VALUE, keeping its salt and type tag - a blank window, not a broken leaf. */
+function setValidUntilValue(doc: WrappedDoc, keyPath: string, value: string): Record<string, unknown> {
+  const d = JSON.parse(JSON.stringify(doc));
+  const parts = keyPath.split(".");
+  let node = d.data;
+  for (const p of parts.slice(0, -1)) node = node[p];
+  const leaf = parts[parts.length - 1] as string;
+  const packed = node[leaf] as string;
+  const [saltHex, tag] = packed.split(":");
+  node[leaf] = `${saltHex}:${tag}:${value}`;
+  return d;
 }
 
 const asRecord = (d: WrappedDoc | Record<string, unknown>) => d as unknown as Record<string, unknown>;
@@ -239,6 +293,26 @@ describe("the three-state contract", () => {
     expect(rootOf(fallback)).toMatch(/^0x[0-9a-f]{64}$/);
   });
 
+  it("REPORTS a malformed record rather than throwing - a dead button tells an operator nothing", async () => {
+    // The page is "throw any record at the system", so a JSON primitive is a record too. `null` parses,
+    // reached `doc.issuer` inside the engine, and threw a TypeError out of the call - discarded by the
+    // page's `void runOn(...)`, leaving the PREVIOUS report on screen as though it applied to this input.
+    const cfg = genuineChain(validDoc());
+    for (const junk of [null, 42, "a string", [1, 2, 3], true]) {
+      const r = await runVerificationBench({
+        wrappedDoc: junk as unknown as Record<string, unknown>,
+        reader: fakeReader(cfg),
+        blockNumber: 900_100n,
+        today: TODAY,
+        now: NOW,
+      });
+      expect(r.verdict).toBeNull();
+      expect(r.verifierError, `${JSON.stringify(junk)} must be reported, not swallowed`).toBeTruthy();
+      expect(check(r, "integrity").outcome).toBe("could-not-run");
+      expect(r.checks.every((c) => c.outcome !== "pass")).toBe(true);
+    }
+  });
+
   it("reports no verdict at all - never `false` - when the verifier could not produce one", async () => {
     const doc = validDoc();
     const r = await bench(doc, { ...genuineChain(doc), failing: new Set(["isValid"] as const) });
@@ -251,7 +325,7 @@ describe("the three-state contract", () => {
 
 function stripValidUntil(doc: WrappedDoc): Record<string, unknown> {
   const d = JSON.parse(JSON.stringify(doc));
-  delete d.data.credentialSubject.validUntil;
+  delete d.data.credentialSubject.validity;
   return d;
 }
 
@@ -382,6 +456,86 @@ describe("the issuer-whitelist check", () => {
   });
 });
 
+// ── THE INVARIANT: no row asserts from a value the recorder never observed ──────────────────────
+
+/** Every contract a check CITES as having answered. Only `readEvidence` can produce this shape. */
+function citedContracts(r: BenchReport): string[] {
+  const out: string[] = [];
+  for (const c of r.checks) {
+    for (const e of c.evidence) {
+      const m = / on (0x[0-9a-fA-F]{40})\b/.exec(e.source);
+      if (m?.[1]) out.push(m[1].toLowerCase());
+    }
+  }
+  return out;
+}
+
+describe("no row asserts from a value the recorder never observed", () => {
+  it("never cites a contract that is absent from the recorded reads", async () => {
+    const doc = validDoc();
+    const forged = repointDocumentStore.apply(asRecord(doc))!.doc;
+    // The unresolved-clone worlds are the ones where the class manifests: the verifier fills
+    // [issuedAt, onchainValid, revoked] with [0n, false, false] having made NO read, and reports the
+    // DOCUMENT'S OWN address as `issuerAddr`. A sweep of genuine chains would pass before the fix.
+    const worlds = [
+      await bench(doc, genuineChain(doc), {
+        domainRegistryAddr: DOMAIN_REGISTRY,
+        domainClaimReader: domainReader(ISSUER.domain),
+      }),
+      await bench(doc, { ...genuineChain(doc), rootIssuers: {} }),
+      await bench(forged, { ...withHostile(genuineChain(doc), doc), rootIssuers: {} }),
+      await bench(doc, { ...genuineChain(doc), failing: new Set(["issuedAt"] as const) }),
+      await bench(doc, { ...genuineChain(doc), issuedBy: {} }),
+      await bench(asRecord({ nonsense: true }), genuineChain(doc)),
+    ];
+    let citations = 0;
+    for (const r of worlds) {
+      const observed = new Set(r.reads.map((x) => x.contract.toLowerCase()));
+      for (const addr of citedContracts(r)) {
+        citations++;
+        expect(
+          observed.has(addr),
+          `an evidence line cites ${addr} as having answered, but no read was recorded against it`,
+        ).toBe(true);
+      }
+    }
+    // ...and citations really ARE made, or this asserts nothing.
+    expect(citations).toBeGreaterThan(0);
+  });
+
+  it("reports not-revoked as could-not-run - NEVER pass - when no clone was resolved to ask", async () => {
+    const doc = validDoc();
+    const forged = repointDocumentStore.apply(asRecord(doc))!.doc;
+    const r = await bench(forged, { ...withHostile(genuineChain(doc), doc), rootIssuers: {} });
+
+    const revoked = check(r, "not-revoked");
+    expect(revoked.outcome).toBe("could-not-run");
+    expect(revoked.outcome).not.toBe("pass");
+    expect(revoked.couldNotRunReason).toContain("isRevoked");
+    const anchored = check(r, "anchored-on-chain");
+    expect(anchored.outcome).toBe("could-not-run");
+    expect(anchored.outcome).not.toBe("pass");
+
+    // No row anywhere may name the attacker's address as a contract that answered - it was never asked.
+    expect(citedContracts(r)).not.toContain(HOSTILE.toLowerCase());
+    expect(r.reads.some((x) => x.contract.toLowerCase() === HOSTILE.toLowerCase())).toBe(false);
+
+    // Nothing is lost: the anchor row already reports the definite failure, which is its honest home.
+    expect(check(r, "issuer-descends-from-factory").outcome).toBe("fail");
+  });
+
+  it("does not claim the registry was asked when no isWhitelistedFor read was made", async () => {
+    const doc = validDoc();
+    const r = await bench(doc, { ...genuineChain(doc), rootIssuers: {} });
+    const wl = check(r, "issuer-whitelisted");
+    expect(wl.outcome).toBe("could-not-run");
+    expect(r.reads.some((x) => x.method === "isWhitelistedFor")).toBe(false);
+    const registryLine = wl.evidence.find((e) => e.label.startsWith("Registry"));
+    expect(registryLine?.value).toContain("not consulted");
+    expect(registryLine?.source).not.toContain(" on 0x");
+  });
+});
+
 describe("the revocation and anchoring checks", () => {
   it("separates a revoked credential from one that was never anchored", async () => {
     const doc = validDoc();
@@ -427,9 +581,82 @@ describe("the expiry check", () => {
 
   it("reads validUntil out of the Merkle-covered data, unpacking the salted leaf", () => {
     expect(validUntilOf(asRecord(validDoc("2031-02-02")))).toEqual({
-      keyPath: "credentialSubject.validUntil",
+      keyPath: "credentialSubject.validity.validUntil",
       value: "2031-02-02",
+      usable: true,
     });
+  });
+
+  it("could-not-run - never a red expired row - for a BLANK validity leaf", () => {
+    // `today > ""` is true for every date, so the blank leaf used to render as "the validity window
+    // lapsed on ." - an accusation against a credential whose window was simply left empty at issuance.
+    const blank = setValidUntilValue(validDoc(), "credentialSubject.validity.validUntil", "");
+    const window = validUntilOf(blank);
+    expect(window?.usable).toBe(false);
+    return bench(blank, genuineChain(validDoc())).then((r) => {
+      const c = check(r, "not-expired");
+      expect(c.outcome).toBe("could-not-run");
+      expect(c.outcome).not.toBe("fail");
+      expect(c.couldNotRunReason).toContain("no value at all");
+    });
+  });
+
+  it("could-not-run for a validity leaf that is present but not an ISO date", async () => {
+    const junk = setValidUntilValue(validDoc(), "credentialSubject.validity.validUntil", "next spring");
+    const c = check(await bench(junk, genuineChain(validDoc())), "not-expired");
+    expect(c.outcome).toBe("could-not-run");
+    expect(c.couldNotRunReason).toContain("not an ISO");
+  });
+});
+
+// ── the canonical validUntil chain: one list, three issuers ─────────────────────────────────────
+
+describe("the canonical validUntil chain", () => {
+  it("is the three tiers the other surfaces read, and never credentialSubject.validUntil", () => {
+    // `credentialSubject.validUntil` is emitted by NO issuer. Substituting it for tier 2 made every EU
+    // health certificate report "no validity window" on the one surface built to expose expiry.
+    expect([...VALID_UNTIL_KEYPATHS]).toEqual([
+      "credentialSubject.validity.validUntil",
+      "credentialSubject.rabiesValidUntil",
+      "validUntil",
+    ]);
+  });
+
+  it("finds and EVALUATES EU_HEALTH_CERT's flat rabiesValidUntil leaf", async () => {
+    const live = euHealthCertDoc("2029-01-14");
+    expect(validUntilOf(asRecord(live))).toEqual({
+      keyPath: "credentialSubject.rabiesValidUntil",
+      value: "2029-01-14",
+      usable: true,
+    });
+    const liveRow = check(await bench(live, genuineChain(live)), "not-expired");
+    expect(liveRow.outcome).toBe("pass");
+    expect(liveRow.outcome).not.toBe("could-not-run");
+
+    const lapsed = euHealthCertDoc("2020-05-01");
+    expect(check(await bench(lapsed, genuineChain(lapsed)), "not-expired").outcome).toBe("fail");
+  });
+
+  it("finds VACCINATION's top-level validUntil, a SIBLING of credentialSubject", async () => {
+    const live = vaccinationDoc("2027-06-30");
+    expect(validUntilOf(asRecord(live))).toEqual({
+      keyPath: "validUntil",
+      value: "2027-06-30",
+      usable: true,
+    });
+    expect(check(await bench(live, genuineChain(live)), "not-expired").outcome).toBe("pass");
+    const lapsed = vaccinationDoc("2019-03-03");
+    expect(check(await bench(lapsed, genuineChain(lapsed)), "not-expired").outcome).toBe("fail");
+  });
+
+  it("lets both validity mutations apply to every issuer's shape, not just tier one", () => {
+    // The mutations resolve the window through the SAME chain the check reads, so a record type the
+    // check can evaluate is always one the mutations can edit. Divergence here would render as "Not
+    // applicable to this record" - a claim about the record rather than about the bench.
+    for (const doc of [validDoc(), euHealthCertDoc(), vaccinationDoc()]) {
+      expect(expireValidityWindow.apply(asRecord(doc))).not.toBeNull();
+      expect(extendValidityWindow.apply(asRecord(doc))).not.toBeNull();
+    }
   });
 });
 

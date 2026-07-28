@@ -1,5 +1,5 @@
 import { flattenData, parsePacked } from "@dogtag/standard/wrap";
-import type { BenchCheckId } from "./verificationBench";
+import { validUntilOf, type BenchCheckId } from "./verificationBench";
 
 /**
  * The adversarial half of the bench: take a record and tell a specific lie with it, then watch which
@@ -92,17 +92,16 @@ function setPackedValue(
   return doc;
 }
 
-/** The keyPath of this document's validity window, if it carries one. */
+/**
+ * The keyPath of this document's validity window, if it carries one.
+ *
+ * Delegates to the expiry check's OWN resolver rather than re-walking the canonical keyPath chain with
+ * a second selection rule. Two rules over one shared list can still diverge - a present-but-blank tier
+ * is one the check falls through and a presence-only scan would stop at - and a mutation that edited a
+ * different leaf than the row reads would demonstrate nothing.
+ */
 function validUntilKeyPath(doc: Record<string, unknown>): string | null {
-  const flat = flattenData(doc.data);
-  for (const kp of [
-    "credentialSubject.validity.validUntil",
-    "credentialSubject.validUntil",
-    "validUntil",
-  ]) {
-    if (flat.some(([k]) => k === kp)) return kp;
-  }
-  return null;
+  return validUntilOf(doc)?.keyPath ?? null;
 }
 
 /** The first covered leaf that is safe to tamper with - never the non-obfuscatable `dogTagId`. */

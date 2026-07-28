@@ -238,6 +238,16 @@ export function VerificationBench() {
       });
       setReport(next);
       if (note) setApplied((a) => [...a, note]);
+    } catch (e) {
+      // The engine reports a bad record rather than throwing, so reaching here means something else
+      // broke. Say so and CLEAR the report: leaving the previous one on screen shows a stale answer as
+      // though it applied to the record just submitted, which is this page's cardinal sin.
+      setReport(null);
+      toast({
+        title: "The bench could not run",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "danger",
+      });
     } finally {
       setBusy(false);
     }
@@ -246,10 +256,18 @@ export function VerificationBench() {
   function onFile(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
-    f.text().then((t) => {
-      setRaw(t);
-      void runOn(t);
-    });
+    f.text()
+      .then((t) => {
+        setRaw(t);
+        void runOn(t);
+      })
+      .catch((err: unknown) => {
+        toast({
+          title: "Could not read that file",
+          description: err instanceof Error ? err.message : String(err),
+          variant: "danger",
+        });
+      });
     e.target.value = "";
   }
 
