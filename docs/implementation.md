@@ -1186,8 +1186,19 @@ GET  /share/{ref}  Bearer<jwt>            // business pulls shared doc
 
 ### 4.2 Business registry & discovery
 ```
-GET  /v1/businesses?type=&near=lat,lng&radius=
-    geo query -> [{businessId,type,name,geo,services,apiBaseUrl,domain,documentStores,hmacKeyId}]  // non-personal
+GET  /v1/businesses?type=
+    -> [{businessId,type,name,geo,services,apiBaseUrl,domain,documentStores,hmacKeyId}]  // non-personal
+    // near=<lat>,<lng> & radius=<km> are still ACCEPTED and still filter server-side, and both are
+    // DEPRECATED. Do not add a caller. This route is on the PUBLIC UNAUTHENTICATED router, so a
+    // position sent here arrives beside the caller's IP with no account attached and no gate - which
+    // contradicts the premise that the owner never reveals where they are. The replacement is
+    // on-device: the client fetches the provider SET (a request byte-identical whoever makes it, so
+    // it discloses nothing) and computes distance/radius/sort locally with packages/ui/src/geo/.
+    // Nothing in this repo sends them - BusinessesQuery (packages/ui/src/api/types.ts) no longer
+    // carries the fields and central.ts's qs() no longer emits them - and the two admit exactly the
+    // same providers for every radius below the half-circumference, pinned from both ends against a
+    // fixture this very filter generated. Rule + rationale: the BusinessesQuery type note in
+    // stacks/admin/api/src/routes.rs, and the module header of packages/ui/src/geo/index.ts.
 POST /v1/businesses (admin)               // register a deployment + issue HMAC key
 ```
 

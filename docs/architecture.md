@@ -724,13 +724,28 @@ The user owns the appointment in the mobile app (central backend); the business 
 ### 8.4 Discovery → booking flow
 
 ```
-mobile → central: GET /v1/businesses?type=groomer&near=lat,lng
+mobile → central: GET /v1/businesses?type=groomer          ← NO position. Never a position.
 central → mobile: [{businessId, name, geo, services, apiBaseUrl, hmacKeyId}]
+mobile (on device):  distance/sort/filter over the returned `geo` - packages/ui/src/geo/
 mobile → central: POST /v1/appointments {businessId, dogTagId, slot}
 central: create appt (rev=1, REQUESTED) → PUT to business apiBaseUrl
 business: store replica, notify staff
 ... business approves → POST appointment-events {CONFIRMED} → central → push to mobile
 ```
+
+**The discovery call carries no position, and "nearby" is computed on the device.**
+This is a protocol rule, not an optimisation, and the shape above is what a Nearby screen must be built on.
+
+- `GET /v1/businesses` is on the **public, unauthenticated** router.
+  A position sent there arrives beside the caller's IP with no account attached and no gate.
+  dogtag is built on the owner never revealing where they are, so an endpoint whose purpose is to be told where the user is contradicts the premise at its most basic.
+- The client fetches the provider **set** - a request that is byte-identical whoever makes it, so it discloses nothing - and computes distance, radius and sort locally with `packages/ui/src/geo/`.
+  A provider's pin is a business fact already on their door; the user's position is not.
+- The server still accepts `near=<lat>,<lng>` and `radius=` for back-compat with any third-party caller, and both are **DEPRECATED**.
+  Nothing in this repo sends them: `BusinessesQuery` (`packages/ui/src/api/types.ts`) no longer carries the fields and `central.ts`'s `qs()` no longer emits them.
+  **Do not add a caller.**
+  The on-device path admits exactly the same providers for every radius below the half-circumference, pinned from both ends by a fixture the server's own filter generated.
+- The rule is written down beside the code it governs: the `BusinessesQuery` type note in `stacks/admin/api/src/routes.rs`, and the module header of `packages/ui/src/geo/index.ts`.
 
 ---
 

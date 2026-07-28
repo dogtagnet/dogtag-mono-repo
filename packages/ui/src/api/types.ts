@@ -535,13 +535,20 @@ export interface CentralBusiness {
 export interface BusinessesResp {
   businesses: CentralBusiness[];
 }
-/** GET /v1/businesses query filters. */
+/**
+ * GET /v1/businesses query filters.
+ *
+ * There is deliberately NO `near`/`radius` here. The route still accepts both and still filters
+ * server-side, but it is public and unauthenticated, so sending a position there discloses where the
+ * caller is standing to anyone in the request path. Distance is computed on the device instead -
+ * `packages/ui/src/geo/` - over a provider set whose request is identical whoever makes it.
+ *
+ * Re-adding these fields is the one change that reopens the leak, because `qs()` in `central.ts`
+ * would then have somewhere to read them from. See the note there and the deprecation note on
+ * `BusinessesQuery` in `stacks/admin/api/src/routes.rs`.
+ */
 export interface BusinessesQuery {
   type?: string;
-  /** "lat,lng" */
-  near?: string;
-  /** km */
-  radius?: number;
 }
 export interface RegisterBusinessReq {
   type: string;
