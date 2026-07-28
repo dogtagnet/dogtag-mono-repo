@@ -224,21 +224,35 @@ panels use, and the reads are made against the real chain.
 The bench takes a **wrapped credential JSON**. Two reliable ways to get one:
 
 - **Government portal (:44831) → Issue** → pick **TRAVEL_CLEARANCE** → fill → issue → click
-  **Copy wrapped document**. One click, and the record is anchored live on ROAX.
+  **Copy wrapped document**.
+  That record is anchored live on ROAX **only if this stack booted with a funded, whitelisted
+  `GOV_SIGNER_KEY` and a `TRAVEL_CLEARANCE_ISSUER_ADDR` clone**; `scripts/demo-provision-government.sh`
+  provisions both, and `demo-up.sh` prints a warning at boot naming whichever is missing.
+  Without them `/issue` only dry-runs: the result card badges **built (not anchored)** rather than
+  **✓ anchored on-chain**, and benching that record gives **Verifier verdict: not valid** with *"Was this
+  issued by a contract that genuinely descends from the DogTag factory?"* reading **Fail** ("The factory
+  has NO record of this root"), not the Pass rows in §F2.
   Prefer `TRAVEL_CLEARANCE`: on the fresh contract set it is the record type with a deployed clone and a
   whitelisted government signer. `EU_HEALTH_CERT` may have no clone provisioned, in which case issuing
-  it only dry-runs and the record you copy will not be anchored.
+  it only dry-runs the same way.
 - **Owner wallet (:45931)** → open a held credential → **Share a redacted copy** →
   **Copy redacted credential**. Useful on its own: redaction leaves the Merkle root untouched, so the
   bench still passes the redacted copy.
 
-The vet portal has **no** copy-the-document button, so a vet-issued VACCINATION reaches the bench via
-the owner wallet above, not from the Records page.
+The vet portal has **no** copy-the-document button, on Issue or on Records, so on this deployment there is
+no vet JSON to paste and a vet-issued VACCINATION does not reach the bench by either route above.
+It reaches the bench through the bench's own **QR share link** field instead, fed a fresh share token as
+described next.
 
 > **Do not feed the bench the `/r/<token>` QR link from §C.5.** The bench has a "QR share link" field and
 > that link would work, but the token is consumed on first read: fetching it here means the phone gets a
-> 404 in §D. If you want both, issue the record, let the phone scan it, and use the wallet copy above -
-> or click **Create QR** a second time for a fresh token.
+> 404 in §D.
+> Mint a **second** token instead: vet portal → **Records** → the row's **QR** button, which issues a
+> fresh one-time token on every click.
+> Paste that URL into the bench's **QR share link** field and click **Fetch**; §C.5's QR stays intact for
+> the phone.
+> The Issue page's **Create QR** button cannot do this, because once it has rendered the QR it is replaced
+> by that QR, leaving only **Issue another**, which resets the whole card.
 
 ### F2. Run it on a genuine record
 
@@ -348,8 +362,14 @@ Each state, and exactly how to reach it:
   the colour of either neighbour. Tap **Refresh** on the record and it returns to VALID.
 - **INVALID (red).** Revoke the record: vet portal → **Records** → the row's **Revoke** → confirm. Then
   tap **Refresh** on the phone. This is the one state that needs an action on the issuing side.
-- **UNVERIFIED (neutral).** Put the phone in airplane mode and tap **Refresh**. The chain read cannot be
-  made, so the app says so with a reason instead of guessing.
+- **UNVERIFIED (neutral).** Run this one on a record whose stored verdict is still **VALID**, which is
+  neither the record you just revoked nor the expired one.
+  If the revoke above used your only in-date credential, issue and import one more first (§C and §D,
+  leaving "Valid until" at the demo's default) so there is a VALID record to refresh.
+  Put the phone in airplane mode and tap **Refresh**.
+  The chain read cannot be made, so the app says so with a reason instead of guessing.
+  Now repeat exactly that airplane-mode **Refresh** on the record you revoked: it stays **INVALID**, and
+  that is the guarantee working rather than a step that failed.
   Two things worth checking here, because they are the point of the change: an established **INVALID is
   not laundered** into "could not check" by a failed refresh, and a **stale answer never renders as
   INVALID**. Age may only ever weaken a claim.
@@ -381,13 +401,14 @@ A pet is now addressable in its own right, not just a line inside a client.
 
 1. **Clients → New client**. Fill name/phone/email, click **Add pet**, give a pet name and breed, then
    **Create client**.
-2. **Pets** in the left nav. The pet is listed with columns **PET · SPECIES · BREED · OWNER · DOGTAG**,
-   showing **No tag** until you link one.
-3. Click the pet's name to open it. The **OWNER** cell is a link too, so the round trip
+2. **Pets** in the left nav. The pet is listed under four columns, **Pet**, **Species / breed**, **Owner**
+   and **DogTag**, with species and breed sharing that one cell.
+   The **DogTag** column shows **No tag** until you link one.
+3. Click the pet's name to open it. The **Owner** cell is a link too, so the round trip
    pet → owner → pet is one click each way.
 4. On the pet page, under **DogTag**, type the tag handle from §A1 into **DogTag id** and click
    **Add DogTag**. The page now shows the id as linked and offers **Remove from this record**, and the
-   Pets list shows the handle in the DOGTAG column.
+   Pets list shows the handle in the **DogTag** column.
 5. **Watch the one-pet-per-tag rule.** Add a second pet for the same owner (**New pet** on the Pets
    page, type the owner's name and pick them from the suggestions), open it, and try to link the **same**
    tag id. It is refused, and the message names the pet already holding it and that pet's owner, for
@@ -456,6 +477,11 @@ address, and label it. The three places this appears:
 - government portal → **Oversight**
 - vet portal → **Traceability**
 
+Start with the government and vet ones.
+`demo-up.sh` passes `INDEXER_API_BASE` to the vet, groomer and government backends but not to admin-api,
+which defaults to no feed at all and answers those routes 503, so admin → Activity shows its
+indexer-not-configured state rather than rows unless your `contracts/.env` exports that variable.
+
 Each row carries either **chain-addressable**, whose transaction hash is a working
 `explorer.roax.net/tx/...` link, or **not chain-addressable**, whose hash is rendered as inert text with
 **no link at all**.
@@ -466,7 +492,13 @@ Each row carries either **chain-addressable**, whose transaction hash is a worki
 > any chain, so labelling them and refusing to link them is the correct answer.
 > The label is decided per row from the hash itself, not from a demo flag, so a single scripted row inside
 > an otherwise real feed is still caught.
-> To see real rows, point the indexer at the live chain by starting it **without** `INDEXER_DEMO_MODE`.
+> **Switching this indexer to the live chain is out of scope for this guide, and unsetting
+> `INDEXER_DEMO_MODE` alone will not do it.** The indexer treats `DEMO_MODE` and `VITE_DEMO_MODE` as the
+> same switch, and `demo-up.sh` sources `contracts/.env`, which sets `DEMO_MODE`.
+> Even with all three unset, the scope registry is then empty and every query fails closed with a **401**
+> until `INDEXER_SCOPES` is authored; the two well-known tokens `demo-up.sh` hands the vet, groomer and
+> government backends exist only in demo mode, so all three would need re-issuing as well.
+> The scripted rows are what a `demo-up.sh` stack shows, and the label above is the correct answer for them.
 
 While you are here, the indexer now says what it is. On a **freshly built** demo-mode indexer,
 `curl http://localhost:46001/health` returns:
