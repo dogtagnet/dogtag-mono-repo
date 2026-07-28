@@ -725,8 +725,14 @@ mod tests {
         assert_eq!(m.witness_server_r1cs_sha256.as_deref(), d.r1cs.sha256);
         assert_eq!(m.witness_server_wasm_sha256.as_deref(), d.wasm.sha256);
         assert_eq!(m.circuit_id, d.circuit_id);
-        // The graph is unpinned on both sides.
-        assert_eq!(m.witness_mobile_sha256, None);
+        // The graph is PINNED on both sides (ROAX 2026-07-28). Asserted as the exact attested hash
+        // rather than merely `is_some()`: this is the only check keeping the descriptor and the
+        // on-chain `witnessMobileSha256` in lockstep, and `reconcile` reports `(Some, None)` as a
+        // conflict, so a test that tolerated either state would retire that guarantee.
+        assert_eq!(
+            m.witness_mobile_sha256.as_deref(),
+            Some(artifact::LEVEL_B_V1_WITNESS_GRAPH_SHA256)
+        );
         // The OFF-CHAIN VK identity is present and is NOT the zkey pin (§3.2).
         assert_eq!(m.verification_key_sha256.as_deref(), d.vk.verification_key_json.sha256);
         assert_ne!(m.verification_key_sha256, Some(m.zkey_sha256.clone()));

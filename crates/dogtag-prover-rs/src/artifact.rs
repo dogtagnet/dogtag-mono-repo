@@ -116,27 +116,31 @@ pub struct ArtifactDescriptor {
 }
 
 /// SHA-256 of the committed `circuits/build/consent.graph` — the witness graph the MOBILE prover
-/// interprets, and the value the on-chain `ArtifactSet.witnessMobileSha256` must carry once pinned.
+/// interprets, and the value the on-chain `ArtifactSet.witnessMobileSha256` now carries.
 ///
-/// # Why this is a constant and not (yet) the descriptor's pin
+/// # Why this is a named constant rather than a literal in the descriptor
 ///
 /// The graph used to be an out-of-band local build that no checkout was guaranteed to have, so
 /// nothing could attest which graph an app proved with (audit M9 rec 10). It is now **committed**,
 /// which makes its bytes fixed and this hash checkable — `graph_file_matches_attested_sha256`
-/// enforces that on every test run.
+/// enforces that on every test run. Naming it once keeps the descriptor pin, the signed manifest and
+/// `scripts/vendor-mobile-artifacts.sh` reading the same value instead of three transcriptions.
 ///
-/// The descriptor's [`ArtifactDescriptor::witness_graph`] pin stays `None` regardless, because that
-/// field is in deliberate lockstep with the on-chain record: it feeds
-/// [`crate::manifest::Manifest::witness_mobile_sha256`], and
-/// [`crate::manifest::reconcile`] treats a manifest `Some` against an on-chain `0`/`None` as a
-/// CONFLICT. The published `ArtifactSet` still carries `witnessMobileSha256 = 0`, so flipping this
-/// side alone would make every reconcile report a disagreement that is really just a half-applied
-/// rollout.
+/// # The lockstep, now closed on both sides
 ///
-/// Flipping the pin and publishing on-chain is therefore ONE atomic step, and it is the operator's
-/// to run: see `docs/ARTIFACT_PIN_RUNBOOK.md`. When it happens, `witness_graph.sha256` becomes
-/// `Some(LEVEL_B_V1_WITNESS_GRAPH_SHA256)` and `descriptor_graph_pin_agrees_with_the_file` starts
-/// enforcing descriptor↔file agreement automatically.
+/// [`ArtifactDescriptor::witness_graph`] feeds [`crate::manifest::Manifest::witness_mobile_sha256`],
+/// and [`crate::manifest::reconcile`] treats a manifest `Some` against an on-chain `0`/`None` as a
+/// CONFLICT. Both sides were flipped together on 2026-07-28: `dogtag-levelb-artifacts/1` was
+/// re-published in place on ROAX carrying this hash, and the descriptor pin became
+/// `Some(LEVEL_B_V1_WITNESS_GRAPH_SHA256)` in the same change. Moving ONE side in isolation - in
+/// either direction - makes every reconcile report a disagreement that is really a half-applied
+/// rollout, so a future rotation moves the constant, the descriptor and the chain together
+/// (`docs/ARTIFACT_PIN_RUNBOOK.md`).
+///
+/// This publishes the graph's identity; it does NOT make it app-enforced. The mobile resolvers do not
+/// hash the bundled graph and do not decode `witnessMobileSha256` at all (`AnchorResolver` reads only
+/// `artifactSetId`, `minAppVersion` and `active`), so an app shipping a divergent graph still would
+/// not detect it at runtime. Bundled-artifact integrity remains the package signature's job.
 pub const LEVEL_B_V1_WITNESS_GRAPH_SHA256: &str =
     "2f74d26b800230400639e92211d80ff453bf82c2057b788fa1350e009748f793";
 
@@ -175,11 +179,12 @@ pub const LEVEL_B_V1_DESCRIPTOR: ArtifactDescriptor = ArtifactDescriptor {
     },
     witness_graph: ArtifactFile {
         rel_path: "consent.graph",
-        // Unpinned HERE, but no longer unattested: the graph is committed and its bytes are
-        // `LEVEL_B_V1_WITNESS_GRAPH_SHA256` (enforced by this module's tests). This field stays
-        // `None` only to match the published `witnessMobileSha256 == 0`; pinning it is one atomic
-        // step with the on-chain publish (see the constant's docs + docs/ARTIFACT_PIN_RUNBOOK.md).
-        sha256: None,
+        // PINNED, in lockstep with the chain: the published `ArtifactSet` for
+        // `dogtag-levelb-artifacts/1` carries this same hash as `witnessMobileSha256` (ROAX
+        // 2026-07-28, in-place re-publish; see docs/ARTIFACT_PIN_RUNBOOK.md). `reconcile` treats a
+        // manifest `Some` against an on-chain `None` as a CONFLICT, so this field and that one move
+        // together or not at all - do not revert this to `None` without deprecating the on-chain pin.
+        sha256: Some(LEVEL_B_V1_WITNESS_GRAPH_SHA256),
     },
     vk: VerifyingKeyIdentity {
         verification_key_json: ArtifactFile {
@@ -340,12 +345,14 @@ mod tests {
         );
     }
 
-    /// The descriptor's graph pin, once set, must be the attested hash.
+    /// The descriptor's graph pin must be the attested hash.
     ///
-    /// Today the pin is deliberately `None` (it is in lockstep with the published
-    /// `witnessMobileSha256 == 0`; see [`LEVEL_B_V1_WITNESS_GRAPH_SHA256`]). This test does not
-    /// require it to stay `None` — it makes the operator's eventual flip self-checking, so pinning a
-    /// stale or hand-typed hash fails here instead of surfacing as a reconcile conflict in the field.
+    /// The pin is now `Some` (flipped 2026-07-28 in lockstep with the on-chain `witnessMobileSha256`;
+    /// see [`LEVEL_B_V1_WITNESS_GRAPH_SHA256`]), so the `Some` arm is the live one and it is what
+    /// catches a stale or hand-typed hash here rather than as a reconcile conflict in the field. The
+    /// `None` arm is retained deliberately: it is the state a future rotation passes back through, and
+    /// it still asserts the attested hash stays publishable, so unpinning cannot quietly become
+    /// "nobody ever attested it".
     #[test]
     fn descriptor_graph_pin_agrees_with_the_file() {
         match LEVEL_B_V1_DESCRIPTOR.witness_graph.sha256 {
