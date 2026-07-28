@@ -193,6 +193,15 @@ This is why the module reads through `Store::try_get_appointment` rather than th
 form, whose collapsed error would have told a client their booking was gone on the strength of a read
 that never happened.
 
+The MINT's write carries the same rule, and it is the one that fails furthest from where it is
+noticed.
+`Store::put_appointment_share` is fallible for that reason — alone among the `put_*` methods — and a
+dropped write answers 503 with no token rather than 200 with one.
+Discarding it would let the mint hand back a token and a QR that were never recorded, so the
+operator would give a client a link whose scan says "this link is not one we recognise, ask the shop
+for a new one" about a booking that is perfectly live: the same false claim the fallible reads exist
+to prevent, arriving through the write instead.
+
 **Sharing is additive and cannot be taken back.**
 Every mint issues a NEW token — the portal dialog mints on each open, so opening it three times leaves
 three live URLs for one booking — and there is no revoke: each link resolves for 180 days past the

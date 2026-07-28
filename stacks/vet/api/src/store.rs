@@ -727,11 +727,13 @@ pub struct AppointmentShare {
     pub expires_at: u64,
 }
 
-/// A store read that did not resolve — the driver errored, not "the row is absent".
+/// A store operation that did not resolve — the driver errored, not "the row is absent".
 ///
-/// Deliberately one opaque string rather than an error taxonomy: exactly two reads surface it (the
-/// pet-uniqueness guards' lookups), and their only decision is refuse-vs-proceed. It carries the
-/// driver's own text for the log, never for the operator, whose 503 says what to do instead.
+/// Named for the reads it was introduced for and kept for the writes that joined them: the
+/// distinction it carries is the same either way, and one type is what keeps a caller from
+/// classifying the two differently. Deliberately one opaque string rather than an error taxonomy —
+/// every caller's only decision is refuse-vs-proceed. It carries the driver's own text for the log,
+/// never for the operator, whose 503 says what to do instead.
 #[derive(Debug, Clone)]
 pub struct StoreReadError(pub String);
 
@@ -923,7 +925,19 @@ pub trait Store: Send + Sync {
     /// `STATUS:CANCELLED` event under the same `UID`), and an iCalendar event cannot exist without a
     /// `DTSTART`. Keeping the start here is what lets a deleted booking be cancelled in the client's
     /// calendar instead of leaving a stale entry behind a 404 forever.
-    async fn put_appointment_share(&self, token: &str, share: AppointmentShare);
+    ///
+    /// FALLIBLE, alone among the `put_*` methods, and for the same reason the two reads on this path
+    /// are: this is the write that CREATES the link, and a dropped one is not merely lost work. The
+    /// mint would answer 200 with a token and a QR, the operator would hand that QR to a client, and
+    /// the scan would resolve to nothing — rendering "this link is not one we recognise, ask the
+    /// shop for a new one" about a booking that is perfectly live. That is the same false claim
+    /// [`Store::try_peek_appointment_share`] was made fallible to prevent, arriving through the
+    /// write instead of the read, so it cannot be fire-and-forget while they are not.
+    async fn put_appointment_share(
+        &self,
+        token: &str,
+        share: AppointmentShare,
+    ) -> Result<(), StoreReadError>;
     /// Resolve a client-handoff token. NON-consuming, and deliberately so: the client opens the page,
     /// then downloads the `.ics` from it, then may re-open it weeks later to see whether the booking
     /// still stands — a one-time token (the `/r/` record-share shape) would break at step two.
@@ -1048,6 +1062,14 @@ pub struct MemStore {
     /// [`Store::try_get_appointment`] (the booking) — because the token lookup runs first, and a
     /// switch that only reached the second would leave the first's collapse untested. Nothing else.
     fail_appointment_reads: Arc<std::sync::atomic::AtomicBool>,
+    /// FAULT INJECTION for the handoff MINT write. Default OFF; nothing in the service ever turns it
+    /// on. Test-only, exactly like `fail_appointment_reads`.
+    ///
+    /// SEPARATE from that switch rather than folded into it, because the case worth testing is
+    /// precisely the one a shared switch cannot express: the reads SUCCEED and the write fails. With
+    /// one switch the booking read short-circuits first and the mint's 503 proves nothing about
+    /// [`Store::put_appointment_share`] at all.
+    fail_appointment_share_writes: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MemStore {
@@ -1058,6 +1080,12 @@ impl MemStore {
     /// Make every subsequent [`Store::try_get_appointment`] report a read failure. See the field.
     pub fn set_fail_appointment_reads(&self, on: bool) {
         self.fail_appointment_reads
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Make every subsequent [`Store::put_appointment_share`] report a write failure. See the field.
+    pub fn set_fail_appointment_share_writes(&self, on: bool) {
+        self.fail_appointment_share_writes
             .store(on, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -1521,12 +1549,27 @@ impl Store for MemStore {
         });
         paginate(matched, q.limit, q.offset)
     }
-    async fn put_appointment_share(&self, token: &str, share: AppointmentShare) {
+    async fn put_appointment_share(
+        &self,
+        token: &str,
+        share: AppointmentShare,
+    ) -> Result<(), StoreReadError> {
+        // Refused BEFORE the insert, so a test asserting "no share row is left behind" is asserting
+        // something true rather than something the fake happened to do anyway.
+        if self
+            .fail_appointment_share_writes
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreReadError(
+                "injected appointment share write failure".to_string(),
+            ));
+        }
         self.inner
             .write()
             .unwrap()
             .appointment_shares
             .insert(token.to_string(), share);
+        Ok(())
     }
     async fn try_peek_appointment_share(
         &self,

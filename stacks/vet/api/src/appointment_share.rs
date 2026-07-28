@@ -62,11 +62,19 @@
 //! trade stops holding (links shared onward, a shop wanting to un-share), revocation belongs here
 //! as an explicit action, not as a shorter expiry that would silently strand working links.
 //!
-//! AND WHEN THE STORE CANNOT BE READ, that is its own answer. It is not a cancellation and it is not
-//! a confirmation: the page says it could not check, in those words, and offers no add-to-calendar
-//! affordance it cannot stand behind. This is why the module reads through
+//! AND WHEN THE STORE CANNOT BE REACHED, that is its own answer. It is not a cancellation and it is
+//! not a confirmation: the page says it could not check, in those words, and offers no
+//! add-to-calendar affordance it cannot stand behind. This is why the module reads through
 //! [`Store::try_get_appointment`] rather than the `Option`-shaped form, whose collapsed error would
 //! have told a client their booking was gone on the strength of a read that never happened.
+//!
+//! The MINT's write is held to the same rule, and it is the one that fails furthest from where it is
+//! noticed: [`Store::put_appointment_share`] is fallible — alone among the `put_*` methods — because
+//! a dropped write still lets the mint answer 200 with a token and a QR that were never recorded.
+//! The operator then hands a client a link whose scan says "this link is not one we recognise, ask
+//! the shop for a new one" about a booking that is perfectly live, which is the same false claim the
+//! fallible reads exist to prevent, arriving through the write instead. So it refuses with a 503 and
+//! no token.
 
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -228,9 +236,21 @@ async fn mint_share(
     let token = mint_token();
     let ts = now();
     // The link outlives the booking, and an already-past booking still gets a usable window rather
-    // than a link that is born expired.
-    let expires_at = appt.end_at.max(appt.start_at).max(ts) + SHARE_TTL_AFTER_END;
-    st.store
+    // than a link that is born expired. Saturating, because nothing upstream bounds how far out a
+    // slot may sit — `validate_slot` only rejects an end at or before the start — and wrapping here
+    // would produce a tiny `expires_at`, i.e. exactly the link born expired this line exists to
+    // avoid, silently and only for the far-future booking that triggered it.
+    let expires_at = appt
+        .end_at
+        .max(appt.start_at)
+        .max(ts)
+        .saturating_add(SHARE_TTL_AFTER_END);
+    // A dropped write must never become a 200. Handing back a token whose scan resolves to nothing
+    // tells the client their link is unrecognised — a false claim about a live booking, and the one
+    // this surface exists to eliminate. Refusing costs the operator a retry; the alternative costs a
+    // client their appointment.
+    if let Err(e) = st
+        .store
         .put_appointment_share(
             &token,
             AppointmentShare {
@@ -239,7 +259,14 @@ async fn mint_share(
                 expires_at,
             },
         )
-        .await;
+        .await
+    {
+        tracing::warn!(error = %e, "appointment share: store write failed");
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "could not create a share link for this appointment right now — nothing was shared, try again",
+        );
+    }
 
     let usability = client_base(&st.cfg.deployment_url);
     let path = format!("/a/{token}");
@@ -462,8 +489,14 @@ pub fn google_calendar_url(e: &IcsEvent) -> String {
     }
     // Google requires both halves; a booking with no usable end gets a nominal hour rather than a
     // malformed range. This is a display default in a link, not a claim about the slot — the `.ics`,
-    // which is the authoritative copy, omits DTEND entirely in that case.
-    let end = if e.end > e.start { e.end } else { e.start + 3600 };
+    // which is the authoritative copy, omits DTEND entirely in that case. Saturating for the same
+    // reason as the mint's expiry: this branch is reached by any booking stored with no end at all
+    // (`validate_slot` permits `end_at == 0`), so the addend is applied to an unbounded `start`.
+    let end = if e.end > e.start {
+        e.end
+    } else {
+        e.start.saturating_add(3600)
+    };
     let dates = format!("{}/{}", ics::format_utc(e.start), ics::format_utc(end));
     let mut q = url::form_urlencoded::Serializer::new(String::new());
     q.append_pair("action", "TEMPLATE");

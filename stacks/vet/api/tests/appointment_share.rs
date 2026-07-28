@@ -730,6 +730,59 @@ async fn an_unreadable_store_refuses_to_mint_rather_than_minting_a_link_to_nothi
     );
 }
 
+#[tokio::test]
+async fn a_mint_whose_write_is_dropped_hands_back_no_token_rather_than_a_link_to_nothing() {
+    // The WRITE half of the same rule the two reads already carry, and the one that fails furthest
+    // from where it is noticed: a discarded write still lets the mint answer 200 with a token and a
+    // QR, the operator hands that QR to a client, and the scan resolves to nothing — rendering "this
+    // link is not one we recognise, ask the shop for a new one" about a booking that is perfectly
+    // live. The reads are deliberately left WORKING here; a shared fault switch could not express
+    // this case at all, because the booking read would short-circuit first.
+    let (app, op, store) = app().await;
+    let id = make_appointment(&app, &op, "Full groom").await;
+
+    // A link minted while the store was healthy, kept to prove the failed mint corrupts nothing.
+    let good = share(&app, &op, &id).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    store.set_fail_appointment_share_writes(true);
+
+    let (s, b) = call(
+        &app,
+        "POST",
+        &format!("/appointments/{id}/share"),
+        Some(&op),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a dropped write must not answer 200: {b}"
+    );
+    // Nothing that could be handed to a client comes back — a token the operator can paste is just
+    // as broken as one drawn into a QR.
+    for k in ["token", "url", "qrUrl", "path", "icsPath"] {
+        assert!(
+            b.get(k).is_none() || b[k].is_null(),
+            "a refused mint still handed back {k}: {b}"
+        );
+    }
+    assert!(
+        b["error"].as_str().unwrap_or_default().contains("try again"),
+        "the operator must be told to retry rather than that the booking is gone: {b}"
+    );
+
+    // No share row was left behind by the refused mint, and the one minted before it still works —
+    // so the refusal wrote nothing AND corrupted nothing.
+    store.set_fail_appointment_share_writes(false);
+    let (s, _, _, page) = get_raw(&app, &format!("/a/{good}")).await;
+    assert_eq!(s, StatusCode::OK, "the earlier link must be untouched:\n{page}");
+    assert!(page.contains("Full groom"), "{page}");
+}
+
 // ================================================================================================
 // supersede semantics — what makes a re-download correct a moved booking
 // ================================================================================================

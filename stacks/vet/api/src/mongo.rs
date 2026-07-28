@@ -356,20 +356,28 @@ impl Store for MongoStore {
             d.get_str("session_id").ok().map(|s| s.to_string())
         }
     }
-    async fn put_appointment_share(&self, token: &str, share: crate::store::AppointmentShare) {
+    async fn put_appointment_share(
+        &self,
+        token: &str,
+        share: crate::store::AppointmentShare,
+    ) -> Result<(), StoreReadError> {
+        // The driver error is REPORTED, never discarded. A dropped write here is not lost work: the
+        // mint would still answer 200 with a token and a QR, and the client's scan would then meet
+        // "this link is not one we recognise" about a live booking. See the trait method.
         let coll: Collection<Document> = self.db.collection("appointment_shares");
-        let _ = coll
-            .replace_one(
-                doc! { "token": token },
-                doc! {
-                    "token": token,
-                    "appointment_id": &share.appointment_id,
-                    "start_at": share.start_at as i64,
-                    "exp": share.expires_at as i64,
-                },
-            )
-            .upsert(true)
-            .await;
+        coll.replace_one(
+            doc! { "token": token },
+            doc! {
+                "token": token,
+                "appointment_id": &share.appointment_id,
+                "start_at": share.start_at as i64,
+                "exp": share.expires_at as i64,
+            },
+        )
+        .upsert(true)
+        .await
+        .map_err(|e| StoreReadError(e.to_string()))?;
+        Ok(())
     }
     async fn try_peek_appointment_share(
         &self,
