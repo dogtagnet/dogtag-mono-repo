@@ -106,12 +106,50 @@ const DOGTAG_ISSUER_FACTORY_ABI = [
   },
 ] as const satisfies Abi;
 
+const ISSUER_DOMAIN_REGISTRY_ABI = [
+  {
+    // `getBinding(clone)` — the published issuer->domain claim. Deliberately does NOT revert on an
+    // unknown clone: "no domain claimed" is a normal day-one state, signalled by `updatedAt == 0`.
+    type: "function",
+    name: "getBinding",
+    stateMutability: "view",
+    inputs: [{ name: "clone", type: "address" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "domain", type: "string" },
+          { name: "updatedAt", type: "uint64" },
+          { name: "updatedAtBlock", type: "uint64" },
+          { name: "setBy", type: "address" },
+        ],
+      },
+    ],
+  },
+] as const satisfies Abi;
+
 /** The all-zero address `issuedBy` returns for a root this clone never issued. */
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 /** The all-zero word a `bytes32` getter returns for an unset slot (e.g. an uninitialized clone). */
 export const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
 
+/**
+ * ## Why every reader below takes an optional `blockNumber`
+ *
+ * Against a MUTABLE world a verdict without a block anchor is not auditable: clones get superseded and
+ * domain claims get rewritten, so "this root resolved to clone X" is only reproducible if it also says
+ * WHEN. Pinning a batch of reads to one height additionally makes them a consistent SNAPSHOT rather than
+ * several answers smeared across blocks, which is what lets two reads in the same verdict be compared at
+ * all. This mirrors the government verify route, which reads the head once into `at_block` and pins the
+ * whole verification to it (`stacks/government/api/src/routes.rs`).
+ *
+ * Omitting it reads `latest`, which is what every pre-existing caller does and continues to do - the
+ * parameter is purely additive. A caller that could not read the head MUST omit it and report the answer
+ * as unanchored; stamping an unpinned read with a separately-read head number would be claiming a
+ * snapshot that was never taken.
+ */
 const clientCache = new Map<string, PublicClient>();
 
 /** A cached viem public client for ROAX over the given RPC (defaults to the ROAX devrpc). */
@@ -136,6 +174,8 @@ export type IsWhitelistedForArgs = {
   registryAddr: string;
   address: string;
   rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
 } & (
   | { recordTypeKey: string; recordType?: never }
   | { recordType: string; recordTypeKey?: never }
@@ -163,6 +203,7 @@ export async function isWhitelistedFor(args: IsWhitelistedForArgs): Promise<bool
     abi: ISSUER_REGISTRY_ABI,
     functionName: "isWhitelistedFor",
     args: [key as `0x${string}`, args.address as Address],
+    blockNumber: args.blockNumber,
   }) as Promise<boolean>;
 }
 
@@ -176,12 +217,15 @@ export async function isRootValid(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
 }): Promise<boolean> {
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "isValid",
     args: [args.root as `0x${string}`],
+    blockNumber: args.blockNumber,
   }) as Promise<boolean>;
 }
 
@@ -193,12 +237,15 @@ export async function isRootRevoked(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
 }): Promise<boolean> {
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "isRevoked",
     args: [args.root as `0x${string}`],
+    blockNumber: args.blockNumber,
   }) as Promise<boolean>;
 }
 
@@ -211,12 +258,15 @@ export async function issuedAtOf(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
 }): Promise<bigint> {
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "issuedAt",
     args: [args.root as `0x${string}`],
+    blockNumber: args.blockNumber,
   }) as Promise<bigint>;
 }
 
@@ -233,12 +283,15 @@ export async function issuedByOf(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
 }): Promise<string> {
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "issuedBy",
     args: [args.root as `0x${string}`],
+    blockNumber: args.blockNumber,
   }) as Promise<string>;
 }
 
@@ -257,12 +310,15 @@ export async function rootIssuerOf(args: {
   factoryAddr: string;
   root: string;
   rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
 }): Promise<string> {
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.factoryAddr as Address,
     abi: DOGTAG_ISSUER_FACTORY_ABI,
     functionName: "rootIssuer",
     args: [args.root as `0x${string}`],
+    blockNumber: args.blockNumber,
   }) as Promise<string>;
 }
 
@@ -274,10 +330,46 @@ export async function rootIssuerOf(args: {
 export async function recordTypeOf(args: {
   issuerAddr: string;
   rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
 }): Promise<string> {
   return roaxPublicClient(args.rpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "recordType",
+    blockNumber: args.blockNumber,
   }) as Promise<string>;
+}
+
+/**
+ * The on-chain issuer->domain claim published for `cloneAddr`, or `null` when none is.
+ *
+ * Read from the DOMAIN REGISTRY, never from the credential: `issuer.domain` sits outside the Merkle
+ * root, so the document's own claim is exactly the field a relabelling attack rewrites. This getter is
+ * the unforgeable half of that comparison.
+ *
+ * `null` is the honest "this issuer has published no domain claim" - the normal day-one state, and NOT
+ * an error. A read that FAILS throws, so a caller can keep "no claim" and "could not ask" apart; folding
+ * the two is the fail-open bug the six-state `IssuerDomainBinding` model exists to prevent.
+ *
+ * The registry address is a PARAMETER with no default, unlike the factory/registry addresses above. The
+ * contract set is still being revised and `IssuerDomainRegistry` may yet be folded elsewhere, so a
+ * caller with nothing configured must report the check as unavailable rather than read a stale constant.
+ */
+export async function issuerDomainClaimOf(args: {
+  domainRegistryAddr: string;
+  cloneAddr: string;
+  rpcUrl?: string;
+  /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
+  blockNumber?: bigint;
+}): Promise<{ domain: string; updatedAt: bigint; updatedAtBlock: bigint; setBy: string } | null> {
+  const b = (await roaxPublicClient(args.rpcUrl).readContract({
+    address: args.domainRegistryAddr as Address,
+    abi: ISSUER_DOMAIN_REGISTRY_ABI,
+    functionName: "getBinding",
+    args: [args.cloneAddr as Address],
+    blockNumber: args.blockNumber,
+  })) as { domain: string; updatedAt: bigint; updatedAtBlock: bigint; setBy: string };
+  // `updatedAt == 0` is the contract's own "no binding published" sentinel, not a zero timestamp.
+  return b.updatedAt === 0n ? null : b;
 }

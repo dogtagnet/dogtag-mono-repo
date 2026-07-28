@@ -10,6 +10,7 @@ import { IssuerApplications } from "./pages/IssuerApplications";
 import { Whitelist } from "./pages/Whitelist";
 import { Wizard } from "./pages/Wizard";
 import { Governance } from "./pages/Governance";
+import { VerificationBench } from "./pages/VerificationBench";
 
 export function App() {
   const { adminToken } = useApp();
@@ -30,6 +31,10 @@ export function App() {
       />
       <Route path="/whitelist" element={<Layout title="Whitelist viewer"><Whitelist /></Layout>} />
       <Route path="/governance" element={<Layout title="Governance"><Governance /></Layout>} />
+      <Route
+        path="/bench"
+        element={<Layout title="Verification bench"><VerificationBench /></Layout>}
+      />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

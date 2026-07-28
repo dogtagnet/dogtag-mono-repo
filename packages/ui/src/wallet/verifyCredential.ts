@@ -62,17 +62,26 @@ export interface IssuerChainReader {
   isWhitelistedFor(registryAddr: string, recordTypeKey: string, signer: string): Promise<boolean>;
 }
 
-/** Default reader: viem `eth_call`s against the public ROAX RPC (chainId 135). */
-export function roaxIssuerChainReader(rpcUrl?: string): IssuerChainReader {
+/**
+ * Default reader: viem `eth_call`s against the public ROAX RPC (chainId 135).
+ *
+ * `blockNumber` pins every read to one height, so a batch of them is a consistent SNAPSHOT and the
+ * resulting verdict is reproducible later - the posture the government verify route takes with its
+ * `at_block`. Omitting it reads `latest`, which is what every caller did before the parameter existed.
+ *
+ * A caller that could not read the head MUST omit it and report its answer as unanchored. Passing a
+ * head number that these reads were not actually pinned to would claim a snapshot that never happened.
+ */
+export function roaxIssuerChainReader(rpcUrl?: string, blockNumber?: bigint): IssuerChainReader {
   return {
-    rootIssuer: (factoryAddr, root) => rootIssuerOf({ factoryAddr, root, rpcUrl }),
-    recordType: (issuerAddr) => recordTypeOf({ issuerAddr, rpcUrl }),
-    issuedAt: (issuerAddr, root) => issuedAtOf({ issuerAddr, root, rpcUrl }),
-    isValid: (issuerAddr, root) => isRootValid({ issuerAddr, root, rpcUrl }),
-    isRevoked: (issuerAddr, root) => isRootRevoked({ issuerAddr, root, rpcUrl }),
-    issuedBy: (issuerAddr, root) => issuedByOf({ issuerAddr, root, rpcUrl }),
+    rootIssuer: (factoryAddr, root) => rootIssuerOf({ factoryAddr, root, rpcUrl, blockNumber }),
+    recordType: (issuerAddr) => recordTypeOf({ issuerAddr, rpcUrl, blockNumber }),
+    issuedAt: (issuerAddr, root) => issuedAtOf({ issuerAddr, root, rpcUrl, blockNumber }),
+    isValid: (issuerAddr, root) => isRootValid({ issuerAddr, root, rpcUrl, blockNumber }),
+    isRevoked: (issuerAddr, root) => isRootRevoked({ issuerAddr, root, rpcUrl, blockNumber }),
+    issuedBy: (issuerAddr, root) => issuedByOf({ issuerAddr, root, rpcUrl, blockNumber }),
     isWhitelistedFor: (registryAddr, key, address) =>
-      isWhitelistedFor({ registryAddr, recordTypeKey: key, address, rpcUrl }),
+      isWhitelistedFor({ registryAddr, recordTypeKey: key, address, rpcUrl, blockNumber }),
   };
 }
 
