@@ -14,9 +14,24 @@ This policy remains in force until upstream no-mistakes provides an enforced ste
 
 ## What the deterministic commands cover
 
-`commands.lint` runs the Document-commit guard and check-only TypeScript compilation for `@dogtag/standard` and `@dogtag/ui`. These checks do not write formatted files, generate code, or synchronize bindings.
+`commands.lint` runs the Document-commit guard, the TypeScript prerequisite step, and check-only TypeScript compilation for `@dogtag/standard` and `@dogtag/ui`. These checks do not write formatted files, generate code, or synchronize bindings.
 
-`commands.test` runs the focused guard tests and the existing `@dogtag/standard` Vitest suite. It intentionally does not duplicate the full Cargo, Foundry, circuit, UI, mobile, or Playwright suites. With user intent supplied, no-mistakes v1.40.0 still launches its test evidence agent; a configured test command does not eliminate all agent work.
+`commands.test` runs the focused guard tests, the same prerequisite step, and the existing `@dogtag/standard` Vitest suite. It intentionally does not duplicate the full Cargo, Foundry, circuit, UI, mobile, or Playwright suites. With user intent supplied, no-mistakes v1.40.0 still launches its test evidence agent; a configured test command does not eliminate all agent work.
+
+### The prerequisite step is a check that cannot be mistaken for a code finding
+
+Both commands call `scripts/ensure-ts-prereqs.sh` before any compilation.
+It exists because `@dogtag/ui` resolves `@dogtag/standard`'s types from the SDK's gitignored `dist/`, so a fresh checkout cannot typecheck until dependencies are installed and the SDK is built.
+Since the pipeline creates a fresh worktree per run, lint previously failed on essentially every run with `Command "tsc" not found`, and `commands.test` with `vitest: command not found`.
+
+That is a trap rather than an inconvenience.
+Both messages read like an environmental blip, so the obvious response is to approve past them, and approving past them signs off a step that never executed.
+The step now installs its own prerequisites, and when it cannot it exits `78` with the exact remedy - `pnpm install --frozen-lockfile && pnpm --filter @dogtag/standard build` - plus an explicit statement that nothing was checked.
+
+Failures are classified rather than blanketed, so the inverse error is closed too.
+A stale `pnpm-lock.yaml` or an SDK that fails to compile are reported as code findings carrying tsc's own diagnostics, never relabelled as a missing prerequisite.
+`--frozen-lockfile` is load-bearing: an install able to rewrite the tracked lockfile would dirty the worktree and fail the next run's Document guard with a fresh confusing error.
+The Document guard stays ahead of the prerequisites because it needs no `node_modules` and should fail closed on a dirty worktree before any install runs.
 
 For that evidence pass, `AGENTS.md` limits the agent to the configured command and the smallest directly relevant checks. Browser or screenshot work is appropriate only when the submitted diff changes that UI. The 15-minute local evidence budget is a prompt and supervision rule, not a hard timeout enforced by no-mistakes.
 

@@ -46,6 +46,21 @@ All live and forward app/server/web code, config, API design, and docs must impl
 
 Toolchain: Rust (cargo workspace), Foundry (`forge`/`cast`), Node 22 + pnpm 10, circom 2.1.9 + snarkjs 0.7.6, Docker.
 
+### A cold checkout cannot typecheck at all - install and build the SDK first
+
+`@dogtag/ui` resolves `@dogtag/standard`'s types from the SDK's **gitignored** `dist/`, so no TypeScript check runs on a fresh tree until dependencies are installed and the SDK is built.
+`pnpm --filter @dogtag/standard exec tsc` fails first with `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL Command "tsc" not found`; `pnpm --filter @dogtag/ui typecheck` then cannot resolve the module at all.
+The remedy is always `pnpm install --frozen-lockfile && pnpm --filter @dogtag/standard build`.
+
+This is a trap, not just a chore.
+The no-mistakes pipeline creates a fresh worktree per run, so the failure fired on essentially every run, and `tsc not found` reads like an environmental blip.
+The obvious response is to approve past it, and approving past it signs off a lint step that **never executed** - a check that did not run counted as a check that passed, which is the same defect class this repo spent a week closing in the product.
+
+`commands.lint` and `commands.test` therefore call `scripts/ensure-ts-prereqs.sh`, which satisfies the prerequisites itself and, when it cannot, exits **78** naming the exact remedy instead of a confusing `tsc not found`.
+Failures are deliberately classified so the inverse mistake cannot happen either: a stale `pnpm-lock.yaml` or an SDK that fails to compile are reported as **code findings** carrying tsc's own diagnostics, never relabelled as a missing prerequisite.
+The prerequisites cost ~1.3s on a warm tree and ~6.1s on a cold one, and leave the worktree clean because everything they write is gitignored.
+Never "fix" a prerequisite failure by deleting the check it guards.
+
 - `cargo check --workspace` / `cargo build` — Rust workspace: `dogtag-standard-rs`, `dogtag-prover-rs`, `vet-api`, `admin-api`, `government-api`, `indexer-api`.
 - `cargo test -p indexer-api` — the oversight indexer (scope + store unit tests + `tests/query_api.rs` end-to-end over MemLogSource + MemStore). Hermetic, fast (no node/Mongo). See the "Oversight indexer (PR-4)" section.
 - `cargo test -p dogtag-standard-rs` — trust-core crypto + cross-language parity vectors.
