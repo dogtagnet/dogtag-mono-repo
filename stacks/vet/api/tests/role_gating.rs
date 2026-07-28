@@ -54,6 +54,12 @@ const VERIFIER_ROUTES: &[(&str, &str)] = &[
     // disassociation is the only tag-removing act this role has.
     ("GET", "/pets"),
     ("GET", "/pets/some-id/credentials"),
+    // The per-appointment CLIENT handoff. Business data, not issuance: a groomer books appointments
+    // and is exactly the role that hands one to the client it belongs to. Only the JSON mint is
+    // listed — the public `/a/{token}` resolve it produces serves HTML, which `route_absent` (which
+    // reads an empty JSON body as "no such route") cannot classify. That side is covered end to end
+    // on a groomer config by `tests/appointment_share.rs`.
+    ("POST", "/appointments/some-id/share"),
 ];
 
 /// Build a Config for a given `BUSINESS_TYPE`, otherwise identical to the shared test config.

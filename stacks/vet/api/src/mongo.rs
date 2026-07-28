@@ -100,6 +100,18 @@ impl MongoStore {
         verifs.create_index(plain(doc! { "status": 1, "createdAt": -1 })).await?;
         verifs.create_index(plain(doc! { "purpose": 1, "createdAt": -1 })).await?;
         verifs.create_index(plain(doc! { "searchKey": 1 })).await?;
+
+        // Client calendar-handoff tokens. Unique because a token IS an identity, and indexed because
+        // this is the hottest lookup on the public surface: a `webcal://` subscriber re-reads
+        // `/a/{token}.ics` for as long as the event sits in its calendar, and the collection only
+        // grows (a link is never revoked and the dialog mints a fresh one per open). Unindexed, every
+        // one of those polls would be a full scan.
+        let shares: Collection<Document> = self.db.collection("appointment_shares");
+        shares.create_index(unique(doc! { "token": 1 })).await?;
+        // Sweeping expired rows is a range scan over `exp`; no TTL index, because expiry is enforced
+        // by the read (see `try_peek_appointment_share`) and a TTL that deleted rows early would turn
+        // a live link into "not valid" without anyone asking.
+        shares.create_index(plain(doc! { "exp": 1 })).await?;
         Ok(())
     }
 
@@ -343,6 +355,65 @@ impl Store for MongoStore {
         } else {
             d.get_str("session_id").ok().map(|s| s.to_string())
         }
+    }
+    async fn put_appointment_share(
+        &self,
+        token: &str,
+        share: crate::store::AppointmentShare,
+    ) -> Result<(), StoreReadError> {
+        // The driver error is REPORTED, never discarded. A dropped write here is not lost work: the
+        // mint would still answer 200 with a token and a QR, and the client's scan would then meet
+        // "this link is not one we recognise" about a live booking. See the trait method.
+        let coll: Collection<Document> = self.db.collection("appointment_shares");
+        coll.replace_one(
+            doc! { "token": token },
+            doc! {
+                "token": token,
+                "appointment_id": &share.appointment_id,
+                "start_at": share.start_at as i64,
+                "exp": share.expires_at as i64,
+            },
+        )
+        .upsert(true)
+        .await
+        .map_err(|e| StoreReadError(e.to_string()))?;
+        Ok(())
+    }
+    async fn try_peek_appointment_share(
+        &self,
+        token: &str,
+    ) -> Result<Option<crate::store::AppointmentShare>, StoreReadError> {
+        // PEEK, never take: the client reads the page, then downloads the `.ics` it links to, and may
+        // come back later to re-check the booking. Consuming on first read would break all of that.
+        //
+        // FALLIBLE, and this is the read where collapsing mattered most: it runs FIRST, so `.ok()`
+        // here would answer a driver fault with "this link is not valid or has expired, ask the shop
+        // for a new one" — instructing the client to discard a link that is perfectly good.
+        let coll: Collection<Document> = self.db.collection("appointment_shares");
+        let found = coll
+            .find_one(doc! { "token": token })
+            .await
+            .map_err(|e| StoreReadError(e.to_string()))?;
+        let Some(d) = found else {
+            return Ok(None);
+        };
+        let exp = d.get_i64("exp").unwrap_or(0) as u64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now > exp {
+            return Ok(None);
+        }
+        // A row present but unreadable is a MALFORMED row, not an unreachable store: it will never
+        // become readable by retrying, so it is `Ok(None)` (an unknown token) rather than an error.
+        Ok(d.get_str("appointment_id")
+            .ok()
+            .map(|id| crate::store::AppointmentShare {
+                appointment_id: id.to_string(),
+                start_at: d.get_i64("start_at").unwrap_or(0).max(0) as u64,
+                expires_at: exp,
+            }))
     }
     async fn take_bind_token(&self, token: &str) -> Option<String> {
         // find_one_and_delete is atomic == one-time consume; then enforce expiry.
@@ -691,12 +762,14 @@ impl Store for MongoStore {
             .upsert(true)
             .await;
     }
-    async fn get_appointment(&self, id: &str) -> Option<Appointment> {
+    async fn try_get_appointment(&self, id: &str) -> Result<Option<Appointment>, StoreReadError> {
+        // The fallible form is the real one here: collapsing a driver fault to `None` would let the
+        // client-facing handoff page state that a booking is no longer on the shop's calendar on the
+        // strength of a read that never happened.
         self.crm_appointments()
             .find_one(doc! { "appointmentId": id })
             .await
-            .ok()
-            .flatten()
+            .map_err(|e| StoreReadError(e.to_string()))
     }
     async fn delete_appointment(&self, id: &str) -> bool {
         self.crm_appointments()

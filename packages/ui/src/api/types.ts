@@ -1277,6 +1277,37 @@ export interface IcsFeedResp {
   path: string | null;
 }
 
+/**
+ * A minted per-appointment CLIENT handoff (`stacks/vet/api/src/appointment_share.rs`).
+ *
+ * `qrUrl` is present IF AND ONLY IF this deployment has a base a client's phone could actually
+ * reach. It is `null` when `DEPLOYMENT_URL` is unset or is a loopback address, and the portal must
+ * key its QR off that field alone — rendering a QR from `url`, or from the portal's own origin,
+ * reintroduces the defect this shape exists to prevent: a scannable code that encodes a host the
+ * scanning phone cannot resolve, which still looks like a working link.
+ *
+ * `url` is the absolute link where one exists at all. On a loopback deployment it is populated while
+ * `qrUrl` is not: the link genuinely works on the machine serving it, which is where a dev run needs
+ * it, and `qrUnavailableReason` says so.
+ */
+export interface AppointmentShareResp {
+  appointmentId: string;
+  /** The handoff secret (32 hex). Anyone holding it can read THIS booking — and only this one. */
+  token: string;
+  /** Backend-relative path of the page, e.g. `/a/<token>`. */
+  path: string;
+  /** Backend-relative path of the calendar file, e.g. `/a/<token>.ics`. */
+  icsPath: string;
+  /** Absolute URL to encode in a QR, or `null` when no reachable base is configured. */
+  qrUrl: string | null;
+  /** Absolute URL to display/copy, or `null` when there is no base at all. */
+  url: string | null;
+  /** Why no QR was drawn, in words naming the fix. `null` exactly when `qrUrl` is present. */
+  qrUnavailableReason: string | null;
+  /** Unix seconds after which the link stops resolving. */
+  expiresAt: number;
+}
+
 /** One already-normalized event from a parsed `.ics` (see `packages/ui/src/calendar/ics.ts`). */
 export interface IcsImportEventInput {
   uid: string;

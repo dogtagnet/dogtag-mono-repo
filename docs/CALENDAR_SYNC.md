@@ -111,6 +111,113 @@ reported as skipped, naming the zone — never booked at a guessed offset.
 
 ---
 
+### 1.3 The other direction — one booking, handed to the CLIENT
+
+Sections 1.1 and 1.2 are both about the SHOP's whole schedule.
+This one is the opposite shape: ONE appointment, handed to the one person it belongs to, who scans a
+QR at the counter (or follows a link) and walks away with it in their own calendar.
+
+Implementation: `stacks/vet/api/src/appointment_share.rs`, which reuses the same RFC 5545 serializer
+in `ics.rs` that the feed does. There is deliberately no second `.ics` writer to drift out of step
+with the first; what differs is the PROJECTION, for the privacy reason below.
+
+| Surface | What it is |
+| --- | --- |
+| `POST /appointments/{id}/share` | Operator-gated. Mints the handoff and returns the link + QR URL. |
+| `GET /a/{token}` | Public. A self-contained page a phone renders, showing the booking's live state. |
+| `GET /a/{token}.ics` | Public. The same booking as a file iOS and Android open natively into "add to calendar". |
+
+The page offers three ways out: the `.ics` download, an **add-to-Google** template link for a client
+who lives in a browser, and — because the `.ics` URL is live rather than a stored file — a
+`webcal://` **subscribe** option for a client whose calendar can poll it.
+
+**The handoff carries the client's booking and nothing else of the shop's.**
+It publishes the service, the slot, the shop, the pet and the groomer.
+It does NOT publish the shop's internal `notes` (free text the shop writes for itself, which can say
+anything about anyone), the client's own name (they know it, and a leaked link should not name the
+person it leaked about), or any other booking.
+This is why `to_client_event` is a SEPARATE projection from the feed's `to_ics_event`: the feed is
+read by the shop and carries both of those fields, so reusing it here would have handed them to
+whoever scanned the QR.
+
+**The QR is built from `DEPLOYMENT_URL`, or it is not drawn at all.**
+A QR encoding a host the scanning phone cannot resolve is worse than no QR, because it still looks
+like a working link — that defect shipped here once already, in receipt QRs built from a `did:web`
+issuer name whose default was RFC-2606 reserved.
+Two bases are refused outright: an unset one, and a LOOPBACK one (`localhost`, `127.0.0.0/8`, `::1`),
+which is the shipped dev default and resolves on the operator's own laptop and nowhere else.
+In both cases the mint returns `qrUrl: null` plus a reason naming the fix, and the portal renders no
+QR and shows the reason. For the loopback case the link itself is still returned and labelled,
+because on a dev box it is the working one.
+
+`/a/` is proxied alongside `/api` in **both** portals' `vite.config.ts` and `nginx.conf`.
+Without that, a deployment pointing `DEPLOYMENT_URL` at the portal origin would send a scanning phone
+into the SPA's history fallback — a 200 from a live host serving the operator app's `index.html`,
+which reads as working far more convincingly than a dead link.
+Those nginx blocks also set `access_log off` for a well-formed token, for the same path-borne-secret
+reason as the feed above; the blast radius here is one booking rather than the whole schedule.
+
+**What a downloaded `.ics` cannot do, and what is done about it.**
+A file import is a SNAPSHOT. Nothing pushes a later change into a calendar it has been imported into;
+iCalendar has no such channel and neither does this service. Three things follow, none of which
+claims the copy stays fresh:
+
+- every event carries a stable `UID` and a monotonic `SEQUENCE`, so re-opening the link and re-adding
+  SUPERSEDES the client's earlier copy in place rather than duplicating it;
+- every event carries `URL:` back to the handoff page, so a stale entry still names the surface that
+  states the current answer;
+- the `webcal://` option gives real updates, on the client's calendar's own refresh schedule — which
+  for Google has historically been hours. The page offers it as a distinct, labelled choice rather
+  than implying the download behaves that way.
+
+A **cancelled** booking publishes `STATUS:CANCELLED`, which is what makes re-adding it remove the
+event; the page leads with the cancellation instead of offering a bare "add to calendar".
+A **deleted** booking publishes the same way, as a tombstone under the same `UID`, using the slot
+recorded when the token was minted — a 404 there would leave a subscriber's stale event standing
+forever with nothing but a sync error to explain it.
+
+**Daylight saving cannot bite this surface, and that is structural rather than lucky.**
+An appointment is stored as an instant; the `.ics` publishes it in UTC and the Google link uses the
+UTC basic form with no `ctz` parameter. Nothing re-derives a wall clock, so there is no offset to
+resolve and no transition to land on the wrong side of. The page formats the instant in the READER's
+own zone with `Intl` (the client may not live in the shop's), and ships a labelled UTC rendering in
+the markup for a reader with no JavaScript.
+Tests pin the exact published UTC for bookings either side of both transitions in `Europe/London` and
+`America/New_York`, with a guard asserting those fixtures genuinely straddle a transition so they
+cannot pass vacuously.
+
+**When the store cannot be read, that is its own answer.** The page says it could not check, in those
+words, and offers no add-to-calendar affordance it cannot stand behind; the `.ics` answers 503 with
+no calendar body at all, because a tombstone there would cancel a booking that may be perfectly live.
+This is why the module reads through `Store::try_get_appointment` rather than the `Option`-shaped
+form, whose collapsed error would have told a client their booking was gone on the strength of a read
+that never happened.
+
+The MINT's write carries the same rule, and it is the one that fails furthest from where it is
+noticed.
+`Store::put_appointment_share` is fallible for that reason — alone among the `put_*` methods — and a
+dropped write answers 503 with no token rather than 200 with one.
+Discarding it would let the mint hand back a token and a QR that were never recorded, so the
+operator would give a client a link whose scan says "this link is not one we recognise, ask the shop
+for a new one" about a booking that is perfectly live: the same false claim the fallible reads exist
+to prevent, arriving through the write instead.
+
+**Sharing is additive and cannot be taken back.**
+Every mint issues a NEW token — the portal dialog mints on each open, so opening it three times leaves
+three live URLs for one booking — and there is no revoke: each link resolves for 180 days past the
+slot.
+That is a deliberate difference from the feed, which makes rotation first-class because its URL
+exposes the shop's *entire* schedule. This one names a single appointment and carries neither the
+client's name nor the shop's notes, so a leaked line costs one booking, while breaking a link a client
+is relying on to find their appointment is the larger risk.
+If that trade stops holding, revocation belongs here as an explicit action — not as a shorter expiry,
+which would silently strand working links.
+
+**Not in scope here.** The handoff has no client-initiated actions: a client cannot confirm, cancel or
+reschedule from this page. It states what the shop's book says and hands it over.
+
+---
+
 ## 2. What already exists in this repo for Google (and does not work yet)
 
 This matters before scoping stage (b), because a good deal of Google two-way sync is already written.

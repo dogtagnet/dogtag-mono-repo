@@ -32,6 +32,27 @@ pub struct IcsEvent {
     pub status: IcsStatus,
     /// Unix seconds the underlying row last changed -> `LAST-MODIFIED`.
     pub last_modified: u64,
+    /// Where this event can be read live -> `URL`. Empty to omit.
+    ///
+    /// The one property that gives a calendar entry a way BACK to the truth. A downloaded `.ics` is a
+    /// snapshot; the shop can move or cancel the booking afterwards and nothing pushes that into a
+    /// calendar the file was imported into. Carrying the handoff page here means the stale entry
+    /// still names the page that states the current answer.
+    pub url: String,
+    /// Human place -> `LOCATION`. Empty to omit.
+    pub location: String,
+    /// Revision of THIS `UID`, per RFC 5545 §3.8.7.4 — monotonically non-decreasing across
+    /// regenerations, so a later publication supersedes an earlier one in a client that already
+    /// holds it rather than sitting beside it.
+    ///
+    /// `0` for a feed whose subscribers re-read the whole calendar every refresh and therefore need
+    /// no per-event revision. It is load-bearing for a SINGLE event handed to a client once and
+    /// re-downloaded later, which is the only way that client's copy can learn the booking moved.
+    ///
+    /// Deliberately NOT a unix timestamp: iCalendar's INTEGER is a SIGNED 32-BIT value, which unix
+    /// seconds overflow in 2038. Callers derive a small monotonic revision instead (see
+    /// `appointment_share::client_sequence`).
+    pub sequence: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,12 +126,33 @@ fn event_lines(e: &IcsEvent, now: u64) -> Vec<String> {
     if !e.description.is_empty() {
         v.push(format!("DESCRIPTION:{}", escape_text(&e.description)));
     }
+    if !e.location.is_empty() {
+        v.push(format!("LOCATION:{}", escape_text(&e.location)));
+    }
+    if !e.url.is_empty() {
+        // URL is a URI value (§3.3.13), NOT TEXT: it is not backslash-escaped, because escaping a
+        // query string's `,`/`;` would corrupt the link. Only the characters that would break line
+        // FRAMING are removed, which no well-formed URI contains anyway.
+        v.push(format!("URL:{}", sanitize_uri(&e.url)));
+    }
     v.push(format!("STATUS:{}", e.status.as_str()));
+    if e.sequence > 0 {
+        v.push(format!("SEQUENCE:{}", e.sequence));
+    }
     if e.last_modified > 0 {
         v.push(format!("LAST-MODIFIED:{}", format_utc(e.last_modified)));
     }
     v.push("END:VEVENT".to_string());
     v
+}
+
+/// Strip what would break RFC 5545 line framing from a URI value.
+///
+/// A URI is emitted verbatim rather than TEXT-escaped, so the grammar's only remaining exposure is a
+/// control character splitting the content line. Dropping those cannot corrupt a legitimate URI —
+/// none may contain a raw CR, LF or space (RFC 3986 §2).
+pub fn sanitize_uri(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() && *c != ' ').collect()
 }
 
 /// Unix seconds -> the RFC 5545 UTC form `YYYYMMDDTHHMMSSZ`.
@@ -212,6 +254,9 @@ mod tests {
             description: "Status: Scheduled".into(),
             status: IcsStatus::Confirmed,
             last_modified: 1_772_000_000,
+            url: String::new(),
+            location: String::new(),
+            sequence: 0,
         }
     }
 
@@ -399,6 +444,72 @@ mod tests {
         assert!(out.starts_with("BEGIN:VCALENDAR\r\n"));
         assert!(out.ends_with("END:VCALENDAR\r\n"));
         assert!(!out.contains("BEGIN:VEVENT"));
+    }
+
+    // ---- URL / LOCATION / SEQUENCE (the single-event handoff's supersede machinery) -------------
+
+    #[test]
+    fn calendar_omits_url_location_and_sequence_when_they_carry_nothing() {
+        // The published FEED sets none of them; its output must be byte-for-byte what it always was.
+        let out = calendar("p", "c", 1, &[ev()]);
+        assert!(!out.contains("URL:"));
+        assert!(!out.contains("LOCATION:"));
+        assert!(!out.contains("SEQUENCE:"));
+    }
+
+    #[test]
+    fn calendar_emits_url_location_and_sequence_when_set() {
+        let mut e = ev();
+        e.url = "https://shop.example/a/deadbeef".into();
+        e.location = "Pampered Paws".into();
+        e.sequence = 7;
+        let out = calendar("p", "c", 1, &[e]);
+        assert!(out.contains("URL:https://shop.example/a/deadbeef\r\n"));
+        assert!(out.contains("LOCATION:Pampered Paws\r\n"));
+        assert!(out.contains("SEQUENCE:7\r\n"));
+    }
+
+    #[test]
+    fn a_url_is_not_text_escaped_but_a_location_is() {
+        // The asymmetry is the point: URL is a URI value (§3.3.13) and backslash-escaping its query
+        // string would corrupt the link, while LOCATION is TEXT and must be escaped.
+        let mut e = ev();
+        e.url = "https://shop.example/a/tok?x=1,2;3".into();
+        e.location = "Paws; Claws, Ltd".into();
+        let out = calendar("p", "c", 1, &[e]);
+        assert!(out.contains("URL:https://shop.example/a/tok?x=1,2;3\r\n"), "{out}");
+        assert!(out.contains("LOCATION:Paws\\; Claws\\, Ltd\r\n"), "{out}");
+    }
+
+    #[test]
+    fn sanitize_uri_drops_only_what_would_break_line_framing() {
+        assert_eq!(
+            sanitize_uri("https://a.example/x?y=1,2;3"),
+            "https://a.example/x?y=1,2;3",
+            "a legitimate URI passes through untouched"
+        );
+        // A newline would end the content line early and inject a forged property.
+        assert_eq!(
+            sanitize_uri("https://a.example/x\r\nSUMMARY:forged"),
+            "https://a.example/xSUMMARY:forged"
+        );
+        assert_eq!(sanitize_uri("https://a.example/a b"), "https://a.example/ab");
+    }
+
+    #[test]
+    fn a_url_carrying_a_newline_cannot_inject_a_property() {
+        let mut e = ev();
+        e.url = "https://shop.example/a/tok\r\nSUMMARY:FORGED".into();
+        let out = calendar("p", "c", 1, &[e]);
+        // A property is only a property when it STARTS a content line. The forged text survives as
+        // inert characters inside the URL value, which is harmless; what must not happen is it
+        // beginning a line of its own.
+        assert!(
+            !out.contains("\r\nSUMMARY:FORGED"),
+            "the injected text began its own content line: {out}"
+        );
+        // exactly one SUMMARY property, the real one
+        assert_eq!(out.matches("\r\nSUMMARY:").count(), 1, "{out}");
     }
 
     #[test]

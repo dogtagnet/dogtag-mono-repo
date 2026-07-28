@@ -16,7 +16,7 @@ import {
   VerifyFlow,
 } from "@dogtag/ui";
 import type { CrmAppointment } from "@dogtag/ui";
-import { ArrowLeft, Pencil, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeft, CalendarPlus, Pencil, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useApp } from "../app/AppContext";
@@ -29,6 +29,7 @@ import {
   useAction,
 } from "../app/crm";
 import { formatDate, formatDateTime, formatSlot } from "../lib/time";
+import { ShareAppointmentDialog } from "./ShareAppointmentDialog";
 import { VERIFY_PURPOSES } from "./verifyPurposes";
 
 /**
@@ -50,6 +51,7 @@ export function AppointmentDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -101,6 +103,10 @@ export function AppointmentDetail() {
 
   return (
     <div className="space-y-4">
+      <ShareAppointmentDialog
+        appointment={sharing ? appt : null}
+        onClose={() => setSharing(false)}
+      />
       <Link
         to="/appointments"
         className="inline-flex items-center gap-1 text-sm text-muted hover:text-onSurface"
@@ -120,6 +126,10 @@ export function AppointmentDetail() {
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
+            {/* The client half of the calendar: hand THIS booking to the person it belongs to. */}
+            <Button size="sm" onClick={() => setSharing(true)}>
+              <CalendarPlus className="h-4 w-4" /> Send to client
+            </Button>
             <Button
               variant="outline"
               size="sm"

@@ -2324,6 +2324,53 @@ thing however it was started. It offers NO mode/disclosure choice: the retired Z
 was removed from `VerifyFlow` when the backend collapsed to the single owner-hidden submit route, and
 `stacks/groomer/web/e2e/verify.spec.ts` asserts neither "Mode" nor "Normal" appears.
 
+### The per-appointment CLIENT handoff (`/a/{token}`) — sharp edges
+
+`stacks/vet/api/src/appointment_share.rs` hands ONE booking to the client it belongs to (page +
+`.ics` + add-to-Google). Four things about it are easy to get wrong later:
+
+**It is NOT issuance-gated, and it must not become so.** `/a/{token}` and
+`POST /appointments/{id}/share` are mounted for every role — a groomer books appointments and is
+precisely the role that hands one to a client. Do not move them into the `issuance` sub-router
+alongside `/r/` and `/p/`.
+
+**A public scan route needs a proxy entry in BOTH portals, or the SPA silently swallows it.**
+`/a/` is proxied in `stacks/{vet,groomer}/web/vite.config.ts` and `nginx.conf`. Without those, a
+deployment whose `DEPLOYMENT_URL` points at the portal origin sends the scanning phone into the
+SPA's history fallback, which answers **200 with the operator app's `index.html`** — a live host
+serving the wrong thing, which reads as working far more convincingly than a dead link. Any future
+public backend-owned path (the `/r/`, `/x/`, `/p/`, `/a/` family) needs the same two entries.
+
+**`route_absent` in `tests/role_gating.rs` cannot classify an HTML route.** It reads an empty JSON
+body as "route not mounted", so a route serving `text/html` always looks absent. Only the JSON mint
+is listed there; the public resolve is covered end to end by `tests/appointment_share.rs`.
+
+**The client projection is deliberately NOT the feed's.** `to_client_event` exists separately from
+`calendar_ics::to_ics_event` because the feed carries the operator's `notes` and the client's name —
+both correct for the shop reading its own schedule, both a leak to whoever scans a client's QR. Reuse
+the SERIALIZER (`ics::calendar`), never the projection. Same reason `client_uid` ignores
+`external_uid`: the UID must stay derivable from the token alone so a DELETED booking can still be
+tombstoned.
+
+#### "Could not check" needs a store that can fail, so `MemStore` can inject one
+
+`Store::try_get_appointment` is the fallible read (the `Option`-shaped `get_appointment` is derived
+from it), added for the same reason as `try_get_pet`: Mongo's `.ok().flatten()` collapses a driver
+fault into `None`, which on this surface would tell a CLIENT their booking is gone on the strength of
+a read that never happened. `MemStore::set_fail_appointment_reads(true)` is default-off fault
+injection that exists solely so that branch is testable — a store that cannot fail cannot exercise a
+required state, and an untested wrong-state renderer is how this defect class ships.
+
+#### The `.ics` bytes are a cross-language contract, pinned from both ends
+
+`appointment_share`'s `*_is_byte_for_byte_the_fixture_the_parser_test_pins` tests assert the writer's
+exact output; `packages/ui/test/clientHandoffIcs.test.ts` holds those same bytes and feeds them
+through the repo's real iCalendar PARSER. Changing the writer's grammar (a property, a fold point, an
+escape) fails on the Rust side FIRST, naming the TS fixture to regenerate. Regenerate it from actual
+output — hand-typing a fixture tests your idea of the format, not the format. Note `SEQUENCE` is
+second-granular (`updated_at - created_at`), so a create-and-edit inside one second does not advance
+it; backdate both stamps in a test rather than racing the clock.
+
 ## Mobile: exercising either app's UI without a scan flow
 
 Both apps persist to two plain JSON files (`pets.json`, `credentials.json`) in the app's private

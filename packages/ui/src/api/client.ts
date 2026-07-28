@@ -4,6 +4,7 @@ import type {
   ApiError,
   AppointmentInput,
   AppointmentListQuery,
+  AppointmentShareResp,
   ClientInput,
   ClientListQuery,
   ConfirmReq,
@@ -314,6 +315,16 @@ export function createApiClient(opts: ApiClientOptions) {
       request<CrmAppointment>("PUT", `/appointments/${id}`, body),
     deleteAppointment: (id: string) =>
       request<{ deleted: boolean }>("DELETE", `/appointments/${id}`),
+    /**
+     * POST /appointments/{id}/share — mint the CLIENT handoff for one booking: a link/QR resolving
+     * to that appointment alone, from which the client adds it to their own calendar.
+     *
+     * The response's `qrUrl` is `null` when this deployment has no base a client's phone could
+     * reach; render no QR and show `qrUnavailableReason` rather than building one from anything
+     * else. See `AppointmentShareResp`.
+     */
+    shareAppointment: (id: string) =>
+      request<AppointmentShareResp>("POST", `/appointments/${id}/share`),
 
     // ---- `.ics` calendar interop: subscription feed + import ----
     /** GET /calendar/feed — is a subscribable `.ics` feed published, and under which secret. */
