@@ -75,16 +75,18 @@ object DogTagCard {
         // about that row.
         val storeAnswered = owned is OwnedTagSource.Records
 
-        // Imported pets are the weaker source and need filtering: `RecordImporter` stores a 32-hex
+        // Imported pets are the source that NEEDS this filter: `RecordImporter` stores a 32-hex
         // share token in `dogTagId` whenever the wrapped doc carries no handle, and that is not a
-        // tag. Owner-secret records need no such filter - `ProfileTreeBuilder.dogTagIdField` refuses
-        // anything but a decimal handle, so a record in the store is a real tag by construction.
+        // tag. Owner-secret records cannot carry one - `ProfileTreeBuilder.dogTagIdField` refuses
+        // anything but a decimal handle - so for them the same predicate is a no-op today. It is
+        // applied to both anyway: one predicate cannot drift, whereas two that merely happen to
+        // agree on every reachable input is how a mirrored pair starts listing different rows.
         val importedByTag = imported
             .filter { isAsciiDecimal(it.dogTagIdDec) }
             .associateBy { it.dogTagIdDec }
 
         val ownedByTag = ownedTags
-            .filter { it.dogTagIdDec.isNotBlank() }
+            .filter { isAsciiDecimal(it.dogTagIdDec) }
             .associateBy { it.dogTagIdDec }
 
         val rows = (ownedByTag.keys + importedByTag.keys).map { id ->

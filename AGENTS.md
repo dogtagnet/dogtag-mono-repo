@@ -1169,19 +1169,33 @@ caller text to echo, by construction rather than by convention. **Nor does the r
 instead** - Android logs the throwable's CLASS and the failing step, deliberately not
 `Log.w(tag, msg, e)`, which prints the message and would just move the plaintext into logcat where a
 bug report collects it; iOS logs nothing (it has no logging surface, and the cause is the diagnostic).
-The two causes are told apart at the THROW site (`UnreadableStoreException.kind`), never by sniffing
-the cause's type downstream. `shortReason` (160 chars, whitespace collapsed) stays as the
-residual cap on whatever a future cause's wording grows into.
-Note the boundary, which is real and verified rather than theoretical: `UnreadableStoreException`'s own
-MESSAGE still interpolates `cause.message`, and **`ScanScreen`'s issuance `catch` still renders it** -
-`err = "Issue failed: ${e.message}"` (`ScanScreen.kt:446`, iOS `ScanScreen.swift:322`) wraps a block
-containing `buildAndPersist` -> `upsert` -> `load()`, so a store-read failure there reaches the screen
-by the old route. Pre-existing, outside this fix, and untouched: the leak is closed on the CARD path
-only. Closing it on Scan means giving that `catch` the same cause treatment, not widening the card's.
-Also uncovered on both platforms: the cause CLASSIFIERS (`ProfileScreen.swift`'s `storeFailure(for:)`
-and `ProfileScreen.kt`'s `when (kind)`) sit in files neither suite compiles, so swapping their two arms
-reddens nothing. Low stakes by design - the privacy property is enforced by the payload's TYPE, not by
-the classifier, so the worst case is one honest sentence shown where the other belonged.
+The two causes are told apart at the THROW site on BOTH platforms - Kotlin
+`UnreadableStoreException.kind`, Swift `StoreError.unreadableFile(kind:underlying:)`, each stamped
+where the read actually failed - never by sniffing the cause's type downstream. That is not
+tidiness: `underlying is DecodingError` was the original Swift classifier, and it is exactly the
+guess that stops working silently the day the decode wraps its own errors. `shortReason` (160 chars,
+whitespace collapsed) stays as the residual cap on whatever a future cause's wording grows into.
+
+**The STORE ERROR's own message is sanitized at the source too, and that is where the leak actually
+was.** The card is not the only renderer: Android builds user-facing text with `${e.message}` on the
+issuance, verify and record-picker catches, and iOS interpolates the error on the issuance
+(`localizedDescription`) and verify (`\(error)`) catches - five paths, none of which caps or
+sanitizes. So the message is built from the file name plus `kind.detail` and quotes the cause
+NOWHERE; a sixth renderer added later inherits the guarantee instead of having to remember it.
+Swift additionally conforms `StoreError` to `CustomStringConvertible`, because `String(describing:)`
+never consults `LocalizedError` and an `errorDescription`-only fix would leave `\(error)` reflecting
+the associated values in full. The raw throwable stays attached (Kotlin `cause`, Swift `underlying`),
+so stack traces and a debugger lose nothing - only the rendered text was narrowed. Pinned by
+`UnreadableStoreExceptionTest`, which feeds a cause whose message looks like the decrypted store and
+asserts none of it survives.
+
+Coverage boundary: the Swift side of this has no automated test, because `StoreError` lives in
+`ProfileTreeStore.swift`, which imports the FFI and so cannot join the host-less `DogTagTests`
+bundle; extracting it would drag `ProfileTreeStore` in with it. The cause CLASSIFIERS
+(`ProfileScreen.swift`'s `storeFailure(for:)` and `ProfileScreen.kt`'s `when (kind)`) are likewise in
+files neither suite compiles, so swapping their two arms reddens nothing. Low stakes by design - the
+privacy property is enforced by the payload's TYPE and by the message's construction, not by the
+classifier, so the worst case is one honest sentence shown where the other belonged.
 
 **iOS's `report(_:action:success:)` re-reads the store, and that is not tidiness.** The Danger zone
 lives on this same screen, so "Delete dog-tags" / "Reset everything" destroy the owner-secret store

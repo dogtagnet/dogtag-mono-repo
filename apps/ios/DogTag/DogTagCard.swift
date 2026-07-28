@@ -175,16 +175,18 @@ enum DogTagCard {
         case .pending: pending = true
         }
 
-        // Imported pets are the weaker source and need filtering: `RecordImporter` stores a 32-hex
+        // Imported pets are the source that NEEDS this filter: `RecordImporter` stores a 32-hex
         // share token in `dogTagId` whenever the wrapped doc carries no handle, and that is not a
-        // tag. Owner-secret records need no such filter - the builder refuses anything but a decimal
-        // handle, so a record in the store is a real tag by construction.
+        // tag. Owner-secret records cannot carry one - the builder refuses anything but a decimal
+        // handle - so for them the same predicate is a no-op today. It is applied to both anyway:
+        // one predicate cannot drift, whereas two that merely happen to agree on every reachable
+        // input is how a mirrored pair starts listing different rows.
         var importedByTag: [String: ImportedTag] = [:]
         for tag in imported where isAsciiDecimal(tag.dogTagIdDec) {
             importedByTag[tag.dogTagIdDec] = tag
         }
         var ownedByTag: [String: OwnedTag] = [:]
-        for tag in ownedTags where !tag.dogTagIdDec.isEmpty {
+        for tag in ownedTags where isAsciiDecimal(tag.dogTagIdDec) {
             ownedByTag[tag.dogTagIdDec] = tag
         }
 

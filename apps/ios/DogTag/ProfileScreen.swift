@@ -492,16 +492,15 @@ struct ProfileScreen: View {
 
     /// Classify a store-read failure into the closed cause set the card can describe.
     ///
-    /// Keyed on the decode step rather than on the error's text, so the distinction rests on WHERE
-    /// the read failed. Anything that is not a decode failure - a locked `.completeFileProtection`
-    /// file, I/O - is the read half.
+    /// Reads the kind the store recorded at its own throw site; it does not inspect the underlying
+    /// error's type. Anything that is not an `unreadableFile` never reached the decode step.
     private static func storeFailure(for error: Error) -> DogTagCard.OwnerStoreFailure {
-        if let storeError = error as? ProfileTreeStore.StoreError,
-           case let .unreadableFile(underlying) = storeError,
-           underlying is DecodingError {
-            return .couldNotDecode
+        guard let storeError = error as? ProfileTreeStore.StoreError,
+              case let .unreadableFile(kind, _) = storeError else { return .couldNotRead }
+        switch kind {
+        case .couldNotRead: return .couldNotRead
+        case .couldNotDecode: return .couldNotDecode
         }
-        return .couldNotRead
     }
 
     private func kv(_ k: String, _ v: String) -> some View {
