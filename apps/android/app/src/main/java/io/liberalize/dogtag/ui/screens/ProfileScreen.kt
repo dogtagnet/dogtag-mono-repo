@@ -1,5 +1,6 @@
 package io.liberalize.dogtag.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,12 +21,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,6 +49,13 @@ import io.liberalize.dogtag.data.DarkPref
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.SettingsStore
+import io.liberalize.dogtag.profile.DogTagCard
+import io.liberalize.dogtag.profile.ImportedTag
+import io.liberalize.dogtag.profile.OwnedTag
+import io.liberalize.dogtag.profile.OwnedTagSource
+import io.liberalize.dogtag.profile.OwnerSecretEvidence
+import io.liberalize.dogtag.profile.OwnerStoreFailure
+import io.liberalize.dogtag.profile.ProfileTreeStore
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
 import io.liberalize.dogtag.ui.ThemeId
@@ -53,7 +63,9 @@ import io.liberalize.dogtag.wallet.Biometric
 import io.liberalize.dogtag.wallet.SeedBackup
 import io.liberalize.dogtag.wallet.Wallet
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: FragmentActivity) {
@@ -89,6 +101,52 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
 
     val localStore = remember { LocalStore.get(context) }
     val pets by localStore.pets.collectAsStateWithLifecycle()
+
+    // The Dog-tags card's OTHER source: the tags this device created by issuance. It is a separate
+    // store from `pets` and nothing joins them - custodial issuance writes an owner-secret record
+    // and never a pet - so reading only `pets` is what made a freshly minted tag invisible here.
+    //
+    // Read through the THROWING `load()`, not `all()`: `all()` answers `emptyList()` for a store it
+    // could not decrypt, which the card would render as "No dog tag yet" - the same false absence
+    // in a second flavour. Off the main thread because it is Keystore AES-GCM plus file I/O, and
+    // therefore starting at [OwnedTagSource.Pending] rather than at "none", so the first frame
+    // cannot claim an absence nothing has checked yet.
+    //
+    // Re-runs on every visit to this tab: `DogTagApp` swaps tab content with a `when`, and shows
+    // `ScanScreen` INSTEAD of it, so returning here after an issuance composes this screen afresh.
+    val treeStore = remember(context) { ProfileTreeStore(context) }
+    var ownedTags by remember { mutableStateOf<OwnedTagSource>(OwnedTagSource.Pending) }
+    LaunchedEffect(treeStore) {
+        ownedTags = withContext(Dispatchers.IO) {
+            try {
+                OwnedTagSource.Records(
+                    treeStore.load().map { OwnedTag(dogTagIdDec = it.dogTagIdDec, rootHex = it.rootHex) },
+                )
+            } catch (e: Exception) {
+                // The CAUSE, never the message. By the time a decode fails the decryption has
+                // already succeeded, and `org.json` quotes the input it choked on - which here is
+                // the owner-secret store's own plaintext. The screen gets a sentence `DogTagCard`
+                // constructed from this cause; see its `reasonText`.
+                val kind = (e as? ProfileTreeStore.UnreadableStoreException)?.kind
+                // Class and step only - deliberately NOT `Log.w(tag, msg, e)`, which prints the
+                // throwable's message and so would move the same plaintext from the screen into
+                // logcat, where a bug report collects it. The class still tells support whether
+                // this was the Keystore, the filesystem or the parser.
+                Log.w(
+                    "ProfileScreen",
+                    "owner-secret store could not be read: ${e.javaClass.name}" +
+                        (kind?.let { " ($it)" } ?: ""),
+                )
+                OwnedTagSource.Unreadable(
+                    when (kind) {
+                        ProfileTreeStore.UnreadableStoreException.Kind.CouldNotDecode ->
+                            OwnerStoreFailure.CouldNotDecode
+                        else -> OwnerStoreFailure.CouldNotRead
+                    },
+                )
+            }
+        }
+    }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(scroll).padding(20.dp),
@@ -293,17 +351,63 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            val minted = pets.filter { it.dogTagId.isNotBlank() && it.dogTagId.all { ch -> ch.isDigit() } }
-            if (minted.isEmpty()) {
+            // Both sources, folded by `DogTagCard` - see its docs for why an empty card is a claim
+            // that has to be earned rather than a default.
+            val card = DogTagCard.state(
+                owned = ownedTags,
+                imported = pets.map { ImportedTag(dogTagIdDec = it.dogTagId, name = it.name) },
+            )
+
+            card.rows.forEachIndexed { i, row ->
+                if (i > 0) HorizontalDivider(color = c.muted.copy(alpha = 0.3f))
+                // The identifier position, always. A tag whose credential has not been imported has
+                // no name to show, and inventing one ("Pet", "Unnamed") would read as data.
+                KV("dogTagId", row.dogTagIdDec)
+                if (row.name != null) KV("Pet", row.name)
+                if (row.rootHex != null) KV("Profile root", row.rootHex.take(18) + "…")
+                // What the owner-secret record itself proves, and no more. The record is written
+                // BEFORE the custodial-bind POST and before the on-chain confirmation poll, and
+                // carries no bind or anchor status, so an issuance that died after it was written
+                // would render as anchored - the claim this product exists to make truthfully,
+                // asserted from evidence that does not establish it.
+                if (row.ownerSecret == OwnerSecretEvidence.Held && !row.credentialImported) {
+                    Text(
+                        "This phone holds this tag's owner-secret and built its profile root. No " +
+                            "credential naming this tag has been imported here yet, so its pet " +
+                            "details are not known on this phone.",
+                        fontSize = 11.sp, color = c.muted,
+                    )
+                }
+                // Only the definite negative is printed. Under Unknown the store never answered, so
+                // "holds no owner-secret" would be could-not-check dressed as a fact; the
+                // card-level notice below is what speaks for that case.
+                if (row.ownerSecret == OwnerSecretEvidence.NotHeld) {
+                    Text(
+                        "Known from an imported credential. This phone holds no owner-secret for " +
+                            "this tag, so it cannot prove consent for it.",
+                        fontSize = 11.sp, color = c.muted,
+                    )
+                }
+            }
+
+            // "Could not check" is its own answer and outranks silence: an unread or unreadable
+            // owner-secret store leaves any issuance-created tag unlisted, so saying nothing would
+            // let the rows above read as the complete set.
+            if (card.ownerStorePending) {
+                Text("Checking this device for owner-hidden tags…", fontSize = 11.sp, color = c.muted)
+            } else if (card.ownerStoreUnavailable != null) {
+                // Printed verbatim: the sentence is built by `DogTagCard.reasonText` from a closed
+                // set of causes, so there is no caller text here to interpolate.
+                Text(card.ownerStoreUnavailable, fontSize = 11.sp, color = c.danger)
+            }
+
+            // Only once every source has answered and none knows a tag.
+            if (card.establishesNoTags) {
                 Text(
                     "No dog tag yet. Scan your vet's dog-tag QR to build its owner-hidden profile " +
                         "tree and have the root issued.",
                     fontSize = 12.sp, color = c.muted,
                 )
-            } else {
-                minted.forEach { pet ->
-                    KV(pet.name.ifBlank { "Pet" }, "dogTagId ${pet.dogTagId}")
-                }
             }
         }
 

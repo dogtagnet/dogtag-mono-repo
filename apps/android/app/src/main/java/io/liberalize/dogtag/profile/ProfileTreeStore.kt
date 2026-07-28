@@ -106,12 +106,42 @@ class ProfileTreeStore(private val context: Context) {
             "owner-secret that a lost phone would destroy permanently",
     )
 
-    /** The store exists but could not be read. Never reported as "no records" - see [load]. */
-    class UnreadableStoreException(cause: Throwable) : IllegalStateException(
+    /**
+     * The store exists but could not be read. Never reported as "no records" - see [load].
+     *
+     * The MESSAGE is built entirely from [FILE_NAME] and [kind] and never quotes [cause]. That is a
+     * privacy property, not tidiness: by the time a DECODE fails the decryption has already
+     * succeeded, so `org.json` is handed the store's own plaintext and quotes it back
+     * (`JSONTokener.syntaxError` appends the whole tokenizer input), which would put `ownerSecretHex`
+     * into any string built from `e.message`. Three screens do exactly that today - the issuance
+     * catch, the verify catch, and the record-picker catch - so the guarantee has to hold at the
+     * throw site rather than at each render, or a fourth added later inherits the leak.
+     *
+     * [cause] stays attached, so stack traces and logcat lose nothing.
+     */
+    class UnreadableStoreException(
+        cause: Throwable,
+        /**
+         * WHERE the read failed, recorded at the throw site rather than inferred later from the
+         * cause's type. Sniffing for a `JSONException` downstream would be a guess that silently
+         * stops working the day [decode] wraps its own errors - and it is also what lets the message
+         * name the failing step without quoting anything untrusted.
+         */
+        val kind: Kind = Kind.CouldNotRead,
+    ) : IllegalStateException(
         "$FILE_NAME exists but could not be read; refusing to overwrite it (it holds recovery " +
-            "secrets): ${cause.message}",
+            "secrets): ${kind.detail}",
         cause,
-    )
+    ) {
+        /** The failing step, and the only text about it that is ever rendered. */
+        enum class Kind(val detail: String) {
+            /** The stored bytes never came back: restore, file I/O, or Keystore decryption. */
+            CouldNotRead("the stored bytes could not be read back"),
+
+            /** They came back, but did not decode into records. */
+            CouldNotDecode("the stored bytes did not decode into records"),
+        }
+    }
 
     /** Rebuilding the tree no longer reproduces the recorded `R`. See [verifyRecoverable]. */
     class RootMismatchException(expected: String, got: String) : IllegalStateException(
@@ -214,10 +244,18 @@ class ProfileTreeStore(private val context: Context) {
                 )
             }
         }
-        try {
-            OwnerSecretRecords.decode(String(decrypt(f.readBytes()), Charsets.UTF_8))
+        // Split so the two halves are distinguishable at the throw site: the bytes never coming back
+        // and the bytes not decoding are different failures with different remedies, and only the
+        // caller that already holds them can tell them apart afterwards without guessing.
+        val plaintext = try {
+            String(decrypt(f.readBytes()), Charsets.UTF_8)
         } catch (e: Exception) {
-            throw UnreadableStoreException(e)
+            throw UnreadableStoreException(e, UnreadableStoreException.Kind.CouldNotRead)
+        }
+        try {
+            OwnerSecretRecords.decode(plaintext)
+        } catch (e: Exception) {
+            throw UnreadableStoreException(e, UnreadableStoreException.Kind.CouldNotDecode)
         }
     }
 

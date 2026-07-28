@@ -1104,6 +1104,110 @@ reads NO expiry leaf at all and reports an expired-but-unrevoked root as valid (
 This is a different surface from gap 1 and fails a different way: gap 1 stays silent, this one asserts
 validity.
 
+### The Profile Dog-tags card has TWO sources, and neither store knows about the other
+
+A dog tag can be known to a phone two independent ways, and **custodial issuance populates only one of
+them**: `ProfileTreeStore.buildAndPersist` upserts an owner-secret record and nothing on the
+custodial-bind path writes a `Pet`, while `pets` comes from the separate record-import QR.
+The card rendered from `pets` alone, so a phone that had scanned a real vet QR, folded the tree
+on-device, posted `R`, and watched the vet anchor and mint it - `profileRoot(dogTagId)` on chain equal
+to the root the phone built - still said **"No dog tag yet"**, across an app restart, on both platforms.
+That is this repo's standing defect class rendered as ABSENCE rather than as a wrong badge: a false
+statement about the owner's own property.
+
+The fold is `profile/DogTagCard.kt` and `DogTag/DogTagCard.swift` - a mirrored pure pair, pinned case
+for case by `DogTagCardTest` / `DogTagCardTests`, in the same shape and for the same reason as
+`VerdictDisplay`. Four things there are load-bearing:
+
+- **The card reads the THROWING accessor**, `ProfileTreeStore.load()` / the new `loadActive()`, never
+  `all()` / `activeRecords()`. Those swallow an unreadable store and answer empty - the Kotlin one says
+  so in its own doc ("use `load` where failure must surface"). Rendering that as "No dog tag yet" is the
+  identical false absence in a second flavour, and on iOS it is not even a corruption-only case: the file
+  is `.completeFileProtection`, so a locked device is a live `unreadableFile`.
+- **The source is TRI-state** (`Records` / `Unreadable` / `Pending`), because "there are no tags", "I
+  could not read the store" and "I have not looked yet" are three different claims and only the first
+  licenses an empty card. `establishesNoTags` is the single predicate gating that sentence; a `rows.isEmpty()`
+  shortcut re-opens the bug. Pending is real, not theoretical - the Android read is Keystore AES-GCM and
+  must leave the main thread, so the card composes at least once before it lands.
+- **A name is resolved, never substituted.** `Pet` decoding defaults the name to the literal `"Unnamed"`
+  (`Models.kt`) and the on-import fallback writes `"DogTag #<id>"`; iOS `LocalStore.isRealName` already
+  rejected both and Android had no equivalent, so the shared `DogTagCard.realName` now carries the one
+  predicate - `LocalStore.isRealName` delegates to it rather than restating it, so there is one per
+  platform and not two to keep in step by hand. A tag with no imported credential shows its `dogTagId`
+  in the identifier position and no name at all - "Pet" in the name slot reads as data.
+- **Ordering is on the digit string, deliberately the same five lines in both languages.** `dogTagIdDec`
+  is unbounded, an overflowing parse would silently reorder rather than fail, and a `BigInteger` here
+  against a hand-rolled compare there would be two algorithms to keep agreeing. Highest handle first, so
+  the just-issued tag - the one the owner opened the card to find - is on top.
+- **The tri-state reaches the ROW too, as `OwnerSecretEvidence` (`Held`/`NotHeld`/`Unknown`).** A `Bool`
+  there collapses it back at the last step: under `Unreadable`/`Pending` the store's record is missing
+  for EVERY row, so a row would print "this phone holds no owner-secret for this tag" - the same
+  could-not-check-as-definite-negative the card exists to close, one level down. Only `NotHeld` licenses
+  that sentence. `rootHex` needs no equivalent: a `null` root renders no row at all, and silence is not
+  a claim.
+- **A row states what the RECORD proves, never what the chain did.** `buildAndPersist` writes the
+  owner-secret record BEFORE the custodial-bind POST and before the confirmation poll, and the record
+  carries no bind or anchor status, so an issuance that died after that write would render as anchored.
+  The copy is therefore "this phone holds this tag's owner-secret and built its profile root" - not
+  "Anchored from this device", which is exactly the claim the product exists to make truthfully. Fixing
+  this by adding an anchored flag to `OwnerSecretRecord` was rejected: that changes the on-disk JSON of a
+  file holding unrecoverable attribute salts, on both platforms.
+
+The imported side keeps its ASCII-decimal filter: `RecordImporter` stores a 32-hex share token in
+`dogTagId` when the wrapped doc carries no handle. Owner-secret records need no such filter, since
+`ProfileTreeBuilder.dogTagIdField` refuses anything but a decimal handle. **ASCII-decimal, not
+`Char::isDigit`/`\.isNumber`** - those admit Unicode digits and admit DIFFERENT ones (`isDigit` is Nd,
+so `٣` U+0663 passed on both; `\.isNumber` adds Nl and No, so `½` passed on iOS only), which is one
+store listing different rows per platform.
+
+**The unreadable-store payload is a CAUSE, not a message, and that is a privacy property.** By the time
+`OwnerSecretRecords.decode` fails the decryption has already SUCCEEDED, and Android's `org.json` quotes
+the input it choked on (`JSONTokener.syntaxError` appends the tokenizer input) - which there is the
+owner-secret store's own plaintext. So `OwnedTagSource.Unreadable` carries `OwnerStoreFailure`
+(`CouldNotRead`/`CouldNotDecode`) and `DogTagCard.reasonText` constructs the sentence: there is no
+caller text to echo, by construction rather than by convention. **Nor does the raw text go to a log
+instead** - Android logs the throwable's CLASS and the failing step, deliberately not
+`Log.w(tag, msg, e)`, which prints the message and would just move the plaintext into logcat where a
+bug report collects it; iOS logs nothing (it has no logging surface, and the cause is the diagnostic).
+The two causes are told apart at the THROW site on BOTH platforms - Kotlin
+`UnreadableStoreException.kind`, Swift `StoreError.unreadableFile(kind:underlying:)`, each stamped
+where the read actually failed - never by sniffing the cause's type downstream. That is not
+tidiness: `underlying is DecodingError` was the original Swift classifier, and it is exactly the
+guess that stops working silently the day the decode wraps its own errors. `shortReason` (160 chars,
+whitespace collapsed) stays as the residual cap on whatever a future cause's wording grows into.
+
+**The STORE ERROR's own message is sanitized at the source too, and that is where the leak actually
+was.** The card is not the only renderer: Android builds user-facing text with `${e.message}` on the
+issuance, verify and record-picker catches, and iOS interpolates the error on the issuance
+(`localizedDescription`) and verify (`\(error)`) catches - five paths, none of which caps or
+sanitizes. So the message is built from the file name plus `kind.detail` and quotes the cause
+NOWHERE; a sixth renderer added later inherits the guarantee instead of having to remember it.
+Swift additionally conforms `StoreError` to `CustomStringConvertible`, because `String(describing:)`
+never consults `LocalizedError` and an `errorDescription`-only fix would leave `\(error)` reflecting
+the associated values in full. The raw throwable stays attached (Kotlin `cause`, Swift `underlying`),
+so stack traces and a debugger lose nothing - only the rendered text was narrowed. Pinned by
+`UnreadableStoreExceptionTest`, which feeds a cause whose message looks like the decrypted store and
+asserts none of it survives.
+
+Coverage boundary: the Swift side of this has no automated test, because `StoreError` lives in
+`ProfileTreeStore.swift`, which imports the FFI and so cannot join the host-less `DogTagTests`
+bundle; extracting it would drag `ProfileTreeStore` in with it. The cause CLASSIFIERS
+(`ProfileScreen.swift`'s `storeFailure(for:)` and `ProfileScreen.kt`'s `when (kind)`) are likewise in
+files neither suite compiles, so swapping their two arms reddens nothing. Low stakes by design - the
+privacy property is enforced by the payload's TYPE and by the message's construction, not by the
+classifier, so the worst case is one honest sentence shown where the other belonged.
+
+**iOS's `report(_:action:success:)` re-reads the store, and that is not tidiness.** The Danger zone
+lives on this same screen, so "Delete dog-tags" / "Reset everything" destroy the owner-secret store
+while `ProfileScreen` stays in composition - `.task` does not re-run, and the card would keep listing a
+tag whose owner-secret was just wiped until the user switched tabs. That is this exact defect inverted
+into a false PRESENCE. It re-reads rather than clearing `ownedTags`, because `AppReset.Outcome` can be
+partial and only the store knows what actually survived. Android has no Danger zone, so it has no
+counterpart to mirror.
+Verified on a simulator by staging `Documents/dogtag-owner-secrets.json` + `pets.json` directly (see
+"Mobile: exercising either app's UI without a scan flow") for all three arms: owner-secret-only,
+both-sources-merged-once, and a deliberately corrupted store.
+
 ### Building / verifying UI changes
 - Build: `xcodebuild build -project apps/ios/DogTag.xcodeproj -scheme DogTag -sdk iphonesimulator
   -destination 'id=<sim-udid>' CODE_SIGNING_ALLOWED=NO`. SourceKit single-file diagnostics report

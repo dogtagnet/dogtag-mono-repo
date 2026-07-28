@@ -124,10 +124,11 @@ final class LocalStore: ObservableObject {
 
     /// A pet name is "real" only if it isn't empty or one of the auto placeholders ("Unnamed" from a
     /// central sync, "DogTag #…" from the on-import fallback).
-    private static func isRealName(_ n: String) -> Bool {
-        let t = n.trimmingCharacters(in: .whitespaces)
-        return !t.isEmpty && t != "Unnamed" && !t.hasPrefix("DogTag #") && !t.hasPrefix("DogTag#")
-    }
+    ///
+    /// Delegates rather than restating the predicate: `DogTagCard` needs the same rule in the
+    /// host-less test bundle, which cannot import this file, and two copies of it would be two
+    /// things to keep in step by hand. One predicate per platform, pinned by `DogTagCardTests`.
+    private static func isRealName(_ n: String) -> Bool { DogTagCard.realName(n) != nil }
 
     // ---- IO ------------------------------------------------------------------------------------
 

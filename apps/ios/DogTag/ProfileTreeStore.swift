@@ -88,10 +88,40 @@ enum ProfileTreeStore {
         var replacesDogTagIdDec: String? = nil
     }
 
-    enum StoreError: Error, LocalizedError {
+    /// Which step of a store read failed, recorded at the throw site rather than inferred later from
+    /// the underlying error's type. Mirrors Android's `UnreadableStoreException.Kind`: a downstream
+    /// `underlying is DecodingError` sniff is a guess that stops working silently the day the decode
+    /// wraps its own errors, and the step is exactly what lets a rendered message be useful without
+    /// quoting anything untrusted.
+    enum UnreadableKind {
+        /// The stored bytes never came back: a locked `.completeFileProtection` file, or I/O.
+        case couldNotRead
+        /// They came back, but did not decode into records.
+        case couldNotDecode
+
+        /// The failing step, and the only text about it that is ever rendered.
+        var detail: String {
+            switch self {
+            case .couldNotRead: return "the stored bytes could not be read back"
+            case .couldNotDecode: return "the stored bytes did not decode into records"
+            }
+        }
+    }
+
+    /// A store failure.
+    ///
+    /// `unreadableFile`'s rendered text is built from `fileName` and the throw-site kind and never
+    /// quotes `underlying`. That is a privacy property: this store holds the owner-secret and the
+    /// attribute salts, an error raised while reading it is free to quote what it was reading, and
+    /// two screens render it (the issuance catch and the verify catch). `CustomStringConvertible` is
+    /// what extends the guarantee to the second of those: it interpolates the error directly, and
+    /// `String(describing:)` never consults `LocalizedError`, so an `errorDescription`-only fix would
+    /// leave that path reflecting the associated values in full. `underlying` stays an associated
+    /// value, so a debugger still reaches it.
+    enum StoreError: Error, LocalizedError, CustomStringConvertible {
         case rootMismatch(expected: String, got: String)
         case conflictingRoot(dogTagId: String, existing: String, proposed: String)
-        case unreadableFile(underlying: Error)
+        case unreadableFile(kind: UnreadableKind, underlying: Error)
         case seedBackupNotConfirmed
         case reissueRequiresFreshId(dogTagId: String)
         case randomSaltGenerationFailed
@@ -102,9 +132,9 @@ enum ProfileTreeStore {
                 return "rebuilt R \(got) != recorded R \(expected)"
             case let .conflictingRoot(dogTagId, existing, proposed):
                 return "dogTagId \(dogTagId) already has root \(existing); refusing replacement with \(proposed)"
-            case let .unreadableFile(underlying):
+            case let .unreadableFile(kind, _):
                 return "\(fileName) exists but could not be read; refusing to overwrite it "
-                    + "(it holds recovery secrets): \(underlying)"
+                    + "(it holds recovery secrets): \(kind.detail)"
             case .seedBackupNotConfirmed:
                 return "the wallet recovery phrase has not been confirmed as backed up; refusing to "
                     + "create an owner-secret that a lost phone would destroy permanently"
@@ -115,6 +145,8 @@ enum ProfileTreeStore {
                 return "could not generate a cryptographically random profile-leaf salt"
             }
         }
+
+        var description: String { errorDescription ?? "store error" }
     }
 
     static var documentsDirectory: URL {
@@ -296,13 +328,18 @@ enum ProfileTreeStore {
     private static func loadUnlocked() throws -> [OwnerSecretRecord] {
         let url = fileURL
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data: Data
         do {
-            let data = try Data(contentsOf: url)
+            data = try Data(contentsOf: url)
+        } catch {
+            throw StoreError.unreadableFile(kind: .couldNotRead, underlying: error)
+        }
+        do {
             let dec = JSONDecoder()
             dec.dateDecodingStrategy = .iso8601
             return try dec.decode([OwnerSecretRecord].self, from: data)
         } catch {
-            throw StoreError.unreadableFile(underlying: error)
+            throw StoreError.unreadableFile(kind: .couldNotDecode, underlying: error)
         }
     }
 
@@ -318,7 +355,18 @@ enum ProfileTreeStore {
     /// abandoned tag stays in the file (its owner-secret is the only record a support flow could
     /// inspect) but is no longer a live credential.
     static func activeRecords() -> [OwnerSecretRecord] {
-        all().filter { $0.abandonedAt == nil }
+        (try? loadActive()) ?? []
+    }
+
+    /// `activeRecords()` where an unreadable store must SURFACE rather than read as "none".
+    ///
+    /// The Dog-tags card uses this one: an empty array from `activeRecords()` is indistinguishable
+    /// between "this device created no tag" and "the store is there but I could not read it", and
+    /// rendering the second as the first tells an owner they hold no tag when they demonstrably do.
+    /// The file is `.completeFileProtection`, so `unreadableFile` is a live possibility (a locked
+    /// device) and not only a corruption case. See `DogTagCard`.
+    static func loadActive() throws -> [OwnerSecretRecord] {
+        try load().filter { $0.abandonedAt == nil }
     }
 
     /// Destroy the whole device-local owner-secret store, staging siblings included.
