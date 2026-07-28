@@ -27,8 +27,12 @@ class DogTagCardTest {
 
     /**
      * THE regression. A tag the owner had issued exists ONLY in the owner-secret store - no pet was
-     * ever imported for it - and the card must list it. Reverting the card to the imported-pets
-     * filter makes this the test that goes red.
+     * ever imported for it - and the fold must list it. Reverting THIS FOLD to the imported-pets
+     * source makes this the test that goes red.
+     *
+     * Note the boundary: the Compose call site in `ProfileScreen` has no coverage on either platform,
+     * so reverting THAT to `pets.filter { … }` reddens nothing here. Extracting the decision is what
+     * makes any of it pinnable at all - same trade as `VerdictDisplay`.
      */
     @Test
     fun issuedTagAppearsWithNoImportedCredential() {

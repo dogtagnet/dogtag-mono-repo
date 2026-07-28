@@ -1146,6 +1146,14 @@ The imported side keeps its all-digits filter: `RecordImporter` stores a 32-hex 
 `shortReason` (160 chars, whitespace collapsed) is applied inside the fold rather than at either
 renderer: the underlying throwables are verbose - iOS's `DecodingError` renders ~400 characters of
 nested `Context(codingPath:…)` - and pasting one into a settings card buries the sentence that matters.
+
+**iOS's `report(_:action:success:)` re-reads the store, and that is not tidiness.** The Danger zone
+lives on this same screen, so "Delete dog-tags" / "Reset everything" destroy the owner-secret store
+while `ProfileScreen` stays in composition - `.task` does not re-run, and the card would keep listing a
+tag whose owner-secret was just wiped until the user switched tabs. That is this exact defect inverted
+into a false PRESENCE. It re-reads rather than clearing `ownedTags`, because `AppReset.Outcome` can be
+partial and only the store knows what actually survived. Android has no Danger zone, so it has no
+counterpart to mirror.
 Verified on a simulator by staging `Documents/dogtag-owner-secrets.json` + `pets.json` directly (see
 "Mobile: exercising either app's UI without a scan flow") for all three arms: owner-secret-only,
 both-sources-merged-once, and a deliberately corrupted store.

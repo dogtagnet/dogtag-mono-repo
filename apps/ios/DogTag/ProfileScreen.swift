@@ -427,6 +427,12 @@ struct ProfileScreen: View {
         } else {
             resetMsg = success
         }
+        // The Danger zone mutates the owner-secret store from INSIDE this screen, so `.task` does not
+        // re-run and `ownedTags` would keep listing tags whose owner-secret was just destroyed - the
+        // same false claim this card exists to stop, merely inverted into a false presence. Re-read
+        // rather than clear: `AppReset.Outcome` can be partial, so what actually survived is a
+        // question only the store can answer.
+        loadOwnedTags()
     }
 
     private func walletButton(_ title: String, _ action: @escaping () -> Void) -> some View {
