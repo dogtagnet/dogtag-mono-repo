@@ -95,12 +95,25 @@ export function createCentralClient(opts: CentralClientOptions) {
     return parsed as T;
   }
 
+  /**
+   * Build the `/v1/businesses` query string.
+   *
+   * This CANNOT send the caller's position, and that is the point rather than an omission. The route
+   * still accepts `near=<lat>,<lng>` and `radius=` and still filters server-side (see the
+   * deprecation note on `BusinessesQuery` in `stacks/admin/api/src/routes.rs`), but it is public and
+   * unauthenticated, so anything sent there arrives beside the caller's IP with no account attached.
+   * In a product built on the owner never revealing where they are, an endpoint whose purpose is to
+   * be told where the user is should not be one argument away from being used.
+   *
+   * The replacement is `packages/ui/src/geo/`: fetch the provider set - the request is identical
+   * whoever makes it - and compute distance on the device. Passing `near` here is the obvious way to
+   * build "nearby", it would work on the first try, and it would turn a latent leak into a live one
+   * in a single line. Do not re-add it.
+   */
   function qs(q?: BusinessesQuery): string {
     if (!q) return "";
     const p = new URLSearchParams();
     if (q.type) p.set("type", q.type);
-    if (q.near) p.set("near", q.near);
-    if (q.radius !== undefined) p.set("radius", String(q.radius));
     const s = p.toString();
     return s ? `?${s}` : "";
   }

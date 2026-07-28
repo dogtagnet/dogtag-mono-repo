@@ -112,8 +112,10 @@ export function Businesses() {
           )}
           <p className="mt-4 text-xs text-muted">
             Note: a geographic map view is optional and intentionally omitted (no map dependency).
-            Latitude/longitude are shown in the table; discovery filters (<code>type</code>,{" "}
-            <code>near</code>, <code>radius</code>) are supported by the backend.
+            Latitude/longitude are shown in the table. The only discovery filter this portal sends is{" "}
+            <code>type</code>. Proximity filtering is done on the device that needs it, never by
+            sending a position to the server - <code>near</code> and <code>radius</code> are
+            deprecated for that reason.
           </p>
         </CardContent>
       </Card>

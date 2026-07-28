@@ -266,6 +266,40 @@ export {
   type ParsedInstant,
 } from "./calendar/ics";
 
+// on-device geo core - distance, bearing, formatting, sorting, geohash. Pure, no I/O.
+// The user's position is computed with, never transmitted: see `geo/index.ts` for the boundary and
+// the deprecated server-side `near=` filter it replaces.
+export {
+  EARTH_RADIUS_KM,
+  MAX_DISTANCE_KM,
+  GEOHASH_BASE32,
+  MAX_GEOHASH_PRECISION,
+  COMPASS_POINTS_8,
+  COMPASS_POINTS_16,
+  FEET_PER_KM,
+  KM_PER_MILE,
+  haversineKm,
+  isValidLatLng,
+  sortByDistance,
+  withinRadiusKm,
+  initialBearingDeg,
+  compassPoint8,
+  compassPoint16,
+  formatBearing,
+  formatDistanceKm,
+  unitSystemForRegion,
+  encodeGeohash,
+  decodeGeohash,
+  geohashCellContains,
+  type LatLng,
+  type Ranked,
+  type CompassPoint8,
+  type CompassPoint16,
+  type UnitSystem,
+  type GeohashCell,
+  type Range as GeoRange,
+} from "./geo";
+
 // schema
 export {
   RECORD_TYPE_SCHEMAS,
