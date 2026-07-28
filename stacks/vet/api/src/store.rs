@@ -712,6 +712,21 @@ pub fn clamp_limit(limit: usize) -> usize {
     }
 }
 
+/// What a client-handoff token resolves to: the booking it names, and the slot it named when the
+/// token was minted.
+///
+/// The retained `start_at` is what makes a DELETED booking still expressible as a cancellation — see
+/// [`Store::put_appointment_share`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppointmentShare {
+    pub appointment_id: String,
+    /// The booking's `start_at` AS OF minting. Used only to give a tombstone a `DTSTART`; the live
+    /// slot is always re-read from the appointment itself.
+    pub start_at: u64,
+    /// Unix seconds after which this token no longer resolves.
+    pub expires_at: u64,
+}
+
 /// A store read that did not resolve — the driver errored, not "the row is absent".
 ///
 /// Deliberately one opaque string rather than an error taxonomy: exactly two reads surface it (the
@@ -874,7 +889,14 @@ pub trait Store: Send + Sync {
 
     // ---- shop CRM: appointments ----
     async fn put_appointment(&self, a: Appointment);
-    async fn get_appointment(&self, id: &str) -> Option<Appointment>;
+    /// One appointment by id, keeping "the row is absent" and "the read did not resolve" APART.
+    ///
+    /// Fallible for the same reason as [`Store::try_get_pet`], but for a reader rather than a guard:
+    /// the client-facing handoff page (`appointment_share`) is the one surface where a collapsed
+    /// error would tell a CLIENT their booking is no longer on the shop's calendar when in truth the
+    /// store could not be read. Those are different sentences and the page must be able to say
+    /// either. Every operator-facing caller keeps using [`Store::get_appointment`].
+    async fn try_get_appointment(&self, id: &str) -> Result<Option<Appointment>, StoreReadError>;
     async fn delete_appointment(&self, id: &str) -> bool;
     /// Search/filter/paginate appointments ordered by `start_at` ASC (calendar order).
     async fn list_appointments(&self, q: &AppointmentQuery) -> Page<Appointment>;
@@ -885,6 +907,28 @@ pub trait Store: Send + Sync {
     /// updates it instead of creating a second copy. Indexed (unique-per-present-value in Mongo), so
     /// it is a seek and not a scan.
     async fn appointment_by_external_uid(&self, external_uid: &str) -> Option<Appointment>;
+
+    /// [`Store::try_get_appointment`] for the operator-facing readers, which have no use for the
+    /// distinction: they turn `None` into a 404 that refuses the request either way.
+    async fn get_appointment(&self, id: &str) -> Option<Appointment> {
+        self.try_get_appointment(id).await.ok().flatten()
+    }
+
+    // ---- shop CRM: per-appointment client handoff ----
+
+    /// Record `token` -> this appointment, for the client-facing calendar handoff.
+    ///
+    /// `start_at` is stored ALONGSIDE the id, and it is load-bearing rather than a convenience: when
+    /// the booking is later DELETED, the handoff still has to publish a tombstone for it (a
+    /// `STATUS:CANCELLED` event under the same `UID`), and an iCalendar event cannot exist without a
+    /// `DTSTART`. Keeping the start here is what lets a deleted booking be cancelled in the client's
+    /// calendar instead of leaving a stale entry behind a 404 forever.
+    async fn put_appointment_share(&self, token: &str, share: AppointmentShare);
+    /// Resolve a client-handoff token. NON-consuming, and deliberately so: the client opens the page,
+    /// then downloads the `.ics` from it, then may re-open it weeks later to see whether the booking
+    /// still stands — a one-time token (the `/r/` record-share shape) would break at step two.
+    /// `None` for a token that is unknown or past its expiry.
+    async fn peek_appointment_share(&self, token: &str) -> Option<AppointmentShare>;
 
     // ---- shop CRM: verification history ----
     async fn put_verification_log(&self, v: VerificationLog);
@@ -912,6 +956,8 @@ struct MemInner {
     profile_sessions: HashMap<String, ProfileIssueSession>,
     /// one-time bind tokens: token -> (session_id, exp unix-seconds).
     bind_tokens: HashMap<String, (String, u64)>,
+    /// client calendar-handoff tokens: token -> the booking it names. NON-consuming.
+    appointment_shares: HashMap<String, AppointmentShare>,
     settings: Option<IssuerSettings>,
     custody: Option<CustodyBlob>,
     op_sessions: std::collections::HashSet<String>,
@@ -981,11 +1027,27 @@ fn below(bound: Option<u64>, value: u64) -> bool {
 #[derive(Clone, Default)]
 pub struct MemStore {
     inner: Arc<RwLock<MemInner>>,
+    /// FAULT INJECTION for appointment reads. Default OFF; nothing in the service ever turns it on.
+    ///
+    /// It exists because "the store could not be read" is a REQUIRED state of the client-facing
+    /// handoff page (`appointment_share`) — one that must never render as "cancelled" and never as
+    /// "confirmed" — and a store that cannot fail cannot exercise it. Without this, that branch
+    /// would be reachable only against a real Mongo that happens to be down, which in practice means
+    /// never tested, which is how a wrong-state renderer ships.
+    ///
+    /// Deliberately narrow: it affects [`Store::try_get_appointment`] and nothing else.
+    fail_appointment_reads: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MemStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Make every subsequent [`Store::try_get_appointment`] report a read failure. See the field.
+    pub fn set_fail_appointment_reads(&self, on: bool) {
+        self.fail_appointment_reads
+            .store(on, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1412,8 +1474,17 @@ impl Store for MemStore {
     async fn put_appointment(&self, a: Appointment) {
         self.inner.write().unwrap().appointments.insert(a.appointment_id.clone(), a);
     }
-    async fn get_appointment(&self, id: &str) -> Option<Appointment> {
-        self.inner.read().unwrap().appointments.get(id).cloned()
+    async fn try_get_appointment(&self, id: &str) -> Result<Option<Appointment>, StoreReadError> {
+        // An in-memory map cannot fail to be read on its own — the fallible shape exists for the
+        // Mongo impl, where it is the whole point — so the error branch is reachable here only by
+        // explicit fault injection. See `MemStore::fail_appointment_reads`.
+        if self
+            .fail_appointment_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreReadError("injected appointment read failure".to_string()));
+        }
+        Ok(self.inner.read().unwrap().appointments.get(id).cloned())
     }
     async fn delete_appointment(&self, id: &str) -> bool {
         self.inner.write().unwrap().appointments.remove(id).is_some()
@@ -1438,6 +1509,26 @@ impl Store for MemStore {
             a.start_at.cmp(&b.start_at).then_with(|| a.appointment_id.cmp(&b.appointment_id))
         });
         paginate(matched, q.limit, q.offset)
+    }
+    async fn put_appointment_share(&self, token: &str, share: AppointmentShare) {
+        self.inner
+            .write()
+            .unwrap()
+            .appointment_shares
+            .insert(token.to_string(), share);
+    }
+    async fn peek_appointment_share(&self, token: &str) -> Option<AppointmentShare> {
+        let inner = self.inner.read().unwrap();
+        let share = inner.appointment_shares.get(token)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now > share.expires_at {
+            None
+        } else {
+            Some(share.clone())
+        }
     }
     async fn appointment_by_external_uid(&self, external_uid: &str) -> Option<Appointment> {
         if external_uid.is_empty() {

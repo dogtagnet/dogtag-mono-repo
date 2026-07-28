@@ -20,6 +20,15 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: (p) => p.replace(/^\/api/, ""),
         },
+        // The PUBLIC per-appointment client handoff (page + `.ics`), owned by the backend rather
+        // than this SPA — passed through untouched, since the Rust route is `/a/:token`. Present for
+        // the same reason as in the groomer portal: a deployment may point DEPLOYMENT_URL at this
+        // origin, and without the proxy a scanning phone would land on the SPA's history fallback.
+        // nginx does the equivalent in production.
+        "/a/": {
+          target: apiTarget,
+          changeOrigin: true,
+        },
       },
     },
     optimizeDeps: {

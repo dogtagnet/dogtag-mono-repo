@@ -11,10 +11,14 @@
 //!   verify.rs      — third-party verify + canonical owner-hidden consent submission
 //!   crm.rs         — the shop's clients/appointments + the verification history they link to
 //!   ics.rs         — pure RFC 5545 (iCalendar) serialization
-//!   calendar_ics.rs— the published `.ics` subscription feed + `.ics` import routes
+//!   calendar_ics.rs— the published `.ics` subscription feed + `.ics` import routes (the SHOP's
+//!                    whole schedule)
+//!   appointment_share.rs — the CLIENT half: one booking handed to the person it belongs to, as a
+//!                    scannable page + `.ics` + add-to-Google link
 //!   routes.rs      — Axum router + all handlers
 
 pub mod app;
+pub mod appointment_share;
 pub mod auth;
 pub mod calendar;
 pub mod calendar_ics;

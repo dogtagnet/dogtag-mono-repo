@@ -273,6 +273,14 @@ fn to_ics_event(a: &Appointment, domain: &str) -> IcsEvent {
             IcsStatus::Confirmed
         },
         last_modified: a.updated_at,
+        // The feed republishes every event on every refresh, so a subscriber re-reads the whole
+        // calendar and needs no per-event revision, no place link and no back-link. These stay unset
+        // so the feed's bytes are exactly what they were. They are load-bearing only for the
+        // SINGLE-event client handoff, which is downloaded once and may be re-downloaded later —
+        // see `appointment_share::to_client_event`.
+        url: String::new(),
+        location: String::new(),
+        sequence: 0,
     }
 }
 
@@ -291,6 +299,9 @@ fn truncation_notice(ts: u64, domain: &str) -> IcsEvent {
         ),
         status: IcsStatus::Confirmed,
         last_modified: ts,
+        url: String::new(),
+        location: String::new(),
+        sequence: 0,
     }
 }
 

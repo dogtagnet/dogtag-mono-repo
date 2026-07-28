@@ -344,6 +344,44 @@ impl Store for MongoStore {
             d.get_str("session_id").ok().map(|s| s.to_string())
         }
     }
+    async fn put_appointment_share(&self, token: &str, share: crate::store::AppointmentShare) {
+        let coll: Collection<Document> = self.db.collection("appointment_shares");
+        let _ = coll
+            .replace_one(
+                doc! { "token": token },
+                doc! {
+                    "token": token,
+                    "appointment_id": &share.appointment_id,
+                    "start_at": share.start_at as i64,
+                    "exp": share.expires_at as i64,
+                },
+            )
+            .upsert(true)
+            .await;
+    }
+    async fn peek_appointment_share(&self, token: &str) -> Option<crate::store::AppointmentShare> {
+        // PEEK, never take: the client reads the page, then downloads the `.ics` it links to, and may
+        // come back later to re-check the booking. Consuming on first read would break all of that.
+        let coll: Collection<Document> = self.db.collection("appointment_shares");
+        let d = coll
+            .find_one(doc! { "token": token })
+            .await
+            .ok()
+            .flatten()?;
+        let exp = d.get_i64("exp").unwrap_or(0) as u64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if now > exp {
+            return None;
+        }
+        Some(crate::store::AppointmentShare {
+            appointment_id: d.get_str("appointment_id").ok()?.to_string(),
+            start_at: d.get_i64("start_at").unwrap_or(0).max(0) as u64,
+            expires_at: exp,
+        })
+    }
     async fn take_bind_token(&self, token: &str) -> Option<String> {
         // find_one_and_delete is atomic == one-time consume; then enforce expiry.
         let coll: Collection<Document> = self.db.collection("bind_tokens");
@@ -691,12 +729,14 @@ impl Store for MongoStore {
             .upsert(true)
             .await;
     }
-    async fn get_appointment(&self, id: &str) -> Option<Appointment> {
+    async fn try_get_appointment(&self, id: &str) -> Result<Option<Appointment>, StoreReadError> {
+        // The fallible form is the real one here: collapsing a driver fault to `None` would let the
+        // client-facing handoff page state that a booking is no longer on the shop's calendar on the
+        // strength of a read that never happened.
         self.crm_appointments()
             .find_one(doc! { "appointmentId": id })
             .await
-            .ok()
-            .flatten()
+            .map_err(|e| StoreReadError(e.to_string()))
     }
     async fn delete_appointment(&self, id: &str) -> bool {
         self.crm_appointments()

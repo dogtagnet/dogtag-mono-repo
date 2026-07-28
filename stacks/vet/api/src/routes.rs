@@ -12,6 +12,10 @@
 //!     GET  /records/{id}                              (record-JWT — UNAUTHENTICATED by session)
 //!     GET  /r/{token}                                 (short one-time share/IMPORT token — UNAUTHENTICATED)
 //!     GET  /x/{token}                                 (short-lived EXPORT token — UNAUTHENTICATED)
+//!     POST /appointments/{id}/share                   -> mint the CLIENT calendar handoff
+//!     GET  /a/{token}[.ics]                           (per-appointment client handoff: page + `.ics`
+//!                                                      — UNAUTHENTICATED, NON-consuming; see
+//!                                                      `appointment_share.rs`)
 //!     GET  /issuer/signers
 //!     POST /import/pull
 //!     POST /verify/credential                         -> direct credential validity/revocation check
@@ -3002,6 +3006,12 @@ pub fn public_router(state: AppState) -> Router {
         // administration and import routes.
         .merge(crate::calendar_ics::ics_feed_router())
         .merge(crate::calendar_ics::ics_admin_router())
+        // The CLIENT half of the calendar: `/a/{token}` is the UNAUTHENTICATED per-appointment
+        // handoff a client scans (page + `.ics`), and the mint beside it is operator-gated. Mounted
+        // for EVERY role, not only issuers — a groomer books appointments and is exactly who needs to
+        // hand one to a client.
+        .merge(crate::appointment_share::appointment_share_public_router())
+        .merge(crate::appointment_share::appointment_share_admin_router())
         // health (no auth) — used by compose healthchecks
         .route("/health", get(health))
         // login
