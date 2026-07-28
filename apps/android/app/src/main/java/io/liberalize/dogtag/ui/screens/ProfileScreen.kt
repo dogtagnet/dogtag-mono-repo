@@ -1,5 +1,6 @@
 package io.liberalize.dogtag.ui.screens
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -52,6 +53,8 @@ import io.liberalize.dogtag.profile.DogTagCard
 import io.liberalize.dogtag.profile.ImportedTag
 import io.liberalize.dogtag.profile.OwnedTag
 import io.liberalize.dogtag.profile.OwnedTagSource
+import io.liberalize.dogtag.profile.OwnerSecretEvidence
+import io.liberalize.dogtag.profile.OwnerStoreFailure
 import io.liberalize.dogtag.profile.ProfileTreeStore
 import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
@@ -120,7 +123,27 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
                     treeStore.load().map { OwnedTag(dogTagIdDec = it.dogTagIdDec, rootHex = it.rootHex) },
                 )
             } catch (e: Exception) {
-                OwnedTagSource.Unreadable(e.message ?: e.toString())
+                // The CAUSE, never the message. By the time a decode fails the decryption has
+                // already succeeded, and `org.json` quotes the input it choked on - which here is
+                // the owner-secret store's own plaintext. The screen gets a sentence `DogTagCard`
+                // constructed from this cause; see its `reasonText`.
+                val kind = (e as? ProfileTreeStore.UnreadableStoreException)?.kind
+                // Class and step only - deliberately NOT `Log.w(tag, msg, e)`, which prints the
+                // throwable's message and so would move the same plaintext from the screen into
+                // logcat, where a bug report collects it. The class still tells support whether
+                // this was the Keystore, the filesystem or the parser.
+                Log.w(
+                    "ProfileScreen",
+                    "owner-secret store could not be read: ${e.javaClass.name}" +
+                        (kind?.let { " ($it)" } ?: ""),
+                )
+                OwnedTagSource.Unreadable(
+                    when (kind) {
+                        ProfileTreeStore.UnreadableStoreException.Kind.CouldNotDecode ->
+                            OwnerStoreFailure.CouldNotDecode
+                        else -> OwnerStoreFailure.CouldNotRead
+                    },
+                )
             }
         }
     }
@@ -342,14 +365,23 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
                 KV("dogTagId", row.dogTagIdDec)
                 if (row.name != null) KV("Pet", row.name)
                 if (row.rootHex != null) KV("Profile root", row.rootHex.take(18) + "…")
-                if (!row.credentialImported) {
+                // What the owner-secret record itself proves, and no more. The record is written
+                // BEFORE the custodial-bind POST and before the on-chain confirmation poll, and
+                // carries no bind or anchor status, so an issuance that died after it was written
+                // would render as anchored - the claim this product exists to make truthfully,
+                // asserted from evidence that does not establish it.
+                if (row.ownerSecret == OwnerSecretEvidence.Held && !row.credentialImported) {
                     Text(
-                        "Anchored from this device. No credential naming this tag has been imported " +
-                            "here yet, so its pet details are not known on this phone.",
+                        "This phone holds this tag's owner-secret and built its profile root. No " +
+                            "credential naming this tag has been imported here yet, so its pet " +
+                            "details are not known on this phone.",
                         fontSize = 11.sp, color = c.muted,
                     )
                 }
-                if (!row.ownerSecretHeld) {
+                // Only the definite negative is printed. Under Unknown the store never answered, so
+                // "holds no owner-secret" would be could-not-check dressed as a fact; the
+                // card-level notice below is what speaks for that case.
+                if (row.ownerSecret == OwnerSecretEvidence.NotHeld) {
                     Text(
                         "Known from an imported credential. This phone holds no owner-secret for " +
                             "this tag, so it cannot prove consent for it.",
@@ -364,11 +396,9 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             if (card.ownerStorePending) {
                 Text("Checking this device for owner-hidden tags…", fontSize = 11.sp, color = c.muted)
             } else if (card.ownerStoreUnavailable != null) {
-                Text(
-                    "Could not read this device's owner-secret store, so any tag created by " +
-                        "issuance is missing from this list: ${card.ownerStoreUnavailable}",
-                    fontSize = 11.sp, color = c.danger,
-                )
+                // Printed verbatim: the sentence is built by `DogTagCard.reasonText` from a closed
+                // set of causes, so there is no caller text here to interpolate.
+                Text(card.ownerStoreUnavailable, fontSize = 11.sp, color = c.danger)
             }
 
             // Only once every source has answered and none knows a tag.

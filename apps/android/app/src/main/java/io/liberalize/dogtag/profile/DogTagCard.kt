@@ -69,13 +69,18 @@ object DogTagCard {
      */
     fun state(owned: OwnedTagSource, imported: List<ImportedTag>): DogTagCardState {
         val ownedTags = (owned as? OwnedTagSource.Records)?.tags.orEmpty()
+        // Whether the ABSENCE of an owner-secret record for a tag is established at all. Only a
+        // store that answered can license the definite negative; under [OwnedTagSource.Unreadable]
+        // and [OwnedTagSource.Pending] every row's `own` is null for a reason that says nothing
+        // about that row.
+        val storeAnswered = owned is OwnedTagSource.Records
 
         // Imported pets are the weaker source and need filtering: `RecordImporter` stores a 32-hex
         // share token in `dogTagId` whenever the wrapped doc carries no handle, and that is not a
         // tag. Owner-secret records need no such filter - `ProfileTreeBuilder.dogTagIdField` refuses
         // anything but a decimal handle, so a record in the store is a real tag by construction.
         val importedByTag = imported
-            .filter { it.dogTagIdDec.isNotBlank() && it.dogTagIdDec.all(Char::isDigit) }
+            .filter { isAsciiDecimal(it.dogTagIdDec) }
             .associateBy { it.dogTagIdDec }
 
         val ownedByTag = ownedTags
@@ -89,31 +94,64 @@ object DogTagCard {
                 dogTagIdDec = id,
                 name = realName(imp?.name),
                 rootHex = own?.rootHex,
-                ownerSecretHeld = own != null,
+                ownerSecret = when {
+                    own != null -> OwnerSecretEvidence.Held
+                    storeAnswered -> OwnerSecretEvidence.NotHeld
+                    else -> OwnerSecretEvidence.Unknown
+                },
                 credentialImported = imp != null,
             )
         }.sortedWith { a, b -> descendingHandle(a.dogTagIdDec, b.dogTagIdDec) }
 
         return DogTagCardState(
             rows = rows,
-            ownerStoreUnavailable = (owned as? OwnedTagSource.Unreadable)?.let { shortReason(it.reason) },
+            ownerStoreUnavailable = (owned as? OwnedTagSource.Unreadable)
+                ?.let { shortReason(reasonText(it.cause)) },
             ownerStorePending = owned is OwnedTagSource.Pending,
         )
+    }
+
+    /**
+     * What the card says when the owner-secret store did not answer - CONSTRUCTED here, never an
+     * underlying failure's own message.
+     *
+     * The store this reports on holds the owner-secret and the attribute salts, and by the time a
+     * DECODE fails the decryption has already SUCCEEDED, so the throwable is handed that plaintext:
+     * `org.json` quotes what it choked on (`JSONTokener.syntaxError` appends the tokenizer input
+     * outright). Rendering it on screen would contradict the one property the whole owner-hidden
+     * model rests on. Rather than reason about how much of it any given failure happens to expose,
+     * the payload of [OwnedTagSource.Unreadable] is a closed set of causes rather than a string:
+     * there is no caller text for this to echo, by construction rather than by convention. iOS
+     * mirrors the discipline for the same reason, though its `DecodingError` carries the coding
+     * path - field names and indices - rather than values.
+     *
+     * Both sentences still state the consequence - a tag created by issuance is missing from the list
+     * - because saying nothing would recreate the false absence this card exists to close.
+     */
+    internal fun reasonText(cause: OwnerStoreFailure): String = when (cause) {
+        // No "unlock and retry" here: this cause also covers an invalidated Keystore key, where
+        // retrying can never work, and promising a remedy that cannot deliver is the same
+        // over-claim in a smaller place.
+        OwnerStoreFailure.CouldNotRead ->
+            "Could not read this device's owner-secret store, so any tag created by issuance is " +
+                "missing from this list. The device may be locked, or the store damaged."
+        OwnerStoreFailure.CouldNotDecode ->
+            "This device's owner-secret store was read but its contents did not decode, so any " +
+                "tag created by issuance is missing from this list."
     }
 
     /** How much of a store-read failure the card prints. See [shortReason]. */
     internal const val MAX_REASON_CHARS = 160
 
     /**
-     * A store-read failure collapsed to one printable line.
+     * A store-read message collapsed to one printable line.
      *
-     * Applied here rather than at the renderer so neither platform can forget it. The underlying
-     * throwables are verbose - iOS's `DecodingError` alone renders ~400 characters of nested
-     * `Context(codingPath:…)` - and pasting that into a settings card buries the sentence that
-     * matters ("any tag created by issuance is missing from this list") under a stack of Foundation
-     * internals. The head is the part worth keeping: it names the file and the class of failure.
-     * Nothing actionable is lost, because the remedy does not vary with the parse detail - the tags
-     * are still on chain, and recovery needs the seed plus the credential either way.
+     * Applied here rather than at the renderer so neither platform can forget it, and retained as
+     * the residual cap now that [reasonText] is the only thing feeding it: whatever a future cause's
+     * sentence grows into, the settings card gets one line rather than a paragraph that buries the
+     * part that matters ("any tag created by issuance is missing from this list"). Nothing
+     * actionable is lost to the cap - the remedy does not vary with the tail, the tags are still on
+     * chain, and recovery needs the seed plus the credential either way.
      */
     internal fun shortReason(raw: String): String {
         val collapsed = raw.replace(Regex("\\s+"), " ").trim()
@@ -147,9 +185,21 @@ object DogTagCard {
 
     /** Digits with leading zeros stripped, or `null` when the handle is not a decimal number. */
     private fun normalizedHandle(s: String): String? {
-        if (s.isEmpty() || !s.all(Char::isDigit)) return null
+        if (!isAsciiDecimal(s)) return null
         return s.trimStart('0').ifEmpty { "0" }
     }
+
+    /**
+     * A non-empty run of ASCII `0`-`9`, which is what a `dogTagId` handle actually is.
+     *
+     * Deliberately NOT `Char::isDigit` / Swift's `\.isNumber`: both admit Unicode digits beyond
+     * ASCII, and they admit DIFFERENT ones - `isDigit` is category Nd (so `٣` U+0663 passes) while
+     * `\.isNumber` adds Nl and No (so `½` and `Ⅸ` pass too). A shared module whose two halves accept
+     * different handles would list different rows on the two platforms for one identical store,
+     * which is the exact drift this module exists to prevent. Nothing reaches either source with a
+     * non-ASCII digit today, so this is a tightening rather than a behaviour change.
+     */
+    private fun isAsciiDecimal(s: String): Boolean = s.isNotEmpty() && s.all { it in '0'..'9' }
 }
 
 /** A tag this device created by issuance - the owner-secret store's view of it. */
@@ -180,11 +230,46 @@ sealed interface OwnedTagSource {
     /**
      * It did not answer: the store exists but could not be decrypted or parsed. Any tag created by
      * issuance is therefore unlisted, and the card must say so instead of reporting absence.
+     *
+     * The payload is a CAUSE, never the failure's own message - see [DogTagCard.reasonText].
      */
-    data class Unreadable(val reason: String) : OwnedTagSource
+    data class Unreadable(val cause: OwnerStoreFailure) : OwnedTagSource
 
     /** Not asked yet - the read is Keystore crypto plus file I/O and runs off the main thread. */
     data object Pending : OwnedTagSource
+}
+
+/**
+ * Why the owner-secret store could not be read - a closed set the code itself names, so that what
+ * the card prints is always constructed rather than quoted from a throwable. See
+ * [DogTagCard.reasonText] for why quoting one would be a privacy defect rather than a copy nit.
+ */
+enum class OwnerStoreFailure {
+    /** The stored bytes never came back: a locked device, an invalidated key, or file I/O. */
+    CouldNotRead,
+
+    /** They came back, but did not decode into owner-secret records. */
+    CouldNotDecode,
+}
+
+/**
+ * What is known about this device's ability to prove consent for one listed tag.
+ *
+ * Three cases for the same reason [OwnedTagSource] has three: a row whose owner-secret record is
+ * missing because the store said so is a different claim from one whose record is missing because
+ * the store never answered, and only the first may be stated as a fact. Collapsing this to a
+ * boolean re-introduces the card's own defect one level down - a definite negative asserted over a
+ * source that was never read.
+ */
+enum class OwnerSecretEvidence {
+    /** The store answered and holds this tag's owner-secret, so consent can still be proved here. */
+    Held,
+
+    /** The store answered and holds no record for this tag. A definite negative, safe to state. */
+    NotHeld,
+
+    /** The store did not answer. Unestablished - the card must claim nothing either way. */
+    Unknown,
 }
 
 /**
@@ -197,10 +282,15 @@ data class DogTagRow(
     val dogTagIdDec: String,
     /** The pet's name, or `null` when this device does not know one. Never a placeholder. */
     val name: String?,
-    /** `R`, known only for a tag whose owner-secret this device holds. */
+    /**
+     * `R`, known only for a tag whose owner-secret this device holds - and therefore `null` both
+     * when no such record exists AND when the store did not answer. A `null` root renders no row at
+     * all rather than a negative one, so it asserts nothing on its own; [ownerSecret] is what says
+     * whether the store was in a position to answer.
+     */
     val rootHex: String?,
-    /** This device holds the owner-secret, so it can still prove consent for this tag. */
-    val ownerSecretHeld: Boolean,
+    /** Whether this device holds the owner-secret for this tag - or could not establish it. */
+    val ownerSecret: OwnerSecretEvidence,
     /** A credential naming this tag has been imported here. */
     val credentialImported: Boolean,
 )
@@ -208,7 +298,7 @@ data class DogTagRow(
 /** Everything the card renders, including whether it was able to check at all. */
 data class DogTagCardState(
     val rows: List<DogTagRow>,
-    /** Why the owner-secret store could not be read, or `null` when it answered. */
+    /** The constructed sentence for a store that could not be read, or `null` when it answered. */
     val ownerStoreUnavailable: String?,
     /** The owner-secret store has not been read yet. */
     val ownerStorePending: Boolean,

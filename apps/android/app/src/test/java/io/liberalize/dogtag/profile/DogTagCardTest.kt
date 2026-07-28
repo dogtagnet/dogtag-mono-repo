@@ -2,6 +2,7 @@ package io.liberalize.dogtag.profile
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,7 +43,7 @@ class DogTagCardTest {
         val row = state.rows.single()
         assertEquals("7", row.dogTagIdDec)
         assertEquals("0x7aa", row.rootHex)
-        assertTrue(row.ownerSecretHeld)
+        assertEquals(OwnerSecretEvidence.Held, row.ownerSecret)
         assertFalse(row.credentialImported)
         assertFalse(
             "a listed tag is not an absence",
@@ -71,7 +72,7 @@ class DogTagCardTest {
         val row = state.rows.single()
         assertEquals("Rex", row.name)
         assertEquals("0xroot7", row.rootHex)
-        assertTrue(row.ownerSecretHeld)
+        assertEquals(OwnerSecretEvidence.Held, row.ownerSecret)
         assertTrue(row.credentialImported)
     }
 
@@ -83,7 +84,11 @@ class DogTagCardTest {
         assertEquals("42", row.dogTagIdDec)
         assertEquals("Bella", row.name)
         assertNull("no owner-secret record means no known root", row.rootHex)
-        assertFalse(row.ownerSecretHeld)
+        assertEquals(
+            "the store answered, so this absence IS established",
+            OwnerSecretEvidence.NotHeld,
+            row.ownerSecret,
+        )
         assertTrue(row.credentialImported)
     }
 
@@ -128,6 +133,25 @@ class DogTagCardTest {
         assertTrue("both sources answered and neither knows a tag", state.establishesNoTags)
     }
 
+    /**
+     * A handle is ASCII `0`-`9`, and both platforms must read it that way or one identical store
+     * lists different rows on each. `Char::isDigit` is Unicode Nd, so `٣` (U+0663) used to pass HERE
+     * as well as on iOS; `\.isNumber` adds Nl and No, so `½` used to pass on iOS ONLY. Both are now
+     * rejected on both sides. Mirrored by iOS `testANonAsciiDigitIsNotAHandle`.
+     */
+    @Test
+    fun aNonAsciiDigitIsNotAHandle() {
+        val state = DogTagCard.state(
+            owned = records(),
+            imported = listOf(
+                ImportedTag("٣", "Arabic-Indic three"), // Nd - both platforms once accepted it
+                ImportedTag("½", "Vulgar half"), // No - iOS once accepted it, Android did not
+                ImportedTag("1٣", "Mixed"),
+            ),
+        )
+        assertTrue(state.rows.isEmpty())
+    }
+
     // ---- "could not check" is not "none" ---------------------------------------------------------
 
     /**
@@ -137,12 +161,15 @@ class DogTagCardTest {
     @Test
     fun anUnreadableStoreIsNotAnAbsence() {
         val state = DogTagCard.state(
-            owned = OwnedTagSource.Unreadable("keystore key invalidated"),
+            owned = OwnedTagSource.Unreadable(OwnerStoreFailure.CouldNotRead),
             imported = emptyList(),
         )
 
         assertTrue(state.rows.isEmpty())
-        assertEquals("keystore key invalidated", state.ownerStoreUnavailable)
+        assertEquals(
+            DogTagCard.reasonText(OwnerStoreFailure.CouldNotRead),
+            state.ownerStoreUnavailable,
+        )
         assertFalse(
             "an unread store leaves absence unproven, so the card may not claim it",
             state.establishesNoTags,
@@ -164,13 +191,45 @@ class DogTagCardTest {
     @Test
     fun anUnreadableStoreStillListsWhatTheOtherSourceKnows() {
         val state = DogTagCard.state(
-            owned = OwnedTagSource.Unreadable("corrupt"),
+            owned = OwnedTagSource.Unreadable(OwnerStoreFailure.CouldNotDecode),
             imported = listOf(ImportedTag("42", "Bella")),
         )
 
         assertEquals(listOf("42"), state.rows.map { it.dogTagIdDec })
-        assertEquals("corrupt", state.ownerStoreUnavailable)
+        assertEquals(
+            DogTagCard.reasonText(OwnerStoreFailure.CouldNotDecode),
+            state.ownerStoreUnavailable,
+        )
         assertFalse(state.establishesNoTags)
+    }
+
+    /**
+     * ...and the rows it lists claim NOTHING about the owner-secret. `own` is null for every row
+     * when the store did not answer, so a boolean "held" would render the definite negative "this
+     * phone holds no owner-secret for this tag" - could-not-check dressed as a fact, which is this
+     * card's own defect one level down. Collapsing [OwnerSecretEvidence] back to a Bool reddens this.
+     */
+    @Test
+    fun anUnreadableStoreClaimsNothingAboutARowsOwnerSecret() {
+        val row = DogTagCard.state(
+            owned = OwnedTagSource.Unreadable(OwnerStoreFailure.CouldNotRead),
+            imported = listOf(ImportedTag("42", "Bella")),
+        ).rows.single()
+
+        assertEquals(OwnerSecretEvidence.Unknown, row.ownerSecret)
+        assertNull("nor may a missing root imply anything either", row.rootHex)
+    }
+
+    /** Same for the frame before the read lands: unasked is not answered. */
+    @Test
+    fun aPendingReadClaimsNothingAboutARowsOwnerSecret() {
+        val row = DogTagCard.state(
+            owned = OwnedTagSource.Pending,
+            imported = listOf(ImportedTag("42", "Bella")),
+        ).rows.single()
+
+        assertEquals(OwnerSecretEvidence.Unknown, row.ownerSecret)
+        assertNull(row.rootHex)
     }
 
     /** The only state that licenses "No dog tag yet". */
@@ -185,28 +244,77 @@ class DogTagCardTest {
     }
 
     /**
-     * The underlying throwables are verbose (iOS's `DecodingError` renders ~400 characters), and a
-     * settings card that pastes one buries the sentence that matters. The head is kept because it
-     * names the file and the class of failure.
+     * THE privacy property, and the reason [OwnedTagSource.Unreadable] carries a cause rather than a
+     * string: by the time a decode fails the decryption has SUCCEEDED, and `org.json` quotes the
+     * input it choked on - here the owner-secret store's own plaintext. Every cause must render a
+     * sentence the code wrote.
+     *
+     * Note what actually enforces this: the payload's TYPE. There is no raw-text case to assert
+     * against because a caller cannot express one, which is the guarantee - a test could only ever
+     * check the causes that exist. This walks all of them and pins that each says what is missing,
+     * so a future cause cannot be added as silence either.
      */
     @Test
-    fun aVerboseStoreFailureIsCollapsedToOnePrintableLine() {
-        val raw = "dogtag-owner-secrets.json exists but could not be read;\n\trefusing to " +
-            "overwrite it (it holds recovery secrets): " + "x".repeat(400)
-        val state = DogTagCard.state(OwnedTagSource.Unreadable(raw), emptyList())
-        val shown = state.ownerStoreUnavailable!!
+    fun everyStoreFailureRendersAConstructedSentence() {
+        OwnerStoreFailure.entries.forEach { cause ->
+            val shown = DogTagCard.state(OwnedTagSource.Unreadable(cause), emptyList())
+                .ownerStoreUnavailable
+
+            assertEquals(DogTagCard.reasonText(cause), shown)
+            assertTrue(
+                "$cause must still state the consequence, or absence returns as silence",
+                shown!!.contains("missing from this list"),
+            )
+        }
+    }
+
+    /**
+     * The two causes are distinguishable to the reader - one is "the bytes never came back", the
+     * other "they came back and did not decode", and they have different remedies. Folding them
+     * into one message would make the card's only diagnostic useless.
+     */
+    @Test
+    fun theTwoStoreFailuresDoNotReadAlike() {
+        assertNotEquals(
+            DogTagCard.reasonText(OwnerStoreFailure.CouldNotRead),
+            DogTagCard.reasonText(OwnerStoreFailure.CouldNotDecode),
+        )
+    }
+
+    /**
+     * The residual cap. Nothing variable reaches it now that the sentences are constructed, so this
+     * pins the helper directly: whatever a future cause's wording grows into, the card gets one
+     * printable line rather than a paragraph burying the part that matters.
+     */
+    @Test
+    fun aVerboseStoreMessageIsCollapsedToOnePrintableLine() {
+        val shown = DogTagCard.shortReason(
+            "Could not read this device's owner-secret store;\n\tany tag created by " +
+                "issuance is missing from this list. " + "x".repeat(400),
+        )
 
         assertEquals(DogTagCard.MAX_REASON_CHARS + 1, shown.length) // + the ellipsis
-        assertTrue("keeps the head, which names the file", shown.startsWith("dogtag-owner-secrets.json exists"))
+        assertTrue("keeps the head, which names the failure", shown.startsWith("Could not read this device's"))
         assertTrue(shown.endsWith("…"))
         assertFalse("newlines and tabs collapse to single spaces", shown.contains("\n") || shown.contains("\t"))
     }
 
-    /** A reason that already fits is passed through unchanged apart from whitespace collapsing. */
+    /** A message that already fits is passed through unchanged apart from whitespace collapsing. */
     @Test
-    fun aShortStoreFailureIsNotTruncated() {
-        val state = DogTagCard.state(OwnedTagSource.Unreadable("  keystore key   invalidated "), emptyList())
-        assertEquals("keystore key invalidated", state.ownerStoreUnavailable)
+    fun aShortStoreMessageIsNotTruncated() {
+        assertEquals("keystore key invalidated", DogTagCard.shortReason("  keystore key   invalidated "))
+    }
+
+    /** And every constructed sentence is already inside the cap, so none of them is ever elided. */
+    @Test
+    fun noConstructedSentenceIsTruncated() {
+        OwnerStoreFailure.entries.forEach { cause ->
+            assertFalse(
+                "$cause is too long for the card and would be cut mid-remedy",
+                DogTagCard.state(OwnedTagSource.Unreadable(cause), emptyList())
+                    .ownerStoreUnavailable!!.endsWith("…"),
+            )
+        }
     }
 
     // ---- names -----------------------------------------------------------------------------------

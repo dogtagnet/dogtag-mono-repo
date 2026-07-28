@@ -35,7 +35,7 @@ final class DogTagCardTests: XCTestCase {
         let row = try XCTUnwrap(state.rows.first)
         XCTAssertEqual(row.dogTagIdDec, "7")
         XCTAssertEqual(row.rootHex, "0x7aa")
-        XCTAssertTrue(row.ownerSecretHeld)
+        XCTAssertEqual(row.ownerSecret, .held)
         XCTAssertFalse(row.credentialImported)
         XCTAssertFalse(state.establishesNoTags, "a listed tag is not an absence")
     }
@@ -59,7 +59,7 @@ final class DogTagCardTests: XCTestCase {
         let row = try XCTUnwrap(state.rows.first)
         XCTAssertEqual(row.name, "Rex")
         XCTAssertEqual(row.rootHex, "0xroot7")
-        XCTAssertTrue(row.ownerSecretHeld)
+        XCTAssertEqual(row.ownerSecret, .held)
         XCTAssertTrue(row.credentialImported)
     }
 
@@ -75,7 +75,7 @@ final class DogTagCardTests: XCTestCase {
         XCTAssertEqual(row.dogTagIdDec, "42")
         XCTAssertEqual(row.name, "Bella")
         XCTAssertNil(row.rootHex, "no owner-secret record means no known root")
-        XCTAssertFalse(row.ownerSecretHeld)
+        XCTAssertEqual(row.ownerSecret, .notHeld, "the store answered, so this absence IS established")
         XCTAssertTrue(row.credentialImported)
     }
 
@@ -118,15 +118,31 @@ final class DogTagCardTests: XCTestCase {
         XCTAssertTrue(state.establishesNoTags, "both sources answered and neither knows a tag")
     }
 
+    /// A handle is ASCII `0`-`9`, and both platforms must read it that way or one identical store
+    /// lists different rows on each. `\.isNumber` covers Nd, Nl and No, so `½` used to pass HERE and
+    /// not on Android; `Char::isDigit` is Nd, so `٣` (U+0663) used to pass on BOTH. Both are now
+    /// rejected on both sides. Mirrored by Android `aNonAsciiDigitIsNotAHandle`.
+    func testANonAsciiDigitIsNotAHandle() {
+        let state = DogTagCard.state(
+            owned: records(),
+            imported: [
+                DogTagCard.ImportedTag(dogTagIdDec: "٣", name: "Arabic-Indic three"),
+                DogTagCard.ImportedTag(dogTagIdDec: "½", name: "Vulgar half"),
+                DogTagCard.ImportedTag(dogTagIdDec: "1٣", name: "Mixed"),
+            ]
+        )
+        XCTAssertTrue(state.rows.isEmpty)
+    }
+
     // MARK: - "could not check" is not "none"
 
     /// An unreadable store must NOT read as an empty one. `ProfileTreeStore.all()` answers `[]` in
     /// exactly this case, which is why the card reads the throwing `loadActive()`.
     func testAnUnreadableStoreIsNotAnAbsence() {
-        let state = DogTagCard.state(owned: .unreadable("file protection: device locked"), imported: [])
+        let state = DogTagCard.state(owned: .unreadable(.couldNotRead), imported: [])
 
         XCTAssertTrue(state.rows.isEmpty)
-        XCTAssertEqual(state.ownerStoreUnavailable, "file protection: device locked")
+        XCTAssertEqual(state.ownerStoreUnavailable, DogTagCard.reasonText(.couldNotRead))
         XCTAssertFalse(
             state.establishesNoTags,
             "an unread store leaves absence unproven, so the card may not claim it"
@@ -146,13 +162,40 @@ final class DogTagCardTests: XCTestCase {
     /// Imported tags still render while the owner-secret store is unreadable - but not as complete.
     func testAnUnreadableStoreStillListsWhatTheOtherSourceKnows() {
         let state = DogTagCard.state(
-            owned: .unreadable("corrupt"),
+            owned: .unreadable(.couldNotDecode),
             imported: [DogTagCard.ImportedTag(dogTagIdDec: "42", name: "Bella")]
         )
 
         XCTAssertEqual(state.rows.map(\.dogTagIdDec), ["42"])
-        XCTAssertEqual(state.ownerStoreUnavailable, "corrupt")
+        XCTAssertEqual(state.ownerStoreUnavailable, DogTagCard.reasonText(.couldNotDecode))
         XCTAssertFalse(state.establishesNoTags)
+    }
+
+    /// ...and the rows it lists claim NOTHING about the owner-secret. `own` is nil for every row when
+    /// the store did not answer, so a `Bool` "held" would render the definite negative "this phone
+    /// holds no owner-secret for this tag" - could-not-check dressed as a fact, which is this card's
+    /// own defect one level down. Collapsing `OwnerSecretEvidence` back to a `Bool` reddens this.
+    func testAnUnreadableStoreClaimsNothingAboutARowsOwnerSecret() throws {
+        let state = DogTagCard.state(
+            owned: .unreadable(.couldNotRead),
+            imported: [DogTagCard.ImportedTag(dogTagIdDec: "42", name: "Bella")]
+        )
+        let row = try XCTUnwrap(state.rows.first)
+
+        XCTAssertEqual(row.ownerSecret, .unknown)
+        XCTAssertNil(row.rootHex, "nor may a missing root imply anything either")
+    }
+
+    /// Same for the frame before the read lands: unasked is not answered.
+    func testAPendingReadClaimsNothingAboutARowsOwnerSecret() throws {
+        let state = DogTagCard.state(
+            owned: .pending,
+            imported: [DogTagCard.ImportedTag(dogTagIdDec: "42", name: "Bella")]
+        )
+        let row = try XCTUnwrap(state.rows.first)
+
+        XCTAssertEqual(row.ownerSecret, .unknown)
+        XCTAssertNil(row.rootHex)
     }
 
     /// The only state that licenses "No dog tag yet".
@@ -165,19 +208,50 @@ final class DogTagCardTests: XCTestCase {
         XCTAssertTrue(state.establishesNoTags)
     }
 
-    /// The underlying errors are verbose (a `DecodingError` renders ~400 characters), and a settings
-    /// card that pastes one buries the sentence that matters. The head is kept because it names the
-    /// file and the class of failure.
-    func testAVerboseStoreFailureIsCollapsedToOnePrintableLine() throws {
-        let raw = "dogtag-owner-secrets.json exists but could not be read;\n\trefusing to "
-            + "overwrite it (it holds recovery secrets): " + String(repeating: "x", count: 400)
-        let state = DogTagCard.state(owned: .unreadable(raw), imported: [])
-        let shown = try XCTUnwrap(state.ownerStoreUnavailable)
+    /// THE privacy property, and the reason `.unreadable` carries a cause rather than a string: an
+    /// error raised while reading this store is free to quote the document it was reading, and this
+    /// one holds the owner-secret. Every cause must render a sentence the code wrote.
+    ///
+    /// Note what actually enforces this: the payload's TYPE. There is no raw-text case to assert
+    /// against because a caller cannot express one, which is the guarantee - a test could only ever
+    /// check the causes that exist. This walks all of them and pins that each says what is missing,
+    /// so a future cause cannot be added as silence either.
+    func testEveryStoreFailureRendersAConstructedSentence() throws {
+        for cause in DogTagCard.OwnerStoreFailure.allCases {
+            let state = DogTagCard.state(owned: .unreadable(cause), imported: [])
+            let shown = try XCTUnwrap(state.ownerStoreUnavailable)
+
+            XCTAssertEqual(shown, DogTagCard.reasonText(cause))
+            XCTAssertTrue(
+                shown.contains("missing from this list"),
+                "\(cause) must still state the consequence, or absence returns as silence"
+            )
+        }
+    }
+
+    /// The two causes are distinguishable to the reader - one is "the bytes never came back", the
+    /// other "they came back and did not decode", and they have different remedies. Folding them
+    /// into one message would make the card's only diagnostic useless.
+    func testTheTwoStoreFailuresDoNotReadAlike() {
+        XCTAssertNotEqual(
+            DogTagCard.reasonText(.couldNotRead),
+            DogTagCard.reasonText(.couldNotDecode)
+        )
+    }
+
+    /// The residual cap. Nothing variable reaches it now that the sentences are constructed, so this
+    /// pins the helper directly: whatever a future cause's wording grows into, the card gets one
+    /// printable line rather than a paragraph burying the part that matters.
+    func testAVerboseStoreMessageIsCollapsedToOnePrintableLine() {
+        let shown = DogTagCard.shortReason(
+            "Could not read this device's owner-secret store;\n\tany tag created by "
+                + "issuance is missing from this list. " + String(repeating: "x", count: 400)
+        )
 
         XCTAssertEqual(shown.count, DogTagCard.maxReasonChars + 1) // + the ellipsis
         XCTAssertTrue(
-            shown.hasPrefix("dogtag-owner-secrets.json exists"),
-            "keeps the head, which names the file"
+            shown.hasPrefix("Could not read this device's"),
+            "keeps the head, which names the failure"
         )
         XCTAssertTrue(shown.hasSuffix("…"))
         XCTAssertFalse(
@@ -186,10 +260,21 @@ final class DogTagCardTests: XCTestCase {
         )
     }
 
-    /// A reason that already fits is passed through unchanged apart from whitespace collapsing.
-    func testAShortStoreFailureIsNotTruncated() {
-        let state = DogTagCard.state(owned: .unreadable("  keystore key   invalidated "), imported: [])
-        XCTAssertEqual(state.ownerStoreUnavailable, "keystore key invalidated")
+    /// A message that already fits is passed through unchanged apart from whitespace collapsing.
+    func testAShortStoreMessageIsNotTruncated() {
+        XCTAssertEqual(DogTagCard.shortReason("  keystore key   invalidated "), "keystore key invalidated")
+    }
+
+    /// And every constructed sentence is already inside the cap, so none of them is ever elided.
+    func testNoConstructedSentenceIsTruncated() throws {
+        for cause in DogTagCard.OwnerStoreFailure.allCases {
+            let state = DogTagCard.state(owned: .unreadable(cause), imported: [])
+            let shown = try XCTUnwrap(state.ownerStoreUnavailable)
+            XCTAssertFalse(
+                shown.hasSuffix("…"),
+                "\(cause) is too long for the card and would be cut mid-remedy"
+            )
+        }
     }
 
     // MARK: - names

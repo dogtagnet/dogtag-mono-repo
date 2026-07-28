@@ -64,9 +64,38 @@ enum DogTagCard {
         case records([OwnedTag])
         /// It did not answer: the store exists but could not be read or decoded. Any tag created by
         /// issuance is therefore unlisted, and the card must say so instead of reporting absence.
-        case unreadable(String)
+        ///
+        /// The payload is a CAUSE, never the failure's own message - see `reasonText`.
+        case unreadable(OwnerStoreFailure)
         /// Not asked yet - the read is file I/O and happens after the first frame.
         case pending
+    }
+
+    /// Why the owner-secret store could not be read - a closed set the code itself names, so that
+    /// what the card prints is always constructed rather than quoted from an error. See `reasonText`.
+    /// `CaseIterable` so a test can walk every cause and pin that each renders a constructed
+    /// sentence, mirroring Kotlin's `entries`; a cause added later cannot slip in as silence.
+    enum OwnerStoreFailure: Equatable, CaseIterable {
+        /// The stored bytes never came back: a locked (`.completeFileProtection`) file, or I/O.
+        case couldNotRead
+        /// They came back, but did not decode into owner-secret records.
+        case couldNotDecode
+    }
+
+    /// What is known about this device's ability to prove consent for one listed tag.
+    ///
+    /// Three cases for the same reason `OwnedTagSource` has three: a row whose owner-secret record is
+    /// missing because the store said so is a different claim from one whose record is missing
+    /// because the store never answered, and only the first may be stated as a fact. Collapsing this
+    /// to a `Bool` re-introduces the card's own defect one level down - a definite negative asserted
+    /// over a source that was never read.
+    enum OwnerSecretEvidence: Equatable {
+        /// The store answered and holds this tag's owner-secret; consent can still be proved here.
+        case held
+        /// The store answered and holds no record for this tag. A definite negative, safe to state.
+        case notHeld
+        /// The store did not answer. Unestablished - the card must claim nothing either way.
+        case unknown
     }
 
     // ---- output ----------------------------------------------------------------------------------
@@ -79,10 +108,13 @@ enum DogTagCard {
         let dogTagIdDec: String
         /// The pet's name, or `nil` when this device does not know one. Never a placeholder.
         let name: String?
-        /// `R`, known only for a tag whose owner-secret this device holds.
+        /// `R`, known only for a tag whose owner-secret this device holds - and therefore `nil` both
+        /// when no such record exists AND when the store did not answer. A `nil` root renders no row
+        /// at all rather than a negative one, so it asserts nothing on its own; `ownerSecret` is what
+        /// says whether the store was in a position to answer.
         let rootHex: String?
-        /// This device holds the owner-secret, so it can still prove consent for this tag.
-        let ownerSecretHeld: Bool
+        /// Whether this device holds the owner-secret for this tag - or could not establish it.
+        let ownerSecret: OwnerSecretEvidence
         /// A credential naming this tag has been imported here.
         let credentialImported: Bool
 
@@ -92,7 +124,7 @@ enum DogTagCard {
     /// Everything the card renders, including whether it was able to check at all.
     struct State: Equatable {
         let rows: [Row]
-        /// Why the owner-secret store could not be read, or `nil` when it answered.
+        /// The constructed sentence for a store that could not be read, or `nil` when it answered.
         let ownerStoreUnavailable: String?
         /// The owner-secret store has not been read yet.
         let ownerStorePending: Bool
@@ -133,9 +165,13 @@ enum DogTagCard {
         var ownedTags: [OwnedTag] = []
         var unavailable: String?
         var pending = false
+        // Whether the ABSENCE of an owner-secret record for a tag is established at all. Only a
+        // store that answered can license the definite negative; under `.unreadable` and `.pending`
+        // every row's `own` is nil for a reason that says nothing about that row.
+        var storeAnswered = false
         switch owned {
-        case let .records(tags): ownedTags = tags
-        case let .unreadable(reason): unavailable = reason
+        case let .records(tags): ownedTags = tags; storeAnswered = true
+        case let .unreadable(cause): unavailable = shortReason(reasonText(cause))
         case .pending: pending = true
         }
 
@@ -144,7 +180,7 @@ enum DogTagCard {
         // tag. Owner-secret records need no such filter - the builder refuses anything but a decimal
         // handle, so a record in the store is a real tag by construction.
         var importedByTag: [String: ImportedTag] = [:]
-        for tag in imported where !tag.dogTagIdDec.isEmpty && tag.dogTagIdDec.allSatisfy(\.isNumber) {
+        for tag in imported where isAsciiDecimal(tag.dogTagIdDec) {
             importedByTag[tag.dogTagIdDec] = tag
         }
         var ownedByTag: [String: OwnedTag] = [:]
@@ -159,7 +195,7 @@ enum DogTagCard {
                 dogTagIdDec: id,
                 name: realName(imp?.name),
                 rootHex: own?.rootHex,
-                ownerSecretHeld: own != nil,
+                ownerSecret: own != nil ? .held : (storeAnswered ? .notHeld : .unknown),
                 credentialImported: imp != nil
             )
         }
@@ -167,23 +203,50 @@ enum DogTagCard {
 
         return State(
             rows: rows,
-            ownerStoreUnavailable: unavailable.map(shortReason),
+            ownerStoreUnavailable: unavailable,
             ownerStorePending: pending
         )
+    }
+
+    /// What the card says when the owner-secret store did not answer - CONSTRUCTED here, never an
+    /// underlying failure's own message.
+    ///
+    /// The store this reports on holds the owner-secret and the attribute salts, and an error caught
+    /// while reading it is free to quote what it was reading. Here that is bounded - a `DecodingError`
+    /// renders the coding path, which is field names and indices rather than values - but Android's
+    /// `org.json` counterpart appends the tokenizer input outright, and by the time a decode fails
+    /// there the decryption has already succeeded, so that input is the store's own plaintext. Rather
+    /// than reason per platform about how much any given error happens to expose, the payload of
+    /// `.unreadable` is a closed set of causes on both: there is no caller text for this to echo, by
+    /// construction rather than by convention.
+    ///
+    /// Both sentences still state the consequence - a tag created by issuance is missing from the
+    /// list - because saying nothing would recreate the false absence this card exists to close.
+    static func reasonText(_ cause: OwnerStoreFailure) -> String {
+        switch cause {
+        // No "unlock and retry" here: this cause also covers a store that is genuinely damaged,
+        // where retrying can never work, and promising a remedy that cannot deliver is the same
+        // over-claim in a smaller place.
+        case .couldNotRead:
+            return "Could not read this device's owner-secret store, so any tag created by "
+                + "issuance is missing from this list. The device may be locked, or the store damaged."
+        case .couldNotDecode:
+            return "This device's owner-secret store was read but its contents did not decode, so "
+                + "any tag created by issuance is missing from this list."
+        }
     }
 
     /// How much of a store-read failure the card prints. See `shortReason`.
     static let maxReasonChars = 160
 
-    /// A store-read failure collapsed to one printable line.
+    /// A store-read message collapsed to one printable line.
     ///
-    /// Applied here rather than at the renderer so neither platform can forget it. The underlying
-    /// errors are verbose - a `DecodingError` alone renders ~400 characters of nested
-    /// `Context(codingPath:…)` - and pasting that into a settings card buries the sentence that
-    /// matters ("any tag created by issuance is missing from this list") under a stack of Foundation
-    /// internals. The head is the part worth keeping: it names the file and the class of failure.
-    /// Nothing actionable is lost, because the remedy does not vary with the parse detail - the tags
-    /// are still on chain, and recovery needs the seed plus the credential either way.
+    /// Applied here rather than at the renderer so neither platform can forget it, and retained as
+    /// the residual cap now that `reasonText` is the only thing feeding it: whatever a future cause's
+    /// sentence grows into, the settings card gets one line rather than a paragraph that buries the
+    /// part that matters ("any tag created by issuance is missing from this list"). Nothing
+    /// actionable is lost to the cap - the remedy does not vary with the tail, the tags are still on
+    /// chain, and recovery needs the seed plus the credential either way.
     static func shortReason(_ raw: String) -> String {
         let collapsed = raw
             .split(whereSeparator: \.isWhitespace)
@@ -220,8 +283,21 @@ enum DogTagCard {
 
     /// Digits with leading zeros stripped, or `nil` when the handle is not a decimal number.
     private static func normalizedHandle(_ s: String) -> String? {
-        guard !s.isEmpty, s.allSatisfy(\.isNumber) else { return nil }
+        guard isAsciiDecimal(s) else { return nil }
         let trimmed = String(s.drop(while: { $0 == "0" }))
         return trimmed.isEmpty ? "0" : trimmed
+    }
+
+    /// A non-empty run of ASCII `0`-`9`, which is what a `dogTagId` handle actually is.
+    ///
+    /// Deliberately NOT `\.isNumber` / Android's `Char::isDigit`: both admit Unicode digits beyond
+    /// ASCII, and they admit DIFFERENT ones - `\.isNumber` covers Nd, Nl and No (so `½` and `Ⅸ`
+    /// pass) while `isDigit` is Nd only (so `٣` U+0663 passes on both, `½` only here). A shared
+    /// module whose two halves accept different handles would list different rows on the two
+    /// platforms for one identical store, which is the exact drift this module exists to prevent.
+    /// Nothing reaches either source with a non-ASCII digit today, so this is a tightening rather
+    /// than a behaviour change.
+    private static func isAsciiDecimal(_ s: String) -> Bool {
+        !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber }
     }
 }

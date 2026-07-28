@@ -153,11 +153,20 @@ struct ProfileScreen: View {
                         CopyRow(label: "dogTagId", value: row.dogTagIdDec)
                         if let name = row.name { CopyRow(label: "Pet", value: name) }
                         if let root = row.rootHex { CopyRow(label: "Profile root", value: root) }
-                        if !row.credentialImported {
-                            Text("Anchored from this device. No credential naming this tag has been imported here yet, so its pet details are not known on this phone.")
+                        // What the owner-secret record itself proves, and no more. The record is
+                        // written BEFORE the custodial-bind POST and before the on-chain
+                        // confirmation poll, and carries no bind or anchor status, so an issuance
+                        // that died after it was written would render as anchored - the claim this
+                        // product exists to make truthfully, asserted from evidence that does not
+                        // establish it.
+                        if row.ownerSecret == .held && !row.credentialImported {
+                            Text("This phone holds this tag's owner-secret and built its profile root. No credential naming this tag has been imported here yet, so its pet details are not known on this phone.")
                                 .font(.system(size: 11)).foregroundColor(c.muted)
                         }
-                        if !row.ownerSecretHeld {
+                        // Only the definite negative is printed. Under `.unknown` the store never
+                        // answered, so "holds no owner-secret" would be could-not-check dressed as a
+                        // fact; the card-level notice below is what speaks for that case.
+                        if row.ownerSecret == .notHeld {
                             Text("Known from an imported credential. This phone holds no owner-secret for this tag, so it cannot prove consent for it.")
                                 .font(.system(size: 11)).foregroundColor(c.muted)
                         }
@@ -169,9 +178,10 @@ struct ProfileScreen: View {
                     if card.ownerStorePending {
                         Text("Checking this device for owner-hidden tags…")
                             .font(.system(size: 11)).foregroundColor(c.muted)
-                    } else if let reason = card.ownerStoreUnavailable {
-                        Text("Could not read this device's owner-secret store, so any tag created by issuance is missing from this list: \(reason)")
-                            .font(.system(size: 11)).foregroundColor(c.danger)
+                    } else if let notice = card.ownerStoreUnavailable {
+                        // Printed verbatim: the sentence is built by `DogTagCard.reasonText` from a
+                        // closed set of causes, so there is no caller text here to interpolate.
+                        Text(notice).font(.system(size: 11)).foregroundColor(c.danger)
                     }
 
                     // Only once every source has answered and none knows a tag.
@@ -470,8 +480,28 @@ struct ProfileScreen: View {
                 DogTagCard.OwnedTag(dogTagIdDec: $0.dogTagIdDec, rootHex: $0.rootHex)
             })
         } catch {
-            ownedTags = .unreadable(error.localizedDescription)
+            // The CAUSE, never the message: an error raised while reading this store is free to
+            // quote the document it was reading, and this one holds the owner-secret. The screen
+            // gets a sentence `DogTagCard` constructed from this cause; see its `reasonText`.
+            // Not logged: this app has no logging surface, and adding one here would only move the
+            // same error text into the device console. The cause is the diagnostic, and the card
+            // already distinguishes the two.
+            ownedTags = .unreadable(Self.storeFailure(for: error))
         }
+    }
+
+    /// Classify a store-read failure into the closed cause set the card can describe.
+    ///
+    /// Keyed on the decode step rather than on the error's text, so the distinction rests on WHERE
+    /// the read failed. Anything that is not a decode failure - a locked `.completeFileProtection`
+    /// file, I/O - is the read half.
+    private static func storeFailure(for error: Error) -> DogTagCard.OwnerStoreFailure {
+        if let storeError = error as? ProfileTreeStore.StoreError,
+           case let .unreadableFile(underlying) = storeError,
+           underlying is DecodingError {
+            return .couldNotDecode
+        }
+        return .couldNotRead
     }
 
     private func kv(_ k: String, _ v: String) -> some View {

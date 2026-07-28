@@ -107,11 +107,29 @@ class ProfileTreeStore(private val context: Context) {
     )
 
     /** The store exists but could not be read. Never reported as "no records" - see [load]. */
-    class UnreadableStoreException(cause: Throwable) : IllegalStateException(
+    class UnreadableStoreException(
+        cause: Throwable,
+        /**
+         * WHERE the read failed, recorded at the throw site rather than inferred later from the
+         * cause's type. A UI that must describe this failure without quoting [cause] - whose message
+         * can carry the decrypted store's own plaintext - needs the distinction, and sniffing for a
+         * `JSONException` downstream would be a guess that silently stops working the day [decode]
+         * wraps its own errors.
+         */
+        val kind: Kind = Kind.CouldNotRead,
+    ) : IllegalStateException(
         "$FILE_NAME exists but could not be read; refusing to overwrite it (it holds recovery " +
             "secrets): ${cause.message}",
         cause,
-    )
+    ) {
+        enum class Kind {
+            /** The stored bytes never came back: restore, file I/O, or Keystore decryption. */
+            CouldNotRead,
+
+            /** They came back, but did not decode into records. */
+            CouldNotDecode,
+        }
+    }
 
     /** Rebuilding the tree no longer reproduces the recorded `R`. See [verifyRecoverable]. */
     class RootMismatchException(expected: String, got: String) : IllegalStateException(
@@ -214,10 +232,18 @@ class ProfileTreeStore(private val context: Context) {
                 )
             }
         }
-        try {
-            OwnerSecretRecords.decode(String(decrypt(f.readBytes()), Charsets.UTF_8))
+        // Split so the two halves are distinguishable at the throw site: the bytes never coming back
+        // and the bytes not decoding are different failures with different remedies, and only the
+        // caller that already holds them can tell them apart afterwards without guessing.
+        val plaintext = try {
+            String(decrypt(f.readBytes()), Charsets.UTF_8)
         } catch (e: Exception) {
-            throw UnreadableStoreException(e)
+            throw UnreadableStoreException(e, UnreadableStoreException.Kind.CouldNotRead)
+        }
+        try {
+            OwnerSecretRecords.decode(plaintext)
+        } catch (e: Exception) {
+            throw UnreadableStoreException(e, UnreadableStoreException.Kind.CouldNotDecode)
         }
     }
 

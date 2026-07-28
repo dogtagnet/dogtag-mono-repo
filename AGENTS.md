@@ -1132,20 +1132,56 @@ for case by `DogTagCardTest` / `DogTagCardTests`, in the same shape and for the 
 - **A name is resolved, never substituted.** `Pet` decoding defaults the name to the literal `"Unnamed"`
   (`Models.kt`) and the on-import fallback writes `"DogTag #<id>"`; iOS `LocalStore.isRealName` already
   rejected both and Android had no equivalent, so the shared `DogTagCard.realName` now carries the one
-  predicate. A tag with no imported credential shows its `dogTagId` in the identifier position and no
-  name at all - "Pet" in the name slot reads as data.
+  predicate - `LocalStore.isRealName` delegates to it rather than restating it, so there is one per
+  platform and not two to keep in step by hand. A tag with no imported credential shows its `dogTagId`
+  in the identifier position and no name at all - "Pet" in the name slot reads as data.
 - **Ordering is on the digit string, deliberately the same five lines in both languages.** `dogTagIdDec`
   is unbounded, an overflowing parse would silently reorder rather than fail, and a `BigInteger` here
   against a hand-rolled compare there would be two algorithms to keep agreeing. Highest handle first, so
   the just-issued tag - the one the owner opened the card to find - is on top.
+- **The tri-state reaches the ROW too, as `OwnerSecretEvidence` (`Held`/`NotHeld`/`Unknown`).** A `Bool`
+  there collapses it back at the last step: under `Unreadable`/`Pending` the store's record is missing
+  for EVERY row, so a row would print "this phone holds no owner-secret for this tag" - the same
+  could-not-check-as-definite-negative the card exists to close, one level down. Only `NotHeld` licenses
+  that sentence. `rootHex` needs no equivalent: a `null` root renders no row at all, and silence is not
+  a claim.
+- **A row states what the RECORD proves, never what the chain did.** `buildAndPersist` writes the
+  owner-secret record BEFORE the custodial-bind POST and before the confirmation poll, and the record
+  carries no bind or anchor status, so an issuance that died after that write would render as anchored.
+  The copy is therefore "this phone holds this tag's owner-secret and built its profile root" - not
+  "Anchored from this device", which is exactly the claim the product exists to make truthfully. Fixing
+  this by adding an anchored flag to `OwnerSecretRecord` was rejected: that changes the on-disk JSON of a
+  file holding unrecoverable attribute salts, on both platforms.
 
-The imported side keeps its all-digits filter: `RecordImporter` stores a 32-hex share token in
+The imported side keeps its ASCII-decimal filter: `RecordImporter` stores a 32-hex share token in
 `dogTagId` when the wrapped doc carries no handle. Owner-secret records need no such filter, since
-`ProfileTreeBuilder.dogTagIdField` refuses anything but a decimal handle.
+`ProfileTreeBuilder.dogTagIdField` refuses anything but a decimal handle. **ASCII-decimal, not
+`Char::isDigit`/`\.isNumber`** - those admit Unicode digits and admit DIFFERENT ones (`isDigit` is Nd,
+so `٣` U+0663 passed on both; `\.isNumber` adds Nl and No, so `½` passed on iOS only), which is one
+store listing different rows per platform.
 
-`shortReason` (160 chars, whitespace collapsed) is applied inside the fold rather than at either
-renderer: the underlying throwables are verbose - iOS's `DecodingError` renders ~400 characters of
-nested `Context(codingPath:…)` - and pasting one into a settings card buries the sentence that matters.
+**The unreadable-store payload is a CAUSE, not a message, and that is a privacy property.** By the time
+`OwnerSecretRecords.decode` fails the decryption has already SUCCEEDED, and Android's `org.json` quotes
+the input it choked on (`JSONTokener.syntaxError` appends the tokenizer input) - which there is the
+owner-secret store's own plaintext. So `OwnedTagSource.Unreadable` carries `OwnerStoreFailure`
+(`CouldNotRead`/`CouldNotDecode`) and `DogTagCard.reasonText` constructs the sentence: there is no
+caller text to echo, by construction rather than by convention. **Nor does the raw text go to a log
+instead** - Android logs the throwable's CLASS and the failing step, deliberately not
+`Log.w(tag, msg, e)`, which prints the message and would just move the plaintext into logcat where a
+bug report collects it; iOS logs nothing (it has no logging surface, and the cause is the diagnostic).
+The two causes are told apart at the THROW site (`UnreadableStoreException.kind`), never by sniffing
+the cause's type downstream. `shortReason` (160 chars, whitespace collapsed) stays as the
+residual cap on whatever a future cause's wording grows into.
+Note the boundary, which is real and verified rather than theoretical: `UnreadableStoreException`'s own
+MESSAGE still interpolates `cause.message`, and **`ScanScreen`'s issuance `catch` still renders it** -
+`err = "Issue failed: ${e.message}"` (`ScanScreen.kt:446`, iOS `ScanScreen.swift:322`) wraps a block
+containing `buildAndPersist` -> `upsert` -> `load()`, so a store-read failure there reaches the screen
+by the old route. Pre-existing, outside this fix, and untouched: the leak is closed on the CARD path
+only. Closing it on Scan means giving that `catch` the same cause treatment, not widening the card's.
+Also uncovered on both platforms: the cause CLASSIFIERS (`ProfileScreen.swift`'s `storeFailure(for:)`
+and `ProfileScreen.kt`'s `when (kind)`) sit in files neither suite compiles, so swapping their two arms
+reddens nothing. Low stakes by design - the privacy property is enforced by the payload's TYPE, not by
+the classifier, so the worst case is one honest sentence shown where the other belonged.
 
 **iOS's `report(_:action:success:)` re-reads the store, and that is not tidiness.** The Danger zone
 lives on this same screen, so "Delete dog-tags" / "Reset everything" destroy the owner-secret store
