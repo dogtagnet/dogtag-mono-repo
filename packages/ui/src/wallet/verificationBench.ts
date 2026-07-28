@@ -2,6 +2,7 @@
 // `./verifyCredential.ts`. The barrel drags in `consent.ts` -> `circomlibjs`, which touches the Node
 // `Buffer` global at module init and throws in a browser.
 import { checkIntegrity } from "@dogtag/standard/verify";
+import { toHex32 } from "@dogtag/standard/field";
 import { flattenData, parsePacked } from "@dogtag/standard/wrap";
 import type { WrappedDoc } from "@dogtag/standard/types";
 import type { VerifyCredentialResp } from "../api/types";
@@ -367,7 +368,7 @@ function integrityCheck(
         : "The recomputed Merkle root does NOT match the root the document claims.",
       evidence: [
         { label: "Claimed root", value: claimed || "(absent)", source: "document signature.merkleRoot" },
-        { label: "Recomputed root", value: String(root), source: "offline" },
+        { label: "Recomputed root", value: toHex32(root), source: "offline" },
       ],
     };
   } catch (e) {

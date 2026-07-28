@@ -221,6 +221,23 @@ describe("the three-state contract", () => {
     expect(couldNotRunSeen).toBeGreaterThan(0);
   });
 
+  it("still answers integrity when the chain is unreachable, and formats it identically either way", async () => {
+    // Integrity is PURE and offline, so an unreachable chain must not take it down with the rest.
+    const doc = validDoc();
+    const answered = check(await bench(doc, genuineChain(doc)), "integrity");
+    const fallback = check(
+      await bench(doc, { ...genuineChain(doc), failing: new Set(["rootIssuer"] as const) }),
+      "integrity",
+    );
+    expect(fallback.outcome).toBe("pass");
+    expect(fallback.outcome).not.toBe("could-not-run");
+    const rootOf = (c: BenchCheck) => c.evidence.find((e) => e.label === "Recomputed root")?.value;
+    // The two paths must be indistinguishable by formatting: a decimal on one and 0x-hex on the other
+    // reads as two different values for the same root.
+    expect(rootOf(fallback)).toBe(rootOf(answered));
+    expect(rootOf(fallback)).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
   it("reports no verdict at all - never `false` - when the verifier could not produce one", async () => {
     const doc = validDoc();
     const r = await bench(doc, { ...genuineChain(doc), failing: new Set(["isValid"] as const) });
