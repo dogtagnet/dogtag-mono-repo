@@ -2732,6 +2732,59 @@ Kill the servers you started by the PID **on the port you chose**
 (`lsof -nP -iTCP:<port> -sTCP:LISTEN -t`), never by matching a path fragment: many checkouts share a
 `target/release/<name>` path and a fleet has killed a captain's live service that way.
 
+### A GENUINELY anchored credential, on a chain you own, in about two minutes
+
+The verification surfaces (the admin `/bench`, `POST /verify/credential`, the wallet panel) all resolve
+the issuing clone from a **configured** factory, and the admin bench takes its RPC and all three
+addresses from `VITE_ROAX_RPC` / `VITE_ISSUER_REGISTRY_ADDR` / `VITE_DOGTAG_ISSUER_FACTORY_ADDR` /
+`VITE_ISSUER_DOMAIN_REGISTRY_ADDR`. So the whole trust chain can be stood up on a private anvil, which
+is how you exercise a **passing** verification without issuing on the captain's stack or spending ROAX
+gas. Reading his `/v1/records` first is worth one curl (`Bearer dogtag-gov-demo-token`), but the
+government demo store is a `MemStore` and is usually empty after a restart.
+
+```bash
+anvil --port 8777 --chain-id 135 --silent &
+cd contracts   # deployer = anvil acct 0, issuing signer = acct 1
+REG=$(forge create --rpc-url $RPC --private-key $K0 --broadcast src/IssuerRegistry.sol:IssuerRegistry --constructor-args $ACCT0 | awk '/Deployed to:/{print $3}')
+IMPL=$(forge create ... src/DogTagIssuer.sol:DogTagIssuer | awk '/Deployed to:/{print $3}')
+FAC=$(forge create ... src/DogTagIssuerFactory.sol:DogTagIssuerFactory --constructor-args $IMPL $REG $ACCT0 | awk '/Deployed to:/{print $3}')
+RT=$(cast keccak "VACCINATION")
+cast send $FAC "createIssuer(string,bytes32,address)" "Seaport Vet" $RT $ACCT0 --private-key $K0
+CLONE=$(cast call $FAC "predictIssuer(bytes32,address)(address)" $RT $ACCT0)   # exact, pre-deploy
+cast send $REG "whitelistFor(bytes32,address)" $RT $ACCT1 --private-key $K0
+# build a REAL wrapped doc with the TS SDK (dist/wrap.js `wrapDocument`), issuer.documentStore = $CLONE,
+# then anchor it FROM THE WHITELISTED SIGNER:
+cast send $CLONE "issue(bytes32)" $R --private-key $K1
+```
+
+`predictIssuer` returns the CREATE2 address exactly, so you can wire `documentStore` before deploying.
+Anchor from the **whitelisted** signer, not the deployer: `issuedBy[R]` is `msg.sender`, and it is what
+the whitelist pillar asks about. Two variants pay for themselves: a second doc with a past `validUntil`
+(the expiry row fails while the verdict stays `valid`, because the chain has no validity window), and a
+third that you `revoke(bytes32)` after issuing.
+Import the script into node by ABSOLUTE path to `packages/dogtag-standard-ts/dist/wrap.js` - a script
+outside the workspace cannot resolve the bare `@dogtag/standard` specifier.
+
+### Sharp edges when driving these surfaces by hand
+
+- **Only the GOVERNMENT portal can hand you a wrapped document.** `stacks/government/web` has
+  `Copy wrapped document` (testid `copy-wrapped`); the vet Records and Issue pages have **no** such
+  affordance, and owner-web offers only `Copy redacted credential` off the Share page. A redacted copy
+  still verifies (`obfuscate` leaves the Merkle root untouched, confirmed against the bench), so it is a
+  fine substitute - but do not send someone to a copy button on the vet portal, there isn't one.
+- **The `/r/<32-hex>` share token is consumed on FIRST read** (`take_share_token`, 180s TTL). Anything
+  that fetches it - the bench's "QR share link" field included - burns it, and the phone then gets a 404.
+- **`demo-up.sh` boots the indexer with `INDEXER_DEMO_MODE=1`**, so every row in the admin Activity,
+  government Oversight and vet Traceability tables carries a placeholder hash (`0x0100`..`0x0800`) and
+  correctly renders `not chain-addressable` with no explorer link. That reads as a bug and is not one.
+  A live indexer is the same binary without that flag.
+- **`demo-up.sh` rebuilds what it serves**: `cargo build --release` for the four backends and `vite dev`
+  from source for every portal. Only the mobile apps carry stale compiled code across a boot.
+- **Check `location.href` before trusting any `chrome-devtools-axi` reading.** Even with
+  `CHROME_DEVTOOLS_AXI_PORT` + `CHROME_DEVTOOLS_AXI_USER_DATA_DIR` set, a session here was navigated to an
+  unrelated site mid-run; a `snapshot`/`eval` then silently describes the wrong page. Have the eval
+  itself assert the origin and return `"WRONG PAGE: "+location.href` rather than an answer.
+
 ### Reading credential state straight from chain 135
 
 `isValid(bytes32)` = `0x6a938567`, `isRevoked(bytes32)` = `0x4294857f`, `issuedAt(bytes32)` =
