@@ -65,8 +65,9 @@ struct CredentialDetailScreen: View {
         // The DID assertion — the OTHER half of issuer identity, required alongside the DNS binding.
         // DNS proves the domain owner vouches for the address; this proves the document has not been
         // relabelled since issuance. It works even when the binding is unavailable, because it needs
-        // nothing but the document itself — and with no IssuerDomainRegistry bundled yet, it is the only
-        // issuer cross-check this screen has.
+        // nothing but the document itself — which still matters with the IssuerDomainRegistry bundled,
+        // since that registry is EMPTY, so every clone's on-chain domain claim reads as unavailable
+        // until one is published.
         switch IssuerIdentity.assertDomain(doc) {
         case .mismatch(let displayed, let rootCovered):
             Text("This credential was issued under “\(rootCovered)”, but the document claims “\(displayed)”")

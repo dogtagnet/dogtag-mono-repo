@@ -59,44 +59,82 @@ contract PinConsentWitnessGraph is Script {
             vm.envString("DOGTAG_ARTIFACTS_URL")
         );
 
-        _requireOnlyTheGraphPinMoves(reg, id, next);
+        requireOnlyTheGraphPinMoves(reg, id, next);
 
         uint256 timelock = reg.PUBLISH_TIMELOCK();
+        uint256 pendingEta = reg.artifactSetEta(id);
         console2.log("--- Pin consent witness graph (artifact axis only) ---");
         console2.log("ProtocolRegistry ", address(reg));
         console2.log("Publish timelock ", timelock, "seconds");
 
-        vm.startBroadcast();
-        reg.proposeArtifactSet(next);
-        // A zero timelock (the ROAX testnet opt-in) lets the execute follow immediately. Under a REAL
-        // delay `executeArtifactSet` would revert "timelock", so the propose is left staged and the
-        // operator must run the execute after the printed ETA - the pin is NOT live until they do.
-        if (timelock == 0) {
+        if (pendingEta == 0) {
+            vm.startBroadcast();
+            reg.proposeArtifactSet(next);
+            // A zero timelock (the ROAX testnet opt-in) lets the execute follow immediately. Under a
+            // REAL delay `executeArtifactSet` would revert "timelock", so the propose is left staged
+            // and the operator re-runs this script after the printed ETA to finish it.
+            if (timelock == 0) {
+                reg.executeArtifactSet(id);
+            }
+            vm.stopBroadcast();
+        } else if (block.timestamp >= pendingEta) {
+            // A proposal from an earlier run has ripened. Re-proposing here would reset
+            // `artifactSetEta` to `block.timestamp + PUBLISH_TIMELOCK` and silently restart the whole
+            // delay, so the second run of a two-phase operation must EXECUTE, never propose again.
+            console2.log("Pending proposal has ripened (ETA elapsed) - executing it, not re-proposing.");
+            vm.startBroadcast();
             reg.executeArtifactSet(id);
-        }
-        vm.stopBroadcast();
-
-        if (timelock == 0) {
-            ProtocolRegistry.ArtifactSet memory got = reg.getArtifactSet(id);
-            console2.log("PUBLISHED. witnessMobileSha256 is now:");
-            console2.logBytes32(got.witnessMobileSha256);
-            require(got.witnessMobileSha256 == next.witnessMobileSha256, "read-back mismatch");
-            require(got.active, "set must remain active");
+            vm.stopBroadcast();
         } else {
+            console2.log("A proposal is already staged and its timelock has NOT elapsed. ETA (unix):", pendingEta);
+            console2.log("Re-run this script at/after that ETA to execute it. Nothing was broadcast.");
+            revert("proposal pending - re-run after the printed ETA to execute");
+        }
+
+        if (reg.artifactSetEta(id) != 0) {
             console2.log("PROPOSED ONLY - execute is still OUTSTANDING. ETA (unix):", reg.artifactSetEta(id));
             console2.log("The graph is NOT pinned on chain until executeArtifactSet runs.");
+            console2.log("Re-run this script at/after that ETA; it will execute rather than re-propose.");
+            return;
         }
+
+        // Read-back. `forge script` simulates `run()` in full and only broadcasts once simulation
+        // succeeds, so this really does gate the transactions rather than merely report on them - which
+        // is what makes executing an opaque `_pendingArtifactSet` from an earlier run safe: a proposal
+        // staging anything other than `next` is caught here, before anything reaches the chain.
+        ProtocolRegistry.ArtifactSet memory got = reg.getArtifactSet(id);
+        console2.log("PUBLISHED. witnessMobileSha256 is now:");
+        console2.logBytes32(got.witnessMobileSha256);
+        require(got.witnessMobileSha256 == next.witnessMobileSha256, "read-back mismatch: graph pin");
+        require(got.zkeySha256 == next.zkeySha256, "read-back mismatch: zkey pin");
+        require(got.witnessServerR1csSha256 == next.witnessServerR1csSha256, "read-back mismatch: r1cs pin");
+        require(got.witnessServerWasmSha256 == next.witnessServerWasmSha256, "read-back mismatch: wasm pin");
+        require(
+            keccak256(bytes(got.artifactBaseUrl)) == keccak256(bytes(next.artifactBaseUrl)),
+            "read-back mismatch: artifactBaseUrl"
+        );
+        require(
+            keccak256(bytes(got.minAppVersion)) == keccak256(bytes(next.minAppVersion)),
+            "read-back mismatch: minAppVersion"
+        );
+        require(got.active, "set must remain active");
     }
 
     /// @dev Refuse to broadcast unless this is exactly "pin the graph on an otherwise-identical set".
-    /// Split out so the guard is directly testable without broadcasting.
-    function _requireOnlyTheGraphPinMoves(
+    /// `public` so `contracts/test/PinConsentWitnessGraph.t.sol` can pin every revert arm directly,
+    /// without broadcasting - the same shape as `DeployProtocolRegistry.validatePublishTimelock`.
+    function requireOnlyTheGraphPinMoves(
         ProtocolRegistry reg,
         bytes32 id,
         ProtocolRegistry.ArtifactSet memory next
-    ) internal view {
+    ) public view {
+        // Publishedness is probed through the auto-getter, which returns a zeroed record for an unknown
+        // id. `getArtifactSet` reverts "unknown artifact set" instead, so asking it first would make
+        // this script's own refusal unreachable and report a registry error for an operator mistake.
+        (bytes32 publishedId,,,,,,,,) = reg.artifactSets(id);
+        require(publishedId == id, "artifact set is not published - this script only re-publishes");
+
         ProtocolRegistry.ArtifactSet memory cur = reg.getArtifactSet(id);
-        require(cur.artifactSetId == id, "artifact set is not published - this script only re-publishes");
         require(cur.active, "artifact set is deprecated - re-activating is a separate decision");
         require(cur.witnessMobileSha256 == bytes32(0), "graph already pinned - a change here is a ROTATION");
         require(next.witnessMobileSha256 != bytes32(0), "refusing to publish an empty graph pin");

@@ -357,8 +357,9 @@ mod tests {
     fn descriptor_graph_pin_agrees_with_the_file() {
         match LEVEL_B_V1_DESCRIPTOR.witness_graph.sha256 {
             None => {
-                // Unpinned is the current, intended state — assert the reason still holds, so this
-                // arm cannot quietly become "nobody ever pinned it".
+                // Not the live state since 2026-07-28; retained for the window a future rotation
+                // passes back through — assert the attested hash stays publishable, so unpinning
+                // cannot quietly become "nobody ever attested it".
                 assert_eq!(
                     LEVEL_B_V1_WITNESS_GRAPH_SHA256.len(),
                     64,

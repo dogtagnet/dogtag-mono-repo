@@ -89,10 +89,13 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 83 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+- `cd contracts && forge test` - 116 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
-  protocol version (an internal version key, not a product label) on both registry axes; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
+  protocol version (an internal version key, not a product label) on both registry axes;
+  `PinConsentWitnessGraph.t.sol` pins every revert arm of the artifact-axis pin script's guard - the
+  only thing keeping that script incapable of a rotation or of rewriting a pin it was not asked to
+  move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
   subject-bearing `Verified` ABI. Use `forge test`, **not** bare `forge build`: a bare full build tries
   to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
   aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project

@@ -168,7 +168,7 @@ pub struct Manifest {
     pub public_signal_layout: Vec<String>,
     /// FETCH pin — SHA-256 of the zkey file (mandatory).
     pub zkey_sha256: String,
-    /// FETCH pin — SHA-256 of the `.graph` (`None` == unpinned: not committed, §3.5).
+    /// FETCH pin — SHA-256 of the `.graph` (`None` == unpinned, §3.5; pinned on ROAX since 2026-07-28).
     pub witness_mobile_sha256: Option<String>,
     /// FETCH pin — SHA-256 of the `.r1cs`.
     pub witness_server_r1cs_sha256: Option<String>,

@@ -4,11 +4,10 @@ pragma solidity 0.8.28;
 import {Script, console2} from "forge-std/Script.sol";
 import {IssuerDomainRegistry} from "../src/IssuerDomainRegistry.sol";
 
-/// @dev The two reads this script preflights. Declared locally so the script depends on no more of the
+/// @dev The one read this script preflights. Declared locally so the script depends on no more of the
 /// live contracts' surface than it actually asks about.
 interface IFactoryPreflight {
     function registry() external view returns (address);
-    function implementation() external view returns (address);
 }
 
 /// @notice Deploy `IssuerDomainRegistry` STANDALONE against an ALREADY-DEPLOYED factory + registry.

@@ -125,6 +125,11 @@ two sides in lockstep. The 2026-07-28 run touched:
   calling the graph "published 0/unpinned" both went stale. Substituting the real hash is offset-safe
   (a fixed-width head word) and nothing asserts on it - `AnchorResolver` decodes only `artifactSetId`,
   `minAppVersion` and `active`.
+- `apps/android/app/src/test/java/io/liberalize/dogtag/net/AnchorResolverTest.kt` -
+  `decodeArtifactSetGolden` is a byte-for-byte MIRROR of the iOS golden, and that mutual mirroring is
+  the point: it is what stops the two platforms silently disagreeing about what the chain returns. So
+  it moves in the same commit, with the identical substitution and the identical comment. Check the
+  two blobs still match each other, not just that each parses.
 
 Two that deliberately did NOT change, so a future run does not "fix" them:
 
@@ -136,7 +141,9 @@ Two that deliberately did NOT change, so a future run does not "fix" them:
   what ROAX happens to publish.
 
 Verify with `cargo test -p dogtag-prover-rs` **and** `cargo test -p vet-api --test discovery_validation`
-(the reconcile path), plus the iOS `DogTagTests` scheme if the fixture moved.
+(the reconcile path). If the mobile goldens moved, run BOTH mirrors - the iOS `DogTagTests` scheme and
+`cd apps/android && gradle test --tests '*AnchorResolverTest'` - since running only one is how the two
+platforms come apart.
 
 ### Ordering
 
@@ -190,6 +197,17 @@ Where the publish timelock is non-zero the script proposes only, prints the ETA,
 NOT live until a later `executeArtifactSet`. ROAX was deployed with the zero-timelock testnet opt-in
 (`PUBLISH_TIMELOCK() == 0`, verified on the deployed contract), so both ran back to back.
 
+**Under a real delay, finish the operation by re-running the same command** at or after the printed
+ETA. The script branches on `artifactSetEta`: no proposal staged means propose (and, at zero timelock,
+execute); a staged proposal whose ETA has elapsed means EXECUTE only; a staged proposal still inside
+its window aborts without broadcasting. The branch is load-bearing rather than a convenience -
+`proposeArtifactSet` recomputes `artifactSetEta = block.timestamp + PUBLISH_TIMELOCK`, so a script that
+re-proposed unconditionally would silently restart the full delay every time the operator tried to
+finish, and never execute. Because the execute path runs whatever an earlier run staged, and a pending
+proposal's contents are not readable on chain, the script re-reads the whole set afterwards and
+requires every field to equal what this run built; `forge script` simulates before broadcasting, so a
+mismatch stops the transactions rather than reporting on them after the fact.
+
 Confirm the remaining three hashes still match the descriptor before broadcasting — they are
 unchanged by this work, but publishing re-states all four:
 
@@ -231,11 +249,21 @@ strand an app on an anchor it cannot resolve. A fork rehearsal answers it empiri
 
 ```bash
 cargo test -p dogtag-prover-rs                       # descriptor + manifest agree
-cd contracts && forge test --match-contract ProtocolRegistry
+cargo test -p vet-api --test discovery_validation    # the reconcile path
+cd contracts && forge test --match-contract 'ProtocolRegistry|PinConsentWitnessGraph'
+
+# BOTH mobile goldens, if either moved - they are byte-for-byte mirrors of each other, and running
+# only one is exactly how the two platforms come apart.
+cd apps/ios     && xcodebuild test -project DogTag.xcodeproj -scheme DogTagTests -destination 'id=<sim-udid>'
+cd apps/android && gradle test --tests '*AnchorResolverTest'
 ```
 
 Then read the published set back from the chain and confirm `witnessMobileSha256` is the value
 above, not `0`.
+
+Re-running `PinConsentWitnessGraph` after a COMPLETED pin refuses with `graph already pinned - a
+change here is a ROTATION`. That is the guard reporting the work is done, not a failure - the script
+admits only the unpinned→pinned transition, so a finished set has nothing left for it to do.
 
 ---
 
