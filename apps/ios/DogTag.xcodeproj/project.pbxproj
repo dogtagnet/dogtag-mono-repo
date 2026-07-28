@@ -18,6 +18,7 @@
 		20F038D3B3ECF7634BEC4266 /* TravelScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E43C8FA8AE163AEF722ED31 /* TravelScreen.swift */; };
 		25DE54A9AD9062ED98EEC699 /* ZkeyAsset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B5CC609CD25C4E499C13B99 /* ZkeyAsset.swift */; };
 		26286860F2F0C9B67191AAF6 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E305C5EDBCBAB54068928D /* Models.swift */; };
+		A1B2C3D50000000000000002 /* DogTagCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D50000000000000001 /* DogTagCard.swift */; };
 		A1B2C3D40000000000000002 /* VerdictDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000001 /* VerdictDisplay.swift */; };
 		2B2E22977AA4914AA56C6103 /* consent_final.zkey in Resources */ = {isa = PBXBuildFile; fileRef = 9B1231C86A044F3FAC1BDBAA /* consent_final.zkey */; };
 		2CB74FCDA1A48DF33F88CF3A /* BigUInt.swift in Sources */ = {isa = PBXBuildFile; fileRef = D015751D851C794DC4128BC7 /* BigUInt.swift */; };
@@ -61,6 +62,8 @@
 		E9C15C0493BE17D1889DAF14 /* TravelReceiptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEFF4BE5934863572EB85AB5 /* TravelReceiptView.swift */; };
 		EF0AD58CCCEF572174247AFF /* ZkSelfTestScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50C45D5C665E86BCBC686B3 /* ZkSelfTestScreen.swift */; };
 		F094B66D48F3C7AEA13F18A2 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E305C5EDBCBAB54068928D /* Models.swift */; };
+		A1B2C3D50000000000000003 /* DogTagCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D50000000000000001 /* DogTagCard.swift */; };
+		A1B2C3D50000000000000005 /* DogTagCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D50000000000000004 /* DogTagCardTests.swift */; };
 		A1B2C3D40000000000000003 /* VerdictDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000001 /* VerdictDisplay.swift */; };
 		A1B2C3D40000000000000005 /* VerdictDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40000000000000004 /* VerdictDisplayTests.swift */; };
 		F2187217695A7C24EAD8AE5A /* LocalDataSweep.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A328A0B2BD5C072A7D4895 /* LocalDataSweep.swift */; };
@@ -92,6 +95,8 @@
 		75EF39B011D7887690A4A543 /* AppReset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppReset.swift; sourceTree = "<group>"; };
 		77B93EB16AAEEA822BB25374 /* consent.graph */ = {isa = PBXFileReference; path = consent.graph; sourceTree = "<group>"; };
 		78E305C5EDBCBAB54068928D /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A1B2C3D50000000000000001 /* DogTagCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagCard.swift; sourceTree = "<group>"; };
+		A1B2C3D50000000000000004 /* DogTagCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DogTagCardTests.swift; sourceTree = "<group>"; };
 		A1B2C3D40000000000000001 /* VerdictDisplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerdictDisplay.swift; sourceTree = "<group>"; };
 		A1B2C3D40000000000000004 /* VerdictDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerdictDisplayTests.swift; sourceTree = "<group>"; };
 		7B95325FF1F4944402491733 /* SeedBackupGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeedBackupGateTests.swift; sourceTree = "<group>"; };
@@ -146,6 +151,7 @@
 			isa = PBXGroup;
 			children = (
 				3E7C0DECAD4479B4092A46E3 /* AnchorResolverTests.swift */,
+				A1B2C3D50000000000000004 /* DogTagCardTests.swift */,
 				E5DC35D1F973834F7739F3F4 /* IssuerDomainBindingTests.swift */,
 				3774010D8817B22E7B20E2ED /* LocalDataSweepTests.swift */,
 				6E677AE2F3DE132622C10E9E /* PublicSignalIndexTests.swift */,
@@ -170,6 +176,7 @@
 				7DC51E046B7E0F7C0F0CA79A /* DocumentsScreen.swift */,
 				58F03AC298F9C638E20ECE1D /* dogtag_standard.swift */,
 				3FD7EFA2677AB3DBF7E7BAB0 /* DogTagApp.swift */,
+				A1B2C3D50000000000000001 /* DogTagCard.swift */,
 				05A35C55F156CE4480CF763C /* HomeScreen.swift */,
 				1F0A5F7F5D703C32FA3502B1 /* InclusionProof.swift */,
 				811220B1CBE49685874502F4 /* IssuerDomainBinding.swift */,
@@ -333,6 +340,7 @@
 				F2187217695A7C24EAD8AE5A /* LocalDataSweep.swift in Sources */,
 				01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */,
 				26286860F2F0C9B67191AAF6 /* Models.swift in Sources */,
+				A1B2C3D50000000000000002 /* DogTagCard.swift in Sources */,
 				A1B2C3D40000000000000002 /* VerdictDisplay.swift in Sources */,
 				E8D82ED92A758B3C7A009A2B /* Net.swift in Sources */,
 				D5B0677DB22C2B06A76051B5 /* ProfileScreen.swift in Sources */,
@@ -368,6 +376,8 @@
 				57CED7819C51A354E991EC8A /* LocalDataSweep.swift in Sources */,
 				09A737AC99AE3E9975BD2BDB /* LocalDataSweepTests.swift in Sources */,
 				F094B66D48F3C7AEA13F18A2 /* Models.swift in Sources */,
+				A1B2C3D50000000000000003 /* DogTagCard.swift in Sources */,
+				A1B2C3D50000000000000005 /* DogTagCardTests.swift in Sources */,
 				A1B2C3D40000000000000003 /* VerdictDisplay.swift in Sources */,
 				A1B2C3D40000000000000005 /* VerdictDisplayTests.swift in Sources */,
 				FA9B27A415CEE5FDBD48CDE0 /* Net.swift in Sources */,

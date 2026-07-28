@@ -17,6 +17,13 @@ struct ProfileScreen: View {
     @State private var sheet: ProfileSheet? = nil
     @State private var resetMsg = ""
 
+    /// The Dog-tags card's OTHER source: the tags this device created by issuance. It is a separate
+    /// store from `store.pets` and nothing joins them - custodial issuance writes an owner-secret
+    /// record and never a pet - so reading only `pets` is what made a freshly minted tag invisible
+    /// here. Starts `.pending` so the frame rendered before the read lands cannot claim an absence
+    /// nothing has checked yet. See `DogTagCard`.
+    @State private var ownedTags: DogTagCard.OwnedTagSource = .pending
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -129,16 +136,48 @@ struct ProfileScreen: View {
                 // ---- Dog-tags: owner-hidden tags created from scanned vet issuance sessions ----
                 SectionTitle(text: "Dog-tags")
                 VStack(alignment: .leading, spacing: 6) {
-                    let minted = store.pets.filter { !$0.dogTagId.isEmpty && $0.dogTagId.allSatisfy { $0.isNumber } }
-                    if minted.isEmpty {
+                    // Both sources, folded by `DogTagCard` - see its docs for why an empty card is a
+                    // claim that has to be earned rather than a default.
+                    let card = DogTagCard.state(
+                        owned: ownedTags,
+                        imported: store.pets.map {
+                            DogTagCard.ImportedTag(dogTagIdDec: $0.dogTagId, name: $0.name)
+                        }
+                    )
+
+                    ForEach(Array(card.rows.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 { Divider().background(c.muted.opacity(0.3)) }
+                        // The identifier position, always. A tag whose credential has not been
+                        // imported has no name to show, and inventing one ("Pet", "Unnamed") would
+                        // read as data.
+                        CopyRow(label: "dogTagId", value: row.dogTagIdDec)
+                        if let name = row.name { CopyRow(label: "Pet", value: name) }
+                        if let root = row.rootHex { CopyRow(label: "Profile root", value: root) }
+                        if !row.credentialImported {
+                            Text("Anchored from this device. No credential naming this tag has been imported here yet, so its pet details are not known on this phone.")
+                                .font(.system(size: 11)).foregroundColor(c.muted)
+                        }
+                        if !row.ownerSecretHeld {
+                            Text("Known from an imported credential. This phone holds no owner-secret for this tag, so it cannot prove consent for it.")
+                                .font(.system(size: 11)).foregroundColor(c.muted)
+                        }
+                    }
+
+                    // "Could not check" is its own answer and outranks silence: an unread or
+                    // unreadable owner-secret store leaves any issuance-created tag unlisted, so
+                    // saying nothing would let the rows above read as the complete set.
+                    if card.ownerStorePending {
+                        Text("Checking this device for owner-hidden tags…")
+                            .font(.system(size: 11)).foregroundColor(c.muted)
+                    } else if let reason = card.ownerStoreUnavailable {
+                        Text("Could not read this device's owner-secret store, so any tag created by issuance is missing from this list: \(reason)")
+                            .font(.system(size: 11)).foregroundColor(c.danger)
+                    }
+
+                    // Only once every source has answered and none knows a tag.
+                    if card.establishesNoTags {
                         Text("No dog tag yet. Scan your vet's dog-tag QR (Scan) to create its private owner proof and anchor the tag.")
                             .font(.system(size: 12)).foregroundColor(c.muted)
-                    } else {
-                        ForEach(minted) { pet in
-                            CopyRow(label: pet.name.isEmpty ? "Pet" : pet.name,
-                                    value: pet.dogTagId,
-                                    display: "dogTagId \(pet.dogTagId)")
-                        }
                     }
                 }
                 .padding(16)
@@ -164,6 +203,10 @@ struct ProfileScreen: View {
             }
             .padding(20)
         }
+        // Runs after the first render, and again on every visit to this tab: `DogTagApp` swaps tab
+        // content with a `switch`, so the cases produce distinct view identities and returning here
+        // after an issuance re-reads the store rather than showing a stale answer.
+        .task { loadOwnedTags() }
         // Deliver the revealed secrets through the sheet's item payload. A prior `.sheet(isPresented:)`
         // read sibling @State that was still nil when SwiftUI first evaluated the sheet body, so the
         // phrase/key never displayed. Dismiss nils the binding, releasing the secrets from memory.
@@ -401,6 +444,27 @@ struct ProfileScreen: View {
                 .padding(.vertical, 10).padding(.horizontal, 14)
                 .foregroundColor(c.accent)
                 .background(RoundedRectangle(cornerRadius: 10).stroke(c.accent, lineWidth: 1.5))
+        }
+    }
+
+    /// Read the tags this device created by issuance, for the Dog-tags card.
+    ///
+    /// Through the THROWING `loadActive()`, not `activeRecords()`: the latter answers `[]` for a
+    /// store it could not read, which the card would render as "No dog tag yet" - the same false
+    /// absence the whole card exists to stop. A failure becomes `.unreadable`, which the card states
+    /// rather than swallows.
+    ///
+    /// Synchronous, unlike Android's equivalent: this is a small protected-file read plus a JSON
+    /// decode (the store is a few KB), where Android's is Keystore AES-GCM decryption and must leave
+    /// the main thread. `.task` still fires after the first render, so `.pending` is genuinely
+    /// observable and the empty state is never asserted before the read happens.
+    private func loadOwnedTags() {
+        do {
+            ownedTags = .records(try ProfileTreeStore.loadActive().map {
+                DogTagCard.OwnedTag(dogTagIdDec: $0.dogTagIdDec, rootHex: $0.rootHex)
+            })
+        } catch {
+            ownedTags = .unreadable(error.localizedDescription)
         }
     }
 

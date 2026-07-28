@@ -1104,6 +1104,52 @@ reads NO expiry leaf at all and reports an expired-but-unrevoked root as valid (
 This is a different surface from gap 1 and fails a different way: gap 1 stays silent, this one asserts
 validity.
 
+### The Profile Dog-tags card has TWO sources, and neither store knows about the other
+
+A dog tag can be known to a phone two independent ways, and **custodial issuance populates only one of
+them**: `ProfileTreeStore.buildAndPersist` upserts an owner-secret record and nothing on the
+custodial-bind path writes a `Pet`, while `pets` comes from the separate record-import QR.
+The card rendered from `pets` alone, so a phone that had scanned a real vet QR, folded the tree
+on-device, posted `R`, and watched the vet anchor and mint it - `profileRoot(dogTagId)` on chain equal
+to the root the phone built - still said **"No dog tag yet"**, across an app restart, on both platforms.
+That is this repo's standing defect class rendered as ABSENCE rather than as a wrong badge: a false
+statement about the owner's own property.
+
+The fold is `profile/DogTagCard.kt` and `DogTag/DogTagCard.swift` - a mirrored pure pair, pinned case
+for case by `DogTagCardTest` / `DogTagCardTests`, in the same shape and for the same reason as
+`VerdictDisplay`. Four things there are load-bearing:
+
+- **The card reads the THROWING accessor**, `ProfileTreeStore.load()` / the new `loadActive()`, never
+  `all()` / `activeRecords()`. Those swallow an unreadable store and answer empty - the Kotlin one says
+  so in its own doc ("use `load` where failure must surface"). Rendering that as "No dog tag yet" is the
+  identical false absence in a second flavour, and on iOS it is not even a corruption-only case: the file
+  is `.completeFileProtection`, so a locked device is a live `unreadableFile`.
+- **The source is TRI-state** (`Records` / `Unreadable` / `Pending`), because "there are no tags", "I
+  could not read the store" and "I have not looked yet" are three different claims and only the first
+  licenses an empty card. `establishesNoTags` is the single predicate gating that sentence; a `rows.isEmpty()`
+  shortcut re-opens the bug. Pending is real, not theoretical - the Android read is Keystore AES-GCM and
+  must leave the main thread, so the card composes at least once before it lands.
+- **A name is resolved, never substituted.** `Pet` decoding defaults the name to the literal `"Unnamed"`
+  (`Models.kt`) and the on-import fallback writes `"DogTag #<id>"`; iOS `LocalStore.isRealName` already
+  rejected both and Android had no equivalent, so the shared `DogTagCard.realName` now carries the one
+  predicate. A tag with no imported credential shows its `dogTagId` in the identifier position and no
+  name at all - "Pet" in the name slot reads as data.
+- **Ordering is on the digit string, deliberately the same five lines in both languages.** `dogTagIdDec`
+  is unbounded, an overflowing parse would silently reorder rather than fail, and a `BigInteger` here
+  against a hand-rolled compare there would be two algorithms to keep agreeing. Highest handle first, so
+  the just-issued tag - the one the owner opened the card to find - is on top.
+
+The imported side keeps its all-digits filter: `RecordImporter` stores a 32-hex share token in
+`dogTagId` when the wrapped doc carries no handle. Owner-secret records need no such filter, since
+`ProfileTreeBuilder.dogTagIdField` refuses anything but a decimal handle.
+
+`shortReason` (160 chars, whitespace collapsed) is applied inside the fold rather than at either
+renderer: the underlying throwables are verbose - iOS's `DecodingError` renders ~400 characters of
+nested `Context(codingPath:…)` - and pasting one into a settings card buries the sentence that matters.
+Verified on a simulator by staging `Documents/dogtag-owner-secrets.json` + `pets.json` directly (see
+"Mobile: exercising either app's UI without a scan flow") for all three arms: owner-secret-only,
+both-sources-merged-once, and a deliberately corrupted store.
+
 ### Building / verifying UI changes
 - Build: `xcodebuild build -project apps/ios/DogTag.xcodeproj -scheme DogTag -sdk iphonesimulator
   -destination 'id=<sim-udid>' CODE_SIGNING_ALLOWED=NO`. SourceKit single-file diagnostics report

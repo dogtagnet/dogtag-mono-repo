@@ -318,7 +318,18 @@ enum ProfileTreeStore {
     /// abandoned tag stays in the file (its owner-secret is the only record a support flow could
     /// inspect) but is no longer a live credential.
     static func activeRecords() -> [OwnerSecretRecord] {
-        all().filter { $0.abandonedAt == nil }
+        (try? loadActive()) ?? []
+    }
+
+    /// `activeRecords()` where an unreadable store must SURFACE rather than read as "none".
+    ///
+    /// The Dog-tags card uses this one: an empty array from `activeRecords()` is indistinguishable
+    /// between "this device created no tag" and "the store is there but I could not read it", and
+    /// rendering the second as the first tells an owner they hold no tag when they demonstrably do.
+    /// The file is `.completeFileProtection`, so `unreadableFile` is a live possibility (a locked
+    /// device) and not only a corruption case. See `DogTagCard`.
+    static func loadActive() throws -> [OwnerSecretRecord] {
+        try load().filter { $0.abandonedAt == nil }
     }
 
     /// Destroy the whole device-local owner-secret store, staging siblings included.
