@@ -165,6 +165,30 @@ export {
 export { WalletProvider } from "./wallet/WalletProvider";
 export { WalletButton, shortAddress } from "./wallet/WalletButton";
 export { useRoaxChain, type UseRoaxChainResult } from "./wallet/useRoaxChain";
+// The admin verification bench: the real verifier, observed. See `wallet/verificationBench.ts` for why
+// it wraps `verifyCredentialOnchain` rather than reimplementing any part of it.
+export {
+  runVerificationBench,
+  recordingReader,
+  docFromShareResponse,
+  validUntilOf,
+  VALID_UNTIL_KEYPATHS,
+  todayIso,
+  type BenchCheck,
+  type ValidityWindow,
+  type BenchCheckId,
+  type BenchInput,
+  type BenchReport,
+  type ChainRead,
+  type CheckOutcome,
+  type DomainClaimReader,
+  type EvidenceLine,
+} from "./wallet/verificationBench";
+export {
+  BENCH_MUTATIONS,
+  type BenchMutation,
+  type UncaughtBy,
+} from "./wallet/benchMutations";
 
 // domain components
 export { SigningModeToggle, type SigningModeToggleProps } from "./domain/SigningModeToggle";

@@ -9,6 +9,7 @@ import {
   Building2,
   Factory,
   Landmark,
+  FlaskConical,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -23,6 +24,7 @@ const NAV: NavItem[] = [
   { key: "applications", href: "/applications", label: "Issuer applications", icon: ListChecks },
   { key: "whitelist", href: "/whitelist", label: "Whitelist", icon: ShieldCheck },
   { key: "governance", href: "/governance", label: "Governance", icon: Landmark },
+  { key: "bench", href: "/bench", label: "Verification bench", icon: FlaskConical },
 ];
 
 function Brand() {
