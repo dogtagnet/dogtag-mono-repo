@@ -584,6 +584,13 @@ contract IssuerV2Test is Test {
 
     /// @notice The factory holds no owner and no privileged function, so there is nothing about it to
     /// capture or repoint — the property `IssuerDomainRegistry` asks of a factory reference.
+    ///
+    /// @dev Read this assertion precisely. A failing `staticcall` proves the selector is **not
+    /// reachable** — no such function and no fallback — which is the property that matters here. It
+    /// would ALSO pass if such a function existed and reverted, so it is not evidence that the source
+    /// declares none; that part is held by review of the source, which declares no owner and no
+    /// privileged function at all. Stated rather than left implicit, because "the call failed" and "the
+    /// function is absent" are different facts and only the first is what a staticcall establishes.
     function test_the_factory_has_no_admin_surface() public view {
         (bool found,) = address(factory).staticcall(abi.encodeWithSignature("owner()"));
         assertFalse(found, "the factory answers owner()");

@@ -1009,7 +1009,7 @@ The four things worth knowing before touching either file:
   router would be circular - the router needs the factory's address); generation 3+ points it at a router
   over all earlier generations.
 
-Verify any change here by mutation, not by reading: the doc's §7 table lists eleven source mutations and
+Verify any change here by mutation, not by reading: the doc's §8 table lists eleven source mutations and
 the named test that catches each. A guard added without one is a guard nothing holds.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass

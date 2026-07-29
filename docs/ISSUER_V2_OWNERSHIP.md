@@ -219,7 +219,35 @@ What a later generation does **not** inherit, and must re-establish:
 
 ---
 
-## 7. Build and test
+## 7. Coordination: what the sibling slices must satisfy
+
+This slice was built against interfaces, not against `dogtag-provreg-s6`'s or `dogtag-router-s8`'s
+branches. Three obligations flow out of it, and each is permanent because the thing that carries it is
+immutable.
+
+**To S-8 (`CloneProvenanceRouter`).** `priorIndex` is a refinement the plan assigns to S-8, but it is
+implemented here because it **must** be in the factory's bytecode: the reference is `immutable` and a
+deployed factory cannot gain it later. Whatever occupies that slot must return `address(0)` for a root
+it has never seen and **must not revert** - the factory gates every `registerRoot` on it, so a reverting
+occupant bricks issuance for the whole generation with no way to repoint. Generation 2 should point it
+at the generation-1 factory directly rather than at the router: the router needs the generation-2
+factory's address, so the reverse would be circular. This closes the revocation bypass on the write
+side; the router's oldest-first resolution is still required on the read side, because this guard is
+only as good as the deployed `priorIndex`.
+
+**To S-6 (`ProviderRegistry`).** The factory asks the approval oracle for exactly one function,
+`isWhitelistedFor(bytes32,address)`, which the plan already makes a load-bearing interface requirement
+on the core. Keeping that signature is what lets this factory be deployed against today's
+`IssuerRegistry` and later against the core with no code change and no adapter. The core's
+providerId-keyed service attachment should compose `authorizeClone` rather than re-deriving provenance
+and control - that is why the predicate is published as a function instead of being inlined.
+
+**To S-9 (`ServiceDomainResolver`).** The captain's AND is now checkable: the whitelist half from the
+registry, the owner half from `authorizeClone`. Call it rather than reimplementing
+`_isSpawningBusiness` - the salt-recomputation stand-in exists only because generation-1 clones have no
+owner, and generation-2 clones do.
+
+## 8. Build and test
 
 ```sh
 cd contracts && forge test --match-contract IssuerV2Test

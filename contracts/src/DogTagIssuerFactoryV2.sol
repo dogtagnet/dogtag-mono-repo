@@ -259,6 +259,22 @@ contract DogTagIssuerFactoryV2 {
 
     /// @notice `provider`'s live clone for `recordType`, or `address(0)` if none is recorded **or the
     /// recorded one no longer passes the predicate** (see the contract doc on stale pointers).
+    ///
+    /// @dev **This function cannot revert, and that is structural rather than incidental** — worth
+    /// stating because unlike `authorizeClone` the caller does not choose the address this dispatches
+    /// to, so a consumer (S-6's attachment, S-9's domain read) treats it as a cheap resolve and would be
+    /// surprised by a revert where it expected an address.
+    ///
+    /// The only address reachable here is one already in `isClone`, which `createIssuer` only ever fills
+    /// with `Clones.cloneDeterministic(implementation, ...)` — and `implementation` is `immutable`. So
+    /// every callee is a `DogTagIssuerV2`, and `owner()`/`recordType()` there are plain public getters
+    /// over storage: no external call, no loop, no revert path. A hostile or absent callee is
+    /// unreachable, not merely unlikely.
+    ///
+    /// Deliberately NOT wrapped in `try/catch`. A catch arm here could never execute, so it would be an
+    /// untestable branch standing in for a case that cannot arise — and this codebase treats an
+    /// unexercised guard as worse than none. If a future implementation ever gives those getters a
+    /// revert path, this guarantee moves with it and the choice has to be made again on the evidence.
     function resolveActiveIssuer(address provider, bytes32 recordType) external view returns (address) {
         address clone = activeIssuer[provider][recordType];
         if (clone == address(0)) return address(0);
