@@ -115,6 +115,28 @@ struct NearbyScreen: View {
         var id: String { rawValue }
     }
 
+    /// A list entry, identified within the ONE scope entitled to render it.
+    ///
+    /// The two scopes present the same `providerId` under incompatible promises: Nearby states
+    /// distance, bearing and Directions, while Provider contacts must claim none of them. They
+    /// previously keyed both lists on the bare `providerId` inside one shared lazy container, and an
+    /// explicit `id` overrides structural identity there, so switching scope re-presented an
+    /// already-realised Nearby row under the contacts list - distance and Directions included,
+    /// directly beneath the copy promising neither. `DirectoryProvider` is itself `Identifiable` on
+    /// `providerId`, so passing it to `ForEach` straight is the collision; these wrappers exist to
+    /// make it unrepresentable rather than merely documented, in both directions.
+    private struct NearbyRowEntry: Identifiable {
+        let row: NearbyDecision.Row
+
+        var id: String { "nearby:\(row.provider.providerId)" }
+    }
+
+    private struct ContactRowEntry: Identifiable {
+        let provider: DirectoryProvider
+
+        var id: String { "contacts:\(provider.providerId)" }
+    }
+
     @Environment(\.dogTagColors) private var c
     @Environment(\.openURL) private var openURL
     @StateObject private var location = NearbyLocationController()
@@ -194,13 +216,21 @@ struct NearbyScreen: View {
                         searchField
                         directoryObservation
 
+                        // Each scope owns its OWN lazy container, so no provider row is ever a direct
+                        // child of a container the other scope also fills. A lazy stack caches its
+                        // cells by their explicit `id`, which is why sharing one container let a
+                        // realised Nearby row reappear under Provider contacts.
                         if scope == .nearby {
-                            if shouldShowOriginCard {
-                                originCard
+                            LazyVStack(alignment: .leading, spacing: 16) {
+                                if shouldShowOriginCard {
+                                    originCard
+                                }
+                                nearbyContent
                             }
-                            nearbyContent
                         } else {
-                            contactContent
+                            LazyVStack(alignment: .leading, spacing: 16) {
+                                contactContent
+                            }
                         }
                         Spacer(minLength: 20)
                     }
@@ -447,8 +477,8 @@ struct NearbyScreen: View {
                     : "Name matches",
                 trailing: "\(rows.count)"
             )
-            ForEach(rows, id: \.provider.providerId) { row in
-                nearbyProviderRow(row)
+            ForEach(rows.map { NearbyRowEntry(row: $0) }) { entry in
+                nearbyProviderRow(entry.row)
             }
         case .directoryEmpty:
             NearbyMessageCard(
@@ -568,8 +598,8 @@ struct NearbyScreen: View {
                 .font(.system(size: 12))
                 .foregroundColor(c.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            ForEach(contacts, id: \.providerId) { provider in
-                providerContactRow(provider)
+            ForEach(contacts.map { ContactRowEntry(provider: $0) }) { entry in
+                providerContactRow(entry.provider)
             }
         }
     }
