@@ -724,15 +724,19 @@ The user owns the appointment in the mobile app (central backend); the business 
 ### 8.4 Discovery → booking flow
 
 ```
-mobile → indexer: GET /v1/businesses                      ← whole set; current-GPS Nearby uses this
-mobile → indexer: GET /v1/businesses?name=…&kind=…        ← deliberately typed search intent
-mobile → indexer: GET /v1/businesses?searchCenterLat=…&searchCenterLng=…&searchRadiusKm=…
+mobile → indexer: GET /v1/businesses                      ← every kind; current-GPS Nearby filters locally
+owner search → indexer: GET /v1/businesses?kind=vet&kind=groomer
+                                                            caller-owned kind policy, not a server default
+owner search → indexer: GET /v1/businesses?name=…&kind=vet&kind=groomer
+                                                            deliberately typed provider-name intent
+owner search → indexer: GET /v1/businesses?kind=vet&kind=groomer&searchCenterLat=…&searchCenterLng=…&searchRadiusKm=…
                                                             only a place explicitly searched/picked
 indexer → admin: GET /v1/businesses                       ← whole interim source; on-chain after S-10
 indexer → mobile: {"businesses":[{businessId,type,name,geo,contact,services,apiBaseUrl,
                                   domain,documentStores,hmacKeyId}]}
 mobile (on device): current-position distance/sort over the returned `geo` - packages/ui/src/geo/
-mobile → OS maps app: selected provider destination         ← per-row handoff; no embedded map
+mobile: render matching providers as a list or map
+mobile → OS maps app: tapped provider destination           ← directions handoff
 mobile → central: POST /v1/appointments {businessId, dogTagId, slot}
 central: create appt (rev=1, REQUESTED) → PUT to business apiBaseUrl
 business: store replica, notify staff
@@ -745,17 +749,25 @@ picked on a map. The server cannot distinguish that coordinate from a live GPS f
 and the exact bare-request tests are the enforcement boundary.
 
 - The indexer's `GET /v1/businesses` is on the **public, unauthenticated** router. Bare GET returns the
-  whole set. `name`, `kind` (`type` is the existing-client compatibility alias; never send both), and
-  the all-or-none `searchCenterLat` + `searchCenterLng` + `searchRadiusKm` group are the only accepted
-  filters and compose with AND semantics.
+  whole set with every published provider kind and no unstated predicate. `name`, repeatable `kind`
+  (`type` is the same repeatable existing-client compatibility alias; never mix spellings), and the
+  all-or-none `searchCenterLat` + `searchCenterLng` + `searchRadiusKm` group are the only accepted
+  filters. Repeated kinds are ORed; the kind set, name, and chosen area compose with AND semantics.
+- Provider kind is first-class caller policy, not a service audience mode. Current kinds are `vet`,
+  `groomer`, `admin`, and `government`, but the service treats kind strings opaquely rather than
+  hardcoding an enum. The owner app admits only vet/groomer and a featureful owner search requests
+  `kind=vet&kind=groomer`; whether another app exposes admin/government remains deliberately deferred.
 - A search center is deliberate intent, like a typed provider name. The live/current GPS fix is
   involuntary and continuous. Native `ProviderDirectory.read()` therefore remains no-argument and the
   current-location flow fetches the provider **set** and computes distance, radius and sort locally
   with `packages/ui/src/geo/`.
   A provider's pin is a business fact already on their door; the user's position is not.
-- Nearby is a **list**, not an in-app map. A selected row may open the destination in the platform
-  maps app / Google Maps. There is no viewport, bounding-box, region, or geohash query to the
-  directory; those shapes have no product caller and would only disclose location.
+- Search results may be rendered as a **list or map**. Tapping one hands that provider's destination
+  to the platform maps app / Google Maps for directions. There is still no viewport, bounding-box,
+  region, or geohash query to the directory; those shapes have no product caller.
+- Location autocomplete/geocoding is an app concern, including any third-party provider it chooses.
+  The indexer receives only the resolved center after the user selects a candidate; it does not accept
+  a partial place query to forward.
 - The indexer rejects ambiguous aliases such as `near`, bare `lat`/`lng`, `radius`, current-GPS
   spellings, bounding boxes, and geohashes. Never feed a live fix into `searchCenter*`; any future
   server-side current-position feature must be separately designed, deliberate, and disclosed.

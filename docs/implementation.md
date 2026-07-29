@@ -1363,11 +1363,14 @@ A grooming business's working application, not a bare verification tool. **A gro
 - **Scan QR** (Verify tab): parse `https://<host>/r?t=&i=` → fetch wrapped doc → `verify()` → import under pet, show 3-pillar verdict.
 - **Share** (user→business): show QR (one-time JWT against central).
 - **Find vet/groomer**: current-position Nearby reads the full provider directory and filters/sorts
-  on-device. Featureful search may ask the indexer to narrow by provider name/kind or by a location
-  the user deliberately typed, searched for, or picked (`searchCenterLat`/`searchCenterLng` plus
-  `searchRadiusKm`). The live GPS fix is never quietly reused as that chosen search center; sending
-  current position would require a separate, deliberate, disclosed action. A selected provider can
-  then be handed to the platform maps app / Google Maps before booking.
+  on-device, including its hard vet/groomer eligibility policy. Featureful owner search supplies the
+  same policy to the indexer as the repeatable set `kind=vet&kind=groomer`; the service itself also
+  serves admin/government and imposes no default kind restriction. Search may additionally narrow by
+  provider name or by a location the user deliberately typed, searched for, or picked
+  (`searchCenterLat`/`searchCenterLng` plus `searchRadiusKm`). Place autocomplete/geocoding is the
+  app's concern; only the resolved selection reaches this endpoint. The live GPS fix is never quietly
+  reused as that chosen search center. Results can render as a list or map, and tapping a provider
+  hands its destination to the platform maps app / Google Maps before booking.
 
 ### 6.3 Theming (7 themes)
 ```

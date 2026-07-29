@@ -20,6 +20,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
+use axum_extra::extract::Query as MultiQuery;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::compression::CompressionLayer;
@@ -72,18 +73,23 @@ fn authenticate<'a>(st: &'a AppState, headers: &HeaderMap) -> Result<&'a Princip
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BusinessDirectoryParams {
     /// Case- and diacritic-insensitive substring of the provider's published name.
-    name: Option<String>,
-    /// Case-insensitive exact match against the business row's `type`.
-    kind: Option<String>,
+    #[serde(default)]
+    name: Vec<String>,
+    /// Caller-selected set of case-insensitive exact matches against the business row's `type`.
+    #[serde(default)]
+    kind: Vec<String>,
     /// Compatibility spelling used by the existing admin directory/client contract.
-    #[serde(rename = "type")]
-    business_type: Option<String>,
+    #[serde(rename = "type", default)]
+    business_type: Vec<String>,
     /// Center of a location the user explicitly searched for, typed, or picked on a map.
-    search_center_lat: Option<f64>,
+    #[serde(default)]
+    search_center_lat: Vec<f64>,
     /// See `search_center_lat`. This is never an implicit current-device coordinate.
-    search_center_lng: Option<f64>,
+    #[serde(default)]
+    search_center_lng: Vec<f64>,
     /// Inclusive search radius around the explicitly selected search center, in kilometres.
-    search_radius_km: Option<f64>,
+    #[serde(default)]
+    search_radius_km: Vec<f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -104,25 +110,57 @@ fn nonempty_filter(value: Option<String>, field: &str) -> Result<Option<String>,
     }
 }
 
-fn kind_filter(params: &BusinessDirectoryParams) -> Result<Option<String>, ApiError> {
-    let value = match (params.kind.clone(), params.business_type.clone()) {
-        (Some(_), Some(_)) => {
-            return Err(err(
-                StatusCode::BAD_REQUEST,
-                "kind and type are aliases; provide only one",
-            ));
-        }
-        (Some(kind), None) | (None, Some(kind)) => Some(kind),
-        (None, None) => None,
+fn kind_filters(params: &BusinessDirectoryParams) -> Result<Vec<String>, ApiError> {
+    if !params.kind.is_empty() && !params.business_type.is_empty() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "kind and type are aliases; use only one spelling",
+        ));
+    }
+    let (values, field) = if params.kind.is_empty() {
+        (&params.business_type, "type")
+    } else {
+        (&params.kind, "kind")
     };
-    Ok(nonempty_filter(value, "kind/type")?.map(|kind| kind.to_ascii_lowercase()))
+    let mut kinds = Vec::with_capacity(values.len());
+    for value in values {
+        let kind = nonempty_filter(Some(value.clone()), field)?
+            .expect("a supplied nonblank kind has a value")
+            .to_ascii_lowercase();
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    Ok(kinds)
+}
+
+fn name_filter(params: &BusinessDirectoryParams) -> Result<Option<String>, ApiError> {
+    match params.name.as_slice() {
+        [] => Ok(None),
+        [name] => nonempty_filter(Some(name.clone()), "name"),
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            "name must be provided at most once",
+        )),
+    }
+}
+
+fn single_number(values: &[f64], field: &str) -> Result<Option<f64>, ApiError> {
+    match values {
+        [] => Ok(None),
+        [value] => Ok(Some(*value)),
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            &format!("{field} must be provided at most once"),
+        )),
+    }
 }
 
 fn search_area(params: &BusinessDirectoryParams) -> Result<Option<SearchArea>, ApiError> {
     match (
-        params.search_center_lat,
-        params.search_center_lng,
-        params.search_radius_km,
+        single_number(&params.search_center_lat, "searchCenterLat")?,
+        single_number(&params.search_center_lng, "searchCenterLng")?,
+        single_number(&params.search_radius_km, "searchRadiusKm")?,
     ) {
         (None, None, None) => Ok(None),
         (Some(lat), Some(lng), Some(radius_km))
@@ -173,10 +211,14 @@ fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
 /// `GET /v1/businesses` — public provider discovery over the admin directory snapshot.
 ///
 /// With no query this serves the WHOLE list, including contact-only providers with `geo: null`.
-/// Optional `name`, `kind` (or compatibility alias `type`, never both), and the all-or-none
-/// `searchCenterLat`/`searchCenterLng`/`searchRadiusKm` group narrow it with AND semantics. The route
-/// preserves source order and never fabricates a coordinate; a spatial search necessarily excludes a
-/// provider that published no premises.
+/// Optional `name`, repeatable `kind` (or repeatable compatibility alias `type`, but never both
+/// spellings), and the all-or-none `searchCenterLat`/`searchCenterLng`/`searchRadiusKm` group narrow it
+/// with AND semantics; repeated kinds are ORed. The service has NO owner-app kind allowlist. Bare GET
+/// includes every published kind — including vet, groomer, admin, and government — and a featureful
+/// owner-app caller supplies its own `kind=vet&kind=groomer` restriction. Other callers choose their
+/// own set; unknown future kind strings are not rejected or reinterpreted. No omitted filter creates a
+/// hidden default. The route preserves source order and never fabricates a coordinate; a spatial search
+/// necessarily excludes a provider that published no premises.
 ///
 /// ## Privacy boundary: search center is deliberate; current GPS is not
 ///
@@ -191,8 +233,11 @@ fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
 /// be a separate, deliberate, disclosed feature — never a quiet reuse of this chosen-search-location
 /// group.
 ///
+/// Place autocomplete/geocoding is a caller concern. This route accepts the resolved selected center;
+/// it has no partial place-query parameter to proxy to a third party.
+///
 /// Ambiguous aliases (`near`, bare `lat`/`lng`, `radius`, bounding boxes, geohashes) are rejected by
-/// `deny_unknown_fields`; they cannot silently become a loaded current-position path.
+/// the strict multi-value extractor; they cannot silently become a loaded current-position path.
 ///
 /// ## Full-fetch scale
 ///
@@ -202,10 +247,10 @@ fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
 /// already available for the featureful search flow.
 async fn businesses(
     State(st): State<AppState>,
-    Query(params): Query<BusinessDirectoryParams>,
+    MultiQuery(params): MultiQuery<BusinessDirectoryParams>,
 ) -> Result<Json<Value>, ApiError> {
-    let name = nonempty_filter(params.name.clone(), "name")?.map(|name| search_fold(&name));
-    let kind = kind_filter(&params)?;
+    let name = name_filter(&params)?.map(|name| search_fold(&name));
+    let kinds = kind_filters(&params)?;
     let area = search_area(&params)?;
     let businesses = st.directory.businesses().ok_or_else(|| {
         err(
@@ -222,9 +267,10 @@ async fn businesses(
                 .unwrap_or(true)
         })
         .filter(|business| {
-            kind.as_ref()
-                .map(|expected| business.kind.trim().eq_ignore_ascii_case(expected))
-                .unwrap_or(true)
+            kinds.is_empty()
+                || kinds
+                    .iter()
+                    .any(|expected| business.kind.trim().eq_ignore_ascii_case(expected))
         })
         .filter(|business| {
             area.map(|area| {

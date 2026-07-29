@@ -195,6 +195,30 @@ fn provider_fixture() -> Value {
                 "domain": "gulf.example",
                 "documentStores": [],
                 "hmacKeyId": "hmac-gulf"
+            },
+            {
+                "businessId": "biz-admin",
+                "type": "admin",
+                "name": "DogTag Protocol Administration",
+                "geo": null,
+                "contact": { "email": "registry@dogtag.example" },
+                "services": ["provider-registration"],
+                "apiBaseUrl": "https://admin-api.dogtag.example",
+                "domain": "admin.dogtag.example",
+                "documentStores": [],
+                "hmacKeyId": "hmac-admin"
+            },
+            {
+                "businessId": "biz-government",
+                "type": "government",
+                "name": "National Animal Health Authority",
+                "geo": { "lat": 1.2966, "lng": 103.7764 },
+                "contact": { "website": "https://animal-health.gov.example" },
+                "services": ["travel-clearance"],
+                "apiBaseUrl": "https://animal-health-api.gov.example",
+                "domain": "animal-health.gov.example",
+                "documentStores": [],
+                "hmacKeyId": "hmac-government"
             }
         ]
     })
@@ -222,14 +246,21 @@ async fn bare_route_is_public_and_returns_the_whole_safe_admin_directory() {
         "the discovery route takes no bearer"
     );
     let businesses = body["businesses"].as_array().expect("businesses array");
-    assert_eq!(businesses.len(), 4, "bare GET is the whole source list");
+    assert_eq!(businesses.len(), 6, "bare GET is the whole source list");
     assert_eq!(
         businesses
             .iter()
             .map(|row| row["businessId"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        vec!["biz-avila", "biz-seaport", "biz-remote", "biz-gulf"],
-        "source order is preserved"
+        vec![
+            "biz-avila",
+            "biz-seaport",
+            "biz-remote",
+            "biz-gulf",
+            "biz-admin",
+            "biz-government"
+        ],
+        "source order and every provider kind are preserved"
     );
 
     let avila = &businesses[0];
@@ -300,9 +331,61 @@ async fn name_kind_and_chosen_search_area_filter_with_and_semantics() {
         "type remains a compatibility alias for existing directory clients"
     );
 
+    let (status, body) = request(&state, "/v1/businesses?kind=ADMIN").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["businesses"][0]["businessId"], "biz-admin");
+
+    let (status, body) = request(&state, "/v1/businesses?kind=government").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["businesses"][0]["businessId"], "biz-government");
+
+    let (status, body) = request(&state, "/v1/businesses?kind=vet&kind=GROOMER").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["businesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["businessId"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["biz-avila", "biz-seaport", "biz-remote", "biz-gulf"],
+        "the owner caller can request vet OR groomer without the service hardcoding its policy"
+    );
+    assert!(
+        body["businesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| matches!(row["type"].as_str(), Some("vet" | "groomer"))),
+        "an owner-selected kind set cannot leak admin or government rows"
+    );
+
+    let (status, body) = request(&state, "/v1/businesses?type=vet&type=groomer").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["businesses"].as_array().unwrap().len(),
+        4,
+        "the compatibility alias has the same repeatable set semantics"
+    );
+
+    let (status, body) = request(&state, "/v1/businesses?kind=vet&kind=VET").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["businesses"].as_array().unwrap().len(),
+        3,
+        "case-normalized duplicate kind members are harmlessly deduplicated"
+    );
+
+    let (status, body) = request(&state, "/v1/businesses?name=paw&kind=vet&kind=groomer").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["businesses"][0]["businessId"], "biz-seaport",
+        "kind values are ORed while name remains an AND predicate"
+    );
+
     let (status, body) = request(
         &state,
-        "/v1/businesses?name=gulf&kind=vet&searchCenterLat=0&searchCenterLng=0&searchRadiusKm=0",
+        "/v1/businesses?name=gulf&kind=vet&kind=groomer&searchCenterLat=0&searchCenterLng=0&searchRadiusKm=0",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -339,7 +422,7 @@ async fn name_kind_and_chosen_search_area_filter_with_and_semantics() {
     let (_, whole_again) = request(&state, "/v1/businesses").await;
     assert_eq!(
         whole_again["businesses"].as_array().unwrap().len(),
-        4,
+        6,
         "a filtered read must never mutate the universal source snapshot"
     );
 
@@ -377,7 +460,10 @@ async fn search_area_is_strict_and_current_position_aliases_are_not_a_loaded_pat
         "kind=",
         "type=",
         "kind=vet&type=vet",
+        "kind=vet&kind=",
+        "type=vet&type=%20",
         "name=one&name=two",
+        "searchCenterLat=0&searchCenterLat=1&searchCenterLng=0&searchRadiusKm=1",
     ];
     for query in invalid {
         let (status, _) = request(&state, &format!("/v1/businesses?{query}")).await;
@@ -396,6 +482,8 @@ async fn search_area_is_strict_and_current_position_aliases_are_not_a_loaded_pat
         "latitude=1&longitude=2",
         "bbox=0,0,1,1",
         "geohash=w21z",
+        "placeQuery=singapore",
+        "kinds=vet",
         "q=vet",
         "limit=1",
         "offset=1",
@@ -453,7 +541,7 @@ async fn failed_refreshes_preserve_the_snapshot_and_successful_empty_replaces_it
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         after_malformed["businesses"].as_array().unwrap().len(),
-        4,
+        6,
         "a malformed source response cannot erase the last complete snapshot"
     );
 

@@ -23,6 +23,7 @@ unicode-normalization = { workspace = true }
 
 # web
 axum = { version = "0.7", features = ["macros"] }
+axum-extra = { version = "0.9", default-features = false, features = ["query"] }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
