@@ -11,7 +11,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt; // oneshot
 
-use indexer_api::app::{keccak_key, AppState, Config};
+use indexer_api::app::{keccak_key, watch_generation, AppState, Config};
 use indexer_api::chain::{emit, MemLogSource};
 use indexer_api::directory::Directory;
 use indexer_api::indexer::Indexer;
@@ -21,10 +21,14 @@ use indexer_api::store::{MemStore, Store};
 const FACTORY: &str = "0x00000000000000000000000000000000000fac70";
 const REGISTRY: &str = "0x0000000000000000000000000000000000c0ce61";
 const VREG: &str = "0x0000000000000000000000000000000000c05e61";
+const SECOND_FACTORY: &str = "0x00000000000000000000000000000000000fac71";
+const SECOND_REGISTRY: &str = "0x0000000000000000000000000000000000c0ce62";
+const SECOND_VREG: &str = "0x0000000000000000000000000000000000c05e62";
 const GOV_CLONE: &str = "0x0000000000000000000000000000000000c10e01";
 const GOV_SIGNER: &str = "0x00000000000000000000000000000000516e0001";
 const OTHER_CLONE: &str = "0x0000000000000000000000000000000000c10e02";
 const OTHER_SIGNER: &str = "0x00000000000000000000000000000000516e0002";
+const SECOND_CLONE: &str = "0x0000000000000000000000000000000000c10e03";
 
 fn b32(seed: u8) -> String {
     format!("0x{}", (0..32).map(|_| format!("{seed:02x}")).collect::<String>())
@@ -33,10 +37,10 @@ fn b32(seed: u8) -> String {
 fn cfg() -> Config {
     Config {
         rpc_url: "mem://".into(),
-        factory_addr: FACTORY.to_ascii_lowercase(),
-        registry_addr: REGISTRY.to_ascii_lowercase(),
-        verification_registry_consent_addr: VREG.to_ascii_lowercase(),
-        seed_clones: vec![], // discovered via IssuerCreated
+        generations: vec![
+            watch_generation(FACTORY, REGISTRY, VREG, vec![])
+                .expect("valid generation-one fixture"),
+        ],
         start_block: 0,
         confirmations: 0, // scripted head; index everything immediately
         chunk_size: 100,
@@ -50,16 +54,17 @@ fn cfg() -> Config {
 /// Script: deploy gov clone → whitelist gov signer → issue → verify → revoke, then a *different*
 /// issuer's deploy + issuance (for scope-exclusion assertions).
 fn seed(mem: &MemLogSource, c: &Config) {
+    let generation = &c.generations[0];
     let rt = keccak_key("TRAVEL_CLEARANCE");
     let purpose = keccak_key("boarding_intake");
     mem.push_empty_block("0x00", 1000); // genesis
-    mem.push_events("0x01", 1012, vec![emit::issuer_created(&c.factory_addr, GOV_CLONE, &rt, "Gov Travel")]);
-    mem.push_events("0x02", 1024, vec![emit::whitelisted(&c.registry_addr, &rt, GOV_SIGNER)]);
+    mem.push_events("0x01", 1012, vec![emit::issuer_created(&generation.factory, GOV_CLONE, &rt, "Gov Travel")]);
+    mem.push_events("0x02", 1024, vec![emit::whitelisted(&generation.issuer_registry, &rt, GOV_SIGNER)]);
     mem.push_events("0x03", 1036, vec![emit::root_issued(GOV_CLONE, &b32(0x11), GOV_SIGNER, 1036)]);
-    mem.push_events("0x04", 1048, vec![emit::verified(&c.verification_registry_consent_addr, 42, GOV_SIGNER, &purpose, &b32(0x33), 1900000000, 1048)]);
+    mem.push_events("0x04", 1048, vec![emit::verified(&generation.verification_registry, 42, GOV_SIGNER, &purpose, &b32(0x33), 1900000000, 1048)]);
     mem.push_events("0x05", 1060, vec![emit::root_revoked(GOV_CLONE, &b32(0x11), GOV_SIGNER, 1060)]);
     // a different issuer the gov-scoped token must NOT see
-    mem.push_events("0x06", 1072, vec![emit::issuer_created(&c.factory_addr, OTHER_CLONE, &rt, "Other")]);
+    mem.push_events("0x06", 1072, vec![emit::issuer_created(&generation.factory, OTHER_CLONE, &rt, "Other")]);
     mem.push_events("0x07", 1084, vec![emit::root_issued(OTHER_CLONE, &b32(0x22), OTHER_SIGNER, 1084)]);
 }
 
@@ -136,6 +141,10 @@ async fn ingest_then_unscoped_and_scoped_feeds() {
     // every event carries a finality annotation (all finalized here — no watermark set, confirmations=0)
     for e in body["events"].as_array().unwrap() {
         assert_eq!(e["finality"], "finalized");
+        assert_eq!(
+            e["generation"], FACTORY,
+            "every decoded event must carry its admitting generation"
+        );
     }
     // newest-first ordering
     let first = &body["events"][0];
@@ -313,6 +322,7 @@ async fn promotion_at_watermark() {
 #[tokio::test]
 async fn owner_hidden_verified_decode_and_anti_spoof() {
     let c = cfg();
+    let generation = &c.generations[0];
     let mem = MemLogSource::new();
     let rt = keccak_key("TRAVEL_CLEARANCE");
     let purpose = keccak_key("boarding_intake");
@@ -320,19 +330,34 @@ async fn owner_hidden_verified_decode_and_anti_spoof() {
     let deadline: u64 = 1_900_000_000;
 
     mem.push_empty_block("0x00", 1000); // genesis
-    mem.push_events("0x01", 1012, vec![emit::issuer_created(&c.factory_addr, GOV_CLONE, &rt, "Gov Travel")]);
-    mem.push_events("0x02", 1024, vec![emit::whitelisted(&c.registry_addr, &rt, GOV_SIGNER)]);
+    mem.push_events("0x01", 1012, vec![emit::issuer_created(&generation.factory, GOV_CLONE, &rt, "Gov Travel")]);
+    mem.push_events("0x02", 1024, vec![emit::whitelisted(&generation.issuer_registry, &rt, GOV_SIGNER)]);
     // Owner-hidden Verified from the configured registry.
     mem.push_events(
         "0x03",
         1036,
-        vec![emit::verified(&c.verification_registry_consent_addr, 43, GOV_SIGNER, &purpose, &b32(0x44), deadline, 1036)],
+        vec![emit::verified(&generation.verification_registry, 43, GOV_SIGNER, &purpose, &b32(0x44), deadline, 1036)],
     );
     // Anti-spoof: the same event shape from a stranger address must be dropped, not indexed.
     mem.push_events(
         "0x04",
         1048,
         vec![emit::verified(stranger, 44, GOV_SIGNER, &purpose, &b32(0x55), deadline, 1048)],
+    );
+    // Role confusion is still a spoof: being a configured FACTORY must not make the same address a
+    // configured verification registry.
+    mem.push_events(
+        "0x05",
+        1060,
+        vec![emit::verified(
+            &generation.factory,
+            45,
+            GOV_SIGNER,
+            &purpose,
+            &b32(0x56),
+            deadline,
+            1060,
+        )],
     );
 
     let store: Arc<dyn Store> = Arc::new(MemStore::new());
@@ -364,7 +389,244 @@ async fn owner_hidden_verified_decode_and_anti_spoof() {
     assert_eq!(verified["nullifier"].as_str().unwrap(), b32(0x44));
     assert_eq!(verified["actor"].as_str().unwrap(), GOV_SIGNER.to_ascii_lowercase());
     assert_eq!(verified["contract"].as_str().unwrap(), VREG.to_ascii_lowercase());
+    assert_eq!(verified["generation"].as_str(), Some(FACTORY));
 
     let (_, stats) = get(&state, "/v1/stats", Some("gov")).await;
     assert_eq!(stats["verifications"], 1);
+}
+
+/// Reproduce S-4's operational defect: a valid event from a second, unconfigured deployment
+/// generation is correctly rejected by the anti-spoof gate, but the status surface must make the
+/// incomplete watch set visible so an empty feed cannot masquerade as "nothing happened".
+#[tokio::test]
+async fn missing_generation_is_visible_when_its_events_are_dropped() {
+    let c = cfg();
+    let mem = MemLogSource::new();
+    let record_type = keccak_key("TRAVEL_CLEARANCE");
+    let purpose = keccak_key("boarding_intake");
+
+    mem.push_empty_block("0x00", 1000);
+    mem.push_events(
+        "0x01",
+        1012,
+        vec![emit::issuer_created(
+            SECOND_FACTORY,
+            SECOND_CLONE,
+            &record_type,
+            "Generation Two",
+        )],
+    );
+    mem.push_events(
+        "0x02",
+        1024,
+        vec![emit::root_issued(
+            SECOND_CLONE,
+            &b32(0x65),
+            GOV_SIGNER,
+            1024,
+        )],
+    );
+    mem.push_events(
+        "0x03",
+        1036,
+        vec![emit::verified(
+            SECOND_VREG,
+            99,
+            GOV_SIGNER,
+            &purpose,
+            &b32(0x66),
+            1_900_000_000,
+            1036,
+        )],
+    );
+
+    let state = AppState {
+        store: Arc::new(MemStore::new()),
+        source: Arc::new(mem),
+        scopes: Arc::new(scopes()),
+        directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        cfg: Arc::new(c),
+    };
+    let indexer = Indexer::new(state.clone());
+    indexer.tick().await.expect("tick");
+
+    let (_, feed) = get(&state, "/v1/events", Some("gov")).await;
+    assert_eq!(
+        feed["total"], 0,
+        "an event from an unknown generation must stay anti-spoof-dropped"
+    );
+
+    let (_, status) = get(&state, "/v1/status", Some("gov")).await;
+    assert_eq!(
+        status["lag"], 0,
+        "the cursor can look fully caught up even though the unknown generation was dropped"
+    );
+    let watched = status["watchedGenerations"]
+        .as_array()
+        .expect("status must expose the exact generation watch set");
+    assert_eq!(watched.len(), 1);
+    assert_eq!(watched[0]["generation"], FACTORY);
+    assert_eq!(watched[0]["factory"], FACTORY);
+    assert_eq!(watched[0]["issuerRegistry"], REGISTRY);
+    assert_eq!(watched[0]["verificationRegistry"], VREG);
+    assert!(
+        watched.iter().all(|generation| generation["verificationRegistry"] != SECOND_VREG),
+        "status must show that generation two is missing from the watch set"
+    );
+
+    // The same log is admitted once generation two's exact role-specific triple is configured, and
+    // the event is stamped with generation two's immutable factory-address id.
+    let mut configured = cfg();
+    configured.generations.push(
+        watch_generation(SECOND_FACTORY, SECOND_REGISTRY, SECOND_VREG, vec![])
+            .expect("valid generation-two fixture"),
+    );
+    configured.chunk_size = 1; // prove clone→generation discovery survives a chunk boundary
+    let mem = MemLogSource::new();
+    mem.push_empty_block("0x00", 1000);
+    mem.push_events(
+        "0x01",
+        1012,
+        vec![emit::issuer_created(
+            SECOND_FACTORY,
+            SECOND_CLONE,
+            &record_type,
+            "Generation Two",
+        )],
+    );
+    mem.push_events(
+        "0x02",
+        1024,
+        vec![emit::root_issued(
+            SECOND_CLONE,
+            &b32(0x65),
+            GOV_SIGNER,
+            1024,
+        )],
+    );
+    mem.push_events(
+        "0x03",
+        1036,
+        vec![emit::verified(
+            SECOND_VREG,
+            99,
+            GOV_SIGNER,
+            &purpose,
+            &b32(0x66),
+            1_900_000_000,
+            1036,
+        )],
+    );
+    let configured_state = AppState {
+        store: Arc::new(MemStore::new()),
+        source: Arc::new(mem),
+        scopes: Arc::new(scopes()),
+        directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        cfg: Arc::new(configured),
+    };
+    Indexer::new(configured_state.clone())
+        .tick()
+        .await
+        .expect("configured tick");
+
+    let (_, feed) = get(&configured_state, "/v1/events", Some("gov")).await;
+    assert_eq!(feed["total"], 3);
+    for event in feed["events"].as_array().unwrap() {
+        assert_eq!(event["generation"], SECOND_FACTORY);
+    }
+
+    let (_, status) = get(&configured_state, "/v1/status", Some("gov")).await;
+    let watched = status["watchedGenerations"].as_array().unwrap();
+    assert_eq!(watched.len(), 2);
+    assert_eq!(watched[1]["generation"], SECOND_FACTORY);
+    assert_eq!(watched[1]["factory"], SECOND_FACTORY);
+    assert_eq!(watched[1]["issuerRegistry"], SECOND_REGISTRY);
+    assert_eq!(watched[1]["verificationRegistry"], SECOND_VREG);
+}
+
+/// Removing a generation from configuration must also remove its historically discovered clones
+/// from the live anti-spoof trust set after restart. Otherwise a stored IssuerCreated row would keep
+/// admitting that generation forever even though `/v1/status` says it is no longer watched.
+#[tokio::test]
+async fn removed_generation_does_not_retrust_its_persisted_clone() {
+    let mut two_generations = cfg();
+    two_generations.generations.push(
+        watch_generation(SECOND_FACTORY, SECOND_REGISTRY, SECOND_VREG, vec![])
+            .expect("valid generation-two fixture"),
+    );
+    let record_type = keccak_key("TRAVEL_CLEARANCE");
+    let shared_store: Arc<dyn Store> = Arc::new(MemStore::new());
+
+    let first_source = MemLogSource::new();
+    first_source.push_empty_block("0x00", 1000);
+    first_source.push_events(
+        "0x01",
+        1012,
+        vec![emit::issuer_created(
+            SECOND_FACTORY,
+            SECOND_CLONE,
+            &record_type,
+            "Generation Two",
+        )],
+    );
+    let first_state = AppState {
+        store: shared_store.clone(),
+        source: Arc::new(first_source),
+        scopes: Arc::new(scopes()),
+        directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        cfg: Arc::new(two_generations),
+    };
+    Indexer::new(first_state)
+        .tick()
+        .await
+        .expect("initial discovery tick");
+
+    // Restart against the same cursor/store but with only generation one configured. Block 1 must
+    // have the same hash so this is an ordinary forward scan, not a reorg-rebuild path.
+    let restarted_source = MemLogSource::new();
+    restarted_source.push_empty_block("0x00", 1000);
+    restarted_source.push_events(
+        "0x01",
+        1012,
+        vec![emit::issuer_created(
+            SECOND_FACTORY,
+            SECOND_CLONE,
+            &record_type,
+            "Generation Two",
+        )],
+    );
+    restarted_source.push_events(
+        "0x02",
+        1024,
+        vec![emit::root_issued(
+            SECOND_CLONE,
+            &b32(0x77),
+            GOV_SIGNER,
+            1024,
+        )],
+    );
+    let restarted_state = AppState {
+        store: shared_store,
+        source: Arc::new(restarted_source),
+        scopes: Arc::new(scopes()),
+        directory: Arc::new(Directory::new(HashMap::new(), None, None)),
+        cfg: Arc::new(cfg()),
+    };
+    let restarted = Indexer::new(restarted_state.clone());
+    restarted.rebuild_known_clones().await;
+    restarted.tick().await.expect("restart tick");
+
+    let (_, issued) = get(
+        &restarted_state,
+        "/v1/events?type=rootIssued",
+        Some("gov"),
+    )
+    .await;
+    assert_eq!(
+        issued["total"], 0,
+        "a removed generation's persisted clone discovery must not bypass the current gate"
+    );
+    let (_, status) = get(&restarted_state, "/v1/status", Some("gov")).await;
+    assert_eq!(status["watchedGenerations"].as_array().unwrap().len(), 1);
+    assert_eq!(status["watchedGenerations"][0]["generation"], FACTORY);
 }

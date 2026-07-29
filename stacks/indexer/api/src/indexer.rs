@@ -14,7 +14,7 @@
 //!     gate `RootIssued`/`RootRevoked` (anti-spoof), rebuilt from the store on startup so restarts
 //!     keep attributing pre-restart clones.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::app::AppState;
@@ -25,15 +25,16 @@ use crate::store::{Cursor, EventQuery};
 
 pub struct Indexer {
     state: AppState,
-    /// Clones discovered from `IssuerCreated` (in addition to the deployment seed in `Config`).
-    discovered: Arc<Mutex<HashSet<String>>>,
+    /// Clones discovered from `IssuerCreated`, mapped to the factory generation that vouched for
+    /// them (in addition to the per-generation deployment seeds in `Config`).
+    discovered: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Indexer {
     pub fn new(state: AppState) -> Self {
         Indexer {
             state,
-            discovered: Arc::new(Mutex::new(HashSet::new())),
+            discovered: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -48,13 +49,19 @@ impl Indexer {
         let (events, _) = self.state.store.query_events(&q, &Scope::Unscoped).await;
         let mut g = self.discovered.lock().unwrap();
         for e in events {
-            if let Some(c) = e.clone {
-                g.insert(c.to_ascii_lowercase());
+            let Some(c) = e.clone else {
+                continue;
+            };
+            // Removing a generation from config must remove its clones from the anti-spoof trust
+            // set after restart. Do not blindly trust a historical IssuerCreated row: require both
+            // its stamped generation and its emitting factory to agree with the current watch set.
+            if self.state.cfg.generation_for_factory(&e.contract) == Some(e.generation.as_str()) {
+                g.insert(c.to_ascii_lowercase(), e.generation);
             }
         }
     }
 
-    fn discovered_snapshot(&self) -> HashSet<String> {
+    fn discovered_snapshot(&self) -> HashMap<String, String> {
         self.discovered.lock().unwrap().clone()
     }
 
@@ -150,7 +157,7 @@ impl Indexer {
                     };
                     if e.event_type == EventType::IssuerCreated {
                         if let Some(c) = &e.clone {
-                            g.insert(c.to_ascii_lowercase());
+                            g.insert(c.to_ascii_lowercase(), e.generation.clone());
                         }
                     }
                 }

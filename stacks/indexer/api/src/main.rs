@@ -8,14 +8,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use indexer_api::app::{keccak_key, AppState, Config};
+use indexer_api::app::{
+    keccak_key, parse_watch_generations, validate_watch_generations, watch_generation, AppState,
+    Config,
+};
 use indexer_api::chain::{AlloyLogSource, LogSource, MemLogSource};
 use indexer_api::directory::Directory;
 use indexer_api::indexer::Indexer;
 use indexer_api::scope::{ScopeConfig, ScopeRegistry};
 use indexer_api::store::{MemStore, Store};
 
-// ROAX deployment (contracts/deployments/roax.json), lowercased. Overridable via env.
+// ROAX deployment defaults (contracts/deployments/roax.json), lowercased. The atomic
+// INDEXER_GENERATIONS setting supersedes these; they remain the deprecated one-generation fallback.
 const DEFAULT_FACTORY: &str = "0xed20269e3ebf0119739aab5258741f3aeb49f140";
 const DEFAULT_REGISTRY: &str = "0xaee540350292e49a9aedf19dd4c3bac6abee6c21";
 // Unified owner-hidden `VerificationRegistryConsent` (roax.json canonical pairing), lowercased.
@@ -32,6 +36,69 @@ const GOV_SIGNER: &str = "0x119f8c7f6d7ec10e7376983739c6f46cf9cc3e96";
 // A stand-in demo groomer signer that issues on the DOG_PROFILE clone (demo scoped-view data).
 const DEMO_GROOMER_SIGNER: &str = "0x00000000000000000000000000000000c710f000";
 
+/// Load the atomic generation-set configuration. The old four-variable shape remains a
+/// singleton-only compatibility fallback, but the two forms may never coexist: accepting both would
+/// recreate the split-brain where an operator edits one address source while the scanner reads the
+/// other.
+fn load_watch_generations() -> Result<Vec<indexer_api::chain::WatchGeneration>, String> {
+    const LEGACY_KEYS: [&str; 4] = [
+        "FACTORY_ADDR",
+        "ISSUER_REGISTRY_ADDR",
+        "VERIFICATION_REGISTRY_CONSENT_ADDR",
+        "SEED_CLONES",
+    ];
+
+    match std::env::var("INDEXER_GENERATIONS") {
+        Ok(raw) => {
+            let conflicts: Vec<&str> = LEGACY_KEYS
+                .into_iter()
+                .filter(|key| std::env::var_os(key).is_some())
+                .collect();
+            if !conflicts.is_empty() {
+                return Err(format!(
+                    "INDEXER_GENERATIONS cannot be combined with legacy {}",
+                    conflicts.join(", ")
+                ));
+            }
+            parse_watch_generations(&raw)
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("INDEXER_GENERATIONS is not valid UTF-8".into())
+        }
+        Err(std::env::VarError::NotPresent) => {
+            let legacy_configured =
+                LEGACY_KEYS.into_iter().any(|key| std::env::var_os(key).is_some());
+            if legacy_configured {
+                tracing::warn!(
+                    "legacy singleton indexer watch variables are deprecated; migrate the exact \
+                     triple + seed clones to INDEXER_GENERATIONS"
+                );
+            }
+            let factory =
+                std::env::var("FACTORY_ADDR").unwrap_or_else(|_| DEFAULT_FACTORY.to_string());
+            let issuer_registry = std::env::var("ISSUER_REGISTRY_ADDR")
+                .unwrap_or_else(|_| DEFAULT_REGISTRY.to_string());
+            let verification_registry = std::env::var("VERIFICATION_REGISTRY_CONSENT_ADDR")
+                .unwrap_or_else(|_| DEFAULT_VREG_CONSENT.to_string());
+            let seed_clones = std::env::var("SEED_CLONES")
+                .unwrap_or_else(|_| {
+                    [GOV_TRAVEL_CLONE, DEMO_DOGPROFILE_CLONE, DEMO_VACCINATION_CLONE].join(",")
+                })
+                .split(',')
+                .map(str::trim)
+                .filter(|clone| !clone.is_empty())
+                .map(str::to_string)
+                .collect();
+            validate_watch_generations(vec![watch_generation(
+                &factory,
+                &issuer_registry,
+                &verification_registry,
+                seed_clones,
+            )?])
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -40,31 +107,19 @@ async fn main() {
 
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
     let truthy = |k: &str| matches!(env(k, "").as_str(), "1" | "true" | "TRUE");
-    let lc = |s: String| s.trim().to_ascii_lowercase();
-
     let demo = truthy("INDEXER_DEMO_MODE") || truthy("DEMO_MODE") || truthy("VITE_DEMO_MODE");
     let port: u16 = env("PORT", "46001").parse().unwrap_or(46001);
     let rpc_url = env("ROAX_RPC", "https://devrpc.roax.net");
     let chain_id: u64 = env("CHAIN_ID", "135").parse().unwrap_or(135);
 
-    let seed_clones: Vec<String> = env(
-        "SEED_CLONES",
-        &[GOV_TRAVEL_CLONE, DEMO_DOGPROFILE_CLONE, DEMO_VACCINATION_CLONE].join(","),
-    )
-    .split(',')
-    .map(|s| lc(s.to_string()))
-    .filter(|s| !s.is_empty())
-    .collect();
+    let generations = load_watch_generations().unwrap_or_else(|error| {
+        tracing::error!("invalid indexer watch configuration: {error}; refusing to start");
+        std::process::exit(1);
+    });
 
     let cfg = Config {
         rpc_url: rpc_url.clone(),
-        factory_addr: lc(env("FACTORY_ADDR", DEFAULT_FACTORY)),
-        registry_addr: lc(env("ISSUER_REGISTRY_ADDR", DEFAULT_REGISTRY)),
-        verification_registry_consent_addr: lc(env(
-            "VERIFICATION_REGISTRY_CONSENT_ADDR",
-            DEFAULT_VREG_CONSENT,
-        )),
-        seed_clones,
+        generations,
         start_block: env("START_BLOCK", "0").parse().unwrap_or(0),
         // Demo has no reorgs and a scripted head — index everything immediately.
         confirmations: env("CONFIRMATIONS", if demo { "0" } else { "5" })
@@ -242,6 +297,10 @@ async fn build_store(demo: bool) -> Arc<dyn Store> {
 /// decoded, non-PII oversight data end-to-end (deploy → whitelist → issue×2 → verify → revoke).
 fn demo_seed(mem: &MemLogSource, cfg: &Config) {
     use indexer_api::chain::emit;
+    let generation = cfg
+        .generations
+        .first()
+        .expect("watch generation validation guarantees a non-empty set");
     let rt_travel = keccak_key("TRAVEL_CLEARANCE");
     let purpose = keccak_key("boarding_intake");
     let root1 = "0x1111111111111111111111111111111111111111111111111111111111111111";
@@ -254,7 +313,7 @@ fn demo_seed(mem: &MemLogSource, cfg: &Config) {
         "0x01",
         base_ts + 12,
         vec![emit::issuer_created(
-            &cfg.factory_addr,
+            &generation.factory,
             GOV_TRAVEL_CLONE,
             &rt_travel,
             "Government TRAVEL_CLEARANCE",
@@ -263,7 +322,11 @@ fn demo_seed(mem: &MemLogSource, cfg: &Config) {
     mem.push_events(
         "0x02",
         base_ts + 24,
-        vec![emit::whitelisted(&cfg.registry_addr, &rt_travel, GOV_SIGNER)],
+        vec![emit::whitelisted(
+            &generation.issuer_registry,
+            &rt_travel,
+            GOV_SIGNER,
+        )],
     );
     mem.push_events(
         "0x03",
@@ -279,7 +342,7 @@ fn demo_seed(mem: &MemLogSource, cfg: &Config) {
         "0x05",
         base_ts + 60,
         vec![emit::verified(
-            &cfg.verification_registry_consent_addr,
+            &generation.verification_registry,
             42,
             GOV_SIGNER,
             &purpose,
@@ -301,7 +364,7 @@ fn demo_seed(mem: &MemLogSource, cfg: &Config) {
         "0x07",
         base_ts + 84,
         vec![emit::issuer_created(
-            &cfg.factory_addr,
+            &generation.factory,
             DEMO_DOGPROFILE_CLONE,
             &rt_dogprofile,
             "Demo DOG_PROFILE",

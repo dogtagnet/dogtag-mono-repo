@@ -193,6 +193,10 @@ async fn health(State(st): State<AppState>) -> impl IntoResponse {
 /// chain head of ~282,800 must be readable as scripted rather than as a catastrophically lagging
 /// indexer. The progress numbers themselves are unchanged - this annotates them, it does not correct
 /// them, because they are a faithful report of the source actually in use.
+///
+/// `watchedGenerations` reports the exact anti-spoof allowlist (immutable generation id + factory /
+/// issuer-registry / verification-registry triple + seeded clones). A feed with no rows can therefore
+/// be distinguished from a scanner that simply omitted the generation an operator expected.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
     let backend = st.source.backend();
@@ -224,6 +228,7 @@ async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<V
         "lastFinalizedIndexed": cursor.last_finalized,
         "lag": lag,
         "confirmations": st.cfg.confirmations,
+        "watchedGenerations": &st.cfg.generations,
         "scope": {
             "label": principal.label,
             "unscoped": principal.scope.is_unscoped(),
