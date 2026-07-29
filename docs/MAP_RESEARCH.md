@@ -29,7 +29,7 @@ What it does not have is an embedded map and a hosted place-search field, both d
 |---|---|---|
 | Find a provider by name | On-device substring match over the already-fetched provider set (`apps/ios/DogTag/NearbyDecision.swift:344`, Kotlin mirror in `apps/android/.../nearby/NearbyDecision.kt`) | none |
 | Filter to the right kind of provider | `vet` or `groomer`, and `active != false`, applied before proximity or contact search (`NearbyDecision.swift:369-370`) | none |
-| Distance and ordering | `packages/ui/src/geo/` - haversine, bearing, display formatting, sorting, all pure arithmetic over a position the caller already holds | none |
+| Distance and ordering | The platform geodesic, on-device: `CLLocation.distance(from:)` on iOS (`NearbyScreen.swift:801`) and `Location.distanceBetween` on Android (`NearbyScreen.kt:901`), with the mirrored `NearbyDecision` rule ordering rows on that raw measurement and coarsening it for display | none |
 | The owner's position | Coarse device fix after an explicit tap, or decimal coordinates typed by hand and parsed on-device | none |
 | Getting there | The row hands the public destination to the platform's maps app after a deliberate tap; the origin is never included in the handoff | the OS's maps app, no key, no cost |
 
@@ -39,6 +39,8 @@ What was declined is an *embedded* map inside dogtag and a *hosted* autocomplete
 Three properties of the current shape are load-bearing and would be traded away by any hosted-autocomplete integration:
 
 - `packages/ui/src/geo/` performs no I/O, and its header forbids turning a position into a query parameter, a request path, a network cache key, or a log line.
+  It is the shared TypeScript geo core - haversine, bearing, display formatting, sorting, geohash - and Nearby is native-only, so the only symbol of it on the shipped path is `isValidLatLng`, reached through `directory/providers.ts` and `directory/sources.ts` to validate a provider's coordinates.
+  Its measuring helpers do not produce a mobile Nearby distance: editing `haversineKm` changes no shipped Nearby number, and the boundary it enforces is what a future TypeScript consumer inherits.
 - `ProviderDirectory.read()` deliberately takes no query, so a position has nowhere to go even by accident.
 - The manual-entry copy on both platforms promises exactly this, verbatim: *"They are parsed on this phone; DogTag does not geocode or send them anywhere."* (`apps/ios/DogTag/NearbyScreen.swift:361`, with the Kotlin equivalent at `apps/android/.../ui/screens/NearbyScreen.kt:460`.)
 
@@ -175,7 +177,7 @@ Google is the only provider where sensitivity to that assumption changes the ans
 | **Photon (self-host)** | no | no | our server | 1 server | 1 server | 1 server | yes | yes | yes |
 | **MapLibre + OpenFreeMap / Protomaps** | **no key** | no | free, tiles only, no geocoding | $0 | $0 | $0 | yes | yes | yes |
 
-Google Places figures are the **cheaper** of its two viable call patterns.
+Google Places figures are Pattern A, the **cheaper** of its two viable call patterns at the two larger scales.
 The alternative pattern costs $0 / $4,335 / $12,155 at the same three scales, cheaper at the smallest scale and dearer at the other two.
 Both are derived in §3.1; neither changes the conclusion.
 
@@ -233,7 +235,7 @@ Computed against the bands above at 4 autocomplete requests per search:
 
 **Break-even between the two patterns is at roughly 4.2 autocomplete requests per search**, which is uncomfortably close to the 4-request assumption.
 This is why Google's cost is stated as a range - "somewhere between $3.4k and $4.3k per month at 10,000 searches/day" - and not as a single figure.
-Either way it is three orders of magnitude above Stadia, so the imprecision does not touch the conclusion.
+Either way it is the roughly 100x to 165x multiple of Stadia recorded in §2.2(a), so the imprecision does not touch the conclusion.
 
 **The map is the one genuinely good piece of Google news.**
 SKU `Maps SDK` (6DE1-4D9C-5B67) covers *Maps SDK for Android* and *Maps SDK for iOS*, billable event "Map load", free cap **Unlimited**, no price in any band.
