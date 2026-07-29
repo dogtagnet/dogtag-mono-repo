@@ -13,7 +13,7 @@ use mongodb::{Client, Collection, Database, IndexModel};
 
 use crate::events::IndexedEvent;
 use crate::scope::Scope;
-use crate::store::{sort_newest_first, Cursor, EventQuery, Store};
+use crate::store::{sort_newest_first, Cursor, EventQuery, Store, StoreError};
 
 pub struct MongoStore {
     db: Database,
@@ -102,23 +102,32 @@ impl Store for MongoStore {
         }
     }
 
-    async fn query_events(&self, q: &EventQuery, scope: &Scope) -> (Vec<IndexedEvent>, usize) {
+    /// Both failure modes here - the `find` itself and any per-document decode while draining the
+    /// cursor - are reported as [`StoreError`]. Neither may degrade to an empty page: a driver fault
+    /// or a single undeserializable document would otherwise blank `/v1/events`, `/v1/stats` and
+    /// `/v1/issuers` for the whole index while `/v1/status` still read fully caught up.
+    async fn query_events(
+        &self,
+        q: &EventQuery,
+        scope: &Scope,
+    ) -> Result<(Vec<IndexedEvent>, usize), StoreError> {
         use futures::TryStreamExt;
         let filter = to_filter_doc(q);
-        let cur = match self
+        let mut cur = self
             .events()
             .find(filter)
             .sort(doc! { "blockNumber": -1i32, "logIndex": -1i32 })
             .await
-        {
-            Ok(c) => c,
-            Err(_) => return (Vec::new(), 0),
-        };
-        let collected: Vec<IndexedEvent> = cur.try_collect().await.unwrap_or_default();
+            .map_err(|e| StoreError(format!("event index query failed: {e}")))?;
         // Re-apply exact filter + scope, then paginate (mirrors MemStore). A plain loop keeps the
-        // `admit` HRTB predicate happy.
+        // `admit` HRTB predicate happy, and draining item-by-item surfaces a decode failure as an
+        // error rather than collapsing the whole cursor into an empty vec.
         let mut all: Vec<IndexedEvent> = Vec::new();
-        for e in collected {
+        while let Some(e) = cur
+            .try_next()
+            .await
+            .map_err(|e| StoreError(format!("event index row could not be read: {e}")))?
+        {
             if scope.admits(&e) && q.matches(&e) {
                 all.push(e);
             }
@@ -126,7 +135,7 @@ impl Store for MongoStore {
         sort_newest_first(&mut all);
         let total = all.len();
         let page = all.into_iter().skip(q.offset).take(q.limit).collect();
-        (page, total)
+        Ok((page, total))
     }
 
     async fn delete_from_block(&self, from_block: u64) -> usize {

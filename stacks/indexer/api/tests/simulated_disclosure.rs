@@ -26,7 +26,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt; // oneshot
 
-use indexer_api::app::{AppState, Config};
+use indexer_api::app::{watch_generation, AppState, Config};
 use indexer_api::chain::{ChainError, LogSource, SourceBackend, WatchContext, SIMULATED_CHAIN_ID};
 use indexer_api::directory::Directory;
 use indexer_api::events::IndexedEvent;
@@ -108,10 +108,13 @@ fn cfg() -> Config {
         // `Config` carries NO chain id at all any more. That was the trap: the old code read `chainId`
         // from here, so a simulated indexer inherited the configured `135` and looked live. The id now
         // has exactly one home - the source object - and a simulated source has none to give.
-        factory_addr: "0x00000000000000000000000000000000000fac70".into(),
-        registry_addr: "0x0000000000000000000000000000000000c0ce61".into(),
-        verification_registry_consent_addr: "0x0000000000000000000000000000000000c05e61".into(),
-        seed_clones: vec![],
+        generations: vec![watch_generation(
+            "0x00000000000000000000000000000000000fac70",
+            "0x0000000000000000000000000000000000c0ce61",
+            "0x0000000000000000000000000000000000c05e61",
+            vec![],
+        )
+        .expect("valid simulated generation fixture")],
         start_block: 0,
         confirmations: 0,
         chunk_size: 100,

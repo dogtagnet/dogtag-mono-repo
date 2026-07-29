@@ -23,12 +23,25 @@ use serde_json::{json, Value};
 use crate::app::{keccak_key, AppState};
 use crate::events::{EventType, Finality, IndexedEvent};
 use crate::scope::Principal;
-use crate::store::EventQuery;
+use crate::store::{EventQuery, StoreError};
 
 type ApiError = (StatusCode, Json<Value>);
 
 fn err(code: StatusCode, msg: &str) -> ApiError {
     (code, Json(json!({ "error": msg })))
+}
+
+/// An unreadable index answers 503 with no counters at all - never `200 {"total": 0}`.
+///
+/// "The store could not be read" and "no events matched" are different facts with different remedies,
+/// and only one of them is evidence about the chain. Emitting an empty feed for the former is the same
+/// could-not-check-rendered-as-a-neighbour defect the generation watch-set closes on the scan side.
+fn store_unreadable(e: StoreError) -> ApiError {
+    tracing::error!("event index read failed: {e}");
+    err(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "event index could not be read; refusing to answer with an empty feed",
+    )
 }
 
 /// Extract the `Authorization: Bearer <token>` value.
@@ -193,6 +206,10 @@ async fn health(State(st): State<AppState>) -> impl IntoResponse {
 /// chain head of ~282,800 must be readable as scripted rather than as a catastrophically lagging
 /// indexer. The progress numbers themselves are unchanged - this annotates them, it does not correct
 /// them, because they are a faithful report of the source actually in use.
+///
+/// `watchedGenerations` reports the exact anti-spoof allowlist (immutable generation id + factory /
+/// issuer-registry / verification-registry triple + seeded clones). A feed with no rows can therefore
+/// be distinguished from a scanner that simply omitted the generation an operator expected.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
     let backend = st.source.backend();
@@ -224,6 +241,7 @@ async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<V
         "lastFinalizedIndexed": cursor.last_finalized,
         "lag": lag,
         "confirmations": st.cfg.confirmations,
+        "watchedGenerations": &st.cfg.generations,
         "scope": {
             "label": principal.label,
             "unscoped": principal.scope.is_unscoped(),
@@ -239,7 +257,11 @@ async fn events(
 ) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
     let q = build_query(&st, &p)?;
-    let (page, total) = st.store.query_events(&q, &principal.scope).await;
+    let (page, total) = st
+        .store
+        .query_events(&q, &principal.scope)
+        .await
+        .map_err(store_unreadable)?;
     let items: Vec<Value> = page.iter().map(|e| render_event(&st, e)).collect();
     Ok(Json(json!({
         "events": items,
@@ -254,7 +276,11 @@ async fn events(
 async fn stats(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
     let q = EventQuery { limit: usize::MAX, ..Default::default() };
-    let (all, total) = st.store.query_events(&q, &principal.scope).await;
+    let (all, total) = st
+        .store
+        .query_events(&q, &principal.scope)
+        .await
+        .map_err(store_unreadable)?;
 
     let mut issued = 0u64;
     let mut revoked = 0u64;
@@ -311,7 +337,11 @@ async fn stats(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Va
 async fn issuers(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let principal = authenticate(&st, &headers)?;
     let q = EventQuery { limit: usize::MAX, ..Default::default() };
-    let (all, _) = st.store.query_events(&q, &principal.scope).await;
+    let (all, _) = st
+        .store
+        .query_events(&q, &principal.scope)
+        .await
+        .map_err(store_unreadable)?;
 
     use std::collections::BTreeMap;
     // clone addr -> (name, recordType, issued, revoked)

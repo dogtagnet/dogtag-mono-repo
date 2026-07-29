@@ -198,8 +198,14 @@ echo "Starting backends:"
 # Oversight pages (govarch PR-5) consume it. NOTE: the scoped demo token is bound to a FIXED stand-in
 # signer/clone, so a freshly-genesis'd vet/groomer sees "0 in scope" until its own signer is added to
 # INDEXER_SCOPES; the government (unscoped) view always shows the full scripted cross-issuer feed.
-INDEXER_DEMO_MODE=1 PORT=46001 VERIFICATION_REGISTRY_CONSENT_ADDR=$VR \
-  run indexer-api ":46001" "$ROOT/target/release/indexer-api"
+# The scanner takes one ATOMIC generation set rather than three parallel address variables. Remove the
+# legacy singleton variables inherited from contracts/.env for this child: startup deliberately rejects
+# both forms together so stale legacy values cannot silently disagree with INDEXER_GENERATIONS.
+INDEXER_GENERATIONS_JSON="[{\"factory\":\"$FACTORY\",\"issuerRegistry\":\"$IR\",\"verificationRegistry\":\"$VR\",\"seedClones\":[]}]"
+run indexer-api ":46001" env \
+  -u FACTORY_ADDR -u ISSUER_REGISTRY_ADDR -u VERIFICATION_REGISTRY_CONSENT_ADDR -u SEED_CLONES \
+  INDEXER_DEMO_MODE=1 PORT=46001 INDEXER_GENERATIONS="$INDEXER_GENERATIONS_JSON" \
+  "$ROOT/target/release/indexer-api"
 ADMIN_PASSWORD=admin OPERATOR_PASSWORD=operator CENTRAL_HMAC_SECRET=$HMAC \
   ROAX_RPC=$RPC ISSUER_REGISTRY_ADDR=$IR VERIFICATION_REGISTRY_ADDR=$VR \
   SBT_ADDR=$SBT FACTORY_ADDR=$FACTORY \

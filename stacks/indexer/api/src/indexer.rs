@@ -14,47 +14,64 @@
 //!     gate `RootIssued`/`RootRevoked` (anti-spoof), rebuilt from the store on startup so restarts
 //!     keep attributing pre-restart clones.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::app::AppState;
 use crate::chain::ChainError;
 use crate::events::{EventType, Finality, IndexedEvent};
 use crate::scope::Scope;
-use crate::store::{Cursor, EventQuery};
+use crate::store::{Cursor, EventQuery, StoreError};
 
 pub struct Indexer {
     state: AppState,
-    /// Clones discovered from `IssuerCreated` (in addition to the deployment seed in `Config`).
-    discovered: Arc<Mutex<HashSet<String>>>,
+    /// Clones discovered from `IssuerCreated`, mapped to the factory generation that vouched for
+    /// them (in addition to the per-generation deployment seeds in `Config`).
+    discovered: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Indexer {
     pub fn new(state: AppState) -> Self {
         Indexer {
             state,
-            discovered: Arc::new(Mutex::new(HashSet::new())),
+            discovered: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Rebuild the discovered-clone set from previously-indexed `IssuerCreated` events, so a restart
     /// re-attributes clones deployed before this process began.
-    pub async fn rebuild_known_clones(&self) {
+    ///
+    /// The new set is built in full and only then swapped in, so a failed read leaves the previous
+    /// trust set intact instead of an empty one. That matters because this is not always re-reachable:
+    /// the post-rewind caller has already cleared the watermark hash, so the divergence branch cannot
+    /// fire again, and a cleared-then-failed rebuild would silently drop every subsequent
+    /// `RootIssued`/`RootRevoked` from pre-restart clones for the life of the process.
+    pub async fn rebuild_known_clones(&self) -> Result<(), StoreError> {
         let q = EventQuery {
             event_type: Some(EventType::IssuerCreated),
             limit: usize::MAX,
             ..Default::default()
         };
-        let (events, _) = self.state.store.query_events(&q, &Scope::Unscoped).await;
-        let mut g = self.discovered.lock().unwrap();
+        let (events, _) = self.state.store.query_events(&q, &Scope::Unscoped).await?;
+        let mut rebuilt: HashMap<String, String> = HashMap::new();
         for e in events {
-            if let Some(c) = e.clone {
-                g.insert(c.to_ascii_lowercase());
+            let Some(c) = e.clone else {
+                continue;
+            };
+            // Removing a generation from config must remove its clones from the anti-spoof trust
+            // set after restart. Do not blindly trust a historical IssuerCreated row: require both
+            // its stamped generation and its emitting factory to agree with the current watch set.
+            // An unstamped legacy row carries an empty generation, which matches no configured
+            // `0x…` id, so it is inadmissible here rather than trusted on its contract alone.
+            if self.state.cfg.generation_for_factory(&e.contract) == Some(e.generation.as_str()) {
+                rebuilt.insert(c.to_ascii_lowercase(), e.generation);
             }
         }
+        *self.discovered.lock().unwrap() = rebuilt;
+        Ok(())
     }
 
-    fn discovered_snapshot(&self) -> HashSet<String> {
+    fn discovered_snapshot(&self) -> HashMap<String, String> {
         self.discovered.lock().unwrap().clone()
     }
 
@@ -113,8 +130,11 @@ impl Indexer {
                     last_finalized_hash: None,
                 };
                 store.set_cursor(cursor.clone()).await;
-                self.discovered.lock().unwrap().clear();
-                self.rebuild_known_clones().await;
+                self.rebuild_known_clones().await.map_err(|e| {
+                    ChainError::Other(format!(
+                        "clone-trust rebuild after a watermark rewind failed: {e}"
+                    ))
+                })?;
             }
         }
 
@@ -150,7 +170,7 @@ impl Indexer {
                     };
                     if e.event_type == EventType::IssuerCreated {
                         if let Some(c) = &e.clone {
-                            g.insert(c.to_ascii_lowercase());
+                            g.insert(c.to_ascii_lowercase(), e.generation.clone());
                         }
                     }
                 }

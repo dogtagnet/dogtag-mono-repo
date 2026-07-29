@@ -225,6 +225,8 @@ export interface OversightLocalJoin {
 export interface OversightEvent {
   id: string;
   type: string;
+  /** Immutable generation id (the lowercase factory address). */
+  generation: string;
   /**
    * The address that EMITTED the log. NOT always the issuer clone: `issuerCreated` comes from the
    * factory, `whitelisted`/`delisted` from the IssuerRegistry, `verified` from the verification

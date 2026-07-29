@@ -12,13 +12,14 @@
 //! clone event must come from a *known* clone (seeded from deployment config + `IssuerCreated`
 //! discovery) — so a random contract re-emitting the same signature is dropped, not indexed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, B256};
 use alloy::sol;
 use alloy::sol_types::SolEvent;
 use async_trait::async_trait;
+use serde::Serialize;
 
 use crate::events::{EventType, Finality, IndexedEvent};
 
@@ -99,18 +100,41 @@ pub enum ChainError {
     Other(String),
 }
 
-/// The fixed contract addresses + the current known-clone set a scan needs to gate events. Passed by
-/// the ingest loop into each `fetch_events` call. Addresses are lowercase `0x…`.
+/// One anti-spoof watch generation. `generation` is always the lowercase factory address: it is an
+/// immutable identifier a consumer can join from an event to `/v1/status.watchedGenerations`.
+///
+/// `seed_clones` belongs to the generation rather than to the scanner globally. Without that
+/// ownership, a pre-existing clone's `RootIssued`/`RootRevoked` log could be admitted but could not be
+/// stamped with the generation that vouched for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchGeneration {
+    pub generation: String,
+    pub factory: String,
+    pub issuer_registry: String,
+    pub verification_registry: String,
+    pub seed_clones: Vec<String>,
+}
+
+/// The role-specific address maps + current known-clone provenance a scan needs to gate events.
+/// Passed by the ingest loop into each `fetch_events` call. Addresses and generation ids are
+/// lowercase `0x…`.
+///
+/// These maps deliberately stay separate. A `Verified` emitted by a known factory is still a spoof:
+/// knowing an address in *some* role must never admit it for every event signature.
 #[derive(Clone, Debug)]
 pub struct WatchContext {
-    pub factory: String,
-    pub registry: String,
-    /// The owner-hidden `VerificationRegistryConsent` — anti-spoof gate for `Verified`.
-    pub verification_registry: String,
+    /// factory address -> immutable generation id.
+    pub factories: HashMap<String, String>,
+    /// issuer-registry address -> immutable generation id.
+    pub issuer_registries: HashMap<String, String>,
+    /// owner-hidden `VerificationRegistryConsent` address -> immutable generation id.
+    pub verification_registries: HashMap<String, String>,
     /// The clones known *before* this range (deployment seed + earlier `IssuerCreated`). Clones
     /// discovered *within* the range are folded in during decode (an `IssuerCreated` always precedes
     /// that clone's first `RootIssued` in `(block, logIndex)` order), so same-range issuance is caught.
-    pub known_clones: HashSet<String>,
+    /// clone address -> immutable generation id.
+    pub known_clones: HashMap<String, String>,
 }
 
 /// The set of topic0 signature hashes the scanner filters on.
@@ -189,14 +213,20 @@ fn hexa(a: &Address) -> String {
 
 /// Decode one raw log into an `IndexedEvent`, gating by emitting address. Returns `None` for a log
 /// that does not match a watched signature or that fails the anti-spoof address gate. `known` is the
-/// mutable known-clone set (an `IssuerCreated` inserts into it so a same-range `RootIssued` passes).
-pub fn decode_log(log: &RawLog, ctx: &WatchContext, known: &mut HashSet<String>) -> Option<IndexedEvent> {
+/// mutable clone→generation map (an `IssuerCreated` inserts into it so a same-range `RootIssued`
+/// passes and inherits the factory generation).
+pub fn decode_log(
+    log: &RawLog,
+    ctx: &WatchContext,
+    known: &mut HashMap<String, String>,
+) -> Option<IndexedEvent> {
     let topic0 = *log.topics.first()?;
     let addr = log.address.to_ascii_lowercase();
-    let base = |event_type: EventType| IndexedEvent {
+    let base = |event_type: EventType, generation: String| IndexedEvent {
         id: IndexedEvent::make_id(&log.tx_hash, log.log_index),
         event_type,
         contract: addr.clone(),
+        generation,
         block_number: log.block_number,
         block_hash: log.block_hash.clone(),
         tx_hash: log.tx_hash.to_ascii_lowercase(),
@@ -217,72 +247,77 @@ pub fn decode_log(log: &RawLog, ctx: &WatchContext, known: &mut HashSet<String>)
     };
     // alloy's SolEvent::decode_raw_log validates topic0 + arity for us.
     if topic0 == IDogTagIssuerFactory::IssuerCreated::SIGNATURE_HASH {
-        if addr != ctx.factory {
-            return None; // spoof: only the real factory emits IssuerCreated
-        }
+        let generation = ctx.factories.get(&addr)?.clone();
         let d = IDogTagIssuerFactory::IssuerCreated::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
         let clone = hexa(&d.clone).to_ascii_lowercase();
-        known.insert(clone.clone());
-        let mut e = base(EventType::IssuerCreated);
+        // A clone address can belong to exactly one configured generation. Treat a contradictory
+        // discovery as inadmissible instead of letting scan order silently change its provenance.
+        //
+        // Startup rejects a seed clone reused across generations, but it cannot detect a seed that
+        // disagrees with the CHAIN - an operator listing a clone under generation A's `seedClones`
+        // when factory B actually created it. Fail-closed is right, and silence is not: the only
+        // other symptom is a missing `IssuerCreated` row plus that clone's root events stamped with
+        // the seed's wrong generation, neither of which names the misconfiguration.
+        if let Some(known_generation) = known.get(&clone) {
+            if known_generation != &generation {
+                tracing::warn!(
+                    "dropping IssuerCreated for clone {clone}: emitted by factory {addr} \
+                     (generation {generation}) but the clone is already owned by generation \
+                     {known_generation}. Check that clone's seedClones placement in \
+                     INDEXER_GENERATIONS - its root events are being stamped {known_generation}."
+                );
+                return None;
+            }
+        }
+        known.insert(clone.clone(), generation.clone());
+        let mut e = base(EventType::IssuerCreated, generation);
         e.clone = Some(clone);
         e.record_type = Some(hexb(&d.recordType));
         e.name = Some(d.name);
         Some(e)
     } else if topic0 == IDogTagIssuerFactory::RootRegistered::SIGNATURE_HASH {
-        if addr != ctx.factory {
-            return None;
-        }
+        let generation = ctx.factories.get(&addr)?.clone();
         let d = IDogTagIssuerFactory::RootRegistered::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
-        let mut e = base(EventType::RootRegistered);
+        let mut e = base(EventType::RootRegistered, generation);
         e.root = Some(hexb(&d.root));
         e.clone = Some(hexa(&d.clone).to_ascii_lowercase());
         Some(e)
     } else if topic0 == IIssuerRegistry::Whitelisted::SIGNATURE_HASH {
-        if addr != ctx.registry {
-            return None;
-        }
+        let generation = ctx.issuer_registries.get(&addr)?.clone();
         let d = IIssuerRegistry::Whitelisted::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
-        let mut e = base(EventType::Whitelisted);
+        let mut e = base(EventType::Whitelisted, generation);
         e.record_type = Some(hexb(&d.recordType));
         e.actor = Some(hexa(&d.signer).to_ascii_lowercase());
         Some(e)
     } else if topic0 == IIssuerRegistry::Delisted::SIGNATURE_HASH {
-        if addr != ctx.registry {
-            return None;
-        }
+        let generation = ctx.issuer_registries.get(&addr)?.clone();
         let d = IIssuerRegistry::Delisted::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
-        let mut e = base(EventType::Delisted);
+        let mut e = base(EventType::Delisted, generation);
         e.record_type = Some(hexb(&d.recordType));
         e.actor = Some(hexa(&d.signer).to_ascii_lowercase());
         Some(e)
     } else if topic0 == IDogTagIssuer::RootIssued::SIGNATURE_HASH {
-        if !known.contains(&addr) {
-            return None; // spoof: RootIssued must come from a known DogTagIssuer clone
-        }
+        let generation = known.get(&addr)?.clone();
         let d = IDogTagIssuer::RootIssued::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
-        let mut e = base(EventType::RootIssued);
+        let mut e = base(EventType::RootIssued, generation);
         e.root = Some(hexb(&d.root));
         e.actor = Some(hexa(&d.by).to_ascii_lowercase());
         e.clone = Some(addr);
         e.onchain_ts = Some(d.ts.to::<u64>());
         Some(e)
     } else if topic0 == IDogTagIssuer::RootRevoked::SIGNATURE_HASH {
-        if !known.contains(&addr) {
-            return None;
-        }
+        let generation = known.get(&addr)?.clone();
         let d = IDogTagIssuer::RootRevoked::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
-        let mut e = base(EventType::RootRevoked);
+        let mut e = base(EventType::RootRevoked, generation);
         e.root = Some(hexb(&d.root));
         e.actor = Some(hexa(&d.by).to_ascii_lowercase());
         e.clone = Some(addr);
         e.onchain_ts = Some(d.ts.to::<u64>());
         Some(e)
     } else if topic0 == IVerificationRegistryConsent::Verified::SIGNATURE_HASH {
-        if addr != ctx.verification_registry {
-            return None;
-        }
+        let generation = ctx.verification_registries.get(&addr)?.clone();
         let d = IVerificationRegistryConsent::Verified::decode_raw_log(log.topics.iter().copied(), &log.data, true).ok()?;
-        let mut e = base(EventType::Verified);
+        let mut e = base(EventType::Verified, generation);
         e.dog_tag_id = Some(d.dogTagId.to_string());
         e.actor = Some(hexa(&d.relayer).to_ascii_lowercase());
         e.purpose = Some(hexb(&d.purpose));
@@ -722,10 +757,16 @@ mod tests {
 
     fn watch_ctx(consent_registry: &str) -> WatchContext {
         WatchContext {
-            factory: "0xfactory".to_string(),
-            registry: "0xregistry".to_string(),
-            verification_registry: consent_registry.to_ascii_lowercase(),
-            known_clones: HashSet::new(),
+            factories: HashMap::from([("0xfactory".to_string(), "0xfactory".to_string())]),
+            issuer_registries: HashMap::from([(
+                "0xregistry".to_string(),
+                "0xfactory".to_string(),
+            )]),
+            verification_registries: HashMap::from([(
+                consent_registry.to_ascii_lowercase(),
+                "0xfactory".to_string(),
+            )]),
+            known_clones: HashMap::new(),
         }
     }
 
@@ -760,7 +801,7 @@ mod tests {
             block_timestamp: 1_900_000_000,
         };
         let ctx = watch_ctx(consent_registry);
-        let mut known = HashSet::new();
+        let mut known = HashMap::new();
         let e = decode_log(&raw, &ctx, &mut known).expect("Verified should decode");
         assert_eq!(e.event_type, EventType::Verified);
         assert_eq!(e.deadline, Some(u64::MAX));
