@@ -89,14 +89,16 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 116 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+- `cd contracts && forge test` - 139 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
   protocol version (an internal version key, not a product label) on both registry axes;
   `PinConsentWitnessGraph.t.sol` pins every revert arm of the artifact-axis pin script's guard - the
   only thing keeping that script incapable of a rotation or of rewriting a pin it was not asked to
   move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
-  subject-bearing `Verified` ABI. Use `forge test`, **not** bare `forge build`: a bare full build tries
+  subject-bearing `Verified` ABI; `CloneProvenanceRouter.t.sol` performs the real cross-generation
+  resurrection attack against the router's oldest-first resolution and pins the mirror direction it
+  deliberately does not close. Use `forge test`, **not** bare `forge build`: a bare full build tries
   to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
   aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project
   error. `forge test` only compiles the real dependency closure and is green.
@@ -152,6 +154,8 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   and deploy scripts are gone; their already-deployed addresses remain solely in the deployment ledger
   for historical reads. Protocol publication keeps the exact compatibility key `dogtag-levelb/1` and
   publishes one contract set plus one independently rotatable artifact set and their binding.
+  `CloneProvenanceRouter` is also in that live source but is **built and tested only, NOT deployed** -
+  no address, no `.env.example` entry, no consumer points at it. See "CloneProvenanceRouter" below.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. **CHAIN and STORE are separate axes, deliberately:** `GOV_CHAIN_BACKEND` picks the chain - `live` (DEFAULT, `AlloyChain` on ROAX; `GOV_SIGNER_KEY` to anchor) or `mem` (explicit opt-in `MemChain`, used by `tests/flow_memchain.rs` and `e2e-roles.sh`) - while `GOV_DEMO_MODE=1` only picks the ephemeral `MemStore` + demo API token. They used to be one flag, which silently ran demo stacks' verify/records on a simulated chain while `/health` still echoed `CHAIN_ID` as `chainId:135, canSign:true`. `/health` now reports `backend`/`simulated`, `chainId:null` when simulated, `canSign` only for real broadcast, and `simulatedSigner` for a stand-in; the portal badge shows LIVE vs SIMULATED CHAIN. Provision real on-chain issuance with `scripts/demo-provision-government.sh` (funded signer + `TRAVEL_CLEARANCE` whitelist + `DogTagIssuer` clone; idempotent, never prints the key). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY on `GOV_CHAIN_BACKEND=mem`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
@@ -967,6 +971,85 @@ An already-installed app keeps proving against its **baked** key until you do, s
   equal the tag's write-once `profileRoot`, and `ownerOf` is called only as a token-existence gate—its
   neutral-custodian return value must never be compared as owner identity. Every relay ABI must stay in
   sync with this four-argument signature.
+
+## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
+
+`contracts/src/CloneProvenanceRouter.sol`. Full rationale: `docs/CLONE_PROVENANCE_ROUTER.md`.
+**BUILT AND TESTED ONLY - NOT DEPLOYED.** No address in `contracts/deployments/roax.json`, no
+`.env.example` entry, no consumer points at it. Deploying it is a separate captain-authorized step
+(registry plan `dogtag-regplan-p3` slice S-8, cutover step C-4).
+
+It occupies `VerificationRegistryConsent`'s **immutable** `rootIndex` slot in place of one factory and
+answers `rootIssuer(bytes32)` + `isClone(address)` over an ordered list of factory generations. That
+slot exists because `rootIndex` is `immutable` and a root can only ever be written into a factory's
+index by a clone of that same factory (`registerRoot` requires `isClone[msg.sender]`), so a new
+registry pointed straight at a new factory sees NO root any old clone anchored - every existing
+credential answers `unknown root`, permanently, unrepairably.
+
+**The one thing not to get wrong.** The write-once guards are per-CONTRACT: `DogTagIssuer.issue`
+reads its own `issuedAt[r]` (`DogTagIssuer.sol:53`), `registerRoot` reads its own `rootIssuer[root]`
+(`DogTagIssuerFactory.sol:52`). So a root anchored and then REVOKED on a generation-1 clone can be
+re-anchored on a generation-2 clone by any signer whitelisted for that clone's record type, and the
+shared SBT means `R == profileRoot(dogTagId)` still holds. Newest-first resolution - the natural way
+to write the loop - would then return the fresh clone, `isValid` reads true, and **a revoked
+credential verifies again**. Oldest-first binds a root to the clone in the EARLIEST GENERATION that
+holds it; a later-generation-only root is absent from every earlier mapping and falls through.
+
+**Read that as earliest-GENERATION-wins, never as first-anchor-wins, because the MIRROR DIRECTION is
+open and no version of the contract can close it.** A root first anchored on a LATER generation can be
+anchored afterwards on an EARLIER generation's clone by any signer still whitelisted for that clone's
+record type on the earlier registry - `issue` gates only on that registry's `isWhitelistedFor` plus
+its own `issuedAt[r]`, and `registerRoot` only on its own `rootIssuer[root]`, and neither earlier
+contract has ever seen that root. Oldest-first then resolves the earlier clone and the LATER
+generation's revocation stops being consulted. `isRootAnchored` cannot help: it is wireable only into
+a NEW generation's `registerRoot` and an already-deployed earlier factory is immutable, so the one
+open direction is exactly the one defence in depth cannot reach. It is closed OPERATIONALLY, and that
+is a PRECONDITION of deploying the router: delist every signer in the earlier `IssuerRegistry` at
+cutover (registry-plan step C-12), after which `onlyWhitelisted` refuses the mirror anchor at source.
+That remedy is available because `adminRevoke` is gated on the registry DEFAULT_ADMIN rather than the
+whitelist (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive the freeze. Pinned as
+a deliberate limitation - never as a passing property - by
+`test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation`.
+
+**That C-12 freeze has a precondition of its own: the later generation must be bound to a DIFFERENT
+`IssuerRegistry`.** `onlyWhitelisted` asks only `registry.isWhitelistedFor(recordType, msg.sender)`
+and never whether the caller owns or spawned the clone (`DogTagIssuer.sol:39-42`), and a clone pins
+its `registry` at `initialize` with no setter (`:44-50`, from the factory's immutable at
+`DogTagIssuerFactory.sol:41`). So under ONE shared registry a single whitelist entry authorizes
+`issue` on every clone of that record type in BOTH generations, and no delisting freezes the earlier
+generation without also stopping the later one. The registry plan already satisfies this (cutover C-5
+binds the generation-2 registry/factory to the new provider core while generation-1 clones keep
+reading the generation-1 registry, per plan C-2), but an operator who reaches C-12 with both
+generations on one registry must otherwise choose between breaking new issuance and skipping the
+freeze - and skipping it leaves the residual above open in production. Note the router's own test
+`setUp` deliberately shares one registry across both factories: that is a TEST topology chosen to make
+these cases reachable with a single whitelist, not a deployment shape to copy.
+
+Three things that look like improvements and are not:
+- **Do NOT revert when two generations answer.** That is a denial of service - anyone could kill an
+  honest credential by re-anchoring its root in a clone they control, with no remedy since the router
+  cannot be repointed. Oldest-first is deterministic and unperturbable by an attacker, which is the
+  property that matters.
+- **Do NOT add remove/insert/replace/reorder.** Append-at-tail is MONOTONE (a new last generation is
+  reached only after every existing one answered zero, so it can never move an existing answer) and
+  that monotonicity is the entire safety argument for allowing the list to change at all. Removal is
+  the same DoS aimed at a whole generation. `test_no_mutation_other_than_append_exists` scans the
+  bytecode for those selectors.
+- **Do NOT treat the write-side guard as the protection.** `isRootAnchored` is the hook a later
+  factory's `registerRoot` should call so the duplicate never exists, but it is DEFENCE IN DEPTH.
+  Oldest-first is what holds against an unguarded, buggy or hostile later generation - which is why
+  the revocation-bypass tests use a second REAL `DogTagIssuerFactory` as generation 2 rather than the
+  guarded double. A guarded factory there would make the attack setup revert and the test would pass
+  while proving nothing.
+
+The ordering claim is pinned by mutation, not by assertion: reverse the loop to
+`for (uint256 i = n; i > 0; i--)` over `_generations[i - 1]` and four tests go red, including
+`test_resurrection_attempt_is_refused_by_the_real_registry`, which fails with `next call did not
+revert as expected` - the real registry emitting `Verified` for a revoked credential.
+
+`renounceOwnership` is overridden to revert. `Ownable2Step` (chosen to match `DogTagIssuerFactory`)
+makes the HANDOVER two-step, but the inherited renounce is a one-transaction drop to `address(0)` with
+no acceptance and no way back - exactly the permanent stranding two-step exists to prevent.
 
 ## Governance authority (Phase-2 executed) - tooling signer
 
