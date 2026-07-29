@@ -2,68 +2,87 @@
 pragma solidity 0.8.28;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
-import {DogTagIssuerV2} from "./DogTagIssuerV2.sol";
+import {DogTagIssuerV2, IProviderAuthority} from "./DogTagIssuerV2.sol";
 
-/// @dev The approval oracle. `isWhitelistedFor(bytes32,address)` is deliberately the ONLY function this
-/// factory asks of it, because that signature exists today on the deployed `IssuerRegistry` AND is a
-/// load-bearing interface requirement on the generation-2 authority core (`ProviderRegistry`, slice S-6,
-/// plan §1): the core must expose it with exactly this shape so it can drop into the immutable slots
-/// existing consumers hold. Binding to that one function is what lets this factory be deployed against
-/// today's registry and later against the core with **no code change and no adapter**.
-interface IProviderApproval {
-    function isWhitelistedFor(bytes32 recordType, address signer) external view returns (bool);
-}
-
-/// @dev A prior generation's write-once root index — either the generation-1 `DogTagIssuerFactory`
-/// itself, or (for a third generation) a `CloneProvenanceRouter` spanning every earlier generation.
-/// This is the exact and only shape `VerificationRegistryConsent` consumes (`:34-36`), so the same
-/// address serves both roles.
+/// @dev A prior generation's cross-generation root query. The intended occupant is the S-8
+/// `CloneProvenanceRouter`, which publishes `isRootAnchored` for exactly this purpose: it answers "does
+/// ANY earlier generation already hold this root", spanning every generation the router carries rather
+/// than one factory's own mapping.
 ///
-/// **Two requirements on whatever occupies this slot, and both are permanent because the reference is
-/// immutable.** It MUST return `address(0)` for a root it has never seen, and it MUST NOT revert. This
-/// factory treats the call as a gate on every `registerRoot`, so a reverting occupant would brick
-/// issuance for the whole generation with no way to repoint. Stated here for slice S-8.
-interface IRootIssuerIndex {
-    function rootIssuer(bytes32 root) external view returns (address);
+/// **Three requirements on whatever occupies this slot, and all three are permanent because the
+/// reference is immutable.** It MUST answer this selector, it MUST NOT revert, and it MUST answer
+/// `false` for a root nothing has anchored. The factory gates every `registerRoot` on it, so an occupant
+/// that reverts — or one that answers `true` indiscriminately — bricks issuance for the whole generation
+/// with no way to repoint. The constructor probes all three before storing the reference; see
+/// {DogTagIssuerFactoryV2-constructor}.
+///
+/// This is deliberately NOT `rootIssuer(bytes32)`. That selector is the generation-LOCAL index — a
+/// generation-1 factory answers only for roots its own clones anchored — so wiring it here would leave
+/// every generation before the immediately preceding one unguarded the moment a third generation exists.
+/// `isRootAnchored` is the query that spans them, which is why S-8 published it.
+interface IPriorRootAnchors {
+    function isRootAnchored(bytes32 root) external view returns (bool);
 }
 
-/// @dev The two getters this factory reads back off a clone it deployed. Never called on an address
-/// that failed `isClone` — see `cloneAuthorization`.
+/// @dev The owner-bearing getter surface every clone of this generation answers. Authorization reads
+/// `owner()` and `recordType()` only, and never on an address that failed `isClone` — see
+/// {DogTagIssuerFactoryV2-_authorization}. `pendingOwner()` is not part of authorization; it is probed
+/// once, against the implementation, as a conformance signal at construction.
 interface IOwnedIssuer {
     function owner() external view returns (address);
+    function pendingOwner() external view returns (address);
     function recordType() external view returns (bytes32);
 }
 
 /// @title DogTagIssuerFactoryV2 — self-service clone deployment, plus the clone-authorization predicate.
 ///
-/// @notice Generation-2 successor to `DogTagIssuerFactory`. Three changes, each answering a specific
-/// requirement, and nothing else moves — `isClone`, `rootIssuer` and `registerRoot` keep generation 1's
-/// semantics exactly.
+/// @notice Generation-2 successor to `DogTagIssuerFactory`. `isClone`, `rootIssuer` and `registerRoot`
+/// keep generation 1's semantics; what moves is who may create, what a clone's owner is, and which
+/// oracle is asked.
 ///
 /// # 1. Creation is self-service, and the clone's owner is its creator
 ///
 /// `DogTagIssuerFactory.createIssuer` is `onlyOwner` (`:36`), so no provider can deploy anything: every
-/// clone in existence was minted by the protocol multisig. Here creation is gated instead on the caller
-/// being an approved provider **for the record type being created** — the captain's *"they can deploy
-/// their own clone contracts from the factory after being approved"*.
+/// clone in existence was minted by the protocol multisig. Here creation is gated instead on the
+/// authority core's `canCreateService(providerId, recordType, msg.sender)` — the captain's *"they can
+/// deploy their own clone contracts from the factory after being approved"*.
+///
+/// The `providerId` is the core's opaque registrar-assigned identity. It is an **argument to a write,
+/// checked against the factory's own immutable core reference** — never a read that decides trust — and
+/// the core resolves this factory from `msg.sender`, so a caller cannot name a generation either. That
+/// gate folds four registrar facts the factory could not check itself: this factory is a pinned, active
+/// generation on the core; the provider is cleared; the provider is approved for this record type; and
+/// the caller may act for the provider (its controller, or a delegate holding the create permission).
+///
+/// **Creation is not issuance, and the gate is deliberately not the issuance capability.** A freshly
+/// created clone can anchor nothing: `canIssue` additionally requires a registrar attachment, an
+/// issuance grant for the signer, a confirmed owner and the provider's current pointer. Generation 1
+/// conflated the two by gating creation on `isWhitelistedFor`, which on the core is not a creation
+/// question at all — for a caller that is not itself an attached service it answers the orthogonal
+/// VERIFY-key capability.
 ///
 /// There is exactly ONE creation path and it takes no `owner` argument: the owner is always
 /// `msg.sender`. An "operator creates on behalf of a provider" variant was considered and rejected,
 /// because it is the shape that produced the generation-1 weakness — `business` defaulting to the
 /// operator's own signer (`stacks/admin/api/src/routes.rs::resolve_business`), so every deployed clone's
 /// "spawning business" is the operator rather than the organisation. With a single path, **`owner()` and
-/// the salt binding can never disagree**, and an operator wanting a protocol-owned clone simply creates
-/// one itself. Migration is unaffected: the governance signer is already whitelisted for the live record
-/// types.
+/// the salt binding agree at creation** — they can diverge later, and only through the two-step
+/// handover, which is the one act that is supposed to move control.
 ///
 /// **This widens the `isClone` set**: under generation 1 only the protocol owner could add to it, and now
-/// any whitelisted signer can. The mandatory issuer-whitelist pillar is unaffected, because it keys the
-/// whitelist question on `clone.recordType()` rather than on any claim — a provider cleared only for
+/// any approved provider can. The mandatory issuer-whitelist pillar is unaffected, because it keys the
+/// whitelist question on `clone.recordType()` rather than on any claim — a provider approved only for
 /// VACCINATION can create only a VACCINATION clone, whose `recordType()` is VACCINATION, so nothing it
 /// produces can read as a TRAVEL credential. Pinned by
-/// `test_a_widened_clone_set_cannot_forge_a_record_type`. Root squatting is unchanged in kind: any
-/// whitelisted signer could already burn a root through `"root taken"` in generation 1, and it stays
-/// infeasible against salted Poseidon roots because the attacker must first know one.
+/// `test_a_widened_clone_set_cannot_forge_a_record_type`. The other thing the widened set could have
+/// carried is a provider-chosen `name()`, and that is closed at the source: this generation's clones have
+/// no settable name — see `DogTagIssuerV2`.
+///
+/// Root squatting is unchanged in kind: any approved signer could already burn a root through
+/// `"root taken"` in generation 1. Salted Poseidon roots make it infeasible to GUESS a root, which is a
+/// narrower claim than it looks — a root becomes public the moment an `issue` transaction is observable,
+/// so an attacker watching the mempool can still front-run a specific pending anchor. What salting rules
+/// out is blind, untargeted squatting.
 ///
 /// # 2. The salt carries a nonce, so a provider has somewhere to move to
 ///
@@ -75,12 +94,21 @@ interface IOwnedIssuer {
 /// rotation or after a compromise, while keeping everything the old salt bought: the address is still
 /// deterministic and still exactly predictable before deployment (`predictIssuer`).
 ///
+/// `providerId` is deliberately NOT in the salt. The factory stores no provider binding and the core
+/// resolves a service's provider from its own registrar attachment, so a salted `providerId` would be
+/// unresolvable by any consumer — an appearance of binding with nothing behind it. The only thing it
+/// would buy is address separation for two providers sharing one caller address, which bumping the nonce
+/// already buys. The intended provider is recorded in {IssuerOwnerRegistered} instead, where it is
+/// legible as the creation's stated intent and not mistakable for a resolvable fact.
+///
 /// # 3. `authorizeClone` — the resolving predicate, published once
 ///
 /// The forgery-proof repoint predicate is defined HERE and nowhere else, so consumers call it rather
 /// than re-deriving it. Two contracts need it (`ProviderRegistry`'s service attachment, S-6; and
 /// `ServiceDomainResolver`'s domain write, S-9), and two parallel implementations of one authorization
-/// rule is how the vet and mobile verdict paths came to disagree in this codebase already.
+/// rule is how the vet and mobile verdict paths came to disagree in this codebase already. Both public
+/// shapes below are thin wrappers over one internal `_authorization`, so the rule cannot be half-changed
+/// and a candidate that failed provenance cannot be reached by either.
 ///
 /// The rule, and why each half is load-bearing (plan §3.1):
 ///
@@ -105,12 +133,15 @@ interface IOwnedIssuer {
 /// value — the target address — and both the authorization and the storage key are resolved from chain
 /// state. There is no argument by which a caller could name a slot it did not earn.
 ///
-/// # The active-issuer pointer, and how it relates to S-6
+/// # The active-issuer pointer is ADVISORY
 ///
-/// `activeIssuer` is the **owner-keyed, self-service** pointer: which of a provider's own clones is
-/// currently its live one for a record type. `ProviderRegistry`'s providerId-keyed, registrar-confirmed
-/// service attachment (S-6) is the **authoritative** record of which contracts belong to which
-/// organisation; these are complementary, not competing, and they are keyed differently on purpose (an
+/// `activeIssuer` is the **owner-keyed, self-service** record of which of a provider's own clones its
+/// controlling key currently designates as live. It is advisory and nothing routes through it: an `issue`
+/// call reaches whichever clone the caller called, and whether it succeeds is decided entirely by the
+/// core's `canIssue` — which folds the core's OWN providerId-keyed pointer, not this one. So this pointer
+/// cannot authorize anything, cannot redirect anything, and a stale one cannot cause a wrong anchor.
+/// `ProviderRegistry`'s registrar-confirmed service attachment (S-6) is the authoritative record of which
+/// contracts belong to which organisation; the two are complementary and keyed differently on purpose (an
 /// owner address is a key, an organisation is not).
 ///
 /// The pointer is re-validated on READ. `resolveActiveIssuer` returns the stored address only if it still
@@ -130,49 +161,140 @@ interface IOwnedIssuer {
 /// This factory has no owner and no privileged function. Nothing about it can be repointed or captured,
 /// which is the property `IssuerDomainRegistry`'s doc asks of a factory reference: *"a repointable
 /// factory reference would let one transaction redefine what counts as a genuine clone."* Here there is
-/// nothing to repoint, in either direction.
+/// nothing to repoint, in either direction — which is also why all three dependencies are checked at
+/// construction: a wrong one is remedied only by deploying a new factory.
 contract DogTagIssuerFactoryV2 {
     address public immutable implementation;
-    /// @notice The approval oracle: today's `IssuerRegistry`, tomorrow's `ProviderRegistry`.
+    /// @notice The authority core — the S-6 `ProviderRegistry`. See [`IProviderAuthority`] for the four
+    /// functions this generation requires of it, all four permanent.
     address public immutable registry;
-    /// @notice A prior generation's root index, or `address(0)` for the first generation. See
-    /// [`IRootIssuerIndex`] for the two permanent requirements on whatever sits here.
-    IRootIssuerIndex public immutable priorIndex;
+    /// @notice The cross-generation root guard. Mandatory and non-zero; see [`IPriorRootAnchors`].
+    IPriorRootAnchors public immutable priorIndex;
 
     mapping(address => bool) public isClone; // deployed by this factory
-    mapping(bytes32 => address) public rootIssuer; // R -> issuing clone (write-once)
+    /// @notice R -> issuing clone, write-once, and **generation-local**: this mapping answers only for
+    /// roots anchored by THIS factory's clones. Resolution across generations is the S-8 router's job.
+    mapping(bytes32 => address) public rootIssuer;
 
-    /// @notice owner => recordType => the clone that owner most recently designated as live. RAW: it is
-    /// not re-validated on this read. Use [`resolveActiveIssuer`] unless you are auditing history.
+    /// @notice owner => recordType => the clone that owner most recently designated as live. RAW: this
+    /// is the CURRENT stored value, not a history — the mapping holds one address per slot and a repoint
+    /// overwrites it, so the audit trail is {ActiveIssuerSet}/{ActiveIssuerCleared}, never this read. It
+    /// is also not re-validated here; use [`resolveActiveIssuer`] unless you specifically want the raw
+    /// designation.
     mapping(address => mapping(bytes32 => address)) public activeIssuer;
 
     /// @dev Byte-identical to generation 1's, so the oversight indexer's existing decoder reads a
-    /// generation-2 creation with no change. The owner is carried in the additive event below rather
-    /// than by widening this one.
+    /// generation-2 creation with no change. `name` is always the empty string — this generation's clones
+    /// have no settable name (see `DogTagIssuerV2`) — so the field is carried to preserve the signature
+    /// and topic0, not to convey a value.
     event IssuerCreated(address indexed clone, bytes32 indexed recordType, string name);
     /// @dev The generation-2 addition. Emitted from the factory (not only as the clone's own
     /// `OwnershipTransferred`) so one log filter on the factory address captures the whole creation.
-    event IssuerOwnerRegistered(address indexed clone, address indexed owner, uint96 cloneNonce);
+    /// `providerId` is the creation's stated intent, checked against the core at the time of the call; the
+    /// authoritative provider binding is the core's own attachment, which this factory does not hold.
+    event IssuerOwnerRegistered(
+        address indexed clone, address indexed owner, bytes20 indexed providerId, uint96 cloneNonce
+    );
     event RootRegistered(bytes32 indexed root, address indexed clone);
     event ActiveIssuerSet(address indexed owner, bytes32 indexed recordType, address indexed clone);
     event ActiveIssuerCleared(address indexed owner, bytes32 indexed recordType, address previousClone);
 
-    /// @dev The caller is not an approved provider for the record type it tried to create.
+    /// @dev The core refused the creation for this provider, record type and caller.
     error NotApproved();
     /// @dev The named address was not deployed by this factory.
     error NotAClone();
     /// @dev The named address is a genuine clone, but the claimant does not own it.
     error NotCloneOwner();
     error ZeroAddress();
+    /// @dev A constructor dependency has no code at all.
+    error NotAContract(address dependency);
+    error ImplementationDoesNotAnswer(address impl);
+    error AuthorityDoesNotAnswer(address authority);
+    error PriorIndexDoesNotAnswer(address priorIndex);
 
     /// @param impl the `DogTagIssuerV2` implementation clones delegate to.
-    /// @param registry_ the approval oracle — see [`IProviderApproval`].
-    /// @param priorIndex_ a prior generation's root index, or `address(0)` for the first generation.
+    /// @param registry_ the authority core — see [`IProviderAuthority`].
+    /// @param priorIndex_ the cross-generation root guard — see [`IPriorRootAnchors`]. Mandatory.
+    ///
+    /// @dev Every dependency is `immutable` and this contract has no admin, so a wrong one is remedied
+    /// only by deploying a new factory — and for `priorIndex` that means a new verification registry too,
+    /// since its `rootIndex` is immutable as well. Each is therefore checked for code AND for ABI
+    /// behaviour before it is stored, so the three ways a wrong address stays silent are closed here
+    /// rather than discovered in production: an EOA (a staticcall to one SUCCEEDS, with empty
+    /// returndata), a contract that does not answer the selector, and one that answers the wrong width.
+    ///
+    /// **Read the implementation check for exactly what it establishes.** It proves the three getters are
+    /// present and non-reverting in the code every clone delegates to. It does NOT prove `impl` is
+    /// `DogTagIssuerV2` — nothing on chain can — and it cannot rule out a getter that reverts on some
+    /// later storage state. What it does rule out is the two shapes that would otherwise let
+    /// `createIssuer` report success while producing an unusable clone: an EOA implementation, and code
+    /// whose `owner()` or `recordType()` does not answer. That is also the exact extent of the no-revert
+    /// guarantee [`resolveActiveIssuer`] rests on.
+    ///
+    /// The core and the prior index are each additionally required to answer `false` to a
+    /// zero-everything query. For the core that refuses one which authorizes indiscriminately; for the
+    /// prior index it refuses one which claims every root, and an occupant claiming every root would make
+    /// every `registerRoot` revert — bricking issuance for the whole generation, permanently.
     constructor(address impl, address registry_, address priorIndex_) {
-        if (impl == address(0) || registry_ == address(0)) revert ZeroAddress();
+        if (impl == address(0) || registry_ == address(0) || priorIndex_ == address(0)) {
+            revert ZeroAddress();
+        }
+
+        _requireCode(impl);
+        if (
+            !_answersWord(impl, abi.encodeCall(IOwnedIssuer.owner, ()))
+                || !_answersWord(impl, abi.encodeCall(IOwnedIssuer.pendingOwner, ()))
+                || !_answersWord(impl, abi.encodeCall(IOwnedIssuer.recordType, ()))
+        ) {
+            revert ImplementationDoesNotAnswer(impl);
+        }
+
+        _requireAuthorityAnswers(registry_);
+
+        _requireCode(priorIndex_);
+        if (!_answersFalse(priorIndex_, abi.encodeCall(IPriorRootAnchors.isRootAnchored, (bytes32(0))))) {
+            revert PriorIndexDoesNotAnswer(priorIndex_);
+        }
+
         implementation = impl;
         registry = registry_;
-        priorIndex = IRootIssuerIndex(priorIndex_);
+        priorIndex = IPriorRootAnchors(priorIndex_);
+    }
+
+    function _requireCode(address dependency) private view {
+        if (dependency.code.length == 0) revert NotAContract(dependency);
+    }
+
+    /// @dev All four functions of [`IProviderAuthority`], each required to answer `false` to a
+    /// zero-everything query. A core missing any one of them cannot be repointed away from later.
+    function _requireAuthorityAnswers(address authority_) private view {
+        _requireCode(authority_);
+        bytes memory create =
+            abi.encodeCall(IProviderAuthority.canCreateService, (bytes20(0), bytes32(0), address(0)));
+        bytes memory issue_ = abi.encodeCall(IProviderAuthority.canIssue, (address(0), address(0)));
+        bytes memory revoke_ = abi.encodeCall(IProviderAuthority.canRevoke, (address(0), address(0)));
+        bytes memory role = abi.encodeCall(IProviderAuthority.hasRole, (bytes32(0), address(0)));
+        if (
+            !_answersFalse(authority_, create) || !_answersFalse(authority_, issue_)
+                || !_answersFalse(authority_, revoke_) || !_answersFalse(authority_, role)
+        ) {
+            revert AuthorityDoesNotAnswer(authority_);
+        }
+    }
+
+    /// @dev True when the target answers with exactly one ABI word and does not revert.
+    function _answersWord(address target, bytes memory call_) private view returns (bool) {
+        (bool ok, bytes memory ret) = target.staticcall(call_);
+        return ok && ret.length == 32;
+    }
+
+    /// @dev True when the target answers one word and that word is zero. Decoded as `uint256` rather
+    /// than `bool` on purpose: a non-conforming word above 1 makes `bool` decoding panic, which would
+    /// replace the named revert with an opaque one.
+    function _answersFalse(address target, bytes memory call_) private view returns (bool) {
+        (bool ok, bytes memory ret) = target.staticcall(call_);
+        if (!ok || ret.length != 32) return false;
+        return abi.decode(ret, (uint256)) == 0;
     }
 
     function _salt(bytes32 recordType, address business, uint96 cloneNonce) internal pure returns (bytes32) {
@@ -183,20 +305,21 @@ contract DogTagIssuerFactoryV2 {
     // Creation
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Deploy a clone owned by the caller. Requires the caller to be approved for `recordType`.
+    /// @notice Deploy a clone owned by the caller. The core must clear the caller to create a service of
+    /// `recordType` for `providerId`, which includes having pinned THIS factory as an active generation.
     /// @param cloneNonce lets one provider hold several clones for a record type; see the contract doc.
-    function createIssuer(string calldata name, bytes32 recordType, uint96 cloneNonce)
+    function createIssuer(bytes20 providerId, bytes32 recordType, uint96 cloneNonce)
         external
         returns (address clone)
     {
-        if (!IProviderApproval(registry).isWhitelistedFor(recordType, msg.sender)) {
+        if (!IProviderAuthority(registry).canCreateService(providerId, recordType, msg.sender)) {
             revert NotApproved();
         }
         clone = Clones.cloneDeterministic(implementation, _salt(recordType, msg.sender, cloneNonce));
         isClone[clone] = true;
-        DogTagIssuerV2(clone).initialize(name, recordType, registry, address(this), msg.sender);
-        emit IssuerCreated(clone, recordType, name);
-        emit IssuerOwnerRegistered(clone, msg.sender, cloneNonce);
+        DogTagIssuerV2(clone).initialize(recordType, registry, address(this), msg.sender);
+        emit IssuerCreated(clone, recordType, "");
+        emit IssuerOwnerRegistered(clone, msg.sender, providerId, cloneNonce);
     }
 
     /// @notice The exact address `createIssuer(_, recordType, cloneNonce)` would produce for `business`.
@@ -214,6 +337,27 @@ contract DogTagIssuerFactoryV2 {
     // The authorization predicate — one implementation, two shapes
     // ---------------------------------------------------------------------------------------------
 
+    /// @dev THE rule. Both public shapes below delegate here, so provenance, control and the resolved
+    /// key can never be applied in one order by a read and another by a write.
+    ///
+    /// `known` is reported separately from `ok` only so `authorizeClone` can name the two failures
+    /// apart — they have different remedies, and collapsing them would tell a provider whose clone is
+    /// genuine that its address is a forgery.
+    ///
+    /// **Ordering is load-bearing.** `isClone` is own-storage and short-circuits, so nothing below
+    /// executes against an address this factory did not deploy: an unrecognised candidate is never
+    /// called, not even to revert.
+    function _authorization(address candidate, address claimant)
+        private
+        view
+        returns (bool known, bool ok, bytes32 recordType)
+    {
+        if (!isClone[candidate]) return (false, false, bytes32(0));
+        if (claimant == address(0)) return (true, false, bytes32(0));
+        if (IOwnedIssuer(candidate).owner() != claimant) return (true, false, bytes32(0));
+        return (true, true, IOwnedIssuer(candidate).recordType());
+    }
+
     /// @notice Non-reverting form, for consoles rendering "can this key act on this contract?".
     /// @return ok whether `claimant` may act for `candidate`.
     /// @return recordType the clone's own record type, resolved from chain state; zero when `!ok`.
@@ -222,19 +366,16 @@ contract DogTagIssuerFactoryV2 {
         view
         returns (bool ok, bytes32 recordType)
     {
-        // Own storage first. Everything below only ever executes against code this factory deployed.
-        if (!isClone[candidate]) return (false, bytes32(0));
-        if (claimant == address(0)) return (false, bytes32(0));
-        if (IOwnedIssuer(candidate).owner() != claimant) return (false, bytes32(0));
-        return (true, IOwnedIssuer(candidate).recordType());
+        (, ok, recordType) = _authorization(candidate, claimant);
     }
 
     /// @notice Fail-closed form — the one a write path calls. Reverts unless `claimant` may act for
     /// `candidate`, and returns the clone's chain-resolved record type so the caller never supplies it.
     function authorizeClone(address candidate, address claimant) public view returns (bytes32 recordType) {
-        if (!isClone[candidate]) revert NotAClone();
-        if (claimant == address(0) || IOwnedIssuer(candidate).owner() != claimant) revert NotCloneOwner();
-        return IOwnedIssuer(candidate).recordType();
+        (bool known, bool ok, bytes32 rt) = _authorization(candidate, claimant);
+        if (!known) revert NotAClone();
+        if (!ok) revert NotCloneOwner();
+        return rt;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -242,7 +383,8 @@ contract DogTagIssuerFactoryV2 {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Designate `clone` as the caller's live issuer for that clone's record type. The caller
-    /// supplies ONLY the address: provenance, control and the storage key are all resolved.
+    /// supplies ONLY the address: provenance, control and the storage key are all resolved. Advisory —
+    /// see the contract doc; it grants no capability and redirects no call.
     function setActiveIssuer(address clone) external {
         bytes32 recordType = authorizeClone(clone, msg.sender);
         activeIssuer[msg.sender][recordType] = clone;
@@ -260,21 +402,21 @@ contract DogTagIssuerFactoryV2 {
     /// @notice `provider`'s live clone for `recordType`, or `address(0)` if none is recorded **or the
     /// recorded one no longer passes the predicate** (see the contract doc on stale pointers).
     ///
-    /// @dev **This function cannot revert, and that is structural rather than incidental** — worth
-    /// stating because unlike `authorizeClone` the caller does not choose the address this dispatches
-    /// to, so a consumer (S-6's attachment, S-9's domain read) treats it as a cheap resolve and would be
-    /// surprised by a revert where it expected an address.
+    /// @dev **This function does not revert**, which is worth stating because unlike `authorizeClone` the
+    /// caller does not choose the address this dispatches to, so a consumer (S-6's attachment, S-9's
+    /// domain read) treats it as a cheap resolve and would be surprised by a revert where it expected an
+    /// address.
     ///
     /// The only address reachable here is one already in `isClone`, which `createIssuer` only ever fills
-    /// with `Clones.cloneDeterministic(implementation, ...)` — and `implementation` is `immutable`. So
-    /// every callee is a `DogTagIssuerV2`, and `owner()`/`recordType()` there are plain public getters
-    /// over storage: no external call, no loop, no revert path. A hostile or absent callee is
-    /// unreachable, not merely unlikely.
+    /// with `Clones.cloneDeterministic(implementation, ...)` — and `implementation` is `immutable` AND
+    /// was probed at construction for a non-reverting `owner()`/`recordType()`. So every callee runs code
+    /// already shown to answer both getters. That is the exact extent of the guarantee: it rests on the
+    /// construction probe, not on an assumption about who deployed the implementation.
     ///
-    /// Deliberately NOT wrapped in `try/catch`. A catch arm here could never execute, so it would be an
-    /// untestable branch standing in for a case that cannot arise — and this codebase treats an
-    /// unexercised guard as worse than none. If a future implementation ever gives those getters a
-    /// revert path, this guarantee moves with it and the choice has to be made again on the evidence.
+    /// Deliberately NOT wrapped in `try/catch`. Given the above a catch arm would stand in for a case the
+    /// construction check already refuses, and this codebase treats an unexercised guard as worse than
+    /// none. A future implementation that gives those getters a state-dependent revert path moves this
+    /// guarantee with it, and the choice has to be made again on the evidence.
     function resolveActiveIssuer(address provider, bytes32 recordType) external view returns (address) {
         address clone = activeIssuer[provider][recordType];
         if (clone == address(0)) return address(0);
@@ -290,24 +432,22 @@ contract DogTagIssuerFactoryV2 {
     /// @notice Write-once registration of `root -> issuing clone` (§11.10(a), audit-11 V4-C1/M1).
     ///
     /// @dev The `priorIndex` check is the write-side half of the provenance router's resolution order
-    /// (slice S-8, plan §1). The write-once guards are **per contract**: `DogTagIssuer.issue` checks
+    /// (slice S-8, plan §1). The write-once guards are **per contract**: `DogTagIssuerV2.issue` checks
     /// `issuedAt[r]` in its own storage and `registerRoot` checks `rootIssuer[root]` in its own factory's
     /// storage. So a root anchored and then REVOKED on a generation-1 clone could be re-anchored on a
-    /// generation-2 clone by any signer whitelisted for that clone's record type — both guards pass,
-    /// because neither contract has ever seen it — and the tag binding does not stop it either, since the
-    /// SBT is shared and `R == profileRoot(dogTagId)` still holds. Under newest-first resolution the
-    /// revoked credential would then verify again.
+    /// generation-2 clone by any signer able to issue there — both guards pass, because neither contract
+    /// has ever seen it — and the tag binding does not stop it either, since the SBT is shared and
+    /// `R == profileRoot(dogTagId)` still holds. Under newest-first resolution the revoked credential
+    /// would then verify again.
     ///
     /// The router closes that on the read side by resolving oldest-first. This closes it on the write
-    /// side, so the duplicate never comes into existence at all. Both, deliberately: this guard is only
-    /// as good as the deployed `priorIndex`, and the router's ordering must remain correct on its own.
-    /// This does NOT loosen either write-once guard — it only ever refuses more.
+    /// side, so the duplicate never comes into existence at all. Both, deliberately: the router's
+    /// ordering must remain correct on its own, because it is what holds against a LATER generation that
+    /// does not call this. This does NOT loosen either write-once guard — it only ever refuses more.
     function registerRoot(bytes32 root) external {
         require(isClone[msg.sender], "!clone");
         require(rootIssuer[root] == address(0), "root taken"); // strictly write-once
-        if (address(priorIndex) != address(0)) {
-            require(priorIndex.rootIssuer(root) == address(0), "root taken upstream");
-        }
+        require(!priorIndex.isRootAnchored(root), "root taken upstream");
         rootIssuer[root] = msg.sender;
         emit RootRegistered(root, msg.sender);
     }

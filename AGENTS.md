@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 167 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 198 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -981,36 +981,70 @@ An already-installed app keeps proving against its **baked** key until you do, s
 ### The generation-2 issuer pair is BUILT, NOT DEPLOYED (registry-plan S-7)
 
 `DogTagIssuerV2` + `DogTagIssuerFactoryV2` exist in `contracts/src/` and are covered by
-`test/IssuerV2.t.sol` (28 tests). **They are deployed nowhere** - no ROAX address, no ledger entry, no
-`.env.example` key, no client config. Deploying them is part of the cutover (S-13/S-14) and is a
-separately captain-authorized step. The generation-1 `DogTagIssuer.sol` / `DogTagIssuerFactory.sol` are
-UNMODIFIED; the pair is purely additive, like `ProtocolRegistry` and `IssuerDomainRegistry` were.
+`test/IssuerV2.t.sol` (59 tests). **This repo records no deployment of either** - no address in
+`deployments/roax.json`, no `.env.example` key, no client config, and nothing in the tree points at one.
+Say it that way rather than "deployed nowhere": the ledger is what this repo can speak for. Deploying is
+part of the cutover (S-13/S-14) and separately captain-authorized. The generation-1 `DogTagIssuer.sol` /
+`DogTagIssuerFactory.sol` are UNMODIFIED; the pair is purely additive, like `ProtocolRegistry` and
+`IssuerDomainRegistry` were.
 
 Full semantics live in **`docs/ISSUER_V2_OWNERSHIP.md`** - do not restate them here, or the copy rots.
-The four things worth knowing before touching either file:
+The six things worth knowing before touching either file:
 
 - **Generation-1 clones have NO owner at all.** Not "an owner that is hard to check" - `DogTagIssuer` is
   `Initializable` only, so the captain's "whitelisted people AND owner of contracts" is *unimplementable*
   against the deployed set, and `IssuerDomainRegistry._isSpawningBusiness` is a salt-recomputation stand-in
   that authorizes whoever was passed as `business` (which `resolve_business` defaults to the operator's own
   signer). V2 replaces that stand-in with a real `owner()`.
-- **Ownership is CONTROL, never an issuance capability.** `issue`/`revoke` stay gated solely on the registry
-  whitelist, because delisting must keep stopping the next `issue` (plan §3.3). Merging the two silently
-  disarms the delist lever. Transfer is two-step and `owner()` can never become zero: `renounceOwnership` is
-  disabled and `acceptOwnership` refuses `msg.sender == address(0)` (OZ's `pendingOwner() != msg.sender`
-  compares `0 == 0` with nothing pending and would hand ownership to the zero address).
-- **`authorizeClone(candidate, claimant) -> recordType` is the ONE repoint predicate**, published on the
-  factory so S-6's attachment and S-9's domain write call it rather than re-deriving it. `isClone` is read
-  from the factory's OWN storage and checked FIRST, so a non-clone never executes; the record type is
-  RETURNED, so a caller supplies only the target address and never names its own slot.
-- **`priorIndex` is immutable and its occupant must return `address(0)` for an unknown root and MUST NOT
-  REVERT.** It gates every `registerRoot`, so a reverting occupant bricks issuance for the whole generation
-  with no way to repoint. Generation 2 points it at the generation-1 *factory* (pointing it at the S-8
-  router would be circular - the router needs the factory's address); generation 3+ points it at a router
-  over all earlier generations.
+- **The oracle is the S-6 `ProviderRegistry`, and generation 2 needs its OWN, separate from generation 1's
+  `IssuerRegistry`.** The pair asks it for FOUR functions, all four permanent and all four load-bearing:
+  `canCreateService` (the factory, per creation), `canIssue` and `canRevoke` (a clone, per write), and
+  `hasRole` (a clone, for `adminRevoke` - without it that mass-revoke lever reverts forever, unrepointably).
+  The legacy `isWhitelistedFor` cannot serve any of them: it cannot tell an issue call from a revoke call,
+  and on the core it branches on `msg.sender`, answering the orthogonal VERIFY-key capability for a caller
+  that is not itself an attached service. Sharing one core across generations also breaks the router's
+  C-12 freeze - see the `CloneProvenanceRouter` section below.
+- **`canIssue` and `canRevoke` are a nested ladder and must NOT be substituted for each other.** `issue`
+  asks the narrow rung, the ordinary `revoke` arm the wide one. They differ only for a superseded clone,
+  and both swaps are real defects there: one reopens a retired clone for new issuance, the other strands
+  its roots as unrevocable. `test_a_superseded_clone_refuses_new_issuance_but_still_revokes` is the only
+  test that distinguishes them.
+- **Ownership is CONTROL and confers no capability - but MOVING it suspends everything.** Merging control
+  into issuance would silently disarm the grant-withdrawal lever (plan §3.3). The converse surprises
+  people: the core folds the CONFIRMED owner into both rungs, so a completed two-step handover pauses
+  issuance AND revocation until the registrar calls `confirmServiceOwner`. Transfer is two-step and
+  `owner()` can never become zero: `renounceOwnership` is disabled and `acceptOwnership` refuses
+  `msg.sender == address(0)` (OZ's `pendingOwner() != msg.sender` compares `0 == 0` with nothing pending
+  and would hand ownership to the zero address).
+- **A generation-2 clone's `name()` is permanently EMPTY, deliberately.** Generation 1's name was
+  authoritative ONLY because `onlyOwner` `createIssuer` wrote it at KYC time; self-service would make it a
+  provider-chosen string with genuine factory provenance, i.e. a fabricated authority beside a green check.
+  So `createIssuer` and `initialize` take no name and nothing writes the slot. A consumer must read it as
+  identity UNAVAILABLE and must not fall back to the document's claim; registrar-controlled identity comes
+  from the core's publication-safe identity anchor via its directory resolver. The existing readers that
+  still label the on-chain name authoritative (`stacks/government/api/src/routes.rs`,
+  `packages/ui/src/domain/issuerDomainBinding.ts`) are a LATER slice and are untouched.
+- **`priorIndex` is immutable, MANDATORY non-zero, and queried via the router's `isRootAnchored`** - not
+  via `rootIssuer`, which is generation-LOCAL and would leave every generation before the immediately
+  preceding one unguarded. Its occupant must answer the selector, must not revert, and must answer `false`
+  for an unanchored root; all three are probed at construction, because a reverting or always-true occupant
+  bricks issuance for the whole generation with no way to repoint. **The topology is router FIRST, then the
+  factory, then `appendGeneration` - it is NOT circular**, and the append-only design exists precisely to
+  permit that ordering. A generation-1 factory is now refused in the slot outright. Residual the code cannot
+  close: a conforming always-`false` stub is indistinguishable at construction, so wiring a router over
+  every earlier generation is a cutover precondition.
 
-Verify any change here by mutation, not by reading: the doc's §8 table lists eleven source mutations and
-the named test that catches each. A guard added without one is a guard nothing holds.
+Two more constructor facts, since the factory has no admin and every dependency is permanent: all three
+are checked for code AND ABI behaviour before being stored (an EOA staticcall SUCCEEDS with empty
+returndata - that is the shape that stays silent), and the implementation probe proves only that
+`owner()`/`pendingOwner()`/`recordType()` answer, never that `impl` is `DogTagIssuerV2`.
+
+Verify any change here by mutation, not by reading: the doc's §9 table lists thirty-three source mutations, each
+actually applied/run/reverted, and the named test that catches each - plus two that change no behaviour
+and are deliberately excluded rather than given vacuous rows. A guard added without one is a guard nothing
+holds. The suite's authority is a stand-in (`MockProviderAuthority`), so its three rungs are DERIVED from
+one set of registrar facts and never independently settable; keep it that way or the coverage becomes
+self-agreement.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
