@@ -3239,8 +3239,8 @@ as the source they mirror, and both must move in the same change as the data cla
 false claim - worse, not better. Do NOT close a future gap by making either parser strict about
 unknown keys.
 
-**The stored-copy codec added two more hand-mirrored enumeration sites per platform, and its version of
-this failure only shows up OFFLINE.**
+**The stored-copy codec added two more hand-mirrored enumeration sites on Android and three on iOS,
+and its version of this failure only shows up OFFLINE.**
 The sites are Kotlin `ProviderDirectoryCacheCodec.encodeProvider` and `decodeProvider`
 (`apps/android/.../nearby/DirectoryCache.kt`), and Swift `ProviderDirectoryCacheCodec.StoredContact`
 plus BOTH of its mapping blocks - the `StoredContact(...)` construction in `encode` and the
