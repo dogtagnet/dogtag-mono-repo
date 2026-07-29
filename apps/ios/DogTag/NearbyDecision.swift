@@ -336,10 +336,11 @@ enum NearbyDecision {
                 .filter(isEligibleProvider)
                 .filter { term.isEmpty || normalized($0.name).contains(term) }
                 .sorted {
-                    let comparison = $0.name.localizedCaseInsensitiveCompare($1.name)
-                    return comparison == .orderedSame
+                    let first = sortKey($0.name)
+                    let second = sortKey($1.name)
+                    return first == second
                         ? $0.providerId < $1.providerId
-                        : comparison == .orderedAscending
+                        : first < second
                 }
             if !providers.isEmpty {
                 return .providersFound(
@@ -368,6 +369,13 @@ enum NearbyDecision {
             .lowercased()
     }
 
+    /// The contact list's ordering key, mirrored by Android.
+    ///
+    /// It is the SAME locale-independent fold the on-device name search uses. A collating comparator
+    /// would order the two apps differently for the same directory, because each platform's collation
+    /// is its own; folding first leaves one order that both can reproduce.
+    private static func sortKey(_ value: String) -> String { normalized(value) }
+
     private static func initialBearing(_ origin: NearbyPoint, _ destination: NearbyPoint) -> Double? {
         guard origin.isValid, destination.isValid else { return nil }
         if origin == destination || abs(origin.lat) == 90 { return nil }
@@ -392,13 +400,29 @@ enum NearbyDecision {
 
     private static let kmPerMile = 1.609344
     private static let feetPerKm = 1000 / 0.3048
-    private static let footStepMetres = 25 * 0.3048
-    private static let tenthMileMetres = 1.609344 * 100
-    /// The coarsest fix that can still place a provider at all. Beyond it, no number is claimed.
-    private static let coarsestFixMetres = 10_000.0
     private static let distanceUnavailable = "This provider's distance could not be measured."
+
+    // Each rung below is the metre width of one display band, derived from the same constant that
+    // band's own formatting divides by. A value rounded to a rung therefore always lands on a
+    // numeral its band can express, which is what keeps a positive distance from printing as zero.
+    private static let footStepMetres = 25_000.0 / feetPerKm
+    private static let tenthMileMetres = kmPerMile * 100
+    private static let mileMetres = kmPerMile * 1_000
+    private static let tenMetreStepMetres = 10.0
+    private static let tenthKilometreMetres = 100.0
+    private static let kilometreStepMetres = 1_000.0
+
+    /// The coarsest fix that can still place a provider at all. Beyond it, no number is claimed.
+    private static let coarsestMetricMetres = 10 * kilometreStepMetres
+    private static let coarsestImperialMetres = 10 * mileMetres
+
     /// Rounding steps a device fix may be shown at. The chosen step is never finer than the fix.
-    private static let precisionLadderMetres = [10.0, 100.0, 1_000.0, coarsestFixMetres]
+    private static let metricLadderMetres = [
+        tenMetreStepMetres, tenthKilometreMetres, kilometreStepMetres, coarsestMetricMetres,
+    ]
+    private static let imperialLadderMetres = [
+        footStepMetres, tenthMileMetres, mileMetres, coarsestImperialMetres,
+    ]
 
     /// [minGranularityMetres] raises the display floor so a band finer than the origin's own
     /// uncertainty is never reached. It can only make a label COARSER; coarser is always honest,
@@ -420,21 +444,23 @@ enum NearbyDecision {
             if minGranularityMetres <= tenthMileMetres, oneDecimal < 10 {
                 return String(format: "%.1f mi", oneDecimal)
             }
-            if minGranularityMetres <= coarsestFixMetres { return "\(Int(miles.rounded())) mi" }
+            if minGranularityMetres <= coarsestImperialMetres {
+                return "\(Int(miles.rounded())) mi"
+            }
             return nil
         }
 
-        if minGranularityMetres <= 10, km < 1 {
+        if minGranularityMetres <= tenMetreStepMetres, km < 1 {
             let metres = km * 1000
             if metres < 10 { return "< 10 m" }
             let rounded = (metres / 10).rounded() * 10
             if rounded < 1000 { return "\(Int(rounded)) m" }
         }
         let oneDecimal = (km * 10).rounded() / 10
-        if minGranularityMetres <= 100, oneDecimal < 10 {
+        if minGranularityMetres <= tenthKilometreMetres, oneDecimal < 10 {
             return String(format: "%.1f km", oneDecimal)
         }
-        if minGranularityMetres <= coarsestFixMetres { return "\(Int(km.rounded())) km" }
+        if minGranularityMetres <= coarsestMetricMetres { return "\(Int(km.rounded())) km" }
         return nil
     }
 
@@ -442,9 +468,13 @@ enum NearbyDecision {
     ///
     /// Chosen coordinates are exact arithmetic on numbers the owner typed, so they keep the ordinary
     /// bands. A device fix does not: its label is rounded to a step no finer than the reported
-    /// horizontal accuracy, a provider closer than that accuracy is stated as a BOUND rather than a
-    /// point value the fix cannot support, and a fix whose accuracy is missing, nonsensical, or
-    /// coarser than any usable step yields no number at all.
+    /// horizontal accuracy, and a fix whose accuracy is missing, nonsensical, or coarser than any
+    /// usable step yields no number at all.
+    ///
+    /// Anything nearer than the coarser of the accuracy and half that rounding step is stated as a
+    /// BOUND. Half the step is the load-bearing half of that pair: below it the rounding collapses to
+    /// zero, which the bands would then print as a confident `0 km`. The gate and the bound label are
+    /// computed from the same value so they can never describe different distances.
     static func distanceClaim(
         _ km: Double?,
         accuracyMetres: Double?,
@@ -465,7 +495,8 @@ enum NearbyDecision {
                 reason: "This location fix reported no usable accuracy, so no distance is claimed."
             )
         }
-        guard let step = precisionLadderMetres.first(where: { $0 >= accuracyMetres }) else {
+        let ladder = unitSystem == .imperial ? imperialLadderMetres : metricLadderMetres
+        guard let step = ladder.first(where: { $0 >= accuracyMetres }) else {
             return .uncertain(
                 reason: "This location fix is accurate only to "
                     + "\(uncertaintyLabel(accuracyMetres, unitSystem: unitSystem)), "
@@ -473,11 +504,12 @@ enum NearbyDecision {
             )
         }
         let metres = km * 1000
-        if metres <= accuracyMetres {
-            // Closer than the fix's own error is something the fix DOES establish. State that bound
-            // rather than a point value, and rather than withholding an answer we actually have.
+        let bound = max(accuracyMetres, step / 2)
+        if metres <= bound {
+            // Nearer than the evidence can resolve is still something the fix DOES establish. State
+            // that bound rather than a point value, and rather than withholding an answer we have.
             return .measured(
-                label: "< \(uncertaintyLabel(accuracyMetres, unitSystem: unitSystem))",
+                label: "< \(uncertaintyLabel(bound, unitSystem: unitSystem))",
                 approximate: true
             )
         }

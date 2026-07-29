@@ -375,9 +375,9 @@ class NearbyDecisionTest {
     @Test
     fun aProviderInsideTheFixesOwnErrorIsBoundedNotStatedAsAPointValue() {
         val claim = NearbyDecision.distanceClaim(0.05, 150.0, fromDeviceFix = true)
-        assertEquals(DistanceClaim.Measured("< 150 m", approximate = true), claim)
-        // A bound already reads as imprecise, so it is not additionally marked "~< 150 m".
-        assertEquals("< 150 m", (claim as DistanceClaim.Measured).display)
+        assertEquals(DistanceClaim.Measured("< 500 m", approximate = true), claim)
+        // A bound already reads as imprecise, so it is not additionally marked "~< 500 m".
+        assertEquals("< 500 m", (claim as DistanceClaim.Measured).display)
         assertEquals(
             "~3 km",
             (NearbyDecision.distanceClaim(3.44, 900.0, fromDeviceFix = true)
@@ -387,6 +387,101 @@ class NearbyDecisionTest {
             "3.4 km",
             (NearbyDecision.distanceClaim(3.44, null, fromDeviceFix = false)
                 as DistanceClaim.Measured).display,
+        )
+    }
+
+    /**
+     * Mirrored by iOS `test_noPositiveDistanceCollapsesToAConfidentZero`.
+     *
+     * Rounding a distance to a step coarser than twice the distance itself yields zero, which the
+     * bands then print as a confident "0 km". Every rung has such a window, and for a coarse-only
+     * grant the 1 km rung's window covers most of the browse radius.
+     */
+    @Test
+    fun noPositiveDistanceCollapsesToAConfidentZero() {
+        val windows = listOf(
+            Triple(1_200.0, 3.0, "< 5.0 km"),
+            Triple(150.0, 0.3, "< 500 m"),
+            Triple(30.0, 0.04, "< 50 m"),
+            Triple(3.0, 0.004, "< 10 m"),
+        )
+        for ((accuracy, km, expected) in windows) {
+            val claim = NearbyDecision.distanceClaim(km, accuracy, fromDeviceFix = true)
+            assertEquals("$accuracy/$km", DistanceClaim.Measured(expected, true), claim)
+        }
+
+        val imperialWindows = listOf(
+            Triple(1_200.0, 3.0, "2 mi"),
+            Triple(150.0, 0.3, "0.2 mi"),
+            Triple(8.0, 0.05, "< 275 ft"),
+        )
+        for ((accuracy, km, expected) in imperialWindows) {
+            val claim = NearbyDecision.distanceClaim(
+                km,
+                accuracy,
+                fromDeviceFix = true,
+                unit = NearbyDecision.UnitSystem.Imperial,
+            )
+            assertEquals("$accuracy/$km", DistanceClaim.Measured(expected, true), claim)
+        }
+    }
+
+    /** Just above the bound is the region the collapse used to occupy, on every rung of both units. */
+    @Test
+    fun aDistanceJustAboveTheBoundStillStatesANonZeroNumber() {
+        val cases = listOf(
+            NearbyDecision.UnitSystem.Metric to listOf(0.009 to 8.0, 0.06 to 30.0, 0.6 to 150.0, 6.0 to 1_200.0),
+            NearbyDecision.UnitSystem.Imperial to listOf(0.005 to 3.0, 0.09 to 80.0, 0.9 to 300.0, 9.0 to 1_200.0),
+        )
+        for ((unit, pairs) in cases) {
+            for ((km, accuracy) in pairs) {
+                val claim = NearbyDecision.distanceClaim(km, accuracy, true, unit)
+                claim as DistanceClaim.Measured
+                assertFalse("$unit $accuracy/$km -> ${claim.label}", claim.label.startsWith("0 "))
+                assertFalse("$unit $accuracy/$km -> ${claim.label}", claim.label.startsWith("0.0 "))
+            }
+        }
+    }
+
+    /**
+     * A fix beyond the coarsest usable step says so. Because that ceiling is per unit, an imperial
+     * fix between the two ceilings must still place the provider rather than report a failed read.
+     */
+    @Test
+    fun theCoarsestUsableFixIsPerUnitAndItsRefusalNamesTheAccuracy() {
+        val metric = NearbyDecision.distanceClaim(30.0, 10_001.0, fromDeviceFix = true)
+        assertTrue(metric is DistanceClaim.Uncertain)
+        assertTrue((metric as DistanceClaim.Uncertain).reason.contains("too coarse"))
+
+        val stillImperial = NearbyDecision.distanceClaim(
+            30.0,
+            12_000.0,
+            fromDeviceFix = true,
+            unit = NearbyDecision.UnitSystem.Imperial,
+        )
+        assertEquals(DistanceClaim.Measured("20 mi", approximate = true), stillImperial)
+
+        val beyondImperial = NearbyDecision.distanceClaim(
+            30.0,
+            17_000.0,
+            fromDeviceFix = true,
+            unit = NearbyDecision.UnitSystem.Imperial,
+        )
+        assertTrue(beyondImperial is DistanceClaim.Uncertain)
+        assertTrue((beyondImperial as DistanceClaim.Uncertain).reason.contains("too coarse"))
+    }
+
+    /** Mirrored by iOS `test_contactOrderIsTheSameFoldedKeyOnBothPlatforms`. */
+    @Test
+    fun contactOrderIsTheSameFoldedKeyOnBothPlatforms() {
+        val avila = provider("avila", name = "Ávila Veterinary", geo = null)
+        val bxx = provider("bxx", name = "Bxx Grooming", geo = null)
+        val sameNameLater = provider("z-same", name = "Ávila veterinary", geo = null)
+        val contacts = NearbyDecision.contacts(found(bxx, sameNameLater, avila), "")
+        contacts as ContactDirectoryPresentation.ProvidersFound
+        assertEquals(
+            listOf("avila", "z-same", "bxx"),
+            contacts.providers.map { it.providerId },
         )
     }
 

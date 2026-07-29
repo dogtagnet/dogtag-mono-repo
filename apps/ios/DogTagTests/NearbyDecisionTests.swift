@@ -438,9 +438,9 @@ final class NearbyDecisionTests: XCTestCase {
         let bounded = NearbyDecision.distanceClaim(
             0.05, accuracyMetres: 150, fromDeviceFix: true, unitSystem: .metric
         )
-        XCTAssertEqual(bounded, .measured(label: "< 150 m", approximate: true))
-        // A bound already reads as imprecise, so it is not additionally marked "~< 150 m".
-        XCTAssertEqual(bounded.display, "< 150 m")
+        XCTAssertEqual(bounded, .measured(label: "< 500 m", approximate: true))
+        // A bound already reads as imprecise, so it is not additionally marked "~< 500 m".
+        XCTAssertEqual(bounded.display, "< 500 m")
         XCTAssertEqual(
             NearbyDecision.distanceClaim(
                 3.44, accuracyMetres: 900, fromDeviceFix: true, unitSystem: .metric
@@ -454,6 +454,101 @@ final class NearbyDecisionTests: XCTestCase {
             "3.4 km"
         )
         XCTAssertNil(DistanceClaim.uncertain(reason: "nope").display)
+    }
+
+    /// Mirrored by Android `noPositiveDistanceCollapsesToAConfidentZero`.
+    ///
+    /// Rounding a distance to a step coarser than twice the distance itself yields zero, which the
+    /// bands then print as a confident "0 km". Every rung has such a window, and for a coarse-only
+    /// grant the 1 km rung's window covers most of the browse radius.
+    func test_noPositiveDistanceCollapsesToAConfidentZero() {
+        let windows: [(Double, Double, String)] = [
+            (1_200, 3.0, "< 5.0 km"),
+            (150, 0.3, "< 500 m"),
+            (30, 0.04, "< 50 m"),
+            (3, 0.004, "< 10 m"),
+        ]
+        for (accuracy, km, expected) in windows {
+            XCTAssertEqual(
+                NearbyDecision.distanceClaim(
+                    km, accuracyMetres: accuracy, fromDeviceFix: true, unitSystem: .metric
+                ),
+                .measured(label: expected, approximate: true),
+                "\(accuracy)/\(km)"
+            )
+        }
+
+        let imperialWindows: [(Double, Double, String)] = [
+            (1_200, 3.0, "2 mi"),
+            (150, 0.3, "0.2 mi"),
+            (8, 0.05, "< 275 ft"),
+        ]
+        for (accuracy, km, expected) in imperialWindows {
+            XCTAssertEqual(
+                NearbyDecision.distanceClaim(
+                    km, accuracyMetres: accuracy, fromDeviceFix: true, unitSystem: .imperial
+                ),
+                .measured(label: expected, approximate: true),
+                "\(accuracy)/\(km)"
+            )
+        }
+    }
+
+    /// Just above the bound is the region the collapse used to occupy, on every rung of both units.
+    func test_aDistanceJustAboveTheBoundStillStatesANonZeroNumber() {
+        let cases: [(NearbyUnitSystem, [(Double, Double)])] = [
+            (.metric, [(0.009, 8), (0.06, 30), (0.6, 150), (6.0, 1_200)]),
+            (.imperial, [(0.005, 3), (0.09, 80), (0.9, 300), (9.0, 1_200)]),
+        ]
+        for (unitSystem, pairs) in cases {
+            for (km, accuracy) in pairs {
+                let claim = NearbyDecision.distanceClaim(
+                    km, accuracyMetres: accuracy, fromDeviceFix: true, unitSystem: unitSystem
+                )
+                guard case .measured(let label, _) = claim else {
+                    return XCTFail("\(unitSystem) \(accuracy)/\(km) was not measured")
+                }
+                XCTAssertFalse(label.hasPrefix("0 "), "\(accuracy)/\(km) -> \(label)")
+                XCTAssertFalse(label.hasPrefix("0.0 "), "\(accuracy)/\(km) -> \(label)")
+            }
+        }
+    }
+
+    /// A fix beyond the coarsest usable step says so. Because that ceiling is per unit, an imperial
+    /// fix between the two ceilings must still place the provider rather than report a failed read.
+    func test_theCoarsestUsableFixIsPerUnitAndItsRefusalNamesTheAccuracy() {
+        guard case .uncertain(let metric) = NearbyDecision.distanceClaim(
+            30, accuracyMetres: 10_001, fromDeviceFix: true, unitSystem: .metric
+        ) else { return XCTFail("expected uncertain beyond the metric ceiling") }
+        XCTAssertTrue(metric.contains("too coarse"), metric)
+
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                30, accuracyMetres: 12_000, fromDeviceFix: true, unitSystem: .imperial
+            ),
+            .measured(label: "20 mi", approximate: true)
+        )
+
+        guard case .uncertain(let imperial) = NearbyDecision.distanceClaim(
+            30, accuracyMetres: 17_000, fromDeviceFix: true, unitSystem: .imperial
+        ) else { return XCTFail("expected uncertain beyond the imperial ceiling") }
+        XCTAssertTrue(imperial.contains("too coarse"), imperial)
+    }
+
+    /// Mirrored by Android `contactOrderIsTheSameFoldedKeyOnBothPlatforms`.
+    func test_contactOrderIsTheSameFoldedKeyOnBothPlatforms() {
+        let presentation = NearbyDecision.contactPresentation(
+            directory: found([
+                provider(id: "bxx", name: "Bxx Grooming", geo: nil),
+                provider(id: "z-same", name: "Ávila veterinary", geo: nil),
+                provider(id: "avila", name: "Ávila Veterinary", geo: nil),
+            ]),
+            query: ""
+        )
+        guard case .providersFound(let providers, _) = presentation else {
+            return XCTFail("expected provider contacts")
+        }
+        XCTAssertEqual(providers.map(\.providerId), ["avila", "z-same", "bxx"])
     }
 
     func test_rowsCarryTheOriginsPrecisionAndKeepTheRawMeasurementForOrdering() {

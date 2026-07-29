@@ -186,14 +186,26 @@ object NearbyDecision {
     const val DEFAULT_RADIUS_KM = 50.0
     private const val KM_PER_MILE = 1.609344
     private const val FEET_PER_KM = 1000 / 0.3048
-    private const val FOOT_STEP_M = 25 * 0.3048
-    private const val TENTH_MILE_M = KM_PER_MILE * 100
-    /** The coarsest fix that can still place a provider at all. Beyond it, no number is claimed. */
-    private const val COARSEST_FIX_M = 10_000.0
     private const val DISTANCE_UNAVAILABLE = "This provider's distance could not be measured."
 
+    // Each rung below is the metre width of one display band, derived from the same constant that
+    // band's own formatting divides by. A value rounded to a rung therefore always lands on a
+    // numeral its band can express, which is what keeps a positive distance from printing as zero.
+    private const val FOOT_STEP_M = 25_000.0 / FEET_PER_KM
+    private const val TENTH_MILE_M = KM_PER_MILE * 100
+    private const val MILE_M = KM_PER_MILE * 1_000
+    private const val TEN_METRE_STEP_M = 10.0
+    private const val TENTH_KM_M = 100.0
+    private const val KM_STEP_M = 1_000.0
+
+    /** The coarsest fix that can still place a provider at all. Beyond it, no number is claimed. */
+    private const val COARSEST_METRIC_M = 10 * KM_STEP_M
+    private const val COARSEST_IMPERIAL_M = 10 * MILE_M
+
     /** Rounding steps a device fix may be shown at. The chosen step is never finer than the fix. */
-    private val PRECISION_LADDER_M = listOf(10.0, 100.0, 1_000.0, COARSEST_FIX_M)
+    private val METRIC_LADDER_M = listOf(TEN_METRE_STEP_M, TENTH_KM_M, KM_STEP_M, COARSEST_METRIC_M)
+    private val IMPERIAL_LADDER_M =
+        listOf(FOOT_STEP_M, TENTH_MILE_M, MILE_M, COARSEST_IMPERIAL_M)
     private val imperialRegions = setOf("US", "GB", "LR", "MM")
     private val compassPoints = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
@@ -325,10 +337,7 @@ object NearbyDecision {
             .filter {
                 needle.isEmpty() || searchFold(it.name).contains(searchFold(needle))
             }
-            .sortedWith(
-                compareBy<DirectoryProvider, String>(String.CASE_INSENSITIVE_ORDER) { it.name }
-                    .thenBy { it.providerId },
-            )
+            .sortedWith(compareBy<DirectoryProvider>({ sortKey(it.name) }, { it.providerId }))
 
         if (providers.isEmpty()) {
             return if (needle.isNotEmpty()) {
@@ -350,6 +359,15 @@ object NearbyDecision {
         Normalizer.normalize(value, Normalizer.Form.NFD)
             .replace(Regex("\\p{M}+"), "")
             .lowercase(Locale.ROOT)
+
+    /**
+     * The contact list's ordering key, mirrored by iOS.
+     *
+     * It is the SAME locale-independent fold the on-device name search uses. A collating comparator
+     * would order the two apps differently for the same directory, because each platform's collation
+     * is its own; folding first leaves one order that both can reproduce.
+     */
+    private fun sortKey(value: String): String = searchFold(value.trim())
 
     fun unitSystemForRegion(regionOrLocale: String?): UnitSystem {
         if (regionOrLocale.isNullOrBlank()) return UnitSystem.Metric
@@ -395,21 +413,21 @@ object NearbyDecision {
             if (minGranularityMetres <= TENTH_MILE_M && oneDecimal < 10) {
                 return String.format(Locale.US, "%.1f mi", oneDecimal)
             }
-            if (minGranularityMetres <= COARSEST_FIX_M) return "${Math.round(miles)} mi"
+            if (minGranularityMetres <= COARSEST_IMPERIAL_M) return "${Math.round(miles)} mi"
             return null
         }
 
-        if (minGranularityMetres <= 10.0 && km < 1) {
+        if (minGranularityMetres <= TEN_METRE_STEP_M && km < 1) {
             val metres = km * 1000
             if (metres < 10) return "< 10 m"
-            val rounded = roundTo(metres, 10.0)
+            val rounded = roundTo(metres, TEN_METRE_STEP_M)
             if (rounded < 1000) return "${rounded.toLong()} m"
         }
         val oneDecimal = Math.round(km * 10) / 10.0
-        if (minGranularityMetres <= 100.0 && oneDecimal < 10) {
+        if (minGranularityMetres <= TENTH_KM_M && oneDecimal < 10) {
             return String.format(Locale.US, "%.1f km", oneDecimal)
         }
-        if (minGranularityMetres <= COARSEST_FIX_M) return "${Math.round(km)} km"
+        if (minGranularityMetres <= COARSEST_METRIC_M) return "${Math.round(km)} km"
         return null
     }
 
@@ -418,9 +436,13 @@ object NearbyDecision {
      *
      * Chosen coordinates are exact arithmetic on numbers the owner typed, so they keep the ordinary
      * bands. A device fix does not: its label is rounded to a step no finer than the reported
-     * horizontal accuracy, a provider closer than that accuracy is stated as a BOUND rather than a
-     * point value the fix cannot support, and a fix whose accuracy is missing, nonsensical, or coarser
-     * than any usable step yields no number at all.
+     * horizontal accuracy, and a fix whose accuracy is missing, nonsensical, or coarser than any
+     * usable step yields no number at all.
+     *
+     * Anything nearer than the coarser of the accuracy and half that rounding step is stated as a
+     * BOUND. Half the step is the load-bearing half of that pair: below it the rounding collapses to
+     * zero, which the bands would then print as a confident `0 km`. The gate and the bound label are
+     * computed from the same value so they can never describe different distances.
      */
     fun distanceClaim(
         km: Double?,
@@ -441,17 +463,19 @@ object NearbyDecision {
                 "This location fix reported no usable accuracy, so no distance is claimed.",
             )
         }
-        val step = PRECISION_LADDER_M.firstOrNull { it >= accuracyMetres }
+        val ladder = if (unit == UnitSystem.Imperial) IMPERIAL_LADDER_M else METRIC_LADDER_M
+        val step = ladder.firstOrNull { it >= accuracyMetres }
             ?: return DistanceClaim.Uncertain(
                 "This location fix is accurate only to ${uncertaintyLabel(accuracyMetres, unit)}, " +
                     "which is too coarse to state a distance.",
             )
         val metres = km * 1_000.0
-        if (metres <= accuracyMetres) {
-            // Closer than the fix's own error is something the fix DOES establish. State that bound
-            // rather than a point value, and rather than withholding an answer we actually have.
+        val bound = maxOf(accuracyMetres, step / 2)
+        if (metres <= bound) {
+            // Nearer than the evidence can resolve is still something the fix DOES establish. State
+            // that bound rather than a point value, and rather than withholding an answer we have.
             return DistanceClaim.Measured(
-                "< ${uncertaintyLabel(accuracyMetres, unit)}",
+                "< ${uncertaintyLabel(bound, unit)}",
                 approximate = true,
             )
         }
