@@ -724,9 +724,14 @@ The user owns the appointment in the mobile app (central backend); the business 
 ### 8.4 Discovery → booking flow
 
 ```
-mobile → central: GET /v1/businesses                       ← full set. NO position. Never a position.
-central → mobile: [{businessId, name, geo, services, apiBaseUrl, hmacKeyId}]
-mobile (on device): kind/distance/sort/filter over the returned `geo` - packages/ui/src/geo/
+mobile → indexer: GET /v1/businesses                      ← whole set; current-GPS Nearby uses this
+mobile → indexer: GET /v1/businesses?name=…&kind=…        ← deliberately typed search intent
+mobile → indexer: GET /v1/businesses?searchCenterLat=…&searchCenterLng=…&searchRadiusKm=…
+                                                            only a place explicitly searched/picked
+indexer → admin: GET /v1/businesses                       ← whole interim source; on-chain after S-10
+indexer → mobile: {"businesses":[{businessId,type,name,geo,contact,services,apiBaseUrl,
+                                  domain,documentStores,hmacKeyId}]}
+mobile (on device): current-position distance/sort over the returned `geo` - packages/ui/src/geo/
 mobile → OS maps app: selected provider destination         ← per-row handoff; no embedded map
 mobile → central: POST /v1/appointments {businessId, dogTagId, slot}
 central: create appt (rev=1, REQUESTED) → PUT to business apiBaseUrl
@@ -734,22 +739,31 @@ business: store replica, notify staff
 ... business approves → POST appointment-events {CONFIRMED} → central → push to mobile
 ```
 
-**The discovery call carries no position, and "nearby" is computed on the device.**
-This is a protocol rule, not an optimisation, and the shape above is what a Nearby screen must be built on.
+**Current-position Nearby carries no position, and remains computed on the device.**
+The separate search-center query is a deliberately disclosed place the user typed, searched for, or
+picked on a map. The server cannot distinguish that coordinate from a live GPS fix, so caller separation
+and the exact bare-request tests are the enforcement boundary.
 
-- `GET /v1/businesses` is on the **public, unauthenticated** router.
-  A position sent there arrives beside the caller's IP with no account attached and no gate.
-  dogtag is built on the owner never revealing where they are, so an endpoint whose purpose is to be told where the user is contradicts the premise at its most basic.
-- The client fetches the provider **set** - a request that is byte-identical whoever makes it, so it discloses nothing - and computes distance, radius and sort locally with `packages/ui/src/geo/`.
+- The indexer's `GET /v1/businesses` is on the **public, unauthenticated** router. Bare GET returns the
+  whole set. `name`, `kind` (`type` is the existing-client compatibility alias; never send both), and
+  the all-or-none `searchCenterLat` + `searchCenterLng` + `searchRadiusKm` group are the only accepted
+  filters and compose with AND semantics.
+- A search center is deliberate intent, like a typed provider name. The live/current GPS fix is
+  involuntary and continuous. Native `ProviderDirectory.read()` therefore remains no-argument and the
+  current-location flow fetches the provider **set** and computes distance, radius and sort locally
+  with `packages/ui/src/geo/`.
   A provider's pin is a business fact already on their door; the user's position is not.
 - Nearby is a **list**, not an in-app map. A selected row may open the destination in the platform
   maps app / Google Maps. There is no viewport, bounding-box, region, or geohash query to the
   directory; those shapes have no product caller and would only disclose location.
-- The server still accepts `near=<lat>,<lng>` and `radius=` for back-compat with any third-party caller, and both are **DEPRECATED**.
-  Nothing in this repo sends them: `BusinessesQuery` (`packages/ui/src/api/types.ts`) no longer carries the fields and `central.ts`'s `qs()` no longer emits them.
-  **Do not add a caller.**
-  The on-device path admits exactly the same providers for every radius below the half-circumference, pinned from both ends by a fixture the server's own filter generated.
-- The rule is written down beside the code it governs: the `BusinessesQuery` type note in `stacks/admin/api/src/routes.rs`, and the module header of `packages/ui/src/geo/index.ts`.
+- The indexer rejects ambiguous aliases such as `near`, bare `lat`/`lng`, `radius`, current-GPS
+  spellings, bounding boxes, and geohashes. Never feed a live fix into `searchCenter*`; any future
+  server-side current-position feature must be separately designed, deliberate, and disclosed.
+- The legacy central/admin route still accepts deprecated `near=<lat>,<lng>` and `radius=` for
+  third-party compatibility, but nothing in this repo sends them. Do not add a caller there.
+- With gzip, the planning budget of ~100 bytes/provider reaches a 5 MB cold-fetch question at about
+  50,000 providers (`5,000,000 / 100`). Location-less providers remain in full/name/kind results and
+  are excluded only when a deliberate radius search needs a coordinate.
 
 ---
 
@@ -761,7 +775,7 @@ This is a protocol rule, not an optimisation, and the shape above is what a Near
 - `pets` — pet profile; `dogTagId` (SBT) once minted; `microchip{code,standard,implantDate,bodyLocation}` (code unique); `ownershipHistory[]{ownerId, from, to}`; cached profile root.
 - `credentials` — references to credentials the user has imported (wrapped docs + verify cache, incl. `ownership` fragment).
 - `consents` / `consent_receipts` — **`Consent`/`ConsentReceipt`** per-purpose records `{purpose, lawfulBasis, grantedAt, withdrawnAt, receiptId}`; drive retention + the erasure flow (§11).
-- `businesses` — registry: `{businessId, type, name, geo, services, apiBaseUrl, domain, documentStores{recordType→addr}, hmacKeyId}`. **Non-personal discovery data.** It carries neither signer addresses nor any listing state, and both have a home elsewhere: signers on `issuer_applications.addresses[]`, the application lifecycle on `issuer_applications.status`, and current issuing authority only on-chain (`IssuerRegistry.isWhitelistedFor`, which the whitelist console reads live). A central directory read therefore has no source for "currently active" and must not synthesise one — `DirectoryProvider.active` is `null` there rather than a fabricated `true`.
+- `businesses` — registry: `{businessId, type, name, geo, contact{phone,whatsapp,telegram,email,website}, services, apiBaseUrl, domain, documentStores{recordType→addr}, hmacKeyId}`. **Non-personal discovery data.** `geo` and every contact channel are optional; absence stays absent rather than being fabricated from another field. It carries neither signer addresses nor any listing state, and both have a home elsewhere: signers on `issuer_applications.addresses[]`, the application lifecycle on `issuer_applications.status`, and current issuing authority only on-chain (`IssuerRegistry.isWhitelistedFor`, which the whitelist console reads live). A central directory read therefore has no source for "currently active" and must not synthesise one — `DirectoryProvider.active` is `null` there rather than a fabricated `true`.
 - `issuer_applications` — pending whitelist requests `{issuerEntityId, address, mode, recordTypes[], USDA#, license#, status}`.
 - `appointments` — **source of truth** `{appointmentId, rev, userId, petId, businessId, state, slot, history[]}`.
 - `verification_records` - proof-of-verification ledger `{dogTagId, relayer, purpose, recordType, nullifier, txHash, deadline, ts}` - a mirror of the on-chain `Verified` events (read from the chain; central is not in the verify loop and never sees a consent), which are **owner-blind** (no subject field exists to store). Owner-side consent receipts, where kept, are off-chain and deletable (crypto-shred erasure scope - §11/§13.7).

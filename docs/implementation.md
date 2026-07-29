@@ -1187,7 +1187,8 @@ GET  /share/{ref}  Bearer<jwt>            // business pulls shared doc
 ### 4.2 Business registry & discovery
 ```
 GET  /v1/businesses?type=
-    -> [{businessId,type,name,geo,services,apiBaseUrl,domain,documentStores,hmacKeyId}]  // non-personal
+    -> {"businesses":[{businessId,type,name,geo,contact,services,apiBaseUrl,domain,
+                       documentStores,hmacKeyId}]}  // non-personal
     // near=<lat>,<lng> & radius=<km> are still ACCEPTED and still filter server-side, and both are
     // DEPRECATED. Do not add a caller. This route is on the PUBLIC UNAUTHENTICATED router, so a
     // position sent here arrives beside the caller's IP with no account attached and no gate - which
@@ -1361,9 +1362,12 @@ A grooming business's working application, not a bare verification tool. **A gro
 - Add health/travel record wizards with type pickers (Vaccine/Checkup/Surgery/Lab/Prescription/Dental; CDC/DOT/Other travel).
 - **Scan QR** (Verify tab): parse `https://<host>/r?t=&i=` → fetch wrapped doc → `verify()` → import under pet, show 3-pillar verdict.
 - **Share** (user→business): show QR (one-time JWT against central).
-- **Find vet/groomer**: list from the full provider directory → filter/sort on-device → hand a
-  selected destination to the platform maps app / Google Maps → book appointment. There is no
-  embedded map and no viewport/region query.
+- **Find vet/groomer**: current-position Nearby reads the full provider directory and filters/sorts
+  on-device. Featureful search may ask the indexer to narrow by provider name/kind or by a location
+  the user deliberately typed, searched for, or picked (`searchCenterLat`/`searchCenterLng` plus
+  `searchRadiusKm`). The live GPS fix is never quietly reused as that chosen search center; sending
+  current position would require a separate, deliberate, disclosed action. A selected provider can
+  then be handed to the platform maps app / Google Maps before booking.
 
 ### 6.3 Theming (7 themes)
 ```

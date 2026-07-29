@@ -1,4 +1,4 @@
-//! The scoped query API.
+//! The scoped oversight query API + public provider directory.
 //!
 //! One feed, two doctrines, enforced **server-side** by the caller's bearer token:
 //!   - the **unscoped** government/oversight token sees every event across all issuers;
@@ -11,6 +11,9 @@
 //! Every event is joined to the admin business directory to NAME its signer/clone where possible, and
 //! carries a ready-to-click `txUrl`. Nothing personal is served — the index holds only non-PII chain
 //! data.
+//!
+//! `GET /v1/businesses` is the separate, public discovery surface. Its business contacts and optional
+//! premises are deliberately published provider facts, not owner PII.
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -19,6 +22,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tower_http::compression::CompressionLayer;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 use crate::app::{keccak_key, AppState};
 use crate::events::{EventType, Finality, IndexedEvent};
@@ -61,6 +66,179 @@ fn authenticate<'a>(st: &'a AppState, headers: &HeaderMap) -> Result<&'a Princip
     st.scopes
         .resolve(&token)
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unknown or unauthorized token"))
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BusinessDirectoryParams {
+    /// Case- and diacritic-insensitive substring of the provider's published name.
+    name: Option<String>,
+    /// Case-insensitive exact match against the business row's `type`.
+    kind: Option<String>,
+    /// Compatibility spelling used by the existing admin directory/client contract.
+    #[serde(rename = "type")]
+    business_type: Option<String>,
+    /// Center of a location the user explicitly searched for, typed, or picked on a map.
+    search_center_lat: Option<f64>,
+    /// See `search_center_lat`. This is never an implicit current-device coordinate.
+    search_center_lng: Option<f64>,
+    /// Inclusive search radius around the explicitly selected search center, in kilometres.
+    search_radius_km: Option<f64>,
+}
+
+#[derive(Clone, Copy)]
+struct SearchArea {
+    lat: f64,
+    lng: f64,
+    radius_km: f64,
+}
+
+fn nonempty_filter(value: Option<String>, field: &str) -> Result<Option<String>, ApiError> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.trim().is_empty() => Err(err(
+            StatusCode::BAD_REQUEST,
+            &format!("{field} must not be blank"),
+        )),
+        Some(value) => Ok(Some(value.trim().to_string())),
+    }
+}
+
+fn kind_filter(params: &BusinessDirectoryParams) -> Result<Option<String>, ApiError> {
+    let value = match (params.kind.clone(), params.business_type.clone()) {
+        (Some(_), Some(_)) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "kind and type are aliases; provide only one",
+            ));
+        }
+        (Some(kind), None) | (None, Some(kind)) => Some(kind),
+        (None, None) => None,
+    };
+    Ok(nonempty_filter(value, "kind/type")?.map(|kind| kind.to_ascii_lowercase()))
+}
+
+fn search_area(params: &BusinessDirectoryParams) -> Result<Option<SearchArea>, ApiError> {
+    match (
+        params.search_center_lat,
+        params.search_center_lng,
+        params.search_radius_km,
+    ) {
+        (None, None, None) => Ok(None),
+        (Some(lat), Some(lng), Some(radius_km))
+            if lat.is_finite()
+                && lng.is_finite()
+                && radius_km.is_finite()
+                && (-90.0..=90.0).contains(&lat)
+                && (-180.0..=180.0).contains(&lng)
+                && radius_km >= 0.0 =>
+        {
+            Ok(Some(SearchArea { lat, lng, radius_km }))
+        }
+        (Some(_), Some(_), Some(_)) => Err(err(
+            StatusCode::BAD_REQUEST,
+            "searchCenterLat/searchCenterLng must be valid coordinates and searchRadiusKm must be finite and non-negative",
+        )),
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            "searchCenterLat, searchCenterLng, and searchRadiusKm must be provided together",
+        )),
+    }
+}
+
+/// Locale-independent name-search fold, matching the native directory's NFD + combining-mark removal
+/// rather than making `avila` fail to find a provider named `Ávila`.
+fn search_fold(value: &str) -> String {
+    value
+        .trim()
+        .nfd()
+        .filter(|ch| !is_combining_mark(*ch))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Total great-circle distance in kilometres. The `atan2` form stays defined at antipodes, unlike the
+/// deprecated admin route's `asin(sqrt(a))` implementation.
+fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
+    const EARTH_RADIUS_KM: f64 = 6371.0;
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    let dphi = (lat2 - lat1).to_radians();
+    let dlambda = (lng2 - lng1).to_radians();
+    let a = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dlambda / 2.0).sin().powi(2);
+    let bounded = a.clamp(0.0, 1.0);
+    2.0 * EARTH_RADIUS_KM * bounded.sqrt().atan2((1.0 - bounded).sqrt())
+}
+
+/// `GET /v1/businesses` — public provider discovery over the admin directory snapshot.
+///
+/// With no query this serves the WHOLE list, including contact-only providers with `geo: null`.
+/// Optional `name`, `kind` (or compatibility alias `type`, never both), and the all-or-none
+/// `searchCenterLat`/`searchCenterLng`/`searchRadiusKm` group narrow it with AND semantics. The route
+/// preserves source order and never fabricates a coordinate; a spatial search necessarily excludes a
+/// provider that published no premises.
+///
+/// ## Privacy boundary: search center is deliberate; current GPS is not
+///
+/// A search center is a location the user intentionally typed, searched for, or picked on a map. That
+/// chosen place is disclosed search intent, like a provider name. The phone's live/current GPS fix is
+/// involuntary and continuous and MUST NOT be put into these fields. "Near me" still performs the bare
+/// full fetch and computes distance/sort on the device. This indexer is centralized and not
+/// caller-swappable, so a filtered request is intentionally distinguishable beside the caller's IP and
+/// timing; that is acceptable only for the intent the user chose to disclose. The server sees only
+/// numbers and cannot prove their provenance, so the semantic names and the native clients' no-query
+/// request tests are load-bearing. If the product ever submits current position to a server, that must
+/// be a separate, deliberate, disclosed feature — never a quiet reuse of this chosen-search-location
+/// group.
+///
+/// Ambiguous aliases (`near`, bare `lat`/`lng`, `radius`, bounding boxes, geohashes) are rejected by
+/// `deny_unknown_fields`; they cannot silently become a loaded current-position path.
+///
+/// ## Full-fetch scale
+///
+/// At roughly 100 compressed bytes per provider, 50,000 rows are about 5,000,000 bytes (4.77 MiB):
+/// the point where a cold full fetch becomes a live cellular-budget question. The service negotiates
+/// gzip for large responses. Delta sync is the next full-set optimization; explicit search filters are
+/// already available for the featureful search flow.
+async fn businesses(
+    State(st): State<AppState>,
+    Query(params): Query<BusinessDirectoryParams>,
+) -> Result<Json<Value>, ApiError> {
+    let name = nonempty_filter(params.name.clone(), "name")?.map(|name| search_fold(&name));
+    let kind = kind_filter(&params)?;
+    let area = search_area(&params)?;
+    let businesses = st.directory.businesses().ok_or_else(|| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider directory has no successful source snapshot yet",
+        )
+    })?;
+
+    let businesses: Vec<_> = businesses
+        .into_iter()
+        .filter(|business| {
+            name.as_ref()
+                .map(|needle| search_fold(&business.name).contains(needle))
+                .unwrap_or(true)
+        })
+        .filter(|business| {
+            kind.as_ref()
+                .map(|expected| business.kind.trim().eq_ignore_ascii_case(expected))
+                .unwrap_or(true)
+        })
+        .filter(|business| {
+            area.map(|area| {
+                business
+                    .geo
+                    .filter(|geo| geo.is_valid())
+                    .map(|geo| haversine_km(area.lat, area.lng, geo.lat, geo.lng) <= area.radius_km)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true)
+        })
+        .collect();
+
+    Ok(Json(json!({ "businesses": businesses })))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -383,12 +561,16 @@ async fn issuers(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<
 }
 
 /// The router. `demo` toggles a permissive posture only via env in `main`; scoping is always enforced.
+/// Compression lives here so every embedding of the public whole-directory route negotiates gzip,
+/// including hermetic tests and deployments that do not use the standalone binary's assembly.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/v1/businesses", get(businesses))
         .route("/v1/status", get(status))
         .route("/v1/events", get(events))
         .route("/v1/stats", get(stats))
         .route("/v1/issuers", get(issuers))
         .with_state(state)
+        .layer(CompressionLayer::new())
 }
