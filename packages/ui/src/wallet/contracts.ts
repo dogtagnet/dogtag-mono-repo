@@ -1,12 +1,12 @@
 import {
   createPublicClient,
-  http,
   keccak256,
   toBytes,
   type Abi,
   type Address,
   type PublicClient,
 } from "viem";
+import { guardedRoaxTransport } from "../chain/rpcEndpoint";
 import { roax } from "./chain";
 
 /**
@@ -152,13 +152,25 @@ export const ZERO_BYTES32 = `0x${"0".repeat(64)}`;
  */
 const clientCache = new Map<string, PublicClient>();
 
-/** A cached viem public client for ROAX over the given RPC (defaults to the ROAX devrpc). */
-export function roaxPublicClient(rpcUrl?: string): PublicClient {
-  const url = rpcUrl ?? roax.rpcUrls.default.http[0];
-  let c = clientCache.get(url);
+/**
+ * A cached viem public client for ROAX.
+ *
+ * Its transport checks `eth_chainId` immediately before every read. A bad preferred endpoint gets no
+ * address-bound request; the independently guarded bundled default is used instead.
+ */
+export function roaxPublicClient(
+  rpcUrl?: string,
+  defaultRpcUrl: string = roax.rpcUrls.default.http[0],
+): PublicClient {
+  const preferred = rpcUrl ?? defaultRpcUrl;
+  const key = `${preferred}\n${defaultRpcUrl}`;
+  let c = clientCache.get(key);
   if (!c) {
-    c = createPublicClient({ chain: roax, transport: http(url) });
-    clientCache.set(url, c);
+    c = createPublicClient({
+      chain: roax,
+      transport: guardedRoaxTransport(preferred, defaultRpcUrl),
+    });
+    clientCache.set(key, c);
   }
   return c;
 }
@@ -174,6 +186,7 @@ export type IsWhitelistedForArgs = {
   registryAddr: string;
   address: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 } & (
@@ -198,7 +211,7 @@ export async function isWhitelistedFor(args: IsWhitelistedForArgs): Promise<bool
       "isWhitelistedFor: exactly one of recordTypeKey or recordType is required - refusing to ask the registry about keccak256(\"\")",
     );
   }
-  return roaxPublicClient(args.rpcUrl).readContract({
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.registryAddr as Address,
     abi: ISSUER_REGISTRY_ABI,
     functionName: "isWhitelistedFor",
@@ -217,10 +230,11 @@ export async function isRootValid(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 }): Promise<boolean> {
-  return roaxPublicClient(args.rpcUrl).readContract({
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "isValid",
@@ -237,10 +251,11 @@ export async function isRootRevoked(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 }): Promise<boolean> {
-  return roaxPublicClient(args.rpcUrl).readContract({
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "isRevoked",
@@ -258,10 +273,11 @@ export async function issuedAtOf(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 }): Promise<bigint> {
-  return roaxPublicClient(args.rpcUrl).readContract({
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "issuedAt",
@@ -283,10 +299,11 @@ export async function issuedByOf(args: {
   issuerAddr: string;
   root: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 }): Promise<string> {
-  return roaxPublicClient(args.rpcUrl).readContract({
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "issuedBy",
@@ -310,10 +327,11 @@ export async function rootIssuerOf(args: {
   factoryAddr: string;
   root: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 }): Promise<string> {
-  return roaxPublicClient(args.rpcUrl).readContract({
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.factoryAddr as Address,
     abi: DOGTAG_ISSUER_FACTORY_ABI,
     functionName: "rootIssuer",
@@ -330,10 +348,11 @@ export async function rootIssuerOf(args: {
 export async function recordTypeOf(args: {
   issuerAddr: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 }): Promise<string> {
-  return roaxPublicClient(args.rpcUrl).readContract({
+  return roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.issuerAddr as Address,
     abi: DOGTAG_ISSUER_ABI,
     functionName: "recordType",
@@ -360,10 +379,11 @@ export async function issuerDomainClaimOf(args: {
   domainRegistryAddr: string;
   cloneAddr: string;
   rpcUrl?: string;
+  defaultRpcUrl?: string;
   /** Pin this `eth_call` to a block height; omitted reads `latest`. See {@link roaxPublicClient}. */
   blockNumber?: bigint;
 }): Promise<{ domain: string; updatedAt: bigint; updatedAtBlock: bigint; setBy: string } | null> {
-  const b = (await roaxPublicClient(args.rpcUrl).readContract({
+  const b = (await roaxPublicClient(args.rpcUrl, args.defaultRpcUrl).readContract({
     address: args.domainRegistryAddr as Address,
     abi: ISSUER_DOMAIN_REGISTRY_ABI,
     functionName: "getBinding",

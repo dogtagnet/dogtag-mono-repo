@@ -197,7 +197,7 @@ struct CredentialDetailScreen: View {
             let root = (doc?.merkleRoot).flatMap { $0.isEmpty ? nil : $0 } ?? cred.credentialRoot
             guard !claimed.isEmpty || !root.isEmpty else { return }
             binding = await IssuerBindingResolver.resolve(
-                rpcUrl: AppConfig.roaxRpc,
+                rpcUrl: RpcEndpointSettings.rpcUrl(),
                 factory: roax.issuerFactory,
                 domainRegistry: roax.issuerDomainRegistry,
                 documentStore: claimed,

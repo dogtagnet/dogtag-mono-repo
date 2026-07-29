@@ -101,7 +101,9 @@ object CredentialRefresher {
         // clone (isValid(root)); a DOG_PROFILE is anchored in the DogTagSBT itself (profileRoot).
         if (doc.documentStore.isNotBlank()) {
             val issuance = when (
-                val r = issuancePillar ?: RoaxRpc.isValid(rpcUrl, doc.documentStore, root)
+                val r = issuancePillar ?: RoaxRpc.isValid(
+                    rpcUrl, roax.chainId, doc.documentStore, root,
+                )
             ) {
                 is RoaxRpc.Result.Valid -> "VALID" to "anchored on ROAX and not revoked"
                 is RoaxRpc.Result.Invalid -> "INVALID" to "revoked or no longer anchored on ROAX"
@@ -136,7 +138,7 @@ object CredentialRefresher {
         } catch (e: Exception) {
             return stamped.marked("UNVERIFIED", "this dog tag id could not be resolved on-chain")
         }
-        val onchainRoot = RoaxRpc.profileRoot(rpcUrl, roax.dogTagSbt, onchainId)
+        val onchainRoot = RoaxRpc.profileRoot(rpcUrl, roax.chainId, roax.dogTagSbt, onchainId)
             ?: return stamped.marked(
                 "UNVERIFIED", "could not reach the chain (DogTagSBT profileRoot read failed)",
             )
@@ -173,6 +175,7 @@ object CredentialRefresher {
 class RefreshCenter(context: Context) {
     private val appContext = context.applicationContext
     private val store = LocalStore.get(appContext)
+    private val settings = SettingsStore(appContext)
 
     private val _inFlight = MutableStateFlow<Set<String>>(emptySet())
 
@@ -192,8 +195,11 @@ class RefreshCenter(context: Context) {
         _inFlight.value = _inFlight.value + cred.id
         try {
             val config = resolvedRoax()
+            // Pass the persisted request through unchanged. RoaxRpc probes `eth_chainId` at the raw
+            // transport seam immediately before each read and guards the bundled fallback too.
+            val rpcUrl = settings.selectedRpcUrl()
             val updated = withContext(Dispatchers.IO) {
-                CredentialRefresher.refreshed(cred, config)
+                CredentialRefresher.refreshed(cred, config, rpcUrl)
             }
             store.updateCredential(updated)
         } finally {

@@ -1,6 +1,15 @@
 import { useCallback, useState } from "react";
 import { useAccount } from "wagmi";
-import { ROAX_ADD_CHAIN_PARAMS, ROAX_CHAIN_ID, ROAX_CHAIN_ID_HEX } from "./chain";
+import {
+  getRoaxRpcPreference,
+  resolveRoaxRpcEndpoint,
+} from "../chain/rpcEndpoint";
+import {
+  ROAX_CHAIN_ID,
+  ROAX_CHAIN_ID_HEX,
+  roax,
+  roaxAddChainParams,
+} from "./chain";
 
 type Eip1193Provider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -22,9 +31,11 @@ export interface UseRoaxChainResult {
 
 /**
  * Switch/add the ROAX chain in the connected wallet (impl §3.8 chain-add calldata).
- * Falls back to wallet_addEthereumChain on error code 4902 (unrecognized chain).
+ * Falls back to wallet_addEthereumChain on error code 4902 (unrecognized chain). The add metadata
+ * uses the browser's selected endpoint only after it establishes chain 135. Transactions still go
+ * through the wallet provider itself; this does not repoint that provider.
  */
-export function useRoaxChain(): UseRoaxChainResult {
+export function useRoaxChain(defaultRpcUrl: string = roax.rpcUrls.default.http[0]): UseRoaxChainResult {
   const { chainId } = useAccount();
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,9 +59,14 @@ export function useRoaxChain(): UseRoaxChainResult {
       // 4902 = chain not added to the wallet yet → add it, then it's selected.
       if (code === 4902) {
         try {
+          const rpc = getRoaxRpcPreference(defaultRpcUrl);
+          const endpoint = await resolveRoaxRpcEndpoint({
+            preferredUrl: rpc.rpcUrl,
+            defaultUrl: rpc.defaultRpcUrl,
+          });
           await provider.request({
             method: "wallet_addEthereumChain",
-            params: [ROAX_ADD_CHAIN_PARAMS],
+            params: [roaxAddChainParams(endpoint.url)],
           });
           return true;
         } catch (addErr) {
@@ -63,7 +79,7 @@ export function useRoaxChain(): UseRoaxChainResult {
     } finally {
       setSwitching(false);
     }
-  }, []);
+  }, [defaultRpcUrl]);
 
   return {
     isOnRoax: chainId === ROAX_CHAIN_ID,

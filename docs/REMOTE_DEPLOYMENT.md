@@ -230,7 +230,7 @@ SPA bundle at `docker compose build`).
 | `VITE_{CENTRAL,VET,GROOMER}_API_PROXY` | dev proxy target | 39742 / 41874 / 43618 | n/a (build serves `/api`) |
 | `VITE_REOWN_PROJECT_ID` | WalletConnect projectId | placeholder | real Reown id (needed only for browser-wallet mode) |
 | `VITE_DEPLOYMENT_URL` | QR caption URL | localhost portal port | `https://<DOMAIN>` |
-| `VITE_ROAX_RPC` | read-only chain RPC | `https://devrpc.roax.net` | per chain |
+| `VITE_ROAX_RPC` | bundled, chain-guarded default for direct browser reads | `https://devrpc.roax.net` | an endpoint on the bundled contract chain |
 | `VITE_DOGTAG_ISSUER_ADDR` | per-recordType issuer for `isValid` polling | empty | optional |
 | `VITE_ISSUER_REGISTRY_ADDR` | IssuerRegistry (whitelist reads) | (roax.json, pre-filled) | per chain |
 
@@ -239,6 +239,15 @@ SPA bundle at `docker compose build`).
 > **`http://localhost:39742`** (matching `stacks/admin/web/.env.example` and `stacks/groomer/web/.env.example`).
 > Do **not** propagate `:41870`. For REMOTE you set `VITE_CENTRAL_API_BASE` to your central origin (or
 > leave the `/api` proxy convention), so the typo only bites if you copy the literal vet template value.
+
+Users can persist a different JSON-RPC peer in the admin, vet, groomer, or owner web Settings
+screen. Before any contract-address request, the client requires `eth_chainId` to match the bundled
+chain; a bad custom choice falls back to `VITE_ROAX_RPC` (or the owner wallet's code-bundled
+default), which is guarded independently. If neither establishes the chain, the read remains
+unavailable. This improves liveness and censorship resistance but does not add light-client
+verification—a peer can fabricate reads. Central app APIs and provider-directory/indexer endpoints
+remain deployment-configured, and an injected or WalletConnect wallet uses its own provider for
+transactions.
 
 ### Call-outs (get these right)
 
@@ -606,12 +615,15 @@ curl -fsS https://<PROVER_DOMAIN>/health     # {"status":"ok"}
 Phones get the vet/groomer **hosts from the scanned QR**, not from a baked URL: `remote-up.sh` /
 compose set each business's **`DEPLOYMENT_URL=https://<DOMAIN>`**, which becomes the host embedded in the
 `/p/<token>` (issue) and `/x/<token>` (export) QR codes the phone scans. The device only ever calls the
-**scanned host**.
+**scanned host**. The Profile blockchain setting changes only JSON-RPC; it cannot repoint either
+service host or the fixed provider directory/indexer.
 
 Because REMOTE stays on **ROAX testnet with the same contract addresses**, **no app rebuild is needed**
 to point phones at a REMOTE deployment — the bundled `roax.json` (addresses + chainId) is unchanged. You
-only rebuild the apps when you **change chains/addresses** (Tier 3) or set a new baked default. Full
-build + install + endpoint model: **[MOBILE_BUILD.md](./MOBILE_BUILD.md)**.
+only rebuild the apps when you **change chains/addresses** (Tier 3) or change the bundled default.
+A user can select another ROAX endpoint at runtime without rebuilding; every endpoint is guarded
+against the bundled chain id. Full build + install + endpoint model:
+**[MOBILE_BUILD.md](./MOBILE_BUILD.md)**.
 
 ---
 

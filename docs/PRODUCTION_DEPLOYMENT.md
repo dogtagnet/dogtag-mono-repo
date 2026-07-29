@@ -63,15 +63,20 @@ continuing. Hardening on top of a broken REMOTE only hides the failure.
 
 ---
 
-## 2. Chain swap (config only — NO code edits)
+## 2. Chain swap (coordinated config + client bundle update)
 
 > This doc OWNS the chain-swap checklist.
 
-Moving off ROAX testnet to a production chain is a **configuration change, not a code change**: `CHAIN_ID`,
-`ROAX_RPC`, and every contract address are env-driven on the backend and portal, and baked-but-editable in
-the mobile apps. (`ROAX_RPC` / `VITE_ROAX_RPC` are just the variable *names* — set them to **whatever RPC
-your target chain uses**; nothing requires ROAX.) The one exception is the browser-wallet signing path —
-see the caveat in §6.
+Rotating an endpoint while staying on the same deployed chain is a configuration/runtime choice:
+backends use `ROAX_RPC`, direct-chain web clients use `VITE_ROAX_RPC` as their bundled default, and
+users can persist another same-chain endpoint in web Settings or the native Profile screen.
+
+Moving the contract set to another chain is broader. `CHAIN_ID`, backend `ROAX_RPC`, every contract
+address, the web chain definition/defaults, and each mobile bundle must move together. The clients'
+chain guards deliberately reject an endpoint whose `eth_chainId` does not match the chain bundled
+with those addresses. (`ROAX_RPC` / `VITE_ROAX_RPC` are legacy variable *names*; their values are not
+required to use the ROAX-operated endpoint.) The browser-wallet signing path has an additional caveat
+in §6.
 
 You must update **four** surfaces in lockstep, then **rebuild the apps**. Skipping any one leaves a split
 brain (e.g. portals on the new chain, phones still on the old).
@@ -159,37 +164,52 @@ cat contracts/deployments/<chain>.json   # eyeball: IssuerRegistry, DogTagIssuer
 **STOP if** the file is missing or `chainId` mismatches → you have not actually deployed (or wired) the set
 on the target chain. Deploy first per [DEPLOY.md](./DEPLOY.md); do not hand-edit addresses into `.env`.
 
-### 2.3 Portal `web/.env` (every `VITE_*` address + `VITE_ROAX_RPC`)
+### 2.3 Portal bundled defaults, chain definition, and `VITE_*` addresses
 
 For each stack's portal env (`stacks/admin/web/.env`, `stacks/vet/web/.env`, `stacks/groomer/web/.env`),
-set the read-only chain RPC and every contract `VITE_*` address from `contracts/deployments/<chain>.json`.
-The full `VITE_*` table is owned by [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md).
+set the guarded default chain RPC and every contract `VITE_*` address from
+`contracts/deployments/<chain>.json`. `VITE_ROAX_RPC` is a build-time default, not a lock: Settings
+can persist a custom endpoint, but only one that passes the same-chain guard. The full `VITE_*` table
+is owned by [REMOTE_DEPLOYMENT.md](./REMOTE_DEPLOYMENT.md).
 
 ```bash
-# Per stack web/.env — read-only chain RPC + contract addresses:
-#   VITE_ROAX_RPC=<NEW_RPC>                  # the variable is named *_ROAX_RPC but holds ANY chain's RPC
+# Per stack web/.env — guarded default chain RPC + contract addresses:
+#   VITE_ROAX_RPC=<NEW_RPC>                  # bundled default; a custom peer must report NEW_CHAIN_ID
 #   VITE_ISSUER_REGISTRY_ADDR=...
 #   VITE_DOGTAG_ISSUER_ADDR=...              # per-recordType issuer for isValid polling (optional)
 # Keep VITE_DEMO_MODE UNSET.
+#
+# If the chain id changed, update the shared browser chain definition and the owner-wallet display
+# constants as part of the client build:
+#   packages/ui/src/wallet/chain.ts           # id/hex, RPC default, currency, explorer metadata
+#   stacks/owner/web/src/lib/config.ts        # chain id, RPC default, explorer
 ```
+
+The custom browser endpoint controls the app's direct reads. It does **not** repoint centralized
+app APIs or the provider directory/indexer, and transactions through an injected or WalletConnect
+wallet still use that wallet's provider. Endpoint choice is not a light-client trust upgrade: a
+JSON-RPC peer can fabricate contract reads even when it reports the expected chain id.
 
 ### 2.4 REBUILD the mobile apps — each bundles its OWN `roax.json`
 
 The phones do **not** read backend `.env`. Each app bundles its **own copy** of `roax.json` (a trimmed
-subset of contract addresses) and bakes the chain RPC as a constant. **There is no sync script** that
-copies addresses into the apps - you must hand-edit **both** files, re-vendor the production proving
-assets, then rebuild and reinstall. Full mobile build steps are in **[MOBILE_BUILD.md](./MOBILE_BUILD.md)**.
+subset of contract addresses plus the expected chain id) and a default chain RPC. **There is no sync
+script** that copies addresses into the apps - you must hand-edit **both** files, re-vendor the
+production proving assets, then rebuild and reinstall. Users may choose a different RPC in Profile,
+but only for that bundled chain. Full mobile build steps are in
+**[MOBILE_BUILD.md](./MOBILE_BUILD.md)**.
 
 ```bash
-# 1. Hand-edit BOTH app roax.json copies to the new chain's addresses (from contracts/deployments/<chain>.json):
+# 1. Hand-edit BOTH app roax.json copies to the new chain's addresses AND chainId
+#    (from contracts/deployments/<chain>.json):
 #      apps/android/app/src/main/assets/roax.json
 #      apps/ios/DogTag/roax.json
 #    (verified iOS == Android; keep them identical.)
 #
-# 2. If the CHAIN itself changed (not just addresses), also update the baked RPC constant in each app
+# 2. If the CHAIN itself changed (not just addresses), also update the bundled default RPC in each app
 #    (exact file paths also in MOBILE_BUILD.md):
 #      iOS:     apps/ios/DogTag/Models.swift                                            -> AppConfig.roaxRpc = "<NEW_RPC>"
-#      Android: apps/android/app/src/main/java/io/liberalize/dogtag/data/AppConfig.kt   -> ROAX_RPC         = "<NEW_RPC>"
+#      Android: apps/android/app/src/main/java/io/liberalize/dogtag/net/RoaxRpc.kt      -> DEFAULT_RPC      = "<NEW_RPC>"
 #
 # 3. Re-vendor the PRODUCTION consent proving assets (the §3 ceremony zkey; the app needs the pair
 #    consent_final.zkey + consent.graph):

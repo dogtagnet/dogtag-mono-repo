@@ -15,11 +15,18 @@ export function shortAddress(addr?: string): string {
  * with a "Switch to ROAX" action (impl §5.0). Requires WagmiProvider + AppKit init
  * (createWalletConfig) above it.
  */
-export function WalletButton({ className }: { className?: string }) {
+export function WalletButton({
+  className,
+  defaultRpcUrl,
+}: {
+  className?: string;
+  /** The deployment's bundled endpoint, used when adding ROAX to a wallet. */
+  defaultRpcUrl?: string;
+}) {
   const { open } = useAppKit();
   const { address, isConnected } = useAccount();
   const { disconnect } = useDisconnect();
-  const { isOnRoax, switchToRoax, switching } = useRoaxChain();
+  const { isOnRoax, switchToRoax, switching } = useRoaxChain(defaultRpcUrl);
 
   if (!isConnected) {
     return (

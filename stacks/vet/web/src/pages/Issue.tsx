@@ -20,6 +20,7 @@ import {
   buildFieldsObject,
   demoRabiesIssue,
   schemaFor,
+  useRoaxRpcPreference,
   useToast,
   validateField,
   type FieldDef,
@@ -35,6 +36,7 @@ export function Issue() {
   const { api, signingMode } = useApp();
   const { toast } = useToast();
   const { sendTransactionAsync } = useSendTransaction();
+  const rpc = useRoaxRpcPreference(env.roaxRpc);
 
   // Testnet demo: prefill the rabies cert FIELDS so you only set the dogTagId + Sign & Issue. The dogTagId
   // is NEVER demo-prefilled — it must be the handle from the DOG_PROFILE SBT issuance, typed by the operator
@@ -179,7 +181,8 @@ export function Issue() {
           root={issued.resp.merkleRoot}
           txHash={issued.txHash}
           issuerAddr={issued.issuerAddr}
-          rpcUrl={env.roaxRpc}
+          rpcUrl={rpc.rpcUrl}
+          defaultRpcUrl={rpc.defaultRpcUrl}
         />
       </div>
     );

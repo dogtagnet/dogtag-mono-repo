@@ -52,6 +52,158 @@ enum Http {
 enum RoaxRpc {
     enum Result { case valid, invalid, unknown(String) }
 
+    /// Why a requested endpoint could not be used. A wrong-chain answer is kept separate so the
+    /// settings screen can say exactly what happened; neither it nor a transport/malformed-response
+    /// failure is allowed to reach an address-bound chain read.
+    enum EndpointFailure: Equatable {
+        case invalidURL
+        case unavailable
+        case invalidChainIdResponse
+        case wrongChain(reported: UInt64)
+    }
+
+    /// The route chosen after probing `eth_chainId`. `unavailable` means even the bundled endpoint
+    /// failed the guard, so no contract read may be sent or trusted.
+    enum EndpointRoute: Equatable {
+        case bundled
+        case custom(String)
+        case bundledFallback(EndpointFailure)
+        case unavailable(custom: EndpointFailure?, bundled: EndpointFailure)
+
+        var rpcUrl: String? {
+            switch self {
+            case .bundled, .bundledFallback: return AppConfig.roaxRpc
+            case .custom(let url): return url
+            case .unavailable: return nil
+            }
+        }
+    }
+
+    /// Check the requested peer immediately before a read. A custom peer that is unavailable,
+    /// malformed, or reports a chain other than the one whose contract addresses are bundled falls
+    /// back to the bundled peer. The bundled peer is guarded too: if it cannot establish the bundled
+    /// chain id, the caller gets UNKNOWN rather than an answer from an unestablished chain.
+    static func endpointRoute(rpcUrl: String) async -> EndpointRoute {
+        await endpointRoute(
+            rpcUrl: rpcUrl,
+            expectedChainId: RoaxConfig.load().chainId,
+            probe: { url, body in await Http.postJSON(url, body: body) }
+        )
+    }
+
+    /// Injectable seam for the host-safe endpoint-selection tests. The probe receives the complete
+    /// JSON-RPC body so tests can also pin that the guard asks `eth_chainId`, not `net_version` or a
+    /// contract whose address is already chain-specific.
+    static func endpointRoute(
+        rpcUrl: String,
+        expectedChainId: Int,
+        probe: (String, String) async -> Http.Response
+    ) async -> EndpointRoute {
+        let bundled = AppConfig.roaxRpc
+        let requested = RpcEndpointSettings.normalizedURL(rpcUrl)
+
+        if requested == bundled {
+            if let failure = await chainFailure(
+                url: bundled, expectedChainId: expectedChainId, probe: probe) {
+                return .unavailable(custom: nil, bundled: failure)
+            }
+            return .bundled
+        }
+
+        let customFailure: EndpointFailure
+        if let requested {
+            if let failure = await chainFailure(
+                url: requested, expectedChainId: expectedChainId, probe: probe) {
+                customFailure = failure
+            } else {
+                return .custom(requested)
+            }
+        } else {
+            customFailure = .invalidURL
+        }
+
+        if let bundledFailure = await chainFailure(
+            url: bundled, expectedChainId: expectedChainId, probe: probe) {
+            return .unavailable(custom: customFailure, bundled: bundledFailure)
+        }
+        return .bundledFallback(customFailure)
+    }
+
+    private static func chainFailure(
+        url: String,
+        expectedChainId: Int,
+        probe: (String, String) async -> Http.Response
+    ) async -> EndpointFailure? {
+        let payload: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": [],
+        ]
+        guard let raw = try? JSONSerialization.data(withJSONObject: payload),
+              let body = String(data: raw, encoding: .utf8) else {
+            return .invalidChainIdResponse
+        }
+        let response = await probe(url, body)
+        guard response.ok else { return .unavailable }
+        guard let data = response.body.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["error"] == nil,
+              let result = object["result"] as? String,
+              result.hasPrefix("0x"),
+              result.count > 2,
+              let reported = UInt64(result.dropFirst(2), radix: 16) else {
+            return .invalidChainIdResponse
+        }
+        guard reported == UInt64(expectedChainId) else { return .wrongChain(reported: reported) }
+        return nil
+    }
+
+    /// The single transport seam for all blockchain JSON-RPC reads below. A custom peer that passes
+    /// the chain guard but disappears before the actual read gets one guarded retry on the bundled
+    /// endpoint. Nothing here applies to central/provider or QR-discovered role APIs.
+    private static func guardedPostJSON(rpcUrl: String, body: String) async -> Http.Response {
+        await guardedPostJSON(
+            rpcUrl: rpcUrl,
+            body: body,
+            expectedChainId: RoaxConfig.load().chainId,
+            probe: { url, probeBody in await Http.postJSON(url, body: probeBody) },
+            request: { url, requestBody in await Http.postJSON(url, body: requestBody) }
+        )
+    }
+
+    /// Injectable form of the production transport seam. Keeping chain probes and address-bound
+    /// requests as separate closures lets tests prove that a rejected peer receives no contract call
+    /// and that a retry cannot bypass a fresh guard on the bundled peer.
+    static func guardedPostJSON(
+        rpcUrl: String,
+        body: String,
+        expectedChainId: Int,
+        probe: (String, String) async -> Http.Response,
+        request: (String, String) async -> Http.Response
+    ) async -> Http.Response {
+        let route = await endpointRoute(
+            rpcUrl: rpcUrl,
+            expectedChainId: expectedChainId,
+            probe: probe
+        )
+        guard let selected = route.rpcUrl else {
+            return Http.Response(code: -1, body: "chain guard could not establish the bundled chain")
+        }
+
+        let response = await request(selected, body)
+        guard case .custom = route, !response.ok else { return response }
+
+        // The custom peer passed `eth_chainId` but then became unavailable. Validate the fallback
+        // endpoint immediately too; never turn a transport retry into an unguarded read.
+        let fallback = await endpointRoute(
+            rpcUrl: AppConfig.roaxRpc,
+            expectedChainId: expectedChainId,
+            probe: probe
+        )
+        guard let bundled = fallback.rpcUrl else {
+            return Http.Response(code: -1, body: "chain guard could not establish the bundled chain")
+        }
+        return await request(bundled, body)
+    }
+
     /// The outcome of a read whose on-chain answer is an address or a word.
     ///
     /// Three outcomes, never two: `unset` is the chain ANSWERING with its zero value (nobody ever
@@ -89,7 +241,7 @@ enum RoaxRpc {
         ]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
               let bodyStr = String(data: raw, encoding: .utf8) else { return .unknown("encode") }
-        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
         guard resp.ok else { return .unknown("rpc \(resp.code)") }
         guard let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
@@ -186,7 +338,7 @@ enum RoaxRpc {
         let payload: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
               let bodyStr = String(data: raw, encoding: .utf8) else { return nil }
-        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
         guard resp.ok, let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
               let hex = o["result"] as? String else { return nil }
@@ -496,7 +648,7 @@ enum RoaxRpc {
         ]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
               let bodyStr = String(data: raw, encoding: .utf8) else { return .failure("encode") }
-        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
         guard resp.ok else { return .failure("rpc \(resp.code)") }
         guard let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {

@@ -11,6 +11,7 @@ import { Whitelist } from "./pages/Whitelist";
 import { Wizard } from "./pages/Wizard";
 import { Governance } from "./pages/Governance";
 import { VerificationBench } from "./pages/VerificationBench";
+import { Settings } from "./pages/Settings";
 
 export function App() {
   const { adminToken } = useApp();
@@ -35,6 +36,7 @@ export function App() {
         path="/bench"
         element={<Layout title="Verification bench"><VerificationBench /></Layout>}
       />
+      <Route path="/settings" element={<Layout title="Settings"><Settings /></Layout>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

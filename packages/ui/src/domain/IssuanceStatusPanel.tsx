@@ -18,6 +18,8 @@ export interface IssuanceStatusPanelProps {
    */
   issuerAddr?: string;
   rpcUrl?: string;
+  /** Bundled endpoint to use, after its own chain guard, if the preferred endpoint cannot be used. */
+  defaultRpcUrl?: string;
   pollIntervalMs?: number;
 }
 
@@ -34,6 +36,7 @@ export function IssuanceStatusPanel({
   txHash,
   issuerAddr,
   rpcUrl,
+  defaultRpcUrl,
   pollIntervalMs = 4000,
 }: IssuanceStatusPanelProps) {
   const canPoll = Boolean(issuerAddr);
@@ -54,7 +57,7 @@ export function IssuanceStatusPanel({
     let cancelled = false;
     const tick = async () => {
       try {
-        const valid = await isRootValid({ issuerAddr, root, rpcUrl });
+        const valid = await isRootValid({ issuerAddr, root, rpcUrl, defaultRpcUrl });
         if (!cancelled && valid) {
           setOnChainConfirmed(true);
           setPhase("verified");
@@ -70,7 +73,7 @@ export function IssuanceStatusPanel({
       cancelled = true;
       stop();
     };
-  }, [canPoll, issuerAddr, root, rpcUrl, pollIntervalMs, stop]);
+  }, [canPoll, issuerAddr, root, rpcUrl, defaultRpcUrl, pollIntervalMs, stop]);
 
   const verified = phase === "verified";
 

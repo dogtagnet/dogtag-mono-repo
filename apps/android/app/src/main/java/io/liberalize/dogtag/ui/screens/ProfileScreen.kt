@@ -23,10 +23,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,6 +51,7 @@ import io.liberalize.dogtag.data.DarkPref
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.RoaxConfig
 import io.liberalize.dogtag.data.SettingsStore
+import io.liberalize.dogtag.net.RoaxRpc
 import io.liberalize.dogtag.profile.DogTagCard
 import io.liberalize.dogtag.profile.ImportedTag
 import io.liberalize.dogtag.profile.OwnedTag
@@ -74,6 +77,10 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val roax = remember { RoaxConfig.load(context) }
+    var rpcInput by remember(settings.rpcUrl) { mutableStateOf(settings.rpcUrl) }
+    var rpcMessage by remember { mutableStateOf("") }
+    var rpcMessageError by remember { mutableStateOf(false) }
+    var checkingRpc by remember { mutableStateOf(false) }
 
     var walletExists by remember { mutableStateOf(Wallet.exists(context)) }
     var ethAddr by remember { mutableStateOf<String?>(null) }
@@ -415,12 +422,129 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
         SectionTitle("Network")
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             KV("Chain", "ROAX (chainId ${roax.chainId})")
             KV("DogTagSBT", roax.dogTagSbt.take(16) + "…")
             KV("IssuerRegistry", roax.issuerRegistry.take(16) + "…")
             KV("ProtocolRegistry", roax.protocolRegistry.ifBlank { "Not deployed" }.take(16) + "…")
+            HorizontalDivider(color = c.muted.copy(alpha = 0.3f))
+            Text("Blockchain endpoint", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
+            Text(
+                "Choosing a custom JSON-RPC peer can improve endpoint choice and liveness and help " +
+                    "resist endpoint censorship. It is not a trust upgrade. DogTag is not a light " +
+                    "client, so that peer can fabricate isValid, rootIssuer, profileRoot, and other " +
+                    "chain responses. This setting changes blockchain reads only; the centralized " +
+                    "provider directory/indexer is not configurable here.",
+                fontSize = 11.sp,
+                color = c.muted,
+            )
+            Text(
+                "Before every blockchain read, DogTag checks eth_chainId against bundled chainId " +
+                    "${roax.chainId}. An invalid, unreachable, or different-chain custom endpoint " +
+                    "falls back to the bundled endpoint, which is checked too. If neither endpoint " +
+                    "establishes that chainId, no contract read is sent. This prevents accidental " +
+                    "cross-chain address use; it cannot prove a peer is honest.",
+                fontSize = 11.sp,
+                color = c.muted,
+            )
+            OutlinedTextField(
+                value = rpcInput,
+                onValueChange = {
+                    rpcInput = it
+                    rpcMessage = ""
+                    rpcMessageError = false
+                },
+                label = { Text("JSON-RPC URL") },
+                placeholder = { Text(RoaxRpc.DEFAULT_RPC) },
+                singleLine = true,
+                enabled = !checkingRpc,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = {
+                        checkingRpc = true
+                        rpcMessage = "Checking reported chainId…"
+                        rpcMessageError = false
+                        scope.launch {
+                            val normalized = RoaxRpc.normalizeRpcUrl(rpcInput)
+                            if (normalized == null) {
+                                // An explicit rejected save must not leave an older custom peer
+                                // active behind the error copy. Keep the draft for correction, but
+                                // fail the persisted choice closed to the bundled endpoint.
+                                store.setRpcUrl(RoaxRpc.DEFAULT_RPC)
+                                rpcMessage =
+                                    "Enter a valid http(s) JSON-RPC URL. The custom endpoint was " +
+                                        "rejected; blockchain reads use the bundled endpoint."
+                                rpcMessageError = true
+                            } else {
+                                val route = withContext(Dispatchers.IO) {
+                                    RoaxRpc.endpointRoute(normalized, roax.chainId)
+                                }
+                                when (route) {
+                                    is RoaxRpc.EndpointRoute.Custom -> {
+                                        store.setRpcUrl(route.url)
+                                        rpcInput = route.url
+                                    }
+                                    RoaxRpc.EndpointRoute.Bundled -> {
+                                        store.setRpcUrl(RoaxRpc.DEFAULT_RPC)
+                                        rpcInput = RoaxRpc.DEFAULT_RPC
+                                    }
+                                    is RoaxRpc.EndpointRoute.BundledFallback,
+                                    is RoaxRpc.EndpointRoute.Unavailable ->
+                                        store.setRpcUrl(RoaxRpc.DEFAULT_RPC)
+                                }
+                                rpcMessage = endpointRouteMessage(route, roax.chainId)
+                                rpcMessageError = route is RoaxRpc.EndpointRoute.Unavailable ||
+                                    route is RoaxRpc.EndpointRoute.BundledFallback
+                            }
+                            checkingRpc = false
+                        }
+                    },
+                    enabled = !checkingRpc,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = c.accent,
+                        contentColor = c.onAccent,
+                    ),
+                ) {
+                    Text(if (checkingRpc) "Checking…" else "Save & check")
+                }
+                TextButton(
+                    onClick = {
+                        // Close the interaction gate before the first suspension. Otherwise a quick
+                        // default → save sequence can launch two probes whose messages and writes
+                        // complete out of order.
+                        checkingRpc = true
+                        rpcMessage = "Checking the bundled endpoint…"
+                        rpcMessageError = false
+                        scope.launch {
+                            store.setRpcUrl(RoaxRpc.DEFAULT_RPC)
+                            rpcInput = RoaxRpc.DEFAULT_RPC
+                            val route = withContext(Dispatchers.IO) {
+                                RoaxRpc.endpointRoute(RoaxRpc.DEFAULT_RPC, roax.chainId)
+                            }
+                            rpcMessage = endpointRouteMessage(route, roax.chainId)
+                            rpcMessageError = route is RoaxRpc.EndpointRoute.Unavailable
+                            checkingRpc = false
+                        }
+                    },
+                    enabled = !checkingRpc,
+                ) {
+                    Text("Use default")
+                }
+            }
+            if (rpcMessage.isNotBlank()) {
+                Text(
+                    rpcMessage,
+                    fontSize = 11.sp,
+                    color = if (rpcMessageError) c.danger else c.success,
+                )
+            }
         }
 
         // ---- Developer · on-device ZK self-test (debug builds only) ----
@@ -433,6 +557,33 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
         Spacer(Modifier.size(24.dp))
     }
 }
+
+private fun endpointRouteMessage(route: RoaxRpc.EndpointRoute, expectedChainId: Long): String =
+    when (route) {
+        RoaxRpc.EndpointRoute.Bundled ->
+            "Using the bundled endpoint on chainId $expectedChainId."
+        is RoaxRpc.EndpointRoute.Custom ->
+            "Saved. The custom endpoint reports chainId $expectedChainId and is active."
+        is RoaxRpc.EndpointRoute.BundledFallback ->
+            "The custom endpoint ${endpointFailureMessage(route.customFailure)}. It was rejected; " +
+                "blockchain reads use the bundled endpoint."
+        is RoaxRpc.EndpointRoute.Unavailable -> {
+            val custom = route.customFailure?.let {
+                "The custom endpoint ${endpointFailureMessage(it)}, and "
+            }.orEmpty()
+            "${custom}the bundled endpoint ${endpointFailureMessage(route.bundledFailure)}. " +
+                "No contract read will be sent until an endpoint establishes chainId $expectedChainId."
+        }
+    }
+
+private fun endpointFailureMessage(failure: RoaxRpc.EndpointFailure): String =
+    when (failure) {
+        RoaxRpc.EndpointFailure.InvalidUrl -> "has an invalid URL"
+        RoaxRpc.EndpointFailure.Unavailable -> "could not be reached"
+        RoaxRpc.EndpointFailure.InvalidChainIdResponse -> "did not return a valid eth_chainId"
+        is RoaxRpc.EndpointFailure.WrongChain ->
+            "reports chainId ${failure.actualChainId}"
+    }
 
 @Composable
 private fun KV(k: String, v: String) {
