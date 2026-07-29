@@ -4,6 +4,8 @@
  * serde renames exactly.
  */
 
+import type { ContactChannelRecord } from "../directory/channels";
+
 export type SigningMode = "wallet" | "backend";
 export type VerifyMode = "normal" | "zk";
 export type RecordStatus = "prepared" | "confirming" | "issued" | "revoked" | "expired";
@@ -528,13 +530,7 @@ export interface BusinessGeo {
  * a provider publishes them so it can be reached. Every channel is optional; a provider chooses
  * which it exposes, and a provider with no location is reached through these alone.
  */
-export interface BusinessContact {
-  phone?: string;
-  whatsapp?: string;
-  telegram?: string;
-  email?: string;
-  website?: string;
-}
+export type BusinessContact = Partial<ContactChannelRecord<string>>;
 /** GET /v1/businesses item (non-personal fields only; never the HMAC secret). */
 export interface CentralBusiness {
   businessId: string;

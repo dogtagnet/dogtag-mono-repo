@@ -9,6 +9,9 @@ import {
   Input,
   Label,
   Spinner,
+  PROVIDER_CONTACT_CHANNELS,
+  blankContactFields,
+  contactRequestFields,
   explorerTxUrl,
   locationRequestFields,
   parseLocationInput,
@@ -17,6 +20,7 @@ import {
   DEMO_BUSINESS_VET,
   DEMO_ISSUER_APPLICATION_GROOMER,
   DEMO_ISSUER_APPLICATION_VET,
+  type ContactChannelRecord,
   type DemoBusiness,
   type DemoIssuerApplication,
   type DnsConfirmationRequired,
@@ -44,16 +48,21 @@ const EMPTY_BUSINESS: DemoBusiness = {
   // Blank lat/lng is a provider with NO location, not a provider at 0,0. See the register form.
   lat: "",
   lng: "",
-  phone: "",
-  whatsapp: "",
-  telegram: "",
-  email: "",
-  website: "",
+  ...blankContactFields(),
   services: "",
   apiBaseUrl: "",
   domain: "",
   documentStores: "",
 };
+/** Keyed off the shared channel list, so a channel added there needs a label rather than compiling. */
+const CONTACT_LABELS: ContactChannelRecord<string> = {
+  phone: "Phone",
+  whatsapp: "WhatsApp",
+  telegram: "Telegram",
+  email: "Business email",
+  website: "Website",
+};
+
 const EMPTY_APPLICATION: DemoIssuerApplication = {
   issuerEntityId: "",
   addresses: "",
@@ -125,13 +134,9 @@ export function Wizard() {
         type: biz.type,
         name: biz.name,
         ...locationRequestFields(location),
-        contact: {
-          phone: biz.phone.trim() || undefined,
-          whatsapp: biz.whatsapp.trim() || undefined,
-          telegram: biz.telegram.trim() || undefined,
-          email: biz.email.trim() || undefined,
-          website: biz.website.trim() || undefined,
-        },
+        // The SAME fold the Businesses dialog uses. Restating the channels here is how a channel
+        // gets added to one register path and silently dropped by the other.
+        contact: contactRequestFields(biz),
         services: biz.services.split(",").map((s) => s.trim()).filter(Boolean),
         apiBaseUrl: biz.apiBaseUrl,
         domain: biz.domain,
@@ -285,11 +290,14 @@ export function Wizard() {
                 one at 0,0. Its contact channels are then how it is reached. */}
             <Field label="Latitude (optional)" value={biz.lat} onChange={(v) => setBiz({ ...biz, lat: v })} />
             <Field label="Longitude (optional)" value={biz.lng} onChange={(v) => setBiz({ ...biz, lng: v })} />
-            <Field label="Phone" value={biz.phone} onChange={(v) => setBiz({ ...biz, phone: v })} />
-            <Field label="WhatsApp" value={biz.whatsapp} onChange={(v) => setBiz({ ...biz, whatsapp: v })} />
-            <Field label="Telegram" value={biz.telegram} onChange={(v) => setBiz({ ...biz, telegram: v })} />
-            <Field label="Business email" value={biz.email} onChange={(v) => setBiz({ ...biz, email: v })} />
-            <Field label="Website" value={biz.website} onChange={(v) => setBiz({ ...biz, website: v })} />
+            {PROVIDER_CONTACT_CHANNELS.map((channel) => (
+              <Field
+                key={channel}
+                label={CONTACT_LABELS[channel]}
+                value={biz[channel]}
+                onChange={(v) => setBiz({ ...biz, [channel]: v })}
+              />
+            ))}
             <Field label="API base URL" value={biz.apiBaseUrl} onChange={(v) => setBiz({ ...biz, apiBaseUrl: v })} required />
             <Field label="Domain" value={biz.domain} onChange={(v) => setBiz({ ...biz, domain: v })} required />
             <Field label="Services (comma)" value={biz.services} onChange={(v) => setBiz({ ...biz, services: v })} />

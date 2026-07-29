@@ -246,6 +246,8 @@ export {
   createMemoryProviderDirectoryCache,
   withProviderDirectoryCache,
   // a location-less provider is listed and contactable, but never placed — see directory/providers.ts
+  blankContactFields,
+  contactRequestFields,
   locationRequestFields,
   parseLocationInput,
   type LocationInput,
@@ -258,6 +260,7 @@ export {
   PROVIDER_CONTACT_CHANNELS,
   type CentralDirectoryOptions,
   type OnchainDirectoryOptions,
+  type ContactChannelRecord,
   type DirectoryObservation,
   type DirectoryProvider,
   type DirectoryProviderContact,

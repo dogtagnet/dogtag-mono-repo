@@ -2984,13 +2984,35 @@ rejected it - so a provider with no premises rendered as a confident pin in the 
 Absence had no representation at all in the record itself. `lat`/`lng` are now `Option<f64>`, joined by
 optional business contact channels (`phone`/`whatsapp`/`telegram`/`email`/`website`).
 
-**The fifth channel is TS-and-server only for now.** `DirectoryProviderContact` and the central adapter
-carry `website`; the two native mirrors (`ProviderDirectory.kt`, `Net.swift` `parseProviders`) still read
-four. That is safe rather than a break, and only because both parsers read named keys one at a time
-instead of validating the contact object exhaustively - an unknown key is ignored, not refused, so the
-server publishing `website` cannot take the mobile directory to `unavailable`. The cost is that a
-provider reachable ONLY by website reads as uncontactable on a phone. Closing it means adding the
-channel to both mirrors; do not close it by making either parser strict about unknown keys.
+**All five channels are read by every consumer, and that is a correctness property rather than
+completeness.** `website` briefly shipped TS-and-server-only, and the failure that made was NOT a
+missing feature: both native parsers read named keys one at a time, so the extra key was silently
+ignored, `ProviderContact.hasAny` folded four channels, and a provider reachable only by website
+rendered the literal "No contact details published." - an absence the phone invented about a provider
+that had published exactly one way to reach it. A channel the server serves and a client drops is
+worse than one never added, because the operator sees it saved and believes it published.
+
+**The channel list is single-sourced in TypeScript and mirrored by hand in the two native ports.**
+`PROVIDER_CONTACT_CHANNELS` (`packages/ui/src/directory/channels.ts`) is a leaf module importing
+nothing, so `api/types.ts` (`BusinessContact`), `directory/types.ts` (`DirectoryProviderContact`),
+`directory/sources.ts`, `schema/demoData.ts` (`DemoBusiness`) and both admin register forms derive
+from it instead of restating five keys in six places. Adding a channel there is a COMPILE ERROR at
+each site that owns a per-channel human decision (`DemoBusiness`'s three presets, and the label /
+placeholder records in `Businesses.tsx` and `Wizard.tsx`) and is picked up automatically everywhere
+that merely folds (`normalizeContact`, `blankContactFields`, `contactRequestFields`, both forms'
+field lists). Verified by mutation - adding a sixth channel reddens exactly those five sites.
+Kotlin and Swift cannot import that list: `ProviderContact` in
+`apps/android/.../nearby/NearbyDecision.kt` and `apps/ios/DogTag/NearbyDecision.swift` each name it
+as the source they mirror, and both must move in the same change as the data class, its parser, its
+`hasAny` fold, AND its screen row. `hasAny` alone renders a website-only provider as an empty card,
+which is a silent blank rather than a false claim - worse, not better. Do NOT close a future gap by
+making either parser strict about unknown keys.
+
+**`website` is the first channel whose SCHEME comes from the directory string.** `tel:`, `https://wa.me/`,
+`https://t.me/` and `mailto:` are all constructed by the renderer, so the value can only fill a slot;
+a website value is the whole URL. Both ports therefore open it only on a case-insensitive `http://`
+or `https://` prefix and otherwise render it as inert published text - the same shape of guard the
+four siblings apply, not fussiness. Android passes `onOpen(uri, false)` like every non-dial channel.
 
 - **`Number("")` is `0`, not `NaN`, and that is the whole mechanism.** Every register form coerced its
   latitude field unconditionally, so a blank input became a valid-looking coordinate. There are **TWO**
@@ -3029,6 +3051,15 @@ channel to both mirrors; do not close it by making either parser strict about un
   "pin is correct" / "pin is wrong, here is the right one" / "no location". There is deliberately **no**
   heuristic, no silent migration, and no repair endpoint. Do not add one that decides on the operator's
   behalf. This is registry-plan §4 item 7, and it blocks C-2.
+- **That banner is THREE states, and the initial one is never the failure one.** `Businesses.tsx` holds
+  `ReviewState = checking | loaded | failed`. Absence of the banner is how "nothing needs an answer" is
+  shown, so the failure case needs its own rendered line - but a two-value `Resp | null` makes the
+  INITIAL value the failure value, and the page announced "rows could not be listed" on first paint
+  before `load()` had issued a request. Both collapses are the same defect pointed in opposite
+  directions: a check that never ran reading as one that passed, and one that never ran reading as one
+  that failed. `checking` renders NEITHER banner, and `load()` returns to it before re-reading so a
+  post-register reload does not present the previous answer as current. A failed review read still must
+  never blank or block the registry table itself.
 - `haversine_km` and both geo-parity fixtures are UNTOUCHED - only the call site changed, so that a
   location-less provider is not within any radius (mirroring `withinRadiusKm`'s both-must-be-usable rule)
   rather than matching a caller near `0,0` as it used to.

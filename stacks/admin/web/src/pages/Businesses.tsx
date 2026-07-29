@@ -21,28 +21,41 @@ import {
   TableHeader,
   TableRow,
   useToast,
+  blankContactFields,
+  contactRequestFields,
   locationRequestFields,
   parseLocationInput,
   DEMO_BUSINESS_CONTACT_ONLY,
   DEMO_BUSINESS_GROOMER,
   DEMO_BUSINESS_VET,
+  PROVIDER_CONTACT_CHANNELS,
   type BusinessContact,
   type BusinessLocationReviewResp,
   type CentralBusiness,
+  type ContactChannelRecord,
 } from "@dogtag/ui";
 import { AlertTriangle, Building2, Copy, MapPin, Plus, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useApp } from "../app/AppContext";
 import { env } from "../lib/env";
 
+/**
+ * How each channel is labelled here. The KEYS come from the shared list, so a channel added there
+ * is a compile error in this record rather than a field this form silently never offers.
+ */
+const CONTACT_PRESENTATION: ContactChannelRecord<{ label: string; placeholder: string }> = {
+  phone: { label: "Phone", placeholder: "+65 6123 4567" },
+  whatsapp: { label: "WhatsApp", placeholder: "+65 9123 4567" },
+  telegram: { label: "Telegram", placeholder: "@handle" },
+  email: { label: "Business email", placeholder: "hello@shop.example" },
+  website: { label: "Website", placeholder: "https://shop.example" },
+};
+
 /** The channels a provider may publish, in the order the table and form offer them. */
-const CONTACT_FIELDS = [
-  { key: "phone", label: "Phone", placeholder: "+65 6123 4567" },
-  { key: "whatsapp", label: "WhatsApp", placeholder: "+65 9123 4567" },
-  { key: "telegram", label: "Telegram", placeholder: "@handle" },
-  { key: "email", label: "Business email", placeholder: "hello@shop.example" },
-  { key: "website", label: "Website", placeholder: "https://shop.example" },
-] as const satisfies readonly { key: keyof BusinessContact; label: string; placeholder: string }[];
+const CONTACT_FIELDS = PROVIDER_CONTACT_CHANNELS.map((key) => ({
+  key,
+  ...CONTACT_PRESENTATION[key],
+}));
 
 /** The published channels of one row, in listing order. */
 function contactEntries(contact: BusinessContact | undefined): { label: string; value: string }[] {
@@ -64,11 +77,24 @@ function contactEntries(contact: BusinessContact | undefined): { label: string; 
  * is a legal point in the Gulf of Guinea, so it rendered here as a confident pin off the coast of
  * Ghana. Never substitute a placeholder coordinate for an absent one.
  */
+/**
+ * THREE states, and the initial one is never the failure one.
+ *
+ * "The review has not been read yet", "it was read and nothing needs an answer" and "it could not be
+ * read" are three different claims. Collapsing the first two into one absent value is how a lapsed
+ * session reads as all-clear on the page whose only signal is this banner; collapsing the first and
+ * third is how a page that has issued no request yet announces that the check failed.
+ */
+type ReviewState =
+  | { status: "checking" }
+  | { status: "loaded"; review: BusinessLocationReviewResp }
+  | { status: "failed" };
+
 export function Businesses() {
   const { central } = useApp();
   const { toast } = useToast();
   const [rows, setRows] = useState<CentralBusiness[] | null>(null);
-  const [review, setReview] = useState<BusinessLocationReviewResp | null>(null);
+  const [review, setReview] = useState<ReviewState>({ status: "checking" });
   const [open, setOpen] = useState(false);
   const [secret, setSecret] = useState<{ businessId: string; hmacKeyId: string; hmacSecret: string } | null>(null);
 
@@ -81,11 +107,13 @@ export function Businesses() {
       setRows([]);
     }
     // Best-effort and deliberately separate: a review listing that cannot be read must not make the
-    // registry itself look empty. It stays null, so the banner simply does not claim anything.
+    // registry itself look empty. Back to "checking" first, so a re-load after registering does not
+    // keep presenting the previous answer as if it were current.
+    setReview({ status: "checking" });
     try {
-      setReview(await central.businessesLocationReview());
+      setReview({ status: "loaded", review: await central.businessesLocationReview() });
     } catch {
-      setReview(null);
+      setReview({ status: "failed" });
     }
   }, [central, toast]);
 
@@ -95,11 +123,12 @@ export function Businesses() {
 
   return (
     <div className="space-y-6">
-      {/* TRI-state, on purpose. "Could not read the review" and "nothing needs review" are
-          different claims, and rendering nothing for both lets a lapsed session read as all-clear on
-          the page whose only signal is this banner. */}
-      {review === null && <LocationReviewUnavailable />}
-      {review !== null && review.needsReview > 0 && <LocationReviewBanner review={review} />}
+      {/* A read still in flight renders NEITHER banner: it has established nothing yet, so it may
+          claim neither that rows need an answer nor that the check failed. */}
+      {review.status === "failed" && <LocationReviewUnavailable />}
+      {review.status === "loaded" && review.review.needsReview > 0 && (
+        <LocationReviewBanner review={review.review} />
+      )}
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
@@ -339,11 +368,7 @@ function RegisterDialog({
     name: "",
     lat: "",
     lng: "",
-    phone: "",
-    whatsapp: "",
-    telegram: "",
-    email: "",
-    website: "",
+    ...blankContactFields(),
     services: "",
     apiBaseUrl: "",
     domain: "",
@@ -372,9 +397,7 @@ function RegisterDialog({
         type: form.type,
         name: form.name,
         ...locationRequestFields(location),
-        contact: Object.fromEntries(
-          CONTACT_FIELDS.map(({ key }) => [key, form[key].trim()]).filter(([, v]) => v),
-        ),
+        contact: contactRequestFields(form),
         services: form.services.split(",").map((s) => s.trim()).filter(Boolean),
         apiBaseUrl: form.apiBaseUrl,
         domain: form.domain,

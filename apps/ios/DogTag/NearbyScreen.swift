@@ -677,6 +677,7 @@ struct NearbyScreen: View {
                     contactAction("WhatsApp", value: provider.contact.whatsapp, icon: "message.fill", kind: .whatsapp)
                     contactAction("Telegram", value: provider.contact.telegram, icon: "paperplane.fill", kind: .telegram)
                     contactAction("Email", value: provider.contact.email, icon: "envelope.fill", kind: .email)
+                    contactAction("Website", value: provider.contact.website, icon: "globe", kind: .website)
                 }
             } else {
                 Text("No contact details published.")
@@ -724,6 +725,7 @@ struct NearbyScreen: View {
         case whatsapp
         case telegram
         case email
+        case website
     }
 
     @ViewBuilder
@@ -782,6 +784,13 @@ struct NearbyScreen: View {
             components.scheme = "mailto"
             components.path = value
             return value.contains("@") ? components.url : nil
+        case .website:
+            // The first channel whose SCHEME comes from the directory string rather than from us:
+            // the four above all construct theirs. So only an explicit http(s) value is opened;
+            // anything else renders as published text rather than being handed to `openURL` as typed.
+            let lowered = value.lowercased()
+            guard lowered.hasPrefix("http://") || lowered.hasPrefix("https://") else { return nil }
+            return URL(string: value)
         }
     }
 

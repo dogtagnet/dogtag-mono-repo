@@ -15,6 +15,8 @@
  * boundary - it is here so the operator gets the message beside the fields.
  */
 
+import { PROVIDER_CONTACT_CHANNELS, type ContactChannelRecord } from "./channels";
+
 /** What a pair of location inputs means. */
 export type LocationInput =
   | { kind: "absent" }
@@ -65,4 +67,29 @@ export function locationRequestFields(
   location: Extract<LocationInput, { kind: "absent" | "located" }>,
 ): { lat: number; lng: number } | Record<string, never> {
   return location.kind === "located" ? { lat: location.lat, lng: location.lng } : {};
+}
+
+/** Every channel as an empty form field, so a channel added to the shared list appears in a form. */
+export function blankContactFields(): ContactChannelRecord<string> {
+  return Object.fromEntries(
+    PROVIDER_CONTACT_CHANNELS.map((channel) => [channel, ""]),
+  ) as ContactChannelRecord<string>;
+}
+
+/**
+ * The `contact` half of a `RegisterBusinessReq` body, with the channels left blank omitted.
+ *
+ * Folded over the shared channel list for the same reason `parseLocationInput` exists: both register
+ * forms restated the channel keys, so a channel added to one form and not the other is offered to
+ * the operator, saved-looking, and never sent. An omitted channel is absent rather than blank.
+ */
+export function contactRequestFields(
+  values: Readonly<ContactChannelRecord<string>>,
+): Partial<ContactChannelRecord<string>> {
+  return Object.fromEntries(
+    PROVIDER_CONTACT_CHANNELS.flatMap((channel) => {
+      const value = values[channel].trim();
+      return value ? [[channel, value] as const] : [];
+    }),
+  );
 }

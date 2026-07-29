@@ -1,5 +1,6 @@
 import type { CentralClient } from "../api/central";
 import { isValidLatLng, type LatLng } from "../geo";
+import { PROVIDER_CONTACT_CHANNELS, type ContactChannelRecord } from "./channels";
 import type {
   DirectoryProvider,
   DirectoryProviderContact,
@@ -28,13 +29,7 @@ export interface CentralDirectoryOptions {
  * `unavailable`. `geo` and `contact` are optional because a contact-only provider is a valid
  * directory entry even though it cannot appear in a distance-ranked Nearby list.
  */
-interface DirectoryContactRow {
-  phone?: string | null;
-  whatsapp?: string | null;
-  telegram?: string | null;
-  email?: string | null;
-  website?: string | null;
-}
+type DirectoryContactRow = Partial<ContactChannelRecord<string | null>>;
 
 interface DirectoryRow {
   businessId: string;
@@ -54,12 +49,10 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-const CONTACT_FIELDS = ["phone", "whatsapp", "telegram", "email", "website"] as const;
-
 function isOptionalContact(value: unknown): value is DirectoryContactRow | null | undefined {
   if (value === undefined || value === null) return true;
   if (!isRecord(value)) return false;
-  return CONTACT_FIELDS.every((field) => {
+  return PROVIDER_CONTACT_CHANNELS.every((field) => {
     const contactValue = value[field];
     return (
       contactValue === undefined ||
@@ -121,13 +114,12 @@ function normalizedContactValue(value: string | null | undefined): string | null
 function normalizeContact(
   contact: DirectoryContactRow | null | undefined,
 ): DirectoryProviderContact {
-  return {
-    phone: normalizedContactValue(contact?.phone),
-    whatsapp: normalizedContactValue(contact?.whatsapp),
-    telegram: normalizedContactValue(contact?.telegram),
-    email: normalizedContactValue(contact?.email),
-    website: normalizedContactValue(contact?.website),
-  };
+  return Object.fromEntries(
+    PROVIDER_CONTACT_CHANNELS.map((channel) => [
+      channel,
+      normalizedContactValue(contact?.[channel]),
+    ]),
+  ) as DirectoryProviderContact;
 }
 
 /** A configured base with nothing to resolve. It must not fall back to the current page URL. */

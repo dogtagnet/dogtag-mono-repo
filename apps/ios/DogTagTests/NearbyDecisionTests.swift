@@ -108,6 +108,47 @@ final class NearbyDecisionTests: XCTestCase {
         XCTAssertNil(parsed?.last?.active)
     }
 
+    /// A provider reachable ONLY by website must not be reported as having published nothing.
+    ///
+    /// The server serves all five channels; this parser once read four, so `website` was dropped on
+    /// the floor, `hasAny` read false, and the screen said "No contact details published." about a
+    /// provider that had published exactly one. Mirrored by Android
+    /// `aWebsiteOnlyProviderIsContactableRatherThanReportedAsPublishingNothing`.
+    func test_aWebsiteOnlyProviderIsContactableRatherThanReportedAsPublishingNothing() {
+        let parsed = CentralProviderDirectory.parseProviders([
+            "businesses": [
+                [
+                    "businessId": "web-only",
+                    "type": "groomer",
+                    "name": "Web Only Grooming",
+                    "services": [],
+                    "domain": "",
+                    "contact": ["website": "https://web-only.test"],
+                ] as [String: Any],
+            ],
+        ])
+
+        XCTAssertEqual(parsed?.first?.contact.website, "https://web-only.test")
+        XCTAssertNil(parsed?.first?.contact.phone)
+        XCTAssertEqual(parsed?.first?.contact.hasAny, true)
+    }
+
+    /// Consistent with the four sibling channels: a non-string channel is a malformed row.
+    func test_aNonTextWebsiteIsMalformedLikeEveryOtherChannel() {
+        XCTAssertNil(CentralProviderDirectory.parseProviders([
+            "businesses": [
+                [
+                    "businessId": "one",
+                    "type": "vet",
+                    "name": "One",
+                    "services": [],
+                    "domain": "",
+                    "contact": ["website": 42],
+                ] as [String: Any],
+            ],
+        ]))
+    }
+
     /// Mirrors the Kotlin adapter's duplicate-id refusal. `providerId` is the list identity both
     /// scopes render with, so a repeated one is a bad response, not two rows to draw on top of
     /// each other.

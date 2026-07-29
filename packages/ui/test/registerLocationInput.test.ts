@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { locationRequestFields, parseLocationInput } from "../src/directory/registration";
+import { PROVIDER_CONTACT_CHANNELS } from "../src/directory/channels";
+import {
+  blankContactFields,
+  contactRequestFields,
+  locationRequestFields,
+  parseLocationInput,
+} from "../src/directory/registration";
 
 describe("parseLocationInput", () => {
   it("reads blank fields as ABSENT, never as 0,0", () => {
@@ -79,5 +85,45 @@ describe("parseLocationInput", () => {
     expect(half.kind).toBe("invalid");
     if (half.kind !== "invalid") return;
     expect(half.reason).toMatch(/leave both blank/i);
+  });
+});
+
+/**
+ * The same "two forms, one rule" property applied to the contact channels.
+ *
+ * The channel keys were restated in six places, and `website` reached the server and the TS seam
+ * while both native mirrors still read four - so a provider reachable only by website was reported
+ * as having published nothing. These folds are what stop a seventh site from restating them again.
+ */
+describe("contact channel folds", () => {
+  it("offers every channel in the shared list, in listing order", () => {
+    expect(Object.keys(blankContactFields())).toEqual([...PROVIDER_CONTACT_CHANNELS]);
+    expect(Object.values(blankContactFields()).every((v) => v === "")).toBe(true);
+  });
+
+  it("sends the published channels and OMITS the blank ones rather than sending empty strings", () => {
+    const sent = contactRequestFields({
+      ...blankContactFields(),
+      phone: "  +65 6123 4567  ",
+      website: "https://shop.example",
+    });
+
+    expect(sent).toEqual({ phone: "+65 6123 4567", website: "https://shop.example" });
+    // Absent, not blank: a channel the provider did not publish carries no key at all.
+    for (const channel of ["whatsapp", "telegram", "email"] as const) {
+      expect(channel in sent).toBe(false);
+    }
+  });
+
+  it("can send a provider reachable by website alone", () => {
+    const sent = contactRequestFields({
+      ...blankContactFields(),
+      website: "https://web-only.test",
+    });
+    expect(sent).toEqual({ website: "https://web-only.test" });
+  });
+
+  it("treats a whitespace-only channel as unpublished", () => {
+    expect(contactRequestFields({ ...blankContactFields(), telegram: "   " })).toEqual({});
   });
 });

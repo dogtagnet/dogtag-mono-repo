@@ -191,6 +191,7 @@ class CentralProviderDirectory(
                     whatsapp = objectValue.optionalText("whatsapp"),
                     telegram = objectValue.optionalText("telegram"),
                     email = objectValue.optionalText("email"),
+                    website = objectValue.optionalText("website"),
                 )
             }
         }

@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
@@ -743,6 +744,21 @@ private fun ContactProviderRow(
                 }
             } else {
                 PublishedContactValue("Email", it)
+            }
+        }
+        contact.website?.let {
+            // The first channel whose SCHEME comes from the directory string rather than from us:
+            // tel:/wa.me/t.me/mailto: are all constructed here. So an explicit http(s) value is
+            // opened and anything else is shown inert, rather than handed to ACTION_VIEW as typed.
+            val url = it.trim()
+            if (url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true)
+            ) {
+                ContactAction(Icons.Filled.Language, "Website", it) {
+                    onOpen(Uri.parse(url), false)
+                }
+            } else {
+                PublishedContactValue("Website", it)
             }
         }
         if (!contact.hasAny) {

@@ -7,6 +7,8 @@
  * the same fields the operator would otherwise type.
  */
 
+import type { ContactChannelRecord } from "../directory/channels";
+
 /**
  * Demo credentials for the testnet click-through (scripts/demo-up.sh launches the backends with
  * ADMIN_PASSWORD=admin / OPERATOR_PASSWORD=operator). These prefill the login + admin-login inputs
@@ -108,22 +110,17 @@ export function demoRabiesIssue(): {
  * Every key of the register form must appear on this type: the form applies a preset by REPLACING
  * its whole state object, so a key missing here silently blanks that field.
  */
-export interface DemoBusiness {
+export type DemoBusiness = ContactChannelRecord<string> & {
   type: string;
   name: string;
   /** Blank for a provider with no location - see `DEMO_BUSINESS_CONTACT_ONLY`. */
   lat: string;
   lng: string;
-  phone: string;
-  whatsapp: string;
-  telegram: string;
-  email: string;
-  website: string;
   services: string;
   apiBaseUrl: string;
   domain: string;
   documentStores: string;
-}
+};
 
 export const DEMO_BUSINESS_VET: DemoBusiness = {
   type: "vet",

@@ -15,15 +15,24 @@ data class GeoPoint(val lat: Double, val lng: Double) {
         get() = lat.isFinite() && lng.isFinite() && lat in -90.0..90.0 && lng in -180.0..180.0
 }
 
-/** Contact channels a provider may publish without publishing a location. */
+/**
+ * Contact channels a provider may publish without publishing a location.
+ *
+ * Membership and order mirror `PROVIDER_CONTACT_CHANNELS` in
+ * `packages/ui/src/directory/channels.ts`, which Kotlin cannot import: keep them aligned by hand.
+ * A channel the server serves and this type omits is worse than one never added - the parser drops
+ * it, [hasAny] then reads false, and a provider that published a website is told to the owner as
+ * having published nothing.
+ */
 data class ProviderContact(
     val phone: String? = null,
     val whatsapp: String? = null,
     val telegram: String? = null,
     val email: String? = null,
+    val website: String? = null,
 ) {
     val hasAny: Boolean
-        get() = listOf(phone, whatsapp, telegram, email).any { !it.isNullOrBlank() }
+        get() = listOf(phone, whatsapp, telegram, email, website).any { !it.isNullOrBlank() }
 }
 
 /**
