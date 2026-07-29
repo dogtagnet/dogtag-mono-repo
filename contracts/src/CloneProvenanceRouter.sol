@@ -50,13 +50,49 @@ interface IIssuerFactoryGeneration {
 /// the revoked credential would verify again - resurrected by a provider other than the one whose
 /// credential it is.
 ///
-/// Oldest-first closes it. A root that any earlier generation holds resolves to its ORIGINAL clone
-/// forever, so the revocation recorded there keeps answering. A root only a later generation holds is
-/// simply absent from every earlier mapping and falls through to it.
+/// Oldest-first closes it. A root resolves to the clone in the EARLIEST GENERATION that holds it, so
+/// the revocation recorded there keeps answering. A root only a later generation holds is simply
+/// absent from every earlier mapping and falls through to it.
+///
+/// Read that as earliest-GENERATION-wins, never as first-anchor-wins. The two coincide only for a
+/// root whose first anchor is in the EARLIEST generation; the residual section below owns the
+/// direction where they come apart.
 ///
 /// This removes no capability that exists today: cross-generation re-anchoring becomes inert, which
 /// is the same thing `issuedAt[r] != 0` and `rootIssuer[root] == address(0)` already enforce WITHIN a
-/// generation. Oldest-first makes that write-once behaviour protocol-global instead of per-contract.
+/// generation. For a root whose first anchor is in the EARLIEST generation, oldest-first makes that
+/// write-once behaviour protocol-global instead of per-contract. For a root first anchored in a later
+/// generation it does not, and the residual section below says why and what closes it instead.
+///
+/// # WHAT OLDEST-FIRST DOES NOT CLOSE: THE MIRROR DIRECTION
+///
+/// Oldest-first closes resurrection by a LATER generation. It does NOT close the mirror.
+///
+/// A root first anchored on a later generation can be anchored AFTERWARDS on an EARLIER generation's
+/// clone by any signer still whitelisted for that clone's record type on the earlier registry.
+/// `DogTagIssuer.issue` gates only on that registry's `isWhitelistedFor` and on its own `issuedAt[r]`
+/// (`DogTagIssuer.sol:52-53`), and `registerRoot` only on its own `rootIssuer[root]`
+/// (`DogTagIssuerFactory.sol:51-52`); neither earlier contract has ever seen that root, so both let it
+/// through. Oldest-first then resolves that earlier clone, and the LATER generation's revocation stops
+/// being consulted - the same harm as the resurrection above, arriving from the other side.
+///
+/// The write guard below structurally cannot reach this. {isRootAnchored} can only ever be wired into
+/// a NEW generation's `registerRoot`, and an already-deployed earlier factory is immutable, so the one
+/// open direction is precisely the one defence in depth cannot cover. That is a real limit of this
+/// design rather than an oversight, and it is written here so no reader infers a symmetry that does
+/// not exist. It is not protected by obscurity either: every root is public in `RootIssued`
+/// (`DogTagIssuer.sol:28`) and `RootRegistered` (`DogTagIssuerFactory.sol:22`).
+///
+/// It is closed OPERATIONALLY, and that is a PRECONDITION of deploying this router rather than a
+/// nice-to-have. Freeze earlier-generation issuance at cutover by delisting every signer in the
+/// earlier `IssuerRegistry` (registry-plan cutover step C-12): with no whitelisted signer left, the
+/// `onlyWhitelisted` gate on `issue` refuses the mirror anchor at its source. Delisting is safe for
+/// the revocations that must keep working, and that is why this remedy is available at all - `revoke`
+/// is `onlyWhitelisted`, but `adminRevoke` is gated on the registry DEFAULT_ADMIN alone
+/// (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive the freeze.
+///
+/// `test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation` pins this
+/// direction as a known, accepted limitation, so it is never mistaken for covered ground.
 ///
 /// # WHY THIS DOES NOT REVERT WHEN TWO GENERATIONS ANSWER
 ///
@@ -191,8 +227,9 @@ contract CloneProvenanceRouter is Ownable2Step {
     /// so its own mapping still answers `address(0)` for the root under consideration and the result
     /// reflects only the OTHER generations. All reads, so no reentrancy surface.
     ///
-    /// This is defence in depth. {rootIssuer}'s ordering is what makes the router safe against a
-    /// generation that does NOT call this.
+    /// This is defence in depth. {rootIssuer}'s ordering is what makes the router safe against a LATER
+    /// generation that does NOT call this. It does not, and structurally cannot, cover the mirror
+    /// direction; see the residual section on the contract.
     function isRootAnchored(bytes32 root) external view returns (bool) {
         uint256 n = _generations.length;
         for (uint256 i; i < n; i++) {

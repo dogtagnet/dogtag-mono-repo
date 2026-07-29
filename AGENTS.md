@@ -89,14 +89,16 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 116 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+- `cd contracts && forge test` - 139 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
   protocol version (an internal version key, not a product label) on both registry axes;
   `PinConsentWitnessGraph.t.sol` pins every revert arm of the artifact-axis pin script's guard - the
   only thing keeping that script incapable of a rotation or of rewriting a pin it was not asked to
   move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
-  subject-bearing `Verified` ABI. Use `forge test`, **not** bare `forge build`: a bare full build tries
+  subject-bearing `Verified` ABI; `CloneProvenanceRouter.t.sol` performs the real cross-generation
+  resurrection attack against the router's oldest-first resolution and pins the mirror direction it
+  deliberately does not close. Use `forge test`, **not** bare `forge build`: a bare full build tries
   to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
   aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project
   error. `forge test` only compiles the real dependency closure and is green.
@@ -990,8 +992,24 @@ reads its own `issuedAt[r]` (`DogTagIssuer.sol:53`), `registerRoot` reads its ow
 re-anchored on a generation-2 clone by any signer whitelisted for that clone's record type, and the
 shared SBT means `R == profileRoot(dogTagId)` still holds. Newest-first resolution - the natural way
 to write the loop - would then return the fresh clone, `isValid` reads true, and **a revoked
-credential verifies again**. Oldest-first binds a root to its original clone forever; a
-later-generation-only root is absent from every earlier mapping and falls through.
+credential verifies again**. Oldest-first binds a root to the clone in the EARLIEST GENERATION that
+holds it; a later-generation-only root is absent from every earlier mapping and falls through.
+
+**Read that as earliest-GENERATION-wins, never as first-anchor-wins, because the MIRROR DIRECTION is
+open and no version of the contract can close it.** A root first anchored on a LATER generation can be
+anchored afterwards on an EARLIER generation's clone by any signer still whitelisted for that clone's
+record type on the earlier registry - `issue` gates only on that registry's `isWhitelistedFor` plus
+its own `issuedAt[r]`, and `registerRoot` only on its own `rootIssuer[root]`, and neither earlier
+contract has ever seen that root. Oldest-first then resolves the earlier clone and the LATER
+generation's revocation stops being consulted. `isRootAnchored` cannot help: it is wireable only into
+a NEW generation's `registerRoot` and an already-deployed earlier factory is immutable, so the one
+open direction is exactly the one defence in depth cannot reach. It is closed OPERATIONALLY, and that
+is a PRECONDITION of deploying the router: delist every signer in the earlier `IssuerRegistry` at
+cutover (registry-plan step C-12), after which `onlyWhitelisted` refuses the mirror anchor at source.
+That remedy is available because `adminRevoke` is gated on the registry DEFAULT_ADMIN rather than the
+whitelist (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive the freeze. Pinned as
+a deliberate limitation - never as a passing property - by
+`test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation`.
 
 Three things that look like improvements and are not:
 - **Do NOT revert when two generations answer.** That is a denial of service - anyone could kill an
@@ -1011,7 +1029,7 @@ Three things that look like improvements and are not:
   while proving nothing.
 
 The ordering claim is pinned by mutation, not by assertion: reverse the loop to
-`for (uint256 i = n; i > 0; i--)` over `_generations[i - 1]` and three tests go red, including
+`for (uint256 i = n; i > 0; i--)` over `_generations[i - 1]` and four tests go red, including
 `test_resurrection_attempt_is_refused_by_the_real_registry`, which fails with `next call did not
 revert as expected` - the real registry emitting `Verified` for a revoked credential.
 

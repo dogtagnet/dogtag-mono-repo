@@ -51,16 +51,21 @@ The tag binding does not stop it either: the SBT is shared across generations, s
 Under newest-first the router returns the fresh clone, `isValid(R)` reads true, and the revoked credential verifies again, resurrected by a provider other than the one whose credential it is.
 
 Oldest-first closes it.
-A root any earlier generation holds resolves to its **original** clone forever, so the revocation recorded there keeps answering.
+A root resolves to the clone in the **earliest generation** that holds it, so the revocation recorded there keeps answering.
 A root only a later generation holds is simply absent from every earlier mapping and falls through to it, so new issuance is unaffected.
+
+Read that as earliest-**generation**-wins, never as first-anchor-wins.
+The two coincide only for a root whose first anchor is in the earliest generation.
+The residual section below owns the direction where they come apart.
 
 This removes no capability that exists today.
 Cross-generation re-anchoring becomes inert, which is the same thing `issuedAt[r] != 0` and `rootIssuer[root] == address(0)` already enforce *within* a generation.
-Oldest-first makes that write-once behaviour protocol-global instead of per-contract.
+For a root whose first anchor is in the earliest generation, oldest-first makes that write-once behaviour protocol-global instead of per-contract.
+For a root first anchored in a later generation it does not, and the residual section below says why and what closes it instead.
 
 ### The ordering is proved by a real attack, not by an assertion
 
-`test_a_revoked_root_cannot_be_resurrected_by_a_later_generation` performs the attack: anchor on generation 1, revoke there, re-anchor the same root on generation 2, then assert the router still resolves the original clone and the credential still reads revoked.
+`test_a_revoked_root_cannot_be_resurrected_by_a_later_generation` performs the attack: anchor on generation 1, revoke there, re-anchor the same root on generation 2, then assert the router still resolves the earliest generation's clone and the credential still reads revoked.
 It asserts the attack setup **succeeds** on chain before asserting the router's answer, so a setup that silently failed cannot make it pass vacuously.
 
 `test_resurrection_attempt_is_refused_by_the_real_registry` drives the same attack end to end through the real `VerificationRegistryConsent` with a real Groth16 proof and the router in the immutable slot, and requires `recordVerificationZK` to revert `cred !valid`.
@@ -73,6 +78,30 @@ Reversing the loop to newest-first turns the first into a wrong-clone failure an
 The later generation is a second instance of the production `DogTagIssuerFactory`, not a mock, because today's factory carries no cross-generation check and that is the honest model.
 The router's ordering has to hold against a later generation that is unguarded, buggy or hostile.
 A guarded factory there would make the attack setup revert and the test would pass while proving nothing.
+
+### What oldest-first does NOT close: the mirror direction
+
+Oldest-first closes resurrection by a **later** generation.
+It does not close the mirror, and no version of this contract can.
+
+A root first anchored on a later generation can be anchored **afterwards** on an **earlier** generation's clone, by any signer still whitelisted for that clone's record type on the earlier registry.
+`DogTagIssuer.issue` gates only on that registry's `isWhitelistedFor` and on its own `issuedAt[r]` (`DogTagIssuer.sol:52-53`), and `registerRoot` only on its own `rootIssuer[root]` (`DogTagIssuerFactory.sol:51-52`).
+Neither earlier contract has ever seen that root, so both let it through.
+Oldest-first then resolves that earlier clone, and the later generation's revocation stops being consulted, which is the same harm as the resurrection above arriving from the other side.
+
+The write guard structurally cannot reach it.
+`isRootAnchored` is wireable only into a **new** generation's `registerRoot`, and an already-deployed earlier factory is immutable, so the one open direction is precisely the one defence in depth cannot cover.
+That is a real limit of this design rather than an oversight, and it is stated here and in the contract so no reader infers a symmetry that does not exist.
+It is not protected by obscurity either: every root is public in `RootIssued` (`DogTagIssuer.sol:28`) and `RootRegistered` (`DogTagIssuerFactory.sol:22`).
+
+It is closed **operationally**, and that is a **precondition of deploying this router** rather than a nice-to-have.
+Freeze earlier-generation issuance at cutover by delisting every signer in the earlier `IssuerRegistry` (registry-plan cutover step C-12).
+With no whitelisted signer left, the `onlyWhitelisted` gate on `issue` refuses the mirror anchor at its source.
+Delisting is safe for the revocations that must keep working, and that is why this remedy is available at all: `revoke` is `onlyWhitelisted`, but `adminRevoke` is gated on the registry `DEFAULT_ADMIN` alone (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive the freeze.
+
+`test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation` pins this direction as a known, accepted limitation.
+It asserts that the mirror anchor succeeds and that the router then reports a generation-2-revoked credential as valid, so the residual is never mistaken for covered ground.
+It is deliberately not a passing security property, and if it ever goes red the residual has been closed by something and this section must be re-read before its assertions are updated.
 
 ## Why it does NOT revert when two generations answer
 
@@ -123,6 +152,10 @@ Append-only also has a consequence for the cutover order.
 A frozen list forces the router to be deployed *after* its newest factory (plan step C-4 follows C-3), which makes the write guard unwireable: a factory cannot name a router that does not exist yet.
 Append-only inverts it.
 Deploy the router first over `[factoryV1]`, deploy factory V2 naming the router, then append it.
+
+**Append V2 to the router before V2 issues anything.**
+Between the V2 deploy and the append there is a window in which the router is not yet consulting V2's index, so any root a V2 clone anchors in that window resolves to `address(0)` and `recordVerificationZK` answers `unknown root` (`VerificationRegistryConsent.sol:186-187`) for that credential.
+It self-heals the moment V2 is appended, so this is a sequencing precondition rather than a defect: V2 must be appended before it creates a clone or anchors a root, and no credential is then ever unverifiable.
 
 The owner can therefore add a factory whose clones this router will vouch for.
 That is a real authority, and it is deliberately the same tier as the existing protocol admin, which can already whitelist an arbitrary signer on any record type.
@@ -182,4 +215,9 @@ Use `forge test`, never a bare `forge build`: a full build tries to compile the 
 That is a submodule artifact, not a project error.
 
 To re-run the ordering mutation, reverse the loop in `rootIssuer` to `for (uint256 i = n; i > 0; i--)` over `_generations[i - 1]`, run the suite, and revert.
-Three tests must go red.
+Four tests must go red:
+`test_a_revoked_root_cannot_be_resurrected_by_a_later_generation`,
+`test_resurrection_attempt_is_refused_by_the_real_registry`,
+`test_appending_a_generation_cannot_change_an_existing_answer`,
+and `test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation`.
+The last one goes red because the mutation inverts which generation wins, not because the residual it pins has been closed.

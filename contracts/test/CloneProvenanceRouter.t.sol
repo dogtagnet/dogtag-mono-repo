@@ -73,6 +73,10 @@ contract GuardedIssuerFactory {
 /// actual attack (anchor, revoke, re-anchor on a later generation) against the REAL production
 /// factory and assert the credential still reads revoked. Both fail if the resolution loop is
 /// reversed to newest-first.
+///
+/// {test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation} is their
+/// deliberate counterweight: it pins the MIRROR direction, which oldest-first does not close and no
+/// version of this contract can, as an accepted limitation closed operationally instead.
 contract CloneProvenanceRouterTest is Test {
     using stdJson for string;
 
@@ -146,8 +150,10 @@ contract CloneProvenanceRouterTest is Test {
         assertEq(factoryV2.rootIssuer(ROOT), address(cloneV2), "setup: the duplicate must exist");
         assertTrue(cloneV2.isValid(ROOT), "setup: the re-anchored copy must read valid on its own clone");
 
-        // Oldest-first: the root stays bound to the clone that first anchored it, forever.
-        assertEq(router.rootIssuer(ROOT), address(cloneV1), "router must resolve the ORIGINAL clone");
+        // Oldest-first: the root stays bound to the clone in the EARLIEST generation that holds it.
+        assertEq(
+            router.rootIssuer(ROOT), address(cloneV1), "router must resolve the earliest generation's clone"
+        );
         assertFalse(
             DogTagIssuer(router.rootIssuer(ROOT)).isValid(ROOT),
             "a revoked credential must not be resurrected by a later generation"
@@ -176,6 +182,51 @@ contract CloneProvenanceRouterTest is Test {
         vm.prank(f.relayer);
         vm.expectRevert("cred !valid");
         f.vr.recordVerificationZK(f.a, f.b, f.c, f.pub);
+    }
+
+    /// @notice THE ACCEPTED RESIDUAL, PINNED ON PURPOSE - read this as a documented limitation, never
+    /// as a passing security property. It asserts the one direction oldest-first does NOT close, so
+    /// that a later reader cannot mistake it for covered ground.
+    ///
+    /// The mirror of the attack above. Anchor on generation 2 and REVOKE it there, then anchor the
+    /// same root on a generation-1 clone. Every generation-1 guard passes, because neither
+    /// generation-1 contract has ever seen this root (`DogTagIssuer.issue` reads its OWN `issuedAt`,
+    /// `registerRoot` its OWN `rootIssuer`). Oldest-first then resolves the generation-1 clone and the
+    /// generation-2 revocation stops being consulted, so the router reports the credential VALID.
+    ///
+    /// The write guard cannot reach this direction: {CloneProvenanceRouter.isRootAnchored} is wireable
+    /// only into a NEW generation's `registerRoot`, and an already-deployed earlier factory is
+    /// immutable. It is closed operationally instead, and that is a precondition of deploying the
+    /// router: delist every signer in the earlier `IssuerRegistry` at cutover (registry-plan step
+    /// C-12), after which `onlyWhitelisted` refuses the mirror anchor below at its source.
+    /// `adminRevoke` is gated on the registry DEFAULT_ADMIN rather than the whitelist
+    /// (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive that freeze.
+    ///
+    /// If this test ever goes red, the residual has been closed by something - re-read the contract's
+    /// residual section before simply updating the assertions here.
+    function test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation() public {
+        DogTagIssuer cloneV2 = _clone(factoryV2, genTwoSigner);
+        vm.prank(genTwoSigner);
+        cloneV2.issue(ROOT);
+        vm.prank(genTwoSigner);
+        cloneV2.revoke(ROOT);
+        assertFalse(cloneV2.isValid(ROOT), "setup: the generation-2 credential must be revoked");
+
+        // The mirror anchor. Assert it really lands, or the residual is not being demonstrated.
+        DogTagIssuer cloneV1 = _clone(factoryV1, vetSigner);
+        vm.prank(vetSigner);
+        cloneV1.issue(ROOT);
+        assertEq(factoryV1.rootIssuer(ROOT), address(cloneV1), "the earlier generation now holds it too");
+
+        assertEq(
+            router.rootIssuer(ROOT),
+            address(cloneV1),
+            "KNOWN RESIDUAL: the earliest generation wins even when it anchored SECOND"
+        );
+        assertTrue(
+            DogTagIssuer(router.rootIssuer(ROOT)).isValid(ROOT),
+            "KNOWN RESIDUAL: the later revocation stops being consulted; C-12 delisting closes this"
+        );
     }
 
     // =============================================================================================
