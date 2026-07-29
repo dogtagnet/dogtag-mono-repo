@@ -2881,9 +2881,23 @@ currently an honest stub because the provider registry and packed paging ABI do 
   `IssuerDomainBinding.dnsObservation` vocabulary. A cache fallback is always `"stored"` and preserves
   the original read time and block anchor.
 - The cache re-checks first, replays only an unexpired snapshot from the same configured source
-  namespace (central origin; future chain + registry), and expires at the exact TTL boundary. A stored
-  replay never renews that TTL. Never key a directory cache by a position/geohash: the cached object is
-  the universal full-set result.
+  namespace, and expires at the exact TTL boundary. A stored replay never renews that TTL. Never key a
+  directory cache by a position/geohash: the cached object is the universal full-set result. A read
+  that THROWS is folded into `unavailable` before the replay branch, so a foreign implementation that
+  ignores the resolve-don't-throw request still gets its offline fallback.
+- **`cacheNamespace` distinguishes what the client can actually observe, and no more.** The central
+  base is resolved against the document ORIGIN (never the current href, which would namespace one
+  deployment differently per route), so two distinct configured bases and two distinct origins are
+  separated. Two deployments sharing an origin whose relative `/api` proxies elsewhere are NOT, and no
+  namespace could separate them - a per-origin store such as `localStorage` is already shared between
+  them. Say that rather than promising origin-level separation.
+- **Replay validates exactly what the write path validates**, because `ProviderDirectoryCache` is an
+  extension point and an entry from a persistent adapter was not necessarily produced by the live
+  path: a corrupted `found` carrying zero providers must not survive a round trip through storage. Two
+  replay-only guards go with it - a snapshot whose `readAt` is in the future is a backwards clock jump
+  and is dropped rather than trusted, and a stored deadline exceeding `readAt + ttlMs` is rejected. So
+  SHORTENING `ttlMs` in a later build discards previously-persisted entries rather than clamping them;
+  that is fail-closed and deliberate, given "a stored replay never renews".
 - Central's `{ businesses }` response carries no chain height, so its honest block anchor is `null`.
   Reading a separate chain head would not make the database snapshot block-pinned. A real on-chain
   implementation must pin every page to one block and cache that anchor.

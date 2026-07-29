@@ -151,6 +151,69 @@ describe("centralDirectory", () => {
     expect("hmacKeyId" in result.providers[0]).toBe(false);
   });
 
+  it("accepts a row that omits the central-only fields this seam never projects", async () => {
+    const { apiBaseUrl: _apiBaseUrl, documentStores: _stores, hmacKeyId: _key, ...consumed } =
+      CENTRAL_PROVIDER;
+    const result = await centralDirectory(
+      {
+        base: "https://central.test",
+        listBusinesses: async () =>
+          ({ businesses: [consumed] }) as unknown as { businesses: CentralBusiness[] },
+      },
+      { now: () => 5_600 },
+    ).read();
+
+    expect(result).toMatchObject({ state: "found", providers: [PROVIDER] });
+  });
+
+  it("rejects an out-of-range coordinate rather than ranking a provider it cannot place", async () => {
+    const result = await centralDirectory(
+      {
+        base: "https://central.test",
+        listBusinesses: async () => ({
+          businesses: [{ ...CENTRAL_PROVIDER, geo: { lat: 91, lng: 103.8198 } }],
+        }),
+      },
+      { now: () => 5_700 },
+    ).read();
+
+    expect(result).toMatchObject({ state: "unavailable", reason: "malformedResponse" });
+    expect("providers" in result).toBe(false);
+  });
+
+  it("derives a cache namespace that separates configured bases and joins identical ones", async () => {
+    const listBusinesses = async () => ({ businesses: [] });
+    const one = centralDirectory({ base: "https://one.test", listBusinesses });
+    const two = centralDirectory({ base: "https://two.test", listBusinesses });
+    const oneAgain = centralDirectory({ base: "https://one.test", listBusinesses });
+
+    expect(one.cacheNamespace).not.toBe(two.cacheNamespace);
+    // The equality half is what catches an instance-scoped namespace, which would disable every
+    // replay while still passing the inequality assertion above.
+    expect(oneAgain.cacheNamespace).toBe(one.cacheNamespace);
+
+    const relativeOnA = centralDirectory(
+      { base: "/api", listBusinesses },
+      { documentOrigin: "https://portal-a.test" },
+    );
+    const relativeOnB = centralDirectory(
+      { base: "/api", listBusinesses },
+      { documentOrigin: "https://portal-b.test" },
+    );
+
+    expect(relativeOnA.cacheNamespace).not.toBe(relativeOnB.cacheNamespace);
+    expect(relativeOnA.cacheNamespace).toBe("central:https://portal-a.test/api");
+
+    // A base with nothing to resolve names a fixed sentinel. Resolving it against the page URL
+    // instead would namespace one deployment per route, which is a worse collision than sharing
+    // one honest sentinel.
+    const unresolved = centralDirectory(
+      { base: "", listBusinesses },
+      { documentOrigin: "https://portal-a.test" },
+    );
+    expect(unresolved.cacheNamespace).toBe("central:unresolved-base");
+  });
+
   it("ignores even a force-passed viewport or region object and still makes the same full fetch", async () => {
     const listBusinesses = vi.fn(async () => ({ businesses: [] }));
     const directory = centralDirectory({ base: "https://central.test", listBusinesses });
@@ -518,6 +581,98 @@ describe("withProviderDirectoryCache", () => {
 
     expect(result.state).toBe("unavailable");
     expect(cache.read()).toBeNull();
+  });
+
+  it("replays a cached snapshot when the wrapped directory throws instead of resolving", async () => {
+    let time = 90_000;
+    let shouldThrow = false;
+    const source: ProviderDirectory = {
+      source: "central",
+      cacheNamespace: "central:fixture",
+      async read() {
+        if (shouldThrow) throw new Error("the source blew up");
+        return found("central", [PROVIDER], 90_000, null);
+      },
+    };
+    const directory = withProviderDirectoryCache(source, {
+      cache: createMemoryProviderDirectoryCache(),
+      ttlMs: 1_000,
+      now: () => time,
+    });
+
+    await directory.read();
+    shouldThrow = true;
+    time = 90_500;
+    const replayed = await directory.read();
+
+    expect(replayed).toMatchObject({
+      state: "found",
+      observation: "stored",
+      providers: [PROVIDER],
+      readAt: 90_000,
+      expiresAt: 91_000,
+    });
+  });
+
+  it("turns a throw with no usable cache into unavailable rather than propagating it", async () => {
+    const cache = createMemoryProviderDirectoryCache();
+    const result = await withProviderDirectoryCache(
+      {
+        source: "onchain",
+        cacheNamespace: "onchain:fixture",
+        async read(): Promise<ProviderDirectoryResult> {
+          throw new Error("rpc exploded");
+        },
+      },
+      { cache, ttlMs: 1_000, now: () => 91_000 },
+    ).read();
+
+    expect(result).toMatchObject({
+      state: "unavailable",
+      source: "onchain",
+      reason: "sourceUnavailable",
+      attemptedAt: 91_000,
+    });
+    if (result.state !== "unavailable") throw new Error("expected unavailable");
+    expect(result.detail).toContain("rpc exploded");
+    expect("providers" in result).toBe(false);
+    expect(cache.read()).toBeNull();
+  });
+
+  it("re-validates a cached entry on replay exactly as it does on write", async () => {
+    const corruptions: Array<{ snapshot: Record<string, unknown>; expiresAt: number }> = [
+      // A `found` that lost its providers must not replay as found-with-zero-providers.
+      { snapshot: { ...found("central", [PROVIDER], 95_000, null), providers: [], expiresAt: 96_000 }, expiresAt: 96_000 },
+      { snapshot: { ...empty("central", 95_000, null), providers: [PROVIDER], expiresAt: 96_000 }, expiresAt: 96_000 },
+      { snapshot: { ...found("central", [PROVIDER], Number.NaN, null), expiresAt: 96_000 }, expiresAt: 96_000 },
+      { snapshot: { ...found("central", [PROVIDER], 95_000, -1), expiresAt: 96_000 }, expiresAt: 96_000 },
+      // Read "in the future": the device clock moved backwards, so the stored absolute deadline
+      // would silently extend the hard window by however far it jumped.
+      { snapshot: { ...found("central", [PROVIDER], 95_400, null), expiresAt: 96_400 }, expiresAt: 96_400 },
+      // A deadline longer than this wrapper's own hard TTL allows.
+      { snapshot: { ...found("central", [PROVIDER], 95_000, null), expiresAt: 99_000 }, expiresAt: 99_000 },
+    ];
+
+    for (const corrupted of corruptions) {
+      const cache = createMemoryProviderDirectoryCache();
+      cache.write({
+        namespace: "central:fixture",
+        snapshot: corrupted.snapshot as unknown as Extract<
+          ProviderDirectoryResult,
+          { state: "found" }
+        > & { expiresAt: number },
+        expiresAt: corrupted.expiresAt,
+      });
+
+      const result = await withProviderDirectoryCache(
+        scriptedDirectory("central", [unavailable("central", 95_300)]),
+        { cache, ttlMs: 1_000, now: () => 95_300 },
+      ).read();
+
+      expect(result.state).toBe("unavailable");
+      expect("providers" in result).toBe(false);
+      expect(cache.read()).toBeNull();
+    }
   });
 
   it("rejects a missing or nonsensical hard TTL at construction", () => {

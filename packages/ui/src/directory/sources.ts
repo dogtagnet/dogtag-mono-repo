@@ -1,5 +1,6 @@
 import type { CentralClient } from "../api/central";
-import type { BusinessesResp, CentralBusiness } from "../api/types";
+import type { CentralBusiness } from "../api/types";
+import { isValidLatLng, type LatLng } from "../geo";
 import type {
   DirectoryProvider,
   ProviderDirectory,
@@ -10,7 +11,26 @@ import type {
 export interface CentralDirectoryOptions {
   /** Injected for deterministic tests. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Absolute origin a relative API base is resolved against when deriving `cacheNamespace`.
+   *
+   * Defaults to the ambient document origin. It never affects which URL is fetched.
+   */
+  documentOrigin?: string;
 }
+
+/**
+ * The subset of a `GET /v1/businesses` row this seam consumes.
+ *
+ * `apiBaseUrl`, `documentStores` and `hmacKeyId` are deliberately absent: none of them reaches a
+ * `DirectoryProvider`, so requiring them would let a wire change with nothing to do with discovery -
+ * dropping `hmacKeyId` from a public, unauthenticated endpoint, say - take the whole directory to
+ * `unavailable`.
+ */
+type DirectoryRow = Pick<
+  CentralBusiness,
+  "businessId" | "type" | "name" | "geo" | "services" | "domain"
+>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -20,29 +40,31 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-function isCentralBusiness(value: unknown): value is CentralBusiness {
+/**
+ * Coordinates are checked with the same `isValidLatLng` the on-device distance/sort path uses, so a
+ * row that could never be presented as a distance is rejected here rather than ranked as one.
+ */
+function isDirectoryRow(value: unknown): value is DirectoryRow {
   if (!isRecord(value) || !isRecord(value.geo)) return false;
   return (
     typeof value.businessId === "string" &&
     typeof value.type === "string" &&
     typeof value.name === "string" &&
-    typeof value.geo.lat === "number" &&
-    Number.isFinite(value.geo.lat) &&
-    typeof value.geo.lng === "number" &&
-    Number.isFinite(value.geo.lng) &&
+    isValidLatLng(value.geo as unknown as LatLng) &&
     isStringArray(value.services) &&
-    typeof value.apiBaseUrl === "string" &&
-    typeof value.domain === "string" &&
-    isStringArray(value.documentStores) &&
-    typeof value.hmacKeyId === "string"
+    typeof value.domain === "string"
   );
 }
 
-function isBusinessesResp(value: unknown): value is BusinessesResp {
+/**
+ * All-or-nothing on purpose. Dropping the rows that fail would let a wholly malformed response
+ * degrade into a successful `empty`, which is the one outcome this seam exists to prevent.
+ */
+function hasDirectoryRows(value: unknown): value is { businesses: DirectoryRow[] } {
   return (
     isRecord(value) &&
     Array.isArray(value.businesses) &&
-    value.businesses.every(isCentralBusiness)
+    value.businesses.every(isDirectoryRow)
   );
 }
 
@@ -51,7 +73,33 @@ function errorDetail(error: unknown): string {
   return "GET /v1/businesses could not be read";
 }
 
-function toDirectoryProvider(business: CentralBusiness): DirectoryProvider {
+/** A configured base with nothing to resolve. It must not fall back to the current page URL. */
+const UNRESOLVED_BASE = "unresolved-base";
+
+function ambientOrigin(): string | undefined {
+  const location = (globalThis as { location?: unknown }).location;
+  if (typeof location !== "object" || location === null) return undefined;
+  const origin = (location as { origin?: unknown }).origin;
+  return typeof origin === "string" && origin ? origin : undefined;
+}
+
+/**
+ * Resolution is against the ORIGIN, never the current href: a path-relative base resolved against a
+ * full href would namespace one deployment differently per route.
+ */
+function centralNamespaceKey(base: string, documentOrigin?: string): string {
+  const configured = base.trim();
+  if (!configured) return UNRESOLVED_BASE;
+  const origin = documentOrigin ?? ambientOrigin();
+  try {
+    const url = origin === undefined ? new URL(configured) : new URL(configured, origin);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return configured;
+  }
+}
+
+function toDirectoryProvider(business: DirectoryRow): DirectoryProvider {
   return {
     providerId: business.businessId,
     kind: business.type,
@@ -78,9 +126,11 @@ export function centralDirectory(
 ): ProviderDirectory {
   const now = options.now ?? Date.now;
 
+  const cacheNamespace = `central:${centralNamespaceKey(client.base, options.documentOrigin)}`;
+
   return {
     source: "central",
-    cacheNamespace: `central:${client.base}`,
+    cacheNamespace,
     async read(): Promise<ProviderDirectoryResult> {
       let response: unknown;
       try {
@@ -99,7 +149,7 @@ export function centralDirectory(
         return unavailable;
       }
 
-      if (!isBusinessesResp(response)) {
+      if (!hasDirectoryRows(response)) {
         return {
           state: "unavailable",
           source: "central",

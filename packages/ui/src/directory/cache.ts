@@ -51,6 +51,35 @@ export interface ProviderDirectoryCacheOptions {
   now?: () => number;
 }
 
+function threwDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim() : "";
+  const suffix = message ? `: ${message}` : "";
+  return `The directory threw instead of resolving unavailable${suffix}`;
+}
+
+/**
+ * The integrity a snapshot must have to be written OR replayed.
+ *
+ * The replay path runs it too, because `ProviderDirectoryCache` is an extension point: an entry a
+ * persistent adapter hands back was not necessarily produced by the live path above. A corrupted
+ * `found` carrying zero providers is the precise defect this module exists to prevent, so it must
+ * not survive a round trip through storage.
+ */
+function snapshotIsWellFormed(snapshot: ProviderDirectorySnapshot): boolean {
+  if (!Number.isFinite(snapshot.readAt) || snapshot.readAt < 0) return false;
+  if (
+    snapshot.blockNumber !== null &&
+    (!Number.isSafeInteger(snapshot.blockNumber) || snapshot.blockNumber < 0)
+  ) {
+    return false;
+  }
+  if (snapshot.expiresAt !== null && !Number.isFinite(snapshot.expiresAt)) return false;
+  if (!Array.isArray(snapshot.providers)) return false;
+  if (snapshot.state === "found" && snapshot.providers.length === 0) return false;
+  if (snapshot.state === "empty" && snapshot.providers.length !== 0) return false;
+  return true;
+}
+
 /**
  * Re-check a directory, replaying its last successful snapshot only when the live read is
  * unavailable and the hard TTL has not elapsed.
@@ -72,7 +101,21 @@ export function withProviderDirectoryCache(
     source: directory.source,
     cacheNamespace: directory.cacheNamespace,
     async read(): Promise<ProviderDirectoryResult> {
-      const result = await directory.read();
+      let result: ProviderDirectoryResult;
+      try {
+        result = await directory.read();
+      } catch (error) {
+        // The interface only ASKS implementations to resolve rather than throw. Letting a throw
+        // escape here would skip the replay branch below in exactly the unexpected-failure case the
+        // cache exists for.
+        result = {
+          state: "unavailable",
+          source: directory.source,
+          reason: "sourceUnavailable",
+          detail: threwDetail(error),
+          attemptedAt: now(),
+        };
+      }
       const currentTime = now();
 
       if (result.source !== directory.source) {
@@ -86,25 +129,49 @@ export function withProviderDirectoryCache(
         };
       }
 
-      if (
-        result.state !== "unavailable" &&
-        (!Number.isFinite(result.readAt) ||
-          result.readAt < 0 ||
-          (result.blockNumber !== null &&
-            (!Number.isSafeInteger(result.blockNumber) || result.blockNumber < 0)) ||
-          (result.expiresAt !== null && !Number.isFinite(result.expiresAt)))
-      ) {
+      if (result.state === "unavailable") {
+        const cached = options.cache.read();
+        if (
+          cached?.namespace !== directory.cacheNamespace ||
+          cached?.snapshot.source !== directory.source
+        ) {
+          // A source swap is a trust-boundary change, not a cache hit.
+          if (cached) options.cache.clear();
+          return result;
+        }
+        if (
+          !Number.isFinite(cached.expiresAt) ||
+          cached.snapshot.expiresAt !== cached.expiresAt ||
+          !snapshotIsWellFormed(cached.snapshot) ||
+          // A snapshot read in the future is a clock that moved backwards. Trusting the stored
+          // absolute deadline there would extend the hard window by however far it jumped.
+          cached.snapshot.readAt > currentTime ||
+          cached.expiresAt > cached.snapshot.readAt + options.ttlMs ||
+          currentTime >= cached.expiresAt
+        ) {
+          options.cache.clear();
+          return result;
+        }
+
+        return {
+          ...cached.snapshot,
+          observation: "stored",
+          expiresAt: cached.expiresAt,
+        };
+      }
+
+      if (!snapshotIsWellFormed(result)) {
         options.cache.clear();
         return {
           state: "unavailable",
           source: directory.source,
           reason: "invalidSnapshot",
-          detail: "The directory returned invalid timestamp or block-anchor metadata",
+          detail: "The directory returned an invalid provider list, timestamp, or block anchor",
           attemptedAt: currentTime,
         };
       }
 
-      if (result.state !== "unavailable" && result.observation === "stored") {
+      if (result.observation === "stored") {
         // A replay is not a successful refresh. Passing it through preserves the original hard
         // deadline; writing it here would let nested cache wrappers renew stale data indefinitely.
         if (
@@ -123,57 +190,31 @@ export function withProviderDirectoryCache(
         return result;
       }
 
-      if (result.state !== "unavailable") {
-        // TTL begins at the original source observation, not cache insertion. A long paged read or
-        // an outer wrapper must never silently lengthen the hard maximum age.
-        const localExpiry = result.readAt + options.ttlMs;
-        const expiresAt =
-          result.expiresAt === null ? localExpiry : Math.min(localExpiry, result.expiresAt);
-        const snapshot: ProviderDirectorySnapshot & { expiresAt: number } = {
-          ...result,
-          expiresAt,
-        };
-        if (!Number.isFinite(expiresAt) || currentTime >= expiresAt) {
-          options.cache.clear();
-          return {
-            state: "unavailable",
-            source: directory.source,
-            reason: "invalidSnapshot",
-            detail: "The live directory snapshot was already outside its hard TTL",
-            attemptedAt: currentTime,
-          };
-        }
-        options.cache.write({
-          namespace: directory.cacheNamespace,
-          snapshot,
-          expiresAt,
-        });
-        return snapshot;
-      }
-
-      const cached = options.cache.read();
-      if (
-        cached?.namespace !== directory.cacheNamespace ||
-        cached?.snapshot.source !== directory.source
-      ) {
-        // A source swap is a trust-boundary change, not a cache hit.
-        if (cached) options.cache.clear();
-        return result;
-      }
-      if (
-        !Number.isFinite(cached.expiresAt) ||
-        cached.snapshot.expiresAt !== cached.expiresAt ||
-        currentTime >= cached.expiresAt
-      ) {
-        options.cache.clear();
-        return result;
-      }
-
-      return {
-        ...cached.snapshot,
-        observation: "stored",
-        expiresAt: cached.expiresAt,
+      // TTL begins at the original source observation, not cache insertion. A long paged read or an
+      // outer wrapper must never silently lengthen the hard maximum age.
+      const localExpiry = result.readAt + options.ttlMs;
+      const expiresAt =
+        result.expiresAt === null ? localExpiry : Math.min(localExpiry, result.expiresAt);
+      const snapshot: ProviderDirectorySnapshot & { expiresAt: number } = {
+        ...result,
+        expiresAt,
       };
+      if (!Number.isFinite(expiresAt) || currentTime >= expiresAt) {
+        options.cache.clear();
+        return {
+          state: "unavailable",
+          source: directory.source,
+          reason: "invalidSnapshot",
+          detail: "The live directory snapshot was already outside its hard TTL",
+          attemptedAt: currentTime,
+        };
+      }
+      options.cache.write({
+        namespace: directory.cacheNamespace,
+        snapshot,
+        expiresAt,
+      });
+      return snapshot;
     },
   };
 }

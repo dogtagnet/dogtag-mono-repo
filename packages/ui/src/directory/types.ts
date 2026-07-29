@@ -107,8 +107,14 @@ export interface ProviderDirectory {
   /**
    * Stable identity of the configured source, used only to scope cached snapshots.
    *
-   * It must distinguish two central origins or two future chain/registry configurations. It must
-   * never contain a user position or a derived region.
+   * It must distinguish two distinct configured bases - including two central bases that resolve to
+   * different origins - and two future chain/registry configurations. It must never contain a user
+   * position or a derived region.
+   *
+   * What it deliberately does NOT promise: two deployments served from the SAME origin whose
+   * relative base (`/api`) proxies to different backends are indistinguishable here, because the
+   * client has no observable difference to key on. A per-origin store such as `localStorage` is
+   * already shared between them, so no namespace could separate them either.
    */
   readonly cacheNamespace: string;
   read(): Promise<ProviderDirectoryResult>;

@@ -111,11 +111,10 @@ export function Businesses() {
             </Table>
           )}
           <p className="mt-4 text-xs text-muted">
-            Note: discovery is list-only; rows may hand a destination to the user's maps app, but
-            there is no in-app map or viewport query. Latitude/longitude are shown in the table. The
-            directory read is a full-set fetch. Kind and proximity filtering are done on the device
-            that needs them, never by sending a position to the server -{" "}
-            <code>near</code> and <code>radius</code> are deprecated for that reason.
+            Note: this page fetches the full business set with no discovery filters and shows each
+            latitude/longitude in the table. There is deliberately no in-app map. No position is ever
+            sent to the server - <code>near</code> and <code>radius</code> are deprecated for that
+            reason, and proximity filtering belongs on the device that needs it.
           </p>
         </CardContent>
       </Card>
