@@ -200,7 +200,7 @@ async function openVerifyAndSubmit(page: Page, doc: WrappedDoc) {
   await expect(page.getByText("Check credential status")).toBeVisible();
   // The new permissionless copy ships on the real surface.
   await expect(
-    page.getByText(/Permissionless - verified in-browser over the public RPC/i),
+    page.getByText(/Permissionless - checked in-browser through your selected blockchain endpoint/i),
   ).toBeVisible();
 
   // Deliberately no "Expected issuer signer": the whitelist pillar resolves its own signer from the

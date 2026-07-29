@@ -9,6 +9,7 @@ import { Receipt } from "./pages/Receipt";
 import { Receipts } from "./pages/Receipts";
 import { Consents } from "./pages/Consents";
 import { ConsentDetail } from "./pages/ConsentDetail";
+import { Settings } from "./pages/Settings";
 
 function TopBar({ wallet }: { wallet: OwnerWallet | null }) {
   return (
@@ -49,6 +50,9 @@ export function App() {
         <NavLink to="/consents" className={({ isActive }) => (isActive ? "active" : "")}>
           Consents
         </NavLink>
+        <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
+          Settings
+        </NavLink>
       </nav>
       <Routes>
         <Route path="/" element={<Navigate to="/wallet" replace />} />
@@ -56,6 +60,7 @@ export function App() {
         <Route path="/receive" element={<Receive />} />
         <Route path="/receipts" element={<Receipts />} />
         <Route path="/consents" element={<Consents />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="/consents/:nullifier" element={<ConsentDetail />} />
         <Route path="/credential/:id" element={<CredentialDetail />} />
         <Route path="/receipt/:id" element={<Receipt />} />

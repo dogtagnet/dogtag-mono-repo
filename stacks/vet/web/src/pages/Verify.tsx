@@ -16,10 +16,12 @@ import {
   SelectValue,
   Spinner,
   explorerTxUrl,
+  useRoaxRpcPreference,
 } from "@dogtag/ui";
 import { CheckCircle2, History, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 
 const PURPOSES = [
   {
@@ -306,9 +308,10 @@ function OwnerHiddenVerificationHistory() {
 }
 
 export function Verify() {
+  const rpc = useRoaxRpcPreference(env.roaxRpc);
   return (
     <div className="space-y-4">
-      <CredentialVerifyPanel />
+      <CredentialVerifyPanel rpcUrl={rpc.rpcUrl} defaultRpcUrl={rpc.defaultRpcUrl} />
       <OwnerHiddenVerifyFlow />
       <OwnerHiddenVerificationHistory />
     </div>

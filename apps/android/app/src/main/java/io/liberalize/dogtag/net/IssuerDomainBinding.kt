@@ -296,6 +296,27 @@ object IssuerBindingResolver {
     }
 
     /**
+     * Identity of one cached chain/DNS observation.
+     *
+     * The endpoint is load-bearing: changing peers must not replay the former peer's answer. Keep
+     * the normalized endpoint's path and query case intact because both can carry case-sensitive
+     * routing or credentials; lowercasing the whole URL would collapse distinct peers.
+     */
+    internal fun cacheKey(
+        rpcUrl: String,
+        expectedChainId: Long,
+        factory: String,
+        domainRegistry: String,
+        documentStore: String,
+        root: String,
+    ): String = listOf(
+        RoaxRpc.normalizeRpcUrl(rpcUrl) ?: rpcUrl.trim(),
+        expectedChainId.toString(),
+        documentStore.lowercase(), root.lowercase(),
+        domainRegistry.lowercase(), factory.lowercase(),
+    ).joinToString("|")
+
+    /**
      * Resolve the full chain for the credential whose Merkle root is [root].
      *
      * [documentStore] is the document's CLAIM about its issuing contract and is never followed while the
@@ -304,6 +325,7 @@ object IssuerBindingResolver {
      */
     suspend fun resolve(
         rpcUrl: String,
+        expectedChainId: Long,
         factory: String,
         domainRegistry: String,
         documentStore: String,
@@ -313,13 +335,12 @@ object IssuerBindingResolver {
         // The root is part of the key: two credentials can share a `documentStore` and still resolve to
         // different clones, so keying on the document's claim alone would serve one credential's answer
         // for another's.
-        val key = listOf(
-            documentStore.lowercase(), root.lowercase(),
-            domainRegistry.lowercase(), factory.lowercase(),
-        ).joinToString("|")
+        val key = cacheKey(
+            rpcUrl, expectedChainId, factory, domainRegistry, documentStore, root,
+        )
         if (useCache) cached(key)?.let { return it }
 
-        val block = RoaxRpc.blockNumber(rpcUrl)
+        val block = RoaxRpc.blockNumber(rpcUrl, expectedChainId)
         val claimed = documentStore.trim()
 
         // ---- link 0: WHICH contract, per the chain ---------------------------------------------
@@ -332,7 +353,10 @@ object IssuerBindingResolver {
                 IssuerBinding(IssuerBindingState.Unavailable, cloneAddress = claimed, blockNumber = block),
             )
         }
-        val choice = chooseClone(RoaxRpc.rootIssuer(rpcUrl, factory, root, block), documentStore)
+        val choice = chooseClone(
+            RoaxRpc.rootIssuer(rpcUrl, expectedChainId, factory, root, block),
+            documentStore,
+        )
         val chain = { s: IssuerBindingState, name: String, dom: String, seen: Long? ->
             IssuerBinding(
                 state = s,
@@ -351,7 +375,7 @@ object IssuerBindingResolver {
         val clone = choice.address
 
         // ---- link 1: factory provenance --------------------------------------------------------
-        when (RoaxRpc.isClone(rpcUrl, factory, clone, block)) {
+        when (RoaxRpc.isClone(rpcUrl, expectedChainId, factory, clone, block)) {
             is RoaxRpc.Result.Invalid ->
                 return store(key, chain(IssuerBindingState.NotADogTagIssuer, "", "", null))
             is RoaxRpc.Result.Unknown ->
@@ -361,14 +385,20 @@ object IssuerBindingResolver {
         }
 
         // The authoritative issuer name, read once provenance holds.
-        val onchainName = (RoaxRpc.issuerOnchainName(rpcUrl, clone, block) as? RoaxRpc.StringRead.Value)
+        val onchainName = (RoaxRpc.issuerOnchainName(
+            rpcUrl, expectedChainId, clone, block,
+        ) as? RoaxRpc.StringRead.Value)
             ?.value.orEmpty()
 
         // ---- link 2: the on-chain domain claim -------------------------------------------------
         if (domainRegistry.isBlank()) {
             return store(key, chain(IssuerBindingState.Unavailable, onchainName, "", null))
         }
-        val domain = when (val r = RoaxRpc.issuerClaimedDomain(rpcUrl, domainRegistry, clone, block)) {
+        val domain = when (
+            val r = RoaxRpc.issuerClaimedDomain(
+                rpcUrl, expectedChainId, domainRegistry, clone, block,
+            )
+        ) {
             is RoaxRpc.StringRead.Failure ->
                 return store(key, chain(IssuerBindingState.Unavailable, onchainName, "", null))
             // An EMPTY eth_call result means no contract at that address — the registry is not deployed

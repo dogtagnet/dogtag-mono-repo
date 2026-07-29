@@ -49,8 +49,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
-import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Credential
+import io.liberalize.dogtag.data.RoaxConfig
+import io.liberalize.dogtag.data.SettingsStore
 import io.liberalize.dogtag.data.VerdictDisplay
 import io.liberalize.dogtag.data.WrappedDoc
 import io.liberalize.dogtag.net.RoaxRpc
@@ -150,7 +151,10 @@ fun TravelReceiptScreen(cred: Credential, onBack: () -> Unit) {
     LaunchedEffect(cred.id) {
         val d = doc ?: return@LaunchedEffect
         val root = d.merkleRoot.ifBlank { cred.credentialRoot }
-        live = RoaxRpc.isValid(AppConfig.ROAX_RPC, d.documentStore, root)
+        val roax = RoaxConfig.load(context)
+        val rpcUrl = SettingsStore(context.applicationContext)
+            .selectedRpcUrl()
+        live = RoaxRpc.isValid(rpcUrl, roax.chainId, d.documentStore, root)
     }
 
     // effectiveStatus: a live revoke wins, then a lapsed validity window, else VALID; chain-unreachable

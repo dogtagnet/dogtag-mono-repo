@@ -71,6 +71,16 @@ The page therefore renders pure history - a lapsed window shows as "Window close
 deliberately no action to undo a consent (record/credential revocation is the issuer's capability,
 not a holder surface).
 
+## Blockchain endpoint settings
+
+**Settings** (`/settings`) lets the holder choose the browser-local JSON-RPC endpoint used for
+gasless ROAX reads. Every read first checks `eth_chainId == 135`; a peer that cannot establish that
+chain receives no contract-address request, and a later transport failure falls back to the
+independently guarded bundled endpoint.
+This is a liveness/censorship remedy, not a trust upgrade or light client: an RPC can fabricate
+contract reads, logs, and transaction data. Centralized APIs and the provider indexer are not made
+user-configurable.
+
 ## Share a redacted copy (selective disclosure)
 
 The holder can hand a recipient a **redacted copy of the credential itself**, mirroring the native

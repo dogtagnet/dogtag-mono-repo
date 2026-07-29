@@ -68,6 +68,10 @@ export { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/Tabs";
 export { ToastProvider, useToast, type ToastItem } from "./components/Toast";
 export { QrCode, type QrCodeProps } from "./components/QrCode";
 export { AppShell, type AppShellProps, type NavItem } from "./components/AppShell";
+export {
+  RpcEndpointSettingsCard,
+  type RpcEndpointSettingsCardProps,
+} from "./components/RpcEndpointSettingsCard";
 
 // wallet
 export {
@@ -75,9 +79,38 @@ export {
   ROAX_CHAIN_ID,
   ROAX_CHAIN_ID_HEX,
   ROAX_ADD_CHAIN_PARAMS,
+  roaxAddChainParams,
   explorerTxUrl,
   explorerAddressUrl,
 } from "./wallet/chain";
+export {
+  DEFAULT_ROAX_RPC_URL,
+  ROAX_RPC_STORAGE_KEY,
+  createGuardedRoaxRpcRequest,
+  getRoaxRpcPreference,
+  getRoaxRpcPreferenceRevision,
+  guardedRoaxTransport,
+  normalizeRpcUrl,
+  resetRoaxRpcPreference,
+  resolveRoaxRpcEndpoint,
+  setRoaxRpcPreference,
+  subscribeRoaxRpcPreference,
+  validateAndSaveRoaxRpcPreference,
+  type GuardedRoaxRpcRequestOptions,
+  type ResolvedRoaxRpcEndpoint,
+  type ResolveRoaxRpcEndpointOptions,
+  type RoaxRpcPreference,
+  type RpcEndpointFailure,
+  type RpcFetch,
+  RpcPreferenceOperationSupersededError,
+  type StorageLike,
+  type ValidateAndSaveRoaxRpcPreferenceOptions,
+} from "./chain/rpcEndpoint";
+export { useRoaxRpcPreference } from "./chain/useRoaxRpcPreference";
+export {
+  useRoaxRpcSettings,
+  type RoaxRpcSettingsMessage,
+} from "./chain/useRoaxRpcSettings";
 
 // on-chain provenance (audit surfaces: government Oversight, vet/groomer Traceability)
 export {

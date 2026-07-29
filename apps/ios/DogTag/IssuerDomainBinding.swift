@@ -182,13 +182,14 @@ enum IssuerBindingResolver {
         root: String,
         useCache: Bool = true
     ) async -> IssuerBinding {
-        // The root is part of the key: two credentials can share a `documentStore` and still resolve to
-        // different clones, so keying on the document's claim alone would serve one credential's answer
-        // for another's.
-        let key = [
-            documentStore.lowercased(), root.lowercased(),
-            domainRegistry.lowercased(), factory.lowercased(),
-        ].joined(separator: "|")
+        let key = cacheKey(
+            rpcUrl: rpcUrl,
+            expectedChainId: RoaxConfig.load().chainId,
+            documentStore: documentStore,
+            root: root,
+            domainRegistry: domainRegistry,
+            factory: factory
+        )
         if useCache, let hit = cached(key) { return hit }
 
         var out = IssuerBinding()
@@ -280,6 +281,32 @@ enum IssuerBindingResolver {
         out.state = await resolveDns(name: name)
         store(key, out)
         return out
+    }
+
+    /// Identity of one cached on-chain/DNS observation.
+    ///
+    /// The RPC endpoint is load-bearing: without it, selecting a new peer can replay the prior peer's
+    /// `rootIssuer`/issuer/domain answer for up to 15 minutes without reaching the new peer or its chain
+    /// guard. The bundled chain id is included alongside it so this key stays correct if iOS ever gains
+    /// more than one bundled deployment. URL normalization trims accidental surrounding whitespace
+    /// but deliberately preserves endpoint case: path segments and query-token values can be
+    /// case-sensitive and therefore identify different peers/credentials.
+    static func cacheKey(
+        rpcUrl: String,
+        expectedChainId: Int,
+        documentStore: String,
+        root: String,
+        domainRegistry: String,
+        factory: String
+    ) -> String {
+        let endpoint = RpcEndpointSettings.normalizedURL(rpcUrl)
+            ?? rpcUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            endpoint,
+            String(expectedChainId),
+            documentStore.lowercased(), root.lowercased(),
+            domainRegistry.lowercased(), factory.lowercased(),
+        ].joined(separator: "|")
     }
 
     /// Resolve the TXT record over DoH. The classification itself is [`classifyDoh`], kept pure so the

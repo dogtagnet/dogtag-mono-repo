@@ -66,6 +66,9 @@ targets:
       # Models is Foundation-only (JSONSerialization) and carries `rootCoveredIssuerLeaf`, which the DID
       # assertion reads. SwiftUI lives in the screens, not here.
       - path: DogTag/Models.swift
+      # The persisted user-selected CHAIN endpoint is Foundation-only. Keep it in this host-less target
+      # so URL validation and UserDefaults persistence are covered without the app/FFI.
+      - path: DogTag/RpcEndpointSettings.swift
       # NearbyDecision is the Foundation-only provider eligibility, state and claim policy shared by
       # NearbyScreen and its mirrored native tests. Core Location stays in NearbyScreen, outside this
       # host-less target; tests inject distance values.

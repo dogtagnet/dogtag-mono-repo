@@ -150,7 +150,8 @@ struct TravelReceiptView: View {
     private func refreshStatus() async {
         guard let d = doc else { return }
         let root = d.merkleRoot.isEmpty ? cred.credentialRoot : d.merkleRoot
-        live = await RoaxRpc.isValid(rpcUrl: AppConfig.roaxRpc, documentStore: d.documentStore, root: root)
+        live = await RoaxRpc.isValid(
+            rpcUrl: RpcEndpointSettings.rpcUrl(), documentStore: d.documentStore, root: root)
     }
 
     // MARK: - top bar

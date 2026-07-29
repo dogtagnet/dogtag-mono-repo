@@ -281,7 +281,8 @@ struct ScanScreen: View {
                     var delayNanos: UInt64 = 2_000_000_000
                     for _ in 0..<40 {
                         if let chainRoot = await RoaxRpc.profileRoot(
-                            rpcUrl: AppConfig.roaxRpc, dogTagSbt: roax.dogTagSbt, dogTagId: onchainId),
+                            rpcUrl: RpcEndpointSettings.rpcUrl(),
+                            dogTagSbt: roax.dogTagSbt, dogTagId: onchainId),
                            chainRoot.dropFirst(2).contains(where: { $0 != "0" }) {
                             guard chainRoot.caseInsensitiveCompare(root) == .orderedSame else {
                                 throw issueFailure(
@@ -568,9 +569,11 @@ struct ScanScreen: View {
         // Resolve both on-chain axes. Missing configuration/publication fails closed.
         let version = AnchorResolver.protocolVersion
         async let csTask = RoaxRpc.getContractSet(
-            rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
+            rpcUrl: RpcEndpointSettings.rpcUrl(),
+            protocolRegistry: roax.protocolRegistry, version: version)
         async let asTask = RoaxRpc.getActiveArtifactSet(
-            rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
+            rpcUrl: RpcEndpointSettings.rpcUrl(),
+            protocolRegistry: roax.protocolRegistry, version: version)
         guard let cs = await csTask, let arti = await asTask else {
             working = false
             status = "Owner-hidden verification is not available yet (discovery anchor unpublished)."
@@ -610,7 +613,7 @@ struct ScanScreen: View {
             status = "Checking groomer authorization…"
             let verifyKey = verifyWhitelistKeyHex(purposeLabel: sess.purpose)
             let wl = await RoaxRpc.isWhitelistedFor(
-                rpcUrl: AppConfig.roaxRpc, issuerRegistry: roax.issuerRegistry,
+                rpcUrl: RpcEndpointSettings.rpcUrl(), issuerRegistry: roax.issuerRegistry,
                 key: verifyKey, signer: sess.relayer)
             guard case .valid = wl else {
                 working = false
@@ -706,7 +709,7 @@ struct ScanScreen: View {
             let nullifier = proof.pubSignals[nfIdx]
             let verificationRegistry = cs.verificationRegistry
             if await RoaxRpc.consumed(
-                rpcUrl: AppConfig.roaxRpc, verificationRegistry: verificationRegistry,
+                rpcUrl: RpcEndpointSettings.rpcUrl(), verificationRegistry: verificationRegistry,
                 nullifier: nullifier) {
                 working = false
                 status = "This verification was already recorded."
@@ -762,7 +765,7 @@ struct ScanScreen: View {
             var failedMsg: String? = nil
             for _ in 0..<40 {
                 if await RoaxRpc.consumed(
-                    rpcUrl: AppConfig.roaxRpc, verificationRegistry: verificationRegistry,
+                    rpcUrl: RpcEndpointSettings.rpcUrl(), verificationRegistry: verificationRegistry,
                     nullifier: nullifier) {
                     done = true
                     break

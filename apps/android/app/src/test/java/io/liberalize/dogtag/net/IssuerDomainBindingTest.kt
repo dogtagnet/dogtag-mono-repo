@@ -597,6 +597,26 @@ class IssuerCloneResolutionTest {
     private val ours = "0xb5d6654d8b29096c8fcf71d24bbe6f6de86c5f9f"
     private val otherAuthority = "0x00000000000000000000000000000000000000ee"
 
+    @Test
+    fun cache_identity_separates_endpoint_and_chain_observations() {
+        fun key(rpcUrl: String, chainId: Long = 135) = IssuerBindingResolver.cacheKey(
+            rpcUrl = rpcUrl,
+            expectedChainId = chainId,
+            factory = "0xfactory",
+            domainRegistry = "0xregistry",
+            documentStore = ours,
+            root = "0x1234",
+        )
+
+        assertNotEquals(key("https://rpc-a.example/roax"), key("https://rpc-b.example/roax"))
+        assertNotEquals(
+            "URL paths and query tokens can be case-sensitive",
+            key("https://rpc.example/ROAX?token=ABC"),
+            key("https://rpc.example/roax?token=abc"),
+        )
+        assertNotEquals(key("https://rpc.example/roax", 135), key("https://rpc.example/roax", 1))
+    }
+
     /**
      * THE property. A document naming some other factory clone must not cause that clone to be the one
      * the binding describes.

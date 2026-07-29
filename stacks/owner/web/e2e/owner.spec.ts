@@ -49,6 +49,8 @@ async function installMocks(page: Page): Promise<RpcRequest[]> {
         body: JSON.stringify({ jsonrpc: "2.0", id: req.id ?? 1, result }),
       });
     switch (req.method) {
+      case "eth_chainId":
+        return reply("0x87");
       case "eth_getLogs": {
         // Serve the Verified history iff the topic filter names Rex's canonical tag id - proving
         // the wallet derives + queries its OWN held-tag ids, not an unscoped feed.

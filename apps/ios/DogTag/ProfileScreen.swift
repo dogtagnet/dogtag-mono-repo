@@ -16,6 +16,11 @@ struct ProfileScreen: View {
     @State private var walletMsg = ""
     @State private var sheet: ProfileSheet? = nil
     @State private var resetMsg = ""
+    @State private var rpcInput = RpcEndpointSettings.rpcUrl()
+    @State private var rpcMessage = ""
+    @State private var rpcChecking = false
+    @State private var rpcCheckTask: Task<Void, Never>? = nil
+    @State private var rpcCheckGeneration = RpcEndpointRequestGeneration()
 
     /// The Dog-tags card's OTHER source: the tags this device created by issuance. It is a separate
     /// store from `store.pets` and nothing joins them - custodial issuance writes an owner-secret
@@ -196,16 +201,7 @@ struct ProfileScreen: View {
 
                 // ---- Network ----
                 SectionTitle(text: "Network")
-                VStack(alignment: .leading, spacing: 4) {
-                    kv("Chain", "ROAX (chainId \(roax.chainId))")
-                    kv("DogTagSBT", String(roax.dogTagSbt.prefix(16)) + "…")
-                    kv("IssuerRegistry", String(roax.issuerRegistry.prefix(16)) + "…")
-                    kv("ProtocolRegistry", roax.protocolRegistry.isEmpty
-                       ? "pending deployment" : String(roax.protocolRegistry.prefix(16)) + "…")
-                }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
+                rpcSettingsCard
 
                 dangerZone
 
@@ -216,7 +212,16 @@ struct ProfileScreen: View {
         // Runs after the first render, and again on every visit to this tab: `DogTagApp` swaps tab
         // content with a `switch`, so the cases produce distinct view identities and returning here
         // after an issuance re-reads the store rather than showing a stale answer.
-        .task { loadOwnedTags() }
+        .task {
+            loadOwnedTags()
+            await refreshRpcStatus()
+        }
+        .onDisappear {
+            // URLSession cancellation is cooperative, so invalidate the generation too. A check
+            // launched by this view instance must not write a preference after the user leaves and
+            // later returns to a newly-created Profile view.
+            cancelRpcCheck()
+        }
         // Deliver the revealed secrets through the sheet's item payload. A prior `.sheet(isPresented:)`
         // read sibling @State that was still nil when SwiftUI first evaluated the sheet body, so the
         // phrase/key never displayed. Dismiss nils the binding, releasing the secrets from memory.
@@ -246,6 +251,237 @@ struct ProfileScreen: View {
                 }
             }
             .environment(\.dogTagColors, c)
+        }
+    }
+
+    // ---- blockchain endpoint ----------------------------------------------------------------------
+
+    private var rpcSettingsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            kv("Chain", "ROAX (chainId \(roax.chainId))")
+            kv("DogTagSBT", String(roax.dogTagSbt.prefix(16)) + "…")
+            kv("IssuerRegistry", String(roax.issuerRegistry.prefix(16)) + "…")
+            kv("ProtocolRegistry", roax.protocolRegistry.isEmpty
+               ? "pending deployment" : String(roax.protocolRegistry.prefix(16)) + "…")
+
+            Divider().overlay(c.outline)
+
+            Text("Blockchain JSON-RPC endpoint")
+                .font(.system(size: 13, weight: .semibold)).foregroundColor(c.onBackground)
+            TextField("https://your-roax-rpc.example", text: $rpcInput)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .textContentType(.URL)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(10)
+                .foregroundColor(c.onBackground)
+                .background(RoundedRectangle(cornerRadius: 10).fill(c.surfaceVariant))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(c.outline, lineWidth: 1))
+                .accessibilityIdentifier("rpcEndpointInput")
+
+            HStack(spacing: 10) {
+                Button {
+                    saveRpcEndpoint()
+                } label: {
+                    if rpcChecking {
+                        ProgressView().tint(c.onAccent)
+                            .frame(minWidth: 72)
+                    } else {
+                        Text("Save & check").font(.system(size: 12, weight: .semibold))
+                    }
+                }
+                .padding(.vertical, 9).padding(.horizontal, 12)
+                .foregroundColor(c.onAccent)
+                .background(RoundedRectangle(cornerRadius: 10).fill(c.accent))
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("rpcEndpointSave")
+
+                Button {
+                    useBundledRpc()
+                } label: {
+                    Text("Use bundled default").font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(c.accent)
+                        .padding(.vertical, 9).padding(.horizontal, 12)
+                        .background(RoundedRectangle(cornerRadius: 10).stroke(c.accent, lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("rpcEndpointDefault")
+            }
+
+            if !rpcMessage.isEmpty {
+                Text(rpcMessage).font(.system(size: 11)).foregroundColor(c.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("Choosing another endpoint can improve endpoint choice, liveness, and censorship resistance by helping route around an endpoint that is censoring or unavailable.")
+                .font(.system(size: 11)).foregroundColor(c.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("This is not a trust upgrade. A plain JSON-RPC peer has no light-client verification and can fabricate credential-validity (isValid), issuer-provenance (rootIssuer), or profile-root (profileRoot) reads.")
+                .font(.system(size: 11, weight: .semibold)).foregroundColor(c.warning)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Before every blockchain read, DogTag checks eth_chainId against bundled chain ID \(roax.chainId). An invalid, unreachable, or different-chain custom endpoint falls back to the bundled endpoint. That guard prevents accidental cross-chain address use; it cannot prove the peer is honest.")
+                .font(.system(size: 11)).foregroundColor(c.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("This changes blockchain JSON-RPC only. The provider directory/indexer and QR-discovered central service endpoints are not user-configurable here.")
+                .font(.system(size: 11)).foregroundColor(c.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
+    }
+
+    private func saveRpcEndpoint() {
+        guard let candidate = RpcEndpointSettings.normalizedURL(rpcInput) else {
+            cancelRpcCheck()
+            RpcEndpointSettings.useBundled()
+            rpcMessage = "Enter a complete http:// or https:// endpoint. The custom setting was cleared; DogTag is using the bundled default."
+            return
+        }
+        if candidate == AppConfig.roaxRpc {
+            useBundledRpc()
+            return
+        }
+        let requestGeneration = beginRpcCheck(message: "Checking eth_chainId…")
+        rpcCheckTask = Task {
+            let route = await RoaxRpc.endpointRoute(rpcUrl: candidate)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                // A later Save/default action or this view disappearing invalidates the token.
+                // The transport may ignore cancellation, so generation is the load-bearing guard.
+                guard !Task.isCancelled,
+                      rpcCheckGeneration.accepts(requestGeneration) else { return }
+                if case .custom(let checked) = route {
+                    // Persist only after the endpoint reports the chain whose bundled addresses this
+                    // build queries. The read-time guard still repeats the check because a saved peer
+                    // can move or disappear later.
+                    _ = RpcEndpointSettings.saveChecked(checked, route: route)
+                    rpcInput = checked
+                    rpcMessage = endpointMessage(route)
+                } else {
+                    // A rejected new choice never leaves an older custom peer active behind copy that
+                    // says we fell back. The durable route becomes the bundled default.
+                    _ = RpcEndpointSettings.saveChecked(candidate, route: route)
+                    rpcMessage = rejectedEndpointMessage(route)
+                }
+                rpcChecking = false
+                rpcCheckTask = nil
+            }
+        }
+    }
+
+    private func useBundledRpc() {
+        let requestGeneration = beginRpcCheck(message: "Checking the bundled endpoint…")
+        RpcEndpointSettings.useBundled()
+        rpcInput = AppConfig.roaxRpc
+        rpcCheckTask = Task {
+            let route = await RoaxRpc.endpointRoute(rpcUrl: AppConfig.roaxRpc)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !Task.isCancelled,
+                      rpcCheckGeneration.accepts(requestGeneration) else { return }
+                rpcMessage = endpointMessage(route)
+                rpcChecking = false
+                rpcCheckTask = nil
+            }
+        }
+    }
+
+    private func refreshRpcStatus() async {
+        let requestGeneration = rpcCheckGeneration.current
+        let selected = RpcEndpointSettings.rpcUrl()
+        let route = await RoaxRpc.endpointRoute(rpcUrl: selected)
+        guard !Task.isCancelled else { return }
+        await MainActor.run {
+            // The Profile task can still be probing when the user saves a different choice. Never
+            // let that stale answer overwrite the newly selected endpoint's status.
+            guard !Task.isCancelled,
+                  rpcCheckGeneration.accepts(requestGeneration),
+                  selected == RpcEndpointSettings.rpcUrl(),
+                  !rpcChecking else { return }
+            rpcMessage = endpointMessage(route)
+        }
+    }
+
+    /// Cancel the transport where possible and always advance the generation. The latter is what
+    /// makes cancellation safe when an already-started URLSession request still calls back.
+    @discardableResult
+    private func beginRpcCheck(message: String) -> UInt64 {
+        rpcCheckTask?.cancel()
+        rpcCheckTask = nil
+        var generation = rpcCheckGeneration
+        let token = generation.begin()
+        rpcCheckGeneration = generation
+        rpcChecking = true
+        rpcMessage = message
+        return token
+    }
+
+    private func cancelRpcCheck() {
+        rpcCheckTask?.cancel()
+        rpcCheckTask = nil
+        var generation = rpcCheckGeneration
+        generation.invalidate()
+        rpcCheckGeneration = generation
+        rpcChecking = false
+    }
+
+    private func rejectedEndpointMessage(_ route: RoaxRpc.EndpointRoute) -> String {
+        let reason: String
+        switch route {
+        case .bundledFallback(.wrongChain(let reported)),
+             .unavailable(custom: .wrongChain(let reported), bundled: _):
+            reason = "It reports chain ID \(reported), not \(roax.chainId)."
+        case .bundledFallback(.invalidChainIdResponse),
+             .unavailable(custom: .invalidChainIdResponse, bundled: _):
+            reason = "It did not return a valid eth_chainId."
+        case .bundledFallback(.unavailable),
+             .unavailable(custom: .unavailable, bundled: _):
+            reason = "It could not be reached."
+        case .bundledFallback(.invalidURL),
+             .unavailable(custom: .invalidURL, bundled: _):
+            reason = "It is not a valid HTTP(S) endpoint."
+        case .unavailable(custom: nil, bundled: _):
+            reason = "The endpoint could not be checked."
+        case .custom:
+            reason = ""
+        case .bundled:
+            reason = "Use “Use bundled default” to select the bundled endpoint."
+        }
+        return "\(reason) The custom endpoint was not saved; DogTag selected the bundled default."
+    }
+
+    private func endpointMessage(_ route: RoaxRpc.EndpointRoute) -> String {
+        switch route {
+        case .bundled:
+            return "Using the bundled endpoint on chain ID \(roax.chainId)."
+        case .custom:
+            return "Custom endpoint reports chain ID \(roax.chainId) and is active."
+        case .bundledFallback(let failure):
+            switch failure {
+            case .invalidURL:
+                return "The saved custom endpoint is invalid. DogTag is using the bundled endpoint."
+            case .unavailable:
+                return "The custom endpoint could not be reached. It remains saved, but DogTag is using the bundled endpoint for reads."
+            case .invalidChainIdResponse:
+                return "The custom endpoint did not return a valid eth_chainId. It remains saved, but DogTag is using the bundled endpoint for reads."
+            case .wrongChain(let reported):
+                return "The custom endpoint reports chain ID \(reported), not \(roax.chainId). It remains saved, but DogTag is using the bundled endpoint for reads."
+            }
+        case .unavailable(let custom, let bundled):
+            let bundledDetail: String
+            if case .wrongChain(let reported) = bundled {
+                bundledDetail = "reports chain ID \(reported), not \(roax.chainId)"
+            } else if bundled == .invalidChainIdResponse {
+                bundledDetail = "did not return a valid eth_chainId"
+            } else {
+                bundledDetail = "could not be reached"
+            }
+            if custom == nil {
+                return "The bundled endpoint \(bundledDetail). No blockchain read will be accepted until a matching endpoint is reachable."
+            }
+            return "The custom endpoint was rejected, and the bundled endpoint \(bundledDetail). No blockchain read will be accepted until a matching endpoint is reachable."
         }
     }
 

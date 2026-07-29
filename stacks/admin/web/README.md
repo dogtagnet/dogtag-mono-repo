@@ -44,4 +44,6 @@ pnpm --filter @dogtag/admin-web dev
 ## Env
 
 See `.env.example`. The central API base is proxied to `/api` by default. `VITE_ISSUER_REGISTRY_ADDR`
-enables the live on-chain whitelist read; `VITE_ROAX_RPC` overrides the ROAX RPC URL.
+enables the live on-chain whitelist read; `VITE_ROAX_RPC` supplies the bundled ROAX RPC default.
+An authenticated user can choose a browser-local endpoint under **Settings**; the central API and
+oversight indexer remain deployment-configured and are not user-configurable.

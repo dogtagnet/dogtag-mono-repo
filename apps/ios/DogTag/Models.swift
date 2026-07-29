@@ -493,8 +493,9 @@ struct RoaxConfig {
     }
 }
 
-/// Endpoint configuration. Per-vet/-verifier hosts always come from scanned QR origins; `roaxRpc`
-/// is the gasless on-chain read endpoint.
+/// Bundled endpoint configuration. Per-vet/-verifier hosts always come from scanned QR origins;
+/// `roaxRpc` is the fail-closed chain fallback, while `RpcEndpointSettings` owns the holder's active
+/// custom choice. The provider directory remains a fixed centralized service by product design.
 enum AppConfig {
     static let roaxRpc = "https://devrpc.roax.net"
     /// Public, full-set provider directory. Nearby never adds a query string: name, range and

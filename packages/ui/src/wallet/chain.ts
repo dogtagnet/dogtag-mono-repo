@@ -30,6 +30,14 @@ export const ROAX_ADD_CHAIN_PARAMS = {
   blockExplorerUrls: ["https://explorer.roax.net"],
 } as const;
 
+/** EIP-3085 metadata using an endpoint that has already passed the ROAX chain guard. */
+export function roaxAddChainParams(rpcUrl: string = roax.rpcUrls.default.http[0]) {
+  return {
+    ...ROAX_ADD_CHAIN_PARAMS,
+    rpcUrls: [rpcUrl],
+  } as const;
+}
+
 export function explorerTxUrl(txHash: string): string {
   return `${roax.blockExplorers.default.url}/tx/${txHash}`;
 }

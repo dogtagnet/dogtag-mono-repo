@@ -135,6 +135,19 @@ Never "fix" a prerequisite failure by deleting the check it guards.
 - Pre-existing harmless warning: unused import `BigInteger` in `crates/dogtag-standard-rs/src/bin/field-hash.rs`.
 - **Mobile `eth_call` selectors must be DERIVED from the signature, never hard-coded.** `apps/*` hand-encode selectors in `RoaxRpc.kt` / `Net.swift` (no ABI lib). `isValid`'s was once the stale literal `0x6d04f0bc` (its comment *claimed* to be the keccak but wasn't) - that selector REVERTS on the deployed ROAX `DogTagIssuer` clone, so every mobile validity read silently fell through to `Unknown`/accept-with-caveat and a revoked credential never showed as revoked. The canonical selector is `keccak256("isValid(bytes32)")[:4] = 0x6a938567` (what viem, the alloy `sol!` ABI, vet-api `verify_credential`, and the web direct-RPC path in `packages/ui` all bind). It is now derived on-device via `Keccak256` (`RoaxRpc.functionSelector` / `Net.swift` `functionSelector`); `apps/android/app/src/test/.../RoaxRpcSelectorTest.kt` pins it. **Android derives ALL of its selectors** (`isValid`, `isWhitelistedFor`, `consumed`, `profileRoot`, plus the ProtocolRegistry reads; the retired `bindNonce`/`keyOf`/`ownerOf` reads went with the owner-revealing layer) - `RoaxRpc.kt` holds no selector literals. **iOS `Net.swift` still hard-codes the non-`isValid` read selectors** (`isWhitelistedFor`, `consumed`, `profileRoot`): each was reconfirmed correct via `cast sig`, so this is latent drift risk rather than a live bug, and it stays open only because `Net.swift` is not yet covered by the iOS unit-test target (which exists now - see "iOS unit tests" - but is host-less/FFI-free, and `Net.swift` would need the selector helpers extracted into an FFI-free source before it can be pinned the way `RoaxRpcSelectorTest.kt` pins Android's). Verify any new mobile selector against the chain before shipping: `eth_call` a real clone (VACCINATION `0x1456f93f7376789c46408CC4616751eB853edD9A` on `https://devrpc.roax.net`) - the correct selector returns a 32-byte word, a wrong one returns `execution reverted`. Note mobile has only the single `isValid` bool (no `issuedAt`/`isRevoked` decomposition like web), so it renders revoked and never-anchored identically as "REVOKED / not anchored"; that is intentional, not a bug.
 
+- **User-selectable RPC is chain transport only, and it is never a trust upgrade.** Android Profile
+  persists `rpc_url` in DataStore, iOS Profile persists `roax_rpc_url` in UserDefaults, and the
+  admin/vet/groomer/owner web Settings screens persist `dogtag.roax-rpc-url.v1` in localStorage.
+  Every address/log/transaction-data read first probes `eth_chainId` against the chain id bundled
+  with the contract addresses. A wrong, malformed, or unavailable custom peer receives no
+  address-bound request; the bundled default is checked independently before fallback, and if
+  neither passes the read stays indeterminate. A peer that reports the expected id can still
+  fabricate `isValid`, `rootIssuer`, `profileRoot`, logs, or transaction data: endpoint choice helps
+  liveness/censorship resistance but supplies no light-client verification. The centralized app
+  APIs, provider directory/indexer, and QR-discovered service hosts are deliberately not settings,
+  and injected/WalletConnect transactions still use the wallet's own provider. Runtime endpoint
+  cache keys must preserve path/query case because API routes and tokens can be case-sensitive.
+
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
 - `crates/dogtag-prover-rs` — real ark-circom/ark-groth16 prover (self-verifies). Test oracle + backend prover-service. Its artifacts are **version-keyed** (`src/artifact.rs`) — see "Version-keyed proving artifacts".

@@ -36,6 +36,7 @@ object RecordImporter {
         req: QrPayload.ImportRecord,
         issuerRegistry: String,
         issuerFactory: String,
+        expectedChainId: Long,
         rpcUrl: String = RoaxRpc.DEFAULT_RPC,
     ): ImportResult {
         // Legacy: fetch the wrapped doc from GET <host>/records/{recordId} with the Bearer record-JWT.
@@ -48,7 +49,9 @@ object RecordImporter {
         if (!resp.ok) {
             return ImportResult(false, "UNVERIFIED", "GET $url -> ${resp.code}: ${resp.body.take(120)}", null)
         }
-        return verifyAndBuild(resp.body, req.recordId, issuerRegistry, issuerFactory, rpcUrl)
+        return verifyAndBuild(
+            resp.body, req.recordId, issuerRegistry, issuerFactory, expectedChainId, rpcUrl,
+        )
     }
 
     /**
@@ -60,6 +63,7 @@ object RecordImporter {
         req: QrPayload.ImportRecordToken,
         issuerRegistry: String,
         issuerFactory: String,
+        expectedChainId: Long,
         rpcUrl: String = RoaxRpc.DEFAULT_RPC,
     ): ImportResult {
         val url = "${req.host}/r/${req.token}"
@@ -71,7 +75,9 @@ object RecordImporter {
         if (!resp.ok) {
             return ImportResult(false, "UNVERIFIED", "GET $url -> ${resp.code}: ${resp.body.take(120)}", null)
         }
-        return verifyAndBuild(resp.body, req.token, issuerRegistry, issuerFactory, rpcUrl)
+        return verifyAndBuild(
+            resp.body, req.token, issuerRegistry, issuerFactory, expectedChainId, rpcUrl,
+        )
     }
 
     /**
@@ -84,6 +90,7 @@ object RecordImporter {
         fallbackId: String,
         issuerRegistry: String,
         issuerFactory: String,
+        expectedChainId: Long,
         rpcUrl: String,
     ): ImportResult {
         val doc = try {
@@ -100,7 +107,9 @@ object RecordImporter {
         }
 
         // 3. ISSUANCE pillar (on-chain isValid via ROAX RPC).
-        val onchain = RoaxRpc.isValid(rpcUrl, doc.documentStore, doc.merkleRoot)
+        val onchain = RoaxRpc.isValid(
+            rpcUrl, expectedChainId, doc.documentStore, doc.merkleRoot,
+        )
 
         // NO FAIL-OPEN: an unreachable RPC means we did not check, which is NOT the same as checking
         // and finding the record good. It records UNVERIFIED with the reason, never VALID.
@@ -124,7 +133,8 @@ object RecordImporter {
         // clone from the app's OWN factory, then asks THAT clone what record type it holds and who
         // issued the root, and checks that signer against the app's own bundled registry.
         val whitelist = RoaxRpc.issuerWhitelistPillar(
-            rpcUrl, issuerRegistry, issuerFactory, doc.documentStore, doc.merkleRoot, doc.recordType,
+            rpcUrl, expectedChainId, issuerRegistry, issuerFactory,
+            doc.documentStore, doc.merkleRoot, doc.recordType,
         )
         // Same fold the refresh path uses, and the REASON moves with the verdict: a degraded verdict
         // still carrying "anchored on ROAX and not revoked" would be an over-claiming explanation
@@ -233,7 +243,8 @@ object IssuerWhitelist {
         pillar: RoaxRpc.Result? = null,
     ): Pair<String, String> {
         val resolved = pillar ?: RoaxRpc.issuerWhitelistPillar(
-            rpcUrl, roax.issuerRegistry, roax.issuerFactory, documentStore, root, recordType,
+            rpcUrl, roax.chainId, roax.issuerRegistry, roax.issuerFactory,
+            documentStore, root, recordType,
         )
         return fold(verdict, reason, resolved)
     }

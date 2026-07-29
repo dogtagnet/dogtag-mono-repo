@@ -234,7 +234,10 @@ export interface DomainClaimReader {
 }
 
 export interface BenchInput
-  extends Pick<VerifyCredentialOnchainArgs, "registryAddr" | "factoryAddr" | "rpcUrl" | "reader"> {
+  extends Pick<
+    VerifyCredentialOnchainArgs,
+    "registryAddr" | "factoryAddr" | "rpcUrl" | "defaultRpcUrl" | "reader"
+  > {
   /** The record under test: a parsed WrappedDoc. */
   wrappedDoc: Record<string, unknown>;
   /**
@@ -497,7 +500,8 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
   const { reader, reads } = recordingReader(
     // The bench's default is the verifier's OWN reader factory, pinned to this run's block - one
     // reader implementation shared, rather than two that could drift.
-    input.reader ?? roaxIssuerChainReader(input.rpcUrl, input.blockNumber),
+    input.reader ??
+      roaxIssuerChainReader(input.rpcUrl, input.blockNumber, input.defaultRpcUrl),
   );
   let response: VerifyCredentialResp | null = null;
   let verifierError: string | null = null;
@@ -507,6 +511,7 @@ export async function runVerificationBench(input: BenchInput): Promise<BenchRepo
       registryAddr,
       factoryAddr,
       rpcUrl: input.rpcUrl,
+      defaultRpcUrl: input.defaultRpcUrl,
       reader,
       now: input.now,
     });
@@ -1034,6 +1039,7 @@ async function domainChecks(
         domainRegistryAddr: registryAddr,
         cloneAddr,
         rpcUrl: input.rpcUrl,
+        defaultRpcUrl: input.defaultRpcUrl,
         blockNumber: input.blockNumber,
       }),
   };

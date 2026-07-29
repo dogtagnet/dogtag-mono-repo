@@ -19,19 +19,20 @@ Placeholders used below (define-once):
 
 ## 0. Goal + the one diagram
 
-A phone gets its configuration from **two** distinct places. Knowing which is which is the whole
-point of this doc - most "it's talking to the wrong thing" bugs are a confusion between them.
+A phone gets its service hosts, chain bundle, and user RPC choice from **three** distinct places.
+Knowing which is which is the whole point of this doc - most "it's talking to the wrong thing" bugs
+are a confusion between them.
 
 ```
                          ┌──────────────────────────────────────────────┐
                          │                THE PHONE APP                 │
                          └──────────────────────────────────────────────┘
                                     ▲                    ▲
-               SCANNED QR (per scan)│                    │BAKED (bundled in the build)
+               SCANNED QR (per scan)│                    │BUNDLED + PROFILE SETTING
    ┌────────────────────────────────┘                    └────────────────────────────────────┐
    │  vet host     = QR  /p/<token>              contract addresses = bundled roax.json       │
-   │  groomer host = QR  /x/<token>              chain RPC = baked constant                   │
-   │  (the app has NO field for these)                       (https://devrpc.roax.net)        │
+   │  groomer host = QR  /x/<token>              chain RPC = saved user choice               │
+   │  (the app has NO field for these)                       or bundled guarded default       │
    │                                             zkey + graph = bundled assets                │
    │                                                          (vendored each build)           │
    └──────────────────────────────────────────────────────────────────────────────────────────┘
@@ -39,14 +40,15 @@ point of this doc - most "it's talking to the wrong thing" bugs are a confusion 
 
 - **SCANNED QR** — the vet host (issue a dog tag) and the groomer host (export/verify) come **only**
   from the QR the operator's portal renders. The app has no UI field for either host. See §2.
-- **BAKED** - contract addresses (`roax.json`), the chain RPC constant, and the owner-hidden consent
-  proving artifacts (`consent_final.zkey` + `consent.graph`) are compiled/bundled into the app.
-  To change any of them you **edit + rebuild + reinstall** (§8).
+- **BUNDLED** - contract addresses and their `chainId` (`roax.json`), the default chain RPC, and the
+  owner-hidden consent proving artifacts (`consent_final.zkey` + `consent.graph`) ship in the app.
+  The user may replace only the chain RPC at runtime from **Profile**; a chain/address or artifact
+  change still requires an edit + rebuild + reinstall (§8).
 
-There is no in-app endpoint setting left at all.
 The former `central_api` ECDSA-fallback preference and the former 32-bit `prover_api` preference are
-retired along with the flows that used them (§3, §7); `AppConfig` in both apps now carries only the
-baked RPC constant.
+retired along with the flows that used them (§3, §7). Their centralized replacements are not
+user-configurable: vet/groomer service hosts still come from scanned QRs, and the provider
+directory/indexer stays fixed. The **Blockchain endpoint** control in Profile changes JSON-RPC only.
 
 ---
 
@@ -128,17 +130,25 @@ not copy it.**
 | setting | source | who sets it / when | notes |
 |---|---|---|---|
 | contract addresses | bundled `roax.json` | baked at build; edit + rebuild to change | iOS `apps/ios/DogTag/roax.json`, Android `apps/android/app/src/main/assets/roax.json` — a hand-maintained trimmed subset, **no sync script** copies it from `contracts/deployments/roax.json` |
-| chain RPC | baked constant | rebuild to change | iOS `apps/ios/DogTag/Models.swift` `AppConfig.roaxRpc`; Android `AppConfig.ROAX_RPC` — both `https://devrpc.roax.net` |
+| chain RPC | persisted Profile choice, with a bundled default | user at runtime; operator sets the default at build | iOS default: `apps/ios/DogTag/Models.swift` `AppConfig.roaxRpc`; Android default: `apps/android/app/src/main/java/io/liberalize/dogtag/net/RoaxRpc.kt` `DEFAULT_RPC` — both default to `https://devrpc.roax.net` |
 | vet host (issue dog tag) | scanned QR `/p/<token>` | per scan | the device calls **only** the scanned host; the app has no field for it |
 | groomer host (export / verify) | scanned QR `/x/<token>` | per scan | the device calls **only** the scanned host; the app has no field for it |
 
 **The vet and groomer hosts come ONLY from the scanned QR.** There is no settings field for them in
 either app — whatever host the operator's portal encodes into the `/p/` or `/x/` QR is the host the
-phone calls, and nothing else. Contract addresses and the RPC are baked; do not look for them in the
-app's settings either.
+phone calls, and nothing else. The full provider directory/indexer is likewise fixed. Only the
+blockchain JSON-RPC peer is user-selectable.
 
-That is the whole model: the retired `central_api` and `prover_api` preferences no longer exist in
-either app (§7), so there is nothing else to configure on the phone.
+Every blockchain read first asks the chosen peer for `eth_chainId` and compares it with the
+`chainId` bundled beside the contract addresses in `roax.json`. A malformed, unreachable, or
+different-chain choice receives no address-bound request and is bypassed for that read in favour of
+the bundled default; that default is guarded independently. An explicitly rejected save clears the
+old custom preference. If neither endpoint establishes the bundled chain, the read stays unavailable
+rather than querying those addresses on another chain.
+
+This is an availability and censorship-control feature, **not a trust upgrade**. The endpoint is a
+plain JSON-RPC peer, not a light client, and can fabricate `isValid`, `rootIssuer`, `profileRoot`,
+logs, or transaction data even after reporting the expected chain id.
 
 Per-contract addresses live in `contracts/deployments/roax.json` (and a quick-reference table in
 [DEPLOYMENT — address book](./DEPLOYMENT.md)). This doc never transcribes addresses.
@@ -409,7 +419,8 @@ cd apps/android && ./gradlew :app:installDebug
 **Retired - there is nothing to set here any more.**
 The in-app `prover_api` preference and the remote `/prove-verification` prover-service it pointed at
 are gone: `AppConfig` no longer carries a prover URL (or a `central_api`), and the app has no
-settings screen for endpoints.
+settings screen for those centralized service endpoints. The Profile blockchain setting is
+unrelated and changes only JSON-RPC.
 On every 64-bit device the app proves on-device with no configuration (§3).
 The replacement concept for a device that cannot prove locally is the **consent server-prove
 fallback** - the backend `POST /prove-consent` route exists, but its mobile wiring lands with the
@@ -424,12 +435,12 @@ There is **no sync script** that pushes contract config into the apps — **each
 copy**, so a chain/contract swap means editing both apps and rebuilding. After you change the on-chain
 deployment, do all of the following:
 
-1. **Edit both `roax.json` files** to the new contract addresses:
+1. **Edit both `roax.json` files** to the new contract addresses **and `chainId`**:
    - `apps/ios/DogTag/roax.json`
    - `apps/android/app/src/main/assets/roax.json`
-2. **If you are changing chains**, also update the baked **RPC constant** in both apps:
+2. **If you are changing chains**, update the bundled **default RPC** in both apps:
    - iOS `apps/ios/DogTag/Models.swift` → `AppConfig.roaxRpc`
-   - Android `apps/android/app/src/main/java/io/liberalize/dogtag/data/AppConfig.kt` → `ROAX_RPC`
+   - Android `apps/android/app/src/main/java/io/liberalize/dogtag/net/RoaxRpc.kt` → `DEFAULT_RPC`
 3. **Re-vendor the production zkey** into both bundles (§4) — a chain swap normally comes with a new
    trusted-setup `consent_final.zkey` (and, if the circuit changed, a rebuilt `consent.graph`):
    ```bash
@@ -438,9 +449,10 @@ deployment, do all of the following:
    ```
 4. **Rebuild + reinstall both apps** — iOS per §5, Android per §6.
 
-Until you rebuild **and reinstall**, the phone keeps using the **old** baked addresses/RPC/zkey and
-will silently talk to the previous chain. For the full go-live chain-swap checklist (backend, portal,
-contracts, ceremony, timelock) see
+Until you rebuild **and reinstall**, the phone still has the old bundled addresses, chain id, default
+RPC, and zkey. A custom endpoint for the new chain will be rejected by the old chain guard; the app
+will keep using its independently guarded old default or report the read unavailable. For the full
+go-live chain-swap checklist (backend, portal, contracts, ceremony, timelock) see
 [PRODUCTION — chain swap §2](./PRODUCTION_DEPLOYMENT.md).
 
 ---
@@ -452,7 +464,7 @@ contracts, ceremony, timelock) see
 | iOS build fails: code-signing / "no team" / can't register bundle id | baked `DEVELOPMENT_TEAM AYDBUX9433` is not your team | set your own `DEVELOPMENT_TEAM` in `apps/ios/project.yml`, then re-run `xcodegen` (don't edit the generated project) — §5 |
 | `adb devices` shows nothing / `unauthorized` / `offline` | USB debugging off, charge-only cable, or prompt not accepted | enable USB debugging, use a data cable, accept the on-phone prompt; `adb kill-server && adb devices` — §6 |
 | 32-bit-only Android: export cannot produce a proof | the device cannot run the on-device prover, and the consent server-prove fallback is not wired into the app yet | use a 64-bit device; the mobile fallback wiring lands with the mobile-issuance slice - §3 |
-| app reaches the **wrong chain** / old contracts after a deploy | apps not rebuilt — `roax.json`/RPC are **baked** | edit both `roax.json` (+ RPC constant), re-vendor zkey, rebuild + **reinstall** — §8 |
+| custom RPC is rejected, or the app still reads old contracts after a deploy | endpoint chain id differs from bundled `roax.json`, or the app was not rebuilt with the new address set/default | verify `eth_chainId`; edit both `roax.json` files (+ bundled RPC defaults for a chain swap), re-vendor zkey, rebuild + **reinstall** — §8 |
 | proofs never validate on a fresh checkout | `consent_final.zkey`/`consent.graph` not vendored (the bundle copies are gitignored) | `make vendor-mobile-artifacts` - §4 |
 | iOS app builds but cannot prove | consent pair vendored **after** `xcodegen`, so the regenerated project never bundled it | vendor the pair, re-run `xcodegen`, rebuild - §4 caveat, §5 |
 | app talks to an unexpected vet/groomer host | the host comes **only** from the scanned QR; a stale/wrong QR was scanned | re-scan the correct `/p/` or `/x/` QR from the right portal — §2 |

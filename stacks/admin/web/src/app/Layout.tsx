@@ -10,6 +10,7 @@ import {
   Factory,
   Landmark,
   FlaskConical,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -25,6 +26,7 @@ const NAV: NavItem[] = [
   { key: "whitelist", href: "/whitelist", label: "Whitelist", icon: ShieldCheck },
   { key: "governance", href: "/governance", label: "Governance", icon: Landmark },
   { key: "bench", href: "/bench", label: "Verification bench", icon: FlaskConical },
+  { key: "settings", href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
 function Brand() {
