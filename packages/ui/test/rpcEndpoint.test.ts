@@ -80,6 +80,48 @@ describe("ROAX RPC preference", () => {
     expect(storage.getItem(ROAX_RPC_STORAGE_KEY)).toBeNull();
   });
 
+  it("preserves path and query case, which carry API routes and tokens", async () => {
+    const storage = new MemoryStorage();
+    const defaultUrl = "https://default.rpc";
+    const cased = "https://Rpc.Example/V1/RoutE?Token=AbCdEf";
+
+    // Only the host is case-insensitive; a lowercased path or query would address a different
+    // route, or present a different token, than the operator typed.
+    expect(normalizeRpcUrl(cased)).toBe("https://rpc.example/V1/RoutE?Token=AbCdEf");
+
+    const selected = setRoaxRpcPreference(cased, defaultUrl, storage);
+    expect(selected.rpcUrl).toBe("https://rpc.example/V1/RoutE?Token=AbCdEf");
+    expect(storage.getItem(ROAX_RPC_STORAGE_KEY)).toBe(
+      "https://rpc.example/V1/RoutE?Token=AbCdEf",
+    );
+
+    // The contacted peer, not merely the stored string, keeps that case.
+    const calls: Array<{ url: string; method: string }> = [];
+    const fetchFn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = requestBody(init);
+      calls.push({ url: String(input), method: body.method });
+      return rpcResponse(body.id, body.method === "eth_chainId" ? "0x87" : "0x01");
+    }) as RpcFetch;
+    const request = createGuardedRoaxRpcRequest({
+      preferredUrl: selected.rpcUrl,
+      defaultUrl,
+      fetchFn,
+    });
+
+    await expect(
+      request({
+        method: "eth_call",
+        params: [{ to: "0x0000000000000000000000000000000000000001", data: "0x" }],
+      }),
+    ).resolves.toBe("0x01");
+    expect(calls).toEqual([
+      { url: "https://rpc.example/V1/RoutE?Token=AbCdEf", method: "eth_chainId" },
+      { url: "https://rpc.example/V1/RoutE?Token=AbCdEf", method: "eth_call" },
+    ]);
+
+    resetRoaxRpcPreference(defaultUrl, storage);
+  });
+
   it("ignores a stale malformed stored value instead of dispatching to it", () => {
     const storage = new MemoryStorage();
     storage.setItem(ROAX_RPC_STORAGE_KEY, "javascript:alert(1)");

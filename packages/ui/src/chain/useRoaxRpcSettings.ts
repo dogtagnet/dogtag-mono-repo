@@ -38,8 +38,14 @@ export function useRoaxRpcSettings(
   }, []);
 
   useEffect(() => {
-    // This also cancels a probe when a storage event changes the preference in another tab.
-    operation.current += 1;
+    // Re-sync the field with the stored choice, including one made in another tab.
+    //
+    // This must NOT cancel the in-flight save. A save's own persist/reset changes the preference
+    // too, so cancelling here made the hook discard its own verdict: every save that actually
+    // changed the endpoint reported nothing, and a rejection that cleared a working custom peer was
+    // the silent worst case. A genuinely foreign change is already superseded by the revision check
+    // inside validateAndSaveRoaxRpcPreference, which runs immediately before persistence rather
+    // than merely after the probe resolves.
     setDraft(preference.rpcUrl);
     setChecking(false);
   }, [preference.rpcUrl]);
