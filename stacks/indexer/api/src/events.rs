@@ -104,6 +104,11 @@ pub struct IndexedEvent {
     /// specific `DogTagIssuer` clone. Load-bearing for clone-scoping + anti-spoof gating.
     #[serde(rename = "contract")]
     pub contract: String,
+    /// Immutable contract-generation id. This is the generation's lowercase factory address, so it
+    /// cannot drift when an operator renames a deployment label. Consumers can join it to
+    /// `/v1/status.watchedGenerations` to recover the exact factory / registry / verification-registry
+    /// triple that admitted this event.
+    pub generation: String,
     #[serde(rename = "blockNumber")]
     pub block_number: u64,
     #[serde(rename = "blockHash")]

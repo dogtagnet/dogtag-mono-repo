@@ -161,6 +161,8 @@ export interface TraceLocalJoin {
 export interface TraceEvent {
   id: string;
   type: TraceEventType;
+  /** Immutable generation id (the lowercase factory address); join to status.watchedGenerations. */
+  generation: string;
   contract?: string;
   blockNumber?: number;
   txHash?: string;
@@ -851,6 +853,8 @@ export type ActivityFinality = "finalized" | "pending";
 export interface ActivityEvent {
   id: string;
   type: ActivityEventType;
+  /** Immutable generation id (the lowercase factory address); join to status.watchedGenerations. */
+  generation: string;
   contract: string;
   blockNumber: number;
   blockHash?: string;
@@ -932,6 +936,16 @@ export interface ActivityStats {
   signers: number;
   scope?: { label: string; unscoped: boolean };
 }
+/** One exact contract-generation triple admitted by the indexer's role-specific anti-spoof gate. */
+export interface IndexerWatchedGeneration {
+  /** Immutable generation id; equal to the normalized factory address. */
+  generation: string;
+  factory: string;
+  issuerRegistry: string;
+  verificationRegistry: string;
+  /** Pre-existing clones admitted for this generation before IssuerCreated discovery catches up. */
+  seedClones: string[];
+}
 /** GET /v1/admin/activity/status - indexer progress + finality watermark (chain-health card). */
 export interface IndexerStatus {
   /** the indexed chain's id, or null when the indexer is serving a simulated source. */
@@ -947,6 +961,8 @@ export interface IndexerStatus {
   /** head − lastFinalizedIndexed (indexing lag in blocks; null when unknown). */
   lag: number | null;
   confirmations: number;
+  /** Exact generation set being watched; omissions stay visible even when the event feed is empty. */
+  watchedGenerations: IndexerWatchedGeneration[];
   scope?: { label: string; unscoped: boolean };
 }
 /** GET /v1/admin/activity/issuers - per-clone issued/revoked/active counts. */

@@ -238,6 +238,7 @@ mod tests {
             id: id.into(),
             event_type: ty,
             contract: "0xc".into(),
+            generation: "0xfactory".into(),
             block_number: block,
             block_hash: "0xbh".into(),
             tx_hash: id.split(':').next().unwrap().into(),

@@ -155,6 +155,7 @@ mod tests {
             id: "0xtx:0".into(),
             event_type: EventType::RootIssued,
             contract: clone.unwrap_or("0xreg").into(),
+            generation: "0xfactory".into(),
             block_number: 1,
             block_hash: "0xbh".into(),
             tx_hash: "0xtx".into(),
