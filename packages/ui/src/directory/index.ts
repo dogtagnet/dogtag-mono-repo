@@ -14,6 +14,7 @@ export {
 export {
   type DirectoryObservation,
   type DirectoryProvider,
+  type DirectoryProviderContact,
   type ProviderDirectory,
   type ProviderDirectoryEmpty,
   type ProviderDirectoryFound,

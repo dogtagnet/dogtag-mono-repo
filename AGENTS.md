@@ -2907,6 +2907,41 @@ currently an honest stub because the provider registry and packed paging ABI do 
 - The admin `Businesses.tsx` and `Dashboard.tsx` management surfaces still call `listBusinesses`
   directly and collapse a fetch failure to `[]`/`0`; they are not a safe precedent for nearby UI.
 
+### Mobile Nearby is list-first, local-only, and keeps contact-only providers out of proximity claims
+
+The native holder apps consume the directory through a native mirror of the same no-argument
+`ProviderDirectory` contract. `@dogtag/ui` is TypeScript source-only and neither app embeds a JavaScript
+runtime, so the mirror is an adapter boundary rather than permission to call `/v1/businesses` from a
+screen. It preserves `found | empty | unavailable`, `live | stored`, the original cache deadline, and a
+universal full-set cache that is never keyed by a position.
+
+- `DirectoryProvider.geo` is nullable. `null` is the explicit contact-only case; `(0, 0)` remains a real
+  coordinate and must never be used as absence. Nearby drops null/unusable positions before measuring,
+  and `active == false` before either proximity or contact search; `active == null` remains eligible
+  without claiming the listing is active.
+- **Provider contacts** is the separate, unranked name-search surface for contact-only providers. It
+  may show every eligible vet/groomer, but it never shows distance, bearing, or Directions. The Nearby
+  surface contains located providers only.
+- Current-position permission is when-in-use and is requested only after the holder taps **Use my
+  location**. The alternative origin is manually entered decimal latitude/longitude, parsed on-device;
+  do not replace it with `CLGeocoder`, Android `Geocoder`, or a remote place search, all of which can
+  disclose the chosen location.
+- Native distance uses the platform geodesic (`CLLocation.distance` /
+  `Location.distanceBetween`) rather than introducing another app-owned haversine implementation.
+  The 50 km empty-query radius preserves the deprecated server default; a non-empty provider-name
+  search scans the whole already-fetched located set on-device, including matches beyond that radius.
+- Directions hands **only the public destination** to the OS maps app after a deliberate tap. Never
+  include the current/chosen origin in the URI or `MKMapItem`, and never embed an in-app map or tile
+  client.
+- The pure `NearbyDecision` mirror owns the display claims and pins the distinction between directory
+  empty, none within range, no name match, directory unavailable, permission refused, location
+  unavailable, and providers found. A stored snapshot remains found/empty with stale copy; it does not
+  become unavailable until its hard TTL expires.
+- Listing provenance uses the existing `IssuerDomainBindingState` / native `IssuerBindingState` and
+  `bindingTone` / `IssuerBinding.tone`. A central row never becomes `verified` merely because it carries
+  a domain string: non-empty central domains are `unavailable` until a binding check exists, while an
+  explicit blank domain uses the ordinary `noDomainClaimed` state.
+
 ### `haversine_km` in admin-api returns NaN for some near-antipodal pairs, and NaN reads as "out of range"
 
 The deprecated server filter ends in `asin(sqrt(a))`. For near-antipodal inputs `a` rounds **two ulps**

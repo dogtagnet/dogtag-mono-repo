@@ -43,6 +43,7 @@ struct MainTabView: View {
     @Environment(\.dogTagColors) var c
     @State private var tab: Tab = .home
     @State private var scanning = false
+    @State private var showingNearby = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -52,7 +53,11 @@ struct MainTabView: View {
                 switch tab {
                 case .verify: VerifyScreen(onScan: { scanning = true })
                 case .travel: TravelScreen(onScan: { scanning = true })
-                case .home: HomeScreen(onScan: { scanning = true })
+                case .home:
+                    HomeScreen(
+                        onScan: { scanning = true },
+                        onNearby: { showingNearby = true }
+                    )
                 case .documents: DocumentsScreen(onScan: { scanning = true })
                 case .profile: ProfileScreen()
                 }
@@ -64,6 +69,10 @@ struct MainTabView: View {
         }
         .fullScreenCover(isPresented: $scanning) {
             ScanScreen(onDone: { scanning = false })
+                .environment(\.dogTagColors, c)
+        }
+        .fullScreenCover(isPresented: $showingNearby) {
+            NearbyScreen(onDone: { showingNearby = false })
                 .environment(\.dogTagColors, c)
         }
     }

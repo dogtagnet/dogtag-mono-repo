@@ -1,8 +1,8 @@
 import type { CentralClient } from "../api/central";
-import type { CentralBusiness } from "../api/types";
 import { isValidLatLng, type LatLng } from "../geo";
 import type {
   DirectoryProvider,
+  DirectoryProviderContact,
   ProviderDirectory,
   ProviderDirectoryResult,
   ProviderDirectoryUnavailable,
@@ -25,34 +25,68 @@ export interface CentralDirectoryOptions {
  * `apiBaseUrl`, `documentStores` and `hmacKeyId` are deliberately absent: none of them reaches a
  * `DirectoryProvider`, so requiring them would let a wire change with nothing to do with discovery -
  * dropping `hmacKeyId` from a public, unauthenticated endpoint, say - take the whole directory to
- * `unavailable`.
+ * `unavailable`. `geo` and `contact` are optional because a contact-only provider is a valid
+ * directory entry even though it cannot appear in a distance-ranked Nearby list.
  */
-type DirectoryRow = Pick<
-  CentralBusiness,
-  "businessId" | "type" | "name" | "geo" | "services" | "domain"
->;
+interface DirectoryContactRow {
+  phone?: string | null;
+  whatsapp?: string | null;
+  telegram?: string | null;
+  email?: string | null;
+}
+
+interface DirectoryRow {
+  businessId: string;
+  type: string;
+  name: string;
+  geo?: LatLng | null;
+  services: string[];
+  domain: string;
+  contact?: DirectoryContactRow | null;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+const CONTACT_FIELDS = ["phone", "whatsapp", "telegram", "email"] as const;
+
+function isOptionalContact(value: unknown): value is DirectoryContactRow | null | undefined {
+  if (value === undefined || value === null) return true;
+  if (!isRecord(value)) return false;
+  return CONTACT_FIELDS.every((field) => {
+    const contactValue = value[field];
+    return (
+      contactValue === undefined ||
+      contactValue === null ||
+      typeof contactValue === "string"
+    );
+  });
+}
+
 /**
- * Coordinates are checked with the same `isValidLatLng` the on-device distance/sort path uses, so a
- * row that could never be presented as a distance is rejected here rather than ranked as one.
+ * Present coordinates are checked with the same `isValidLatLng` the on-device distance/sort path
+ * uses. Missing/null is the valid contact-only case; any other malformed or out-of-range value makes
+ * the response unavailable rather than manufacturing a coordinate or silently dropping the row.
  */
 function isDirectoryRow(value: unknown): value is DirectoryRow {
-  if (!isRecord(value) || !isRecord(value.geo)) return false;
+  if (!isRecord(value)) return false;
+  const geoIsValid =
+    value.geo === undefined ||
+    value.geo === null ||
+    (isRecord(value.geo) && isValidLatLng(value.geo as unknown as LatLng));
   return (
     typeof value.businessId === "string" &&
     typeof value.type === "string" &&
     typeof value.name === "string" &&
-    isValidLatLng(value.geo as unknown as LatLng) &&
+    geoIsValid &&
     isStringArray(value.services) &&
-    typeof value.domain === "string"
+    typeof value.domain === "string" &&
+    isOptionalContact(value.contact)
   );
 }
 
@@ -71,6 +105,21 @@ function hasDirectoryRows(value: unknown): value is { businesses: DirectoryRow[]
 function errorDetail(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
   return "GET /v1/businesses could not be read";
+}
+
+function normalizedContactValue(value: string | null | undefined): string | null {
+  return typeof value === "string" ? value.trim() || null : null;
+}
+
+function normalizeContact(
+  contact: DirectoryContactRow | null | undefined,
+): DirectoryProviderContact {
+  return {
+    phone: normalizedContactValue(contact?.phone),
+    whatsapp: normalizedContactValue(contact?.whatsapp),
+    telegram: normalizedContactValue(contact?.telegram),
+    email: normalizedContactValue(contact?.email),
+  };
 }
 
 /** A configured base with nothing to resolve. It must not fall back to the current page URL. */
@@ -100,13 +149,21 @@ function centralNamespaceKey(base: string, documentOrigin?: string): string {
 }
 
 function toDirectoryProvider(business: DirectoryRow): DirectoryProvider {
+  const domain = business.domain.trim() || null;
+
   return {
     providerId: business.businessId,
     kind: business.type,
     name: business.name,
-    geo: { ...business.geo },
+    // Absence is preserved. In particular, it is never translated to the real Atlantic coordinate
+    // `{ lat: 0, lng: 0 }`, which would make a contact-only listing look placeable.
+    geo: business.geo === undefined || business.geo === null ? null : { ...business.geo },
     services: [...business.services],
-    domain: business.domain.trim() || null,
+    contact: normalizeContact(business.contact),
+    domain,
+    // The central list does not execute the issuer↔domain binding check. A non-empty published
+    // domain is therefore unavailable, never verified; a blank one is the ordinary no-claim state.
+    bindingState: domain === null ? "noDomainClaimed" : "unavailable",
     // `/v1/businesses` has no delisting/whitelist fact. Inventing `true` here would turn discovery
     // data into a claim about current standing that the source never made.
     active: null,
