@@ -139,12 +139,24 @@ either app — whatever host the operator's portal encodes into the `/p/` or `/x
 phone calls, and nothing else. The full provider directory/indexer is likewise fixed. Only the
 blockchain JSON-RPC peer is user-selectable.
 
-Every blockchain read first asks the chosen peer for `eth_chainId` and compares it with the
-`chainId` bundled beside the contract addresses in `roax.json`. A malformed, unreachable, or
+Every blockchain read runs a chain-id guard first: the endpoint it is about to use is asked for
+`eth_chainId`, and the answer is compared with the `chainId` bundled beside the contract addresses in
+`roax.json`. For ordinary reads that endpoint is your chosen peer. A malformed, unreachable, or
 different-chain choice receives no address-bound request and is bypassed for that read in favour of
 the bundled default; that default is guarded independently. An explicitly rejected save clears the
 old custom preference. If neither endpoint establishes the bundled chain, the read stays unavailable
 rather than querying those addresses on another chain.
+
+**Two reads deliberately ignore your choice, and they are the only ones that do.** The
+`ProtocolRegistry` pair `getContractSet`/`getActiveArtifactSet` always names the bundled endpoint
+(`AppConfig.roaxRpc` / `RoaxRpc.DEFAULT_RPC`). It is read in `runLevelBFlow`, once per owner-hidden
+verification, from iOS `apps/ios/DogTag/ScanScreen.swift` and Android
+`apps/android/app/src/main/java/io/liberalize/dogtag/ui/screens/ScanScreen.kt` - the only caller on
+either platform. The record it returns is the trust anchor the app checks the scanned platform's
+claimed `verificationRegistry` and protocol version against, so a peer answering it could supply both
+sides of that comparison. Those two reads still run the same chain-id guard, but because the requested
+endpoint IS the bundled one the guard has no custom candidate to fall back to: an unavailable or
+wrong-chain bundled peer makes them fail closed and the verification stops.
 
 This is an availability and censorship-control feature, **not a trust upgrade**. The endpoint is a
 plain JSON-RPC peer, not a light client, and can fabricate `isValid`, `rootIssuer`, `profileRoot`,
