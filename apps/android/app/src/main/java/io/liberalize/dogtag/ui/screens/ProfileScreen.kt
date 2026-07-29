@@ -432,10 +432,10 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
             Text("Blockchain endpoint", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
             Text(
                 "Choosing a custom JSON-RPC peer can improve endpoint choice and liveness and help " +
-                    "resist endpoint censorship. It is not a trust upgrade. DogTag is not a light " +
-                    "client, so that peer can fabricate isValid, rootIssuer, profileRoot, and other " +
-                    "chain responses. This setting changes blockchain reads only; the centralized " +
-                    "provider directory/indexer is not configurable here.",
+                    "resist endpoint censorship. It is not a trust upgrade. This is plain " +
+                    "JSON-RPC, not a light client: any endpoint can fabricate isValid, rootIssuer, " +
+                    "profileRoot, logs, or transaction data. This setting changes blockchain reads " +
+                    "only; the centralized provider directory/indexer is not configurable here.",
                 fontSize = 11.sp,
                 color = c.muted,
             )
