@@ -252,8 +252,22 @@ pub fn decode_log(
         let clone = hexa(&d.clone).to_ascii_lowercase();
         // A clone address can belong to exactly one configured generation. Treat a contradictory
         // discovery as inadmissible instead of letting scan order silently change its provenance.
-        if known.get(&clone).is_some_and(|known_generation| known_generation != &generation) {
-            return None;
+        //
+        // Startup rejects a seed clone reused across generations, but it cannot detect a seed that
+        // disagrees with the CHAIN - an operator listing a clone under generation A's `seedClones`
+        // when factory B actually created it. Fail-closed is right, and silence is not: the only
+        // other symptom is a missing `IssuerCreated` row plus that clone's root events stamped with
+        // the seed's wrong generation, neither of which names the misconfiguration.
+        if let Some(known_generation) = known.get(&clone) {
+            if known_generation != &generation {
+                tracing::warn!(
+                    "dropping IssuerCreated for clone {clone}: emitted by factory {addr} \
+                     (generation {generation}) but the clone is already owned by generation \
+                     {known_generation}. Check that clone's seedClones placement in \
+                     INDEXER_GENERATIONS - its root events are being stamped {known_generation}."
+                );
+                return None;
+            }
         }
         known.insert(clone.clone(), generation.clone());
         let mut e = base(EventType::IssuerCreated, generation);

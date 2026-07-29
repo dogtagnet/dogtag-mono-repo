@@ -108,6 +108,17 @@ impl EventQuery {
     }
 }
 
+/// A store read that could not be answered at all.
+///
+/// Deliberately distinct from an empty result, and the reason [`Store::query_events`] is fallible: an
+/// index the store could not read must never be reported as "nothing happened". That collapse is the
+/// exact ambiguity the generation watch-set exists to remove on the scan side - `/v1/status` can look
+/// fully caught up with a complete `watchedGenerations` while the feed is blank for a reason no
+/// generation could explain.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct StoreError(pub String);
+
 /// The storage surface the ingest loop + query API share.
 #[async_trait]
 pub trait Store: Send + Sync {
@@ -119,7 +130,15 @@ pub trait Store: Send + Sync {
     /// log_index desc), with `q.offset`/`q.limit` applied *after* filtering. The total number of
     /// matches (pre-pagination) is returned alongside the page. Scope admission is enforced here so
     /// no store consumer can accidentally bypass it.
-    async fn query_events(&self, q: &EventQuery, scope: &Scope) -> (Vec<IndexedEvent>, usize);
+    ///
+    /// Fallible on purpose: a driver fault or an undeserializable document must surface as
+    /// [`StoreError`], never as `Ok((vec![], 0))`. Callers refuse to answer rather than presenting an
+    /// unreadable index as an empty one.
+    async fn query_events(
+        &self,
+        q: &EventQuery,
+        scope: &Scope,
+    ) -> Result<(Vec<IndexedEvent>, usize), StoreError>;
 
     /// Delete every event at or above `from_block` — the finalized-watermark rewind primitive (only
     /// exercised by the confirmations-depth fallback's defensive guard). Returns the count removed.
@@ -177,7 +196,11 @@ impl Store for MemStore {
         }
     }
 
-    async fn query_events(&self, q: &EventQuery, scope: &Scope) -> (Vec<IndexedEvent>, usize) {
+    async fn query_events(
+        &self,
+        q: &EventQuery,
+        scope: &Scope,
+    ) -> Result<(Vec<IndexedEvent>, usize), StoreError> {
         // Snapshot out of the lock first, then filter.
         let snapshot: Vec<IndexedEvent> = {
             let g = self.inner.lock().unwrap();
@@ -192,7 +215,7 @@ impl Store for MemStore {
         sort_newest_first(&mut hits);
         let total = hits.len();
         let page = hits.into_iter().skip(q.offset).take(q.limit).collect();
-        (page, total)
+        Ok((page, total))
     }
 
     async fn delete_from_block(&self, from_block: u64) -> usize {
@@ -269,7 +292,8 @@ mod tests {
         .await;
         let (page, total) = s
             .query_events(&EventQuery { limit: 10, ..Default::default() }, &Scope::Unscoped)
-            .await;
+            .await
+            .expect("MemStore reads are infallible");
         assert_eq!(total, 2, "duplicate id must not double-count");
         assert_eq!(page[0].block_number, 12, "newest first");
     }
@@ -286,7 +310,8 @@ mod tests {
         assert_eq!(removed, 1);
         let (_, total) = s
             .query_events(&EventQuery { limit: 10, ..Default::default() }, &Scope::Unscoped)
-            .await;
+            .await
+            .expect("MemStore reads are infallible");
         assert_eq!(total, 1);
     }
 
@@ -302,7 +327,8 @@ mod tests {
         assert_eq!(removed, 1, "only the pending event is dropped");
         let (page, total) = s
             .query_events(&EventQuery { limit: 10, ..Default::default() }, &Scope::Unscoped)
-            .await;
+            .await
+            .expect("MemStore reads are infallible");
         assert_eq!(total, 1);
         assert_eq!(page[0].finality, Finality::Finalized);
     }
@@ -320,7 +346,8 @@ mod tests {
                 &EventQuery { finality: Some(Finality::Finalized), limit: 10, ..Default::default() },
                 &Scope::Unscoped,
             )
-            .await;
+            .await
+            .expect("MemStore reads are infallible");
         assert_eq!(fin, 1);
     }
 }

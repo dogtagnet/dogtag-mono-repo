@@ -108,6 +108,13 @@ pub struct IndexedEvent {
     /// cannot drift when an operator renames a deployment label. Consumers can join it to
     /// `/v1/status.watchedGenerations` to recover the exact factory / registry / verification-registry
     /// triple that admitted this event.
+    ///
+    /// A row persisted before generation stamping existed deserializes to the empty string - the
+    /// honest "no provenance was recorded", never a fabricated generation. It matches no configured
+    /// generation id (those are always `0x…` factory addresses), so such a row can never re-enter the
+    /// anti-spoof trust set; it exists only so one unstamped document cannot make an entire readable
+    /// index deserialize-fail into a confident empty feed.
+    #[serde(default)]
     pub generation: String,
     #[serde(rename = "blockNumber")]
     pub block_number: u64,
@@ -170,5 +177,73 @@ impl IndexedEvent {
     /// Deterministic id for a log: `{txHash}:{logIndex}` (lowercase). Re-scanning yields the same id.
     pub fn make_id(tx_hash: &str, log_index: u64) -> String {
         format!("{}:{}", tx_hash.to_ascii_lowercase(), log_index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A document persisted before generation stamping existed must still DESERIALIZE. `MongoStore`
+    /// drains one cursor for the whole feed, so one undeserializable row would fail the entire read -
+    /// which the query layer must then report as unreadable, never as an empty index.
+    #[test]
+    fn a_row_stored_without_a_generation_still_deserializes() {
+        let legacy = r#"{
+            "id":"0xabc:0",
+            "type":"rootIssued",
+            "contract":"0x00000000000000000000000000000000000c10e0",
+            "blockNumber":12,
+            "blockHash":"0x0b",
+            "txHash":"0xabc",
+            "logIndex":0,
+            "blockTimestamp":1000,
+            "finality":"finalized"
+        }"#;
+        let event: IndexedEvent =
+            serde_json::from_str(legacy).expect("an unstamped legacy row must remain readable");
+        assert_eq!(event.event_type, EventType::RootIssued);
+        assert_eq!(
+            event.generation, "",
+            "provenance that was never recorded must read as absent, never be invented"
+        );
+    }
+
+    /// The compatibility default may not double as a way back into the anti-spoof trust set. Every
+    /// configured generation id is a normalized `0x…` factory address, so the empty default can never
+    /// equal one - the property `Indexer::rebuild_known_clones` relies on.
+    #[test]
+    fn the_absent_generation_default_can_never_equal_a_configured_generation_id() {
+        let default_generation = IndexedEvent {
+            id: "0xabc:0".into(),
+            event_type: EventType::IssuerCreated,
+            contract: "0x00000000000000000000000000000000000fac70".into(),
+            generation: String::new(),
+            block_number: 1,
+            block_hash: "0x0b".into(),
+            tx_hash: "0xabc".into(),
+            log_index: 0,
+            block_timestamp: 1000,
+            finality: Finality::Finalized,
+            actor: None,
+            clone: Some("0x00000000000000000000000000000000000c10e0".into()),
+            record_type: None,
+            name: None,
+            root: None,
+            dog_tag_id: None,
+            purpose: None,
+            nullifier: None,
+            deadline: None,
+            onchain_ts: None,
+        };
+        let configured = crate::app::watch_generation(
+            "0x00000000000000000000000000000000000fac70",
+            "0x0000000000000000000000000000000000c0ce61",
+            "0x0000000000000000000000000000000000c05e61",
+            vec![],
+        )
+        .expect("valid generation fixture");
+        assert_ne!(configured.generation, default_generation.generation);
+        assert!(!configured.generation.is_empty());
     }
 }

@@ -36,6 +36,21 @@ const GOV_SIGNER: &str = "0x119f8c7f6d7ec10e7376983739c6f46cf9cc3e96";
 // A stand-in demo groomer signer that issues on the DOG_PROFILE clone (demo scoped-view data).
 const DEMO_GROOMER_SIGNER: &str = "0x00000000000000000000000000000000c710f000";
 
+/// A deprecated singleton watch variable, read as CONFIGURATION rather than as mere presence.
+///
+/// A blank value carries no configuration, so a deployment template that renders `FACTORY_ADDR=`
+/// (Helm, systemd, a compose `environment:` interpolation) has not set it. Treating presence alone as
+/// configuration made such a template refuse to boot, blaming legacy variables the operator never
+/// set - and, on the fallback path, fail address parsing with a confusing "must be a 20-byte address".
+/// The fail-closed property is untouched: a blank value cannot silently disagree with
+/// `INDEXER_GENERATIONS`, because it states nothing to disagree with.
+fn legacy_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Load the atomic generation-set configuration. The old four-variable shape remains a
 /// singleton-only compatibility fallback, but the two forms may never coexist: accepting both would
 /// recreate the split-brain where an operator edits one address source while the scanner reads the
@@ -52,7 +67,7 @@ fn load_watch_generations() -> Result<Vec<indexer_api::chain::WatchGeneration>, 
         Ok(raw) => {
             let conflicts: Vec<&str> = LEGACY_KEYS
                 .into_iter()
-                .filter(|key| std::env::var_os(key).is_some())
+                .filter(|key| legacy_env(key).is_some())
                 .collect();
             if !conflicts.is_empty() {
                 return Err(format!(
@@ -66,22 +81,20 @@ fn load_watch_generations() -> Result<Vec<indexer_api::chain::WatchGeneration>, 
             Err("INDEXER_GENERATIONS is not valid UTF-8".into())
         }
         Err(std::env::VarError::NotPresent) => {
-            let legacy_configured =
-                LEGACY_KEYS.into_iter().any(|key| std::env::var_os(key).is_some());
+            let legacy_configured = LEGACY_KEYS.into_iter().any(|key| legacy_env(key).is_some());
             if legacy_configured {
                 tracing::warn!(
                     "legacy singleton indexer watch variables are deprecated; migrate the exact \
                      triple + seed clones to INDEXER_GENERATIONS"
                 );
             }
-            let factory =
-                std::env::var("FACTORY_ADDR").unwrap_or_else(|_| DEFAULT_FACTORY.to_string());
-            let issuer_registry = std::env::var("ISSUER_REGISTRY_ADDR")
-                .unwrap_or_else(|_| DEFAULT_REGISTRY.to_string());
-            let verification_registry = std::env::var("VERIFICATION_REGISTRY_CONSENT_ADDR")
-                .unwrap_or_else(|_| DEFAULT_VREG_CONSENT.to_string());
-            let seed_clones = std::env::var("SEED_CLONES")
-                .unwrap_or_else(|_| {
+            let factory = legacy_env("FACTORY_ADDR").unwrap_or_else(|| DEFAULT_FACTORY.to_string());
+            let issuer_registry =
+                legacy_env("ISSUER_REGISTRY_ADDR").unwrap_or_else(|| DEFAULT_REGISTRY.to_string());
+            let verification_registry = legacy_env("VERIFICATION_REGISTRY_CONSENT_ADDR")
+                .unwrap_or_else(|| DEFAULT_VREG_CONSENT.to_string());
+            let seed_clones = legacy_env("SEED_CLONES")
+                .unwrap_or_else(|| {
                     [GOV_TRAVEL_CLONE, DEMO_DOGPROFILE_CLONE, DEMO_VACCINATION_CLONE].join(",")
                 })
                 .split(',')
@@ -182,7 +195,15 @@ async fn main() {
 
     // --- background: ingest loop ---------------------------------------------------------------
     let indexer = Arc::new(Indexer::new(state.clone()));
-    indexer.rebuild_known_clones().await;
+    // Fail closed, like `build_store`: an index we cannot read yields an EMPTY clone-trust set, which
+    // silently drops every `RootIssued`/`RootRevoked` from pre-restart clones while `/v1/status`
+    // reports a complete watch set and zero lag. Refuse to start rather than serve that.
+    if let Err(e) = indexer.rebuild_known_clones().await {
+        tracing::error!(
+            "could not rebuild the clone-trust set from the event index: {e}; refusing to start"
+        );
+        std::process::exit(1);
+    }
     {
         let ix = indexer.clone();
         tokio::spawn(async move { ix.run().await });
