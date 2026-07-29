@@ -471,6 +471,89 @@ class NearbyDecisionTest {
         assertTrue((beyondImperial as DistanceClaim.Uncertain).reason.contains("too coarse"))
     }
 
+    /**
+     * Mirrored by iOS `test_aBoundLabelIsNeverTighterThanTheDistanceItAdmitted`.
+     *
+     * The gate admits everything up to the bound, so a label rounded to the NEAREST display step
+     * can name a distance the gate already let past: at 94 m accuracy a provider measured at 92 m
+     * used to render "< 90 m". Every one of these pairs rounds down under nearest.
+     */
+    @Test
+    fun aBoundLabelIsNeverTighterThanTheDistanceItAdmitted() {
+        val metric = listOf(
+            Triple(94.0, 0.092, "< 100 m" to "< 90 m"),
+            Triple(944.0, 0.942, "< 950 m" to "< 940 m"),
+            Triple(5_040.0, 5.03, "< 5.1 km" to "< 5.0 km"),
+        )
+        for ((accuracy, km, labels) in metric) {
+            val claim = NearbyDecision.distanceClaim(km, accuracy, fromDeviceFix = true)
+            assertEquals("$accuracy/$km", DistanceClaim.Measured(labels.first, true), claim)
+            assertTrue("$accuracy/$km", boundMetres(labels.first) >= km * 1_000)
+            assertTrue("$accuracy/$km", boundMetres(labels.second) < km * 1_000)
+        }
+
+        val imperial = listOf(
+            Triple(100.0, 0.0995, "< 350 ft" to "< 325 ft"),
+            Triple(850.0, 0.84, "< 0.6 mi" to "< 0.5 mi"),
+        )
+        for ((accuracy, km, labels) in imperial) {
+            val claim = NearbyDecision.distanceClaim(
+                km,
+                accuracy,
+                fromDeviceFix = true,
+                unit = NearbyDecision.UnitSystem.Imperial,
+            )
+            assertEquals("$accuracy/$km", DistanceClaim.Measured(labels.first, true), claim)
+            assertTrue("$accuracy/$km", boundMetres(labels.first) >= km * 1_000)
+            assertTrue("$accuracy/$km", boundMetres(labels.second) < km * 1_000)
+        }
+    }
+
+    /**
+     * The general property behind the cases above, over every rung of both ladders: a `< bound` may
+     * never name less than the accuracy it was derived from. A value that already sits on a step
+     * must also not be bumped outward, which is what the imperial rungs - none of them exactly
+     * representable as a double - would otherwise do.
+     */
+    @Test
+    fun everyBoundLabelCoversTheAccuracyItWasDerivedFrom() {
+        val accuracies = listOf(
+            3.0, 9.4, 40.0, 94.0, 100.0, 160.9344, 400.0, 850.0, 944.0, 1_609.344, 5_040.0, 9_400.0,
+        )
+        for (unit in NearbyDecision.UnitSystem.entries) {
+            for (accuracy in accuracies) {
+                val claim = NearbyDecision.distanceClaim(accuracy / 1_000.0, accuracy, true, unit)
+                claim as DistanceClaim.Measured
+                assertTrue("$unit $accuracy -> ${claim.label}", claim.label.startsWith("< "))
+                assertTrue(
+                    "$unit $accuracy -> ${claim.label}",
+                    boundMetres(claim.label) >= accuracy - 1e-6,
+                )
+            }
+        }
+        assertEquals(
+            DistanceClaim.Measured("< 1.0 mi", approximate = true),
+            NearbyDecision.distanceClaim(
+                1.5,
+                1_609.344,
+                fromDeviceFix = true,
+                unit = NearbyDecision.UnitSystem.Imperial,
+            ),
+        )
+    }
+
+    private fun boundMetres(label: String): Double {
+        val parts = label.removePrefix("< ").split(" ")
+        val value = parts[0].toDouble()
+        return when (parts[1]) {
+            "m" -> value
+            "km" -> value * 1_000
+            "ft" -> value * 0.3048
+            "mi" -> value * 1_609.344
+            else -> throw AssertionError("unexpected unit in $label")
+        }
+    }
+
     /** Mirrored by iOS `test_contactOrderIsTheSameFoldedKeyOnBothPlatforms`. */
     @Test
     fun contactOrderIsTheSameFoldedKeyOnBothPlatforms() {

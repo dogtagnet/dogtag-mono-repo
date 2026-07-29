@@ -535,6 +535,81 @@ final class NearbyDecisionTests: XCTestCase {
         XCTAssertTrue(imperial.contains("too coarse"), imperial)
     }
 
+    /// Mirrored by Android `aBoundLabelIsNeverTighterThanTheDistanceItAdmitted`.
+    ///
+    /// The gate admits everything up to the bound, so a label rounded to the NEAREST display step
+    /// can name a distance the gate already let past: at 94 m accuracy a provider measured at 92 m
+    /// used to render "< 90 m". Every one of these pairs rounds down under nearest.
+    func test_aBoundLabelIsNeverTighterThanTheDistanceItAdmitted() {
+        let metric: [(Double, Double, String, String)] = [
+            (94, 0.092, "< 100 m", "< 90 m"),
+            (944, 0.942, "< 950 m", "< 940 m"),
+            (5_040, 5.03, "< 5.1 km", "< 5.0 km"),
+        ]
+        let imperial: [(Double, Double, String, String)] = [
+            (100, 0.0995, "< 350 ft", "< 325 ft"),
+            (850, 0.84, "< 0.6 mi", "< 0.5 mi"),
+        ]
+
+        for (unitSystem, cases) in [(NearbyUnitSystem.metric, metric), (.imperial, imperial)] {
+            for (accuracy, km, expected, understated) in cases {
+                XCTAssertEqual(
+                    NearbyDecision.distanceClaim(
+                        km, accuracyMetres: accuracy, fromDeviceFix: true, unitSystem: unitSystem
+                    ),
+                    .measured(label: expected, approximate: true),
+                    "\(accuracy)/\(km)"
+                )
+                XCTAssertGreaterThanOrEqual(boundMetres(expected), km * 1000, "\(accuracy)/\(km)")
+                XCTAssertLessThan(boundMetres(understated), km * 1000, "\(accuracy)/\(km)")
+            }
+        }
+    }
+
+    /// The general property behind the cases above, over every rung of both ladders: a `< bound` may
+    /// never name less than the accuracy it was derived from. A value that already sits on a step
+    /// must also not be bumped outward, which is what the imperial rungs - none of them exactly
+    /// representable as a double - would otherwise do.
+    func test_everyBoundLabelCoversTheAccuracyItWasDerivedFrom() {
+        let accuracies: [Double] = [
+            3, 9.4, 40, 94, 100, 160.9344, 400, 850, 944, 1_609.344, 5_040, 9_400,
+        ]
+        for unitSystem in [NearbyUnitSystem.metric, .imperial] {
+            for accuracy in accuracies {
+                let claim = NearbyDecision.distanceClaim(
+                    accuracy / 1000,
+                    accuracyMetres: accuracy,
+                    fromDeviceFix: true,
+                    unitSystem: unitSystem
+                )
+                guard case .measured(let label, _) = claim, label.hasPrefix("< ") else {
+                    return XCTFail("\(unitSystem) \(accuracy) produced no bound")
+                }
+                XCTAssertGreaterThanOrEqual(
+                    boundMetres(label), accuracy - 1e-6, "\(unitSystem) \(accuracy) -> \(label)"
+                )
+            }
+        }
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                1.5, accuracyMetres: 1_609.344, fromDeviceFix: true, unitSystem: .imperial
+            ),
+            .measured(label: "< 1.0 mi", approximate: true)
+        )
+    }
+
+    private func boundMetres(_ label: String) -> Double {
+        let parts = label.replacingOccurrences(of: "< ", with: "").split(separator: " ")
+        guard let value = Double(parts[0]) else { return .nan }
+        switch parts[1] {
+        case "m": return value
+        case "km": return value * 1_000
+        case "ft": return value * 0.3048
+        case "mi": return value * 1_609.344
+        default: return .nan
+        }
+    }
+
     /// Mirrored by Android `contactOrderIsTheSameFoldedKeyOnBothPlatforms`.
     func test_contactOrderIsTheSameFoldedKeyOnBothPlatforms() {
         let presentation = NearbyDecision.contactPresentation(

@@ -187,6 +187,7 @@ object NearbyDecision {
     private const val KM_PER_MILE = 1.609344
     private const val FEET_PER_KM = 1000 / 0.3048
     private const val DISTANCE_UNAVAILABLE = "This provider's distance could not be measured."
+    private const val CEIL_TOLERANCE = 1e-9
 
     // Each rung below is the metre width of one display band, derived from the same constant that
     // band's own formatting divides by. A value rounded to a rung therefore always lands on a
@@ -493,19 +494,33 @@ object NearbyDecision {
     /**
      * A distance that IS the uncertainty. Rendered from the value itself so its own granularity can
      * never over-claim, unlike running it through the measured-distance bands.
+     *
+     * It rounds OUTWARD, and every caller is why: a `< bound`, a `±error` and an "accurate only to"
+     * all state a ceiling, so a label one display step below its own value understates exactly what
+     * it exists to disclose. Rounding to nearest put a provider measured at 92 m behind `< 90 m`.
+     *
+     * The branch is chosen from the ROUNDED value, not the raw one, so a bound that rounds up to a
+     * whole kilometre reads `1.0 km` rather than `1000 m`.
      */
     private fun uncertaintyLabel(metres: Double, unit: UnitSystem): String =
         if (unit == UnitSystem.Imperial) {
-            val feet = metres * FEET_PER_KM / 1_000.0
+            val feet = maxOf(ceilTo(metres * FEET_PER_KM / 1_000.0, 25.0), 25.0)
             if (feet < 1_000) {
-                "${maxOf(roundTo(feet, 25.0), 25.0).toLong()} ft"
+                "${feet.toLong()} ft"
             } else {
-                String.format(Locale.US, "%.1f mi", metres / 1_000.0 / KM_PER_MILE)
+                String.format(
+                    Locale.US,
+                    "%.1f mi",
+                    ceilTo(metres, TENTH_MILE_M) / 1_000.0 / KM_PER_MILE,
+                )
             }
-        } else if (metres < 1_000) {
-            "${maxOf(roundTo(metres, 10.0), 10.0).toLong()} m"
         } else {
-            String.format(Locale.US, "%.1f km", metres / 1_000.0)
+            val rounded = maxOf(ceilTo(metres, TEN_METRE_STEP_M), TEN_METRE_STEP_M)
+            if (rounded < 1_000) {
+                "${rounded.toLong()} m"
+            } else {
+                String.format(Locale.US, "%.1f km", ceilTo(metres, TENTH_KM_M) / 1_000.0)
+            }
         }
 
     /** Eight-point compass label for the platform-provided initial bearing. */
@@ -517,4 +532,13 @@ object NearbyDecision {
     }
 
     private fun roundTo(value: Double, step: Double): Double = Math.round(value / step) * step
+
+    /**
+     * Rounds up to a whole number of [step]s, tolerating a value that already IS a multiple of a
+     * step no double can hold exactly. `MILE_M` is `KM_PER_MILE * 1_000`, which is not exactly
+     * 1609.344, so without that tolerance a whole mile would bump itself to `1.1 mi`. The tolerance
+     * is expressed in steps, so it can understate by at most a billionth of one - sub-micron here.
+     */
+    private fun ceilTo(value: Double, step: Double): Double =
+        Math.ceil(value / step - CEIL_TOLERANCE) * step
 }

@@ -2934,10 +2934,17 @@ universal full-set cache that is never keyed by a position.
   - The fix's own `horizontalAccuracy` / `Location.accuracy` is carried into the mirrored pure policy
     (`NearbyOrigin.accuracyMetres` / `NearbyOriginState.Available.accuracyMetres`), and
     `NearbyDecision.distanceClaim` rounds every device-fix label to a step no finer than that
-    accuracy. A provider closer than the fix's own error is stated as a BOUND (`< 150 m`); a fix whose
-    accuracy is missing, negative, non-finite, or coarser than 10 km yields `DistanceClaim.Uncertain`
-    and a sentence, never a confident number. `NearbyRow.distanceKm` stays the RAW measurement, since
-    ordering uses it, and typed coordinates keep ordinary precision - they carry no measurement error.
+    accuracy. A provider nearer than **`max(accuracy, step / 2)`** is stated as a BOUND rather than a
+    point value, and **half the step is the load-bearing half of that pair**: below it the rounding
+    collapses to zero and the bands print a confident `0 km`, which is how a real 3 km provider once
+    rendered as `~0 km` on a 1.2 km fix. `uncertaintyLabel` rounds that bound OUTWARD on the display
+    ladder, so a `< X` can never be tighter than the distance the gate just admitted - rounding to
+    nearest put a provider measured at 92 m behind `< 90 m`. The refusal ceiling is PER UNIT (10 km
+    metric, 10 miles imperial), so the same 12 km fix is `DistanceClaim.Uncertain` in one locale and
+    a number in the other. A fix whose accuracy is missing, negative or non-finite is `Uncertain`
+    too - always with a sentence, never a confident number. `NearbyRow.distanceKm` stays the RAW
+    measurement, since ordering uses it, and typed coordinates keep ordinary precision - they carry
+    no measurement error.
   - With coarse-only, a provider read can throw `SecurityException` at a caller holding a perfectly
     good coarse grant, so that catch must re-check `checkSelfPermission` before calling it
     `PermissionRefused`. Telling an owner they refused a permission they granted is the same class of

@@ -401,6 +401,7 @@ enum NearbyDecision {
     private static let kmPerMile = 1.609344
     private static let feetPerKm = 1000 / 0.3048
     private static let distanceUnavailable = "This provider's distance could not be measured."
+    private static let ceilTolerance = 1e-9
 
     // Each rung below is the metre width of one display band, derived from the same constant that
     // band's own formatting divides by. A value rounded to a rung therefore always lands on a
@@ -535,20 +536,39 @@ enum NearbyDecision {
 
     /// A distance that IS the uncertainty. Rendered from the value itself so its own granularity can
     /// never over-claim, unlike running it through the measured-distance bands.
+    ///
+    /// It rounds OUTWARD, and every caller is why: a `< bound`, a `±error` and an "accurate only to"
+    /// all state a ceiling, so a label one display step below its own value understates exactly what
+    /// it exists to disclose. Rounding to nearest put a provider measured at 92 m behind `< 90 m`.
+    ///
+    /// The branch is chosen from the ROUNDED value, not the raw one, so a bound that rounds up to a
+    /// whole kilometre reads `1.0 km` rather than `1000 m`.
     private static func uncertaintyLabel(
         _ metres: Double,
         unitSystem: NearbyUnitSystem
     ) -> String {
         if unitSystem == .imperial {
-            let feet = metres * feetPerKm / 1000
+            let feet = max(ceilTo(metres * feetPerKm / 1000, 25), 25)
             if feet < 1000 {
-                return "\(Int(max((feet / 25).rounded() * 25, 25))) ft"
+                return "\(Int(feet)) ft"
             }
-            return String(format: "%.1f mi", metres / 1000 / kmPerMile)
+            return String(
+                format: "%.1f mi",
+                ceilTo(metres, tenthMileMetres) / 1000 / kmPerMile
+            )
         }
-        if metres < 1000 {
-            return "\(Int(max((metres / 10).rounded() * 10, 10))) m"
+        let rounded = max(ceilTo(metres, tenMetreStepMetres), tenMetreStepMetres)
+        if rounded < 1000 {
+            return "\(Int(rounded)) m"
         }
-        return String(format: "%.1f km", metres / 1000)
+        return String(format: "%.1f km", ceilTo(metres, tenthKilometreMetres) / 1000)
+    }
+
+    /// Rounds up to a whole number of `step`s, tolerating a value that already IS a multiple of a
+    /// step no double can hold exactly. `mileMetres` is `kmPerMile * 1_000`, which is not exactly
+    /// 1609.344, so without that tolerance a whole mile would bump itself to `1.1 mi`. The tolerance
+    /// is expressed in steps, so it can understate by at most a billionth of one - sub-micron here.
+    private static func ceilTo(_ value: Double, _ step: Double) -> Double {
+        (value / step - ceilTolerance).rounded(.up) * step
     }
 }
