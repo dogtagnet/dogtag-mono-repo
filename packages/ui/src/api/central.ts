@@ -9,6 +9,7 @@ import type {
   ApproveApplicationResp,
   BusinessesQuery,
   BusinessesResp,
+  BusinessLocationReviewResp,
   CreateIssuerReq,
   CreateIssuerResp,
   DelistApplicationResp,
@@ -151,6 +152,15 @@ export function createCentralClient(opts: CentralClientOptions) {
     /** POST /v1/businesses — admin-gated; returns the HMAC secret ONCE. */
     registerBusiness: (body: RegisterBusinessReq) =>
       request<RegisterBusinessResp>("POST", "/v1/businesses", body),
+    /**
+     * GET /v1/admin/businesses/location-review — rows stored at exactly `0, 0`.
+     *
+     * Read-only, and it decides nothing: `0, 0` is a legal coordinate AND the value every blank
+     * location was stored as before location became optional, so code cannot tell the two apart.
+     * Each listed row needs an operator's answer.
+     */
+    businessesLocationReview: () =>
+      request<BusinessLocationReviewResp>("GET", "/v1/admin/businesses/location-review"),
 
     // ---- issuer applications queue (§4.3) ----
     /** POST /v1/issuer-applications — create an application (public; no auth required). */

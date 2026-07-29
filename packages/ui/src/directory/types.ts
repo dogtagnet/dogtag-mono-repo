@@ -27,7 +27,19 @@ export interface DirectoryProviderContact {
   whatsapp: string | null;
   telegram: string | null;
   email: string | null;
+  website: string | null;
 }
+
+/** The channel keys, in the order a listing should offer them. */
+export const PROVIDER_CONTACT_CHANNELS = [
+  "phone",
+  "whatsapp",
+  "telegram",
+  "email",
+  "website",
+] as const satisfies readonly (keyof DirectoryProviderContact)[];
+
+export type ProviderContactChannel = (typeof PROVIDER_CONTACT_CHANNELS)[number];
 
 /**
  * The source-neutral provider shape needed by the list consumer.

@@ -33,6 +33,7 @@ interface DirectoryContactRow {
   whatsapp?: string | null;
   telegram?: string | null;
   email?: string | null;
+  website?: string | null;
 }
 
 interface DirectoryRow {
@@ -53,7 +54,7 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-const CONTACT_FIELDS = ["phone", "whatsapp", "telegram", "email"] as const;
+const CONTACT_FIELDS = ["phone", "whatsapp", "telegram", "email", "website"] as const;
 
 function isOptionalContact(value: unknown): value is DirectoryContactRow | null | undefined {
   if (value === undefined || value === null) return true;
@@ -125,6 +126,7 @@ function normalizeContact(
     whatsapp: normalizedContactValue(contact?.whatsapp),
     telegram: normalizedContactValue(contact?.telegram),
     email: normalizedContactValue(contact?.email),
+    website: normalizedContactValue(contact?.website),
   };
 }
 

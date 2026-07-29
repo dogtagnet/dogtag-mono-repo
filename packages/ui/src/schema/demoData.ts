@@ -102,12 +102,23 @@ export function demoRabiesIssue(): {
   };
 }
 
-/** Demo register-business presets for the admin register form (vet + groomer). */
+/**
+ * Demo register-business presets for the admin register form (vet + groomer + contact-only).
+ *
+ * Every key of the register form must appear on this type: the form applies a preset by REPLACING
+ * its whole state object, so a key missing here silently blanks that field.
+ */
 export interface DemoBusiness {
   type: string;
   name: string;
+  /** Blank for a provider with no location - see `DEMO_BUSINESS_CONTACT_ONLY`. */
   lat: string;
   lng: string;
+  phone: string;
+  whatsapp: string;
+  telegram: string;
+  email: string;
+  website: string;
   services: string;
   apiBaseUrl: string;
   domain: string;
@@ -119,6 +130,11 @@ export const DEMO_BUSINESS_VET: DemoBusiness = {
   name: "Bayview Veterinary Clinic",
   lat: "37.7749",
   lng: "-122.4194",
+  phone: "+1 415 555 0142",
+  whatsapp: "",
+  telegram: "",
+  email: "reception@vet.dogtag.localhost",
+  website: "https://vet.dogtag.localhost",
   services: "vaccination, microchip, wellness",
   apiBaseUrl: "http://localhost:41874",
   domain: "vet.dogtag.localhost",
@@ -130,9 +146,37 @@ export const DEMO_BUSINESS_GROOMER: DemoBusiness = {
   name: "Pawsh Grooming Studio",
   lat: "37.7849",
   lng: "-122.4094",
+  phone: "+1 415 555 0188",
+  whatsapp: "+1 415 555 0188",
+  telegram: "",
+  email: "hello@groomer.dogtag.localhost",
+  website: "",
   services: "grooming, boarding, daycare",
   apiBaseUrl: "http://localhost:43618",
   domain: "groomer.dogtag.localhost",
+  documentStores: DEMO_VACCINATION_DOCUMENT_STORE,
+};
+
+/**
+ * A provider reached only by its contact channels - a mobile groomer with no premises.
+ *
+ * `lat`/`lng` are blank, which registers with NO location rather than the `0, 0` a blank field used
+ * to become. It exists as a preset so the location-less path is one click away in the demo, since
+ * it is the case most likely to be left untested.
+ */
+export const DEMO_BUSINESS_CONTACT_ONLY: DemoBusiness = {
+  type: "groomer",
+  name: "Roving Paws Mobile Grooming",
+  lat: "",
+  lng: "",
+  phone: "+1 415 555 0170",
+  whatsapp: "+1 415 555 0170",
+  telegram: "@rovingpaws",
+  email: "book@rovingpaws.dogtag.localhost",
+  website: "https://rovingpaws.dogtag.localhost",
+  services: "mobile grooming",
+  apiBaseUrl: "http://localhost:43618",
+  domain: "rovingpaws.dogtag.localhost",
   documentStores: DEMO_VACCINATION_DOCUMENT_STORE,
 };
 
