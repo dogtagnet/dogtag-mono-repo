@@ -33,7 +33,7 @@ import { env } from "../lib/env";
 /**
  * Business registry (impl §5.3 / §4.2). Lists businesses from GET /v1/businesses (public discovery)
  * and registers new ones via POST /v1/businesses (admin-gated; the HMAC secret is returned ONCE).
- * Geo coords are shown in the table; a map is optional and skipped here to avoid a heavy dep.
+ * Geo coords are shown in the table. There is deliberately no in-app map.
  */
 export function Businesses() {
   const { central } = useApp();
@@ -111,11 +111,11 @@ export function Businesses() {
             </Table>
           )}
           <p className="mt-4 text-xs text-muted">
-            Note: a geographic map view is optional and intentionally omitted (no map dependency).
-            Latitude/longitude are shown in the table. The only discovery filter this portal sends is{" "}
-            <code>type</code>. Proximity filtering is done on the device that needs it, never by
-            sending a position to the server - <code>near</code> and <code>radius</code> are
-            deprecated for that reason.
+            Note: discovery is list-only; rows may hand a destination to the user's maps app, but
+            there is no in-app map or viewport query. Latitude/longitude are shown in the table. The
+            directory read is a full-set fetch. Kind and proximity filtering are done on the device
+            that needs them, never by sending a position to the server -{" "}
+            <code>near</code> and <code>radius</code> are deprecated for that reason.
           </p>
         </CardContent>
       </Card>

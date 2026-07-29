@@ -724,9 +724,10 @@ The user owns the appointment in the mobile app (central backend); the business 
 ### 8.4 Discovery → booking flow
 
 ```
-mobile → central: GET /v1/businesses?type=groomer          ← NO position. Never a position.
+mobile → central: GET /v1/businesses                       ← full set. NO position. Never a position.
 central → mobile: [{businessId, name, geo, services, apiBaseUrl, hmacKeyId}]
-mobile (on device):  distance/sort/filter over the returned `geo` - packages/ui/src/geo/
+mobile (on device): kind/distance/sort/filter over the returned `geo` - packages/ui/src/geo/
+mobile → OS maps app: selected provider destination         ← per-row handoff; no embedded map
 mobile → central: POST /v1/appointments {businessId, dogTagId, slot}
 central: create appt (rev=1, REQUESTED) → PUT to business apiBaseUrl
 business: store replica, notify staff
@@ -741,6 +742,9 @@ This is a protocol rule, not an optimisation, and the shape above is what a Near
   dogtag is built on the owner never revealing where they are, so an endpoint whose purpose is to be told where the user is contradicts the premise at its most basic.
 - The client fetches the provider **set** - a request that is byte-identical whoever makes it, so it discloses nothing - and computes distance, radius and sort locally with `packages/ui/src/geo/`.
   A provider's pin is a business fact already on their door; the user's position is not.
+- Nearby is a **list**, not an in-app map. A selected row may open the destination in the platform
+  maps app / Google Maps. There is no viewport, bounding-box, region, or geohash query to the
+  directory; those shapes have no product caller and would only disclose location.
 - The server still accepts `near=<lat>,<lng>` and `radius=` for back-compat with any third-party caller, and both are **DEPRECATED**.
   Nothing in this repo sends them: `BusinessesQuery` (`packages/ui/src/api/types.ts`) no longer carries the fields and `central.ts`'s `qs()` no longer emits them.
   **Do not add a caller.**
@@ -757,7 +761,7 @@ This is a protocol rule, not an optimisation, and the shape above is what a Near
 - `pets` — pet profile; `dogTagId` (SBT) once minted; `microchip{code,standard,implantDate,bodyLocation}` (code unique); `ownershipHistory[]{ownerId, from, to}`; cached profile root.
 - `credentials` — references to credentials the user has imported (wrapped docs + verify cache, incl. `ownership` fragment).
 - `consents` / `consent_receipts` — **`Consent`/`ConsentReceipt`** per-purpose records `{purpose, lawfulBasis, grantedAt, withdrawnAt, receiptId}`; drive retention + the erasure flow (§11).
-- `businesses` — registry: `{businessId, type, name, geo, services, apiBaseUrl, domain, documentStores{recordType→addr}, signerAddresses[], hmacKeyId, status}`. **Non-personal discovery data.**
+- `businesses` — registry: `{businessId, type, name, geo, services, apiBaseUrl, domain, documentStores{recordType→addr}, hmacKeyId}`. **Non-personal discovery data.** It carries no whitelist/delisting state; that lives on issuer applications/the chain, so a central directory read cannot claim a business is currently active.
 - `issuer_applications` — pending whitelist requests `{issuerEntityId, address, mode, recordTypes[], USDA#, license#, status}`.
 - `appointments` — **source of truth** `{appointmentId, rev, userId, petId, businessId, state, slot, history[]}`.
 - `verification_records` - proof-of-verification ledger `{dogTagId, relayer, purpose, recordType, nullifier, txHash, deadline, ts}` - a mirror of the on-chain `Verified` events (read from the chain; central is not in the verify loop and never sees a consent), which are **owner-blind** (no subject field exists to store). Owner-side consent receipts, where kept, are off-chain and deletable (crypto-shred erasure scope - §11/§13.7).
@@ -778,8 +782,8 @@ This is a protocol rule, not an optimisation, and the shape above is what a Near
 
 ## 10. Mobile architecture (themes)
 
-- **Android:** Kotlin + Jetpack Compose, MVVM, Retrofit/Ktor, CameraX (QR), Maps Compose, EncryptedSharedPreferences/Keystore.
-- **iOS:** Swift + SwiftUI, MVVM, async/await URLSession, AVFoundation (QR), MapKit, Keychain.
+- **Android:** Kotlin + Jetpack Compose, MVVM, Retrofit/Ktor, CameraX (QR), OS-maps URI handoff, EncryptedSharedPreferences/Keystore.
+- **iOS:** Swift + SwiftUI, MVVM, async/await URLSession, AVFoundation (QR), OS Maps URL handoff, Keychain.
 - **Verification:** shared Rust crate `dogtag-standard-rs` exposed via **UniFFI** to both platforms (single source of truth for canonicalization + Merkle + verify), avoiding two re-implementations.
 - **Theming (mobile keeps its 7 themes — black/white/blue/red/pink/green/yellow, each with light+dark — unchanged):** a **semantic token layer** (`color.primary`, `color.secondary`, `color.surface`, `color.onPrimary`, …) with one palette per theme. Components reference **only semantic tokens**, never raw colors → switching theme swaps the palette, components unchanged. Android: `MaterialTheme` `ColorScheme` per theme + a `ThemeController`. iOS: an `@Environment` theme object + `Color` token extensions.
 - **Navigation** mirrors the reference: bottom tabs **Verify · Travel · Home · Documents · Profile**; Home = pet card + grouped Credentials (Health / Service / Travel); add-record wizards with type pickers.

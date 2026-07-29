@@ -2863,6 +2863,36 @@ reach for it got built.
   acquire I/O or turn a position into a query parameter, path, network cache key, or log line.
   `sortByDistance` is fine; a `fetchNearby` would defeat the module.
 
+### Provider directory reads are explicit `found | empty | unavailable` (`packages/ui/src/directory/`)
+
+Nearby consumers read through `ProviderDirectory.read()`, which deliberately takes **no query**:
+`centralDirectory` performs the same full `GET /v1/businesses` for every caller, and the future
+`onchainDirectory` keeps paging/RPC details behind the same interface. The on-chain implementation is
+currently an honest stub because the provider registry and packed paging ABI do not exist; it resolves
+`unavailable` and makes no RPC call, never `empty`.
+
+- **There is no in-app map.** Nearby is a list; a row hands its already-held destination to the
+  platform's maps app / Google Maps. Consequently `ProviderDirectory` must never acquire a viewport,
+  bounding-box, region, or geohash query. Such a parameter has no product caller and would only reopen
+  a location-disclosure surface.
+- Only `empty` means a successful source read established zero providers. `unavailable` has no
+  `providers` member, so it cannot be handed to a list as `[]`. `found` carries a non-empty tuple.
+- Successful snapshots require `observation: "live" | "stored"`, derived from the existing
+  `IssuerDomainBinding.dnsObservation` vocabulary. A cache fallback is always `"stored"` and preserves
+  the original read time and block anchor.
+- The cache re-checks first, replays only an unexpired snapshot from the same configured source
+  namespace (central origin; future chain + registry), and expires at the exact TTL boundary. A stored
+  replay never renews that TTL. Never key a directory cache by a position/geohash: the cached object is
+  the universal full-set result.
+- Central's `{ businesses }` response carries no chain height, so its honest block anchor is `null`.
+  Reading a separate chain head would not make the database snapshot block-pinned. A real on-chain
+  implementation must pin every page to one block and cache that anchor.
+- Central also carries no current delisting fact. Its source-neutral `DirectoryProvider.active` is
+  therefore `null`, never a fabricated `true`; a future on-chain scan may populate its maintained
+  active hint.
+- The admin `Businesses.tsx` and `Dashboard.tsx` management surfaces still call `listBusinesses`
+  directly and collapse a fetch failure to `[]`/`0`; they are not a safe precedent for nearby UI.
+
 ### `haversine_km` in admin-api returns NaN for some near-antipodal pairs, and NaN reads as "out of range"
 
 The deprecated server filter ends in `asin(sqrt(a))`. For near-antipodal inputs `a` rounds **two ulps**

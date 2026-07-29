@@ -1342,7 +1342,7 @@ A grooming business's working application, not a bare verification tool. **A gro
 - **Groomers / Reports / Marketing** remain placeholders mirroring the reference UI.
 
 ### 5.3 Admin portal (`stacks/admin/web`, port 39741)
-- Business registry CRUD + map.
+- Business registry CRUD + table (no in-app map).
 - Issuer applications queue → approve (triggers on-chain `whitelistIssuer`) / reject.
 - Whitelist viewer (on-chain state), appointment/observability dashboards.
 
@@ -1361,7 +1361,9 @@ A grooming business's working application, not a bare verification tool. **A gro
 - Add health/travel record wizards with type pickers (Vaccine/Checkup/Surgery/Lab/Prescription/Dental; CDC/DOT/Other travel).
 - **Scan QR** (Verify tab): parse `https://<host>/r?t=&i=` → fetch wrapped doc → `verify()` → import under pet, show 3-pillar verdict.
 - **Share** (user→business): show QR (one-time JWT against central).
-- **Find vet/groomer**: Maps (Maps Compose / MapKit) → discovery API → book appointment.
+- **Find vet/groomer**: list from the full provider directory → filter/sort on-device → hand a
+  selected destination to the platform maps app / Google Maps → book appointment. There is no
+  embedded map and no viewport/region query.
 
 ### 6.3 Theming (7 themes)
 ```
