@@ -317,7 +317,7 @@ struct ProfileScreen: View {
             Text("Choosing another endpoint can improve endpoint choice, liveness, and censorship resistance by helping route around an endpoint that is censoring or unavailable.")
                 .font(.system(size: 11)).foregroundColor(c.muted)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("This is not a trust upgrade. A plain JSON-RPC peer has no light-client verification and can fabricate credential-validity (isValid), issuer-provenance (rootIssuer), or profile-root (profileRoot) reads.")
+            Text("This is not a trust upgrade. This is plain JSON-RPC, not a light client: any endpoint can fabricate isValid, rootIssuer, profileRoot, logs, or transaction data.")
                 .font(.system(size: 11, weight: .semibold)).foregroundColor(c.warning)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Before every blockchain read, DogTag checks eth_chainId against bundled chain ID \(roax.chainId). An invalid, unreachable, or different-chain custom endpoint falls back to the bundled endpoint. That guard prevents accidental cross-chain address use; it cannot prove the peer is honest.")

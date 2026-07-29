@@ -172,7 +172,25 @@ export function getRoaxRpcPreferenceRevision(): number {
   return preferenceRevision;
 }
 
-class JsonRpcResponseError extends Error {}
+/**
+ * A JSON-RPC error envelope answered by the peer.
+ *
+ * The peer's `code` is carried on the error rather than only interpolated into the message, so
+ * viem's retry classifier can recognise a deterministic answer instead of re-attempting it as an
+ * unknown transport failure. That holds for the codes viem maps to a typed `RpcError` (`-32000`,
+ * `-32601`, `4001`, …); a code viem does not know — an `eth_call` revert reported as `3`, say —
+ * still becomes `UnknownRpcError` and is retried. Retrying a deterministic answer costs latency,
+ * never correctness: the same error is raised at the end either way.
+ */
+class JsonRpcResponseError extends Error {
+  readonly code?: number;
+
+  constructor(message: string, code?: number) {
+    super(message);
+    this.name = "JsonRpcResponseError";
+    if (typeof code === "number") this.code = code;
+  }
+}
 
 async function jsonRpcRequest(
   url: string,
@@ -204,13 +222,13 @@ async function jsonRpcRequest(
     }
     const envelope = body as { result?: unknown; error?: { code?: unknown; message?: unknown } };
     if (envelope.error) {
-      const code =
-        typeof envelope.error.code === "number" ? ` (${envelope.error.code})` : "";
+      const code = typeof envelope.error.code === "number" ? envelope.error.code : undefined;
+      const suffix = code === undefined ? "" : ` (${code})`;
       const message =
         typeof envelope.error.message === "string"
           ? envelope.error.message
           : "JSON-RPC request failed";
-      throw new JsonRpcResponseError(`${message}${code}`);
+      throw new JsonRpcResponseError(`${message}${suffix}`, code);
     }
     if (!Object.prototype.hasOwnProperty.call(envelope, "result")) {
       throw new Error("malformed JSON-RPC response");
@@ -451,7 +469,15 @@ export function createGuardedRoaxRpcRequest(options: GuardedRoaxRpcRequestOption
   };
 }
 
-/** A viem transport whose first network action for every read is the chain guard above. */
+/**
+ * A viem transport whose first network action for every read is the chain guard above.
+ *
+ * viem's retry policy is kept rather than disabled: a retry re-enters the guarded request function,
+ * so the chain guard runs again on every attempt instead of a later attempt inheriting an earlier
+ * probe's trust. Without it a single transient failure — one chunk of a long `eth_getLogs` scan,
+ * say — becomes a permanent coverage gap that the built-in HTTP transport would have ridden out.
+ * The count is stated rather than inherited so a viem default change cannot silently move it.
+ */
 export function guardedRoaxTransport(
   preferredUrl?: string,
   defaultUrl: string = DEFAULT_ROAX_RPC_URL,
@@ -463,7 +489,7 @@ export function guardedRoaxTransport(
     {
       key: `dogtag-roax-guard:${preferredUrl ?? defaultUrl}:${defaultUrl}`,
       name: "DogTag ROAX chain-guarded JSON-RPC",
-      retryCount: 0,
+      retryCount: 3,
     },
   );
 }
