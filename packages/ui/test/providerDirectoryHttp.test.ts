@@ -143,6 +143,16 @@ describe("provider directory over a real HTTP boundary", () => {
       "providerId",
       "services",
     ]);
+    // `contact` is always present with a null per unpublished channel: these rows carry no contact
+    // key on the wire at all, and the seam must not leave a consumer to distinguish "the server
+    // sent no contact block" from "this provider published no phone number".
+    expect(live.providers[0].contact).toEqual({
+      phone: null,
+      whatsapp: null,
+      telegram: null,
+      email: null,
+      website: null,
+    });
     expect(live.providers.every((p) => p.active === null)).toBe(true);
     expect(live.providers.every((p) => p.bindingState === "unavailable")).toBe(true);
     expect(live.providers.every((p) => Object.values(p.contact).every((v) => v === null))).toBe(

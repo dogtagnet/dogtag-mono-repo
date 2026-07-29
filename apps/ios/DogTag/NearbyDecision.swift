@@ -13,14 +13,21 @@ struct NearbyPoint: Equatable {
 }
 
 /// Public contact channels a provider chose to publish.
+///
+/// Membership and order mirror `PROVIDER_CONTACT_CHANNELS` in
+/// `packages/ui/src/directory/channels.ts`, which Swift cannot import: keep them aligned by hand.
+/// A channel the server serves and this type omits is worse than one never added - the parser drops
+/// it, `hasAny` then reads false, and a provider that published a website is told to the owner as
+/// having published nothing.
 struct ProviderContact: Equatable {
     var phone: String? = nil
     var whatsapp: String? = nil
     var telegram: String? = nil
     var email: String? = nil
+    var website: String? = nil
 
     var hasAny: Bool {
-        [phone, whatsapp, telegram, email].contains { value in
+        [phone, whatsapp, telegram, email, website].contains { value in
             value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         }
     }

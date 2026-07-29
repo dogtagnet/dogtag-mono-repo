@@ -2973,6 +2973,100 @@ universal full-set cache that is never keyed by a position.
   `Net.swift` `parseProviders`) and all three refuse a repeated `providerId` as malformed rather than
   rendering two rows under one list identity.
 
+### A provider may have no location, and `0,0` is the shape that defect takes
+
+The seam half of this is stated above (`DirectoryProvider.geo` is nullable and a geo-less row is
+accepted); what follows is the SERVER half and the write path, which that work did not touch.
+`Business.lat`/`lng` in `stacks/admin/api/src/store.rs` were non-optional `f64`, so a provider that
+published no address was STORED and served as `0, 0`.
+That is a **legal coordinate** off the coast of Ghana, `isValidLatLng` accepts it, and nothing anywhere
+rejected it - so a provider with no premises rendered as a confident pin in the Gulf of Guinea.
+Absence had no representation at all in the record itself. `lat`/`lng` are now `Option<f64>`, joined by
+optional business contact channels (`phone`/`whatsapp`/`telegram`/`email`/`website`).
+
+**All five channels are read by every consumer, and that is a correctness property rather than
+completeness.** `website` briefly shipped TS-and-server-only, and the failure that made was NOT a
+missing feature: both native parsers read named keys one at a time, so the extra key was silently
+ignored, `ProviderContact.hasAny` folded four channels, and a provider reachable only by website
+rendered the literal "No contact details published." - an absence the phone invented about a provider
+that had published exactly one way to reach it. A channel the server serves and a client drops is
+worse than one never added, because the operator sees it saved and believes it published.
+
+**The channel list is single-sourced in TypeScript and mirrored by hand in the two native ports.**
+`PROVIDER_CONTACT_CHANNELS` (`packages/ui/src/directory/channels.ts`) is a leaf module importing
+nothing, so `api/types.ts` (`BusinessContact`), `directory/types.ts` (`DirectoryProviderContact`),
+`directory/sources.ts`, `schema/demoData.ts` (`DemoBusiness`) and both admin register forms derive
+from it instead of restating five keys in six places. Adding a channel there is a COMPILE ERROR at
+each site that owns a per-channel human decision (`DemoBusiness`'s three presets, and the label /
+placeholder records in `Businesses.tsx` and `Wizard.tsx`) and is picked up automatically everywhere
+that merely folds (`normalizeContact`, `blankContactFields`, `contactRequestFields`, both forms'
+field lists). Verified by mutation - adding a sixth channel reddens exactly those five sites.
+Kotlin and Swift cannot import that list: `ProviderContact` in
+`apps/android/.../nearby/NearbyDecision.kt` and `apps/ios/DogTag/NearbyDecision.swift` each name it
+as the source they mirror, and both must move in the same change as the data class, its parser, its
+`hasAny` fold, AND its screen row. `hasAny` alone renders a website-only provider as an empty card,
+which is a silent blank rather than a false claim - worse, not better. Do NOT close a future gap by
+making either parser strict about unknown keys.
+
+**`website` is the first channel whose SCHEME comes from the directory string.** `tel:`, `https://wa.me/`,
+`https://t.me/` and `mailto:` are all constructed by the renderer, so the value can only fill a slot;
+a website value is the whole URL. Both ports therefore open it only on a case-insensitive `http://`
+or `https://` prefix and otherwise render it as inert published text - the same shape of guard the
+four siblings apply, not fussiness. Android passes `onOpen(uri, false)` like every non-dial channel.
+
+- **`Number("")` is `0`, not `NaN`, and that is the whole mechanism.** Every register form coerced its
+  latitude field unconditionally, so a blank input became a valid-looking coordinate. There are **TWO**
+  register paths in the admin portal - the `Businesses.tsx` dialog and the setup `Wizard.tsx` - and both
+  had it. They now share one rule, `parseLocationInput` (`packages/ui/src/directory/registration.ts`),
+  precisely so fixing one and not the other cannot happen again. It returns `absent | located | invalid`,
+  and `locationRequestFields` OMITS the keys for `absent` rather than sending `null`.
+- **`isDirectoryRow` accepts a geo-less row without failing the batch, and that split is load-bearing.**
+  `hasDirectoryRows` is all-or-nothing on purpose (a malformed response must not degrade into a
+  successful `empty`), so the moment location became optional a SINGLE contact-only provider would
+  otherwise take the entire directory to `unavailable` - an all-or-nothing failure hiding inside a
+  per-row validator. The rule is: absent **or** `null` geo is accepted (both spellings - our server
+  emits an explicit `null`, but a serializer that omits nulls is an ordinary wire difference and must not
+  blank the directory); a present-but-malformed geo still fails the whole batch. Absence is a fact the
+  source can state; malformed is a response we cannot trust.
+- **Object spread of `null` yields `{}`, not `null`.** `geo: { ...business.geo }` would hand a
+  location-less provider an empty object - not a usable position, but not `null` either, so a downstream
+  `geo !== null` guard passes on garbage. Checked rather than assumed: with `geo: LatLng | null` tsc DOES
+  reject that spread (spreading a possibly-null value makes the members optional). It is still pinned
+  behaviourally by `providerNoLocation.test.ts` asserting `provider.geo === null` **by identity**, because
+  the type only happens to catch it and a later `geo?: LatLng` or an `as` cast would restore it silently.
+- **Out-of-range coordinates are refused at the WRITE** (`register_business`, 400), because the read side
+  cannot repair one: the all-or-nothing rule above means a single bad row blanks the directory for every
+  consumer. Half-set pairs are refused too - one coordinate is not a place - which keeps
+  `Business::location`'s half-set arm unreachable through the API.
+- **A null-geo provider is listed and contactable but never placed.** Read the position through
+  `providerPosition` (`packages/ui/src/directory/providers.ts`), which re-checks validity rather than
+  trusting the field; `hasDirectionsDestination` is the Directions gate. `packages/ui/src/geo/` needed no
+  change - `sortByDistance`'s `positionOf` already returns `LatLng | null | undefined` and already sorts
+  nulls last with `distanceKm: null`.
+- **THE HONEST PART: rows already at exactly `0,0` cannot be reinterpreted by code, ever.** `0,0` is both
+  a legal coordinate and the value every blank location used to become, so nothing can distinguish a
+  provider genuinely in the Gulf of Guinea from one with no address - and a guess would either plant a
+  false pin or erase a real one. `Business::location_needs_review` flags them and
+  `GET /v1/admin/businesses/location-review` (admin-gated, read-only) lists them for an operator answer of
+  "pin is correct" / "pin is wrong, here is the right one" / "no location". There is deliberately **no**
+  heuristic, no silent migration, and no repair endpoint. Do not add one that decides on the operator's
+  behalf. This is registry-plan §4 item 7, and it blocks C-2.
+- **That banner is THREE states, and the initial one is never the failure one.** `Businesses.tsx` holds
+  `ReviewState = checking | loaded | failed`. Absence of the banner is how "nothing needs an answer" is
+  shown, so the failure case needs its own rendered line - but a two-value `Resp | null` makes the
+  INITIAL value the failure value, and the page announced "rows could not be listed" on first paint
+  before `load()` had issued a request. Both collapses are the same defect pointed in opposite
+  directions: a check that never ran reading as one that passed, and one that never ran reading as one
+  that failed. `checking` renders NEITHER banner, and `load()` returns to it before re-reading so a
+  post-register reload does not present the previous answer as current. A failed review read still must
+  never blank or block the registry table itself.
+- `haversine_km` and both geo-parity fixtures are UNTOUCHED - only the call site changed, so that a
+  location-less provider is not within any radius (mirroring `withinRadiusKm`'s both-must-be-usable rule)
+  rather than matching a caller near `0,0` as it used to.
+- These are **business** contact channels on a public endpoint - the number on the shop's door -
+  deliberately distinct from `Owner::email`, which is personal. A reviewer will otherwise read `email` on
+  `/v1/businesses` as a PII leak.
+
 ### `haversine_km` in admin-api returns NaN for some near-antipodal pairs, and NaN reads as "out of range"
 
 The deprecated server filter ends in `asin(sqrt(a))`. For near-antipodal inputs `a` rounds **two ulps**

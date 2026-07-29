@@ -1101,10 +1101,17 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
               let phone = optionalString(object["phone"]),
               let whatsapp = optionalString(object["whatsapp"]),
               let telegram = optionalString(object["telegram"]),
-              let email = optionalString(object["email"]) else {
+              let email = optionalString(object["email"]),
+              let website = optionalString(object["website"]) else {
             return nil
         }
-        return ProviderContact(phone: phone, whatsapp: whatsapp, telegram: telegram, email: email)
+        return ProviderContact(
+            phone: phone,
+            whatsapp: whatsapp,
+            telegram: telegram,
+            email: email,
+            website: website
+        )
     }
 }
 

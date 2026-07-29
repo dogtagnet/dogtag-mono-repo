@@ -25,7 +25,8 @@ class ProviderDirectoryTest {
                 "phone": "+65 6123 4567",
                 "whatsapp": "6561234567",
                 "telegram": "callonlyvet",
-                "email": "care@example.test"
+                "email": "care@example.test",
+                "website": "https://call-only.test"
               }
             },
             {
@@ -70,6 +71,7 @@ class ProviderDirectoryTest {
         val contactOnly = result.providers.first()
         assertEquals(null, contactOnly.geo)
         assertEquals("+65 6123 4567", contactOnly.contact.phone)
+        assertEquals("https://call-only.test", contactOnly.contact.website)
         assertTrue(contactOnly.contact.hasAny)
         // A directory row is not a chain read, so a blank domain column may not claim the on-chain
         // fact `NoDomainClaimed`; it says only that this listing carries no domain.
@@ -84,6 +86,47 @@ class ProviderDirectoryTest {
         assertEquals(null, located.active)
         assertTrue(located.bindingState === IssuerBindingState.Unavailable)
         assertFalse(located.bindingState is IssuerBindingState.Verified)
+    }
+
+    /**
+     * A provider reachable ONLY by website must not be reported as having published nothing.
+     *
+     * The server serves all five channels; this parser once read four, so `website` was dropped on
+     * the floor, `hasAny` read false, and the screen said "No contact details published." about a
+     * provider that had published exactly one. Mirrored by iOS
+     * `test_aWebsiteOnlyProviderIsContactableRatherThanReportedAsPublishingNothing`.
+     */
+    @Test
+    fun aWebsiteOnlyProviderIsContactableRatherThanReportedAsPublishingNothing() {
+        val body = """
+            {"businesses":[{
+              "businessId":"web-only","type":"groomer","name":"Web Only Grooming",
+              "geo":null,"services":[],"domain":"",
+              "contact":{"website":"https://web-only.test"}
+            }]}
+        """.trimIndent()
+        val result = CentralProviderDirectory("https://central.test").decode(body, 1_000)
+            as ProviderDirectoryResult.Found
+        val contact = result.providers.single().contact
+        assertEquals("https://web-only.test", contact.website)
+        assertEquals(null, contact.phone)
+        assertTrue("a website-only provider is contactable", contact.hasAny)
+    }
+
+    /** Consistent with the four sibling channels: a non-string channel is a malformed row. */
+    @Test
+    fun aNonTextWebsiteIsMalformedLikeEveryOtherChannel() {
+        val body = """
+            {"businesses":[{
+              "businessId":"one","type":"vet","name":"One",
+              "geo":null,"services":[],"domain":"","contact":{"website":42}
+            }]}
+        """.trimIndent()
+        val result = CentralProviderDirectory("https://central.test").decode(body, 1_000)
+        assertEquals(
+            DirectoryUnavailableReason.MalformedResponse,
+            (result as ProviderDirectoryResult.Unavailable).reason,
+        )
     }
 
     @Test

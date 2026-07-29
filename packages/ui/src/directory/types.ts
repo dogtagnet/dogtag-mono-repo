@@ -3,6 +3,13 @@ import type {
   IssuerDomainBindingState,
 } from "../domain/issuerDomainBinding";
 import type { LatLng } from "../geo";
+import type { ContactChannelRecord } from "./channels";
+
+export {
+  PROVIDER_CONTACT_CHANNELS,
+  type ContactChannelRecord,
+  type ProviderContactChannel,
+} from "./channels";
 
 /**
  * The directory uses the codebase's existing freshness vocabulary verbatim.
@@ -22,12 +29,7 @@ export type ProviderDirectorySource = "central" | "onchain";
  * normalizes missing, blank, and null wire values to `null`, so consumers never need to guess
  * whether an absent contact object meant an empty string.
  */
-export interface DirectoryProviderContact {
-  phone: string | null;
-  whatsapp: string | null;
-  telegram: string | null;
-  email: string | null;
-}
+export type DirectoryProviderContact = ContactChannelRecord<string | null>;
 
 /**
  * The source-neutral provider shape needed by the list consumer.

@@ -154,14 +154,61 @@ pub struct ShareRef {
 
 // ---- businesses / discovery ----
 
+/// A business's own public contact channels.
+///
+/// These are BUSINESS contact details - the number on the shop's door - and are deliberately
+/// distinct from `Owner::email`, which is a pet owner's personal data. They are served on the
+/// public `GET /v1/businesses` route for exactly that reason: a provider publishes them so it can
+/// be reached. Never put an owner's or an operator's personal contact details here.
+///
+/// Every field is optional because a provider chooses which channels it publishes, and every field
+/// carries `#[serde(default)]` so a document written before this struct existed still deserializes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BusinessContact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whatsapp: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+}
+
+impl BusinessContact {
+    /// Is every channel absent? A provider with no location AND no contact channel is unreachable.
+    pub fn is_empty(&self) -> bool {
+        self.phone.is_none()
+            && self.whatsapp.is_none()
+            && self.telegram.is_none()
+            && self.email.is_none()
+            && self.website.is_none()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Business {
     pub business_id: String,
     #[serde(rename = "type")]
     pub kind: String,
     pub name: String,
-    pub lat: f64,
-    pub lng: f64,
+    /// Latitude, ABSENT when this provider published no location.
+    ///
+    /// Optional since the location-less-provider slice: a blank location used to be stored as the
+    /// literal `0.0`, which is a legal coordinate off the coast of Ghana, so a provider that simply
+    /// had no address rendered as a pin in the Gulf of Guinea. `None` is the honest absence.
+    ///
+    /// Read this through [`Business::location`], never as a bare pair: the two fields are only a
+    /// position when BOTH are present.
+    #[serde(default)]
+    pub lat: Option<f64>,
+    /// Longitude, ABSENT when this provider published no location. See [`Business::lat`].
+    #[serde(default)]
+    pub lng: Option<f64>,
+    #[serde(default)]
+    pub contact: BusinessContact,
     pub services: Vec<String>,
     #[serde(rename = "apiBaseUrl")]
     pub api_base_url: String,
@@ -173,6 +220,32 @@ pub struct Business {
     /// HMAC shared secret (server-side only; never returned in discovery).
     #[serde(rename = "hmacSecret")]
     pub hmac_secret: String,
+}
+
+impl Business {
+    /// This business's position, or `None` when it published no usable location.
+    ///
+    /// A HALF-set pair (one coordinate present, the other absent) is `None`, not a partial answer:
+    /// one coordinate is not a place. `register_business` refuses to write such a row, so this
+    /// arises only from an out-of-band document edit.
+    pub fn location(&self) -> Option<(f64, f64)> {
+        match (self.lat, self.lng) {
+            (Some(lat), Some(lng)) => Some((lat, lng)),
+            _ => None,
+        }
+    }
+
+    /// Does this row's stored location need an operator's answer?
+    ///
+    /// True for exactly `0, 0`. That coordinate is BOTH a legal position in the Gulf of Guinea AND
+    /// the value every blank location was stored as before the field became optional, so **code
+    /// cannot tell the two apart** and must not try. There is deliberately no heuristic here (no
+    /// "0,0 plus a landlocked domain", no epsilon): a guess would silently rewrite a real
+    /// coordinate. The remedy is an operator saying which it is - see
+    /// `GET /v1/admin/businesses/location-review`.
+    pub fn location_needs_review(&self) -> bool {
+        matches!(self.location(), Some((lat, lng)) if lat == 0.0 && lng == 0.0)
+    }
 }
 
 // ---- issuer applications (whitelisting) ----

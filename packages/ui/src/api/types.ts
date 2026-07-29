@@ -4,6 +4,8 @@
  * serde renames exactly.
  */
 
+import type { ContactChannelRecord } from "../directory/channels";
+
 export type SigningMode = "wallet" | "backend";
 export type VerifyMode = "normal" | "zk";
 export type RecordStatus = "prepared" | "confirming" | "issued" | "revoked" | "expired";
@@ -522,12 +524,31 @@ export interface BusinessGeo {
   lat: number;
   lng: number;
 }
+/**
+ * A business's own published contact channels.
+ *
+ * BUSINESS contact details - the number on the shop's door - deliberately distinct from an
+ * `Owner`'s personal email. That is why they are served on the public `GET /v1/businesses` route:
+ * a provider publishes them so it can be reached. Every channel is optional; a provider chooses
+ * which it exposes, and a provider with no location is reached through these alone.
+ */
+export type BusinessContact = Partial<ContactChannelRecord<string>>;
 /** GET /v1/businesses item (non-personal fields only; never the HMAC secret). */
 export interface CentralBusiness {
   businessId: string;
   type: string;
   name: string;
-  geo: BusinessGeo;
+  /**
+   * `null` when this provider published no location, and that is an ordinary case rather than a
+   * defect.
+   *
+   * It used to be non-optional, so a provider that left location blank was stored as `0, 0` - a
+   * legal coordinate in the Gulf of Guinea - and rendered as a pin there. Never substitute a
+   * fallback coordinate for `null`; a location we do not have must not be drawn as one we do.
+   */
+  geo: BusinessGeo | null;
+  /** Optional on the wire: a server predating this field sends no `contact` key at all. */
+  contact?: BusinessContact;
   services: string[];
   apiBaseUrl: string;
   domain: string;
@@ -555,8 +576,13 @@ export interface BusinessesQuery {
 export interface RegisterBusinessReq {
   type: string;
   name: string;
-  lat: number;
-  lng: number;
+  /**
+   * Optional, and BOTH-OR-NEITHER: omit `lat` and `lng` together to register a provider with no
+   * location. The server rejects a half-set pair with 400 - one coordinate is not a place.
+   */
+  lat?: number;
+  lng?: number;
+  contact?: BusinessContact;
   services?: string[];
   apiBaseUrl: string;
   domain: string;
@@ -567,6 +593,30 @@ export interface RegisterBusinessResp {
   businessId: string;
   hmacKeyId: string;
   hmacSecret: string;
+}
+/** One row whose stored location an operator has to answer for. */
+export interface BusinessLocationReviewRow {
+  businessId: string;
+  type: string;
+  name: string;
+  domain: string;
+  geo: BusinessGeo | null;
+  /** Whether it published any contact channel - i.e. whether "no location" would leave it reachable. */
+  hasContact: boolean;
+}
+/**
+ * GET /v1/admin/businesses/location-review — rows stored at exactly `0, 0`.
+ *
+ * Not a defect list and not a repair: `0, 0` is a legal coordinate in the Gulf of Guinea AND the
+ * value a blank location was stored as before the field became optional. No code can distinguish
+ * them, so this route asks rather than decides. Each row needs an operator answer of "this pin is
+ * correct", "this pin is wrong, here is the right one", or "this provider has no location".
+ */
+export interface BusinessLocationReviewResp {
+  totalBusinesses: number;
+  needsReview: number;
+  businesses: BusinessLocationReviewRow[];
+  reason: string;
 }
 
 // ---- issuer applications queue (§4.3) ----

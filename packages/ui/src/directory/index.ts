@@ -12,9 +12,28 @@ export {
   type ProviderDirectoryCacheOptions,
 } from "./cache";
 export {
+  blankContactFields,
+  contactRequestFields,
+  locationRequestFields,
+  parseLocationInput,
+  type LocationInput,
+} from "./registration";
+export {
+  hasDirectionsDestination,
+  isContactable,
+  isUnreachableProvider,
+  partitionByLocatability,
+  providerContactEntries,
+  providerPosition,
+  type ProviderContactEntry,
+} from "./providers";
+export {
+  PROVIDER_CONTACT_CHANNELS,
+  type ContactChannelRecord,
   type DirectoryObservation,
   type DirectoryProvider,
   type DirectoryProviderContact,
+  type ProviderContactChannel,
   type ProviderDirectory,
   type ProviderDirectoryEmpty,
   type ProviderDirectoryFound,

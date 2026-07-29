@@ -9,12 +9,18 @@ import {
   Input,
   Label,
   Spinner,
+  PROVIDER_CONTACT_CHANNELS,
+  blankContactFields,
+  contactRequestFields,
   explorerTxUrl,
+  locationRequestFields,
+  parseLocationInput,
   useToast,
   DEMO_BUSINESS_GROOMER,
   DEMO_BUSINESS_VET,
   DEMO_ISSUER_APPLICATION_GROOMER,
   DEMO_ISSUER_APPLICATION_VET,
+  type ContactChannelRecord,
   type DemoBusiness,
   type DemoIssuerApplication,
   type DnsConfirmationRequired,
@@ -39,13 +45,24 @@ import { env } from "../lib/env";
 const EMPTY_BUSINESS: DemoBusiness = {
   type: "",
   name: "",
+  // Blank lat/lng is a provider with NO location, not a provider at 0,0. See the register form.
   lat: "",
   lng: "",
+  ...blankContactFields(),
   services: "",
   apiBaseUrl: "",
   domain: "",
   documentStores: "",
 };
+/** Keyed off the shared channel list, so a channel added there needs a label rather than compiling. */
+const CONTACT_LABELS: ContactChannelRecord<string> = {
+  phone: "Phone",
+  whatsapp: "WhatsApp",
+  telegram: "Telegram",
+  email: "Business email",
+  website: "Website",
+};
+
 const EMPTY_APPLICATION: DemoIssuerApplication = {
   issuerEntityId: "",
   addresses: "",
@@ -100,13 +117,26 @@ export function Wizard() {
 
   async function registerBusiness(e: FormEvent) {
     e.preventDefault();
+
+    // The SAME rule the Businesses register dialog uses. This form is the second register path, and
+    // it had the identical defect: `Number("")` is 0, so leaving the location blank registered the
+    // provider at 0,0 and drew a pin in the Gulf of Guinea. Fixing only the other form would leave
+    // it live on the path a new operator is most likely to take.
+    const location = parseLocationInput(biz.lat, biz.lng);
+    if (location.kind === "invalid") {
+      toast({ title: "Check the location", description: location.reason, variant: "danger" });
+      return;
+    }
+
     setBizBusy(true);
     try {
       const r = await central.registerBusiness({
         type: biz.type,
         name: biz.name,
-        lat: Number(biz.lat),
-        lng: Number(biz.lng),
+        ...locationRequestFields(location),
+        // The SAME fold the Businesses dialog uses. Restating the channels here is how a channel
+        // gets added to one register path and silently dropped by the other.
+        contact: contactRequestFields(biz),
         services: biz.services.split(",").map((s) => s.trim()).filter(Boolean),
         apiBaseUrl: biz.apiBaseUrl,
         domain: biz.domain,
@@ -256,8 +286,18 @@ export function Wizard() {
           <form onSubmit={registerBusiness} className="grid gap-3 sm:grid-cols-2">
             <Field label="Type" value={biz.type} onChange={(v) => setBiz({ ...biz, type: v })} required />
             <Field label="Name" value={biz.name} onChange={(v) => setBiz({ ...biz, name: v })} required />
-            <Field label="Latitude" value={biz.lat} onChange={(v) => setBiz({ ...biz, lat: v })} required />
-            <Field label="Longitude" value={biz.lng} onChange={(v) => setBiz({ ...biz, lng: v })} required />
+            {/* Optional, both-or-neither: blank registers a provider with NO location rather than
+                one at 0,0. Its contact channels are then how it is reached. */}
+            <Field label="Latitude (optional)" value={biz.lat} onChange={(v) => setBiz({ ...biz, lat: v })} />
+            <Field label="Longitude (optional)" value={biz.lng} onChange={(v) => setBiz({ ...biz, lng: v })} />
+            {PROVIDER_CONTACT_CHANNELS.map((channel) => (
+              <Field
+                key={channel}
+                label={CONTACT_LABELS[channel]}
+                value={biz[channel]}
+                onChange={(v) => setBiz({ ...biz, [channel]: v })}
+              />
+            ))}
             <Field label="API base URL" value={biz.apiBaseUrl} onChange={(v) => setBiz({ ...biz, apiBaseUrl: v })} required />
             <Field label="Domain" value={biz.domain} onChange={(v) => setBiz({ ...biz, domain: v })} required />
             <Field label="Services (comma)" value={biz.services} onChange={(v) => setBiz({ ...biz, services: v })} />
