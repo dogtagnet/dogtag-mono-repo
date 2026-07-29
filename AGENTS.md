@@ -2948,24 +2948,28 @@ reach for it got built.
 
 ### There is deliberately no map and no location autocomplete (captain decision 2026-07-29)
 
-Full decision record: `docs/MAP_RESEARCH.md`. An embedded map, a hosted place-search field and any paid
-location vendor were **declined** so that nothing has to be paid for; this entry exists so the absence is
-not read as a gap to fill. What ships instead is what the sections here describe: on-device provider-name
-search, the `vet`/`groomer` kind filter, on-device distance, and a Directions handoff to the platform's own
-maps app. The one map in the product is the OS's, it costs nothing, and it needs no key.
+Full decision record: `docs/MAP_RESEARCH.md`.
+An embedded map, a hosted place-search field and any paid location vendor were **declined** so that nothing
+has to be paid for, and this entry exists so the absence is not read as a gap to fill.
+What ships instead is what the sections here describe: on-device provider-name search, the `vet`/`groomer`
+kind filter, on-device distance, and a Directions handoff to the platform's own maps app.
+The one map in the product is the OS's, it costs nothing, and it needs no key.
 
-Three things in that record are the reason not to re-run the survey. The vendor survey was priced from the
-vendors' own pages on **2026-07-29** and every figure carries that date, so re-check before committing money
-rather than re-researching. If it is revisited the answer is **one vendor, Stadia Maps**, roughly $20-80/month,
-**not Google** - Google is 40x to 100x the cost for the same three capabilities AND its terms §3.2.3(e)
-*No Use With Non-Google Maps* forbids the cheap hybrid (Google's dropdown beside a free map), so taking its
-autocomplete means taking its map too. The revisit trigger is Nearby actually reaching ~10,000 searches/day.
+Three things in that record are the reason not to re-run the survey.
+Every figure was priced from the vendors' own pages on **2026-07-29** and carries that date, so re-check
+before committing money rather than re-researching.
+If it is revisited the answer is **one vendor, Stadia Maps**, roughly $20-80/month, and **not Google** -
+Google is roughly **100x to 165x** the cost for the same three capabilities, AND its terms §3.2.3(e)
+*No Use With Non-Google Maps* forbid the cheap hybrid (Google's dropdown beside a free map), so taking its
+autocomplete means taking its map too.
+The revisit trigger is Nearby actually reaching ~10,000 searches/day.
 
 **If any hosted autocomplete ever ships, the manual-entry copy on both platforms becomes false and must
 change in the same commit** - `NearbyScreen.swift:361` and `NearbyScreen.kt:460` currently promise the
-coordinates are never geocoded or sent anywhere. Same rule as verdict badges: a surface may not state
-something the code no longer does. The integration also belongs in a NEW sibling module (`placesearch/`),
-never inside `geo/` or `directory/`, both of whose boundaries exist precisely to keep a position off the wire.
+coordinates are never geocoded or sent anywhere.
+Same rule as verdict badges: a surface may not state something the code no longer does.
+The integration also belongs in a NEW sibling module (`placesearch/`), never inside `geo/` or `directory/`,
+both of whose boundaries exist precisely to keep a position off the wire.
 
 ### Provider directory reads are explicit `found | empty | unavailable` (`packages/ui/src/directory/`)
 

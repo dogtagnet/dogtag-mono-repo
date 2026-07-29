@@ -68,7 +68,7 @@ One key, one account, three capabilities, three platforms.
 **(a) Cost decides it on its own.**
 At 10,000 searches/day Google is **$3,433 to $4,335/month** and Stadia is **$26/month**.
 At a million searches/month Google is **$8,113 to $12,155** and Stadia is **$80**.
-That is a multiple of roughly 40x to 100x for the same three capabilities.
+Dividing those figures gives a multiple of roughly **100x to 165x** for the same three capabilities, depending on scale and on which Google call pattern is used.
 
 The Google figure is deliberately a range rather than a single number - see §3.1 for why, and do not quote a point estimate from it.
 
