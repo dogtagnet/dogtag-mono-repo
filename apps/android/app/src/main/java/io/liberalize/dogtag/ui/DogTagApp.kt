@@ -40,6 +40,7 @@ import io.liberalize.dogtag.data.SettingsStore
 import io.liberalize.dogtag.ui.screens.CredentialDetailScreen
 import io.liberalize.dogtag.ui.screens.DocumentsScreen
 import io.liberalize.dogtag.ui.screens.HomeScreen
+import io.liberalize.dogtag.ui.screens.NearbyScreen
 import io.liberalize.dogtag.ui.screens.ProfileScreen
 import io.liberalize.dogtag.ui.screens.ScanScreen
 import io.liberalize.dogtag.ui.screens.TravelScreen
@@ -58,12 +59,15 @@ fun DogTagApp(store: SettingsStore, settings: AppSettings, activity: FragmentAct
     val c = DogTagTheme.colors
     var tab by remember { mutableStateOf(Tab.Home) }
     var scanning by remember { mutableStateOf(false) }
+    var showingNearby by remember { mutableStateOf(false) }
     var selectedCred by remember { mutableStateOf<Credential?>(null) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = c.background) {
         Box(Modifier.fillMaxSize()) {
             val detail = selectedCred
-            if (scanning) {
+            if (showingNearby) {
+                NearbyScreen(onBack = { showingNearby = false })
+            } else if (scanning) {
                 ScanScreen(activity, onDone = { scanning = false })
             } else if (detail != null) {
                 CredentialDetailScreen(detail, onBack = { selectedCred = null })
@@ -72,7 +76,11 @@ fun DogTagApp(store: SettingsStore, settings: AppSettings, activity: FragmentAct
                     when (tab) {
                         Tab.Verify -> VerifyScreen(activity, onScan = { scanning = true })
                         Tab.Travel -> TravelScreen(onScan = { scanning = true }, onOpen = { selectedCred = it })
-                        Tab.Home -> HomeScreen(onScan = { scanning = true }, onOpen = { selectedCred = it })
+                        Tab.Home -> HomeScreen(
+                            onScan = { scanning = true },
+                            onOpen = { selectedCred = it },
+                            onNearby = { showingNearby = true },
+                        )
                         Tab.Documents -> DocumentsScreen(onScan = { scanning = true }, onOpen = { selectedCred = it })
                         Tab.Profile -> ProfileScreen(store, settings, activity)
                     }

@@ -29,6 +29,7 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "DogTag scans verifier QR codes to sign verification consents."
         INFOPLIST_KEY_NSFaceIDUsageDescription: "DogTag uses Face ID to protect your embedded wallet and authorize consent signing."
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "DogTag uses your location only after you tap Use my current location in Nearby, to calculate provider distances on this phone. Your position is never sent to DogTag."
         MARKETING_VERSION: "1.4.0"
         CURRENT_PROJECT_VERSION: "4"
         SWIFT_VERSION: "5.0"
@@ -65,6 +66,10 @@ targets:
       # Models is Foundation-only (JSONSerialization) and carries `rootCoveredIssuerLeaf`, which the DID
       # assertion reads. SwiftUI lives in the screens, not here.
       - path: DogTag/Models.swift
+      # NearbyDecision is the Foundation-only provider eligibility, state and claim policy shared by
+      # NearbyScreen and its mirrored native tests. Core Location stays in NearbyScreen, outside this
+      # host-less target; tests inject distance values.
+      - path: DogTag/NearbyDecision.swift
       # VerdictDisplay is Foundation-only: the pure badge decision (staleness + expiry ordering) with an
       # injected clock and no SwiftUI, no JSON, no FFI. #94 filed extracting it precisely so this bundle
       # could pin the verdict rules the way RoaxRpcSelectorTest pins Android; Models.swift above already

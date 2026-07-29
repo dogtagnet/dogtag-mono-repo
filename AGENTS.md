@@ -2907,6 +2907,72 @@ currently an honest stub because the provider registry and packed paging ABI do 
 - The admin `Businesses.tsx` and `Dashboard.tsx` management surfaces still call `listBusinesses`
   directly and collapse a fetch failure to `[]`/`0`; they are not a safe precedent for nearby UI.
 
+### Mobile Nearby is list-first, local-only, and keeps contact-only providers out of proximity claims
+
+The native holder apps consume the directory through a native mirror of the same no-argument
+`ProviderDirectory` contract. `@dogtag/ui` is TypeScript source-only and neither app embeds a JavaScript
+runtime, so the mirror is an adapter boundary rather than permission to call `/v1/businesses` from a
+screen. It preserves `found | empty | unavailable`, `live | stored`, the original cache deadline, and a
+universal full-set cache that is never keyed by a position.
+
+- `DirectoryProvider.geo` is nullable. `null` is the explicit contact-only case; `(0, 0)` remains a real
+  coordinate and must never be used as absence. Nearby drops null/unusable positions before measuring,
+  and `active == false` before either proximity or contact search; `active == null` remains eligible
+  without claiming the listing is active.
+- **Provider contacts** is the separate, unranked name-search surface for contact-only providers. It
+  may show every eligible vet/groomer, but it never shows distance, bearing, or Directions. The Nearby
+  surface contains located providers only.
+- Current-position permission is when-in-use and is requested only after the holder taps **Use my
+  location**. The alternative origin is manually entered decimal latitude/longitude, parsed on-device;
+  do not replace it with `CLGeocoder`, Android `Geocoder`, or a remote place search, all of which can
+  disclose the chosen location.
+- **Collection is hundred-metre class on BOTH platforms, and the display must admit it.** Android
+  requests `ACCESS_COARSE_LOCATION` only - never re-add `ACCESS_FINE_LOCATION` to the manifest, the
+  launcher, or a permission check - and iOS asks for `kCLLocationAccuracyHundredMeters`. Ranking a
+  50 km list needs nothing finer, and the one feature whose own copy promises "private by design" must
+  not ask for precise GPS. Two consequences that are easy to undo:
+  - The fix's own `horizontalAccuracy` / `Location.accuracy` is carried into the mirrored pure policy
+    (`NearbyOrigin.accuracyMetres` / `NearbyOriginState.Available.accuracyMetres`), and
+    `NearbyDecision.distanceClaim` rounds every device-fix label to a step no finer than that
+    accuracy. A provider nearer than **`max(accuracy, step / 2)`** is stated as a BOUND rather than a
+    point value, and **half the step is the load-bearing half of that pair**: below it the rounding
+    collapses to zero and the bands print a confident `0 km`, which is how a real 3 km provider once
+    rendered as `~0 km` on a 1.2 km fix. `uncertaintyLabel` rounds that bound OUTWARD on the display
+    ladder, so a `< X` can never be tighter than the distance the gate just admitted - rounding to
+    nearest put a provider measured at 92 m behind `< 90 m`. The refusal ceiling is PER UNIT (10 km
+    metric, 10 miles imperial), so the same 12 km fix is `DistanceClaim.Uncertain` in one locale and
+    a number in the other. A fix whose accuracy is missing, negative or non-finite is `Uncertain`
+    too - always with a sentence, never a confident number. `NearbyRow.distanceKm` stays the RAW
+    measurement, since ordering uses it, and typed coordinates keep ordinary precision - they carry
+    no measurement error.
+  - With coarse-only, a provider read can throw `SecurityException` at a caller holding a perfectly
+    good coarse grant, so that catch must re-check `checkSelfPermission` before calling it
+    `PermissionRefused`. Telling an owner they refused a permission they granted is the same class of
+    false claim this feature's state machine exists to prevent.
+- Native distance uses the platform geodesic (`CLLocation.distance` /
+  `Location.distanceBetween`) rather than introducing another app-owned haversine implementation.
+  The 50 km empty-query radius preserves the deprecated server default; a non-empty provider-name
+  search scans the whole already-fetched located set on-device, including matches beyond that radius.
+- Directions hands **only the public destination** to the OS maps app after a deliberate tap. Never
+  include the current/chosen origin in the URI or `MKMapItem`, and never embed an in-app map or tile
+  client.
+- The pure `NearbyDecision` mirror owns the display claims and pins the distinction between directory
+  empty, none within range, no name match, directory unavailable, permission refused, location
+  unavailable, and providers found. A stored snapshot remains found/empty with stale copy; it does not
+  become unavailable until its hard TTL expires.
+- Listing provenance uses the existing `IssuerDomainBindingState` / native `IssuerBindingState` and
+  `bindingTone` / `IssuerBinding.tone` - never a parallel listing-specific enum. A central row never
+  becomes `verified` merely because it carries a domain string: non-empty central domains are
+  `unavailable` until a binding check exists, while a blank one is `noDomainListed` ("No domain listed
+  for this provider"), the neutral directory-only member added for exactly this.
+  **`noDomainClaimed` is reserved for an actual on-chain read** and its copy says so ("This issuer has
+  published no domain on-chain"). `GET /v1/businesses` reads no chain state at all
+  (`stacks/admin/api/src/routes.rs`), so a blank domain column there is evidence of nothing about what
+  the issuer published on-chain, and borrowing that wording would assert a read that never happened.
+  All three adapters produce it (`packages/ui/src/directory/sources.ts`, `ProviderDirectory.kt`,
+  `Net.swift` `parseProviders`) and all three refuse a repeated `providerId` as malformed rather than
+  rendering two rows under one list identity.
+
 ### `haversine_km` in admin-api returns NaN for some near-antipodal pairs, and NaN reads as "out of range"
 
 The deprecated server filter ends in `asin(sqrt(a))`. For near-antipodal inputs `a` rounds **two ulps**

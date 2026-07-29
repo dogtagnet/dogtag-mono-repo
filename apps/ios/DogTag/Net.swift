@@ -916,3 +916,220 @@ enum DnsVerify {
         }
     }
 }
+
+// MARK: - Provider directory
+
+/// Native adapter for the shared ProviderDirectory contract.
+///
+/// The screen receives this seam and never performs HTTP itself. `read()` accepts no query, and the
+/// endpoint builder rejects a configured base that already contains one, so neither a current nor a
+/// chosen position has a request-shaped place to go. A failed live read may replay the same universal,
+/// full-set snapshot while its hard TTL remains open; that replay is labelled `.stored`.
+struct CentralProviderDirectory: ProviderDirectoryReading {
+    let source: ProviderDirectorySource = .central
+    static let defaultTtl: TimeInterval = 15 * 60
+
+    private let baseURL: String
+    private let ttl: TimeInterval
+    private let now: () -> Date
+
+    init(
+        baseURL: String = AppConfig.centralApi,
+        ttl: TimeInterval = Self.defaultTtl,
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.baseURL = baseURL
+        self.ttl = ttl
+        self.now = now
+    }
+
+    func read() async -> ProviderDirectoryResult {
+        let attemptedAt = now()
+        guard ttl.isFinite, ttl > 0,
+              let endpoint = Self.endpoint(baseURL: baseURL) else {
+            return fallbackOrUnavailable(
+                reason: .sourceUnavailable,
+                detail: "The provider directory is not configured with a valid query-free URL",
+                attemptedAt: attemptedAt
+            )
+        }
+
+        let response = await Http.getJSON(endpoint)
+        guard response.ok else {
+            return fallbackOrUnavailable(
+                reason: .sourceUnavailable,
+                detail: response.code < 0
+                    ? "The provider directory could not be reached"
+                    : "The provider directory returned HTTP \(response.code)",
+                attemptedAt: attemptedAt
+            )
+        }
+        guard let data = response.body.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let providers = Self.parseProviders(object) else {
+            return fallbackOrUnavailable(
+                reason: .malformedResponse,
+                detail: "The provider directory returned an invalid response; it was not treated as empty",
+                attemptedAt: attemptedAt
+            )
+        }
+
+        let readAt = now()
+        let snapshot = ProviderDirectorySnapshot(
+            source: .central,
+            providers: providers,
+            observation: .live,
+            blockNumber: nil,
+            readAt: readAt,
+            expiresAt: readAt.addingTimeInterval(ttl)
+        )
+        ProviderDirectoryMemoryCache.write(snapshot, namespace: cacheNamespace)
+        return providers.isEmpty ? .empty(snapshot) : .found(snapshot)
+    }
+
+    /// The exact request target. It is always the full-set endpoint and never has a query string.
+    static func endpoint(baseURL: String) -> String? {
+        let raw = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, var components = URLComponents(string: raw),
+              components.query == nil, components.fragment == nil,
+              let scheme = components.scheme?.lowercased(),
+              scheme == "https" || scheme == "http",
+              components.host?.isEmpty == false else { return nil }
+        components.path = components.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = "/" + [components.path, "v1/businesses"]
+            .filter { !$0.isEmpty && $0 != "/" }
+            .joined(separator: "/")
+        components.query = nil
+        components.fragment = nil
+        return components.url?.absoluteString
+    }
+
+    private var cacheNamespace: String {
+        "central:\(Self.endpoint(baseURL: baseURL) ?? "unresolved-base")"
+    }
+
+    private func fallbackOrUnavailable(
+        reason: ProviderDirectoryUnavailableReason,
+        detail: String,
+        attemptedAt: Date
+    ) -> ProviderDirectoryResult {
+        if var cached = ProviderDirectoryMemoryCache.read(namespace: cacheNamespace, now: attemptedAt) {
+            cached.observation = .stored
+            return cached.providers.isEmpty ? .empty(cached) : .found(cached)
+        }
+        return .unavailable(ProviderDirectoryUnavailable(
+            source: .central,
+            reason: reason,
+            detail: detail,
+            attemptedAt: attemptedAt
+        ))
+    }
+
+    /// All-or-nothing validation, except that a genuinely absent/null `geo` is the valid contact-only
+    /// case. A malformed coordinate object is not silently dropped or changed into a location-less row.
+    ///
+    /// A repeated `businessId` is malformed for the same reason: the id is this screen's list
+    /// identity, so keeping both rows would corrupt rendering instead of reporting a bad response.
+    static func parseProviders(_ object: [String: Any]) -> [DirectoryProvider]? {
+        guard let rows = object["businesses"] as? [Any] else { return nil }
+        var providers: [DirectoryProvider] = []
+        var seenIds = Set<String>()
+        providers.reserveCapacity(rows.count)
+
+        for raw in rows {
+            guard let row = raw as? [String: Any],
+                  let providerId = row["businessId"] as? String,
+                  seenIds.insert(providerId).inserted,
+                  let kind = row["type"] as? String,
+                  let name = row["name"] as? String,
+                  let services = row["services"] as? [String],
+                  let geo = parseGeo(row["geo"]),
+                  let domain = row["domain"] as? String,
+                  let contact = parseContact(row["contact"]) else {
+                return nil
+            }
+
+            let claimedDomain = domain.trimmingCharacters(in: .whitespacesAndNewlines)
+            providers.append(DirectoryProvider(
+                providerId: providerId,
+                kind: kind,
+                name: name,
+                geo: geo,
+                services: services,
+                domain: claimedDomain.isEmpty ? nil : claimedDomain,
+                // Today's central response carries no delisting fact. Ignore any unrelated extra
+                // wire field rather than manufacturing a current-standing claim from this source.
+                active: nil,
+                contact: contact,
+                // Central does not carry a resolved on-chain/DNS observation and reads no chain state
+                // at all. A blank domain is a fact about THIS LISTING, never the on-chain
+                // `noDomainClaimed`; a nonblank claim stays neutral/unavailable rather than being
+                // promoted to verified merely because the directory echoed it.
+                bindingState: claimedDomain.isEmpty ? .noDomainListed : .unavailable
+            ))
+        }
+        return providers
+    }
+
+    /// Optional-success parser: the outer optional means valid/invalid, the inner value is absence.
+    private static func optionalString(_ raw: Any?) -> String?? {
+        if raw == nil || raw is NSNull { return .some(nil) }
+        guard let value = raw as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .some(trimmed.isEmpty ? nil : trimmed)
+    }
+
+    /// Optional-success parser matching `optionalString`: `.some(nil)` is a real contact-only row.
+    private static func parseGeo(_ raw: Any?) -> NearbyPoint?? {
+        if raw == nil || raw is NSNull { return .some(nil) }
+        guard let object = raw as? [String: Any] else { return nil }
+        guard let lat = number(object["lat"]), let lng = number(object["lng"]) else { return nil }
+        let point = NearbyPoint(lat: lat, lng: lng)
+        return point.isValid ? .some(point) : nil
+    }
+
+    private static func number(_ raw: Any?) -> Double? {
+        guard !(raw is Bool), let number = raw as? NSNumber else { return nil }
+        let value = number.doubleValue
+        return value.isFinite ? value : nil
+    }
+
+    private static func parseContact(_ raw: Any?) -> ProviderContact? {
+        if raw == nil || raw is NSNull { return ProviderContact() }
+        guard let object = raw as? [String: Any],
+              let phone = optionalString(object["phone"]),
+              let whatsapp = optionalString(object["whatsapp"]),
+              let telegram = optionalString(object["telegram"]),
+              let email = optionalString(object["email"]) else {
+            return nil
+        }
+        return ProviderContact(phone: phone, whatsapp: whatsapp, telegram: telegram, email: email)
+    }
+}
+
+/// One process-local full-set snapshot per configured directory. The value is never keyed by a
+/// position, name search, radius, geohash, or viewport.
+private enum ProviderDirectoryMemoryCache {
+    private static let lock = NSLock()
+    private static var entries: [String: ProviderDirectorySnapshot] = [:]
+
+    static func write(_ snapshot: ProviderDirectorySnapshot, namespace: String) {
+        lock.lock()
+        entries[namespace] = snapshot
+        lock.unlock()
+    }
+
+    static func read(namespace: String, now: Date) -> ProviderDirectorySnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let snapshot = entries[namespace],
+              let expiresAt = snapshot.expiresAt,
+              snapshot.readAt <= now,
+              now < expiresAt else {
+            entries.removeValue(forKey: namespace)
+            return nil
+        }
+        return snapshot
+    }
+}

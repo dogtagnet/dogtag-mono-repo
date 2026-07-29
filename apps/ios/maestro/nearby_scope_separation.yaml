@@ -1,0 +1,107 @@
+# DogTag iOS — Nearby and Provider contacts must never share a rendered row.
+#
+# The two scopes show the SAME provider under incompatible promises. Nearby states distance, bearing
+# and Directions; Provider contacts exists for providers that published no location, and its own copy
+# promises it "never calculates distance or offers Directions". Both lists once lived in one lazy
+# container keyed on the bare `providerId`, and an explicit `id` overrides structural identity there,
+# so once Nearby had rendered, switching scope re-presented the already-realised Nearby rows under
+# the contacts list — distance and Directions included, directly beneath that line. Scrolling spread
+# it to every located provider. It did NOT happen when contacts was opened first, which is why it
+# survived review.
+#
+# This is a VIEW-layer defect, so neither pure-policy suite can catch it: `NearbyDecisionTests` and
+# the mirrored `NearbyDecisionTest` both decide correctly and both stay green while the screen lies.
+# `NearbyScreen.swift` is not in the host-less `DogTagTests` bundle (it imports SwiftUI, CoreLocation
+# and MapKit), and an XCUITest would need the app target, which needs the gitignored
+# `DogTagFFI.xcframework`. So this flow is the regression coverage for the property.
+#
+# The positive control is load-bearing, not ceremony: an absence assertion passes just as happily
+# when the feature was destroyed as when it was fixed, so this asserts Nearby still DOES state
+# distance, bearing and Directions before and after asserting contacts states none of them. Same
+# reasoning as `test_owner_absence_scanner_actually_detects_the_owner` in `CustodialIssuance.t.sol`.
+#
+# Prerequisites: the DEBUG app installed (so `DogTagFFI.xcframework` + the vendored zkey/graph — see
+# apps/ios/AGENTS.md and docs/MOBILE_BUILD.md §4), when-in-use location permitted
+# (`xcrun simctl privacy <udid> grant location io.liberalize.dogtag`), and a reachable provider
+# directory carrying at least one located and one contact-only vet/groomer. Like `zk_e2e.yaml` and
+# `wallet_reset.yaml` this is a local run, not CI.
+#
+# Set the simulator location IMMEDIATELY before the run. It does NOT survive across separate
+# `maestro test` invocations — each starts its own XCTest runner — and a lost fix renders as
+# "Current location unavailable", which reads like a product regression and is not one.
+#
+# Run:  xcrun simctl location <udid> set 1.2931,103.8520
+#       maestro test apps/ios/maestro/nearby_scope_separation.yaml
+appId: io.liberalize.dogtag
+---
+- launchApp:
+    clearState: true
+- tapOn: "Nearby"
+- extendedWaitUntil:
+    visible: "Private by design"
+    timeout: 20000
+
+# --- Nearby, with an origin: the positive control ----------------------------------------------
+# `~`/`<` is what makes this a ROW's distance rather than the "Within 50 km" range header, which
+# carries no approximation marker and would otherwise satisfy a bare units regex.
+- tapOn: "Use my current location"
+- extendedWaitUntil:
+    visible: "Directions"
+    timeout: 30000
+- assertVisible:
+    text: ".*[~<] ?[0-9.]+ ?(km|m|mi|ft).*"
+- assertVisible:
+    text: ".*· [NSEW]{1,2}.*"
+
+# Realise more than the first cell: the reuse spread with every row the container built, so a
+# scrolled list is the higher-yield probe rather than an optional extra.
+- scroll
+- scroll
+- assertVisible: "Directions"
+
+# --- switch to Provider contacts: no Nearby row may survive the transition ----------------------
+# The scope picker scrolls with the content. Return to the very TOP rather than to the picker
+# itself: stopping the moment the picker is "visible" leaves it clipped under the navigation bar,
+# where the tap lands on the bar and the scope silently never changes.
+- scrollUntilVisible:
+    element:
+      text: "Private by design"
+    direction: UP
+- tapOn: "Provider contacts"
+# Wait on the DISCLAIMER, not on "Provider contacts": that string is the picker's own segment label
+# and is on screen in both scopes, so waiting on it would pass without the scope ever changing and
+# every absence assertion below would then be measuring the Nearby scope.
+- extendedWaitUntil:
+    visible: ".*never calculates distance or offers Directions.*"
+    timeout: 15000
+# A bare string is a whole-text match, so this is the Directions BUTTON, not the privacy card's
+# "Directions opens Maps only after you tap…" sentence, which stays visible in both scopes.
+- assertNotVisible: "Directions"
+- assertNotVisible:
+    text: ".*[~<] ?[0-9.]+ ?(km|m|mi|ft).*"
+- assertNotVisible:
+    text: ".*· [NSEW]{1,2}.*"
+- scroll
+- scroll
+- assertNotVisible: "Directions"
+- assertNotVisible:
+    text: ".*[~<] ?[0-9.]+ ?(km|m|mi|ft).*"
+
+# --- and back: the reverse invariant, that Nearby never reuses a contact row --------------------
+- scrollUntilVisible:
+    element:
+      text: "Private by design"
+    direction: UP
+- tapOn:
+    text: "Nearby"
+    index: 1
+- extendedWaitUntil:
+    visible: "Directions"
+    timeout: 20000
+- assertVisible:
+    text: ".*[~<] ?[0-9.]+ ?(km|m|mi|ft).*"
+- assertVisible:
+    text: ".*· [NSEW]{1,2}.*"
+# A contact-only provider publishes no location, so it can never be ranked into Nearby.
+- assertNotVisible: "Phone"
+- assertNotVisible: "WhatsApp"

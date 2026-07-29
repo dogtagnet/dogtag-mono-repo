@@ -6,6 +6,7 @@ struct HomeScreen: View {
     @ObservedObject private var store = LocalStore.shared
     @ObservedObject private var photos = PetPhotoStore.shared
     let onScan: () -> Void
+    let onNearby: () -> Void
     @State private var expanded: CredentialGroup? = nil
     @State private var selectedPetId: String? = nil
     @State private var detailCred: Credential? = nil
@@ -26,6 +27,18 @@ struct HomeScreen: View {
                 HStack {
                     Text("Dog Tags").font(.system(size: 26, weight: .bold)).foregroundColor(c.onBackground)
                     Spacer()
+                    Button(action: onNearby) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "location.fill").font(.system(size: 13, weight: .semibold))
+                            Text("Nearby").font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundColor(c.accent)
+                        .padding(.horizontal, 11).padding(.vertical, 9)
+                        .background(Capsule().fill(c.surface))
+                        .overlay(Capsule().stroke(c.outline))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Find nearby vets and groomers")
                     // Labeled scan affordance — icon + "Scan" reads unambiguously as "scan a QR"
                     // (the old bare "+" over the photo read as "add" and confused the action).
                     Button(action: onScan) {

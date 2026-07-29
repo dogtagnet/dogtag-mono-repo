@@ -71,6 +71,10 @@
 		F99C7D3CA52E6CCBE02EB6A5 /* Wallet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E35FCC686C0AAD6B317376C7 /* Wallet.swift */; };
 		FA9B27A415CEE5FDBD48CDE0 /* Net.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409155A71A31BD791C0561AD /* Net.swift */; };
 		FF53152641B9534CBD704A74 /* InclusionProof.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F0A5F7F5D703C32FA3502B1 /* InclusionProof.swift */; };
+		F0AA00000000000000000002 /* NearbyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA00000000000000000001 /* NearbyDecision.swift */; };
+		F0AA00000000000000000003 /* NearbyDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA00000000000000000001 /* NearbyDecision.swift */; };
+		F0AA00000000000000000005 /* NearbyScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA00000000000000000004 /* NearbyScreen.swift */; };
+		F0AA00000000000000000007 /* NearbyDecisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0AA00000000000000000006 /* NearbyDecisionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -125,6 +129,9 @@
 		E4CB964F92162E883F581DE3 /* roax.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = roax.json; sourceTree = "<group>"; };
 		E5DC35D1F973834F7739F3F4 /* IssuerDomainBindingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssuerDomainBindingTests.swift; sourceTree = "<group>"; };
 		E9AFF180B3A3062BCB03AFE3 /* PublicSignalIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicSignalIndex.swift; sourceTree = "<group>"; };
+		F0AA00000000000000000001 /* NearbyDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyDecision.swift; sourceTree = "<group>"; };
+		F0AA00000000000000000004 /* NearbyScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyScreen.swift; sourceTree = "<group>"; };
+		F0AA00000000000000000006 /* NearbyDecisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyDecisionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -154,6 +161,7 @@
 				A1B2C3D50000000000000004 /* DogTagCardTests.swift */,
 				E5DC35D1F973834F7739F3F4 /* IssuerDomainBindingTests.swift */,
 				3774010D8817B22E7B20E2ED /* LocalDataSweepTests.swift */,
+				F0AA00000000000000000006 /* NearbyDecisionTests.swift */,
 				6E677AE2F3DE132622C10E9E /* PublicSignalIndexTests.swift */,
 				A38289E086F9DD77EF41997A /* QrPayloadTests.swift */,
 				7B95325FF1F4944402491733 /* SeedBackupGateTests.swift */,
@@ -184,6 +192,8 @@
 				E1A328A0B2BD5C072A7D4895 /* LocalDataSweep.swift */,
 				21052A141B470C3ACE0815DA /* LocalStore.swift */,
 				78E305C5EDBCBAB54068928D /* Models.swift */,
+				F0AA00000000000000000001 /* NearbyDecision.swift */,
+				F0AA00000000000000000004 /* NearbyScreen.swift */,
 				409155A71A31BD791C0561AD /* Net.swift */,
 				4383F7BC97C38D7BCFE52F35 /* ProfileScreen.swift */,
 				D675DAAC0F79E523B503EA5F /* ProfileTreeStore.swift */,
@@ -340,6 +350,8 @@
 				F2187217695A7C24EAD8AE5A /* LocalDataSweep.swift in Sources */,
 				01D73C14D916A9A600A5B5E2 /* LocalStore.swift in Sources */,
 				26286860F2F0C9B67191AAF6 /* Models.swift in Sources */,
+				F0AA00000000000000000002 /* NearbyDecision.swift in Sources */,
+				F0AA00000000000000000005 /* NearbyScreen.swift in Sources */,
 				A1B2C3D50000000000000002 /* DogTagCard.swift in Sources */,
 				A1B2C3D40000000000000002 /* VerdictDisplay.swift in Sources */,
 				E8D82ED92A758B3C7A009A2B /* Net.swift in Sources */,
@@ -376,6 +388,8 @@
 				57CED7819C51A354E991EC8A /* LocalDataSweep.swift in Sources */,
 				09A737AC99AE3E9975BD2BDB /* LocalDataSweepTests.swift in Sources */,
 				F094B66D48F3C7AEA13F18A2 /* Models.swift in Sources */,
+				F0AA00000000000000000003 /* NearbyDecision.swift in Sources */,
+				F0AA00000000000000000007 /* NearbyDecisionTests.swift in Sources */,
 				A1B2C3D50000000000000003 /* DogTagCard.swift in Sources */,
 				A1B2C3D50000000000000005 /* DogTagCardTests.swift in Sources */,
 				A1B2C3D40000000000000003 /* VerdictDisplay.swift in Sources */,
@@ -410,6 +424,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DogTag scans verifier QR codes to sign verification consents.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "DogTag uses Face ID to protect your embedded wallet and authorize consent signing.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "DogTag uses your location only after you tap Use my current location in Nearby, to calculate provider distances on this phone. Your position is never sent to DogTag.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -454,6 +469,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "DogTag scans verifier QR codes to sign verification consents.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "DogTag uses Face ID to protect your embedded wallet and authorize consent signing.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "DogTag uses your location only after you tap Use my current location in Nearby, to calculate provider distances on this phone. Your position is never sent to DogTag.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

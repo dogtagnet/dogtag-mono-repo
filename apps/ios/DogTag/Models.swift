@@ -497,4 +497,7 @@ struct RoaxConfig {
 /// is the gasless on-chain read endpoint.
 enum AppConfig {
     static let roaxRpc = "https://devrpc.roax.net"
+    /// Public, full-set provider directory. Nearby never adds a query string: name, range and
+    /// distance all stay on the phone.
+    static let centralApi = "https://api.dogtag.io"
 }

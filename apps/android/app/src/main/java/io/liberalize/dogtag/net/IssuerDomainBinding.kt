@@ -58,6 +58,12 @@ sealed class IssuerBindingState {
     /** Link 1 holds; this issuer has claimed no domain on-chain. The normal day-one state. */
     object NoDomainClaimed : IssuerBindingState()
 
+    /**
+     * A provider-DIRECTORY listing carried no domain. No chain read happened at all, so this must
+     * never borrow [NoDomainClaimed]'s on-chain wording, which asserts a read that did occur.
+     */
+    object NoDomainListed : IssuerBindingState()
+
     /** A prerequisite could not be read at all (nothing configured, or the read failed). */
     object Unavailable : IssuerBindingState()
 
@@ -146,6 +152,7 @@ data class IssuerBinding(
                 IssuerBindingState.NotADogTagIssuer -> "This contract was not deployed by the DogTag factory"
                 IssuerBindingState.CouldNotCheck -> "We could not reach DNS to check this domain"
                 IssuerBindingState.NoDomainClaimed -> "This issuer has published no domain on-chain"
+                IssuerBindingState.NoDomainListed -> "No domain listed for this provider"
                 IssuerBindingState.Unavailable -> "The on-chain domain claim could not be read"
                 IssuerBindingState.Pending -> "Checking this domain's DNS records…"
             }

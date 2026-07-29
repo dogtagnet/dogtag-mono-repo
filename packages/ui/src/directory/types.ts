@@ -1,4 +1,7 @@
-import type { IssuerDomainBinding } from "../domain/issuerDomainBinding";
+import type {
+  IssuerDomainBinding,
+  IssuerDomainBindingState,
+} from "../domain/issuerDomainBinding";
 import type { LatLng } from "../geo";
 
 /**
@@ -13,22 +16,47 @@ export type DirectoryObservation = NonNullable<IssuerDomainBinding["dnsObservati
 export type ProviderDirectorySource = "central" | "onchain";
 
 /**
+ * Public ways to contact a provider.
+ *
+ * Every field is nullable because a provider may publish any subset of them. The directory
+ * normalizes missing, blank, and null wire values to `null`, so consumers never need to guess
+ * whether an absent contact object meant an empty string.
+ */
+export interface DirectoryProviderContact {
+  phone: string | null;
+  whatsapp: string | null;
+  telegram: string | null;
+  email: string | null;
+}
+
+/**
  * The source-neutral provider shape needed by the list consumer.
  *
  * This intentionally excludes central-only wire fields such as `hmacKeyId`, `apiBaseUrl`, and
  * `documentStores`: a future on-chain source could not supply them honestly. `active` is nullable
  * because today's central response has no delisting fact at all; `null` must never be read as
- * `false`. The future on-chain scan can populate its maintained `active` assertion.
+ * `false`. The future on-chain scan can populate its maintained `active` assertion. A null `geo`
+ * is a contact-only listing, never a placeholder coordinate; distance consumers must omit it rather
+ * than inventing a pin.
  */
 export interface DirectoryProvider {
   /** Central `businessId` today; the future KYC-assigned provider id behind the on-chain source. */
   providerId: string;
   kind: string;
   name: string;
-  geo: LatLng;
+  /** `null` is a valid contact-only listing and must never be replaced with `{ lat: 0, lng: 0 }`. */
+  geo: LatLng | null;
   services: readonly string[];
+  contact: DirectoryProviderContact;
   /** `null` is the ordinary domain-less-provider case. */
   domain: string | null;
+  /**
+   * Reuses the issuer-domain state machine consumed by existing provenance chips.
+   *
+   * A directory source that did not perform the binding check must use `unavailable`; publishing a
+   * domain string is not evidence of `verified`.
+   */
+  bindingState: IssuerDomainBindingState;
   /** `null` means this source supplied no listing-state fact. It is not evidence of delisting. */
   active: boolean | null;
 }

@@ -134,6 +134,8 @@ describe("provider directory over a real HTTP boundary", () => {
     // Central-only wire fields never reach a provider, and no delisting fact is invented.
     expect(Object.keys(live.providers[0]).sort()).toEqual([
       "active",
+      "bindingState",
+      "contact",
       "domain",
       "geo",
       "kind",
@@ -142,6 +144,10 @@ describe("provider directory over a real HTTP boundary", () => {
       "services",
     ]);
     expect(live.providers.every((p) => p.active === null)).toBe(true);
+    expect(live.providers.every((p) => p.bindingState === "unavailable")).toBe(true);
+    expect(live.providers.every((p) => Object.values(p.contact).every((v) => v === null))).toBe(
+      true,
+    );
     say("");
 
     // 2. source down mid-window -> stored replay, deadline untouched

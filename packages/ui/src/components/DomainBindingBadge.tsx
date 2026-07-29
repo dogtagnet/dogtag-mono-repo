@@ -143,7 +143,12 @@ export function DomainBindingBadge({
   "data-testid": testId,
 }: DomainBindingBadgeProps) {
   if (!binding) return null;
-  if (hideWhenNoClaim && binding.state === "noDomainClaimed") return null;
+  if (
+    hideWhenNoClaim &&
+    (binding.state === "noDomainClaimed" || binding.state === "noDomainListed")
+  ) {
+    return null;
+  }
 
   const tone = bindingTone(binding.state);
   const line = bindingLine(binding);

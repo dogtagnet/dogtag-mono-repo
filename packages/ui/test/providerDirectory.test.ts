@@ -28,8 +28,26 @@ const PROVIDER: DirectoryProvider = {
   name: "North Star Veterinary",
   geo: { lat: 1.3521, lng: 103.8198 },
   services: ["vaccination"],
+  contact: {
+    phone: null,
+    whatsapp: null,
+    telegram: null,
+    email: null,
+  },
   domain: "north-star.test",
+  bindingState: "unavailable",
   active: null,
+};
+
+const CONTACT_ONLY_PROVIDER: DirectoryProvider = {
+  ...PROVIDER,
+  geo: null,
+  contact: {
+    phone: "+65 6123 4567",
+    whatsapp: "+65 9000 0000",
+    telegram: "@northstarvet",
+    email: "hello@north-star.test",
+  },
 };
 
 const SECOND_PROVIDER: DirectoryProvider = {
@@ -41,7 +59,11 @@ const SECOND_PROVIDER: DirectoryProvider = {
 
 describe("centralDirectory", () => {
   it("performs one full fetch with no query and reports a live, honestly unanchored result", async () => {
-    const listBusinesses = vi.fn(async () => ({ businesses: [CENTRAL_PROVIDER] }));
+    const listBusinesses = vi.fn(async () => ({
+      // The central wire is not a binding oracle. Even if it grows or injects this field, the seam
+      // must derive `unavailable` itself rather than accepting an unperformed verification.
+      businesses: [{ ...CENTRAL_PROVIDER, bindingState: "verified" }],
+    }));
     const result = await centralDirectory(
       { base: "https://central.test", listBusinesses },
       { now: () => 1_000 },
@@ -115,7 +137,7 @@ describe("centralDirectory", () => {
     expect("providers" in result).toBe(false);
   });
 
-  it("rejects a malformed provider inside an otherwise array-shaped response", async () => {
+  it("rejects a malformed geo object inside an otherwise array-shaped response", async () => {
     const result = await centralDirectory(
       {
         base: "https://central.test",
@@ -129,7 +151,77 @@ describe("centralDirectory", () => {
       { now: () => 5_000 },
     ).read();
 
-    expect(result.state).toBe("unavailable");
+    expect(result).toMatchObject({ state: "unavailable", reason: "malformedResponse" });
+    expect("providers" in result).toBe(false);
+  });
+
+  it.each(["omitted", "null"] as const)(
+    "keeps a contact-only row with %s geo in a successful found snapshot",
+    async (geoShape) => {
+      const { geo: _geo, ...withoutGeo } = CENTRAL_PROVIDER;
+      const row = {
+        ...withoutGeo,
+        ...(geoShape === "null" ? { geo: null } : {}),
+        contact: {
+          phone: " +65 6123 4567 ",
+          whatsapp: "+65 9000 0000",
+          telegram: " @northstarvet ",
+          email: " hello@north-star.test ",
+        },
+      };
+      const result = await centralDirectory(
+        {
+          base: "https://central.test",
+          listBusinesses: async () =>
+            ({ businesses: [row] }) as unknown as { businesses: CentralBusiness[] },
+        },
+        { now: () => 5_100 },
+      ).read();
+
+      expect(result).toEqual({
+        state: "found",
+        source: "central",
+        providers: [CONTACT_ONLY_PROVIDER],
+        observation: "live",
+        blockNumber: null,
+        readAt: 5_100,
+        expiresAt: null,
+      });
+      if (result.state !== "found") throw new Error("expected found");
+      expect(result.providers[0].geo).toBeNull();
+      expect(result.providers[0].contact).toEqual(CONTACT_ONLY_PROVIDER.contact);
+    },
+  );
+
+  it("rejects malformed contact fields rather than partially trusting the row", async () => {
+    const result = await centralDirectory(
+      {
+        base: "https://central.test",
+        listBusinesses: async () =>
+          ({
+            businesses: [{ ...CENTRAL_PROVIDER, contact: { phone: 61234567 } }],
+          }) as unknown as { businesses: CentralBusiness[] },
+      },
+      { now: () => 5_200 },
+    ).read();
+
+    expect(result).toMatchObject({ state: "unavailable", reason: "malformedResponse" });
+  });
+
+  // Mirrors the Kotlin and Swift adapters: `providerId` is the consumer's list identity, so a
+  // repeated one is a bad response rather than two rows to render on top of each other.
+  it("refuses a response that repeats a provider id rather than rendering both rows", async () => {
+    const result = await centralDirectory(
+      {
+        base: "https://central.test",
+        listBusinesses: async () => ({
+          businesses: [CENTRAL_PROVIDER, { ...CENTRAL_PROVIDER, name: "Impostor Vet" }],
+        }),
+      },
+      { now: () => 5_400 },
+    ).read();
+
+    expect(result).toMatchObject({ state: "unavailable", reason: "malformedResponse" });
   });
 
   it("normalizes a domain-less central row without exposing central-only HMAC metadata", async () => {
@@ -145,7 +237,7 @@ describe("centralDirectory", () => {
 
     expect(result).toMatchObject({
       state: "found",
-      providers: [{ ...PROVIDER, domain: null }],
+      providers: [{ ...PROVIDER, domain: null, bindingState: "noDomainListed" }],
     });
     if (result.state !== "found") throw new Error("expected found");
     expect("hmacKeyId" in result.providers[0]).toBe(false);
@@ -306,6 +398,38 @@ const unavailable = (
 });
 
 describe("withProviderDirectoryCache", () => {
+  it("writes and replays a contact-only provider without manufacturing a pin", async () => {
+    let time = 9_000;
+    const source = scriptedDirectory("central", [
+      found("central", [CONTACT_ONLY_PROVIDER], 9_000, null),
+      unavailable("central", 9_100),
+    ]);
+    const cache = createMemoryProviderDirectoryCache();
+    const directory = withProviderDirectoryCache(source, {
+      cache,
+      ttlMs: 1_000,
+      now: () => time,
+    });
+
+    expect(await directory.read()).toMatchObject({
+      state: "found",
+      providers: [CONTACT_ONLY_PROVIDER],
+      observation: "live",
+    });
+    expect(cache.read()?.snapshot).toMatchObject({
+      state: "found",
+      providers: [CONTACT_ONLY_PROVIDER],
+    });
+
+    time = 9_100;
+    expect(await directory.read()).toMatchObject({
+      state: "found",
+      providers: [CONTACT_ONLY_PROVIDER],
+      observation: "stored",
+    });
+    expect(CONTACT_ONLY_PROVIDER.geo).toBeNull();
+  });
+
   it("stores a live snapshot with its block anchor and TTL, then replays it as stored", async () => {
     let time = 10_000;
     const source = scriptedDirectory("onchain", [

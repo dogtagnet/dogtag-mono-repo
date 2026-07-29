@@ -17,6 +17,7 @@ const ALL_STATES: IssuerDomainBindingState[] = [
   "notListed",
   "couldNotCheck",
   "noDomainClaimed",
+  "noDomainListed",
   "unavailable",
   "pending",
 ];
@@ -69,7 +70,21 @@ describe("tone", () => {
 
   it("keeps the other unknown states neutral too", () => {
     expect(bindingTone("noDomainClaimed")).toBe("neutral");
+    expect(bindingTone("noDomainListed")).toBe("neutral");
     expect(bindingTone("unavailable")).toBe("neutral");
+  });
+
+  // A directory listing is not a chain read, so its copy must not borrow the wording of
+  // `noDomainClaimed`, which asserts that the on-chain claim WAS read and was empty.
+  it("keeps a directory's domain-less listing from asserting an on-chain read", () => {
+    const line = bindingLine(b("noDomainListed"));
+    expect(line.toLowerCase()).not.toContain("on-chain");
+    expect(line).not.toBe(bindingLine(b("noDomainClaimed")));
+
+    const explanation = bindingExplanation(b("noDomainListed")).toLowerCase();
+    expect(explanation).not.toContain("published no domain");
+    expect(explanation).not.toContain("has not claimed a domain");
+    expect(explanation).toContain("nothing on-chain was read");
   });
 
   it("never gives a non-verified state a positive tone", () => {

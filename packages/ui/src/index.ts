@@ -249,6 +249,7 @@ export {
   type OnchainDirectoryOptions,
   type DirectoryObservation,
   type DirectoryProvider,
+  type DirectoryProviderContact,
   type ProviderDirectory,
   type ProviderDirectoryCache,
   type ProviderDirectoryCacheEntry,

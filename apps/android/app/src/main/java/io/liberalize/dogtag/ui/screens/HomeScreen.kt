@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Flight
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Shield
@@ -50,7 +51,11 @@ import io.liberalize.dogtag.ui.DogTagTheme
 import io.liberalize.dogtag.ui.SectionTitle
 
 @Composable
-fun HomeScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
+fun HomeScreen(
+    onScan: () -> Unit,
+    onOpen: (Credential) -> Unit,
+    onNearby: () -> Unit,
+) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
     val store = remember { LocalStore.get(context) }
@@ -70,6 +75,26 @@ fun HomeScreen(onScan: () -> Unit, onOpen: (Credential) -> Unit) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Dog Tags", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = c.onBackground)
             Spacer(Modifier.weight(1f))
+            Row(
+                Modifier.clip(CircleShape).background(c.surfaceVariant).clickable { onNearby() }
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.LocationOn,
+                    "Nearby providers",
+                    tint = c.accent,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(5.dp))
+                Text(
+                    "Nearby",
+                    color = c.onBackground,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            Spacer(Modifier.size(8.dp))
             Box(
                 Modifier.size(40.dp).clip(CircleShape).background(c.accent).clickable { onScan() },
                 contentAlignment = Alignment.Center,
