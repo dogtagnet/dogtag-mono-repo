@@ -283,6 +283,67 @@ class RoaxRpcEndpointTest {
         assertEquals(-1, response.code)
     }
 
+    /**
+     * The `ProtocolRegistry` discovery-anchor reads in `ScanScreen.runLevelBFlow` pass
+     * [RoaxRpc.DEFAULT_RPC] instead of the holder's selected peer, because that record is the trust
+     * anchor `validateDiscovery` checks the platform's own claims against - a peer answering both
+     * sides of that comparison defeats it. This pins the transport property that call site rests on:
+     * a read requested on the bundled endpoint reaches the bundled endpoint ONLY, and is still
+     * guarded by `eth_chainId` first. (Which URL the call site passes is a source fact the comment
+     * there carries; no unit test can observe a Compose call site.)
+     */
+    @Test
+    fun aBundledRequestedReadReachesOnlyTheBundledPeerAndIsStillGuarded() = runBlocking {
+        val calls = mutableListOf<Pair<String, String>>()
+        val anchorBody =
+            """{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xreg"},"latest"]}"""
+
+        val response = RoaxRpc.guardedPostJson(
+            RoaxRpc.DEFAULT_RPC,
+            expectedChainId,
+            anchorBody,
+        ) { url, body ->
+            val method = JSONObject(body).getString("method")
+            calls += url to method
+            if (url != RoaxRpc.DEFAULT_RPC) error("the discovery anchor must not reach $url")
+            if (method == "eth_chainId") {
+                chainResponse(expectedChainId)
+            } else {
+                Http.Response(200, """{"jsonrpc":"2.0","id":1,"result":"0x01"}""")
+            }
+        }
+
+        assertEquals(200, response.code)
+        assertEquals(
+            listOf(
+                RoaxRpc.DEFAULT_RPC to "eth_chainId",
+                RoaxRpc.DEFAULT_RPC to "eth_call",
+            ),
+            calls,
+        )
+    }
+
+    /**
+     * The other half of the same boundary: an unavailable or off-chain bundled peer leaves the anchor
+     * read unanswered rather than reaching for a custom peer it deliberately did not ask.
+     */
+    @Test
+    fun aBundledRequestedReadFailsClosedWhenTheBundledPeerIsOffChain() = runBlocking {
+        val calls = mutableListOf<Pair<String, String>>()
+        val response = RoaxRpc.guardedPostJson(
+            RoaxRpc.DEFAULT_RPC,
+            expectedChainId,
+            """{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0xreg"},"latest"]}""",
+        ) { url, body ->
+            val method = JSONObject(body).getString("method")
+            calls += url to method
+            if (method == "eth_chainId") chainResponse(1L) else error("off-chain peer was read")
+        }
+
+        assertEquals(-1, response.code)
+        assertEquals(listOf(RoaxRpc.DEFAULT_RPC to "eth_chainId"), calls)
+    }
+
     @Test
     fun parsesCanonicalChainIdQuantityAndRejectsMalformedValues() {
         assertEquals(expectedChainId, RoaxRpc.parseChainId("0x87"))

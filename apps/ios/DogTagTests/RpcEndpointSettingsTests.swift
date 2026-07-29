@@ -256,6 +256,69 @@ final class RpcEndpointSettingsTests: XCTestCase {
         XCTAssertTrue(requests.isEmpty, "no address-bound call is safe when neither peer establishes chain identity")
     }
 
+    /// The `ProtocolRegistry` discovery-anchor reads in `ScanScreen.runLevelBFlow` pass
+    /// `AppConfig.roaxRpc` instead of the holder's selected peer, because that record is the trust
+    /// anchor `validateDiscovery` checks the platform's own claims against - a peer answering both
+    /// sides of that comparison defeats it. This pins the transport property that call site rests on:
+    /// a read requested on the bundled endpoint reaches the bundled endpoint ONLY, and is still
+    /// guarded by `eth_chainId` first. (Which URL the call site passes is a source fact the comment
+    /// there carries; no host-less test can observe a SwiftUI call site.)
+    func testBundledRequestedReadReachesOnlyTheBundledPeerAndIsStillGuarded() async {
+        let log = RpcTransportLog()
+        let anchorBody = #"{"jsonrpc":"2.0","id":11,"method":"eth_call","params":[]}"#
+
+        let response = await RoaxRpc.guardedPostJSON(
+            rpcUrl: AppConfig.roaxRpc,
+            body: anchorBody,
+            expectedChainId: chainId,
+            probe: { url, body in
+                await log.recordProbe(url: url, body: body)
+                return self.chainResponse("0x87")
+            },
+            request: { url, body in
+                await log.recordRequest(url: url, body: body)
+                return Http.Response(code: 200, body: #"{"result":"0x01"}"#)
+            }
+        )
+
+        let probes = await log.probes()
+        let requests = await log.requests()
+        XCTAssertTrue(response.ok)
+        XCTAssertEqual(probes.map(\.url), [AppConfig.roaxRpc])
+        XCTAssertTrue(probes.allSatisfy { $0.body.contains(#""method":"eth_chainId""#) })
+        XCTAssertEqual(
+            requests,
+            [.init(url: AppConfig.roaxRpc, body: anchorBody)],
+            "the discovery anchor must be answered by the bundled peer and nothing else"
+        )
+    }
+
+    /// The other half of the same boundary: an off-chain bundled peer leaves the anchor read
+    /// unanswered rather than reaching for a custom peer it deliberately did not ask.
+    func testBundledRequestedReadFailsClosedWhenTheBundledPeerIsOffChain() async {
+        let log = RpcTransportLog()
+
+        let response = await RoaxRpc.guardedPostJSON(
+            rpcUrl: AppConfig.roaxRpc,
+            body: #"{"jsonrpc":"2.0","id":12,"method":"eth_call","params":[]}"#,
+            expectedChainId: chainId,
+            probe: { url, body in
+                await log.recordProbe(url: url, body: body)
+                return self.chainResponse("0x1")
+            },
+            request: { url, body in
+                await log.recordRequest(url: url, body: body)
+                return Http.Response(code: 200, body: #"{"result":"must-not-run"}"#)
+            }
+        )
+
+        let probes = await log.probes()
+        let requests = await log.requests()
+        XCTAssertFalse(response.ok)
+        XCTAssertEqual(probes.map(\.url), [AppConfig.roaxRpc])
+        XCTAssertTrue(requests.isEmpty, "an off-chain bundled peer must not answer the discovery anchor")
+    }
+
     func testCustomReadTransportFailureGetsIndependentlyGuardedBundledRetry() async {
         let log = RpcTransportLog()
         let contractBody = #"{"jsonrpc":"2.0","id":9,"method":"eth_call","params":[]}"#

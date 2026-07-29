@@ -77,7 +77,14 @@ fun ProfileScreen(store: SettingsStore, settings: AppSettings, activity: Fragmen
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val roax = remember { RoaxConfig.load(context) }
-    var rpcInput by remember(settings.rpcUrl) { mutableStateOf(settings.rpcUrl) }
+    // Seeded ONCE from the persisted choice and owned by this screen thereafter. Deliberately NOT
+    // keyed on `settings.rpcUrl`: a rejected save resets the PERSISTED endpoint to the bundled
+    // default, which re-keyed this state and wiped the very draft the error copy asks the operator to
+    // correct - and only when a custom endpoint had been saved, so the two rejection paths silently
+    // behaved differently. Every accepted route below assigns the field explicitly instead, so
+    // nothing needs the key. `MainActivity` renders only once `store.settings` has emitted, so the
+    // first composition already carries the persisted value, and this screen is the only writer.
+    var rpcInput by remember { mutableStateOf(settings.rpcUrl) }
     var rpcMessage by remember { mutableStateOf("") }
     var rpcMessageError by remember { mutableStateOf(false) }
     var checkingRpc by remember { mutableStateOf(false) }

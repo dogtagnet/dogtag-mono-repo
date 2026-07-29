@@ -567,12 +567,25 @@ struct ScanScreen: View {
             return
         }
         // Resolve both on-chain axes. Missing configuration/publication fails closed.
+        //
+        // These TWO reads deliberately name the BUNDLED endpoint rather than the holder's transport
+        // choice, and they are the only chain reads that bypass that choice. The contract set they return
+        // IS the trust anchor `validateDiscovery` compares the platform's claimed
+        // `verificationRegistry`/version against - the anti-redirect trip. A peer that answers
+        // `eth_chainId` with 135 (trivial for a hostile peer) could otherwise supply BOTH sides of
+        // that comparison, so a hostile portal plus a holder-chosen peer would satisfy a check whose
+        // whole point is independence from the portal. Endpoint choice is transport liveness for
+        // reads whose answers the anchor then constrains; it must never answer the anchor itself.
+        // Still routed through `guardedPostJSON`, so the bundled peer is probed for `eth_chainId`
+        // immediately before each read and an unavailable/wrong-chain bundled peer yields nil here
+        // (fail closed) rather than falling back to the custom peer - `endpointRoute` takes its
+        // `requested == bundled` branch, which has no custom candidate to fall back to.
         let version = AnchorResolver.protocolVersion
         async let csTask = RoaxRpc.getContractSet(
-            rpcUrl: RpcEndpointSettings.rpcUrl(),
+            rpcUrl: AppConfig.roaxRpc,
             protocolRegistry: roax.protocolRegistry, version: version)
         async let asTask = RoaxRpc.getActiveArtifactSet(
-            rpcUrl: RpcEndpointSettings.rpcUrl(),
+            rpcUrl: AppConfig.roaxRpc,
             protocolRegistry: roax.protocolRegistry, version: version)
         guard let cs = await csTask, let arti = await asTask else {
             working = false

@@ -30,7 +30,15 @@ export const ROAX_ADD_CHAIN_PARAMS = {
   blockExplorerUrls: ["https://explorer.roax.net"],
 } as const;
 
-/** EIP-3085 metadata using an endpoint that has already passed the ROAX chain guard. */
+/**
+ * EIP-3085 metadata for the ROAX chain.
+ *
+ * `rpcUrl` is the portal's BUNDLED endpoint, supplied intentionally rather than taken from the
+ * browser's DogTag endpoint choice - see `useRoaxChain`, the only caller. It is deliberately NOT
+ * described as pre-probed: nothing here or in that caller runs the chain guard, and a guard could
+ * not stand in for one anyway, since this URL becomes the wallet's own persistent configuration and
+ * would then serve the wallet's traffic long after any one-off probe.
+ */
 export function roaxAddChainParams(rpcUrl: string = roax.rpcUrls.default.http[0]) {
   return {
     ...ROAX_ADD_CHAIN_PARAMS,

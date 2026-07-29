@@ -15,6 +15,7 @@ import {
  *   3. SHARE    — create an integrity-preserving selectively disclosed copy
  *   4. RECEIPT  — render government travel/health receipts with live validity
  *   5. CONSENTS - render the owner's own consent history from the owner-blind Verified events
+ *   6. SETTINGS - every endpoint save reports its verdict, and a rejection really does clear
  *
  * ROAX RPC is mocked at the network layer so the live validity reads are deterministic. Owner-hidden
  * consent proving requires the private tag-profile witness held by the native wallet and is not a
@@ -325,4 +326,109 @@ test("consent history: owner-blind Verified events render as the owner's receipt
   // The print affordance is the only export; there is no share path out of the private history.
   await expect(page.getByTestId("consent-print")).toBeVisible();
   await expect(page.getByTestId("consent-detail-loading")).toHaveCount(0);
+});
+
+/** The bundled endpoint, normalized the way `normalizeRpcUrl` stores and displays it. */
+const BUNDLED_RPC = "https://devrpc.roax.net/";
+const GOOD_RPC = "https://good-peer.rpc.test/";
+const WRONG_CHAIN_RPC = "https://other-chain.rpc.test/";
+const RPC_STORAGE_KEY = "dogtag.roax-rpc-url.v1";
+
+interface EndpointCall {
+  url: string;
+  method: string;
+}
+
+/**
+ * Endpoint-probe mocks for the Settings surface: the bundled peer and one candidate answer ROAX
+ * chain 135, another answers chain 5. Returns every request with its URL, so a test can assert that
+ * a rejected peer received `eth_chainId` and nothing else.
+ *
+ * Replaces the credential mocks for this test rather than layering on them, so route precedence
+ * cannot decide whether a request is recorded.
+ */
+async function installEndpointMocks(page: Page): Promise<EndpointCall[]> {
+  const calls: EndpointCall[] = [];
+  await page.unrouteAll();
+  await page.route(/(devrpc\.roax\.net|rpc\.test)/, async (route) => {
+    const url = route.request().url();
+    let req: { id?: unknown; method?: string } = {};
+    try {
+      req = JSON.parse(route.request().postData() || "{}");
+    } catch {
+      /* recorded as an empty method below */
+    }
+    calls.push({ url, method: req.method ?? "" });
+    const chainId = url.startsWith(WRONG_CHAIN_RPC) ? "0x5" : "0x87";
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: req.id ?? 1,
+        result: req.method === "eth_chainId" ? chainId : "0x" + "0".repeat(63) + "1",
+      }),
+    });
+  });
+  return calls;
+}
+
+/**
+ * Endpoint settings on the REAL owner surface, which is where the verdict is actually reported.
+ *
+ * The hook's own persist/reset changes the preference it subscribes to, so a re-sync effect that
+ * cancelled the in-flight operation made every save that genuinely CHANGED the endpoint report
+ * nothing at all - the silent worst case being a rejection that quietly cleared a working custom
+ * peer behind no message. Both halves are asserted here: a save that persists must show its success,
+ * and a rejection must show its alert AND have really cleared storage and reverted the field.
+ */
+test("endpoint settings: every save reports its verdict, and a rejection clears the override", async ({
+  page,
+}) => {
+  const calls = await installEndpointMocks(page);
+
+  await page.goto("/settings");
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+
+  const field = page.locator("#owner-roax-rpc");
+  const save = page.getByRole("button", { name: "Check and save" });
+
+  // No preference yet: the bundled endpoint is active and there is nothing to restore.
+  await expect(field).toHaveValue(BUNDLED_RPC);
+  await expect(page.getByRole("button", { name: "Restore default" })).toBeDisabled();
+
+  // 1. A same-chain custom peer is accepted, PERSISTED, and reports success.
+  await field.fill(GOOD_RPC);
+  await save.click();
+  await expect(page.getByRole("status")).toContainText(
+    "Custom endpoint saved and confirmed on ROAX chain 135.",
+  );
+  await expect(field).toHaveValue(GOOD_RPC);
+  expect(await page.evaluate((k) => localStorage.getItem(k), RPC_STORAGE_KEY)).toBe(GOOD_RPC);
+  // Accepting it took exactly one guard probe, and no address-bound request rode along.
+  expect(calls.filter((c) => c.url.startsWith(GOOD_RPC))).toEqual([
+    { url: GOOD_RPC, method: "eth_chainId" },
+  ]);
+
+  // 2. Replacing it with an off-chain peer is REJECTED: alert, storage cleared, field reverted.
+  await field.fill(WRONG_CHAIN_RPC);
+  await save.click();
+  await expect(page.getByRole("alert")).toContainText(
+    "The endpoint reports chain 5; DogTag's bundled contracts are for chain 135.",
+  );
+  await expect(page.getByRole("alert")).toContainText(
+    "The custom endpoint was removed; blockchain reads use the bundled default.",
+  );
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(field).toHaveValue(BUNDLED_RPC);
+  expect(await page.evaluate((k) => localStorage.getItem(k), RPC_STORAGE_KEY)).toBeNull();
+
+  // The rejected peer learned only which chain it claims to be - never a contract read.
+  expect(calls.filter((c) => c.url.startsWith(WRONG_CHAIN_RPC))).toEqual([
+    { url: WRONG_CHAIN_RPC, method: "eth_chainId" },
+  ]);
+  // And the bundled endpoint was guarded independently before becoming the fallback.
+  expect(calls.filter((c) => c.url.startsWith(BUNDLED_RPC))).toEqual([
+    { url: BUNDLED_RPC, method: "eth_chainId" },
+  ]);
 });

@@ -693,11 +693,25 @@ private suspend fun runLevelBFlow(
     val version = AnchorResolver.PROTOCOL_VERSION
     // Resolve BOTH on-chain axes. Either null — registry unconfigured/undeployed, version unpublished,
     // or no artifact binding — fails closed.
+    //
+    // These TWO reads deliberately name the BUNDLED endpoint rather than `rpcUrl`, and they are the
+    // only chain reads that bypass the holder's choice. The contract set they return IS the trust anchor
+    // `validateDiscovery` compares the platform's claimed `verificationRegistry`/version against -
+    // the anti-redirect trip. A peer that answers `eth_chainId` with 135 (trivial for a hostile peer)
+    // could otherwise supply BOTH sides of that comparison, so a hostile portal plus a holder-chosen
+    // peer would satisfy a check whose whole point is independence from the portal. Endpoint choice is
+    // transport liveness for reads whose answers the anchor then constrains; it must never answer the
+    // anchor itself. Still routed through `guardedPostJson`, so the bundled peer is probed for
+    // `eth_chainId` immediately before each read and an unavailable/wrong-chain bundled peer yields
+    // null here (fail closed) rather than falling back to the custom peer - `endpointRoute` takes its
+    // `candidate == DEFAULT_RPC` branch, which has no custom candidate to fall back to.
     val cs = withContext(Dispatchers.IO) {
-        RoaxRpc.getContractSet(rpcUrl, roax.chainId, roax.protocolRegistry, version)
+        RoaxRpc.getContractSet(RoaxRpc.DEFAULT_RPC, roax.chainId, roax.protocolRegistry, version)
     }
     val arti = withContext(Dispatchers.IO) {
-        RoaxRpc.getActiveArtifactSet(rpcUrl, roax.chainId, roax.protocolRegistry, version)
+        RoaxRpc.getActiveArtifactSet(
+            RoaxRpc.DEFAULT_RPC, roax.chainId, roax.protocolRegistry, version,
+        )
     }
     if (cs == null || arti == null) {
         onDone("Owner-hidden verification is not available yet (discovery anchor unpublished).")
