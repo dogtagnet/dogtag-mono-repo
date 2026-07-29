@@ -67,7 +67,8 @@ struct ProviderDirectorySnapshot: Equatable {
     var observation: ProviderDirectoryObservation
     let blockNumber: UInt64?
     let readAt: Date
-    let expiresAt: Date?
+    /// `nil` means no cache wrapper set a deadline. It does NOT mean the facts are permanent.
+    var expiresAt: Date?
 }
 
 enum ProviderDirectoryUnavailableReason: Equatable {
@@ -96,7 +97,361 @@ enum ProviderDirectoryResult: Equatable {
 /// The read seam consumed by Nearby. It accepts no query, leaving nowhere for a user position.
 protocol ProviderDirectoryReading {
     var source: ProviderDirectorySource { get }
+    /// Stable identity of the configured source, used ONLY to scope a stored copy.
+    ///
+    /// It must distinguish two distinct configured endpoints and two future chain/registry
+    /// configurations. It must never contain a user position or anything derived from one.
+    var cacheNamespace: String { get }
     func read() async -> ProviderDirectoryResult
+}
+
+// MARK: - The on-device local copy
+
+/// Persistence seam. All policy lives above it, so the whole decision is covered by the host-less
+/// `DogTagTests` target while the file I/O stays a thin uncovered edge.
+protocol ProviderDirectoryCacheStore {
+    /// The stored document, or `nil` when nothing is stored or it could not be read.
+    func read() -> Data?
+    func write(_ document: Data)
+    func clear()
+}
+
+/// In-memory store for tests and for a caller that deliberately wants no disk copy.
+final class MemoryProviderDirectoryCacheStore: ProviderDirectoryCacheStore {
+    private var document: Data?
+    init() {}
+    func read() -> Data? { document }
+    func write(_ document: Data) { self.document = document }
+    func clear() { document = nil }
+}
+
+/// A stored snapshot plus the identity needed to decide whether it may be replayed at all.
+struct ProviderDirectoryCacheEntry: Equatable {
+    let namespace: String
+    let snapshot: ProviderDirectorySnapshot
+    let readAt: Date
+    let expiresAt: Date
+}
+
+/// The integrity a snapshot must have to be written OR replayed.
+///
+/// Running it on the replay path is the load-bearing half. TypeScript makes a non-empty `found`
+/// unrepresentable (`readonly [P, ...P[]]`); a Swift `[DirectoryProvider]` cannot, so a `found`
+/// carrying zero providers becomes possible the moment a snapshot arrives from disk rather than from
+/// the live path - and it renders as "no vets near you", the exact false absence this exists to
+/// prevent. The guard is the only thing standing there.
+func providerDirectorySnapshotIsWellFormed(_ result: ProviderDirectoryResult) -> Bool {
+    switch result {
+    case .found(let snapshot):
+        return snapshot.readAt.timeIntervalSince1970.isFinite && !snapshot.providers.isEmpty
+    case .empty(let snapshot):
+        return snapshot.readAt.timeIntervalSince1970.isFinite && snapshot.providers.isEmpty
+    // `unavailable` is not a snapshot. It is never stored and never replayed.
+    case .unavailable:
+        return false
+    }
+}
+
+/// Re-check the directory, replaying the last successful snapshot only when the live read could not
+/// answer and the hard TTL has not elapsed.
+///
+/// This is the Swift port of `packages/ui/src/directory/cache.ts`, and its semantics are that file's,
+/// not new ones. A successful LIVE read replaces the stored copy. A stored replay never renews its
+/// hard deadline. An entry AT its exact expiry is expired. Missing, wrong-namespace, and expired
+/// entries all leave the live `unavailable` exactly as it was; none may turn it into `empty`.
+///
+/// What it buys over the in-process snapshot it replaces: it survives the process. A cache held in a
+/// static is empty on every cold launch, which is exactly the state a phone is in when the owner
+/// opens the app somewhere with no signal.
+///
+/// There is deliberately no `catch` around the delegate read, unlike the Kotlin twin. `read()` is a
+/// non-throwing `async` function, so an unexpected error cannot escape it: the compiler enforces
+/// here what Android has to enforce at runtime. A catch would be unreachable code masquerading as a
+/// safeguard.
+struct CachedProviderDirectory: ProviderDirectoryReading {
+    static let defaultTtl: TimeInterval = 15 * 60
+
+    private let delegate: ProviderDirectoryReading
+    private let store: ProviderDirectoryCacheStore
+    private let ttl: TimeInterval
+    private let now: () -> Date
+
+    var source: ProviderDirectorySource { delegate.source }
+    var cacheNamespace: String { delegate.cacheNamespace }
+
+    init(
+        delegate: ProviderDirectoryReading,
+        store: ProviderDirectoryCacheStore,
+        ttl: TimeInterval = CachedProviderDirectory.defaultTtl,
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.delegate = delegate
+        self.store = store
+        self.ttl = ttl
+        self.now = now
+    }
+
+    func read() async -> ProviderDirectoryResult {
+        let live = await delegate.read()
+        let currentTime = now()
+
+        guard ttl.isFinite, ttl > 0 else {
+            // A misconfigured lifetime disables the copy rather than storing an entry whose deadline
+            // no later read could evaluate.
+            store.clear()
+            return live
+        }
+
+        if case .unavailable = live { return replay(live: live, currentTime: currentTime) }
+
+        // A source that identifies itself differently from the one configured is a trust-boundary
+        // change, not a cache hit.
+        if snapshotSource(live) != delegate.source {
+            store.clear()
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: delegate.source,
+                reason: .inconsistentSource,
+                detail: "The directory identified itself as a different source than the one configured",
+                attemptedAt: currentTime
+            ))
+        }
+
+        guard providerDirectorySnapshotIsWellFormed(live), let snapshot = successfulSnapshot(live) else {
+            store.clear()
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: delegate.source,
+                reason: .invalidSnapshot,
+                detail: "The directory returned an invalid provider list or timestamp",
+                attemptedAt: currentTime
+            ))
+        }
+
+        if snapshot.observation == .stored {
+            // A replay handed up by an inner wrapper is not a successful refresh. Passing it through
+            // preserves the original hard deadline; storing it here would let stacked wrappers renew
+            // stale data forever.
+            guard let inherited = snapshot.expiresAt, currentTime < inherited else {
+                return .unavailable(ProviderDirectoryUnavailable(
+                    source: delegate.source,
+                    reason: .invalidSnapshot,
+                    detail: "The directory returned a stored snapshot without an unexpired hard TTL",
+                    attemptedAt: currentTime
+                ))
+            }
+            return live
+        }
+
+        // The TTL runs from the SOURCE's observation, not from insertion, so a slow read or an outer
+        // wrapper can never silently lengthen the hard maximum age.
+        let localExpiry = snapshot.readAt.addingTimeInterval(ttl)
+        let expiresAt = min(localExpiry, snapshot.expiresAt ?? localExpiry)
+        guard currentTime < expiresAt else {
+            store.clear()
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: delegate.source,
+                reason: .invalidSnapshot,
+                detail: "The live directory snapshot was already outside its hard TTL",
+                attemptedAt: currentTime
+            ))
+        }
+
+        var stamped = snapshot
+        stamped.expiresAt = expiresAt
+        let entry = ProviderDirectoryCacheEntry(
+            namespace: delegate.cacheNamespace,
+            snapshot: stamped,
+            readAt: snapshot.readAt,
+            expiresAt: expiresAt
+        )
+        if let document = ProviderDirectoryCacheCodec.encode(entry) { store.write(document) }
+        return stamped.providers.isEmpty ? .empty(stamped) : .found(stamped)
+    }
+
+    private func replay(live: ProviderDirectoryResult, currentTime: Date) -> ProviderDirectoryResult {
+        guard let document = store.read() else { return live }
+        guard let entry = ProviderDirectoryCacheCodec.decode(document),
+              entry.namespace == delegate.cacheNamespace,
+              entry.snapshot.source == delegate.source else {
+            store.clear()
+            return live
+        }
+        let replayed: ProviderDirectoryResult =
+            entry.snapshot.providers.isEmpty ? .empty(entry.snapshot) : .found(entry.snapshot)
+        guard providerDirectorySnapshotIsWellFormed(replayed),
+              entry.snapshot.readAt == entry.readAt,
+              entry.snapshot.expiresAt == entry.expiresAt,
+              // A snapshot read in the future means the clock moved backwards. Trusting the stored
+              // absolute deadline there would extend the hard window by however far it jumped.
+              entry.readAt <= currentTime,
+              entry.expiresAt <= entry.readAt.addingTimeInterval(ttl),
+              currentTime < entry.expiresAt else {
+            store.clear()
+            return live
+        }
+        var stored = entry.snapshot
+        stored.observation = .stored
+        return stored.providers.isEmpty ? .empty(stored) : .found(stored)
+    }
+
+    private func snapshotSource(_ result: ProviderDirectoryResult) -> ProviderDirectorySource {
+        switch result {
+        case .found(let snapshot), .empty(let snapshot): return snapshot.source
+        case .unavailable(let unavailable): return unavailable.source
+        }
+    }
+
+    private func successfulSnapshot(_ result: ProviderDirectoryResult) -> ProviderDirectorySnapshot? {
+        switch result {
+        case .found(let snapshot), .empty(let snapshot): return snapshot
+        case .unavailable: return nil
+        }
+    }
+}
+
+/// The stored document's wire form.
+///
+/// Everything decodes strictly and any failure is `nil`, which the caller reads as "nothing stored".
+/// A cache that guessed at a half-understood document would be inventing directory content.
+enum ProviderDirectoryCacheCodec {
+    /// Bump on ANY change to the stored shape, including a change to what a field means.
+    ///
+    /// A stale-version document is dropped rather than migrated. The concrete reason this exists from
+    /// day one: S-1 made `geo` optional, and before it a location-less provider was persisted as the
+    /// real coordinate `0,0`. AGENTS.md is explicit that such a row cannot be safely reinterpreted by
+    /// code, so a stored copy from an older shape must never be replayed as if it were this one.
+    static let version = 1
+
+    private struct StoredPoint: Codable, Equatable {
+        let lat: Double
+        let lng: Double
+    }
+
+    private struct StoredContact: Codable, Equatable {
+        var phone: String?
+        var whatsapp: String?
+        var telegram: String?
+        var email: String?
+        var website: String?
+    }
+
+    private struct StoredProvider: Codable, Equatable {
+        let providerId: String
+        let kind: String
+        let name: String
+        /// Absence is stored as absence. It is never written as `0,0`, a real coordinate off the
+        /// coast of Ghana that would place a contact-only provider on the map.
+        let geo: StoredPoint?
+        let services: [String]
+        let domain: String?
+        let active: Bool?
+        let contact: StoredContact
+        /// Only the two states a directory source may honestly produce. A stored `verified` would be
+        /// a claim about a DNS/chain check nobody performed, so it can be neither written nor read.
+        let bindingState: String
+    }
+
+    private struct StoredEntry: Codable, Equatable {
+        let version: Int
+        let namespace: String
+        /// Seconds since the epoch. Absolute, so a replay cannot slide its own deadline forward.
+        let readAt: Double
+        let expiresAt: Double
+        /// `"found"` or `"empty"`. `observation` is deliberately NOT stored: a document read back
+        /// from disk is a replay by definition, and a persisted `"live"` could present a remembered
+        /// answer as a fresh one.
+        let state: String
+        let providers: [StoredProvider]
+    }
+
+    static func encode(_ entry: ProviderDirectoryCacheEntry) -> Data? {
+        // Only the central source has a stored shape today. A future on-chain directory must extend
+        // this explicitly rather than being silently written under central's identity.
+        guard entry.snapshot.source == .central else { return nil }
+        let stored = StoredEntry(
+            version: version,
+            namespace: entry.namespace,
+            readAt: entry.readAt.timeIntervalSince1970,
+            expiresAt: entry.expiresAt.timeIntervalSince1970,
+            state: entry.snapshot.providers.isEmpty ? "empty" : "found",
+            providers: entry.snapshot.providers.map { provider in
+                StoredProvider(
+                    providerId: provider.providerId,
+                    kind: provider.kind,
+                    name: provider.name,
+                    geo: provider.geo.map { StoredPoint(lat: $0.lat, lng: $0.lng) },
+                    services: provider.services,
+                    domain: provider.domain,
+                    active: provider.active,
+                    contact: StoredContact(
+                        phone: provider.contact.phone,
+                        whatsapp: provider.contact.whatsapp,
+                        telegram: provider.contact.telegram,
+                        email: provider.contact.email,
+                        website: provider.contact.website
+                    ),
+                    bindingState: provider.bindingState == .noDomainListed
+                        ? "noDomainListed"
+                        : "unavailable"
+                )
+            }
+        )
+        return try? JSONEncoder().encode(stored)
+    }
+
+    static func decode(_ document: Data) -> ProviderDirectoryCacheEntry? {
+        guard let stored = try? JSONDecoder().decode(StoredEntry.self, from: document),
+              stored.version == version,
+              !stored.namespace.isEmpty,
+              stored.readAt.isFinite, stored.expiresAt.isFinite,
+              stored.state == "found" || stored.state == "empty" else { return nil }
+        if stored.state == "empty" && !stored.providers.isEmpty { return nil }
+        if stored.state == "found" && stored.providers.isEmpty { return nil }
+
+        var providers: [DirectoryProvider] = []
+        providers.reserveCapacity(stored.providers.count)
+        for row in stored.providers {
+            var geo: NearbyPoint?
+            if let point = row.geo {
+                let candidate = NearbyPoint(lat: point.lat, lng: point.lng)
+                guard candidate.isValid else { return nil }
+                geo = candidate
+            }
+            providers.append(DirectoryProvider(
+                providerId: row.providerId,
+                kind: row.kind,
+                name: row.name,
+                geo: geo,
+                services: row.services,
+                domain: row.domain,
+                active: row.active,
+                contact: ProviderContact(
+                    phone: row.contact.phone,
+                    whatsapp: row.contact.whatsapp,
+                    telegram: row.contact.telegram,
+                    email: row.contact.email,
+                    website: row.contact.website
+                ),
+                bindingState: row.bindingState == "noDomainListed" ? .noDomainListed : .unavailable
+            ))
+        }
+
+        let readAt = Date(timeIntervalSince1970: stored.readAt)
+        let expiresAt = Date(timeIntervalSince1970: stored.expiresAt)
+        return ProviderDirectoryCacheEntry(
+            namespace: stored.namespace,
+            snapshot: ProviderDirectorySnapshot(
+                source: .central,
+                providers: providers,
+                // Relabelled by the wrapper; a document off disk is a replay whatever it claims.
+                observation: .stored,
+                blockNumber: nil,
+                readAt: readAt,
+                expiresAt: expiresAt
+            ),
+            readAt: readAt,
+            expiresAt: expiresAt
+        )
+    }
 }
 
 enum NearbyOriginSource: Equatable {

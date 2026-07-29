@@ -1498,6 +1498,16 @@ generated `dogtag_standardFFI.modulemap` (`-Xcc -fmodule-map-file=...`). Pass th
 to force static linking (a `-L/-l` pair prefers a stale dylib). Full-app typecheck without linking:
 `swiftc -typecheck -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" -target arm64-apple-ios17.0-simulator <all app .swift> -I <gen> -Xcc -fmodule-map-file=<gen>/dogtag_standardFFI.modulemap`.
 
+**With no xcframework at all you can still typecheck everything EXCEPT the FFI closure**, which is
+`dogtag_standard.swift` plus the three symbols `InclusionProof.swift` calls out of it (`hashLeafHex`,
+`hashNodeHex`, `verifyInclusionProofHex`). Exclude that one file and expect exactly those three errors;
+anything else is yours. **Build the file list as a zsh ARRAY, not a string** - the default shell does
+not word-split an unquoted `$SRC`, so `swiftc $SRC` passes every path as ONE argument and answers
+`error: unexpected input file: <every file concatenated>`. That single line contains most of the repo's
+filenames, so a `grep -v` filter aimed at expected failures swallows it and the run reads as clean -
+the same false-clean shape as piping an uncoloured `git diff` into `grep '^-'`. Count `error:` lines
+from a `tee`'d log and check `${pipestatus[1]}`, never the exit of the last command in the pipe.
+
 ### Selective-Disclosure Protocol (DSDP) — Merkle inclusion proofs (plan §2.3)
 
 The `Sibling | Promote` inclusion-proof engine lives in `merkle.{rs,ts}` and the Swift verifier in
@@ -3055,6 +3065,77 @@ universal full-set cache that is never keyed by a position.
   All three adapters produce it (`packages/ui/src/directory/sources.ts`, `ProviderDirectory.kt`,
   `Net.swift` `parseProviders`) and all three refuse a repeated `providerId` as malformed rather than
   rendering two rows under one list identity.
+
+### The stored directory copy is ONE decorator, and its whole job is not saying "empty"
+
+The offline local copy exists so an owner with no signal still sees the providers their phone already
+knows about. `packages/ui/src/directory/cache.ts` is the reference; `CachedProviderDirectory` in
+`apps/android/.../nearby/DirectoryCache.kt` and in `apps/ios/DogTag/NearbyDecision.swift` are ports of
+it, not independent designs. Change one, change all three.
+
+- **The source holds no cache, and there is exactly one wrapper.** Both apps originally fused an
+  in-process snapshot into `CentralProviderDirectory`, which did nothing in the case it existed for:
+  a cache in a field is empty on every cold launch, which is precisely the state a phone is in when
+  the owner opens the app somewhere with no signal. It is now one decorator over the `ProviderDirectory`
+  / `ProviderDirectoryReading` seam, so the future on-chain directory inherits it. Do NOT re-add an
+  inner cache: an inner wrapper hands the outer a snapshot already labelled `stored`, and treating that
+  as a successful refresh renews a deadline that is supposed to be hard. That branch is ported (a
+  `stored` result is passed through, never re-stored) but the second layer should simply not exist.
+- **`expiresAt` is nullable ON PURPOSE.** `null` means "no wrapper set a deadline", and it is the only
+  thing that distinguishes a fresh source read from an inner replay. A non-null default would make
+  those two indistinguishable and the never-expires bug unrepresentable in a test.
+- **`snapshotIsWellFormed` runs on WRITE and on REPLAY, and the replay half is the load-bearing one.**
+  TypeScript makes an empty `found` unrepresentable (`readonly [P, ...P[]]`); Kotlin's `List` and
+  Swift's `[DirectoryProvider]` cannot, so a `found` carrying zero providers becomes possible the moment
+  a snapshot arrives from disk rather than from the live path - and it renders as "no vets near you".
+  The store is an extension point, so an entry handed back by a persistent adapter was not necessarily
+  written by the live path.
+- **The namespace is derived from the configured endpoint** (`central:$requestUrl` / the same in Swift),
+  never a shared literal. Repointing `CENTRAL_API` / `centralApi` changes it, so one deployment's
+  persisted snapshot can never be replayed as another's. A future on-chain directory must put its own
+  chain/registry identity there.
+- **The stored document is VERSION-stamped and a stale version is dropped, never migrated.** Concretely:
+  before S-1 a location-less provider was persisted as the real coordinate `0,0`, which this file
+  already records as unreinterpretable by code. No released build carries this cache, so the field cost
+  nothing to add and forecloses that permanently.
+- **`observation` and a `verified` binding state are NOT stored.** A document read off disk is a replay
+  by definition and the wrapper relabels it, so persisting `"live"` would let a hand-edited file present
+  a remembered answer as a fresh one; and a directory source runs no DNS or chain check, so a stored
+  `verified` would assert work nobody did. Both degrade on read (`stored`, `unavailable`).
+- **Kotlin `catch (Exception)` swallows `CancellationException`** (it is a `RuntimeException` on the JVM),
+  turning "the owner left the screen" into a fabricated source failure that then spends a replay. Both
+  the wrapper and the adapter rethrow it before mapping anything to `unavailable`. **iOS needs no such
+  catch and must not grow a decorative one:** `read()` is a non-throwing `async` function, so the
+  compiler enforces there what Android enforces at runtime. `DirectoryCacheTests` pins that asymmetry by
+  calling the seam without `try` - making it `async throws` breaks that line, which is the signal that
+  the catch-before-replay has become mandatory.
+- **Neither file store is covered by a test, so two things about them are stated here rather than
+  pinned.** Both suites inject `MemoryProviderDirectoryCacheStore`, which is the whole point of the
+  seam but means the disk paths are reasoned about, not exercised.
+  - **Android: every store touch hops to `Dispatchers.IO` in the WRAPPER** (`storedDocument`,
+    `storeDocument`, `clearStore`). A Kotlin `suspend fun` does not change dispatcher - it runs on the
+    caller's - and `NearbyScreen`'s `LaunchedEffect` is on Main. The old adapter was safe there only
+    because `Http.getJson` does its own `withContext(Dispatchers.IO)`, so a synchronous `File.readText`
+    added beside it is disk I/O on the UI thread. The hop is in the wrapper, not in
+    `ProviderDirectoryCacheStore`, so the interface stays plain non-suspend for the memory store.
+  - **iOS writes straight to the destination with `Data.write(options: .atomic)`**, which already
+    writes an auxiliary file and renames it in. Do NOT "improve" this into a staging file plus
+    `FileManager.replaceItemAt`: that call is modelled on replacing an item that ALREADY EXISTS, so on
+    a fresh install it would be the one call between the owner and a local copy, on a path no test
+    covers - and a write that only fails on first run leaves the cache permanently inert, silently, in
+    exactly the offline case it exists for.
+- **Storage is the CACHE dir on both platforms, with no protection or backup-exclusion flags.** Copying
+  the owner-secret store's `.completeFileProtection` / `isExcludedFromBackup` by reflex would misstate
+  this file: it is one public endpoint's response, holds no owner position and nothing the phone could
+  not fetch again. OS eviction therefore reads as a missing entry - `unavailable`, never `empty`.
+  `AppReset.resetEverything()` deliberately does NOT sweep it, for the reason it already skips theme
+  preferences, plus a sharper one: it would put a re-fetchable public file inside the partial-failure
+  short-circuit, where failing to delete it would block the wallet wipe.
+
+Testing note: the Android suite lives in `nearby/DirectoryCacheTest.kt` (`Context`-free, so plain
+`gradle test`), the iOS one in `DogTagTests/DirectoryCacheTests.swift`. The iOS test bundle is HOST-LESS,
+so it uses no `@testable import DogTag` - it compiles the listed sources directly, and adding that import
+fails with `Unable to find module dependency: 'DogTag'`.
 
 ### A provider may have no location, and `0,0` is the shape that defect takes
 

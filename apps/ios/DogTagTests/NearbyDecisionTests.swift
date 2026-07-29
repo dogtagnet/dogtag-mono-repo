@@ -70,8 +70,10 @@ final class NearbyDecisionTests: XCTestCase {
         XCTAssertNil(CentralProviderDirectory.endpoint(baseURL: "https://api.dogtag.io?lat=1"))
     }
 
-    func test_centralDirectoryUsesTheSharedFifteenMinuteHardTtl() {
-        XCTAssertEqual(CentralProviderDirectory.defaultTtl, 15 * 60)
+    /// The TTL belongs to the cache wrapper, not to the source: the source has no lifetime of its own
+    /// and says so by declaring no deadline, which is what lets the wrapper time from the observation.
+    func test_theStoredCopyUsesTheSharedFifteenMinuteHardTtl() {
+        XCTAssertEqual(CachedProviderDirectory.defaultTtl, 15 * 60)
     }
 
     func test_centralParserPreservesContactOnlyAndRealZeroZeroLocations() {

@@ -67,13 +67,18 @@ sealed interface ProviderDirectoryResult {
         val providers: List<DirectoryProvider>,
         val observation: DirectoryObservation,
         val readAt: Long,
-        val expiresAt: Long,
+        /**
+         * `null` means this result came from a directory with no cache wrapper around it. It does
+         * NOT mean the facts are permanent, and it is what lets [CachedProviderDirectory] tell a
+         * fresh source read apart from a replay handed up by an inner wrapper.
+         */
+        val expiresAt: Long?,
     ) : ProviderDirectoryResult
 
     data class Empty(
         val observation: DirectoryObservation,
         val readAt: Long,
-        val expiresAt: Long,
+        val expiresAt: Long?,
     ) : ProviderDirectoryResult
 
     data class Unavailable(

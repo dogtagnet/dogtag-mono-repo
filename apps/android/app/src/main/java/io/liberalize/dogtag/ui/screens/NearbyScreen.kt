@@ -99,7 +99,7 @@ private enum class DirectoryScope { Nearby, Contacts }
 fun NearbyScreen(onBack: () -> Unit) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
-    val directory = remember { ProviderDirectories.central }
+    val directory = remember(context) { ProviderDirectories.central(context) }
     var directoryResult by remember { mutableStateOf<ProviderDirectoryResult?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
     var scope by rememberSaveable { mutableStateOf(DirectoryScope.Nearby) }

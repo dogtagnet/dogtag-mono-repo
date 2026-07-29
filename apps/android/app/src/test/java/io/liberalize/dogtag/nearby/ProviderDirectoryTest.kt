@@ -157,33 +157,54 @@ class ProviderDirectoryTest {
         )
     }
 
+    /**
+     * The whole HTTP-through-stored-copy path, driven end to end.
+     *
+     * The policy itself is pinned case by case in `DirectoryCacheTest`; this one exists to prove the
+     * real adapter and the real wrapper are actually connected, which no test of either alone shows.
+     */
     @Test
     fun failedRefreshReplaysStoredOnlyUntilTheHardDeadline() = runBlocking {
         var time = 1_000L
         var call = 0
-        val directory = CentralProviderDirectory(
-            baseUrl = "https://central.test",
+        val directory = CachedProviderDirectory(
+            delegate = CentralProviderDirectory(
+                baseUrl = "https://central.test",
+                now = { time },
+                fetch = {
+                    call += 1
+                    if (call == 1) Http.Response(200, rows) else Http.Response(503, "")
+                },
+            ),
+            store = MemoryProviderDirectoryCacheStore(),
             ttlMs = 1_000,
             now = { time },
-            fetch = {
-                call += 1
-                if (call == 1) Http.Response(200, rows) else Http.Response(503, "")
-            },
         )
 
         val live = directory.read() as ProviderDirectoryResult.Found
         assertEquals(DirectoryObservation.Live, live.observation)
-        assertEquals(2_000, live.expiresAt)
+        assertEquals(2_000L, live.expiresAt)
 
         time = 1_999
         val stored = directory.read() as ProviderDirectoryResult.Found
         assertEquals(DirectoryObservation.Stored, stored.observation)
         assertEquals(1_000, stored.readAt)
-        assertEquals(2_000, stored.expiresAt)
+        assertEquals(2_000L, stored.expiresAt)
 
         time = 2_000
         val expired = directory.read()
         assertTrue(expired is ProviderDirectoryResult.Unavailable)
+    }
+
+    /** The source owns no TTL; a bare adapter reports an honest "no wrapper set a deadline". */
+    @Test
+    fun theSourceAloneDeclaresNoDeadline() = runBlocking {
+        val directory = CentralProviderDirectory(
+            baseUrl = "https://central.test",
+            now = { 1_000 },
+            fetch = { Http.Response(200, rows) },
+        )
+        assertEquals(null, (directory.read() as ProviderDirectoryResult.Found).expiresAt)
     }
 
     @Test

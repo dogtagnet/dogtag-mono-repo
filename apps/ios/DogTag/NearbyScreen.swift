@@ -142,7 +142,9 @@ struct NearbyScreen: View {
     @StateObject private var location = NearbyLocationController()
 
     let onDone: () -> Void
-    private let directory: CentralProviderDirectory
+    /// The seam, not the concrete adapter: what the screen gets is the source wrapped in the stored
+    /// local copy, so an offline refresh replays instead of blanking the list.
+    private let directory: ProviderDirectoryReading
 
     @State private var directoryResult: ProviderDirectoryResult?
     @State private var isRefreshing = false
@@ -155,7 +157,7 @@ struct NearbyScreen: View {
 
     init(
         onDone: @escaping () -> Void,
-        directory: CentralProviderDirectory = CentralProviderDirectory()
+        directory: ProviderDirectoryReading = ProviderDirectories.central()
     ) {
         self.onDone = onDone
         self.directory = directory
