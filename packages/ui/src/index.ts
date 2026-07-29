@@ -239,6 +239,29 @@ export {
 } from "./api/central";
 export * from "./api/types";
 
+// provider directory — full-set reads, explicit empty/unavailable states, and block-anchored TTL cache
+export {
+  centralDirectory,
+  onchainDirectory,
+  createMemoryProviderDirectoryCache,
+  withProviderDirectoryCache,
+  type CentralDirectoryOptions,
+  type OnchainDirectoryOptions,
+  type DirectoryObservation,
+  type DirectoryProvider,
+  type ProviderDirectory,
+  type ProviderDirectoryCache,
+  type ProviderDirectoryCacheEntry,
+  type ProviderDirectoryCacheOptions,
+  type ProviderDirectoryEmpty,
+  type ProviderDirectoryFound,
+  type ProviderDirectoryResult,
+  type ProviderDirectorySnapshot,
+  type ProviderDirectorySource,
+  type ProviderDirectoryUnavailable,
+  type ProviderDirectoryUnavailableReason,
+} from "./directory";
+
 // calendar grid arithmetic — DST-safe day/week/month stepping (see calendar/grid.ts)
 export {
   DAY_SECS,
