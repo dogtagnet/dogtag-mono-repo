@@ -72,8 +72,37 @@ final class NearbyDecisionTests: XCTestCase {
 
     /// The TTL belongs to the cache wrapper, not to the source: the source has no lifetime of its own
     /// and says so by declaring no deadline, which is what lets the wrapper time from the observation.
-    func test_theStoredCopyUsesTheSharedFifteenMinuteHardTtl() {
-        XCTAssertEqual(CachedProviderDirectory.defaultTtl, 15 * 60)
+    ///
+    /// Pinned so the value cannot drift back silently. It bounds ONLY how long an offline owner may
+    /// be shown a remembered directory - the wrapper re-checks live on every read - so shortening it
+    /// buys no freshness and only cuts that owner off sooner.
+    func test_theStoredCopyUsesTheSharedSevenDayOfflineWindow() {
+        XCTAssertEqual(CachedProviderDirectory.defaultTtl, 7 * 24 * 60 * 60)
+    }
+
+    /// A replay is labelled with a coarse age, and the rounding never makes it look fresher than it
+    /// is. An age that cannot be derived says nothing rather than inventing a number.
+    func test_theStoredAgeIsCoarseAndNeverUnderstatesStaleness() {
+        let readAt = Date(timeIntervalSince1970: 1_000_000)
+        func age(_ elapsed: TimeInterval) -> String? {
+            NearbyDecision.formatStoredAge(readAt: readAt, now: readAt.addingTimeInterval(elapsed))
+        }
+
+        XCTAssertEqual(age(0), "less than a minute ago")
+        XCTAssertEqual(age(59), "less than a minute ago")
+        XCTAssertEqual(age(60), "1 minute ago")
+        // Rounds outward: 61 seconds is stated as two minutes, never as one.
+        XCTAssertEqual(age(61), "2 minutes ago")
+        // The ceiling promotes rather than printing "60 minutes ago" or "24 hours ago".
+        XCTAssertEqual(age(3_599), "1 hour ago")
+        XCTAssertEqual(age(3_600), "1 hour ago")
+        XCTAssertEqual(age(3_601), "2 hours ago")
+        XCTAssertEqual(age(86_399), "1 day ago")
+        XCTAssertEqual(age(86_400), "1 day ago")
+        XCTAssertEqual(age(6 * 86_400), "6 days ago")
+
+        // A snapshot read in the future is a backwards clock, not a fresh copy.
+        XCTAssertNil(age(-1))
     }
 
     func test_centralParserPreservesContactOnlyAndRealZeroZeroLocations() {

@@ -307,7 +307,7 @@ struct NearbyScreen: View {
                 Image(systemName: observation == .live ? "bolt.fill" : "clock.arrow.circlepath")
                 Text(observation == .live
                      ? "Live provider directory"
-                     : "Stored provider directory · live refresh unavailable")
+                     : "Stored provider directory\(storedAgeClause) · live refresh unavailable")
             }
             .font(.system(size: 11, weight: .semibold))
             .foregroundColor(observation == .live ? c.success : c.warning)
@@ -325,6 +325,20 @@ struct NearbyScreen: View {
             return snapshot.observation
         case .unavailable, .none:
             return nil
+        }
+    }
+
+    /// The offline window is days long, so how old the copy is is a materially different statement
+    /// from the bare fact that it is stored. An age that could not be derived adds nothing rather
+    /// than inventing a number.
+    private var storedAgeClause: String {
+        switch directoryResult {
+        case .found(let snapshot), .empty(let snapshot):
+            guard let age = NearbyDecision.formatStoredAge(readAt: snapshot.readAt, now: Date())
+            else { return "" }
+            return " · remembered \(age)"
+        case .unavailable, .none:
+            return ""
         }
     }
 

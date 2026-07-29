@@ -209,6 +209,9 @@ object NearbyDecision {
     private const val FOOT_STEP_M = 25_000.0 / FEET_PER_KM
     private const val TENTH_MILE_M = KM_PER_MILE * 100
     private const val MILE_M = KM_PER_MILE * 1_000
+    private const val MINUTE_MS = 60L * 1_000
+    private const val HOUR_MS = 60L * MINUTE_MS
+    private const val DAY_MS = 24L * HOUR_MS
     private const val TEN_METRE_STEP_M = 10.0
     private const val TENTH_KM_M = 100.0
     private const val KM_STEP_M = 1_000.0
@@ -445,6 +448,38 @@ object NearbyDecision {
         if (minGranularityMetres <= COARSEST_METRIC_M) return "${Math.round(km)} km"
         return null
     }
+
+    /**
+     * How old a stored directory replay is, coarsely.
+     *
+     * The offline window is measured in days, so "stored" and "recent" are no longer the same
+     * statement and the surface has to say which. The ladder is deliberately blunt - under a minute,
+     * then minutes, hours, days - because a remembered public directory supports no finer claim.
+     *
+     * Rounds the age OUTWARD, so the stated age is never smaller than the true one and a remembered
+     * copy is never described as fresher than it is. That is the same direction [uncertaintyLabel]
+     * rounds a distance bound, and the safe one here: understating staleness under-warns.
+     *
+     * Derived from the snapshot's own `readAt`, never from `expiresAt` minus the TTL - the deadline
+     * is the MINIMUM of the local window and any the source declared, so that subtraction is wrong
+     * whenever the source declared a shorter one. A `readAt` in the future is not derivable and
+     * answers null, which the surface renders as saying nothing rather than as "0 minutes ago".
+     */
+    fun formatStoredAge(readAtMillis: Long, nowMillis: Long): String? {
+        val elapsedMs = nowMillis - readAtMillis
+        if (elapsedMs < 0) return null
+        if (elapsedMs < MINUTE_MS) return "less than a minute ago"
+        val minutes = ceilDiv(elapsedMs, MINUTE_MS)
+        if (minutes < 60) return agePhrase(minutes, "minute")
+        val hours = ceilDiv(elapsedMs, HOUR_MS)
+        if (hours < 24) return agePhrase(hours, "hour")
+        return agePhrase(ceilDiv(elapsedMs, DAY_MS), "day")
+    }
+
+    private fun ceilDiv(value: Long, unit: Long): Long = (value + unit - 1) / unit
+
+    private fun agePhrase(count: Long, unit: String): String =
+        if (count == 1L) "1 $unit ago" else "$count ${unit}s ago"
 
     /**
      * What this origin's precision permits the row to say about one measured distance.

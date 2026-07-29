@@ -3077,10 +3077,35 @@ it, not independent designs. Change one, change all three.
   in-process snapshot into `CentralProviderDirectory`, which did nothing in the case it existed for:
   a cache in a field is empty on every cold launch, which is precisely the state a phone is in when
   the owner opens the app somewhere with no signal. It is now one decorator over the `ProviderDirectory`
-  / `ProviderDirectoryReading` seam, so the future on-chain directory inherits it. Do NOT re-add an
+  / `ProviderDirectoryReading` seam. Do NOT re-add an
   inner cache: an inner wrapper hands the outer a snapshot already labelled `stored`, and treating that
   as a successful refresh renews a deadline that is supposed to be hard. That branch is ported (a
   `stored` result is passed through, never re-stored) but the second layer should simply not exist.
+- **The on-chain directory will not need its own cache implementation, but it does NOT inherit this one
+  for free.** What holds today is the decorator SHAPE: it wraps the seam rather than a concrete adapter,
+  so a second source is wrapped, not re-implemented. Three things must be fixed first, none of them
+  reachable while there is exactly one directory implementation, all three silent when they land:
+  (1) iOS `ProviderDirectoryCacheCodec.encode` returns `nil` unless the snapshot source is `.central`,
+  so an on-chain snapshot would simply never be stored - the wrapper's write is skipped with no error;
+  (2) both platforms hard-code a single cache filename with no namespace in the PATH
+  (`FileProviderDirectoryCacheStore.fileName` / `FILE_NAME`), so two wrapped directories sharing a cache
+  dir would mutually evict - each success overwrites the other's document and each offline read clears
+  on namespace mismatch, so neither would ever serve a replay; (3) Android's result model carries no
+  `source` at all, so its codec would write an on-chain snapshot under central's stored shape, the
+  inverse asymmetry to iOS.
+- **The TTL bounds ONLY the offline window, and it is SEVEN DAYS.** Read the constant's own comment
+  (`CachedProviderDirectory.DEFAULT_TTL_MS` / `.defaultTtl`) before changing it - the reasoning is
+  written there because this class first inherited fifteen minutes across a change of role, from an
+  in-process snapshot where the number meant something else. The wrapper is re-check-first: a live read
+  is attempted on every read and always replaces the stored copy, so an owner with signal has ~0
+  staleness whatever this value is. Shortening it therefore buys no freshness and does not help with
+  delisting (which propagates on the next live read); it only cuts an offline owner off sooner. What
+  licenses a multi-day window is that a replay is LABELLED WITH ITS AGE: `NearbyDecision.formatStoredAge`
+  (mirrored in Kotlin and Swift, pinned case for case in both suites) renders a coarse
+  minutes/hours/days phrase beside the existing stored-copy wording. It rounds the age OUTWARD, so a
+  remembered copy is never described as fresher than it is, and answers null for a `readAt` in the
+  future rather than inventing "0 minutes ago". Derive it from `readAt`, never from `expiresAt` minus
+  the TTL - the deadline is the MINIMUM of the local window and any the source declared.
 - **`expiresAt` is nullable ON PURPOSE.** `null` means "no wrapper set a deadline", and it is the only
   thing that distinguishes a fresh source read from an inner replay. A non-null default would make
   those two indistinguishable and the never-expires bug unrepresentable in a test.
@@ -3112,12 +3137,22 @@ it, not independent designs. Change one, change all three.
 - **Neither file store is covered by a test, so two things about them are stated here rather than
   pinned.** Both suites inject `MemoryProviderDirectoryCacheStore`, which is the whole point of the
   seam but means the disk paths are reasoned about, not exercised.
-  - **Android: every store touch hops to `Dispatchers.IO` in the WRAPPER** (`storedDocument`,
-    `storeDocument`, `clearStore`). A Kotlin `suspend fun` does not change dispatcher - it runs on the
-    caller's - and `NearbyScreen`'s `LaunchedEffect` is on Main. The old adapter was safe there only
-    because `Http.getJson` does its own `withContext(Dispatchers.IO)`, so a synchronous `File.readText`
-    added beside it is disk I/O on the UI thread. The hop is in the wrapper, not in
-    `ProviderDirectoryCacheStore`, so the interface stays plain non-suspend for the memory store.
+  - **Android: every store touch AND the codec work on the same document hop to `Dispatchers.IO` in
+    the WRAPPER** (`storedEntry`, `storeEntry`, `clearStore`). A Kotlin `suspend fun` does not change
+    dispatcher - it runs on the caller's - and `NearbyScreen`'s `LaunchedEffect` is on Main. The old
+    adapter was safe there only because `Http.getJson` does its own `withContext(Dispatchers.IO)`, so a
+    synchronous `File.readText` added beside it is disk I/O on the UI thread. Moving only the file
+    touch closes half the hazard: `JSONObject(document)` plus per-provider construction over the whole
+    provider set is at least as heavy as the read or write beside it, and an `encode(...)` passed as an
+    ARGUMENT to a suspend function is evaluated on the caller's dispatcher before the hop is entered.
+    So the codec calls live INSIDE the `withContext` blocks, not beside them. The hop is in the
+    wrapper, not in `ProviderDirectoryCacheStore`, so the interface stays plain non-suspend for the
+    memory store. The read is three-state (`Absent` / `Unreadable` / `Present`) rather than a nullable,
+    because "nothing is stored" leaves the store alone while "stored but undecodable" clears it, and a
+    single `null` would collapse those into either clearing on every ordinary miss or keeping a corrupt
+    document. The namespace comparison stays in `replay()` and must not move into the codec, which has
+    no access to `delegate.cacheNamespace` - moving it is how its mutation test starts passing
+    vacuously.
   - **iOS writes straight to the destination with `Data.write(options: .atomic)`**, which already
     writes an auxiliary file and renames it in. Do NOT "improve" this into a staging file plus
     `FileManager.replaceItemAt`: that call is modelled on replacing an item that ALREADY EXISTS, so on

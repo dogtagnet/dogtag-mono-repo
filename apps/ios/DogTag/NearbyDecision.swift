@@ -169,7 +169,33 @@ func providerDirectorySnapshotIsWellFormed(_ result: ProviderDirectoryResult) ->
 /// here what Android has to enforce at runtime. A catch would be unreachable code masquerading as a
 /// safeguard.
 struct CachedProviderDirectory: ProviderDirectoryReading {
-    static let defaultTtl: TimeInterval = 15 * 60
+    /// Seven days, and the reasoning is written down because the next person will otherwise inherit
+    /// this number the way this type first inherited fifteen minutes from the in-process snapshot it
+    /// replaced.
+    ///
+    /// This value governs ONLY the offline window, which is the fact the old fifteen minutes
+    /// obscured. The wrapper is re-check-first: a live read is attempted on every single read and
+    /// always replaces the stored copy, so for an owner with signal the staleness is ~0 whatever this
+    /// number is. Fifteen minutes never bought anyone fresher data - it only decided how early an
+    /// offline owner was cut off.
+    ///
+    /// So the trade is not fresh-versus-stale. It is: show a labelled remembered list, or show
+    /// nothing. This is the list a pet owner uses to find a vet, and showing nothing is the worse
+    /// failure - a wasted call to a clinic that moved costs far less than having no vet contacts at
+    /// all while standing somewhere with no signal.
+    ///
+    /// Seven days specifically, because this product's flagship credential is TRAVEL_CLEARANCE: the
+    /// owner abroad with data roaming off is the exact offline case, and a 24-hour window fails them
+    /// on day two of a trip. A clinic directory changes on a scale of weeks to months, not minutes.
+    ///
+    /// On delisting: a shorter window would not have helped. Delisting propagates on the next live
+    /// read, which happens on every read, so an online owner sees a removed provider disappear
+    /// regardless of this value; the residual is only an owner offline for days. And the source
+    /// publishes no standing fact anyway - central sets `DirectoryProvider.active` to nil - so not
+    /// even a fresh live read can assert a provider is currently active. This copy must not imply a
+    /// currency the source never claimed, which is why the surface labels a replay with its age
+    /// rather than presenting it as current.
+    static let defaultTtl: TimeInterval = 7 * 24 * 60 * 60
 
     private let delegate: ProviderDirectoryReading
     private let store: ProviderDirectoryCacheStore
@@ -825,6 +851,39 @@ enum NearbyDecision {
         }
         if minGranularityMetres <= coarsestMetricMetres { return "\(Int(km.rounded())) km" }
         return nil
+    }
+
+    /// How old a stored directory replay is, coarsely. Mirrors the Kotlin `formatStoredAge`.
+    ///
+    /// The offline window is measured in days, so "stored" and "recent" are no longer the same
+    /// statement and the surface has to say which. The ladder is deliberately blunt - under a minute,
+    /// then minutes, hours, days - because a remembered public directory supports no finer claim.
+    ///
+    /// Rounds the age OUTWARD, so the stated age is never smaller than the true one and a remembered
+    /// copy is never described as fresher than it is. That is the same direction `uncertaintyLabel`
+    /// rounds a distance bound, and the safe one here: understating staleness under-warns.
+    ///
+    /// Derived from the snapshot's own `readAt`, never from `expiresAt` minus the TTL - the deadline
+    /// is the MINIMUM of the local window and any the source declared, so that subtraction is wrong
+    /// whenever the source declared a shorter one. A `readAt` in the future is not derivable and
+    /// answers nil, which the surface renders as saying nothing rather than as "0 minutes ago".
+    static func formatStoredAge(readAt: Date, now: Date) -> String? {
+        let elapsed = now.timeIntervalSince(readAt)
+        guard elapsed.isFinite, elapsed >= 0 else { return nil }
+        if elapsed < 60 { return "less than a minute ago" }
+        let minutes = (elapsed / 60).rounded(.up)
+        if minutes < 60 { return agePhrase(minutes, "minute") }
+        let hours = (elapsed / 3_600).rounded(.up)
+        if hours < 24 { return agePhrase(hours, "hour") }
+        return agePhrase((elapsed / 86_400).rounded(.up), "day")
+    }
+
+    /// Formatted straight from the `Double` rather than through `Int(count)`, which TRAPS above
+    /// `Int.max`. The wrapper's own guards bound a rendered snapshot's age to the TTL, so no product
+    /// path can reach that - but this is a plain pure function with no such bound of its own, and a
+    /// formatter that can crash its caller is not worth the one conversion it saves.
+    private static func agePhrase(_ count: Double, _ unit: String) -> String {
+        count == 1 ? "1 \(unit) ago" : String(format: "%.0f", count) + " \(unit)s ago"
     }
 
     /// What this origin's precision permits the row to say about one measured distance.

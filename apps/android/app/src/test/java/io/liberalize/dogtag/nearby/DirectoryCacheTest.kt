@@ -581,6 +581,17 @@ class DirectoryCacheTest {
         assertTrue(!providerDirectorySnapshotIsWellFormed(unavailable(1_000)))
     }
 
+    /**
+     * Pinned so the offline window cannot drift back silently, the way this class first inherited
+     * fifteen minutes from the in-process snapshot it replaced. It bounds ONLY how long an offline
+     * owner may be shown a remembered directory - the wrapper re-checks live on every read - so
+     * shortening it buys no freshness and only cuts that owner off sooner.
+     */
+    @Test
+    fun theStoredCopyUsesTheSharedSevenDayOfflineWindow() {
+        assertEquals(7L * 24 * 60 * 60 * 1_000, CachedProviderDirectory.DEFAULT_TTL_MS)
+    }
+
     @Test
     fun aNonPositiveTtlIsRefusedRatherThanSilentlyDisablingTheCopy() {
         for (ttl in listOf(0L, -1L)) {

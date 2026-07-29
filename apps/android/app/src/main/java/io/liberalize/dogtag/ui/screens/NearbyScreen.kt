@@ -243,6 +243,20 @@ fun NearbyScreen(onBack: () -> Unit) {
         unit = unitSystem,
     )
     val contactPresentation = NearbyDecision.contacts(directoryResult, query)
+    // The clock is read once per snapshot rather than on every recomposition; a coarse age should not
+    // animate, so there is deliberately no ticker. `refreshKey` is part of the key because
+    // `ProviderDirectoryResult` is a data class and `remember` compares keys STRUCTURALLY: a manual
+    // refresh that replays the same stored document produces an equal result, which alone would keep
+    // the previous age and leave the label frozen however often the owner refreshes.
+    val storedAge = remember(refreshKey, directoryResult) {
+        when (val result = directoryResult) {
+            is ProviderDirectoryResult.Found ->
+                NearbyDecision.formatStoredAge(result.readAt, System.currentTimeMillis())
+            is ProviderDirectoryResult.Empty ->
+                NearbyDecision.formatStoredAge(result.readAt, System.currentTimeMillis())
+            else -> null
+        }
+    }
     val fixAccuracyNote = (origin as? NearbyOriginState.Available)
         ?.takeIf { it.source == OriginSource.CurrentLocation }
         ?.let { NearbyDecision.accuracyNote(it.accuracyMetres, unitSystem) }
@@ -340,6 +354,7 @@ fun NearbyScreen(onBack: () -> Unit) {
             NearbyResults(
                 presentation = nearbyPresentation,
                 unitSystem = unitSystem,
+                storedAge = storedAge,
                 onDirections = { provider ->
                     handoffError = if (openDirections(context, provider)) {
                         null
@@ -352,6 +367,7 @@ fun NearbyScreen(onBack: () -> Unit) {
         } else {
             ContactResults(
                 presentation = contactPresentation,
+                storedAge = storedAge,
                 onOpen = { uri, dial ->
                     handoffError = if (openExternal(context, uri, dial)) {
                         null
@@ -498,6 +514,7 @@ private fun OriginPicker(
 private fun NearbyResults(
     presentation: NearbyPresentation,
     unitSystem: NearbyDecision.UnitSystem,
+    storedAge: String?,
     onDirections: (DirectoryProvider) -> Unit,
     modifier: Modifier,
 ) {
@@ -518,7 +535,7 @@ private fun NearbyResults(
                 )
             }
             is NearbyPresentation.DirectoryEmpty -> item {
-                ObservationBanner(presentation.observation)
+                ObservationBanner(presentation.observation, storedAge)
                 StateCard(
                     "The directory is empty",
                     "The provider directory was reached successfully, but currently contains no providers.",
@@ -554,7 +571,7 @@ private fun NearbyResults(
                 )
             }
             is NearbyPresentation.NoneWithinRange -> item {
-                ObservationBanner(presentation.observation)
+                ObservationBanner(presentation.observation, storedAge)
                 val radius = NearbyDecision.formatDistanceKm(presentation.radiusKm, unitSystem)
                     ?: "${presentation.radiusKm.toInt()} km"
                 StateCard(
@@ -564,14 +581,14 @@ private fun NearbyResults(
                 )
             }
             is NearbyPresentation.NoNameMatch -> item {
-                ObservationBanner(presentation.observation)
+                ObservationBanner(presentation.observation, storedAge)
                 StateCard(
                     "No provider named “${presentation.query}”",
                     "The directory was searched on this phone; your search text was not sent anywhere.",
                 )
             }
             is NearbyPresentation.ProvidersFound -> {
-                item { ObservationBanner(presentation.observation) }
+                item { ObservationBanner(presentation.observation, storedAge) }
                 items(presentation.rows, key = { it.provider.providerId }) { row ->
                     NearbyProviderRow(row, onDirections)
                 }
@@ -584,6 +601,7 @@ private fun NearbyResults(
 @Composable
 private fun ContactResults(
     presentation: ContactDirectoryPresentation,
+    storedAge: String?,
     onOpen: (Uri, Boolean) -> Unit,
     modifier: Modifier,
 ) {
@@ -604,14 +622,14 @@ private fun ContactResults(
                 )
             }
             is ContactDirectoryPresentation.DirectoryEmpty -> item {
-                ObservationBanner(presentation.observation)
+                ObservationBanner(presentation.observation, storedAge)
                 StateCard(
                     "No provider contacts",
                     "The provider directory was reached successfully, but has no eligible providers.",
                 )
             }
             is ContactDirectoryPresentation.NoNameMatch -> item {
-                ObservationBanner(presentation.observation)
+                ObservationBanner(presentation.observation, storedAge)
                 StateCard(
                     "No provider named “${presentation.query}”",
                     "The directory was searched on this phone; your search text was not sent anywhere.",
@@ -619,7 +637,7 @@ private fun ContactResults(
             }
             is ContactDirectoryPresentation.ProvidersFound -> {
                 item {
-                    ObservationBanner(presentation.observation)
+                    ObservationBanner(presentation.observation, storedAge)
                     Text(
                         "This unranked directory includes providers that publish contact details but " +
                             "no location. It never gives them a placeholder pin or Directions button.",
@@ -842,7 +860,7 @@ private fun ContactAction(
 }
 
 @Composable
-private fun ObservationBanner(observation: DirectoryObservation) {
+private fun ObservationBanner(observation: DirectoryObservation, storedAge: String?) {
     if (observation != DirectoryObservation.Stored) return
     val c = DogTagTheme.colors
     Row(
@@ -853,7 +871,11 @@ private fun ObservationBanner(observation: DirectoryObservation) {
         Icon(Icons.Filled.Info, null, tint = c.muted, modifier = Modifier.size(17.dp))
         Spacer(Modifier.size(8.dp))
         Text(
-            "Using a saved, unexpired directory snapshot because the live refresh could not complete.",
+            "Using a saved, unexpired directory snapshot because the live refresh could not " +
+                // The offline window is days long, so how old the copy is is a materially different
+                // statement from the bare fact that it is stored. An age that could not be derived
+                // says nothing rather than inventing a number.
+                "complete." + storedAge?.let { " Remembered $it." }.orEmpty(),
             fontSize = 11.sp,
             color = c.muted,
             modifier = Modifier.weight(1f),

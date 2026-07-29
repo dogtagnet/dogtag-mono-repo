@@ -135,15 +135,34 @@ class CachedProviderDirectory(
 
     override val cacheNamespace: String get() = delegate.cacheNamespace
 
-    // Every store touch hops to IO. `suspend` does NOT change dispatcher - it runs on the caller's,
-    // and `NearbyScreen`'s `LaunchedEffect` is on Main. The delegate was safe there only because
-    // `Http.getJson` does its own `withContext(Dispatchers.IO)`; a synchronous file read added beside
-    // it would have been disk I/O on the UI thread. Kept out of `ProviderDirectoryCacheStore` itself
-    // so the seam stays a plain non-suspend interface for the in-memory store and the tests.
-    private suspend fun storedDocument(): String? = withContext(Dispatchers.IO) { store.read() }
+    /**
+     * What a look at the stored copy found. Three states, because "nothing is stored" and "something
+     * is stored that cannot be read" call for different handling: the first leaves the store alone,
+     * the second clears it. Collapsing them into one nullable would either start clearing on every
+     * ordinary miss or stop clearing a corrupt document.
+     */
+    private sealed interface StoredRead {
+        data object Absent : StoredRead
+        data object Unreadable : StoredRead
+        data class Present(val entry: ProviderDirectoryCacheEntry) : StoredRead
+    }
 
-    private suspend fun storeDocument(document: String) =
-        withContext(Dispatchers.IO) { store.write(document) }
+    // Every store touch AND the codec work on the same document hop to IO. `suspend` does NOT change
+    // dispatcher - it runs on the caller's, and `NearbyScreen`'s `LaunchedEffect` is on Main. The
+    // delegate was safe there only because `Http.getJson` does its own `withContext(Dispatchers.IO)`.
+    // Serialising or parsing the whole provider set is at least as heavy as the file touch beside it,
+    // so leaving either on the caller's dispatcher would close only half the hazard. Kept out of
+    // `ProviderDirectoryCacheStore` itself so the seam stays a plain non-suspend interface for the
+    // in-memory store and the tests.
+    private suspend fun storedEntry(): StoredRead = withContext(Dispatchers.IO) {
+        val document = store.read() ?: return@withContext StoredRead.Absent
+        val entry = ProviderDirectoryCacheCodec.decode(document)
+            ?: return@withContext StoredRead.Unreadable
+        StoredRead.Present(entry)
+    }
+
+    private suspend fun storeEntry(entry: ProviderDirectoryCacheEntry) =
+        withContext(Dispatchers.IO) { store.write(ProviderDirectoryCacheCodec.encode(entry)) }
 
     private suspend fun clearStore() = withContext(Dispatchers.IO) { store.clear() }
 
@@ -209,14 +228,12 @@ class CachedProviderDirectory(
         }
 
         val stamped = withExpiry(live, expiresAt)
-        storeDocument(
-            ProviderDirectoryCacheCodec.encode(
-                ProviderDirectoryCacheEntry(
-                    namespace = delegate.cacheNamespace,
-                    snapshot = stamped,
-                    readAt = readAt,
-                    expiresAt = expiresAt,
-                ),
+        storeEntry(
+            ProviderDirectoryCacheEntry(
+                namespace = delegate.cacheNamespace,
+                snapshot = stamped,
+                readAt = readAt,
+                expiresAt = expiresAt,
             ),
         )
         return stamped
@@ -226,9 +243,15 @@ class CachedProviderDirectory(
         live: ProviderDirectoryResult.Unavailable,
         currentTime: Long,
     ): ProviderDirectoryResult {
-        val document = storedDocument() ?: return live
-        val entry = ProviderDirectoryCacheCodec.decode(document)
-        if (entry == null || entry.namespace != delegate.cacheNamespace) {
+        val entry = when (val stored = storedEntry()) {
+            StoredRead.Absent -> return live
+            StoredRead.Unreadable -> {
+                clearStore()
+                return live
+            }
+            is StoredRead.Present -> stored.entry
+        }
+        if (entry.namespace != delegate.cacheNamespace) {
             // A source swap is a trust-boundary change, not a cache hit.
             clearStore()
             return live
@@ -256,7 +279,36 @@ class CachedProviderDirectory(
     }
 
     companion object {
-        const val DEFAULT_TTL_MS: Long = 15 * 60 * 1_000L
+        /**
+         * Seven days, and the reasoning is written down because the next person will otherwise
+         * inherit this number the way this class first inherited fifteen minutes from the in-process
+         * snapshot it replaced.
+         *
+         * This value governs ONLY the offline window, which is the fact the old fifteen minutes
+         * obscured. The wrapper is re-check-first: a live read is attempted on every single read and
+         * always replaces the stored copy, so for an owner with signal the staleness is ~0 whatever
+         * this number is. Fifteen minutes never bought anyone fresher data - it only decided how
+         * early an offline owner was cut off.
+         *
+         * So the trade is not fresh-versus-stale. It is: show a labelled remembered list, or show
+         * nothing. This is the list a pet owner uses to find a vet, and showing nothing is the worse
+         * failure - a wasted call to a clinic that moved costs far less than having no vet contacts
+         * at all while standing somewhere with no signal.
+         *
+         * Seven days specifically, because this product's flagship credential is TRAVEL_CLEARANCE:
+         * the owner abroad with data roaming off is the exact offline case, and a 24-hour window
+         * fails them on day two of a trip. A clinic directory changes on a scale of weeks to months,
+         * not minutes.
+         *
+         * On delisting: a shorter window would not have helped. Delisting propagates on the next
+         * live read, which happens on every read, so an online owner sees a removed provider
+         * disappear regardless of this value; the residual is only an owner offline for days. And
+         * the source publishes no standing fact anyway - central sets [DirectoryProvider.active] to
+         * null - so not even a fresh live read can assert a provider is currently active. This copy
+         * must not imply a currency the source never claimed, which is why the surface labels a
+         * replay with its age rather than presenting it as current.
+         */
+        const val DEFAULT_TTL_MS: Long = 7L * 24 * 60 * 60 * 1_000
 
         internal fun observationOf(result: ProviderDirectoryResult): DirectoryObservation? =
             when (result) {
