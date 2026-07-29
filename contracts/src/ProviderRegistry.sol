@@ -24,6 +24,7 @@ interface IProviderRegistry {
 
     function canIssue(address service, address signer) external view returns (bool);
     function canRevoke(address service, address signer) external view returns (bool);
+    function isRecognizedIssuer(address service, address signer) external view returns (bool);
     function isWhitelistedFor(bytes32 key, address signer) external view returns (bool);
     function hasRole(bytes32 role, address account) external view returns (bool);
 }
@@ -124,6 +125,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     mapping(address => Service) private _services;
     address[] private _serviceAddresses;
     mapping(bytes20 => address[]) private _providerServices;
+    mapping(bytes20 => mapping(address => uint256)) private _providerServiceIndex;
     mapping(bytes20 => mapping(bytes32 => address)) private _currentService;
 
     mapping(bytes20 => mapping(address => Delegation)) private _providerDelegates;
@@ -192,6 +194,12 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         bytes32 recordType,
         address confirmedOwner
     );
+    event ServiceProviderReassigned(
+        address indexed service,
+        bytes20 indexed oldProviderId,
+        bytes20 indexed newProviderId,
+        address reassignedBy
+    );
     event ServiceStandingChanged(address indexed service, Standing oldStanding, Standing newStanding);
     event ServiceOwnerConfirmed(
         address indexed service, address indexed oldOwner, address indexed newOwner, uint64 ownerEpoch
@@ -244,6 +252,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     error NotPendingController();
     error UnexpectedControllerTransfer();
     error UnexpectedServiceOwner();
+    error UnexpectedServiceProvider();
     error BadIdentityAnchor();
     error ContenthashTooLong();
     error ResolverNotApproved();
@@ -518,8 +527,37 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
             standing: Standing.PENDING
         });
         _serviceAddresses.push(serviceAddress);
-        _providerServices[providerId].push(serviceAddress);
+        _addProviderService(providerId, serviceAddress);
         emit ServiceAttached(serviceAddress, providerId, generationId, recordType, liveOwner);
+    }
+
+    /// @notice Corrects the one attachment fact chain provenance cannot verify. Factory generation,
+    /// record type and confirmed owner stay resolved from the clone and are untouched here; only the
+    /// registrar-supplied provider binding moves. The mistaken provider's current pointer is cleared
+    /// rather than carried across, and the corrected provider's pointer is deliberately NOT set —
+    /// publication remains the clone owner's `repointService` decision, so a correction can never
+    /// publish a service under a provider that never selected it.
+    function reassignServiceProvider(
+        address serviceAddress,
+        bytes20 expectedProviderId,
+        bytes20 newProviderId
+    ) external onlyOwner {
+        Service storage s = _requireService(serviceAddress);
+        _requireProvider(newProviderId);
+        bytes20 oldProviderId = s.providerId;
+        if (oldProviderId != expectedProviderId) revert UnexpectedServiceProvider();
+        if (oldProviderId == newProviderId) revert NoChange();
+
+        if (_currentService[oldProviderId][s.recordType] == serviceAddress) {
+            delete _currentService[oldProviderId][s.recordType];
+            emit CurrentServiceChanged(
+                oldProviderId, s.recordType, serviceAddress, address(0), msg.sender
+            );
+        }
+        _removeProviderService(oldProviderId, serviceAddress);
+        s.providerId = newProviderId;
+        _addProviderService(newProviderId, serviceAddress);
+        emit ServiceProviderReassigned(serviceAddress, oldProviderId, newProviderId, msg.sender);
     }
 
     function setServiceStanding(address serviceAddress, Standing newStanding) external onlyOwner {
@@ -628,26 +666,73 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         emit IssuanceCapabilitySet(serviceAddress, signer, allowed);
     }
 
-    function canIssue(address serviceAddress, address signer) public view override returns (bool) {
-        if (!_canOperateService(serviceAddress, signer)) return false;
-        Service storage s = _services[serviceAddress];
-        if (_currentService[s.providerId][s.recordType] != serviceAddress) return false;
-        return true;
+    /// The three issuance-axis reads are a deliberate ladder, widest first, and each rung answers a
+    /// different question. `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue`. Never substitute one for
+    /// another: the extra terms each rung folds are exactly the terms that would be wrong to fold
+    /// into the rung above it.
+
+    /// @notice THE historical issuer-status question, and the only sound migration target for a
+    /// direct legacy `isWhitelistedFor(recordTypeKey, signer)` reader such as the mandatory
+    /// issuer-whitelist verification pillar. It folds exactly two facts: the registrar attached this
+    /// clone, and the registrar's forward-only issuance grant for this signer still stands — the
+    /// precise `whitelistFor`/`delistFor` semantics that pillar was built on.
+    ///
+    /// It folds NO lifecycle or liveness state, deliberately. A repoint, a KYC suspension, a service
+    /// retirement, a generation deprecation and an unconfirmed clone-owner handover all say nothing
+    /// about whether a root anchored earlier was genuinely issued — yet the pillar reads a definite
+    /// `false` as "resolved but not authorized", an authenticity failure that REFUSES the credential.
+    /// Folding any of them here would turn every ordinary lifecycle event into a fleet-wide forgery
+    /// verdict against genuine credentials. Only an explicit registrar revocation of the grant flips
+    /// this, exactly as `delistFor` did.
+    ///
+    /// It reads storage alone and makes NO external call, which matters for a verification input: a
+    /// clone whose `owner()` reverts or answers a malformed word cannot make this rung unanswerable.
+    function isRecognizedIssuer(address serviceAddress, address signer)
+        public
+        view
+        override
+        returns (bool)
+    {
+        return _isRecognizedIssuer(serviceAddress, _services[serviceAddress], signer);
     }
 
     /// @notice Preserves an originator's ability to revoke roots on a superseded service without
     /// reopening that service for new issuance. S-7 must call this path from `revoke`; the legacy
     /// `isWhitelistedFor` selector cannot distinguish an issue call from a revoke call.
+    ///
+    /// Above `isRecognizedIssuer` it adds only the confirmed-live-owner term, which the registrar can
+    /// clear at any time — `confirmServiceOwner` is gated by neither standing nor generation. Every
+    /// term it deliberately omits is either irreversible (a deprecated generation, a RETIRED standing)
+    /// or a review state that must not block invalidation (a suspended provider, a repointed pointer).
+    /// Revocation is the safety direction: no lifecycle event may strand a root as unrevocable by the
+    /// originator that anchored it.
     function canRevoke(address serviceAddress, address signer) public view override returns (bool) {
-        return _canOperateService(serviceAddress, signer);
+        Service storage s = _services[serviceAddress];
+        return _isRecognizedIssuer(serviceAddress, s, signer) && _isOwnerConfirmed(serviceAddress, s);
     }
 
-    function _canOperateService(address serviceAddress, address signer) internal view returns (bool) {
+    /// @notice CURRENT eligibility to mint a NEW root: everything `canRevoke` requires, plus every
+    /// live lifecycle term — provider and service standing, an active factory generation, and the
+    /// provider's current pointer for this record type. It answers "may this signer issue now", so it
+    /// is a pre-issue gate ONLY and never a verification input.
+    function canIssue(address serviceAddress, address signer) public view override returns (bool) {
         Service storage s = _services[serviceAddress];
-        if (!_issuanceCapabilities[serviceAddress][signer] || !_serviceStandingIsEffective(serviceAddress, s))
-        {
+        if (!_isRecognizedIssuer(serviceAddress, s, signer) || !_isOwnerConfirmed(serviceAddress, s)) {
             return false;
         }
+        if (!_serviceStandingIsEffective(serviceAddress, s)) return false;
+        return _currentService[s.providerId][s.recordType] == serviceAddress;
+    }
+
+    function _isRecognizedIssuer(address serviceAddress, Service storage s, address signer)
+        internal
+        view
+        returns (bool)
+    {
+        return s.providerId != bytes20(0) && _issuanceCapabilities[serviceAddress][signer];
+    }
+
+    function _isOwnerConfirmed(address serviceAddress, Service storage s) internal view returns (bool) {
         (bool ownerOk, address liveOwner) = _readServiceOwner(serviceAddress);
         return ownerOk && liveOwner == s.confirmedOwner;
     }
@@ -868,13 +953,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         view
         returns (address[] memory values, uint256 nextCursor)
     {
-        _checkPage(cursor, limit, _serviceAddresses.length);
-        uint256 end = _pageEnd(cursor, limit, _serviceAddresses.length);
-        values = new address[](end - cursor);
-        for (uint256 i = cursor; i < end; i++) {
-            values[i - cursor] = _serviceAddresses[i];
-        }
-        return (values, end);
+        return _addressPage(_serviceAddresses, cursor, limit);
     }
 
     function providerServiceCount(bytes20 providerId) external view returns (uint256) {
@@ -886,14 +965,7 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         view
         returns (address[] memory values, uint256 nextCursor)
     {
-        address[] storage source = _providerServices[providerId];
-        _checkPage(cursor, limit, source.length);
-        uint256 end = _pageEnd(cursor, limit, source.length);
-        values = new address[](end - cursor);
-        for (uint256 i = cursor; i < end; i++) {
-            values[i - cursor] = source[i];
-        }
-        return (values, end);
+        return _addressPage(_providerServices[providerId], cursor, limit);
     }
 
     function resolverCount(ResolverKind kind) external view returns (uint256) {
@@ -905,7 +977,14 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
         view
         returns (address[] memory values, uint256 nextCursor)
     {
-        address[] storage source = _resolverAddresses[kind];
+        return _addressPage(_resolverAddresses[kind], cursor, limit);
+    }
+
+    function _addressPage(address[] storage source, uint256 cursor, uint256 limit)
+        internal
+        view
+        returns (address[] memory values, uint256 nextCursor)
+    {
         _checkPage(cursor, limit, source.length);
         uint256 end = _pageEnd(cursor, limit, source.length);
         values = new address[](end - cursor);
@@ -936,6 +1015,30 @@ contract ProviderRegistry is Ownable2Step, IProviderRegistry {
     {
         generation = _factoryGenerations[generationId];
         if (generation.factory == address(0)) revert UnknownFactoryGeneration();
+    }
+
+    function _addProviderService(bytes20 providerId, address serviceAddress) internal {
+        address[] storage list = _providerServices[providerId];
+        list.push(serviceAddress);
+        _providerServiceIndex[providerId][serviceAddress] = list.length;
+    }
+
+    /// @dev O(1) removal keyed by a 1-based index, so correcting a provider that already enumerates
+    /// many services can never be priced out of the only path that fixes a misbinding.
+    function _removeProviderService(bytes20 providerId, address serviceAddress) internal {
+        address[] storage list = _providerServices[providerId];
+        uint256 position = _providerServiceIndex[providerId][serviceAddress];
+        // Unreachable while every attachment goes through `_addProviderService`, and it fails closed
+        // rather than leaving the service enumerated under both providers at once.
+        if (position == 0) revert UnknownService();
+        uint256 lastPosition = list.length;
+        if (position != lastPosition) {
+            address moved = list[lastPosition - 1];
+            list[position - 1] = moved;
+            _providerServiceIndex[providerId][moved] = position;
+        }
+        list.pop();
+        delete _providerServiceIndex[providerId][serviceAddress];
     }
 
     function _requireSettableStanding(Standing standing) internal pure {

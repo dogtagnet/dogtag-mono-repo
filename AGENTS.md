@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 159 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+- `cd contracts && forge test` - 161 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
   protocol version (an internal version key, not a product label) on both registry axes;
@@ -100,7 +100,9 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   resurrection attack against the router's oldest-first resolution and pins the mirror direction it
   deliberately does not close; and `ProviderRegistry.t.sol` proves the build-only provider-authority
   core's KYC-standing AND owner/delegate predicate, genuine-factory attachment/repoint, service-scoped
-  capabilities, and real controller/owner/admin key rotations. Use `forge test`, **not** bare
+  capabilities, real controller/owner/admin key rotations, the widest-first
+  `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
+  issuance, and the registrar-only provider-binding correction. Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
   vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency
@@ -164,10 +166,34 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
   clones; C-2 therefore still needs that KYC/captain migration choice, because S-6 contains no legacy
   controller adapter. Its legacy `isWhitelistedFor(bytes32,address)` issuance answer is deliberately
-  caller-scoped to an attached clone; direct app/backend reads must move to
-  `canIssue(service, signer)`. S-7 must use the distinct `canRevoke(service, signer)` path so a repoint
-  disables old-clone issuance without removing the originator's ability to revoke historical roots
-  there. Resolver deapproval preserves the raw selected pointer for history, so S-9/S-10 resolver
+  caller-scoped to an attached clone, so a direct reader (which cannot identify a service through that
+  two-argument selector) must migrate to a service-scoped read — but **which** one is the whole
+  question, because the three issuance-axis reads are a deliberate ladder, `isRecognizedIssuer` ⊇
+  `canRevoke` ⊇ `canIssue`, and each rung answers something different. The migration therefore splits
+  BY QUESTION, not by caller convenience: a direct client asking *may this signer issue now* migrates
+  to `canIssue(service, signer)`, and a verifier asking *was this credential genuinely issued*
+  migrates to `isRecognizedIssuer(service, signer)`. **The mandatory issuer-whitelist verification
+  pillar is the second kind, so it migrates to `isRecognizedIssuer(service, signer)` and NEVER to
+  `canIssue(service, signer)`**, which is the pre-issue eligibility gate only: `canIssue` additionally
+  folds the provider's current pointer, provider/service standing and a live factory generation, while
+  the pillar asks the historical issuer-status question and treats a definite `false` as "resolved but
+  not authorized" — an authenticity failure that REFUSES the credential (`verify.rs` `credential_valid`,
+  `packages/ui/src/wallet/verifyCredential.ts`, the vet/government verify routes, both mobile
+  importers). Wiring the pillar to a current-state predicate therefore turns an ordinary repoint, KYC
+  suspension, service retirement, generation deprecation or pending clone-owner handover into a
+  fleet-wide forgery verdict against genuine credentials. `isRecognizedIssuer` folds only registrar
+  attachment plus the forward-only issuance grant — exactly the `whitelistFor`/`delistFor` semantics
+  the pillar was built on — so only an explicit registrar revocation flips it. S-7 must use the middle
+  rung, `canRevoke(service, signer)` (recognized issuer + confirmed live owner, the one term the
+  registrar can clear at any time), so a repoint, retirement, standing change or irreversible
+  generation deprecation disables new issuance without ever stranding a root as unrevocable by the
+  originator that anchored it; `DogTagIssuer.adminRevoke` remains the registrar backstop. `providerId`
+  is the single attachment fact chain provenance cannot verify, so
+  `reassignServiceProvider(service, expectedProviderId, newProviderId)` is its registrar-gated
+  correction path: it moves the binding and its enumeration and clears the mistaken provider's current
+  pointer, but deliberately does NOT publish under the corrected provider — repointing stays the clone
+  owner's decision, so a correction can never become a publication-authority bypass. Resolver
+  deapproval preserves the raw selected pointer for history, so S-9/S-10 resolver
   operations must check BOTH that they remain the selected resolver and that their typed allowlist
   entry is still active, in addition to the core's provider/service writer predicate.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.

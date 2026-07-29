@@ -561,6 +561,10 @@ contract ProviderRegistryTest is Test {
         vm.prank(SERVICE_OWNER);
         vm.expectRevert(ProviderRegistry.Unauthorized.selector);
         registry.repointService(address(serviceA));
+        // Live factory recognition is deliberately absent from the revoke rung: it is an external
+        // call whose answer a broken or hostile factory could withhold, and revocation is the safety
+        // direction. Attachment already proved provenance and recorded it in state.
+        assertTrue(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -586,9 +590,13 @@ contract ProviderRegistryTest is Test {
         assertFalse(registry.isWhitelistedFor(RECORD_TYPE, ISSUANCE_SIGNER));
         vm.prank(address(serviceA));
         assertFalse(registry.isWhitelistedFor(OTHER_RECORD_TYPE, ISSUANCE_SIGNER));
-        // Direct readers cannot identify a service through the legacy two-argument selector.
-        // They must use canIssue(service, signer) during the S-13 consumer migration.
+        // Direct readers cannot identify a service through the legacy two-argument selector, so the
+        // S-13 consumer migration splits BY QUESTION: a caller asking "may this signer issue now"
+        // moves to canIssue(service, signer), while a verifier asking "was this genuinely issued"
+        // moves to isRecognizedIssuer(service, signer). Never the reverse — canIssue folds live
+        // lifecycle state the verification pillar would read as an authenticity failure.
         assertFalse(registry.isWhitelistedFor(RECORD_TYPE, ISSUANCE_SIGNER));
+        assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
 
         // The operational key still has no metadata-edit authority.
         assertFalse(registry.canWriteService(address(serviceA), ISSUANCE_SIGNER, SERVICE_RECORD_PERMISSION));
@@ -649,6 +657,172 @@ contract ProviderRegistryTest is Test {
             registry.effectiveService(address(serviceA));
         assertFalse(factoryActiveAfterDeprecation);
         assertFalse(activeAfterDeprecation);
+    }
+
+    /// @dev The mandatory issuer-whitelist verification pillar reads a definite `false` as an
+    /// authenticity failure and REFUSES the credential, so the historical issuer-status question must
+    /// never be answered by a current-eligibility predicate. This pins the three-rung ladder:
+    /// `isRecognizedIssuer` (what a verifier asks) is strictly wider than `canRevoke`, which is
+    /// strictly wider than `canIssue` (the pre-issue gate).
+    function test_historical_issuer_status_outlives_every_lifecycle_event_that_stops_new_issuance()
+        public
+    {
+        ProviderRegistryServiceMock replacement =
+            _createAndAttach(factoryA, GENERATION_A, providerA, RECORD_TYPE, SERVICE_OWNER);
+        vm.startPrank(AUTHORITY);
+        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, true);
+        registry.setIssuanceCapability(address(replacement), ISSUANCE_SIGNER, true);
+        vm.stopPrank();
+
+        assertTrue(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
+        assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
+        // Never granted, and never attached: both are genuine negatives on the historical axis too.
+        assertFalse(registry.isRecognizedIssuer(address(serviceA), OTHER_SIGNER));
+        ProviderRegistryServiceMock unattached = factoryA.create(RECORD_TYPE, SERVICE_OWNER);
+        assertFalse(registry.isRecognizedIssuer(address(unattached), ISSUANCE_SIGNER));
+
+        // (1) A repoint supersedes the old clone for new issuance only.
+        vm.prank(SERVICE_OWNER);
+        registry.repointService(address(replacement));
+        assertFalse(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
+        assertTrue(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
+        assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
+
+        // (2) Retiring the superseded service is terminal, so it must not reach either wider rung.
+        vm.prank(AUTHORITY);
+        registry.setServiceStanding(address(serviceA), ProviderRegistry.Standing.RETIRED);
+        assertFalse(registry.canIssue(address(serviceA), ISSUANCE_SIGNER));
+        assertTrue(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
+        assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
+
+        // (3) An unrelated KYC suspension stops new issuance fleet-wide for the provider.
+        vm.prank(AUTHORITY);
+        registry.setProviderStanding(providerA, ProviderRegistry.Standing.SUSPENDED);
+        assertFalse(registry.canIssue(address(replacement), ISSUANCE_SIGNER));
+        assertTrue(registry.canRevoke(address(replacement), ISSUANCE_SIGNER));
+        assertTrue(registry.isRecognizedIssuer(address(replacement), ISSUANCE_SIGNER));
+
+        // (4) Generation deprecation is irreversible, so folding it into revocation would strand
+        // every root the generation ever anchored as unrevocable by its own originator.
+        vm.prank(AUTHORITY);
+        registry.deprecateFactoryGeneration(GENERATION_A);
+        assertFalse(registry.canIssue(address(replacement), ISSUANCE_SIGNER));
+        assertTrue(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
+        assertTrue(registry.canRevoke(address(replacement), ISSUANCE_SIGNER));
+        assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
+
+        // (5) An unconfirmed clone-owner handover quarantines operations, but a verifier must not
+        // read a pending handover as "this credential was never genuinely issued".
+        vm.prank(SERVICE_OWNER);
+        serviceA.transferOwnership(NEXT_SERVICE_OWNER);
+        vm.prank(NEXT_SERVICE_OWNER);
+        serviceA.acceptOwnership();
+        assertFalse(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
+        assertTrue(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
+        // The registrar can clear that quarantine even on a retired, deprecated-generation service.
+        vm.prank(AUTHORITY);
+        registry.confirmServiceOwner(address(serviceA), NEXT_SERVICE_OWNER, 1);
+        assertTrue(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
+
+        // Only an explicit registrar revocation of the forward-only grant flips the historical answer.
+        vm.prank(AUTHORITY);
+        registry.setIssuanceCapability(address(serviceA), ISSUANCE_SIGNER, false);
+        assertFalse(registry.isRecognizedIssuer(address(serviceA), ISSUANCE_SIGNER));
+        assertFalse(registry.canRevoke(address(serviceA), ISSUANCE_SIGNER));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Correcting the one attachment fact chain provenance cannot verify
+    // ---------------------------------------------------------------------------------------------
+
+    function test_registrar_corrects_a_misbound_provider_without_publishing_under_the_new_one() public {
+        vm.startPrank(AUTHORITY);
+        _register(providerB, NEXT_CONTROLLER, keccak256("identity-b"));
+        registry.setProviderStanding(providerB, ProviderRegistry.Standing.ACTIVE);
+        vm.stopPrank();
+
+        // The registrar typo'd the provider: this clone belongs to provider B. A third service is
+        // attached after it so the correction has to move a NON-tail entry out of the enumeration.
+        ProviderRegistryServiceMock misbound =
+            _createAndAttach(factoryB, GENERATION_B, providerA, OTHER_RECORD_TYPE, SERVICE_OWNER);
+        ProviderRegistryServiceMock trailing =
+            _createAndAttach(factoryB, GENERATION_B, providerA, RECORD_TYPE, SERVICE_OWNER);
+        vm.prank(SERVICE_OWNER);
+        registry.repointService(address(misbound));
+        assertEq(registry.currentService(providerA, OTHER_RECORD_TYPE), address(misbound));
+        assertEq(registry.providerServiceCount(providerA), 3);
+        assertEq(registry.providerServiceCount(providerB), 0);
+
+        ProviderRegistryServiceMock unattached = factoryB.create(RECORD_TYPE, SERVICE_OWNER);
+
+        vm.prank(STRANGER);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, STRANGER));
+        registry.reassignServiceProvider(address(misbound), providerA, providerB);
+
+        vm.startPrank(AUTHORITY);
+        vm.expectRevert(ProviderRegistry.UnexpectedServiceProvider.selector);
+        registry.reassignServiceProvider(address(misbound), providerB, providerB);
+        vm.expectRevert(ProviderRegistry.NoChange.selector);
+        registry.reassignServiceProvider(address(misbound), providerA, providerA);
+        vm.expectRevert(ProviderRegistry.UnknownProvider.selector);
+        registry.reassignServiceProvider(address(misbound), providerA, providerC);
+        vm.expectRevert(ProviderRegistry.UnknownService.selector);
+        registry.reassignServiceProvider(address(unattached), providerA, providerB);
+
+        registry.reassignServiceProvider(address(misbound), providerA, providerB);
+        vm.stopPrank();
+
+        // The binding moves; every chain-resolved fact is untouched.
+        ProviderRegistry.Service memory corrected = registry.service(address(misbound));
+        assertEq(bytes32(corrected.providerId), bytes32(providerB));
+        assertEq(corrected.factoryGeneration, GENERATION_B);
+        assertEq(corrected.recordType, OTHER_RECORD_TYPE);
+        assertEq(corrected.confirmedOwner, SERVICE_OWNER);
+        assertEq(uint8(corrected.standing), uint8(ProviderRegistry.Standing.ACTIVE));
+
+        // The mistaken provider's stale pointer is cleared rather than carried across, and the
+        // corrected provider is NOT published to: repointing stays the clone owner's decision.
+        assertEq(registry.currentService(providerA, OTHER_RECORD_TYPE), address(0));
+        assertEq(registry.currentService(providerB, OTHER_RECORD_TYPE), address(0));
+        assertEq(registry.currentService(providerA, RECORD_TYPE), address(serviceA));
+
+        vm.prank(AUTHORITY);
+        registry.setIssuanceCapability(address(misbound), ISSUANCE_SIGNER, true);
+        assertFalse(registry.canIssue(address(misbound), ISSUANCE_SIGNER));
+        vm.prank(SERVICE_OWNER);
+        registry.repointService(address(misbound));
+        assertTrue(registry.canIssue(address(misbound), ISSUANCE_SIGNER));
+
+        // Enumeration moves with the binding, on both sides, and the entry displaced to backfill the
+        // gap stays correctable itself — a stale removal index would silently orphan it.
+        assertEq(registry.providerServiceCount(providerA), 2);
+        assertEq(registry.providerServiceCount(providerB), 1);
+        {
+            (address[] memory providerAServices,) = registry.providerServicePage(providerA, 0, 10);
+            assertEq(providerAServices.length, 2);
+            assertEq(providerAServices[0], address(serviceA));
+            assertEq(providerAServices[1], address(trailing));
+            (address[] memory providerBServices,) = registry.providerServicePage(providerB, 0, 10);
+            assertEq(providerBServices.length, 1);
+            assertEq(providerBServices[0], address(misbound));
+        }
+
+        vm.prank(AUTHORITY);
+        registry.reassignServiceProvider(address(trailing), providerA, providerB);
+        assertEq(registry.providerServiceCount(providerA), 1);
+        assertEq(registry.providerServiceCount(providerB), 2);
+        {
+            (address[] memory providerAServices,) = registry.providerServicePage(providerA, 0, 10);
+            assertEq(providerAServices.length, 1);
+            assertEq(providerAServices[0], address(serviceA));
+            (address[] memory providerBServices,) = registry.providerServicePage(providerB, 0, 10);
+            assertEq(providerBServices.length, 2);
+            assertEq(providerBServices[0], address(misbound));
+            assertEq(providerBServices[1], address(trailing));
+        }
+
+        // The append-only global audit list is unaffected by a binding correction.
+        assertEq(registry.serviceCount(), 3);
     }
 
     function test_verifier_capability_preserves_exact_orthogonal_key_shape() public {
