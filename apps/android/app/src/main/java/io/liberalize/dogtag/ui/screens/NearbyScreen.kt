@@ -71,6 +71,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.liberalize.dogtag.nearby.ContactDirectoryPresentation
 import io.liberalize.dogtag.nearby.DirectoryObservation
 import io.liberalize.dogtag.nearby.DirectoryProvider
@@ -243,12 +246,26 @@ fun NearbyScreen(onBack: () -> Unit) {
         unit = unitSystem,
     )
     val contactPresentation = NearbyDecision.contacts(directoryResult, query)
+    // An age is a claim about NOW, so it is re-sampled whenever the owner comes back to the app: one
+    // who backgrounds a composed Nearby for a day must not return to the age they left behind, which
+    // would understate staleness in exactly the direction the outward rounding exists to prevent.
+    // This re-reads the CLOCK only - `refreshKey` is deliberately untouched, so returning to the app
+    // does not silently re-attempt the live directory read.
+    var foregroundEpoch by remember { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) foregroundEpoch++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     // The clock is read once per snapshot rather than on every recomposition; a coarse age should not
     // animate, so there is deliberately no ticker. `refreshKey` is part of the key because
     // `ProviderDirectoryResult` is a data class and `remember` compares keys STRUCTURALLY: a manual
     // refresh that replays the same stored document produces an equal result, which alone would keep
     // the previous age and leave the label frozen however often the owner refreshes.
-    val storedAge = remember(refreshKey, directoryResult) {
+    val storedAge = remember(refreshKey, foregroundEpoch, directoryResult) {
         when (val result = directoryResult) {
             is ProviderDirectoryResult.Found ->
                 NearbyDecision.formatStoredAge(result.readAt, System.currentTimeMillis())

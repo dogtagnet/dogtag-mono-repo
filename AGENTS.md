@@ -3102,10 +3102,19 @@ it, not independent designs. Change one, change all three.
   delisting (which propagates on the next live read); it only cuts an offline owner off sooner. What
   licenses a multi-day window is that a replay is LABELLED WITH ITS AGE: `NearbyDecision.formatStoredAge`
   (mirrored in Kotlin and Swift, pinned case for case in both suites) renders a coarse
-  minutes/hours/days phrase beside the existing stored-copy wording. It rounds the age OUTWARD, so a
-  remembered copy is never described as fresher than it is, and answers null for a `readAt` in the
-  future rather than inventing "0 minutes ago". Derive it from `readAt`, never from `expiresAt` minus
-  the TTL - the deadline is the MINIMUM of the local window and any the source declared.
+  minutes/hours/days phrase beside the existing stored-copy wording. It rounds the age OUTWARD, so for
+  the `now` it is given the stated age is never smaller than the true one, and answers null for a
+  `readAt` in the future rather than inventing "0 minutes ago". Derive it from `readAt`, never from
+  `expiresAt` minus the TTL - the deadline is the MINIMUM of the local window and any the source
+  declared. **Not understating staleness is a JOINT property of that rounding and the caller
+  re-sampling the clock**, and the rounding alone cannot carry it: a label derived once and left
+  composed goes on asserting an age that has stopped being true, so an owner who backgrounds Nearby for
+  a day returns to the age they left. A surface must therefore re-derive the label when the owner comes
+  back to it - Android keys the `remember` on an `ON_RESUME` epoch, iOS reads `scenePhase` in
+  `storedAgeClause` so the body re-evaluates and `Date()` is sampled afresh. Both re-read the CLOCK
+  only and leave `refreshKey` alone, because whether returning to the app should re-attempt the live
+  read is a separate product call. Neither is a ticker, and neither suite can reach a lifecycle
+  callback, so this half is documented rather than pinned.
 - **`expiresAt` is nullable ON PURPOSE.** `null` means "no wrapper set a deadline", and it is the only
   thing that distinguishes a fresh source read from an inner replay. A non-null default would make
   those two indistinguishable and the never-expires bug unrepresentable in a test.

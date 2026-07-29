@@ -859,9 +859,18 @@ enum NearbyDecision {
     /// statement and the surface has to say which. The ladder is deliberately blunt - under a minute,
     /// then minutes, hours, days - because a remembered public directory supports no finer claim.
     ///
-    /// Rounds the age OUTWARD, so the stated age is never smaller than the true one and a remembered
-    /// copy is never described as fresher than it is. That is the same direction `uncertaintyLabel`
-    /// rounds a distance bound, and the safe one here: understating staleness under-warns.
+    /// Rounds the age OUTWARD, so for the `now` it is GIVEN the stated age is never smaller than the
+    /// true one. That is the same direction `uncertaintyLabel` rounds a distance bound, and the safe
+    /// one here: understating staleness under-warns.
+    ///
+    /// Never describing a remembered copy as fresher than it is, though, is a JOINT property of that
+    /// rounding and the CALLER re-sampling the clock - it is not something this function can carry
+    /// alone. A label derived once and left on screen goes on asserting an age that has stopped being
+    /// true, which under-warns in precisely the direction the rounding exists to prevent. So a surface
+    /// must re-derive this when the owner returns to it: `NearbyScreen.storedAgeClause` reads
+    /// `scenePhase` here, and the Kotlin twin keys its `remember` on an `ON_RESUME` epoch. Neither is
+    /// a ticker, and neither suite can reach a lifecycle callback, so this half is a caller obligation
+    /// stated here rather than a pinned one.
     ///
     /// Derived from the snapshot's own `readAt`, never from `expiresAt` minus the TTL - the deadline
     /// is the MINIMUM of the local window and any the source declared, so that subtraction is wrong
