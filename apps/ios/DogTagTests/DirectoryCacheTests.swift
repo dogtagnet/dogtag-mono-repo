@@ -566,4 +566,54 @@ final class DirectoryCacheTests: XCTestCase {
             XCTAssertNil(store.read())
         }
     }
+
+    // MARK: - keeping the copy's own failures off the live answer
+
+    /// A failure of the COPY may only ever cost a replay, never the live answer an owner is waiting on.
+    ///
+    /// Android needs written-out guards for this; here the compiler supplies them - `encode` is
+    /// `try? JSONEncoder().encode(...)` behind an `if let document`, so a snapshot the codec cannot
+    /// express is simply not written. Pinned because that is a property of this seam's SHAPE, which a
+    /// later refactor could quietly take away. The failing-store half of the Android pair has no
+    /// counterpart at all: `write`/`clear` are non-throwing protocol requirements, so a conforming
+    /// store cannot throw and there is nothing to test.
+    func test_aSnapshotThisCodecCannotExpressCostsTheStoredCopyNotTheLiveAnswer() async {
+        let unencodable = snapshot(
+            providers: [DirectoryProvider(
+                providerId: "unencodable",
+                kind: "vet",
+                name: "Not-a-number Vet",
+                geo: NearbyPoint(lat: .nan, lng: .nan),
+                services: [],
+                domain: nil,
+                active: nil,
+                contact: ProviderContact(phone: "+65 6123 4567"),
+                bindingState: .noDomainListed
+            )],
+            readAt: 1_000
+        )
+        // Pinned as a PRECONDITION so this case cannot pass for the wrong reason: nothing on the
+        // wrapper path rejects a non-finite coordinate, and if `JSONEncoder` ever stopped refusing one
+        // the assertions below would hold whether or not the write stayed conditional.
+        XCTAssertTrue(providerDirectorySnapshotIsWellFormed(.found(unencodable)))
+        XCTAssertNil(ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
+            namespace: namespace,
+            snapshot: unencodable,
+            readAt: date(1_000),
+            expiresAt: date(11_000)
+        )))
+
+        let store = MemoryProviderDirectoryCacheStore()
+        let result = await CachedProviderDirectory(
+            delegate: FakeDirectory { .found(unencodable) },
+            store: store,
+            ttl: 10_000,
+            now: { self.date(1_000) }
+        ).read()
+        guard case .found(let live) = result else {
+            return XCTFail("an unstorable snapshot is still a live answer")
+        }
+        XCTAssertEqual(live.observation, .live)
+        XCTAssertNil(store.read(), "a refused encode must leave no partial document behind")
+    }
 }

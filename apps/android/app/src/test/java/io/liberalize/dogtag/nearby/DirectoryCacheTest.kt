@@ -3,6 +3,7 @@ package io.liberalize.dogtag.nearby
 import io.liberalize.dogtag.net.IssuerBindingState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import org.json.JSONException
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -65,6 +66,14 @@ class DirectoryCacheTest {
         reason = DirectoryUnavailableReason.SourceUnavailable,
         detail = "offline",
         attemptedAt = at,
+    )
+
+    /** The one live shape the wrapper refuses outright, so it is how the clear path is reached. */
+    private fun emptyFound(readAt: Long) = ProviderDirectoryResult.Found(
+        providers = emptyList(),
+        observation = DirectoryObservation.Live,
+        readAt = readAt,
+        expiresAt = null,
     )
 
     // ---- the statement each state is entitled to make ------------------------------------------
@@ -602,6 +611,172 @@ class DirectoryCacheTest {
                     ttlMs = ttl,
                 )
             }
+        }
+    }
+
+    // ---- keeping the copy's own failures off the live answer -------------------------------------
+
+    /** A store that fails on the touch named by [failing], and answers normally otherwise. */
+    private class FailingStore(
+        private val failing: Set<String>,
+        seed: String? = null,
+        private val error: () -> Throwable = { IllegalStateException("store fault") },
+    ) : ProviderDirectoryCacheStore {
+        private val inner = MemoryProviderDirectoryCacheStore().also { store ->
+            seed?.let(store::write)
+        }
+        var clears = 0
+            private set
+
+        override fun read(): String? {
+            if ("read" in failing) throw error()
+            return inner.read()
+        }
+
+        override fun write(document: String) {
+            if ("write" in failing) throw error()
+            inner.write(document)
+        }
+
+        override fun clear() {
+            clears += 1
+            if ("clear" in failing) throw error()
+            inner.clear()
+        }
+    }
+
+    /**
+     * Nothing on the wrapper path rejects a non-finite coordinate - the well-formed check reads only
+     * the timestamp and the provider count, and the range check lives in the SOURCE, which is the
+     * seam a second directory replaces. So a snapshot the codec cannot express must cost the stored
+     * copy and nothing else: an owner who was successfully served a directory may not be handed a
+     * crash because the phone could not write it down.
+     */
+    @Test
+    fun aSnapshotThisCodecCannotExpressCostsTheStoredCopyNotTheLiveAnswer() = runBlocking {
+        val unencodable = ProviderDirectoryResult.Found(
+            providers = listOf(located.copy(geo = GeoPoint(Double.NaN, Double.NaN))),
+            observation = DirectoryObservation.Live,
+            readAt = 1_000,
+            expiresAt = null,
+        )
+        // Pinned so this case cannot pass for the wrong reason: without a throwing encode the
+        // assertions below would hold whether or not the guard exists. The exception TYPE is pinned
+        // too, so an unrelated throw from some other line cannot stand in for the one being guarded.
+        assertTrue(providerDirectorySnapshotIsWellFormed(unencodable))
+        assertThrows(JSONException::class.java) {
+            ProviderDirectoryCacheCodec.encode(
+                ProviderDirectoryCacheEntry("n", unencodable, 1_000, 11_000),
+            )
+        }
+
+        val store = MemoryProviderDirectoryCacheStore()
+        val result = CachedProviderDirectory(
+            delegate = FakeDirectory(next = { unencodable }),
+            store = store,
+            ttlMs = 10_000,
+            now = { 1_000 },
+        ).read()
+        assertTrue(
+            "an unstorable snapshot is still a live answer",
+            result is ProviderDirectoryResult.Found,
+        )
+        assertEquals(
+            DirectoryObservation.Live,
+            (result as ProviderDirectoryResult.Found).observation,
+        )
+        assertNull("a failed encode must leave no partial document behind", store.read())
+    }
+
+    /** Same rule one layer down: a store that cannot persist the copy does not fail the read. */
+    @Test
+    fun aStoreThatCannotWriteDoesNotFailTheLiveRead() = runBlocking {
+        val result = CachedProviderDirectory(
+            delegate = FakeDirectory(next = { found(1_000) }),
+            store = FailingStore(failing = setOf("write")),
+            ttlMs = 10_000,
+            now = { 1_000 },
+        ).read()
+        assertTrue(result is ProviderDirectoryResult.Found)
+        assertEquals(
+            DirectoryObservation.Live,
+            (result as ProviderDirectoryResult.Found).observation,
+        )
+    }
+
+    /**
+     * The offline path is the one this whole copy exists for, so a store that cannot be read must
+     * degrade to the live `unavailable` - never a throw the screen has to survive, and never `empty`.
+     */
+    @Test
+    fun aStoreThatCannotBeReadDegradesToUnavailableRatherThanEmpty() = runBlocking {
+        // A good document is seeded so the classification choice is visible: a failed read is Absent,
+        // which leaves the store alone, rather than Unreadable, which would clear it and throw away a
+        // copy that may be perfectly fine over what may be a transient fault.
+        val store = FailingStore(
+            failing = setOf("read"),
+            seed = ProviderDirectoryCacheCodec.encode(
+                ProviderDirectoryCacheEntry(
+                    namespace = "central:https://central.test/v1/businesses",
+                    snapshot = found(1_000, 11_000),
+                    readAt = 1_000,
+                    expiresAt = 11_000,
+                ),
+            ),
+        )
+        val result = CachedProviderDirectory(
+            delegate = FakeDirectory(next = { unavailable(2_000) }),
+            store = store,
+            ttlMs = 10_000,
+            now = { 2_000 },
+        ).read()
+        result as ProviderDirectoryResult.Unavailable
+        assertEquals(DirectoryUnavailableReason.SourceUnavailable, result.reason)
+        assertEquals("a failed read must not discard the stored copy", 0, store.clears)
+    }
+
+    /** A store that cannot be cleared is best effort too: every replay re-validates anyway. */
+    @Test
+    fun aStoreThatCannotBeClearedDoesNotFailTheRead() = runBlocking {
+        val result = CachedProviderDirectory(
+            delegate = FakeDirectory(next = { emptyFound(1_000) }),
+            store = FailingStore(failing = setOf("clear")),
+            ttlMs = 10_000,
+            now = { 1_000 },
+        ).read()
+        result as ProviderDirectoryResult.Unavailable
+        assertEquals(DirectoryUnavailableReason.InvalidSnapshot, result.reason)
+    }
+
+    /**
+     * The guards above must not become a blanket `runCatching`: `CancellationException` is a
+     * `RuntimeException` on the JVM, so swallowing it here would report the owner leaving the screen
+     * as a stored-copy fault and let the read continue on their behalf.
+     *
+     * Each touch needs the live result that actually reaches it: a failed live read reaches `read`, a
+     * good one reaches `write`, and a snapshot the guard refuses reaches `clear`.
+     */
+    @Test
+    fun aCancelledStoreTouchPropagatesRatherThanBeingSwallowed() {
+        val cases: List<Pair<String, () -> ProviderDirectoryResult>> = listOf(
+            "read" to { unavailable(1_000) },
+            "write" to { found(1_000) },
+            "clear" to { emptyFound(1_000) },
+        )
+        for ((touch, live) in cases) {
+            val directory = CachedProviderDirectory(
+                delegate = FakeDirectory(next = live),
+                store = FailingStore(
+                    failing = setOf(touch),
+                    error = { CancellationException("left the screen") },
+                ),
+                ttlMs = 10_000,
+                now = { 1_000 },
+            )
+            assertThrows(
+                "a cancelled $touch must not be swallowed",
+                CancellationException::class.java,
+            ) { runBlocking { directory.read() } }
         }
     }
 }

@@ -20,7 +20,14 @@ import java.io.File
  * opens the app somewhere with no signal - so it did nothing in the one case the captain asked for.
  */
 
-/** Persistence seam. Pure policy lives above it so the whole decision is JVM-testable. */
+/**
+ * Persistence seam. Pure policy lives above it so the whole decision is JVM-testable.
+ *
+ * An implementation is asked to swallow its own failures, and Kotlin has no checked exceptions to
+ * enforce that, so [CachedProviderDirectory] tolerates a throw from any of the three: a copy that
+ * could not be stored, read or cleared may only ever cost a replay, never the live answer the owner
+ * is waiting on. Cancellation is the exception and still propagates.
+ */
 interface ProviderDirectoryCacheStore {
     /** The stored document, or `null` when nothing is stored or it could not be read. */
     fun read(): String?
@@ -154,17 +161,49 @@ class CachedProviderDirectory(
     // so leaving either on the caller's dispatcher would close only half the hazard. Kept out of
     // `ProviderDirectoryCacheStore` itself so the seam stays a plain non-suspend interface for the
     // in-memory store and the tests.
+    //
+    // The codec and the store are both wrapped, and each `catch` is written out rather than reached
+    // for via `runCatching`, which catches `Throwable` and so would swallow the `CancellationException`
+    // the arm above it exists to rethrow.
     private suspend fun storedEntry(): StoredRead = withContext(Dispatchers.IO) {
-        val document = store.read() ?: return@withContext StoredRead.Absent
+        val document = try {
+            store.read()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Absent, not Unreadable: a read that failed hands back nothing to use, and clearing on
+            // what may be a transient store fault would destroy a good copy for no gain.
+            null
+        }
+        if (document == null) return@withContext StoredRead.Absent
         val entry = ProviderDirectoryCacheCodec.decode(document)
             ?: return@withContext StoredRead.Unreadable
         StoredRead.Present(entry)
     }
 
-    private suspend fun storeEntry(entry: ProviderDirectoryCacheEntry) =
-        withContext(Dispatchers.IO) { store.write(ProviderDirectoryCacheCodec.encode(entry)) }
+    private suspend fun storeEntry(entry: ProviderDirectoryCacheEntry) = withContext(Dispatchers.IO) {
+        try {
+            store.write(ProviderDirectoryCacheCodec.encode(entry))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // A copy that could not be serialised or persisted simply is not stored, and the live
+            // answer stands. `encode` is inside the guard as well as inside the hop: nothing on this
+            // path rejects a non-finite coordinate, and `JSONObject.put(String, double)` throws on
+            // one, so the source's own range check is the only thing keeping it out today. A snapshot
+            // this codec cannot express must cost a replay, never the read.
+        }
+    }
 
-    private suspend fun clearStore() = withContext(Dispatchers.IO) { store.clear() }
+    private suspend fun clearStore() = withContext(Dispatchers.IO) {
+        try {
+            store.clear()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Best effort. Every replay re-validates, so a survivor cannot be replayed unchecked.
+        }
+    }
 
     override suspend fun read(): ProviderDirectoryResult {
         val live = try {
