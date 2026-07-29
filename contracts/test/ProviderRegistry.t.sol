@@ -1117,4 +1117,253 @@ contract ProviderRegistryTest is Test {
         assertEq(registry.factoryGenerationCount(), 2);
         assertEq(registry.serviceCount(), 2);
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // The emitted audit trail
+    //
+    // Every authority fact this core stores is also announced, and an off-chain oversight consumer
+    // reads ONLY the announcement: it decodes by event signature and indexed topic, never by
+    // re-reading storage. So an event that carries the wrong field, indexes the wrong argument, or
+    // reports the post-state where the transition is the fact is not a cosmetic slip - it is
+    // silently undecodable, or decodably wrong, at exactly the consumer that cannot ask again.
+    // These assert the transition events by full signature and topic layout.
+    // ---------------------------------------------------------------------------------------------
+
+    event ProviderRegistered(bytes20 indexed providerId, address indexed controller);
+    event ProviderStandingChanged(
+        bytes20 indexed providerId, ProviderRegistry.Standing oldStanding, ProviderRegistry.Standing newStanding
+    );
+    event PublicIdentityAnchorSet(
+        bytes20 indexed providerId,
+        bytes32 indexed oldDigest,
+        bytes32 indexed newDigest,
+        uint32 schema,
+        uint16 codec,
+        uint8 hashAlgorithm,
+        bytes contenthash,
+        uint64 revision,
+        uint64 atBlock
+    );
+    event ControllerTransferRequested(
+        bytes20 indexed providerId,
+        address indexed currentController,
+        address indexed pendingController,
+        address requestedBy,
+        uint64 requestNonce
+    );
+    event ControllerTransferAccepted(
+        bytes20 indexed providerId, address indexed pendingController, uint64 requestNonce
+    );
+    event ControllerTransferConfirmed(
+        bytes20 indexed providerId,
+        address indexed oldController,
+        address indexed newController,
+        uint64 controllerEpoch
+    );
+    event FactoryGenerationAdded(bytes32 indexed generationId, address indexed factory, uint64 atBlock);
+    event FactoryGenerationDeprecated(bytes32 indexed generationId, address indexed factory, uint64 atBlock);
+    event ServiceAttached(
+        address indexed service,
+        bytes20 indexed providerId,
+        bytes32 indexed factoryGeneration,
+        bytes32 recordType,
+        address confirmedOwner
+    );
+    event ServiceProviderReassigned(
+        address indexed service,
+        bytes20 indexed oldProviderId,
+        bytes20 indexed newProviderId,
+        address reassignedBy
+    );
+    event ServiceOwnerConfirmed(
+        address indexed service, address indexed oldOwner, address indexed newOwner, uint64 ownerEpoch
+    );
+    event CurrentServiceChanged(
+        bytes20 indexed providerId,
+        bytes32 indexed recordType,
+        address indexed oldService,
+        address newService,
+        address setBy
+    );
+    event IssuanceCapabilitySet(address indexed service, address indexed signer, bool allowed);
+    event VerifierCapabilitySet(
+        bytes32 indexed purpose, bytes32 indexed compatibilityKey, address indexed relayer, bool allowed
+    );
+    event ResolverApprovalSet(
+        ProviderRegistry.ResolverKind indexed kind, address indexed resolver, bool approved
+    );
+
+    function test_identity_and_standing_transitions_are_announced_with_full_audit_detail() public {
+        bytes20 provider = providerC;
+        bytes32 firstDigest = keccak256("publication-safe-identity-c1");
+        bytes memory contenthash = bytes("ipfs://publication-safe-provider-identity");
+
+        // Registration announces the opaque id and its first controller, and the identity anchor
+        // arrives as its own event so a publication consumer never has to infer revision 1.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ProviderRegistered(provider, CONTROLLER);
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit PublicIdentityAnchorSet(
+            provider, bytes32(0), firstDigest, 1, 0xe3, 0x12, contenthash, 1, uint64(block.number)
+        );
+        vm.prank(AUTHORITY);
+        registry.registerProvider(provider, CONTROLLER, firstDigest, 1, 0xe3, 0x12, contenthash);
+
+        // A re-anchor carries BOTH digests and the bumped revision: superseding a published identity
+        // statement is the fact, and an event that reported only the new digest would leave a
+        // consumer unable to tell a first publication from a silent replacement.
+        bytes32 secondDigest = keccak256("publication-safe-identity-c2");
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit PublicIdentityAnchorSet(
+            provider, firstDigest, secondDigest, 2, 0xe3, 0x12, contenthash, 2, uint64(block.number)
+        );
+        vm.prank(AUTHORITY);
+        registry.setPublicIdentityAnchor(provider, secondDigest, 2, 0xe3, 0x12, contenthash);
+
+        // Standing is a TRANSITION, so both ends ride the event. A consumer that joined the feed
+        // late cannot reconstruct the previous standing from anywhere else.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ProviderStandingChanged(
+            provider, ProviderRegistry.Standing.PENDING, ProviderRegistry.Standing.ACTIVE
+        );
+        vm.prank(AUTHORITY);
+        registry.setProviderStanding(provider, ProviderRegistry.Standing.ACTIVE);
+
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ProviderStandingChanged(
+            provider, ProviderRegistry.Standing.ACTIVE, ProviderRegistry.Standing.SUSPENDED
+        );
+        vm.prank(AUTHORITY);
+        registry.setProviderStanding(provider, ProviderRegistry.Standing.SUSPENDED);
+    }
+
+    function test_every_safe_handover_step_is_separately_announced_with_its_nonce_and_epoch() public {
+        // Each rung of the controller handover is its own event. Collapsing them would make a
+        // requested-but-unaccepted transfer indistinguishable from a completed one - the exact
+        // ambiguity the request/accept/confirm split exists to remove.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ControllerTransferRequested(providerA, CONTROLLER, NEXT_CONTROLLER, CONTROLLER, 1);
+        vm.prank(CONTROLLER);
+        registry.requestControllerTransfer(providerA, NEXT_CONTROLLER);
+
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ControllerTransferAccepted(providerA, NEXT_CONTROLLER, 1);
+        vm.prank(NEXT_CONTROLLER);
+        registry.acceptControllerTransfer(providerA);
+
+        // Only confirmation moves authority, and it is the only step carrying the new epoch - the
+        // term every delegation is scoped to.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ControllerTransferConfirmed(providerA, CONTROLLER, NEXT_CONTROLLER, 2);
+        vm.prank(AUTHORITY);
+        registry.confirmControllerTransfer(providerA, NEXT_CONTROLLER, 1);
+
+        // The clone-owner axis announces its own handover with the bumped owner epoch, which is the
+        // term that un-quarantines service writes and `canRevoke`.
+        vm.prank(SERVICE_OWNER);
+        serviceA.transferOwnership(NEXT_SERVICE_OWNER);
+        vm.prank(NEXT_SERVICE_OWNER);
+        serviceA.acceptOwnership();
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ServiceOwnerConfirmed(address(serviceA), SERVICE_OWNER, NEXT_SERVICE_OWNER, 2);
+        vm.prank(AUTHORITY);
+        registry.confirmServiceOwner(address(serviceA), NEXT_SERVICE_OWNER, 1);
+
+        // The registry authority's own two-step rotation announces through OZ's own event, so the
+        // one key this generation trusts is auditable on the same feed.
+        vm.prank(AUTHORITY);
+        registry.transferOwnership(NEXT_AUTHORITY);
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit Ownable.OwnershipTransferred(AUTHORITY, NEXT_AUTHORITY);
+        vm.prank(NEXT_AUTHORITY);
+        registry.acceptOwnership();
+    }
+
+    function test_service_provenance_capability_and_resolver_writes_are_announced() public {
+        ProviderRegistryFactoryMock factoryC = new ProviderRegistryFactoryMock();
+        bytes32 generationC = keccak256("dogtag/factory/c");
+
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit FactoryGenerationAdded(generationC, address(factoryC), uint64(block.number));
+        vm.prank(AUTHORITY);
+        registry.addFactoryGeneration(generationC, address(factoryC));
+
+        ProviderRegistryServiceMock service = factoryC.create(OTHER_RECORD_TYPE, SERVICE_OWNER);
+
+        // Attachment announces the provenance triple - generation, record type and owner. Note this
+        // assertion pins the triple's SHAPE and topic layout, not the owner field's provenance:
+        // `attachService` reverts unless the resolved `owner()` equals `expectedOwner`, so the two
+        // are provably equal at the emit site and no event assertion could tell them apart. That the
+        // owner is READ FROM THE CLONE rather than taken from the registrar's claim is established
+        // by the revert arm in `test_attach_resolves_registered_factory_and_clone_metadata_not_supplied_claims`.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ServiceAttached(
+            address(service), providerA, generationC, OTHER_RECORD_TYPE, SERVICE_OWNER
+        );
+        vm.prank(AUTHORITY);
+        registry.attachService(providerA, address(service), generationC, SERVICE_OWNER);
+
+        vm.prank(AUTHORITY);
+        registry.setServiceStanding(address(service), ProviderRegistry.Standing.ACTIVE);
+
+        // Issuance capability is announced service-scoped, never record-type-scoped, so the feed
+        // cannot be read as a fleet-wide grant.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit IssuanceCapabilitySet(address(service), ISSUANCE_SIGNER, true);
+        vm.prank(AUTHORITY);
+        registry.setIssuanceCapability(address(service), ISSUANCE_SIGNER, true);
+
+        // The verifier axis announces the purpose AND the derived legacy compatibility key, so an
+        // existing `isWhitelistedFor` consumer can follow the grant without recomputing it.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit VerifierCapabilitySet(PURPOSE, registry.verificationKey(PURPOSE), RELAYER, true);
+        vm.prank(AUTHORITY);
+        registry.setVerifierCapability(PURPOSE, RELAYER, true);
+
+        // Publication is the clone owner's decision, and the pointer move carries both ends plus
+        // the caller that made it.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit CurrentServiceChanged(
+            providerA, OTHER_RECORD_TYPE, address(0), address(service), SERVICE_OWNER
+        );
+        vm.prank(SERVICE_OWNER);
+        registry.repointService(address(service));
+
+        // Resolver approval is announced per typed kind, keeping domain claims and directory
+        // listings separable on the feed itself.
+        ProviderRegistryResolverMock resolver = new ProviderRegistryResolverMock();
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ResolverApprovalSet(ProviderRegistry.ResolverKind.DOMAIN, address(resolver), true);
+        vm.prank(AUTHORITY);
+        registry.setResolverApproved(ProviderRegistry.ResolverKind.DOMAIN, address(resolver), true);
+
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit FactoryGenerationDeprecated(generationC, address(factoryC), uint64(block.number));
+        vm.prank(AUTHORITY);
+        registry.deprecateFactoryGeneration(generationC);
+    }
+
+    function test_a_provider_binding_correction_announces_the_clearing_and_the_move() public {
+        vm.startPrank(AUTHORITY);
+        _register(providerB, NEXT_CONTROLLER, keccak256("identity-b"));
+        registry.setProviderStanding(providerB, ProviderRegistry.Standing.ACTIVE);
+        vm.stopPrank();
+
+        // `serviceA` is the mistaken provider's published pointer, so the correction must announce
+        // TWO facts, in order: the mistaken provider stops publishing it, then the binding moves.
+        // A correction that announced only the move would leave a directory consumer still listing
+        // the service under a provider that no longer owns it.
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit CurrentServiceChanged(
+            providerA, RECORD_TYPE, address(serviceA), address(0), AUTHORITY
+        );
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit ServiceProviderReassigned(address(serviceA), providerA, providerB, AUTHORITY);
+        vm.prank(AUTHORITY);
+        registry.reassignServiceProvider(address(serviceA), providerA, providerB);
+
+        // No publication is announced under the corrected provider: that stays the clone owner's
+        // own `repointService` decision, so the feed can never show a correction as a publication.
+        assertEq(registry.currentService(providerB, RECORD_TYPE), address(0));
+    }
 }
