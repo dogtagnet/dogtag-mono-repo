@@ -1011,6 +1011,20 @@ whitelist (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive 
 a deliberate limitation - never as a passing property - by
 `test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation`.
 
+**That C-12 freeze has a precondition of its own: the later generation must be bound to a DIFFERENT
+`IssuerRegistry`.** `onlyWhitelisted` asks only `registry.isWhitelistedFor(recordType, msg.sender)`
+and never whether the caller owns or spawned the clone (`DogTagIssuer.sol:39-42`), and a clone pins
+its `registry` at `initialize` with no setter (`:44-50`, from the factory's immutable at
+`DogTagIssuerFactory.sol:41`). So under ONE shared registry a single whitelist entry authorizes
+`issue` on every clone of that record type in BOTH generations, and no delisting freezes the earlier
+generation without also stopping the later one. The registry plan already satisfies this (cutover C-5
+binds the generation-2 registry/factory to the new provider core while generation-1 clones keep
+reading the generation-1 registry, per plan C-2), but an operator who reaches C-12 with both
+generations on one registry must otherwise choose between breaking new issuance and skipping the
+freeze - and skipping it leaves the residual above open in production. Note the router's own test
+`setUp` deliberately shares one registry across both factories: that is a TEST topology chosen to make
+these cases reachable with a single whitelist, not a deployment shape to copy.
+
 Three things that look like improvements and are not:
 - **Do NOT revert when two generations answer.** That is a denial of service - anyone could kill an
   honest credential by re-anchoring its root in a clone they control, with no remedy since the router

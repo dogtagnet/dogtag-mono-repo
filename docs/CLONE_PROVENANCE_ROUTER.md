@@ -99,6 +99,14 @@ Freeze earlier-generation issuance at cutover by delisting every signer in the e
 With no whitelisted signer left, the `onlyWhitelisted` gate on `issue` refuses the mirror anchor at its source.
 Delisting is safe for the revocations that must keep working, and that is why this remedy is available at all: `revoke` is `onlyWhitelisted`, but `adminRevoke` is gated on the registry `DEFAULT_ADMIN` alone (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive the freeze.
 
+**That freeze has a precondition of its own: the later generation must be bound to a different `IssuerRegistry`.**
+`onlyWhitelisted` asks only `registry.isWhitelistedFor(recordType, msg.sender)` and never whether the caller owns or spawned the clone (`DogTagIssuer.sol:39-42`), and a clone pins its `registry` at `initialize` with no setter (`:44-50`, passed from the factory's immutable at `DogTagIssuerFactory.sol:41`).
+So under one shared registry a single whitelist entry authorizes `issue` on every clone of that record type in **both** generations, and no delisting can freeze the earlier generation while leaving the later one able to issue.
+
+The registry plan already satisfies this.
+Cutover C-5 binds the generation-2 verification registry and factory to the new provider core, while generation-1 clones keep reading the generation-1 `IssuerRegistry` precisely because of that same no-setter pinning (plan C-2 says so explicitly).
+It is written down because an operator who reaches C-12 having wired both generations to one registry would otherwise have to choose between breaking new issuance and skipping the freeze, and skipping the freeze leaves the residual above open in production.
+
 `test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation` pins this direction as a known, accepted limitation.
 It asserts that the mirror anchor succeeds and that the router then reports a generation-2-revoked credential as valid, so the residual is never mistaken for covered ground.
 It is deliberately not a passing security property, and if it ever goes red the residual has been closed by something and this section must be re-read before its assertions are updated.

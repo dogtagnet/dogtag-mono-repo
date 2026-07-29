@@ -91,6 +91,19 @@ interface IIssuerFactoryGeneration {
 /// is `onlyWhitelisted`, but `adminRevoke` is gated on the registry DEFAULT_ADMIN alone
 /// (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive the freeze.
 ///
+/// THAT FREEZE HAS A PRECONDITION OF ITS OWN: the later generation must be bound to a DIFFERENT
+/// `IssuerRegistry`. `onlyWhitelisted` asks only `registry.isWhitelistedFor(recordType, msg.sender)`
+/// and never whether the caller owns or spawned the clone (`DogTagIssuer.sol:39-42`), and a clone
+/// pins its `registry` at `initialize` with no setter (`:44-50`, passed from the factory's immutable
+/// at `DogTagIssuerFactory.sol:41`). So under ONE shared registry a single whitelist entry authorizes
+/// `issue` on every clone of that record type in BOTH generations, and no delisting can freeze the
+/// earlier generation while leaving the later one able to issue. The registry plan already satisfies
+/// this - cutover C-5 binds the generation-2 verification registry and factory to the new provider
+/// core, while generation-1 clones keep reading the generation-1 registry precisely because of that
+/// same no-setter pinning (plan C-2) - but it is written down because an operator who reaches C-12
+/// having wired both generations to one registry would have to choose between breaking new issuance
+/// and skipping the freeze, and skipping the freeze leaves the residual above open in production.
+///
 /// `test_a_root_first_anchored_later_can_still_be_claimed_by_an_earlier_generation` pins this
 /// direction as a known, accepted limitation, so it is never mistaken for covered ground.
 ///

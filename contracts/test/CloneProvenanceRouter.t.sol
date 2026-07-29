@@ -103,6 +103,13 @@ contract CloneProvenanceRouterTest is Test {
         vm.startPrank(admin);
         registry = new IssuerRegistry(admin);
         impl = new DogTagIssuer();
+        // Both generations share ONE `IssuerRegistry`. That is a TEST topology, chosen because a
+        // clone's `onlyWhitelisted` never asks who owns it and a clone pins its registry at
+        // `initialize` with no setter, so a single whitelist entry reaches both generations and makes
+        // the resurrection and mirror cases reachable with one signer. It is deliberately NOT the
+        // recommended deployment shape: the C-12 issuance freeze that closes the mirror residual
+        // requires the later generation to be on a SEPARATE registry, or delisting the earlier
+        // generation stops the later one issuing too. See the residual section on the contract.
         factoryV1 = new DogTagIssuerFactory(address(impl), address(registry), admin);
         factoryV2 = new DogTagIssuerFactory(address(impl), address(registry), admin);
         registry.whitelistFor(VACCINATION, vetSigner);
@@ -201,6 +208,12 @@ contract CloneProvenanceRouterTest is Test {
     /// C-12), after which `onlyWhitelisted` refuses the mirror anchor below at its source.
     /// `adminRevoke` is gated on the registry DEFAULT_ADMIN rather than the whitelist
     /// (`DogTagIssuer.sol:84-85`), so earlier-generation revocations survive that freeze.
+    ///
+    /// That freeze in turn presupposes the later generation is bound to a DIFFERENT `IssuerRegistry`,
+    /// which this test's shared-registry {setUp} deliberately is not: `onlyWhitelisted` never asks who
+    /// owns the clone (`DogTagIssuer.sol:39-42`) and a clone pins its registry at `initialize` with no
+    /// setter (`:44-50`), so one whitelist entry here reaches both generations - which is exactly what
+    /// makes the anchor below reachable with a single signer.
     ///
     /// If this test ever goes red, the residual has been closed by something - re-read the contract's
     /// residual section before simply updating the assertions here.
