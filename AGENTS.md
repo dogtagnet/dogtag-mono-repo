@@ -89,7 +89,11 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 139 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+- `cd contracts && forge test` - 167 tests over the owner-hidden contract set. **A fresh worktree has
+  EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
+  worktree is created without them), so the first `forge test` fails on the remappings rather than on
+  anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
+  contracts/lib/openzeppelin-contracts` once. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
   protocol version (an internal version key, not a product label) on both registry axes;
@@ -98,7 +102,9 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
   subject-bearing `Verified` ABI; `CloneProvenanceRouter.t.sol` performs the real cross-generation
   resurrection attack against the router's oldest-first resolution and pins the mirror direction it
-  deliberately does not close. Use `forge test`, **not** bare `forge build`: a bare full build tries
+  deliberately does not close; `IssuerV2.t.sol` covers the built-but-undeployed generation-2 issuer
+  pair (see "The generation-2 issuer pair is BUILT, NOT DEPLOYED").
+  Use `forge test`, **not** bare `forge build`: a bare full build tries
   to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
   aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project
   error. `forge test` only compiles the real dependency closure and is green.
@@ -971,6 +977,40 @@ An already-installed app keeps proving against its **baked** key until you do, s
   equal the tag's write-once `profileRoot`, and `ownerOf` is called only as a token-existence gate—its
   neutral-custodian return value must never be compared as owner identity. Every relay ABI must stay in
   sync with this four-argument signature.
+
+### The generation-2 issuer pair is BUILT, NOT DEPLOYED (registry-plan S-7)
+
+`DogTagIssuerV2` + `DogTagIssuerFactoryV2` exist in `contracts/src/` and are covered by
+`test/IssuerV2.t.sol` (28 tests). **They are deployed nowhere** - no ROAX address, no ledger entry, no
+`.env.example` key, no client config. Deploying them is part of the cutover (S-13/S-14) and is a
+separately captain-authorized step. The generation-1 `DogTagIssuer.sol` / `DogTagIssuerFactory.sol` are
+UNMODIFIED; the pair is purely additive, like `ProtocolRegistry` and `IssuerDomainRegistry` were.
+
+Full semantics live in **`docs/ISSUER_V2_OWNERSHIP.md`** - do not restate them here, or the copy rots.
+The four things worth knowing before touching either file:
+
+- **Generation-1 clones have NO owner at all.** Not "an owner that is hard to check" - `DogTagIssuer` is
+  `Initializable` only, so the captain's "whitelisted people AND owner of contracts" is *unimplementable*
+  against the deployed set, and `IssuerDomainRegistry._isSpawningBusiness` is a salt-recomputation stand-in
+  that authorizes whoever was passed as `business` (which `resolve_business` defaults to the operator's own
+  signer). V2 replaces that stand-in with a real `owner()`.
+- **Ownership is CONTROL, never an issuance capability.** `issue`/`revoke` stay gated solely on the registry
+  whitelist, because delisting must keep stopping the next `issue` (plan §3.3). Merging the two silently
+  disarms the delist lever. Transfer is two-step and `owner()` can never become zero: `renounceOwnership` is
+  disabled and `acceptOwnership` refuses `msg.sender == address(0)` (OZ's `pendingOwner() != msg.sender`
+  compares `0 == 0` with nothing pending and would hand ownership to the zero address).
+- **`authorizeClone(candidate, claimant) -> recordType` is the ONE repoint predicate**, published on the
+  factory so S-6's attachment and S-9's domain write call it rather than re-deriving it. `isClone` is read
+  from the factory's OWN storage and checked FIRST, so a non-clone never executes; the record type is
+  RETURNED, so a caller supplies only the target address and never names its own slot.
+- **`priorIndex` is immutable and its occupant must return `address(0)` for an unknown root and MUST NOT
+  REVERT.** It gates every `registerRoot`, so a reverting occupant bricks issuance for the whole generation
+  with no way to repoint. Generation 2 points it at the generation-1 *factory* (pointing it at the S-8
+  router would be circular - the router needs the factory's address); generation 3+ points it at a router
+  over all earlier generations.
+
+Verify any change here by mutation, not by reading: the doc's §7 table lists eleven source mutations and
+the named test that catches each. A guard added without one is a guard nothing holds.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
