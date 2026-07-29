@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 161 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+- `cd contracts && forge test` - 165 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
   protocol version (an internal version key, not a product label) on both registry axes;
