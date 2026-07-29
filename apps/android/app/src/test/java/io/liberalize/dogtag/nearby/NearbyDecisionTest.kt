@@ -339,6 +339,91 @@ class NearbyDecisionTest {
         assertTrue(state.rows.single().provider.bindingState === IssuerBindingState.NoDomainClaimed)
     }
 
+    /**
+     * Mirrored by iOS `test_aCoarseFixNeverRendersAFinerNumberThanItSupports`.
+     *
+     * Coarse collection is only honest if the display admits how coarse it is: the same 3.44 km
+     * measurement must read differently from an exact chosen coordinate, a ten-metre fix and a
+     * hundred-metre fix, and the raw measurement must survive untouched for ordering.
+     */
+    @Test
+    fun aCoarseFixNeverRendersAFinerNumberThanItSupports() {
+        val exact = NearbyDecision.distanceClaim(3.44, null, fromDeviceFix = false)
+        assertEquals(DistanceClaim.Measured("3.4 km", approximate = false), exact)
+
+        val fine = NearbyDecision.distanceClaim(3.44, 8.0, fromDeviceFix = true)
+        assertEquals(DistanceClaim.Measured("3.4 km", approximate = true), fine)
+
+        val coarse = NearbyDecision.distanceClaim(3.44, 900.0, fromDeviceFix = true)
+        assertEquals(DistanceClaim.Measured("3 km", approximate = true), coarse)
+
+        val nearFix = NearbyDecision.distanceClaim(0.823, 90.0, fromDeviceFix = true)
+        assertEquals(DistanceClaim.Measured("0.8 km", approximate = true), nearFix)
+    }
+
+    @Test
+    fun aFixTooCoarseOrTooBrokenToPlaceAProviderStatesUncertaintyInsteadOfANumber() {
+        for (accuracy in listOf(null, Double.NaN, -1.0)) {
+            val claim = NearbyDecision.distanceClaim(3.44, accuracy, fromDeviceFix = true)
+            assertTrue("$accuracy", claim is DistanceClaim.Uncertain)
+        }
+        val tooCoarse = NearbyDecision.distanceClaim(30.0, 25_000.0, fromDeviceFix = true)
+        assertTrue(tooCoarse is DistanceClaim.Uncertain)
+        assertTrue((tooCoarse as DistanceClaim.Uncertain).reason.contains("25.0 km"))
+    }
+
+    @Test
+    fun aProviderInsideTheFixesOwnErrorIsBoundedNotStatedAsAPointValue() {
+        val claim = NearbyDecision.distanceClaim(0.05, 150.0, fromDeviceFix = true)
+        assertEquals(DistanceClaim.Measured("< 150 m", approximate = true), claim)
+        // A bound already reads as imprecise, so it is not additionally marked "~< 150 m".
+        assertEquals("< 150 m", (claim as DistanceClaim.Measured).display)
+        assertEquals(
+            "~3 km",
+            (NearbyDecision.distanceClaim(3.44, 900.0, fromDeviceFix = true)
+                as DistanceClaim.Measured).display,
+        )
+        assertEquals(
+            "3.4 km",
+            (NearbyDecision.distanceClaim(3.44, null, fromDeviceFix = false)
+                as DistanceClaim.Measured).display,
+        )
+    }
+
+    @Test
+    fun rowsCarryTheOriginsPrecisionAndKeepTheRawMeasurementForOrdering() {
+        val clinic = provider("clinic")
+        val coarse = NearbyDecision.nearby(
+            found(clinic),
+            NearbyOriginState.Available(
+                GeoPoint(1.3521, 103.8198),
+                OriginSource.CurrentLocation,
+                accuracyMetres = 900.0,
+            ),
+            listOf(measured(clinic, 3.44)),
+            "",
+        )
+        coarse as NearbyPresentation.ProvidersFound
+        val row = coarse.rows.single()
+        assertEquals(3.44, row.distanceKm, 0.0)
+        assertEquals(DistanceClaim.Measured("3 km", approximate = true), row.distance)
+
+        // A typed coordinate carries no measurement error, so it keeps ordinary precision.
+        val chosen = NearbyDecision.nearby(
+            found(clinic),
+            origin,
+            listOf(measured(clinic, 3.44)),
+            "",
+        )
+        chosen as NearbyPresentation.ProvidersFound
+        assertEquals(
+            DistanceClaim.Measured("3.4 km", approximate = false),
+            chosen.rows.single().distance,
+        )
+        assertNull(NearbyDecision.accuracyNote(null))
+        assertEquals("±40 m", NearbyDecision.accuracyNote(38.0))
+    }
+
     @Test
     fun distanceAndBearingFormattingDoNotOverclaimPrecision() {
         assertEquals("< 10 m", NearbyDecision.formatDistanceKm(0.003))

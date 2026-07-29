@@ -93,13 +93,19 @@ function isDirectoryRow(value: unknown): value is DirectoryRow {
 /**
  * All-or-nothing on purpose. Dropping the rows that fail would let a wholly malformed response
  * degrade into a successful `empty`, which is the one outcome this seam exists to prevent.
+ *
+ * A repeated `businessId` is malformed for the same reason: the id is the consumer's list identity,
+ * so silently keeping both rows corrupts rendering rather than reporting a bad response.
  */
 function hasDirectoryRows(value: unknown): value is { businesses: DirectoryRow[] } {
-  return (
-    isRecord(value) &&
-    Array.isArray(value.businesses) &&
-    value.businesses.every(isDirectoryRow)
-  );
+  if (!isRecord(value) || !Array.isArray(value.businesses)) return false;
+  if (!value.businesses.every(isDirectoryRow)) return false;
+  const ids = new Set<string>();
+  return (value.businesses as DirectoryRow[]).every((row) => {
+    if (ids.has(row.businessId)) return false;
+    ids.add(row.businessId);
+    return true;
+  });
 }
 
 function errorDetail(error: unknown): string {
@@ -161,9 +167,10 @@ function toDirectoryProvider(business: DirectoryRow): DirectoryProvider {
     services: [...business.services],
     contact: normalizeContact(business.contact),
     domain,
-    // The central list does not execute the issuer↔domain binding check. A non-empty published
-    // domain is therefore unavailable, never verified; a blank one is the ordinary no-claim state.
-    bindingState: domain === null ? "noDomainClaimed" : "unavailable",
+    // The central list does not execute the issuer↔domain binding check, and reads no chain state at
+    // all. A non-empty published domain is therefore unavailable, never verified; a blank one says
+    // only that this listing carries no domain, which is not the on-chain fact `noDomainClaimed`.
+    bindingState: domain === null ? "noDomainListed" : "unavailable",
     // `/v1/businesses` has no delisting/whitelist fact. Inventing `true` here would turn discovery
     // data into a claim about current standing that the source never made.
     active: null,

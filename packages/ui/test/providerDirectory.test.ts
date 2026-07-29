@@ -208,6 +208,22 @@ describe("centralDirectory", () => {
     expect(result).toMatchObject({ state: "unavailable", reason: "malformedResponse" });
   });
 
+  // Mirrors the Kotlin and Swift adapters: `providerId` is the consumer's list identity, so a
+  // repeated one is a bad response rather than two rows to render on top of each other.
+  it("refuses a response that repeats a provider id rather than rendering both rows", async () => {
+    const result = await centralDirectory(
+      {
+        base: "https://central.test",
+        listBusinesses: async () => ({
+          businesses: [CENTRAL_PROVIDER, { ...CENTRAL_PROVIDER, name: "Impostor Vet" }],
+        }),
+      },
+      { now: () => 5_400 },
+    ).read();
+
+    expect(result).toMatchObject({ state: "unavailable", reason: "malformedResponse" });
+  });
+
   it("normalizes a domain-less central row without exposing central-only HMAC metadata", async () => {
     const result = await centralDirectory(
       {
@@ -221,7 +237,7 @@ describe("centralDirectory", () => {
 
     expect(result).toMatchObject({
       state: "found",
-      providers: [{ ...PROVIDER, domain: null, bindingState: "noDomainClaimed" }],
+      providers: [{ ...PROVIDER, domain: null, bindingState: "noDomainListed" }],
     });
     if (result.state !== "found") throw new Error("expected found");
     expect("hmacKeyId" in result.providers[0]).toBe(false);

@@ -92,13 +92,53 @@ protocol ProviderDirectoryReading {
     func read() async -> ProviderDirectoryResult
 }
 
+enum NearbyOriginSource: Equatable {
+    case currentLocation
+    case chosenCoordinates
+}
+
+/// Where distance is measured from, and how precise that origin actually is.
+///
+/// `accuracyMetres` is the horizontal uncertainty the DEVICE reported for a `currentLocation` fix,
+/// carried so no row can render a distance finer than the fix supports. It is meaningless for
+/// `chosenCoordinates`, which the owner typed exactly, so that source keeps ordinary precision.
+struct NearbyOrigin: Equatable {
+    let point: NearbyPoint
+    let source: NearbyOriginSource
+    var accuracyMetres: Double?
+
+    static func chosen(_ point: NearbyPoint) -> NearbyOrigin {
+        NearbyOrigin(point: point, source: .chosenCoordinates, accuracyMetres: nil)
+    }
+}
+
 enum NearbyLocationState: Equatable {
     case notRequested
     case locating
-    case ready(NearbyPoint)
+    case ready(NearbyOrigin)
     case refused
     case unavailable
     case invalidChosenLocation
+}
+
+/// What may be SAID about one measured distance, given how precise the origin actually is.
+///
+/// A device fix carries real uncertainty, so the rendered number must not be finer than the fix
+/// supports, and when nothing numeric is supportable the surface shows `uncertain` rather than an
+/// arbitrary confident figure.
+enum DistanceClaim: Equatable {
+    /// `approximate` is true for every device fix, so the row can mark the number as such.
+    case measured(label: String, approximate: Bool)
+    /// No distance may be stated at all; `reason` is shown in place of a number.
+    case uncertain(reason: String)
+
+    /// What the row actually prints, `nil` when there is no number to print. Composed here, not at
+    /// each call site, so the two apps cannot disagree — and so a label that is already a bound is
+    /// not double-marked as `~< 150 m`.
+    var display: String? {
+        guard case .measured(let label, let approximate) = self else { return nil }
+        return approximate && !label.hasPrefix("<") ? "~\(label)" : label
+    }
 }
 
 enum NearbyUnitSystem: Equatable {
@@ -145,8 +185,9 @@ enum NearbyDecision {
 
     struct Row: Equatable {
         let provider: DirectoryProvider
+        /// The RAW platform measurement. Ordering uses it; only `distance` is coarsened for display.
         let distanceKm: Double
-        let distanceLabel: String
+        let distance: DistanceClaim
         let bearingLabel: String?
 
         /// A row reaches this type only after a real, valid coordinate and distance were established.
@@ -217,7 +258,7 @@ enum NearbyDecision {
                 )
             }
 
-            let origin: NearbyPoint
+            let resolved: NearbyOrigin
             switch location {
             case .notRequested:
                 return .awaitingOrigin
@@ -229,18 +270,19 @@ enum NearbyDecision {
                 return .locationUnavailable
             case .invalidChosenLocation:
                 return .invalidChosenLocation
-            case .ready(let point):
-                guard point.isValid else {
+            case .ready(let candidate):
+                guard candidate.point.isValid else {
                     return .locationUnavailable
                 }
-                origin = point
+                resolved = candidate
             }
 
+            let origin = resolved.point
+            let fromDeviceFix = resolved.source == .currentLocation
             let ranked = candidates.enumerated().compactMap { index, provider -> (Int, Row)? in
                 guard let destination = provider.geo, destination.isValid,
                       let km = distanceKm(origin, destination),
-                      km.isFinite, km >= 0,
-                      let label = formatDistanceKm(km, unitSystem: unitSystem) else {
+                      km.isFinite, km >= 0 else {
                     return nil
                 }
                 return (
@@ -248,7 +290,12 @@ enum NearbyDecision {
                     Row(
                         provider: provider,
                         distanceKm: km,
-                        distanceLabel: label,
+                        distance: distanceClaim(
+                            km,
+                            accuracyMetres: resolved.accuracyMetres,
+                            fromDeviceFix: fromDeviceFix,
+                            unitSystem: unitSystem
+                        ),
                         bearingLabel: initialBearing(origin, destination).flatMap(compassPoint8)
                     )
                 )
@@ -343,31 +390,133 @@ enum NearbyDecision {
         return points[Int((normalized / 45).rounded()) % points.count]
     }
 
+    private static let kmPerMile = 1.609344
+    private static let feetPerKm = 1000 / 0.3048
+    private static let footStepMetres = 25 * 0.3048
+    private static let tenthMileMetres = 1.609344 * 100
+    /// The coarsest fix that can still place a provider at all. Beyond it, no number is claimed.
+    private static let coarsestFixMetres = 10_000.0
+    private static let distanceUnavailable = "This provider's distance could not be measured."
+    /// Rounding steps a device fix may be shown at. The chosen step is never finer than the fix.
+    private static let precisionLadderMetres = [10.0, 100.0, 1_000.0, coarsestFixMetres]
+
+    /// [minGranularityMetres] raises the display floor so a band finer than the origin's own
+    /// uncertainty is never reached. It can only make a label COARSER; coarser is always honest,
+    /// finer never is. The default 0 is the exact coordinate-arithmetic path, unchanged.
     static func formatDistanceKm(
         _ km: Double?,
-        unitSystem: NearbyUnitSystem
+        unitSystem: NearbyUnitSystem,
+        minGranularityMetres: Double = 0
     ) -> String? {
         guard let km, km.isFinite, km >= 0 else { return nil }
         if unitSystem == .imperial {
-            let miles = km / 1.609344
-            if miles < 0.1 {
-                let feet = km * (1000 / 0.3048)
+            let miles = km / kmPerMile
+            if minGranularityMetres <= footStepMetres, miles < 0.1 {
+                let feet = km * feetPerKm
                 if feet < 25 { return "< 25 ft" }
                 return "\(Int((feet / 25).rounded() * 25)) ft"
             }
             let oneDecimal = (miles * 10).rounded() / 10
-            if oneDecimal < 10 { return String(format: "%.1f mi", oneDecimal) }
-            return "\(Int(miles.rounded())) mi"
+            if minGranularityMetres <= tenthMileMetres, oneDecimal < 10 {
+                return String(format: "%.1f mi", oneDecimal)
+            }
+            if minGranularityMetres <= coarsestFixMetres { return "\(Int(miles.rounded())) mi" }
+            return nil
         }
 
-        if km < 1 {
+        if minGranularityMetres <= 10, km < 1 {
             let metres = km * 1000
             if metres < 10 { return "< 10 m" }
             let rounded = (metres / 10).rounded() * 10
             if rounded < 1000 { return "\(Int(rounded)) m" }
         }
         let oneDecimal = (km * 10).rounded() / 10
-        if oneDecimal < 10 { return String(format: "%.1f km", oneDecimal) }
-        return "\(Int(km.rounded())) km"
+        if minGranularityMetres <= 100, oneDecimal < 10 {
+            return String(format: "%.1f km", oneDecimal)
+        }
+        if minGranularityMetres <= coarsestFixMetres { return "\(Int(km.rounded())) km" }
+        return nil
+    }
+
+    /// What this origin's precision permits the row to say about one measured distance.
+    ///
+    /// Chosen coordinates are exact arithmetic on numbers the owner typed, so they keep the ordinary
+    /// bands. A device fix does not: its label is rounded to a step no finer than the reported
+    /// horizontal accuracy, a provider closer than that accuracy is stated as a BOUND rather than a
+    /// point value the fix cannot support, and a fix whose accuracy is missing, nonsensical, or
+    /// coarser than any usable step yields no number at all.
+    static func distanceClaim(
+        _ km: Double?,
+        accuracyMetres: Double?,
+        fromDeviceFix: Bool,
+        unitSystem: NearbyUnitSystem
+    ) -> DistanceClaim {
+        guard let km, km.isFinite, km >= 0 else {
+            return .uncertain(reason: distanceUnavailable)
+        }
+        guard fromDeviceFix else {
+            guard let label = formatDistanceKm(km, unitSystem: unitSystem) else {
+                return .uncertain(reason: distanceUnavailable)
+            }
+            return .measured(label: label, approximate: false)
+        }
+        guard let accuracyMetres, accuracyMetres.isFinite, accuracyMetres >= 0 else {
+            return .uncertain(
+                reason: "This location fix reported no usable accuracy, so no distance is claimed."
+            )
+        }
+        guard let step = precisionLadderMetres.first(where: { $0 >= accuracyMetres }) else {
+            return .uncertain(
+                reason: "This location fix is accurate only to "
+                    + "\(uncertaintyLabel(accuracyMetres, unitSystem: unitSystem)), "
+                    + "which is too coarse to state a distance."
+            )
+        }
+        let metres = km * 1000
+        if metres <= accuracyMetres {
+            // Closer than the fix's own error is something the fix DOES establish. State that bound
+            // rather than a point value, and rather than withholding an answer we actually have.
+            return .measured(
+                label: "< \(uncertaintyLabel(accuracyMetres, unitSystem: unitSystem))",
+                approximate: true
+            )
+        }
+        let rounded = (metres / step).rounded() * step / 1000
+        guard let label = formatDistanceKm(
+            rounded,
+            unitSystem: unitSystem,
+            minGranularityMetres: accuracyMetres
+        ) else {
+            return .uncertain(reason: distanceUnavailable)
+        }
+        return .measured(label: label, approximate: true)
+    }
+
+    /// How the fix's own uncertainty is written, e.g. `±40 m`. Never finer than the value itself.
+    static func accuracyNote(
+        _ accuracyMetres: Double?,
+        unitSystem: NearbyUnitSystem
+    ) -> String? {
+        guard let accuracyMetres, accuracyMetres.isFinite, accuracyMetres >= 0 else { return nil }
+        return "±\(uncertaintyLabel(accuracyMetres, unitSystem: unitSystem))"
+    }
+
+    /// A distance that IS the uncertainty. Rendered from the value itself so its own granularity can
+    /// never over-claim, unlike running it through the measured-distance bands.
+    private static func uncertaintyLabel(
+        _ metres: Double,
+        unitSystem: NearbyUnitSystem
+    ) -> String {
+        if unitSystem == .imperial {
+            let feet = metres * feetPerKm / 1000
+            if feet < 1000 {
+                return "\(Int(max((feet / 25).rounded() * 25, 25))) ft"
+            }
+            return String(format: "%.1f mi", metres / 1000 / kmPerMile)
+        }
+        if metres < 1000 {
+            return "\(Int(max((metres / 10).rounded() * 10, 10))) m"
+        }
+        return String(format: "%.1f km", metres / 1000)
     }
 }

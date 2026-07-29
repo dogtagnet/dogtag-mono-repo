@@ -56,7 +56,7 @@ final class NearbyDecisionTests: XCTestCase {
         ))
     }
 
-    private let origin = NearbyPoint(lat: 0, lng: 0)
+    private let origin = NearbyOrigin.chosen(NearbyPoint(lat: 0, lng: 0))
 
     func test_centralDirectoryEndpointIsTheExactFullSetRouteWithoutAQuery() {
         let endpoint = CentralProviderDirectory.endpoint(baseURL: "https://api.dogtag.io")
@@ -98,11 +98,32 @@ final class NearbyDecisionTests: XCTestCase {
 
         XCTAssertEqual(parsed?.count, 2)
         XCTAssertNil(parsed?.first?.geo)
-        XCTAssertEqual(parsed?.first?.bindingState, .noDomainClaimed)
+        // A directory row is not a chain read, so a blank domain column may not claim the on-chain
+        // fact `noDomainClaimed`; it says only that this listing carries no domain.
+        XCTAssertEqual(parsed?.first?.bindingState, .noDomainListed)
+        XCTAssertFalse(IssuerBinding(state: .noDomainListed).line.contains("on-chain"))
         XCTAssertEqual(parsed?.first?.contact.phone, "+65 6123 4567")
         XCTAssertEqual(parsed?.last?.geo, NearbyPoint(lat: 0, lng: 0))
         XCTAssertEqual(parsed?.last?.bindingState, .unavailable)
         XCTAssertNil(parsed?.last?.active)
+    }
+
+    /// Mirrors the Kotlin adapter's duplicate-id refusal. `providerId` is the list identity both
+    /// scopes render with, so a repeated one is a bad response, not two rows to draw on top of
+    /// each other.
+    func test_centralParserRefusesARepeatedProviderIdRatherThanRenderingBothRows() {
+        let row: [String: Any] = [
+            "businessId": "same",
+            "type": "vet",
+            "name": "One Vet",
+            "services": [],
+            "domain": "",
+        ]
+        var impostor = row
+        impostor["name"] = "Impostor Vet"
+
+        XCTAssertNil(CentralProviderDirectory.parseProviders(["businesses": [row, impostor]]))
+        XCTAssertEqual(CentralProviderDirectory.parseProviders(["businesses": [row]])?.count, 1)
     }
 
     func test_centralParserRejectsPresentNullCoordinateObjectsAndMissingDomains() {
@@ -217,7 +238,7 @@ final class NearbyDecisionTests: XCTestCase {
                 provider(id: "contact", name: "Contact Only", geo: nil),
                 provider(id: "zero", name: "Published Zero", geo: NearbyPoint(lat: 0, lng: 0)),
             ]),
-            location: .ready(NearbyPoint(lat: 1, lng: 0)),
+            location: .ready(.chosen(NearbyPoint(lat: 1, lng: 0))),
             distance: { origin, destination in abs(origin.lat - destination.lat) }
         )
 
@@ -363,6 +384,102 @@ final class NearbyDecisionTests: XCTestCase {
         XCTAssertEqual(IssuerBinding(state: state).tone, .neutral)
     }
 
+    /// Mirrored by Android `aCoarseFixNeverRendersAFinerNumberThanItSupports`.
+    ///
+    /// Coarse collection is only honest if the display admits how coarse it is: the same 3.44 km
+    /// measurement must read differently from an exact chosen coordinate, a ten-metre fix and a
+    /// hundred-metre fix.
+    func test_aCoarseFixNeverRendersAFinerNumberThanItSupports() {
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                3.44, accuracyMetres: nil, fromDeviceFix: false, unitSystem: .metric
+            ),
+            .measured(label: "3.4 km", approximate: false)
+        )
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                3.44, accuracyMetres: 8, fromDeviceFix: true, unitSystem: .metric
+            ),
+            .measured(label: "3.4 km", approximate: true)
+        )
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                3.44, accuracyMetres: 900, fromDeviceFix: true, unitSystem: .metric
+            ),
+            .measured(label: "3 km", approximate: true)
+        )
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                0.823, accuracyMetres: 90, fromDeviceFix: true, unitSystem: .metric
+            ),
+            .measured(label: "0.8 km", approximate: true)
+        )
+    }
+
+    func test_aFixTooCoarseOrTooBrokenToPlaceAProviderStatesUncertaintyInsteadOfANumber() {
+        for accuracy in [nil, Double.nan, -1] as [Double?] {
+            let claim = NearbyDecision.distanceClaim(
+                3.44, accuracyMetres: accuracy, fromDeviceFix: true, unitSystem: .metric
+            )
+            guard case .uncertain = claim else {
+                return XCTFail("expected uncertain for accuracy \(String(describing: accuracy))")
+            }
+        }
+        let tooCoarse = NearbyDecision.distanceClaim(
+            30, accuracyMetres: 25_000, fromDeviceFix: true, unitSystem: .metric
+        )
+        guard case .uncertain(let reason) = tooCoarse else {
+            return XCTFail("expected uncertain beyond the coarsest usable fix")
+        }
+        XCTAssertTrue(reason.contains("25.0 km"), reason)
+    }
+
+    func test_aProviderInsideTheFixesOwnErrorIsBoundedNotStatedAsAPointValue() {
+        let bounded = NearbyDecision.distanceClaim(
+            0.05, accuracyMetres: 150, fromDeviceFix: true, unitSystem: .metric
+        )
+        XCTAssertEqual(bounded, .measured(label: "< 150 m", approximate: true))
+        // A bound already reads as imprecise, so it is not additionally marked "~< 150 m".
+        XCTAssertEqual(bounded.display, "< 150 m")
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                3.44, accuracyMetres: 900, fromDeviceFix: true, unitSystem: .metric
+            ).display,
+            "~3 km"
+        )
+        XCTAssertEqual(
+            NearbyDecision.distanceClaim(
+                3.44, accuracyMetres: nil, fromDeviceFix: false, unitSystem: .metric
+            ).display,
+            "3.4 km"
+        )
+        XCTAssertNil(DistanceClaim.uncertain(reason: "nope").display)
+    }
+
+    func test_rowsCarryTheOriginsPrecisionAndKeepTheRawMeasurementForOrdering() {
+        let directory = found([provider(id: "one", name: "One Vet", geo: NearbyPoint(lat: 0, lng: 3.44))])
+        let coarse = presentation(
+            directory,
+            location: .ready(NearbyOrigin(
+                point: NearbyPoint(lat: 0, lng: 0),
+                source: .currentLocation,
+                accuracyMetres: 900
+            ))
+        )
+        guard let row = rows(coarse).first else { return XCTFail("expected a row") }
+        XCTAssertEqual(row.distanceKm, 3.44)
+        XCTAssertEqual(row.distance, .measured(label: "3 km", approximate: true))
+
+        // A typed coordinate carries no measurement error, so it keeps ordinary precision.
+        let chosen = presentation(directory)
+        XCTAssertEqual(
+            rows(chosen).first?.distance,
+            .measured(label: "3.4 km", approximate: false)
+        )
+        XCTAssertNil(NearbyDecision.accuracyNote(nil, unitSystem: .metric))
+        XCTAssertEqual(NearbyDecision.accuracyNote(38, unitSystem: .metric), "±40 m")
+    }
+
     func test_distanceFormattingMatchesTheSharedDisplayBands() {
         XCTAssertEqual(NearbyDecision.formatDistanceKm(0, unitSystem: .metric), "< 10 m")
         XCTAssertEqual(NearbyDecision.formatDistanceKm(0.823, unitSystem: .metric), "820 m")
@@ -405,7 +522,7 @@ final class NearbyDecisionTests: XCTestCase {
         XCTAssertEqual(
             presentation(
                 directory,
-                location: .ready(NearbyPoint(lat: 91, lng: 0))
+                location: .ready(.chosen(NearbyPoint(lat: 91, lng: 0)))
             ),
             .locationUnavailable
         )

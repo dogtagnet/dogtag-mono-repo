@@ -298,6 +298,7 @@ class IssuerDomainBindingTest {
             IssuerBindingState.NotADogTagIssuer,
             IssuerBindingState.Unavailable,
             IssuerBindingState.NoDomainClaimed,
+            IssuerBindingState.NoDomainListed,
         )
         for (state in noDns) {
             // `checkedAt` is deliberately supplied: even a stray timestamp must not license the claim.
@@ -366,6 +367,7 @@ class IssuerDomainBindingTest {
         IssuerBindingState.NotListed,
         IssuerBindingState.CouldNotCheck,
         IssuerBindingState.NoDomainClaimed,
+        IssuerBindingState.NoDomainListed,
         IssuerBindingState.Unavailable,
         IssuerBindingState.Pending,
     )
@@ -453,6 +455,7 @@ class IssuerDomainBindingTest {
     fun the_unknown_states_stay_neutral() {
         assertEquals(BindingTone.Neutral, b(IssuerBindingState.CouldNotCheck).tone)
         assertEquals(BindingTone.Neutral, b(IssuerBindingState.NoDomainClaimed).tone)
+        assertEquals(BindingTone.Neutral, b(IssuerBindingState.NoDomainListed).tone)
         assertEquals(BindingTone.Neutral, b(IssuerBindingState.Unavailable).tone)
     }
 

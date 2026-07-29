@@ -211,10 +211,11 @@ class CentralProviderDirectory(
             // the source-neutral maintained/delisted fact.
             active = null,
             contact = contact,
-            // Central supplies no clone/root/observed binding. These are the only honest states it
-            // may derive locally; it can never synthesize Verified from the domain string.
+            // Central supplies no clone/root/observed binding and reads no chain state at all. These
+            // are the only honest states it may derive locally; it can never synthesize Verified from
+            // the domain string, and a blank column is a fact about THIS LISTING, not an on-chain one.
             bindingState = if (domain == null) {
-                IssuerBindingState.NoDomainClaimed
+                IssuerBindingState.NoDomainListed
             } else {
                 IssuerBindingState.Unavailable
             },

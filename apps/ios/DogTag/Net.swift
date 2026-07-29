@@ -1028,14 +1028,19 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
 
     /// All-or-nothing validation, except that a genuinely absent/null `geo` is the valid contact-only
     /// case. A malformed coordinate object is not silently dropped or changed into a location-less row.
+    ///
+    /// A repeated `businessId` is malformed for the same reason: the id is this screen's list
+    /// identity, so keeping both rows would corrupt rendering instead of reporting a bad response.
     static func parseProviders(_ object: [String: Any]) -> [DirectoryProvider]? {
         guard let rows = object["businesses"] as? [Any] else { return nil }
         var providers: [DirectoryProvider] = []
+        var seenIds = Set<String>()
         providers.reserveCapacity(rows.count)
 
         for raw in rows {
             guard let row = raw as? [String: Any],
                   let providerId = row["businessId"] as? String,
+                  seenIds.insert(providerId).inserted,
                   let kind = row["type"] as? String,
                   let name = row["name"] as? String,
                   let services = row["services"] as? [String],
@@ -1057,10 +1062,11 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
                 // wire field rather than manufacturing a current-standing claim from this source.
                 active: nil,
                 contact: contact,
-                // Central does not carry a resolved on-chain/DNS observation. A blank domain is the
-                // established normal no-domain state; a nonblank claim stays neutral/unavailable
-                // rather than being promoted to verified merely because the directory echoed it.
-                bindingState: claimedDomain.isEmpty ? .noDomainClaimed : .unavailable
+                // Central does not carry a resolved on-chain/DNS observation and reads no chain state
+                // at all. A blank domain is a fact about THIS LISTING, never the on-chain
+                // `noDomainClaimed`; a nonblank claim stays neutral/unavailable rather than being
+                // promoted to verified merely because the directory echoed it.
+                bindingState: claimedDomain.isEmpty ? .noDomainListed : .unavailable
             ))
         }
         return providers

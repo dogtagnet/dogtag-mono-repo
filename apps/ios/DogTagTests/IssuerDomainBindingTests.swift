@@ -235,7 +235,10 @@ final class IssuerDomainBindingTests: XCTestCase {
     /// looked" the three-state design exists to prevent. The chain clause still renders: that read DID
     /// happen.
     func test_no_dns_clause_for_states_that_never_queried_dns() {
-        for state in [IssuerBindingState.notADogTagIssuer, .unavailable, .noDomainClaimed] {
+        let noDns: [IssuerBindingState] = [
+            .notADogTagIssuer, .unavailable, .noDomainClaimed, .noDomainListed,
+        ]
+        for state in noDns {
             // `checkedAt` is deliberately supplied: even a stray timestamp must not license the claim.
             let line = bound(state).provenanceLine()
             XCTAssertNotNil(line, "\(state)")
@@ -301,6 +304,7 @@ final class IssuerDomainBindingTests: XCTestCase {
         .notListed,
         .couldNotCheck,
         .noDomainClaimed,
+        .noDomainListed,
         .unavailable,
         .pending,
     ]
@@ -375,6 +379,7 @@ final class IssuerDomainBindingTests: XCTestCase {
     func test_the_unknown_states_stay_neutral() {
         XCTAssertEqual(binding(.couldNotCheck).tone, .neutral)
         XCTAssertEqual(binding(.noDomainClaimed).tone, .neutral)
+        XCTAssertEqual(binding(.noDomainListed).tone, .neutral)
         XCTAssertEqual(binding(.unavailable).tone, .neutral)
     }
 

@@ -37,6 +37,8 @@
  *    and it must never be softened into "not listed".
  *  - `noDomainClaimed` — link 1 holds and this issuer has claimed no domain. Nothing to check. The
  *    NORMAL state on day one, and it must look unremarkable.
+ *  - `noDomainListed` — a DIRECTORY listing published no domain. No chain read happened at all, so it
+ *    must never borrow `noDomainClaimed`'s on-chain wording.
  *  - `unavailable` — a prerequisite could not be read at all (nothing configured, or the read failed).
  *
  * Visually the three "we do not know" states share a neutral treatment with DIFFERENT text. That is not
@@ -52,6 +54,14 @@ export type IssuerDomainBindingState =
   | "notListed"
   | "couldNotCheck"
   | "noDomainClaimed"
+  /**
+   * Directory-only: a provider-directory listing carried no domain. Never sent by the API.
+   *
+   * A directory row is not a chain read, so an absent domain column is evidence of nothing about what
+   * the issuer published on-chain. `noDomainClaimed` states that the on-chain claim WAS read and was
+   * empty; using it here would assert a read that never happened.
+   */
+  | "noDomainListed"
   | "unavailable"
   /**
    * Client-only: the lookup is in flight. Never sent by the API.
@@ -126,8 +136,8 @@ export function bindingTone(state: IssuerDomainBindingState): BindingTone {
     case "pending":
       return "pending";
     default:
-      // `couldNotCheck`, `noDomainClaimed` and `unavailable` are all "we do not know". Deliberately
-      // NEITHER green nor red: a resolver timeout is not evidence either way.
+      // `couldNotCheck`, `noDomainClaimed`, `noDomainListed` and `unavailable` are all "we do not
+      // know". Deliberately NEITHER green nor red: a resolver timeout is not evidence either way.
       return "neutral";
   }
 }
@@ -151,6 +161,8 @@ export function bindingLine(b: IssuerDomainBinding): string {
       return "We could not reach DNS to check this domain";
     case "noDomainClaimed":
       return "This issuer has published no domain on-chain";
+    case "noDomainListed":
+      return "No domain listed for this provider";
     case "unavailable":
       return "The on-chain domain claim could not be read";
     case "pending":
@@ -190,6 +202,11 @@ export function bindingExplanation(b: IssuerDomainBinding): string {
       return (
         "This issuer's contract has not claimed a domain on-chain, so there is nothing to check " +
         "against DNS. This is normal."
+      );
+    case "noDomainListed":
+      return (
+        "This provider's directory listing carries no domain. Nothing on-chain was read here, so " +
+        "this says nothing about what the issuer may have published on-chain."
       );
     case "unavailable":
       return b.detail?.trim()

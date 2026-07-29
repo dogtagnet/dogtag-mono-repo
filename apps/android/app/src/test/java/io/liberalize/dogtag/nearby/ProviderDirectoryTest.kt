@@ -1,6 +1,7 @@
 package io.liberalize.dogtag.nearby
 
 import io.liberalize.dogtag.net.Http
+import io.liberalize.dogtag.net.IssuerBinding
 import io.liberalize.dogtag.net.IssuerBindingState
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -70,7 +71,13 @@ class ProviderDirectoryTest {
         assertEquals(null, contactOnly.geo)
         assertEquals("+65 6123 4567", contactOnly.contact.phone)
         assertTrue(contactOnly.contact.hasAny)
-        assertTrue(contactOnly.bindingState === IssuerBindingState.NoDomainClaimed)
+        // A directory row is not a chain read, so a blank domain column may not claim the on-chain
+        // fact `NoDomainClaimed`; it says only that this listing carries no domain.
+        assertTrue(contactOnly.bindingState === IssuerBindingState.NoDomainListed)
+        assertFalse(contactOnly.bindingState === IssuerBindingState.NoDomainClaimed)
+        assertFalse(
+            IssuerBinding(state = contactOnly.bindingState, domain = "").line.contains("on-chain"),
+        )
 
         val located = result.providers.last()
         assertEquals(GeoPoint(1.3039, 103.8318), located.geo)
@@ -93,7 +100,7 @@ class ProviderDirectoryTest {
     }
 
     @Test
-    fun missingDomainIsMalformedRatherThanInventedAsNoDomainClaimed() {
+    fun missingDomainIsMalformedRatherThanInventedAsADomainlessListing() {
         val body = """
             {"businesses":[{
               "businessId":"one","type":"vet","name":"One",

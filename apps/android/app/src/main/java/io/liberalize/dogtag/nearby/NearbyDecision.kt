@@ -30,8 +30,8 @@ data class ProviderContact(
  * The source-neutral row consumed by the two directory scopes.
  *
  * [bindingState] reuses the app's issuer-domain state machine. The central adapter may only produce
- * `NoDomainClaimed` for a blank domain or `Unavailable` otherwise; it has no chain-backed basis for a
- * positive claim.
+ * `NoDomainListed` for a blank domain or `Unavailable` otherwise; it reads no chain state, so it has
+ * no basis for a positive claim and none for the on-chain `NoDomainClaimed` either.
  */
 data class DirectoryProvider(
     val providerId: String,
@@ -82,7 +82,40 @@ sealed interface NearbyOriginState {
     data object PermissionRefused : NearbyOriginState
     data object LocationUnavailable : NearbyOriginState
     data object InvalidChosenLocation : NearbyOriginState
-    data class Available(val point: GeoPoint, val source: OriginSource) : NearbyOriginState
+
+    /**
+     * [accuracyMetres] is the horizontal uncertainty the DEVICE reported for a
+     * [OriginSource.CurrentLocation] fix, and is what stops a coarse fix from being rendered as a
+     * precise distance. It is meaningless for [OriginSource.ChosenCoordinates], which the owner typed
+     * exactly, so that source keeps ordinary coordinate-based precision.
+     */
+    data class Available(
+        val point: GeoPoint,
+        val source: OriginSource,
+        val accuracyMetres: Double? = null,
+    ) : NearbyOriginState
+}
+
+/**
+ * What may be SAID about one measured distance, given how precise the origin actually is.
+ *
+ * A device fix carries real uncertainty, so the rendered number must not be finer than the fix
+ * supports, and when nothing numeric is supportable the surface shows [Uncertain] rather than an
+ * arbitrary confident figure.
+ */
+sealed interface DistanceClaim {
+    /** [approximate] is true for every device fix, so the row can mark the number as such. */
+    data class Measured(val label: String, val approximate: Boolean) : DistanceClaim {
+        /**
+         * What the row actually prints. Composed here, not at each call site, so the two apps cannot
+         * disagree — and so a label that is already a bound is not double-marked as `~< 150 m`.
+         */
+        val display: String
+            get() = if (approximate && !label.startsWith("<")) "~$label" else label
+    }
+
+    /** No distance may be stated at all; [reason] is shown in place of a number. */
+    data class Uncertain(val reason: String) : DistanceClaim
 }
 
 /** Distance/bearing supplied by the platform geo primitive, not recomputed by this rule layer. */
@@ -94,8 +127,10 @@ data class ProviderMeasurement(
 
 data class NearbyRow(
     val provider: DirectoryProvider,
+    /** The RAW platform measurement. Ordering uses it; only [distance] is coarsened for display. */
     val distanceKm: Double,
     val bearingDegrees: Double?,
+    val distance: DistanceClaim,
 ) {
     /** A row reaches this type only after its real destination was validated. */
     val canOpenDirections: Boolean get() = provider.geo?.isUsable == true
@@ -151,6 +186,14 @@ object NearbyDecision {
     const val DEFAULT_RADIUS_KM = 50.0
     private const val KM_PER_MILE = 1.609344
     private const val FEET_PER_KM = 1000 / 0.3048
+    private const val FOOT_STEP_M = 25 * 0.3048
+    private const val TENTH_MILE_M = KM_PER_MILE * 100
+    /** The coarsest fix that can still place a provider at all. Beyond it, no number is claimed. */
+    private const val COARSEST_FIX_M = 10_000.0
+    private const val DISTANCE_UNAVAILABLE = "This provider's distance could not be measured."
+
+    /** Rounding steps a device fix may be shown at. The chosen step is never finer than the fix. */
+    private val PRECISION_LADDER_M = listOf(10.0, 100.0, 1_000.0, COARSEST_FIX_M)
     private val imperialRegions = setOf("US", "GB", "LR", "MM")
     private val compassPoints = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 
@@ -168,6 +211,7 @@ object NearbyDecision {
         measurements: List<ProviderMeasurement>,
         query: String,
         radiusKm: Double = DEFAULT_RADIUS_KM,
+        unit: UnitSystem = UnitSystem.Metric,
     ): NearbyPresentation {
         when (directory) {
             null -> return NearbyPresentation.LoadingDirectory
@@ -203,7 +247,7 @@ object NearbyDecision {
             }
         }
 
-        when (origin) {
+        val available = when (origin) {
             NearbyOriginState.AwaitingChoice -> return NearbyPresentation.AwaitingOrigin
             NearbyOriginState.Locating -> return NearbyPresentation.Locating
             NearbyOriginState.PermissionRefused -> return NearbyPresentation.PermissionRefused
@@ -212,9 +256,11 @@ object NearbyDecision {
                 return NearbyPresentation.InvalidChosenLocation
             is NearbyOriginState.Available -> {
                 if (!origin.point.isUsable) return NearbyPresentation.LocationUnavailable
+                origin
             }
         }
 
+        val fromDeviceFix = available.source == OriginSource.CurrentLocation
         val measuredById = measurements.associateBy { it.providerId }
         val located = locatedCandidates.mapNotNull { provider ->
             val measured = measuredById[provider.providerId] ?: return@mapNotNull null
@@ -225,6 +271,12 @@ object NearbyDecision {
                 bearingDegrees = measured.bearingDegrees
                     ?.takeIf { it.isFinite() }
                     ?.let { ((it % 360.0) + 360.0) % 360.0 },
+                distance = distanceClaim(
+                    km = measured.distanceKm,
+                    accuracyMetres = available.accuracyMetres,
+                    fromDeviceFix = fromDeviceFix,
+                    unit = unit,
+                ),
             )
         }
 
@@ -321,31 +373,116 @@ object NearbyDecision {
     /**
      * Honest display precision matching the canonical geo core: roughly ten metres near the user,
      * coarser with distance, and no plausible string for an unusable measurement.
+     *
+     * [minGranularityMetres] raises that floor so a band finer than the origin's own uncertainty is
+     * never reached. It can only make a label COARSER; coarser is always honest, finer never is.
+     * The default 0.0 is the exact coordinate-arithmetic path and is byte-identical to before.
      */
-    fun formatDistanceKm(km: Double?, unit: UnitSystem = UnitSystem.Metric): String? {
+    fun formatDistanceKm(
+        km: Double?,
+        unit: UnitSystem = UnitSystem.Metric,
+        minGranularityMetres: Double = 0.0,
+    ): String? {
         if (km == null || !km.isFinite() || km < 0) return null
         if (unit == UnitSystem.Imperial) {
             val miles = km / KM_PER_MILE
-            if (miles < 0.1) {
+            if (minGranularityMetres <= FOOT_STEP_M && miles < 0.1) {
                 val feet = km * FEET_PER_KM
                 if (feet < 25) return "< 25 ft"
                 return "${roundTo(feet, 25.0).toLong()} ft"
             }
             val oneDecimal = Math.round(miles * 10) / 10.0
-            if (oneDecimal < 10) return String.format(Locale.US, "%.1f mi", oneDecimal)
-            return "${Math.round(miles)} mi"
+            if (minGranularityMetres <= TENTH_MILE_M && oneDecimal < 10) {
+                return String.format(Locale.US, "%.1f mi", oneDecimal)
+            }
+            if (minGranularityMetres <= COARSEST_FIX_M) return "${Math.round(miles)} mi"
+            return null
         }
 
-        if (km < 1) {
+        if (minGranularityMetres <= 10.0 && km < 1) {
             val metres = km * 1000
             if (metres < 10) return "< 10 m"
             val rounded = roundTo(metres, 10.0)
             if (rounded < 1000) return "${rounded.toLong()} m"
         }
         val oneDecimal = Math.round(km * 10) / 10.0
-        if (oneDecimal < 10) return String.format(Locale.US, "%.1f km", oneDecimal)
-        return "${Math.round(km)} km"
+        if (minGranularityMetres <= 100.0 && oneDecimal < 10) {
+            return String.format(Locale.US, "%.1f km", oneDecimal)
+        }
+        if (minGranularityMetres <= COARSEST_FIX_M) return "${Math.round(km)} km"
+        return null
     }
+
+    /**
+     * What this origin's precision permits the row to say about one measured distance.
+     *
+     * Chosen coordinates are exact arithmetic on numbers the owner typed, so they keep the ordinary
+     * bands. A device fix does not: its label is rounded to a step no finer than the reported
+     * horizontal accuracy, a provider closer than that accuracy is stated as a BOUND rather than a
+     * point value the fix cannot support, and a fix whose accuracy is missing, nonsensical, or coarser
+     * than any usable step yields no number at all.
+     */
+    fun distanceClaim(
+        km: Double?,
+        accuracyMetres: Double?,
+        fromDeviceFix: Boolean,
+        unit: UnitSystem = UnitSystem.Metric,
+    ): DistanceClaim {
+        if (km == null || !km.isFinite() || km < 0) {
+            return DistanceClaim.Uncertain(DISTANCE_UNAVAILABLE)
+        }
+        if (!fromDeviceFix) {
+            val label = formatDistanceKm(km, unit)
+                ?: return DistanceClaim.Uncertain(DISTANCE_UNAVAILABLE)
+            return DistanceClaim.Measured(label, approximate = false)
+        }
+        if (accuracyMetres == null || !accuracyMetres.isFinite() || accuracyMetres < 0) {
+            return DistanceClaim.Uncertain(
+                "This location fix reported no usable accuracy, so no distance is claimed.",
+            )
+        }
+        val step = PRECISION_LADDER_M.firstOrNull { it >= accuracyMetres }
+            ?: return DistanceClaim.Uncertain(
+                "This location fix is accurate only to ${uncertaintyLabel(accuracyMetres, unit)}, " +
+                    "which is too coarse to state a distance.",
+            )
+        val metres = km * 1_000.0
+        if (metres <= accuracyMetres) {
+            // Closer than the fix's own error is something the fix DOES establish. State that bound
+            // rather than a point value, and rather than withholding an answer we actually have.
+            return DistanceClaim.Measured(
+                "< ${uncertaintyLabel(accuracyMetres, unit)}",
+                approximate = true,
+            )
+        }
+        val label = formatDistanceKm(roundTo(metres, step) / 1_000.0, unit, accuracyMetres)
+            ?: return DistanceClaim.Uncertain(DISTANCE_UNAVAILABLE)
+        return DistanceClaim.Measured(label, approximate = true)
+    }
+
+    /** How the fix's own uncertainty is written, e.g. `±40 m`. Never finer than the value itself. */
+    fun accuracyNote(accuracyMetres: Double?, unit: UnitSystem = UnitSystem.Metric): String? {
+        if (accuracyMetres == null || !accuracyMetres.isFinite() || accuracyMetres < 0) return null
+        return "±${uncertaintyLabel(accuracyMetres, unit)}"
+    }
+
+    /**
+     * A distance that IS the uncertainty. Rendered from the value itself so its own granularity can
+     * never over-claim, unlike running it through the measured-distance bands.
+     */
+    private fun uncertaintyLabel(metres: Double, unit: UnitSystem): String =
+        if (unit == UnitSystem.Imperial) {
+            val feet = metres * FEET_PER_KM / 1_000.0
+            if (feet < 1_000) {
+                "${maxOf(roundTo(feet, 25.0), 25.0).toLong()} ft"
+            } else {
+                String.format(Locale.US, "%.1f mi", metres / 1_000.0 / KM_PER_MILE)
+            }
+        } else if (metres < 1_000) {
+            "${maxOf(roundTo(metres, 10.0), 10.0).toLong()} m"
+        } else {
+            String.format(Locale.US, "%.1f km", metres / 1_000.0)
+        }
 
     /** Eight-point compass label for the platform-provided initial bearing. */
     fun formatBearing(bearingDegrees: Double?): String? {

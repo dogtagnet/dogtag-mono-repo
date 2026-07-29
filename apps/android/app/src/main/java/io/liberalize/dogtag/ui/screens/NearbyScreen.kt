@@ -73,6 +73,7 @@ import androidx.core.location.LocationManagerCompat
 import io.liberalize.dogtag.nearby.ContactDirectoryPresentation
 import io.liberalize.dogtag.nearby.DirectoryObservation
 import io.liberalize.dogtag.nearby.DirectoryProvider
+import io.liberalize.dogtag.nearby.DistanceClaim
 import io.liberalize.dogtag.nearby.GeoPoint
 import io.liberalize.dogtag.nearby.NearbyDecision
 import io.liberalize.dogtag.nearby.NearbyOriginState
@@ -126,6 +127,10 @@ fun NearbyScreen(onBack: () -> Unit) {
         }
     }
 
+    fun hasCoarseGrant(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
     fun resolveCurrentLocation() {
         // Supersede any earlier request before checking providers. Cancellation can race a callback
         // already queued on the main executor, so that callback also checks this signal's identity.
@@ -160,7 +165,17 @@ fun NearbyScreen(onBack: () -> Unit) {
                     cancellation.value = null
                     val point = location?.let { GeoPoint(it.latitude, it.longitude) }
                     origin = if (point?.isUsable == true) {
-                        NearbyOriginState.Available(point, OriginSource.CurrentLocation)
+                        NearbyOriginState.Available(
+                            point,
+                            OriginSource.CurrentLocation,
+                            // The fix's own horizontal uncertainty, carried so no row can render a
+                            // distance finer than this coarse grant actually supports. Absent is
+                            // NOT zero: it means the device stated no accuracy, which the pure
+                            // policy turns into an explicit non-claim.
+                            accuracyMetres = location.takeIf { it.hasAccuracy() }
+                                ?.accuracy
+                                ?.toDouble(),
+                        )
                     } else {
                         NearbyOriginState.LocationUnavailable
                     }
@@ -169,7 +184,14 @@ fun NearbyScreen(onBack: () -> Unit) {
         } catch (_: SecurityException) {
             if (cancellation.value === signal) {
                 cancellation.value = null
-                origin = NearbyOriginState.PermissionRefused
+                // With coarse-only collection this provider may simply refuse a caller holding a
+                // perfectly good coarse grant. Only an actually absent grant is a refusal; calling
+                // the other case "refused" would accuse the owner of a choice they never made.
+                origin = if (hasCoarseGrant()) {
+                    NearbyOriginState.LocationUnavailable
+                } else {
+                    NearbyOriginState.PermissionRefused
+                }
             }
         } catch (_: Exception) {
             if (cancellation.value === signal) {
@@ -179,31 +201,22 @@ fun NearbyScreen(onBack: () -> Unit) {
         }
     }
 
+    // Coarse only, deliberately. Ranking a 50 km list and rendering its bands needs nothing finer,
+    // and the precise-GPS grant is not something this feature is entitled to ask for. The iOS mirror
+    // requests the same hundred-metre class via `kCLLocationAccuracyHundredMeters`.
     val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        val granted = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true ||
-            grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
         if (granted) resolveCurrentLocation() else origin = NearbyOriginState.PermissionRefused
     }
 
     fun useCurrentLocation() {
         // This function is reached only from the explicit button below. Merely opening Nearby never
         // triggers a permission prompt or a location read.
-        val granted =
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
-        if (granted) {
+        if (hasCoarseGrant()) {
             resolveCurrentLocation()
         } else {
-            permissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                ),
-            )
+            permissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
         }
     }
 
@@ -218,16 +231,20 @@ fun NearbyScreen(onBack: () -> Unit) {
             }
         }
     }
+    val unitSystem = remember {
+        NearbyDecision.unitSystemForRegion(Locale.getDefault().toLanguageTag())
+    }
     val nearbyPresentation = NearbyDecision.nearby(
         directory = directoryResult,
         origin = origin,
         measurements = measurements,
         query = query,
+        unit = unitSystem,
     )
     val contactPresentation = NearbyDecision.contacts(directoryResult, query)
-    val unitSystem = remember {
-        NearbyDecision.unitSystemForRegion(Locale.getDefault().toLanguageTag())
-    }
+    val fixAccuracyNote = (origin as? NearbyOriginState.Available)
+        ?.takeIf { it.source == OriginSource.CurrentLocation }
+        ?.let { NearbyDecision.accuracyNote(it.accuracyMetres, unitSystem) }
     val offerOriginChoice = when (nearbyPresentation) {
         NearbyPresentation.AwaitingOrigin,
         NearbyPresentation.Locating,
@@ -286,6 +303,7 @@ fun NearbyScreen(onBack: () -> Unit) {
         if (scope == DirectoryScope.Nearby && offerOriginChoice) {
             OriginPicker(
                 origin = origin,
+                fixAccuracyNote = fixAccuracyNote,
                 showCoordinates = showCoordinates,
                 latitude = latitude,
                 longitude = longitude,
@@ -376,6 +394,7 @@ private fun ScopePicker(scope: DirectoryScope, onSelect: (DirectoryScope) -> Uni
 @Composable
 private fun OriginPicker(
     origin: NearbyOriginState,
+    fixAccuracyNote: String?,
     showCoordinates: Boolean,
     latitude: String,
     longitude: String,
@@ -423,7 +442,10 @@ private fun OriginPicker(
             is NearbyOriginState.Available ->
                 Text(
                     if (origin.source == OriginSource.CurrentLocation) {
-                        "Using your current position on this phone."
+                        // State the fix's own uncertainty rather than implying a precise position.
+                        fixAccuracyNote?.let {
+                            "Using your current position on this phone, accurate to $it."
+                        } ?: "Using your current position on this phone."
                     } else {
                         "Using your chosen coordinates on this phone."
                     },
@@ -550,7 +572,7 @@ private fun NearbyResults(
             is NearbyPresentation.ProvidersFound -> {
                 item { ObservationBanner(presentation.observation) }
                 items(presentation.rows, key = { it.provider.providerId }) { row ->
-                    NearbyProviderRow(row, unitSystem, onDirections)
+                    NearbyProviderRow(row, onDirections)
                 }
                 item { Spacer(Modifier.height(16.dp)) }
             }
@@ -617,23 +639,29 @@ private fun ContactResults(
 @Composable
 private fun NearbyProviderRow(
     row: NearbyRow,
-    unitSystem: NearbyDecision.UnitSystem,
     onDirections: (DirectoryProvider) -> Unit,
 ) {
     val c = DogTagTheme.colors
-    val distance = NearbyDecision.formatDistanceKm(row.distanceKm, unitSystem)
     val bearing = NearbyDecision.formatBearing(row.bearingDegrees)
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         ProviderHeading(row.provider)
-        Text(
-            listOfNotNull(distance, bearing).joinToString(" · "),
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            color = c.onBackground,
-        )
+        when (val distance = row.distance) {
+            is DistanceClaim.Measured -> Text(
+                listOfNotNull(distance.display, bearing).joinToString(" · "),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                color = c.onBackground,
+            )
+            // Never a confident number the origin cannot support, and never a silent blank either.
+            is DistanceClaim.Uncertain -> Text(
+                listOfNotNull(distance.reason, bearing?.let { "Bearing $it" }).joinToString(" "),
+                fontSize = 12.sp,
+                color = c.muted,
+            )
+        }
         ProviderBindingChip(row.provider)
         Button(
             onClick = { onDirections(row.provider) },

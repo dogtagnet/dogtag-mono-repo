@@ -2926,6 +2926,22 @@ universal full-set cache that is never keyed by a position.
   location**. The alternative origin is manually entered decimal latitude/longitude, parsed on-device;
   do not replace it with `CLGeocoder`, Android `Geocoder`, or a remote place search, all of which can
   disclose the chosen location.
+- **Collection is hundred-metre class on BOTH platforms, and the display must admit it.** Android
+  requests `ACCESS_COARSE_LOCATION` only - never re-add `ACCESS_FINE_LOCATION` to the manifest, the
+  launcher, or a permission check - and iOS asks for `kCLLocationAccuracyHundredMeters`. Ranking a
+  50 km list needs nothing finer, and the one feature whose own copy promises "private by design" must
+  not ask for precise GPS. Two consequences that are easy to undo:
+  - The fix's own `horizontalAccuracy` / `Location.accuracy` is carried into the mirrored pure policy
+    (`NearbyOrigin.accuracyMetres` / `NearbyOriginState.Available.accuracyMetres`), and
+    `NearbyDecision.distanceClaim` rounds every device-fix label to a step no finer than that
+    accuracy. A provider closer than the fix's own error is stated as a BOUND (`< 150 m`); a fix whose
+    accuracy is missing, negative, non-finite, or coarser than 10 km yields `DistanceClaim.Uncertain`
+    and a sentence, never a confident number. `NearbyRow.distanceKm` stays the RAW measurement, since
+    ordering uses it, and typed coordinates keep ordinary precision - they carry no measurement error.
+  - With coarse-only, a provider read can throw `SecurityException` at a caller holding a perfectly
+    good coarse grant, so that catch must re-check `checkSelfPermission` before calling it
+    `PermissionRefused`. Telling an owner they refused a permission they granted is the same class of
+    false claim this feature's state machine exists to prevent.
 - Native distance uses the platform geodesic (`CLLocation.distance` /
   `Location.distanceBetween`) rather than introducing another app-owned haversine implementation.
   The 50 km empty-query radius preserves the deprecated server default; a non-empty provider-name
@@ -2938,9 +2954,17 @@ universal full-set cache that is never keyed by a position.
   unavailable, and providers found. A stored snapshot remains found/empty with stale copy; it does not
   become unavailable until its hard TTL expires.
 - Listing provenance uses the existing `IssuerDomainBindingState` / native `IssuerBindingState` and
-  `bindingTone` / `IssuerBinding.tone`. A central row never becomes `verified` merely because it carries
-  a domain string: non-empty central domains are `unavailable` until a binding check exists, while an
-  explicit blank domain uses the ordinary `noDomainClaimed` state.
+  `bindingTone` / `IssuerBinding.tone` - never a parallel listing-specific enum. A central row never
+  becomes `verified` merely because it carries a domain string: non-empty central domains are
+  `unavailable` until a binding check exists, while a blank one is `noDomainListed` ("No domain listed
+  for this provider"), the neutral directory-only member added for exactly this.
+  **`noDomainClaimed` is reserved for an actual on-chain read** and its copy says so ("This issuer has
+  published no domain on-chain"). `GET /v1/businesses` reads no chain state at all
+  (`stacks/admin/api/src/routes.rs`), so a blank domain column there is evidence of nothing about what
+  the issuer published on-chain, and borrowing that wording would assert a read that never happened.
+  All three adapters produce it (`packages/ui/src/directory/sources.ts`, `ProviderDirectory.kt`,
+  `Net.swift` `parseProviders`) and all three refuse a repeated `providerId` as malformed rather than
+  rendering two rows under one list identity.
 
 ### `haversine_km` in admin-api returns NaN for some near-antipodal pairs, and NaN reads as "out of range"
 

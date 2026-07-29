@@ -71,7 +71,18 @@ final class NearbyLocationController: NSObject, ObservableObject, @preconcurrenc
             lat: location.coordinate.latitude,
             lng: location.coordinate.longitude
         )
-        state = point.isValid ? .ready(point) : .unavailable
+        // A negative `horizontalAccuracy` means Core Location considers the coordinate invalid, so
+        // it is not a ready origin at all. Otherwise the reported uncertainty is carried into the
+        // pure policy, which is what stops a hundred-metre-class fix rendering a metre-level number.
+        guard point.isValid, location.horizontalAccuracy >= 0 else {
+            state = .unavailable
+            return
+        }
+        state = .ready(NearbyOrigin(
+            point: point,
+            source: .currentLocation,
+            accuracyMetres: location.horizontalAccuracy
+        ))
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -200,7 +211,9 @@ struct NearbyScreen: View {
             .navigationTitle("Nearby")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                // `.navigationBarTrailing`, not `.topBarTrailing`: the latter is iOS 17+ and this
+                // app targets iOS 16.
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done", action: onDone)
                 }
             }
@@ -364,9 +377,15 @@ struct NearbyScreen: View {
                 Text("Finding your location on this device…")
             }
             .foregroundColor(c.muted)
-        case .ready:
-            Label("Using the current location held on this phone", systemImage: "checkmark.circle.fill")
-                .foregroundColor(c.success)
+        case .ready(let fix):
+            // State the fix's own uncertainty rather than implying a precise position was obtained.
+            Label(
+                NearbyDecision.accuracyNote(fix.accuracyMetres, unitSystem: unitSystem)
+                    .map { "Using the current location held on this phone, accurate to \($0)" }
+                    ?? "Using the current location held on this phone",
+                systemImage: "checkmark.circle.fill"
+            )
+            .foregroundColor(c.success)
         case .refused:
             Text("Location permission was refused. Choose a location above or allow access in Settings.")
                 .foregroundColor(c.danger)
@@ -381,9 +400,13 @@ struct NearbyScreen: View {
     @ViewBuilder
     private var chosenLocationCaption: some View {
         switch chosenLocation {
-        case .ready(let point):
+        case .ready(let chosen):
             Label(
-                String(format: "Using %.5f, %.5f on this phone", point.lat, point.lng),
+                String(
+                    format: "Using %.5f, %.5f on this phone",
+                    chosen.point.lat,
+                    chosen.point.lng
+                ),
                 systemImage: "checkmark.circle.fill"
             )
             .foregroundColor(c.success)
@@ -551,12 +574,13 @@ struct NearbyScreen: View {
         }
     }
 
-    private func nearbyProviderRow(_ row: NearbyDecision.Row) -> some View {
-        VStack(alignment: .leading, spacing: 11) {
-            providerHeader(row.provider)
+    @ViewBuilder
+    private func distanceLine(_ row: NearbyDecision.Row) -> some View {
+        switch row.distance {
+        case .measured:
             HStack(spacing: 7) {
                 Image(systemName: "location.fill")
-                Text(row.distanceLabel)
+                Text(row.distance.display ?? "")
                     .fontWeight(.bold)
                 if let bearing = row.bearingLabel {
                     Text("· \(bearing)")
@@ -564,6 +588,22 @@ struct NearbyScreen: View {
             }
             .font(.system(size: 13))
             .foregroundColor(c.onBackground)
+        case .uncertain(let reason):
+            // Never a confident number the origin cannot support, and never a silent blank either.
+            HStack(spacing: 7) {
+                Image(systemName: "location.slash")
+                Text(row.bearingLabel.map { "\(reason) Bearing \($0)." } ?? reason)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.system(size: 12))
+            .foregroundColor(c.muted)
+        }
+    }
+
+    private func nearbyProviderRow(_ row: NearbyDecision.Row) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            providerHeader(row.provider)
+            distanceLine(row)
 
             providerServices(row.provider)
             DomainBindingLine(binding: IssuerBinding(
@@ -730,7 +770,8 @@ struct NearbyScreen: View {
 
     private func applyChosenLocation() {
         if let point = NearbyDecision.parseChosenOrigin(lat: latitude, lng: longitude) {
-            chosenLocation = .ready(point)
+            // Typed coordinates carry no measurement uncertainty, so they keep ordinary precision.
+            chosenLocation = .ready(.chosen(point))
         } else {
             chosenLocation = .invalidChosenLocation
         }

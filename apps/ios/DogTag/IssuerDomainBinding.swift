@@ -46,6 +46,9 @@ enum IssuerBindingState: Equatable {
     case couldNotCheck
     /// Link 1 holds; this issuer has claimed no domain on-chain. The normal day-one state.
     case noDomainClaimed
+    /// A provider-DIRECTORY listing carried no domain. No chain read happened at all, so this must
+    /// never borrow `noDomainClaimed`'s on-chain wording, which asserts a read that did occur.
+    case noDomainListed
     /// A prerequisite could not be read at all (nothing configured, or the read failed).
     case unavailable
     /// In flight. Never a resting state.
@@ -405,6 +408,7 @@ extension IssuerBinding {
         case .notADogTagIssuer: return "This contract was not deployed by the DogTag factory"
         case .couldNotCheck:   return "We could not reach DNS to check this domain"
         case .noDomainClaimed: return "This issuer has published no domain on-chain"
+        case .noDomainListed:  return "No domain listed for this provider"
         case .unavailable:     return "The on-chain domain claim could not be read"
         case .pending:         return "Checking this domain's DNS records…"
         }
@@ -441,7 +445,7 @@ extension IssuerBinding {
         case .verified: return .positive
         case .notListed, .notADogTagIssuer: return .negative
         case .pending: return .pending
-        case .couldNotCheck, .noDomainClaimed, .unavailable: return .neutral
+        case .couldNotCheck, .noDomainClaimed, .noDomainListed, .unavailable: return .neutral
         }
     }
 
@@ -453,7 +457,8 @@ extension IssuerBinding {
     var hasDnsHalf: Bool {
         switch state {
         case .verified, .notListed, .couldNotCheck: return true
-        case .notADogTagIssuer, .noDomainClaimed, .unavailable, .pending: return false
+        case .notADogTagIssuer, .noDomainClaimed, .noDomainListed, .unavailable, .pending:
+            return false
         }
     }
 
