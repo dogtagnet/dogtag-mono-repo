@@ -2907,6 +2907,59 @@ currently an honest stub because the provider registry and packed paging ABI do 
 - The admin `Businesses.tsx` and `Dashboard.tsx` management surfaces still call `listBusinesses`
   directly and collapse a fetch failure to `[]`/`0`; they are not a safe precedent for nearby UI.
 
+### A provider may have no location, and `0,0` is the shape that defect takes
+
+`Business.lat`/`lng` were non-optional `f64` and `DirectoryProvider.geo` a non-optional `LatLng`, so a
+provider that published no address was stored and served as `0, 0`.
+That is a **legal coordinate** off the coast of Ghana, `isValidLatLng` accepts it, and nothing anywhere
+rejected it - so a provider with no premises rendered as a confident pin in the Gulf of Guinea.
+Absence had no representation at all. Both are now optional (`Option<f64>` / `LatLng | null`), plus
+optional business contact channels (`phone`/`whatsapp`/`telegram`/`email`/`website`).
+
+- **`Number("")` is `0`, not `NaN`, and that is the whole mechanism.** Every register form coerced its
+  latitude field unconditionally, so a blank input became a valid-looking coordinate. There are **TWO**
+  register paths in the admin portal - the `Businesses.tsx` dialog and the setup `Wizard.tsx` - and both
+  had it. They now share one rule, `parseLocationInput` (`packages/ui/src/directory/registration.ts`),
+  precisely so fixing one and not the other cannot happen again. It returns `absent | located | invalid`,
+  and `locationRequestFields` OMITS the keys for `absent` rather than sending `null`.
+- **`isDirectoryRow` accepts a geo-less row without failing the batch, and that split is load-bearing.**
+  `hasDirectoryRows` is all-or-nothing on purpose (a malformed response must not degrade into a
+  successful `empty`), so before this the moment location became optional a SINGLE contact-only provider
+  would have taken the entire directory to `unavailable` - an all-or-nothing failure hiding inside a
+  per-row validator. The rule is now: absent **or** `null` geo is accepted (both spellings - our server
+  emits an explicit `null`, but a serializer that omits nulls is an ordinary wire difference and must not
+  blank the directory); a present-but-malformed geo still fails the whole batch. Absence is a fact the
+  source can state; malformed is a response we cannot trust.
+- **Object spread of `null` yields `{}`, not `null`.** `geo: { ...business.geo }` would hand a
+  location-less provider an empty object - not a usable position, but not `null` either, so a downstream
+  `geo !== null` guard passes on garbage. Checked rather than assumed: with `geo: LatLng | null` tsc DOES
+  reject that spread (spreading a possibly-null value makes the members optional). It is still pinned
+  behaviourally by `providerNoLocation.test.ts` asserting `provider.geo === null` **by identity**, because
+  the type only happens to catch it and a later `geo?: LatLng` or an `as` cast would restore it silently.
+- **Out-of-range coordinates are refused at the WRITE** (`register_business`, 400), because the read side
+  cannot repair one: the all-or-nothing rule above means a single bad row blanks the directory for every
+  consumer. Half-set pairs are refused too - one coordinate is not a place - which keeps
+  `Business::location`'s half-set arm unreachable through the API.
+- **A null-geo provider is listed and contactable but never placed.** Read the position through
+  `providerPosition` (`packages/ui/src/directory/providers.ts`), which re-checks validity rather than
+  trusting the field; `hasDirectionsDestination` is the Directions gate. `packages/ui/src/geo/` needed no
+  change - `sortByDistance`'s `positionOf` already returns `LatLng | null | undefined` and already sorts
+  nulls last with `distanceKm: null`.
+- **THE HONEST PART: rows already at exactly `0,0` cannot be reinterpreted by code, ever.** `0,0` is both
+  a legal coordinate and the value every blank location used to become, so nothing can distinguish a
+  provider genuinely in the Gulf of Guinea from one with no address - and a guess would either plant a
+  false pin or erase a real one. `Business::location_needs_review` flags them and
+  `GET /v1/admin/businesses/location-review` (admin-gated, read-only) lists them for an operator answer of
+  "pin is correct" / "pin is wrong, here is the right one" / "no location". There is deliberately **no**
+  heuristic, no silent migration, and no repair endpoint. Do not add one that decides on the operator's
+  behalf. This is registry-plan §4 item 7, and it blocks C-2.
+- `haversine_km` and both geo-parity fixtures are UNTOUCHED - only the call site changed, so that a
+  location-less provider is not within any radius (mirroring `withinRadiusKm`'s both-must-be-usable rule)
+  rather than matching a caller near `0,0` as it used to.
+- These are **business** contact channels on a public endpoint - the number on the shop's door -
+  deliberately distinct from `Owner::email`, which is personal. A reviewer will otherwise read `email` on
+  `/v1/businesses` as a PII leak.
+
 ### `haversine_km` in admin-api returns NaN for some near-antipodal pairs, and NaN reads as "out of range"
 
 The deprecated server filter ends in `asin(sqrt(a))`. For near-antipodal inputs `a` rounds **two ulps**

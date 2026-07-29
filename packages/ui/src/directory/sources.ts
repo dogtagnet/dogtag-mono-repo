@@ -1,8 +1,10 @@
 import type { CentralClient } from "../api/central";
-import type { CentralBusiness } from "../api/types";
+import type { BusinessContact, CentralBusiness } from "../api/types";
 import { isValidLatLng, type LatLng } from "../geo";
+import { PROVIDER_CONTACT_CHANNELS as CONTACT_CHANNELS } from "./types";
 import type {
   DirectoryProvider,
+  ProviderContacts,
   ProviderDirectory,
   ProviderDirectoryResult,
   ProviderDirectoryUnavailable,
@@ -29,7 +31,7 @@ export interface CentralDirectoryOptions {
  */
 type DirectoryRow = Pick<
   CentralBusiness,
-  "businessId" | "type" | "name" | "geo" | "services" | "domain"
+  "businessId" | "type" | "name" | "geo" | "contact" | "services" | "domain"
 >;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -41,16 +43,57 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 /**
- * Coordinates are checked with the same `isValidLatLng` the on-device distance/sort path uses, so a
- * row that could never be presented as a distance is rejected here rather than ranked as one.
+ * Is this row's `geo` acceptable?
+ *
+ * THREE cases, and the split is the point of this whole seam:
+ *
+ * - ABSENT or `null` → accepted as "this provider published no location". A location-less provider
+ *   is first class, so its row must not fail. Absence is accepted in both spellings deliberately:
+ *   our own server emits an explicit `null`, but a serializer that omits nulls is an ordinary wire
+ *   difference and must not take the entire directory to `unavailable`.
+ * - a valid `{lat, lng}` → accepted, checked with the same `isValidLatLng` the on-device
+ *   distance/sort path uses, so a coordinate that could never be presented as a distance is
+ *   rejected here rather than ranked as one.
+ * - anything else (out-of-range numbers, a string, a number, `[]`) → REJECTED, which under
+ *   `hasDirectoryRows` still takes the whole batch to `unavailable`. That is unchanged and
+ *   intentional: absence is a fact this source can state, malformed is a response we cannot trust.
+ *
+ * The previous version had only the middle case, so one location-less row blanked the directory for
+ * every consumer - an all-or-nothing failure hiding inside a per-row validator.
  */
+function hasAcceptableGeo(value: Record<string, unknown>): boolean {
+  const geo = value.geo;
+  if (geo === undefined || geo === null) return true;
+  if (!isRecord(geo)) return false;
+  return isValidLatLng(geo as unknown as LatLng);
+}
+
+/**
+ * Absent, `null`, or a string. Anything else is a wire-shape violation, not an absent channel.
+ *
+ * Contact channels are decoration for trust purposes, but a number or an object where a string
+ * belongs still says this response is not what we asked for - and absence, the only case a real
+ * provider produces, can never reach the rejecting branch.
+ */
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+
+function hasAcceptableContact(value: Record<string, unknown>): boolean {
+  const contact = value.contact;
+  if (contact === undefined || contact === null) return true;
+  if (!isRecord(contact)) return false;
+  return CONTACT_CHANNELS.every((channel) => isOptionalString(contact[channel]));
+}
+
 function isDirectoryRow(value: unknown): value is DirectoryRow {
-  if (!isRecord(value) || !isRecord(value.geo)) return false;
+  if (!isRecord(value)) return false;
   return (
     typeof value.businessId === "string" &&
     typeof value.type === "string" &&
     typeof value.name === "string" &&
-    isValidLatLng(value.geo as unknown as LatLng) &&
+    hasAcceptableGeo(value) &&
+    hasAcceptableContact(value) &&
     isStringArray(value.services) &&
     typeof value.domain === "string"
   );
@@ -99,12 +142,36 @@ function centralNamespaceKey(base: string, documentOrigin?: string): string {
   }
 }
 
+/** Trim, and read a blank string as the absent channel it means. */
+function contactValue(value: string | undefined | null): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function toProviderContacts(contact: BusinessContact | undefined | null): ProviderContacts {
+  return {
+    phone: contactValue(contact?.phone),
+    whatsapp: contactValue(contact?.whatsapp),
+    telegram: contactValue(contact?.telegram),
+    email: contactValue(contact?.email),
+    website: contactValue(contact?.website),
+  };
+}
+
 function toDirectoryProvider(business: DirectoryRow): DirectoryProvider {
   return {
     providerId: business.businessId,
     kind: business.type,
     name: business.name,
-    geo: { ...business.geo },
+    // Written as a conditional rather than the previous `{ ...business.geo }` because object spread
+    // of `null` yields `{}` at runtime, NOT `null` - which would hand a location-less provider an
+    // empty object: not a usable position, but not `null` either, so a downstream `geo !== null`
+    // guard would pass on it. Checked rather than assumed: with `geo: LatLng | null` the spread is
+    // in fact REJECTED by tsc (spreading a possibly-null value makes the members optional, and
+    // `LatLng` requires them). The guarantee is still pinned behaviourally - `providerNoLocation`
+    // asserts `provider.geo === null` by identity - because the type only happens to catch it here,
+    // and a future `geo?: LatLng` or an `as` cast anywhere on this path would silently restore it.
+    geo: business.geo ? { lat: business.geo.lat, lng: business.geo.lng } : null,
+    contacts: toProviderContacts(business.contact),
     services: [...business.services],
     domain: business.domain.trim() || null,
     // `/v1/businesses` has no delisting/whitelist fact. Inventing `true` here would turn discovery

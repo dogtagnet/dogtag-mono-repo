@@ -10,6 +10,8 @@ import {
   Label,
   Spinner,
   explorerTxUrl,
+  locationRequestFields,
+  parseLocationInput,
   useToast,
   DEMO_BUSINESS_GROOMER,
   DEMO_BUSINESS_VET,
@@ -39,8 +41,14 @@ import { env } from "../lib/env";
 const EMPTY_BUSINESS: DemoBusiness = {
   type: "",
   name: "",
+  // Blank lat/lng is a provider with NO location, not a provider at 0,0. See the register form.
   lat: "",
   lng: "",
+  phone: "",
+  whatsapp: "",
+  telegram: "",
+  email: "",
+  website: "",
   services: "",
   apiBaseUrl: "",
   domain: "",
@@ -100,13 +108,30 @@ export function Wizard() {
 
   async function registerBusiness(e: FormEvent) {
     e.preventDefault();
+
+    // The SAME rule the Businesses register dialog uses. This form is the second register path, and
+    // it had the identical defect: `Number("")` is 0, so leaving the location blank registered the
+    // provider at 0,0 and drew a pin in the Gulf of Guinea. Fixing only the other form would leave
+    // it live on the path a new operator is most likely to take.
+    const location = parseLocationInput(biz.lat, biz.lng);
+    if (location.kind === "invalid") {
+      toast({ title: "Check the location", description: location.reason, variant: "danger" });
+      return;
+    }
+
     setBizBusy(true);
     try {
       const r = await central.registerBusiness({
         type: biz.type,
         name: biz.name,
-        lat: Number(biz.lat),
-        lng: Number(biz.lng),
+        ...locationRequestFields(location),
+        contact: {
+          phone: biz.phone.trim() || undefined,
+          whatsapp: biz.whatsapp.trim() || undefined,
+          telegram: biz.telegram.trim() || undefined,
+          email: biz.email.trim() || undefined,
+          website: biz.website.trim() || undefined,
+        },
         services: biz.services.split(",").map((s) => s.trim()).filter(Boolean),
         apiBaseUrl: biz.apiBaseUrl,
         domain: biz.domain,
@@ -256,8 +281,15 @@ export function Wizard() {
           <form onSubmit={registerBusiness} className="grid gap-3 sm:grid-cols-2">
             <Field label="Type" value={biz.type} onChange={(v) => setBiz({ ...biz, type: v })} required />
             <Field label="Name" value={biz.name} onChange={(v) => setBiz({ ...biz, name: v })} required />
-            <Field label="Latitude" value={biz.lat} onChange={(v) => setBiz({ ...biz, lat: v })} required />
-            <Field label="Longitude" value={biz.lng} onChange={(v) => setBiz({ ...biz, lng: v })} required />
+            {/* Optional, both-or-neither: blank registers a provider with NO location rather than
+                one at 0,0. Its contact channels are then how it is reached. */}
+            <Field label="Latitude (optional)" value={biz.lat} onChange={(v) => setBiz({ ...biz, lat: v })} />
+            <Field label="Longitude (optional)" value={biz.lng} onChange={(v) => setBiz({ ...biz, lng: v })} />
+            <Field label="Phone" value={biz.phone} onChange={(v) => setBiz({ ...biz, phone: v })} />
+            <Field label="WhatsApp" value={biz.whatsapp} onChange={(v) => setBiz({ ...biz, whatsapp: v })} />
+            <Field label="Telegram" value={biz.telegram} onChange={(v) => setBiz({ ...biz, telegram: v })} />
+            <Field label="Business email" value={biz.email} onChange={(v) => setBiz({ ...biz, email: v })} />
+            <Field label="Website" value={biz.website} onChange={(v) => setBiz({ ...biz, website: v })} />
             <Field label="API base URL" value={biz.apiBaseUrl} onChange={(v) => setBiz({ ...biz, apiBaseUrl: v })} required />
             <Field label="Domain" value={biz.domain} onChange={(v) => setBiz({ ...biz, domain: v })} required />
             <Field label="Services (comma)" value={biz.services} onChange={(v) => setBiz({ ...biz, services: v })} />

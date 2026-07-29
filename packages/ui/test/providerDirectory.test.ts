@@ -22,11 +22,20 @@ const CENTRAL_PROVIDER: CentralBusiness = {
   hmacKeyId: "hmac-1",
 };
 
+const NO_CONTACTS = {
+  phone: null,
+  whatsapp: null,
+  telegram: null,
+  email: null,
+  website: null,
+} as const;
+
 const PROVIDER: DirectoryProvider = {
   providerId: "business-1",
   kind: "vet",
   name: "North Star Veterinary",
   geo: { lat: 1.3521, lng: 103.8198 },
+  contacts: { ...NO_CONTACTS },
   services: ["vaccination"],
   domain: "north-star.test",
   active: null,

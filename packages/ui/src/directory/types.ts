@@ -25,13 +25,52 @@ export interface DirectoryProvider {
   providerId: string;
   kind: string;
   name: string;
-  geo: LatLng;
+  /**
+   * `null` is the ordinary location-less-provider case, and it must survive as `null`.
+   *
+   * A provider may publish contact channels and no address at all. Before this was nullable the
+   * only representable answer was a coordinate, so a blank location became `0, 0` - a legal point
+   * in the Gulf of Guinea - and every surface drew a pin there. Substituting any fallback
+   * coordinate re-creates that defect exactly.
+   *
+   * Consumers must read it through `providerPosition`, which is what makes "no location" flow into
+   * `sortByDistance` (last, `distanceKm: null`) and out of any Directions affordance.
+   */
+  geo: LatLng | null;
+  /**
+   * How to reach this provider. Every channel is independently nullable.
+   *
+   * BUSINESS channels, not personal ones - a provider publishes them so it can be contacted. This
+   * is the whole of a location-less provider's usefulness, so it is a required member with
+   * nullable fields rather than an optional object: a consumer cannot forget to consider it.
+   */
+  contacts: ProviderContacts;
   services: readonly string[];
   /** `null` is the ordinary domain-less-provider case. */
   domain: string | null;
   /** `null` means this source supplied no listing-state fact. It is not evidence of delisting. */
   active: boolean | null;
 }
+
+/** The contact channels a provider may publish. `null` is "this provider published no such channel". */
+export interface ProviderContacts {
+  phone: string | null;
+  whatsapp: string | null;
+  telegram: string | null;
+  email: string | null;
+  website: string | null;
+}
+
+/** The channel keys, in the order a listing should offer them. */
+export const PROVIDER_CONTACT_CHANNELS = [
+  "phone",
+  "whatsapp",
+  "telegram",
+  "email",
+  "website",
+] as const satisfies readonly (keyof ProviderContacts)[];
+
+export type ProviderContactChannel = (typeof PROVIDER_CONTACT_CHANNELS)[number];
 
 interface ProviderDirectorySnapshotBase {
   source: ProviderDirectorySource;

@@ -134,6 +134,7 @@ describe("provider directory over a real HTTP boundary", () => {
     // Central-only wire fields never reach a provider, and no delisting fact is invented.
     expect(Object.keys(live.providers[0]).sort()).toEqual([
       "active",
+      "contacts",
       "domain",
       "geo",
       "kind",
@@ -141,6 +142,16 @@ describe("provider directory over a real HTTP boundary", () => {
       "providerId",
       "services",
     ]);
+    // `contacts` is always present with a null per unpublished channel: these rows carry no contact
+    // key on the wire at all, and the seam must not leave a consumer to distinguish "the server
+    // sent no contact block" from "this provider published no phone number".
+    expect(live.providers[0].contacts).toEqual({
+      phone: null,
+      whatsapp: null,
+      telegram: null,
+      email: null,
+      website: null,
+    });
     expect(live.providers.every((p) => p.active === null)).toBe(true);
     say("");
 

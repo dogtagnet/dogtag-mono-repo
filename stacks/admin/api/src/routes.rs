@@ -600,14 +600,21 @@ async fn list_businesses(State(st): State<AppState>, Query(q): Query<BusinessesQ
         .into_iter()
         .filter(|b| q.kind.as_ref().map(|k| &b.kind == k).unwrap_or(true))
         .filter(|b| match near {
-            Some((lat, lng)) => haversine_km(lat, lng, b.lat, b.lng) <= radius,
+            // A location-less provider is NOT within any radius. It is not distance zero, and it is
+            // not silently admitted either - the same both-positions-must-be-usable rule
+            // `withinRadiusKm` applies on the device. The deprecated formula below is untouched.
+            Some((lat, lng)) => match b.location() {
+                Some((blat, blng)) => haversine_km(lat, lng, blat, blng) <= radius,
+                None => false,
+            },
             None => true,
         })
         .map(|b| {
             // non-personal fields only — NEVER the HMAC secret.
             json!({
                 "businessId": b.business_id, "type": b.kind, "name": b.name,
-                "geo": { "lat": b.lat, "lng": b.lng }, "services": b.services,
+                "geo": business_geo_json(&b), "contact": b.contact,
+                "services": b.services,
                 "apiBaseUrl": b.api_base_url, "domain": b.domain,
                 "documentStores": b.document_stores, "hmacKeyId": b.hmac_key_id,
             })
@@ -616,13 +623,70 @@ async fn list_businesses(State(st): State<AppState>, Query(q): Query<BusinessesQ
     ok(json!({ "businesses": out }))
 }
 
+/// `geo` for the wire: the pair when this provider published a location, otherwise an EXPLICIT
+/// `null`.
+///
+/// Emitted rather than omitted so the wire says "this provider has no location" instead of leaving
+/// a consumer to guess whether the key was dropped by a serializer. (`packages/ui`'s row validator
+/// accepts both, for the opposite reason - a foreign serializer that omits nulls must not take the
+/// whole directory down - but our own response should state it.)
+fn business_geo_json(b: &Business) -> Value {
+    match b.location() {
+        Some((lat, lng)) => json!({ "lat": lat, "lng": lng }),
+        None => Value::Null,
+    }
+}
+
+/// Contact channels a provider may publish. All optional: a provider chooses which it exposes.
+///
+/// BUSINESS contact details, not personal ones - see [`BusinessContact`].
+#[derive(Deserialize)]
+struct BusinessContactReq {
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    whatsapp: Option<String>,
+    #[serde(default)]
+    telegram: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    website: Option<String>,
+}
+
+/// Trim, and treat a blank string as absence.
+///
+/// A form that submits every field always sends `""` for the ones left empty; storing that would
+/// make "no phone number" and "an empty phone number" two different states with identical meaning.
+fn opt_trimmed(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+impl From<BusinessContactReq> for BusinessContact {
+    fn from(r: BusinessContactReq) -> Self {
+        BusinessContact {
+            phone: opt_trimmed(r.phone),
+            whatsapp: opt_trimmed(r.whatsapp),
+            telegram: opt_trimmed(r.telegram),
+            email: opt_trimmed(r.email),
+            website: opt_trimmed(r.website),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct RegisterBusinessReq {
     #[serde(rename = "type")]
     kind: String,
     name: String,
-    lat: f64,
-    lng: f64,
+    /// OPTIONAL. Omit both `lat` and `lng` to register a provider with no location.
+    #[serde(default)]
+    lat: Option<f64>,
+    /// OPTIONAL. See `lat`.
+    #[serde(default)]
+    lng: Option<f64>,
+    #[serde(default)]
+    contact: Option<BusinessContactReq>,
     #[serde(default)]
     services: Vec<String>,
     #[serde(rename = "apiBaseUrl")]
@@ -640,6 +704,27 @@ async fn register_business(
     if let Err(e) = require_admin(&st, &headers).await {
         return e;
     }
+    // Both-or-neither: one coordinate is not a place, and a half-set row could never be served as a
+    // position anyway. Refusing it here is what keeps `Business::location`'s half-set arm
+    // unreachable through the API.
+    if body.lat.is_some() != body.lng.is_some() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "lat and lng must be supplied together; omit both for a provider with no location",
+        );
+    }
+    // Range-check at the WRITE, because the read side cannot fix it: `packages/ui`'s directory row
+    // validator keeps its all-or-nothing rule for a MALFORMED coordinate, so one out-of-range row
+    // would take the whole directory to `unavailable` for every consumer. Absence is first class;
+    // nonsense is not.
+    if let (Some(lat), Some(lng)) = (body.lat, body.lng) {
+        if !lat.is_finite() || !lng.is_finite() || !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lng) {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "lat must be within ±90 and lng within ±180",
+            );
+        }
+    }
     let business_id = uuid::Uuid::new_v4().to_string();
     let hmac_key_id = format!("key_{}", uuid::Uuid::new_v4());
     let hmac_secret = auth::new_session_token("hsec");
@@ -649,6 +734,7 @@ async fn register_business(
         name: body.name,
         lat: body.lat,
         lng: body.lng,
+        contact: body.contact.map(BusinessContact::from).unwrap_or_default(),
         services: body.services,
         api_base_url: body.api_base_url,
         domain: body.domain,
@@ -659,6 +745,46 @@ async fn register_business(
     st.store.put_business(biz).await;
     // return the secret ONCE at registration (like an API key).
     ok(json!({ "businessId": business_id, "hmacKeyId": hmac_key_id, "hmacSecret": hmac_secret }))
+}
+
+/// `GET /v1/admin/businesses/location-review` - the rows an operator has to answer for.
+///
+/// Admin-gated, read-only, and it changes nothing. It exists because making location optional
+/// cannot repair the rows that were written BEFORE it was optional: a blank location was stored as
+/// `0, 0`, and `0, 0` is a legal coordinate, so a row sitting there is either a provider genuinely
+/// at that point in the Gulf of Guinea or a provider with no location at all - and no code can tell
+/// which. Guessing would either plant a false pin or erase a real one.
+///
+/// So this route asks rather than decides. Each listed row needs one of three operator answers:
+/// "this pin is correct", "this pin is wrong, here is the right one", or "this provider has no
+/// location". Remediation itself is deliberately NOT here - there is no business-edit endpoint in
+/// this slice, and inventing one to carry a review answer would put the decision back in code.
+async fn businesses_location_review(State(st): State<AppState>, headers: HeaderMap) -> Resp {
+    if let Err(e) = require_admin(&st, &headers).await {
+        return e;
+    }
+    let all = st.store.all_businesses().await;
+    let total = all.len();
+    let rows: Vec<Value> = all
+        .into_iter()
+        .filter(Business::location_needs_review)
+        .map(|b| {
+            json!({
+                "businessId": b.business_id, "type": b.kind, "name": b.name,
+                "domain": b.domain, "geo": business_geo_json(&b),
+                "hasContact": !b.contact.is_empty(),
+            })
+        })
+        .collect();
+    ok(json!({
+        "totalBusinesses": total,
+        "needsReview": rows.len(),
+        "businesses": rows,
+        "reason": "Stored at exactly 0,0 - a legal coordinate AND the value a blank location used \
+                   to be stored as. Code cannot distinguish the two; each row needs an operator \
+                   answer of 'pin is correct', 'pin is wrong, here is the right one', or 'this \
+                   provider has no location'.",
+    }))
 }
 
 // ============================================================================================
@@ -2022,6 +2148,11 @@ pub fn admin_router(state: AppState) -> Router {
         .route(
             "/v1/admin/directory/signer/:addr",
             get(admin_directory_signer),
+        )
+        // rows whose stored location is exactly 0,0 and therefore needs an operator's answer
+        .route(
+            "/v1/admin/businesses/location-review",
+            get(businesses_location_review),
         )
         // issuer whitelisting (admin-session writes)
         .route(
