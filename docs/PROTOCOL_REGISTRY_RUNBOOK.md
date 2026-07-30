@@ -10,6 +10,10 @@ Its keccak keys the on-chain registry, so the string is never renamed.
 This document remains the reproducible procedure (a future environment, or a mainnet deploy with the full 2-day timelock).
 Executing it requires the governance/publisher key and is the captain's to authorize and run.
 
+**This document is about the DEPLOYED generation-1 registry.**
+The generation-2 discovery layer is a separate, built-but-undeployed contract with a different record and a non-zero timelock floor: see `docs/PROTOCOL_REGISTRY_V2.md`.
+The `PUBLISH_TIMELOCK = 0` recorded above is the specific defect that registry exists to correct, and it is correctable only at deploy time because the value is immutable.
+
 ## Why this is the long pole
 
 The app-side anchor validation (M-4 PR3) resolves its `TrustedAnchor` from

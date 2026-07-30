@@ -74,6 +74,20 @@ pub struct VersionDeployment {
     pub sbt: &'static str,
     /// The on-chain VK identity (`Groth16Verifier*` address). NOT a hash.
     pub verifier: &'static str,
+    /// The provider-authority core in the verification registry's immutable `issuerRegistry` slot —
+    /// generation 2's `ProviderRegistryV2.DiscoverySet.providerRegistry`.
+    ///
+    /// `None` for a version published to generation 1's `ProtocolRegistry`, whose `ContractSet` struct
+    /// has no such member. That absence is load-bearing rather than cosmetic: [`reconcile`] treats a
+    /// manifest-`Some` against an on-chain-`None` as a CONFLICT, so claiming an address a
+    /// generation-1 record cannot supply would make every reconcile of that version report a phantom
+    /// disagreement.
+    pub provider_registry: Option<&'static str>,
+    /// The contract in the verification registry's immutable `rootIndex` slot — generation 2's
+    /// `CloneProvenanceRouter`. `None` for a generation-1 version, for the same reason as
+    /// [`Self::provider_registry`]: generation 1's record carries no separate root index (there, the
+    /// root index IS `factory`, and duplicating it here would assert a member the chain does not have).
+    pub root_index: Option<&'static str>,
 }
 
 /// The OFF-CHAIN ARTIFACT AXIS half, mirroring `ProtocolRegistry.ArtifactSet` plus the binding that
@@ -106,6 +120,11 @@ pub const LEVEL_B_DEPLOYMENT: VersionDeployment = VersionDeployment {
     verification_registry: "0xaBFd6f6E31780EBcB7ABd28A2a9bCfc9C8e6A77B",
     sbt: "0xBEbc45A838643D27004827b797b30A464b2b02c0",
     verifier: "0x1A9027986B859dc3879896B053deA78F636BE9b1",
+    // Neither exists on generation 1: the live `ProtocolRegistry.ContractSet` has no provider-authority
+    // or root-index member, and this version's root index IS its factory. A generation-2 version
+    // published to `ProtocolRegistryV2` fills both.
+    provider_registry: None,
+    root_index: None,
 };
 
 /// The artifact set currently BOUND to `dogtag-levelb/1` (mirrors `activeArtifactSetOf`).
@@ -163,6 +182,18 @@ pub struct Manifest {
     pub sbt: String,
     /// On-chain VK identity (address). NOT a hash.
     pub verifier: String,
+    /// The provider-authority core, when the version's on-chain record carries one (generation 2).
+    ///
+    /// `skip_serializing_if` is what keeps this widening ADDITIVE: [`Manifest::canonical_bytes`] is
+    /// `serde_json` over this struct, so a generation-1 manifest — where both new members are `None` —
+    /// serializes to exactly the bytes it did before these fields existed, and any signature already
+    /// produced over it still verifies. A generation-2 manifest carries them and signs over them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_registry: Option<String>,
+    /// The root index (generation 2's `CloneProvenanceRouter`), when the version's record carries one.
+    /// Same additive treatment as [`Self::provider_registry`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_index: Option<String>,
     pub circuit_id: String,
     pub num_public: usize,
     pub public_signal_layout: Vec<String>,
@@ -202,6 +233,8 @@ impl Manifest {
             verification_registry: deploy.verification_registry.to_string(),
             sbt: deploy.sbt.to_string(),
             verifier: deploy.verifier.to_string(),
+            provider_registry: deploy.provider_registry.map(str::to_string),
+            root_index: deploy.root_index.map(str::to_string),
             circuit_id: desc.circuit_id.to_string(),
             num_public: desc.num_public,
             public_signal_layout: desc.public_signal_layout.iter().map(|s| s.to_string()).collect(),
@@ -265,6 +298,15 @@ pub struct OnchainContractSet {
     pub verification_registry: String,
     pub sbt: String,
     pub verifier: String,
+    /// The on-chain `providerRegistry` member — `Some` when read from a generation-2
+    /// `ProtocolRegistryV2.DiscoverySet`, `None` when read from a generation-1 `ContractSet`, which has
+    /// no such member. Compared by [`reconcile`] like any other mirrored address, so a manifest that
+    /// claims one where the chain has none (or vice versa) is a recorded CONFLICT rather than a silent
+    /// acceptance.
+    pub provider_registry: Option<String>,
+    /// The on-chain `rootIndex` member — generation 2's `CloneProvenanceRouter`. `None` on generation 1,
+    /// where the root index is the `factory` member and no separate slot exists.
+    pub root_index: Option<String>,
     /// `keccak256(circuit-string)` as `0x`-hex — the authoritative on-chain `circuitId` bytes32.
     pub circuit_id: String,
     /// The on-chain `ContractSet.active` lifecycle bit — `deprecateContractSet` flips it false and the
@@ -404,32 +446,29 @@ pub fn reconcile(
 
     let m = &signed.content;
     let mut conflicts = Vec::new();
-    let mut cmp = |field: &'static str, oc: &str, mf: &str| {
-        // Address/hex comparisons are case-insensitive (checksum vs lowercase must not read as a
-        // conflict); the pins are lowercase hex on both sides but this is harmless for them too.
-        if !oc.eq_ignore_ascii_case(mf) {
-            conflicts.push(FieldConflict {
-                field,
-                onchain: oc.to_string(),
-                manifest: mf.to_string(),
-            });
-        }
-    };
     // --- the ON-CHAIN axis ---
-    cmp("version_id", &contract_set.version_id, &m.version_id);
-    cmp("factory", &contract_set.factory, &m.factory);
-    cmp("verification_registry", &contract_set.verification_registry, &m.verification_registry);
-    cmp("sbt", &contract_set.sbt, &m.sbt);
-    cmp("verifier", &contract_set.verifier, &m.verifier);
+    cmp(&mut conflicts, "version_id", &contract_set.version_id, &m.version_id);
+    cmp(&mut conflicts, "factory", &contract_set.factory, &m.factory);
+    cmp(&mut conflicts, "verification_registry", &contract_set.verification_registry, &m.verification_registry);
+    cmp(&mut conflicts, "sbt", &contract_set.sbt, &m.sbt);
+    cmp(&mut conflicts, "verifier", &contract_set.verifier, &m.verifier);
+    // The generation-2 members. Optional on BOTH sides, and a present-vs-absent disagreement in either
+    // direction is a conflict rather than a shrug — which is what makes the two generations' manifests
+    // non-interchangeable: a generation-1 manifest reconciled against a generation-2 record reports the
+    // two missing addresses instead of validating against a record whose authority core and root index it
+    // never attested. Absence renders as `<absent>`, not as the pins' `<unpinned>`: a missing address is
+    // a member the record does not have, not a hash somebody chose not to pin.
+    cmp_opt_addr(&mut conflicts, "provider_registry", &contract_set.provider_registry, &m.provider_registry);
+    cmp_opt_addr(&mut conflicts, "root_index", &contract_set.root_index, &m.root_index);
     // On-chain `circuitId` is a bytes32 (`keccak256(circuit-string)`) while the manifest carries the
     // plain circuit string, so hash the manifest's before the (case-insensitive hex) compare.
-    cmp("circuit_id", &contract_set.circuit_id, &keccak_hex(&m.circuit_id));
+    cmp(&mut conflicts, "circuit_id", &contract_set.circuit_id, &keccak_hex(&m.circuit_id));
 
     // --- the ARTIFACT axis ---
     // `artifact_set_id` is the axis's own identity: comparing it is what stops a manifest describing
     // artifact set N from being accepted while the chain has rotated the binding to N+1.
-    cmp("artifact_set_id", &artifact_set.artifact_set_id, &m.artifact_set_id);
-    cmp("zkey_sha256", &artifact_set.zkey_sha256, &m.zkey_sha256);
+    cmp(&mut conflicts, "artifact_set_id", &artifact_set.artifact_set_id, &m.artifact_set_id);
+    cmp(&mut conflicts, "zkey_sha256", &artifact_set.zkey_sha256, &m.zkey_sha256);
     cmp_opt(&mut conflicts, "witness_mobile_sha256", &artifact_set.witness_mobile_sha256, &m.witness_mobile_sha256);
     cmp_opt(&mut conflicts, "witness_server_r1cs_sha256", &artifact_set.witness_server_r1cs_sha256, &m.witness_server_r1cs_sha256);
     cmp_opt(&mut conflicts, "witness_server_wasm_sha256", &artifact_set.witness_server_wasm_sha256, &m.witness_server_wasm_sha256);
@@ -446,7 +485,23 @@ pub fn reconcile(
     })
 }
 
-/// Exact (case-sensitive) string comparison — for the on-chain string members (`artifactBaseUrl`,
+/// Compare a mirrored field CASE-INSENSITIVELY (checksum vs lowercase hex must not read as a conflict;
+/// the pins are lowercase on both sides, so it is harmless for them too).
+///
+/// A free function taking `&mut conflicts`, uniform with [`cmp_opt`]/[`cmp_str`], rather than a closure
+/// capturing the vector: a closure holds the mutable borrow for its whole lifetime, so the comparisons had
+/// to be ordered around the borrow checker rather than around the two axes they describe.
+fn cmp(conflicts: &mut Vec<FieldConflict>, field: &'static str, oc: &str, mf: &str) {
+    if !oc.eq_ignore_ascii_case(mf) {
+        conflicts.push(FieldConflict {
+            field,
+            onchain: oc.to_string(),
+            manifest: mf.to_string(),
+        });
+    }
+}
+
+/// Exact (case-sensitive) string comparison - for the on-chain string members (`artifactBaseUrl`,
 /// `minAppVersion`) where case is significant, unlike the case-folded hex/address fields.
 fn cmp_str(conflicts: &mut Vec<FieldConflict>, field: &'static str, oc: &str, mf: &str) {
     if oc != mf {
@@ -458,11 +513,20 @@ fn cmp_str(conflicts: &mut Vec<FieldConflict>, field: &'static str, oc: &str, mf
     }
 }
 
-fn cmp_opt(
+/// The presence/case-folding rule shared by every optional member: case-insensitive when both sides are
+/// present, agreement when both are absent, and a conflict whenever presence itself differs.
+///
+/// `absent` is the word rendered into a conflict for the missing side, and it is a PARAMETER rather than
+/// a constant because the two kinds of optional member mean different things by absence - see
+/// [`cmp_opt`] and [`cmp_opt_addr`], which are the only callers and exist solely to fix that word. The
+/// rule lives here once so a future change to the presence semantics cannot land on one kind and not the
+/// other.
+fn cmp_opt_with(
     conflicts: &mut Vec<FieldConflict>,
     field: &'static str,
     oc: &Option<String>,
     mf: &Option<String>,
+    absent: &str,
 ) {
     let same = match (oc, mf) {
         (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
@@ -472,10 +536,35 @@ fn cmp_opt(
     if !same {
         conflicts.push(FieldConflict {
             field,
-            onchain: oc.clone().unwrap_or_else(|| "<unpinned>".into()),
-            manifest: mf.clone().unwrap_or_else(|| "<unpinned>".into()),
+            onchain: oc.clone().unwrap_or_else(|| absent.into()),
+            manifest: mf.clone().unwrap_or_else(|| absent.into()),
         });
     }
+}
+
+/// An optional PIN. Absence renders as `<unpinned>`: the artifact exists and somebody chose not to pin
+/// its hash.
+fn cmp_opt(
+    conflicts: &mut Vec<FieldConflict>,
+    field: &'static str,
+    oc: &Option<String>,
+    mf: &Option<String>,
+) {
+    cmp_opt_with(conflicts, field, oc, mf, "<unpinned>");
+}
+
+/// An optional ADDRESS member. Same comparison rule as [`cmp_opt`] and a DIFFERENT word for absence,
+/// which is the whole reason the two wrappers exist: `<unpinned>` would describe a hash nobody chose to
+/// pin, while these two members are simply not part of a generation-1 record. Do not collapse the two
+/// placeholders - the word is what tells a reader whether a record lacks the member or merely lacks a
+/// hash for it.
+fn cmp_opt_addr(
+    conflicts: &mut Vec<FieldConflict>,
+    field: &'static str,
+    oc: &Option<String>,
+    mf: &Option<String>,
+) {
+    cmp_opt_with(conflicts, field, oc, mf, "<absent>");
 }
 
 #[cfg(test)]
@@ -504,6 +593,8 @@ mod tests {
             verification_registry: m.verification_registry.clone(),
             sbt: m.sbt.clone(),
             verifier: m.verifier.clone(),
+            provider_registry: m.provider_registry.clone(),
+            root_index: m.root_index.clone(),
             // On-chain the circuitId is `keccak256(circuit-string)`, mirrored here from the manifest's
             // plain circuit string so an agreeing manifest reconciles clean.
             circuit_id: keccak_hex(&m.circuit_id),
@@ -681,6 +772,131 @@ mod tests {
         assert_eq!(m.artifact_set, "dogtag-levelb-artifacts/1");
         assert_eq!(m.artifact_set_id, version_id("dogtag-levelb-artifacts/1"));
         assert_ne!(m.artifact_set_id, m.version_id, "the axes must not share an id");
+    }
+
+    /// The generation-2 members are ADDITIVE: a generation-1 manifest, where both are `None`, serializes
+    /// to exactly the bytes it did before the members existed, so a signature already produced over such a
+    /// manifest still verifies. `skip_serializing_if` is the whole mechanism, and it is what this asserts —
+    /// dropping it would silently invalidate every previously-signed manifest, and only at go-live, when a
+    /// pinned key finally makes signatures load-bearing.
+    #[test]
+    fn the_generation_two_members_do_not_disturb_a_generation_one_signature() {
+        let m = levelb_manifest();
+        assert_eq!(m.provider_registry, None, "generation 1's record has no authority-core member");
+        assert_eq!(m.root_index, None, "...and no separate root-index member");
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("provider_registry"), "an absent member emits no key");
+        assert!(!obj.contains_key("root_index"), "an absent member emits no key");
+
+        // ...and the signature over those bytes verifies, which is the property the key absence buys.
+        let key = test_key();
+        let signed = sign(&m, &key);
+        verify(&signed, &key.verifying_key()).expect("a generation-1 manifest still verifies");
+    }
+
+    /// A generation-2 manifest carries both members, signs over them, and round-trips — so the additive
+    /// treatment above does not amount to the fields being dropped.
+    #[test]
+    fn a_generation_two_manifest_carries_and_signs_both_members() {
+        let mut m = levelb_manifest();
+        m.provider_registry = Some("0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112".to_string());
+        m.root_index = Some("0x120127E4a5B6c7D8E9f001122334455667788990".to_string());
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
+        assert_eq!(json["provider_registry"], *m.provider_registry.as_ref().unwrap());
+        assert_eq!(json["root_index"], *m.root_index.as_ref().unwrap());
+
+        let key = test_key();
+        let signed = sign(&m, &key);
+        verify(&signed, &key.verifying_key()).unwrap();
+        let back: Manifest = serde_json::from_value(json).unwrap();
+        assert_eq!(back, m);
+
+        // Tampering with either member breaks the signature, i.e. they are genuinely signed over.
+        let mut tampered = signed.clone();
+        tampered.content.root_index = Some("0x0000000000000000000000000000000000000bad".to_string());
+        assert_eq!(
+            verify(&tampered, &key.verifying_key()),
+            Err(ManifestError::BadSignature),
+            "the root index is inside the signed bytes"
+        );
+    }
+
+    /// The two generations' manifests are NOT interchangeable. Reconciling a generation-1 manifest against
+    /// a generation-2 record reports both missing addresses rather than accepting a record whose authority
+    /// core and root index the manifest never attested — and the reverse direction is a conflict too.
+    ///
+    /// This is the same present-vs-absent rule the graph pin already follows, and it is why the members are
+    /// `None` on generation 1 rather than being back-filled with the factory address: a back-fill would
+    /// make every generation-1 reconcile report a phantom disagreement.
+    #[test]
+    fn a_generation_mismatch_is_a_conflict_on_both_members_in_both_directions() {
+        let key = test_key();
+        let signed = sign(&levelb_manifest(), &key); // manifest: both None
+
+        let mut gen_two_chain = contracts_from(&signed.content);
+        gen_two_chain.provider_registry = Some("0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112".to_string());
+        gen_two_chain.root_index = Some("0x120127E4a5B6c7D8E9f001122334455667788990".to_string());
+
+        let r = reconcile(&signed, &key.verifying_key(), &gen_two_chain, &artifacts_from(&signed.content))
+            .unwrap();
+        assert!(!r.manifest_agrees());
+        let fields: Vec<&str> = r.conflicts.iter().map(|c| c.field).collect();
+        assert!(fields.contains(&"provider_registry"), "got {fields:?}");
+        assert!(fields.contains(&"root_index"), "got {fields:?}");
+        // Absence is reported as absent, not as an unpinned hash — the word matters to whoever reads it.
+        let root = r.conflicts.iter().find(|c| c.field == "root_index").unwrap();
+        assert_eq!(root.manifest, "<absent>");
+        assert_eq!(root.onchain, "0x120127E4a5B6c7D8E9f001122334455667788990");
+        // The trio is untouched, so only the two new members disagree.
+        assert!(!fields.contains(&"factory") && !fields.contains(&"verifier"), "got {fields:?}");
+
+        // The reverse: a generation-2 manifest against a generation-1 record.
+        let mut gen_two_manifest = levelb_manifest();
+        gen_two_manifest.provider_registry = Some("0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112".to_string());
+        gen_two_manifest.root_index = Some("0x120127E4a5B6c7D8E9f001122334455667788990".to_string());
+        let signed_two = sign(&gen_two_manifest, &key);
+        let mut gen_one_chain = contracts_from(&signed_two.content);
+        gen_one_chain.provider_registry = None;
+        gen_one_chain.root_index = None;
+        let r2 =
+            reconcile(&signed_two, &key.verifying_key(), &gen_one_chain, &artifacts_from(&signed_two.content))
+                .unwrap();
+        let fields2: Vec<&str> = r2.conflicts.iter().map(|c| c.field).collect();
+        assert!(fields2.contains(&"provider_registry") && fields2.contains(&"root_index"), "got {fields2:?}");
+    }
+
+    /// A differing address on either member is a conflict, and on-chain wins — the same precedence the
+    /// trio already gets. Without this, a stale manifest could steer a caller onto a root index the chain
+    /// does not name, which resolves a different set of historical roots.
+    #[test]
+    fn a_differing_generation_two_member_resolves_to_onchain() {
+        let key = test_key();
+        let mut m = levelb_manifest();
+        m.provider_registry = Some("0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112".to_string());
+        m.root_index = Some("0x120127E4a5B6c7D8E9f001122334455667788990".to_string());
+        let signed = sign(&m, &key);
+
+        let mut chain = contracts_from(&signed.content);
+        chain.root_index = Some("0x00000000000000000000000000000000dead0000".to_string());
+
+        let r = reconcile(&signed, &key.verifying_key(), &chain, &artifacts_from(&signed.content)).unwrap();
+        assert!(!r.manifest_agrees());
+        assert_eq!(
+            r.contract_set.root_index.as_deref(),
+            Some("0x00000000000000000000000000000000dead0000"),
+            "the reconciled record is the CHAIN's, never the manifest's"
+        );
+
+        // Case alone is not a disagreement, matching how the trio addresses are compared.
+        let mut cased = contracts_from(&signed.content);
+        cased.root_index = Some("0x120127e4a5b6c7d8e9f001122334455667788990".to_string());
+        let r2 = reconcile(&signed, &key.verifying_key(), &cased, &artifacts_from(&signed.content)).unwrap();
+        assert!(r2.manifest_agrees(), "checksum vs lowercase is not a conflict: {:?}", r2.conflicts);
     }
 
     /// A verified manifest that AGREES with on-chain reconciles cleanly (no conflicts).

@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 331 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 363 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -112,11 +112,24 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   locally-declared oracle interface to the REAL provider core (`ProviderRegistry.t.sol` binds that core
   too, for its own behaviour), pinning that the four functions the pair asks of it are the core's own on
   both axes a signature has; `ProviderDirectory.t.sol` covers the build-only typed DIRECTORY
-  resolver against the REAL core rather than a mock (see "ProviderDirectory" below); and
+  resolver against the REAL core rather than a mock (see "ProviderDirectory" below);
   `ServiceDomainResolver.t.sol` is the one suite whose fixture binds the real core, the real router AND
   real generation-2 clones from the real self-service factory at once, so it is where "these contracts
   compose" is actually exercised rather than mocked (see "ServiceDomainResolver - three absences, and
-  the router term that is NOT redundant").
+  the router term that is NOT redundant");
+  and `ProtocolRegistryV2.t.sol` + `DeployProtocolRegistryV2.t.sol` cover the built-but-undeployed
+  generation-2 discovery registry, including the constructor timelock floor, the golden ABI encoding
+  both mobile anchor decoders are pinned against, and the publish script's execute-phase re-preflight
+  refusing a `zkVerifier` swapped inside the publish window plus its staged-versus-environment check on
+  BOTH axes (see "ProtocolRegistryV2 is BUILT, NOT DEPLOYED"). **The preflight's negative cases are
+  asserted by calling `preflight` directly with a mutated struct, never by writing `GEN2_*` and running
+  the script**: `vm.setEnv` writes the PROCESS environment while forge runs a suite's test functions
+  concurrently, so the env-driven form made that file fail 8 runs out of 8 at default threads under
+  `--match-path` isolation. The invariant is DIVERGENCE, not abstinence: four tests still write the
+  environment because they drive the real scripts, but all four write byte-identical canonical values
+  (the `setUp` snapshot gives every test function the same fixture addresses), so the writes cannot be
+  observed as a change. To vary a record, mutate the struct and call `preflight`, or re-stage on the
+  registry - never write a divergent `GEN2_*`.
   Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
@@ -1233,6 +1246,70 @@ committed, so the checked-in tree makes the source/test mappings reviewable but 
 those mutations as a repeatable gate. `IssuerV2.t.sol`'s authority is a stand-in
 (`MockProviderAuthority`), so its three rungs are DERIVED from one set of registrar facts and never
 independently settable; keep it that way or the coverage becomes self-agreement.
+
+## ProtocolRegistryV2 is BUILT, NOT DEPLOYED - and its timelock floor is the point (registry-plan S-11)
+
+`contracts/src/ProtocolRegistryV2.sol` + the `…V2` deploy/versions/publish scripts. Full rationale:
+**`docs/PROTOCOL_REGISTRY_V2.md`** - do not restate it here, or the copy rots. This repo records no
+address, no `.env.example` entry, and no consumer points at one; deploying is cutover C-8 and separately
+captain-authorized. Generation 1's deployed `ProtocolRegistry` (`0xf5492A67…`) is untouched and stays
+live until clients are repointed, so **no address moved in this slice** - both mobile bundles keep their
+generation-1 key, and a placeholder V2 entry would be invented data.
+
+The six things worth knowing before touching any of it:
+
+- **A new registry is FORCED by the struct, not chosen.** `ProtocolRegistry.ContractSet`
+  (`ProtocolRegistry.sol:97-106`) is a FIXED struct with no member for an authority core, a resolver
+  layer, or a provenance index, and the contract is not upgradeable. A struct's shape is part of its
+  storage layout AND its ABI. Say it that way; it is not a preference.
+- **A zero `PUBLISH_TIMELOCK` is UNREPRESENTABLE, enforced in the CONSTRUCTOR.** The live generation-1
+  registry carries `0` and the value is `immutable`, so its publisher key can repoint the whole declared
+  protocol set in one block and nothing but a redeploy can fix it. The floor
+  (`MIN_PUBLISH_TIMELOCK = 1 hours`) is on the CONTRACT because a script guard is bypassable by a direct
+  deploy and the mistake it would let through is unfixable. The value is derived: the oversight indexer
+  is finality-aware and ROAX's `finalized` tag sits ~80 blocks behind `latest`, so a shorter delay is a
+  timelock that exists only in the getter. Mainnet still requires exactly 2 days; the testnet opt-in may
+  go shorter but **cannot reach zero** - the deliberate divergence from generation 1's deploy script,
+  which has a passing `test_explicit_testnet_opt_in_accepts_zero_timelock`.
+- **The record is RENAMED (`DiscoverySet`, `getDiscoverySet`/`resolveDiscovery`) as a STRUCTURAL guard.**
+  Generation 1's `getContractSet` returns 8 words, this returns 10, and a selector is a function of the
+  name and arguments only - so keeping the name would let a generation-1 client DISPATCH and decode the
+  first 8 words, reading `providerRegistry` as `circuitId` and a truthy `publishedAt` as `active`. Same
+  trap as the two `recordVerificationZK` arities sharing `0xdd080593`. `ArtifactSet` is unchanged, so
+  `getArtifactSet`/`getActiveArtifactSet` deliberately KEEP their selectors. Both mobile decoders now
+  require the arity EXACTLY (they accepted `>= 8`, which is how that misdecode would have happened).
+- **`factory` is NOT the root index any more, and that is the easiest thing to get wrong.** Generation 1
+  documented `factory == verificationRegistry.rootIndex()`; generation 2 carries both because they are
+  different contracts. Reading the factory where `rootIndex` is meant resolves only that generation's
+  roots and misses every earlier one - the exact failure `CloneProvenanceRouter` exists to prevent. The
+  publish preflight asserts the difference against the chain.
+- **There is deliberately NO `providerDirectory` or `serviceDomainResolver` member, and the plan's S-11
+  is WRONG on this point.** The merged S-6 `ProviderRegistry` already owns the resolver layer:
+  `setResolverApproved` allowlists MANY resolvers per `ResolverKind.DIRECTORY`/`DOMAIN`, and each
+  provider/service selects its own. One protocol-wide address for either would be the wrong resolver for
+  every provider that selected another. `providerRegistry` is how a consumer reaches the real resolution
+  root (and must re-check `isResolverApproved`, since the core keeps a deapproved selection as history).
+- **The discovery key bumps to `dogtag-levelb/2`; the ARTIFACT key stays `dogtag-levelb-artifacts/1`.**
+  The artifacts are byte-for-byte generation 1's, so a second identity for them would be a falsehood -
+  and it would also swap the app-gate diagnostic from the actionable `AppTooOld` to a stitched-anchor
+  coherence error, because both mobile resolvers carry the artifact identity as a compile-time constant.
+  `minAppVersion` is a mandatory publish input with NO default: the generation-2 floor is the release
+  that reads the root index instead of the bundled factory, and guessing it would publish a number
+  nobody verified.
+
+Client-side, `TrustedAnchor`/`ValidatedVersion`/`Manifest`/`OnchainContractSet` gained
+`provider_registry` + `root_index` as `Option`. **`None` is a generation-1 record's honest shape, NOT a
+could-not-check** - a failed read must surface as a failed resolution and must never arrive as `None`. A
+value that IS reported must be usable (`0x` + 40 hex, non-zero) or `validate` fails closed with
+`MalformedAnchorAddress`; shape is the only check available because nothing CLAIMS these two, unlike
+`verification_registry`. The `Manifest` members are `skip_serializing_if`, so a generation-1 manifest's
+canonical bytes - and any signature over them - are unchanged. The mobile RPC call for
+`getDiscoverySet` and the `ScanScreen` repoint are deliberately DEFERRED to C-9/C-10; both call sites
+pass `nil`/`null` today with a comment naming what must change. The mandatory issuer-whitelist pillar
+still asks the generation-1 `IssuerRegistry` and does not yet answer for a generation-2 root - a cutover
+blocker recorded in `docs/ISSUER_V2_OWNERSHIP.md` §8, not something this slice closes; carrying
+`providerRegistry` on the validated anchor is what gives those five consumers an attested address to
+migrate TO.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 

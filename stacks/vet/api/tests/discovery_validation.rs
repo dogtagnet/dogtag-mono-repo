@@ -49,6 +49,11 @@ fn agreeing_contracts(m: &manifest::Manifest) -> OnchainContractSet {
         verification_registry: m.verification_registry.clone(),
         sbt: m.sbt.clone(),
         verifier: m.verifier.clone(),
+        // Mirrored from the manifest so an agreeing record stays agreeing on both members. For
+        // `dogtag-levelb/1` both are `None`: generation 1's on-chain `ContractSet` has no such member,
+        // and back-filling one here would build a record no generation-1 registry could ever return.
+        provider_registry: m.provider_registry.clone(),
+        root_index: m.root_index.clone(),
         circuit_id: version_id(&m.circuit_id),
         active: true,
     }
@@ -315,4 +320,75 @@ fn deprecating_either_axis_fails_closed() {
     let anchor_ok = anchor_from_reconciliation(&recon_ok).unwrap();
     assert!(anchor_ok.contract_set_active && anchor_ok.artifact_set_active);
     assert!(validate(&claims, &anchor_ok, &ctx).is_ok());
+}
+
+/// The generation-2 members travel the WHOLE seam: manifest -> reconcile -> `TrustedAnchor` -> `validate`
+/// -> `ValidatedVersion`. A caller therefore reads `rootIssuer`/`isClone` from a root index the chain
+/// attested, rather than from an address baked into its own bundle — which is the specific failure mode
+/// that makes an un-updated client render a genuine generation-2 credential as unverified.
+#[test]
+fn the_generation_two_members_reach_the_validated_version() {
+    const PROVIDER_REGISTRY: &str = "0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112";
+    const ROOT_INDEX: &str = "0x120127E4a5B6c7D8E9f001122334455667788990";
+
+    let key = test_key();
+    // A generation-2 version's manifest: same frozen artifacts, plus the two new addresses.
+    let mut m = manifest::build(VERSION).unwrap();
+    m.provider_registry = Some(PROVIDER_REGISTRY.to_string());
+    m.root_index = Some(ROOT_INDEX.to_string());
+    let signed: SignedManifest = manifest::sign(&m, &key);
+
+    let recon = manifest::reconcile(
+        &signed,
+        &key.verifying_key(),
+        &agreeing_contracts(&m),
+        &agreeing_artifacts(&m),
+    )
+    .unwrap();
+    assert!(recon.manifest_agrees(), "conflicts: {:?}", recon.conflicts);
+
+    let anchor = anchor_from_reconciliation(&recon).unwrap();
+    assert_eq!(anchor.provider_registry.as_deref(), Some(PROVIDER_REGISTRY));
+    assert_eq!(anchor.root_index.as_deref(), Some(ROOT_INDEX));
+    assert_ne!(
+        anchor.root_index.as_deref(),
+        Some(m.factory.as_str()),
+        "the root index is the provenance router, NOT the factory"
+    );
+
+    let ctx = ClientContext { app_version: &m.min_app_version, expected_purpose: PURPOSE };
+    let v = validate(&honest_claims(&m), &anchor, &ctx).expect("a generation-2 anchor validates");
+    assert_eq!(v.provider_registry.as_deref(), Some(PROVIDER_REGISTRY));
+    assert_eq!(v.root_index.as_deref(), Some(ROOT_INDEX));
+}
+
+/// On-chain precedence extends to the two new members: a manifest naming a different root index than the
+/// chain does is a CONFLICT, so `anchor_from_reconciliation` refuses to build an anchor at all rather than
+/// letting a stale manifest steer a caller onto a provenance index the chain never named — which would
+/// resolve a different set of historical roots and silently change which credentials verify.
+#[test]
+fn a_stale_manifest_cannot_steer_the_root_index() {
+    let key = test_key();
+    let mut m = manifest::build(VERSION).unwrap();
+    m.provider_registry = Some("0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112".to_string());
+    m.root_index = Some("0x120127E4a5B6c7D8E9f001122334455667788990".to_string());
+    let signed: SignedManifest = manifest::sign(&m, &key);
+
+    let mut chain = agreeing_contracts(&m);
+    chain.root_index = Some("0x00000000000000000000000000000000dead0000".to_string());
+
+    let recon =
+        manifest::reconcile(&signed, &key.verifying_key(), &chain, &agreeing_artifacts(&m)).unwrap();
+    assert!(!recon.manifest_agrees());
+    let conflicts = anchor_from_reconciliation(&recon).expect_err("a disagreeing manifest builds no anchor");
+    assert!(
+        conflicts.iter().any(|c| c.field == "root_index"),
+        "the disagreement must be named: {conflicts:?}"
+    );
+    // The reconciled record itself still holds the CHAIN's value, so a caller that inspects it sees the
+    // authoritative address rather than the manifest's claim.
+    assert_eq!(
+        recon.contract_set.root_index.as_deref(),
+        Some("0x00000000000000000000000000000000dead0000")
+    );
 }

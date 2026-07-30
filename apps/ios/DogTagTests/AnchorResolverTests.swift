@@ -95,20 +95,97 @@ final class AnchorResolverTests: XCTestCase {
     /// from `abi.encode(reg.getContractSet(bId))` in a Foundry run against the real `ProtocolVersions`
     /// levelb set. This catches an ABI-model error the hand-built vectors above cannot: they were
     /// written from the same understanding as the decoder, so a shared mistake would pass both.
+    private let genOneGolden =
+        "36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d" +
+        "000000000000000000000000d3179abbfb0274d0a5f7017d76015a93c159511d" +
+        "000000000000000000000000b9b313c17fd8725bb50a7f41121ac4cf5f4fec87" +
+        "00000000000000000000000096cba4580d79bc9b8e51fc1b3a044a29592afffc" +
+        "000000000000000000000000272be146c0aed6401000e9aa8241201f6f0fdf1a" +
+        "a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f" +
+        "000000000000000000000000000000000000000000000000000000000002a301" +
+        "0000000000000000000000000000000000000000000000000000000000000001"
+
+    /// The EXACT bytes `ProtocolRegistryV2.getDiscoverySet(keccak("dogtag-levelb/2"))` returns, captured
+    /// from `abi.encode(...)` in `contracts/test/ProtocolRegistryV2.t.sol`, which pins the SAME literal
+    /// from the Solidity end. A change to the record's shape or member order fails there first, naming
+    /// this file to regenerate — never hand-edit this hex, which would test an idea of the ABI rather than
+    /// the ABI. The Kotlin mirror carries the identical bytes.
+    private let genTwoGolden =
+        "44a8d618d62ba7874b6df187bc27a0c147d0523c8cda11f7764d343d032ae0b5" + // 0 discoverySetId
+        "0000000000000000000000001c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607" + // 1 factory (skipped)
+        "000000000000000000000000b9b313c17fd8725bb50a7f41121ac4cf5f4fec87" + // 2 verificationRegistry
+        "00000000000000000000000096cba4580d79bc9b8e51fc1b3a044a29592afffc" + // 3 sbt (skipped)
+        "000000000000000000000000272be146c0aed6401000e9aa8241201f6f0fdf1a" + // 4 verifier (skipped)
+        "0000000000000000000000009309ab1c2d3e4f5061728394a5b6c7d8e9f00112" + // 5 providerRegistry
+        "000000000000000000000000120127e4a5b6c7d8e9f001122334455667788990" + // 6 rootIndex (router)
+        "a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f" + // 7 circuitId
+        "000000000000000000000000000000000000000000000000000000006b4c7500" + // 8 publishedAt (skipped)
+        "0000000000000000000000000000000000000000000000000000000000000001"   // 9 active = true
+
     func testDecodeContractSetGolden() {
-        let hex =
-            "36a8d69d16a9f540fa11be5f0311ebd5efd8e971b66cd704a6e197ee15b01b3d" +
-            "000000000000000000000000d3179abbfb0274d0a5f7017d76015a93c159511d" +
-            "000000000000000000000000b9b313c17fd8725bb50a7f41121ac4cf5f4fec87" +
-            "00000000000000000000000096cba4580d79bc9b8e51fc1b3a044a29592afffc" +
-            "000000000000000000000000272be146c0aed6401000e9aa8241201f6f0fdf1a" +
-            "a708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f" +
-            "000000000000000000000000000000000000000000000000000000000002a301" +
-            "0000000000000000000000000000000000000000000000000000000000000001"
-        let cs = AnchorResolver.decodeContractSet(hex)
+        let cs = AnchorResolver.decodeContractSet(genOneGolden)
         // The canonical owner-hidden trio (kept at its deployed compatibility key).
         XCTAssertEqual(cs?.verificationRegistry, "0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87")
         XCTAssertEqual(cs?.active, true)
+    }
+
+    /// The generation-2 golden vector, decoded. The two members that only exist here are the point:
+    /// `rootIndex` is what `rootIssuer`/`isClone` must be read from, and it is a DIFFERENT address from
+    /// `factory` (word 1) — reading the factory instead resolves only generation-2 roots and silently
+    /// misses every earlier one, which is exactly what the provenance router exists to prevent.
+    ///
+    /// `circuitId` is byte-identical to the generation-1 golden's, because generation 2 rotates no proving
+    /// artifact.
+    func testDecodeDiscoverySetGolden() {
+        let d = AnchorResolver.decodeDiscoverySet(genTwoGolden)
+        XCTAssertNotNil(d)
+        XCTAssertEqual(d?.discoverySetId, "0x44a8d618d62ba7874b6df187bc27a0c147d0523c8cda11f7764d343d032ae0b5")
+        XCTAssertEqual(d?.verificationRegistry, "0xb9b313c17fd8725bb50a7f41121ac4cf5f4fec87")
+        XCTAssertEqual(d?.providerRegistry, "0x9309ab1c2d3e4f5061728394a5b6c7d8e9f00112")
+        XCTAssertEqual(d?.rootIndex, "0x120127e4a5b6c7d8e9f001122334455667788990")
+        XCTAssertEqual(d?.circuitId, "0xa708f8e240d9734e5f054f55fa891a37c31f536a5de28874439572018c9aa54f")
+        XCTAssertEqual(d?.active, true)
+        // The root index is NOT the factory, and the decoder must not have read word 1 for it.
+        XCTAssertNotEqual(d?.rootIndex, "0x1c9ac2eb3f1a2d4b5c6d7e8f90a1b2c3d4e5f607")
+        // The frozen circuit is unchanged across the generation boundary.
+        XCTAssertEqual(d?.circuitId, AnchorResolver.decodeContractSet(genOneGolden)?.circuitId)
+    }
+
+    /// The generation-2 record (10 words) must not decode through the generation-1 decoder, and vice
+    /// versa. Both directions matter and both used to be reachable: the generation-1 decoder accepted
+    /// `>= 8` words, so a `getDiscoverySet` return would have decoded at generation-1 indices — reading
+    /// `providerRegistry` as `circuitId` and `publishedAt` as `active`, i.e. an `active` that is a block
+    /// timestamp (truthy) and a circuit id that is an address.
+    ///
+    /// That is a plausible-looking live record for a shape this build cannot read, which is the
+    /// identical-shape/different-semantics failure this repo has paid for before. The exact-arity check is
+    /// what makes it impossible; this test is what keeps the check.
+    func testTheTwoGenerationsRecordsCannotDecodeAsEachOther() {
+        XCTAssertNil(
+            AnchorResolver.decodeContractSet(genTwoGolden),
+            "a 10-word generation-2 return must not decode as a generation-1 contract set")
+        XCTAssertNil(
+            AnchorResolver.decodeDiscoverySet(genOneGolden),
+            "an 8-word generation-1 return must not decode as a generation-2 discovery set")
+        // ...and each decodes its own, so neither refusal is vacuous.
+        XCTAssertEqual(AnchorResolver.decodeContractSet(genOneGolden)?.active, true)
+        XCTAssertEqual(AnchorResolver.decodeDiscoverySet(genTwoGolden)?.active, true)
+    }
+
+    /// A short/misaligned generation-2 return fails closed too.
+    func testDecodeDiscoverySetFailsClosedOnShortReturn() {
+        XCTAssertNil(AnchorResolver.decodeDiscoverySet(word("01") + word("02")))
+        XCTAssertNil(AnchorResolver.decodeDiscoverySet("abc"))
+    }
+
+    /// The generation-2 discovery key and the artifact key move INDEPENDENTLY, which is the point of the
+    /// two axes: generation 2 rotates addresses and rotates no proving artifact, so its artifact identity
+    /// and circuit id are generation 1's unchanged.
+    func testTheGenerationTwoKeyBumpsWhileTheArtifactKeyDoesNot() {
+        XCTAssertEqual(AnchorResolver.protocolVersionV2, "dogtag-levelb/2")
+        XCTAssertEqual(AnchorResolver.artifactSet, "dogtag-levelb-artifacts/1")
+        XCTAssertEqual(AnchorResolver.circuitId, "consent.circom/DogTagConsent(6)")
+        XCTAssertEqual(AnchorResolver.protocolVersion, "dogtag-levelb/1")
     }
 
     /// The EXACT bytes `getActiveArtifactSet` returns for the levelb set — where `artifactBaseUrl`

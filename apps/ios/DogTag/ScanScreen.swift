@@ -604,7 +604,15 @@ struct ScanScreen: View {
             circuitId: AnchorResolver.circuitId,
             minAppVersion: arti.minAppVersion,
             contractSetActive: cs.active,
-            artifactSetActive: arti.active)
+            artifactSetActive: arti.active,
+            // `nil` because this build reads generation 1's `ProtocolRegistry`, whose `ContractSet`
+            // struct has no provider-authority or root-index member. That is an accurate statement about
+            // the record's shape, not a could-not-check: a FAILED read is the `guard let cs` above, which
+            // aborts. When this call site is repointed at `ProtocolRegistryV2.getDiscoverySet`
+            // (`AnchorResolver.decodeDiscoverySet`) both must be populated from that record — and
+            // `rootIndex` from its OWN member, never from `factory`.
+            providerRegistry: nil,
+            rootIndex: nil)
         let ffiClaims = ConvenienceClaims(
             protocolVersion: claims.protocolVersion,
             chainId: claims.chainId,
