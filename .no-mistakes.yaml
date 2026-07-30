@@ -29,12 +29,29 @@ commands:
   # With user intent, v1.40.0 still launches the test evidence agent as well.
   # Same cold-worktree trap, same remedy: without the prerequisites vitest is not installed
   # and the step fails with `vitest: command not found` / ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL.
-  # No --sdk-dist here, because these tests import the SDK source rather than its built dist/.
+  # The @dogtag/standard leg needs no --sdk-dist, because its own tests import the SDK source
+  # rather than its built dist/.
+  # @dogtag/ui is its direct sibling - hermetic, no node/Mongo/chain/browser, ~4s - and was simply
+  # absent from this baseline, so its 468 tests never ran in the gate at all: the mandatory
+  # issuer-whitelist pillar, the verification bench, chain provenance, the geo parity fixture and
+  # the endpoint-settings verdict pin were all checks that could not fail here, which is the same
+  # a-check-that-did-not-run-counts-as-passed defect the prerequisites above exist to close.
+  # It DOES need --sdk-dist: @dogtag/standard's exports map resolves only to dist/, so without it
+  # five of those suites fail to resolve @dogtag/standard at all. The second prereq call is
+  # deliberate rather than a replacement - the no-flag caller is what probes for vitest, the
+  # --sdk-dist caller probes for tsc, and both are idempotent.
+  # Read that guard's promise narrowly, though: require_installed_bin probes
+  # packages/dogtag-standard-ts/node_modules/.bin, so it confirms the SDK's vitest and NOT
+  # @dogtag/ui's, which is the binary this second leg actually runs. Harmless while one install
+  # links both, but it means a ui-only devDependency/lockfile fault would surface as vitest's own
+  # "command not found" from the leg below rather than as this guard's named code finding.
   test: >-
     bash scripts/test-no-mistakes-document-guard.sh &&
     bash scripts/test-ensure-ts-prereqs.sh &&
     bash scripts/ensure-ts-prereqs.sh &&
-    pnpm --filter @dogtag/standard test
+    pnpm --filter @dogtag/standard test &&
+    bash scripts/ensure-ts-prereqs.sh --sdk-dist &&
+    pnpm --filter @dogtag/ui test
 
 document:
   instructions: |
