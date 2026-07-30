@@ -723,7 +723,7 @@ private fun ContactProviderRow(
 }
 
 /**
- * Hands this provider's published destination to whichever maps app the chooser offers.
+ * Hands this provider's published destination to whichever maps app resolves the `geo:` intent.
  *
  * Offered on nearby rows and on OFFLINE STORED rows (captain's ruling, 2026-07-30: an owner with no
  * signal is exactly who most needs directions, the cached coordinate is part of the provider record

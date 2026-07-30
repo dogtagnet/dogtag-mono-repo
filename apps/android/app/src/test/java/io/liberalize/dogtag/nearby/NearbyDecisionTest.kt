@@ -669,7 +669,7 @@ class NearbyDecisionTest {
     fun theDirectionsHandoffCarriesTheDestinationAndNeverTheOrigin() {
         val uri = NearbyDecision.directionsUri(provider("a", geo = GeoPoint(1.35249, 103.81951)))
 
-        assertEquals("geo:1.352490,103.819510", uri)
+        assertEquals("geo:1.352490,103.819510?q=1.352490,103.819510", uri)
         // The owner's own fix from this file's `origin` is 1.3521,103.8198 - no part of it may appear.
         assertFalse("the origin must never reach the maps handoff", uri!!.contains("1.3521"))
         assertFalse("the origin must never reach the maps handoff", uri.contains("103.8198"))
@@ -685,7 +685,7 @@ class NearbyDecisionTest {
     fun onlyAnAbsentLocationWithholdsDirectionsAndZeroZeroIsARealDestination() {
         assertNull(NearbyDecision.directionsUri(provider("contact-only", geo = null)))
         assertEquals(
-            "geo:0.000000,0.000000",
+            "geo:0.000000,0.000000?q=0.000000,0.000000",
             NearbyDecision.directionsUri(provider("gulf-of-guinea", geo = GeoPoint(0.0, 0.0))),
         )
         // An unusable coordinate is not a destination either.
@@ -701,11 +701,11 @@ class NearbyDecisionTest {
     @Test
     fun directionsCoordinatesAreFixedPointAndSurviveBothSigns() {
         assertEquals(
-            "geo:-33.865510,-151.209900",
+            "geo:-33.865510,-151.209900?q=-33.865510,-151.209900",
             NearbyDecision.directionsUri(provider("s", geo = GeoPoint(-33.86551, -151.2099))),
         )
         assertEquals(
-            "geo:0.000010,0.000000",
+            "geo:0.000010,0.000000?q=0.000010,0.000000",
             NearbyDecision.directionsUri(provider("meridian", geo = GeoPoint(0.00001, 0.0))),
         )
     }

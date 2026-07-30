@@ -715,7 +715,10 @@ final class NearbyDecisionTests: XCTestCase {
         else { return XCTFail("remembered records must present as their own state") }
         XCTAssertEqual(shown.map(\.name), ["Alpha Vet", "Beta Groomer"])
         XCTAssertEqual(storedAge, "2 minutes ago")
-        XCTAssertTrue(shown.allSatisfy { $0.distanceKm == nil }, "a stored row can claim no distance")
+        // That a stored row can claim no distance is pinned where it is actually enforced:
+        // `DirectoryCacheTests.test_aDistanceIsNeverWrittenToDisk`, which writes non-nil distances and
+        // asserts none reach the document. `storedFallback` only filters, so asserting it here would
+        // either restate the helper's own default or claim a filter strips a field it never touches.
 
         // Routed through the live presentation instead, the same records would claim there are none.
         let throughNearby = NearbyDecision.presentation(

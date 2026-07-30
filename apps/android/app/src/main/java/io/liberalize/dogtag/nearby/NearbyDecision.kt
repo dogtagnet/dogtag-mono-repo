@@ -491,8 +491,9 @@ object NearbyDecision {
     /**
      * The maps-app handoff for one provider: its PUBLISHED destination, and nothing else.
      *
-     * This is a handoff, not a map. The owner leaves the app and the map belongs to whichever app the
-     * chooser opens, so it costs nothing and needs no key - the 2026-07-29 captain decision that
+     * This is a handoff, not a map. The owner leaves the app and the map belongs to whichever app
+     * resolves the `ACTION_VIEW` `geo:` intent - the owner's default maps app, or a chooser when no
+     * default is set - so it costs nothing and needs no key. The 2026-07-29 captain decision that
      * declined an embedded map and a hosted place search kept this affordance as the thing that ships
      * instead.
      *
@@ -510,12 +511,14 @@ object NearbyDecision {
      */
     fun directionsUri(provider: DirectoryProvider): String? {
         val geo = provider.geo?.takeIf { it.isUsable } ?: return null
-        // Coordinates only - deliberately no `?q=lat,lng(Name)` label. A provider name is
-        // operator-entered free text, so the label form needs a percent-encoder for `&`, `#` and
-        // spaces, and that encoder is a correctness surface with nothing to gain: the pin is in the
-        // same place either way. It also keeps this URI trivially auditable as "the destination and
-        // nothing else", which is the property that actually matters here.
-        return "geo:${coordinate(geo.lat)},${coordinate(geo.lng)}"
+        // The `?q=` term is what makes a maps app drop a MARKER on the destination; a bare
+        // `geo:lat,lng` only centres the map there and leaves the owner to find the place themselves.
+        // The point is therefore emitted twice. The label form `?q=lat,lng(Name)` is deliberately NOT
+        // used: a provider name is operator-entered free text, so it would need a hand-rolled
+        // percent-encoder for `&`, `#` and spaces - a correctness surface with nothing to gain, since
+        // the coordinate `q` value contains only digits, `.`, `,` and `-` and needs no encoder at all.
+        val destination = "${coordinate(geo.lat)},${coordinate(geo.lng)}"
+        return "geo:$destination?q=$destination"
     }
 
     /**
