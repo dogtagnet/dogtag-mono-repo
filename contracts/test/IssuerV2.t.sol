@@ -251,6 +251,18 @@ contract WrongWidthAnchors {
 /// @dev Has code, and answers no selector at all - deliberately empty.
 contract AnswersNothing {}
 
+/// @dev Answers every selector with ONE word of the right width whose value is neither 0 nor 1. The
+/// shape a width check alone would accept and a `bool` decode would panic on. It has stated no boolean,
+/// so it must be refused as a non-answer rather than as a definite `true`.
+contract AnswersNonCanonicalWord {
+    fallback() external {
+        assembly {
+            mstore(0, 2)
+            return(0, 32)
+        }
+    }
+}
+
 /// @dev An implementation whose getters revert. A clone of it would be permanently unusable, and
 /// `resolveActiveIssuer`'s no-revert guarantee would be false.
 contract RevertingImplementation {
@@ -1256,15 +1268,31 @@ contract IssuerV2Test is Test {
 
     /// @notice A core that authorizes indiscriminately — including the zero-everything query — would make
     /// every creation and every anchor pass. Refused before it is stored, because it cannot be repointed.
+    ///
+    /// @dev The diagnostic must be the DEFINITE-`true` one, naming the probed selector. Reporting a
+    /// broken authorization rule as a missing selector sends an operator after the wrong dependency, and
+    /// this assertion is the only thing holding the two apart.
     function test_an_authority_that_authorizes_indiscriminately_is_refused() public {
         address bad = address(new PermissiveAuthority());
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector, bad));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.AuthorityAuthorizesUnconditionally.selector,
+                bad,
+                IProviderAuthority.canCreateService.selector
+            )
+        );
         new DogTagIssuerFactoryV2(address(impl), bad, address(router));
     }
 
     function test_an_authority_that_answers_nothing_is_refused() public {
         address bad = address(new AnswersNothing());
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector, bad));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector,
+                bad,
+                IProviderAuthority.canCreateService.selector
+            )
+        );
         new DogTagIssuerFactoryV2(address(impl), bad, address(router));
     }
 
@@ -1277,7 +1305,9 @@ contract IssuerV2Test is Test {
         assertTrue(gen1Registry.isWhitelistedFor(VACCINATION, providerA), "the core really is live");
         vm.expectRevert(
             abi.encodeWithSelector(
-                DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector, address(gen1Registry)
+                DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector,
+                address(gen1Registry),
+                IProviderAuthority.canCreateService.selector
             )
         );
         new DogTagIssuerFactoryV2(address(impl), address(gen1Registry), address(router));
@@ -1288,36 +1318,92 @@ contract IssuerV2Test is Test {
     /// way to repoint.
     function test_a_prior_index_that_does_not_answer_is_refused() public {
         address bad = address(new AnswersNothing());
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector, bad));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
+                bad,
+                IPriorRootAnchors.isRootAnchored.selector
+            )
+        );
         new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
 
         // A generation-1 factory is a real contract that answers `rootIssuer` — and NOT the
         // cross-generation query, which is why it can no longer occupy this slot directly.
         vm.expectRevert(
-            abi.encodeWithSelector(DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector, address(gen1))
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
+                address(gen1),
+                IPriorRootAnchors.isRootAnchored.selector
+            )
         );
         new DogTagIssuerFactoryV2(address(impl), address(authority), address(gen1));
     }
 
     function test_a_prior_index_answering_the_wrong_width_is_refused() public {
         address bad = address(new WrongWidthAnchors());
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector, bad));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
+                bad,
+                IPriorRootAnchors.isRootAnchored.selector
+            )
+        );
+        new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
+    }
+
+    /// @notice A single word is not yet a boolean. An occupant answering `2` has stated nothing this
+    /// factory can act on, and it must be refused as a NON-ANSWER rather than read as a definite `true` -
+    /// otherwise a malformed reply would be reported as a deliberate authorization or claim. Both
+    /// dependency slots share the probe, so both are exercised here.
+    function test_a_dependency_answering_a_non_canonical_boolean_is_a_non_answer() public {
+        address bad = address(new AnswersNonCanonicalWord());
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.AuthorityDoesNotAnswer.selector,
+                bad,
+                IProviderAuthority.canCreateService.selector
+            )
+        );
+        new DogTagIssuerFactoryV2(address(impl), bad, address(router));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector,
+                bad,
+                IPriorRootAnchors.isRootAnchored.selector
+            )
+        );
         new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
     }
 
     /// @notice An occupant claiming every root would refuse every anchor — permanently, since the slot is
-    /// immutable. Caught by requiring `false` for a root nothing has anchored.
+    /// immutable. Caught by requiring `false` for a root nothing has anchored, and reported as the
+    /// definite claim it is rather than as a missing selector.
     function test_a_prior_index_that_claims_every_root_is_refused() public {
         address bad = address(new AllAnchored());
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector, bad));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.PriorIndexClaimsEveryRoot.selector,
+                bad,
+                IPriorRootAnchors.isRootAnchored.selector
+            )
+        );
         new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
     }
 
     /// @notice The membership probe is load-bearing independently of the root probe: an index that
-    /// correctly sees no zero root but prematurely claims this not-yet-deployed factory is refused.
+    /// correctly sees no zero root but prematurely claims this not-yet-deployed factory is refused, under
+    /// its OWN error naming `isGeneration` - the root probe passed, so nothing here is a missing selector.
     function test_a_prior_index_that_prematurely_claims_this_generation_is_refused() public {
         address bad = address(new PrematureGenerationAnchors());
-        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector, bad));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.PriorIndexPrematurelyClaimsThisFactory.selector,
+                bad,
+                IPriorRootAnchors.isGeneration.selector
+            )
+        );
         new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
     }
 

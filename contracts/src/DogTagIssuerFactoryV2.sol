@@ -211,8 +211,23 @@ contract DogTagIssuerFactoryV2 {
     error NotAContract(address dependency);
     /// @dev `impl` is code, but not the exact `DogTagIssuerV2` runtime this factory was compiled for.
     error ImplementationCodeMismatch(address impl);
-    error AuthorityDoesNotAnswer(address authority);
-    error PriorIndexDoesNotAnswer(address priorIndex);
+    /// @dev The core did not ANSWER `selector`: it reverted, returned nothing, returned the wrong width,
+    /// or returned a word that is not a canonical boolean. Distinct from
+    /// {AuthorityAuthorizesUnconditionally}, which is a definite `true` - a broken authorization rule and
+    /// a missing selector have different remedies, and naming one as the other sends an operator after
+    /// the wrong dependency.
+    error AuthorityDoesNotAnswer(address authority, bytes4 selector);
+    /// @dev The core answered a canonical `true` to a zero-everything query on `selector`. It authorizes
+    /// indiscriminately, so every creation and every anchor would pass.
+    error AuthorityAuthorizesUnconditionally(address authority, bytes4 selector);
+    /// @dev The prior index did not ANSWER `selector` - same four shapes as {AuthorityDoesNotAnswer}.
+    error PriorIndexDoesNotAnswer(address priorIndex, bytes4 selector);
+    /// @dev The prior index answered a canonical `true` for a root nothing has anchored, so it claims
+    /// every root and would refuse every anchor.
+    error PriorIndexClaimsEveryRoot(address priorIndex, bytes4 selector);
+    /// @dev The prior index answered a canonical `true` for this factory while it is still under
+    /// construction, so it claims a generation that cannot yet exist.
+    error PriorIndexPrematurelyClaimsThisFactory(address priorIndex, bytes4 selector);
     /// @dev This factory has not yet been appended to its immutable provenance router.
     error FactoryNotRegisteredInPriorIndex(address factory);
 
@@ -240,6 +255,12 @@ contract DogTagIssuerFactoryV2 {
     /// before this not-yet-deployed factory can be appended. `registerRoot` later requires that answer
     /// to have become true, enforcing router-first -> factory -> append when the intended router occupies
     /// the slot.
+    ///
+    /// **A dependency that did not answer and one that answered a definite `true` are refused under
+    /// SEPARATE errors**, each naming the dependency and the probed selector. Both are equally
+    /// fail-closed; what differs is the remedy. A single error for both told an operator to go looking
+    /// for a missing selector when the real cause was an authorization rule that authorizes everything,
+    /// which is this codebase's could-not-check-rendered-as-a-neighbouring-state defect, inverted.
     constructor(address impl, address registry_, address priorIndex_) {
         if (impl == address(0) || registry_ == address(0) || priorIndex_ == address(0)) {
             revert ZeroAddress();
@@ -251,16 +272,7 @@ contract DogTagIssuerFactoryV2 {
         }
 
         _requireAuthorityAnswers(registry_);
-
-        _requireCode(priorIndex_);
-        if (
-            !_answersFalse(priorIndex_, abi.encodeCall(IPriorRootAnchors.isRootAnchored, (bytes32(0))))
-                || !_answersFalse(
-                    priorIndex_, abi.encodeCall(IPriorRootAnchors.isGeneration, (address(this)))
-                )
-        ) {
-            revert PriorIndexDoesNotAnswer(priorIndex_);
-        }
+        _requirePriorIndexAnswers(priorIndex_);
 
         implementation = impl;
         registry = registry_;
@@ -273,28 +285,85 @@ contract DogTagIssuerFactoryV2 {
 
     /// @dev All four functions of [`IProviderAuthority`], each required to answer `false` to a
     /// zero-everything query. A core missing any one of them cannot be repointed away from later.
+    ///
+    /// The probe order is `canCreateService`, `canIssue`, `canRevoke`, `hasRole`, and it is stable on
+    /// purpose: the reported selector is the FIRST one that failed, so a generation-1 `IssuerRegistry` -
+    /// which answers `hasRole` and none of the three capability questions - is named for the capability
+    /// selector it lacks rather than for a later one it happens to share.
     function _requireAuthorityAnswers(address authority_) private view {
         _requireCode(authority_);
-        bytes memory create =
-            abi.encodeCall(IProviderAuthority.canCreateService, (bytes20(0), bytes32(0), address(0)));
-        bytes memory issue_ = abi.encodeCall(IProviderAuthority.canIssue, (address(0), address(0)));
-        bytes memory revoke_ = abi.encodeCall(IProviderAuthority.canRevoke, (address(0), address(0)));
-        bytes memory role = abi.encodeCall(IProviderAuthority.hasRole, (bytes32(0), address(0)));
-        if (
-            !_answersFalse(authority_, create) || !_answersFalse(authority_, issue_)
-                || !_answersFalse(authority_, revoke_) || !_answersFalse(authority_, role)
-        ) {
-            revert AuthorityDoesNotAnswer(authority_);
+        _requireAuthorityFalse(
+            authority_,
+            IProviderAuthority.canCreateService.selector,
+            abi.encodeCall(IProviderAuthority.canCreateService, (bytes20(0), bytes32(0), address(0)))
+        );
+        _requireAuthorityFalse(
+            authority_,
+            IProviderAuthority.canIssue.selector,
+            abi.encodeCall(IProviderAuthority.canIssue, (address(0), address(0)))
+        );
+        _requireAuthorityFalse(
+            authority_,
+            IProviderAuthority.canRevoke.selector,
+            abi.encodeCall(IProviderAuthority.canRevoke, (address(0), address(0)))
+        );
+        _requireAuthorityFalse(
+            authority_,
+            IProviderAuthority.hasRole.selector,
+            abi.encodeCall(IProviderAuthority.hasRole, (bytes32(0), address(0)))
+        );
+    }
+
+    function _requireAuthorityFalse(address authority_, bytes4 selector, bytes memory call_) private view {
+        Answer answer = _probe(authority_, call_);
+        if (answer == Answer.True) revert AuthorityAuthorizesUnconditionally(authority_, selector);
+        if (answer != Answer.False) revert AuthorityDoesNotAnswer(authority_, selector);
+    }
+
+    /// @dev Both [`IPriorRootAnchors`] queries, each required to answer `false` while this factory is
+    /// still under construction. The two definite-`true` refusals are separate errors because they are
+    /// separate claims: one occupant sees a root nothing anchored, the other sees a generation that
+    /// cannot yet exist.
+    function _requirePriorIndexAnswers(address priorIndex_) private view {
+        _requireCode(priorIndex_);
+
+        bytes4 rootSelector = IPriorRootAnchors.isRootAnchored.selector;
+        Answer rootAnswer =
+            _probe(priorIndex_, abi.encodeCall(IPriorRootAnchors.isRootAnchored, (bytes32(0))));
+        if (rootAnswer == Answer.True) revert PriorIndexClaimsEveryRoot(priorIndex_, rootSelector);
+        if (rootAnswer != Answer.False) revert PriorIndexDoesNotAnswer(priorIndex_, rootSelector);
+
+        bytes4 generationSelector = IPriorRootAnchors.isGeneration.selector;
+        Answer generationAnswer =
+            _probe(priorIndex_, abi.encodeCall(IPriorRootAnchors.isGeneration, (address(this))));
+        if (generationAnswer == Answer.True) {
+            revert PriorIndexPrematurelyClaimsThisFactory(priorIndex_, generationSelector);
+        }
+        if (generationAnswer != Answer.False) {
+            revert PriorIndexDoesNotAnswer(priorIndex_, generationSelector);
         }
     }
 
-    /// @dev True when the target answers one word and that word is zero. Decoded as `uint256` rather
-    /// than `bool` on purpose: a non-conforming word above 1 makes `bool` decoding panic, which would
-    /// replace the named revert with an opaque one.
-    function _answersFalse(address target, bytes memory call_) private view returns (bool) {
+    /// @dev What a one-word boolean probe established. `NoAnswer` covers every shape in which the target
+    /// failed to state a boolean at all - a revert, no code path for the selector, the wrong returndata
+    /// width, and a word that is neither 0 nor 1.
+    enum Answer {
+        NoAnswer,
+        False,
+        True
+    }
+
+    /// @dev Decoded as `uint256` rather than `bool` on purpose: a non-conforming word above 1 makes
+    /// `bool` decoding panic, which would replace the named revert with an opaque one. Such a word is
+    /// reported as `NoAnswer` rather than as `True`, so a malformed reply can never be read as a definite
+    /// authorization - the caller refuses it either way, and only the diagnostic differs.
+    function _probe(address target, bytes memory call_) private view returns (Answer) {
         (bool ok, bytes memory ret) = target.staticcall(call_);
-        if (!ok || ret.length != 32) return false;
-        return abi.decode(ret, (uint256)) == 0;
+        if (!ok || ret.length != 32) return Answer.NoAnswer;
+        uint256 word = abi.decode(ret, (uint256));
+        if (word == 0) return Answer.False;
+        if (word == 1) return Answer.True;
+        return Answer.NoAnswer;
     }
 
     function _salt(bytes32 recordType, address business, uint96 cloneNonce) internal pure returns (bytes32) {

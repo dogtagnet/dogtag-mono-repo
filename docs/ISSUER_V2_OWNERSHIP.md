@@ -222,6 +222,13 @@ The core must answer `false` to all four zero-everything capability queries.
 The prior index must answer `false` both for `isRootAnchored(bytes32(0))` and for `isGeneration(address(this))` while this factory is still under construction.
 Those checks refuse an indiscriminately permissive core, an index which claims every root, and an index which falsely claims the not-yet-appended factory as a generation.
 
+**A dependency that did not answer and one that answered a definite `true` are refused under separate errors, each naming the dependency and the probed selector.**
+`AuthorityDoesNotAnswer` / `PriorIndexDoesNotAnswer` cover the four shapes in which nothing was stated - a revert, no code path for the selector, the wrong returndata width, and a word that is neither 0 nor 1.
+`AuthorityAuthorizesUnconditionally`, `PriorIndexClaimsEveryRoot` and `PriorIndexPrematurelyClaimsThisFactory` are the definite-`true` answers, and each is a different accusation with a different remedy.
+Both classes are equally fail-closed; only the diagnostic differs, and a single error for both told an operator to hunt a missing selector when the real cause was an authorization rule that authorizes everything - this codebase's could-not-check-rendered-as-a-neighbouring-state defect, inverted.
+A non-canonical word is deliberately a non-answer rather than a `true`: it states no boolean, so reporting it as a deliberate authorization would be the same collapse in the other direction.
+`test_a_dependency_answering_a_non_canonical_boolean_is_a_non_answer` holds that for both dependency slots, and the definite-`true` diagnostics are held by `test_an_authority_that_authorizes_indiscriminately_is_refused`, `test_a_prior_index_that_claims_every_root_is_refused` and `test_a_prior_index_that_prematurely_claims_this_generation_is_refused`.
+
 ### Write-once stays per contract and honest
 
 `DogTagIssuerV2.issue` checks `issuedAt[r]` in its own storage; `registerRoot` checks `rootIssuer[root]` in its own factory's storage.
@@ -374,13 +381,40 @@ The two-query requirements on the slot and the authenticity/completeness residua
 Call it rather than reimplementing `_isSpawningBusiness` - the salt-recomputation stand-in exists only because generation-1 clones have no owner, and generation-2 clones do.
 Note also that the identity a resolver publishes must come from the core's identity anchor, never from the clone's `name()`, which is empty by construction (§6).
 
+**To the cutover (S-13/S-14): the mandatory issuer-whitelist pillar must resolve authority for the generation that anchored the root.**
+This is the obligation that gates credential VALIDITY, and it is the one sibling obligation that is a code change in each consumer rather than a configuration flip.
+There is one owner-hidden verification pillar and it stays one - what follows is not a mode, a second path, or an A/B choice.
+
+The pillar today resolves the issuing clone from the verifier's OWN configured factory, reads `clone.recordType()` and `issuedBy[R]` off that clone, and then asks the verifier's OWN configured **generation-1 `IssuerRegistry`**, `isWhitelistedFor(recordTypeKey, signer)`.
+Against a generation-2 root that read produces one of two refusals, and **both must be stated**, because they are different claims:
+
+* A verifier still configured with the generation-1 factory gets `rootIssuer(R) == 0` for a generation-2 root - the mapping is generation-local - so resolution is `NoRecord`, the pillar is **indeterminate**, and the credential is refused as unresolved.
+* A verifier resolving against the generation-2 factory, or against the S-8 router, resolves the clone and reaches `issuedBy[R]`. That signer's authority exists only in the S-6 `ProviderRegistry` under `canIssue`; the legacy `isWhitelistedFor` is deliberately not that oracle (§3), so the generation-1 registry returns a **definite `false`** and the pillar's tri-state treats it as a real authenticity failure.
+
+The second is the worse shape: an honestly issued credential rendered as a forged one.
+It is also not transitional.
+`RpcAdapter::is_whitelisted_for` takes no registry address by design - the implementor supplies it from its own config, which is exactly what keeps a document from choosing the answering contract - so making the read generation-aware is a code change per consumer.
+And the router's C-12 cutover freeze delists every signer in the generation-1 `IssuerRegistry`, so the generation-1 answer moves further from correct rather than closer.
+
+The consumers that must move together, all of which read the pillar from a verifier-owned registry:
+
+* `packages/ui/src/wallet/verifyCredential.ts`
+* `stacks/government/api/src/routes.rs::verify`
+* `stacks/vet/api/src/routes.rs::verify_credential`
+* `crates/dogtag-standard-rs/src/verify.rs`
+* the two mobile importers, `RoaxRpc.issuerWhitelistPillar` and `RecordImporter.foldIssuerWhitelist`
+
+**Sequencing: this must land before a generation-2 clone anchors anything a consumer will verify.**
+Unlike the deferred `name()` readers of §6 - where the guarantee this slice ships is that there is no provider-chosen string to mistake - an unreconciled pillar does not degrade to "identity unavailable"; it refuses genuine credentials.
+None of those files is touched here, and nothing in this branch wires a consumer to either contract: the pair is built and undeployed, so the obligation is recorded for the cutover rather than discharged in this slice.
+
 ## 9. Build and test
 
 ```sh
 cd contracts && forge test --match-contract IssuerV2Test
 ```
 
-62 tests in `IssuerV2Test`; 201 in the whole `contracts` suite.
+63 tests in `IssuerV2Test`; 202 in the whole `contracts` suite.
 Use `forge test`, never a bare `forge build`: a full build tries to compile the vendored OZ submodule's `certora/harnesses/*`, which import generated `../patched/*` files that are not present, and fails with "File not found" - a submodule artifact, not a project error.
 
 A fresh worktree has no `contracts/lib` contents; run `git submodule update --init --recursive contracts/lib/forge-std contracts/lib/openzeppelin-contracts` first.
@@ -405,7 +439,8 @@ Where several tests fail, the one named is the test written for that property.
 That temporary harness was **not committed**, so this repository does not provide a repeatable command that reproduces the mutations.
 The committed source and named tests make every table mapping inspectable, and `forge test` reruns those tests against the checked-in source; it does not apply the mutations.
 Treat the table as true historical evidence, not as a mutation gate that silently ran as part of the ordinary suite.
-The later exact-runtime-identity and pre-append-membership regressions are held directly by their named tests in §5; they are not retroactively claimed as rows in this thirty-three-mutation run.
+The later exact-runtime-identity, pre-append-membership and constructor-diagnostic regressions are held directly by their named tests in §5; they are not retroactively claimed as rows in this thirty-three-mutation run.
+In particular, collapsing the definite-`true` refusals back into the no-answer errors is caught by the three named tests above and not by any row below.
 
 | mutation | test that caught it |
 |---|---|

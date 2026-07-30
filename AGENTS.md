@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 201 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 202 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -981,7 +981,7 @@ An already-installed app keeps proving against its **baked** key until you do, s
 ### The generation-2 issuer pair is BUILT, NOT DEPLOYED (registry-plan S-7)
 
 `DogTagIssuerV2` + `DogTagIssuerFactoryV2` exist in `contracts/src/` and are covered by
-`test/IssuerV2.t.sol` (62 tests). **This repo records no deployment of either** - no address in
+`test/IssuerV2.t.sol` (63 tests). **This repo records no deployment of either** - no address in
 `deployments/roax.json`, no `.env.example` key, no client config, and nothing in the tree points at one.
 Say it that way rather than "deployed nowhere": the ledger is what this repo can speak for. Deploying is
 part of the cutover (S-13/S-14) and separately captain-authorized. The generation-1 `DogTagIssuer.sol` /
@@ -1048,7 +1048,23 @@ must be non-zero contracts. The implementation is identified exactly:
 `owner()` / `pendingOwner()` / `recordType()` is refused with `ImplementationCodeMismatch`; this is pinned
 by `test_an_abi_shaped_impostor_implementation_is_refused`. The authority and prior index are
 behaviour-probed for their exact required reads (an EOA staticcall SUCCEEDS with empty returndata - the
-silent shape those probes must reject).
+silent shape those probes must reject). Those probes are TRI-state and their diagnostics must stay
+split: `*DoesNotAnswer(dependency, selector)` means nothing was stated (revert, no such selector, wrong
+returndata width, or a word that is neither 0 nor 1), while `AuthorityAuthorizesUnconditionally` /
+`PriorIndexClaimsEveryRoot` / `PriorIndexPrematurelyClaimsThisFactory` are definite `true` answers. Both
+refuse construction identically; collapsing them sends an operator hunting a missing selector when the
+real cause is an authorization rule that authorizes everything.
+
+**The mandatory issuer-whitelist pillar does NOT yet answer for a generation-2 root, and that is a
+cutover blocker rather than a wiring note.** The pillar asks the verifier's OWN configured
+generation-1 `IssuerRegistry.isWhitelistedFor`, so a generation-2 root either resolves nowhere
+(`rootIssuer` is generation-local -> indeterminate) or resolves a signer whose authority lives only in
+the S-6 `ProviderRegistry` under `canIssue` -> a definite `false`, i.e. a genuine credential rendered as
+forged. `RpcAdapter::is_whitelisted_for` deliberately takes no registry address, so this is a code change
+in each of the five consumers (`packages/ui/src/wallet/verifyCredential.ts`, government-api `verify`,
+vet-api `verify_credential`, `crates/dogtag-standard-rs/src/verify.rs`, and the two mobile importers) -
+and C-12's delisting freeze makes the generation-1 answer worse, not transitional. Still ONE owner-hidden
+pillar; none of those files is touched by this branch. Full statement: `docs/ISSUER_V2_OWNERSHIP.md` §8.
 
 The doc's §9 table is true historical evidence from a one-off temporary mutation harness: thirty-three
 source mutations were actually applied/run/reverted and mapped to named red tests, while two no-behaviour
