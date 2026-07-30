@@ -724,58 +724,67 @@ The user owns the appointment in the mobile app (central backend); the business 
 ### 8.4 Discovery → booking flow
 
 ```
-mobile → indexer: GET /v1/businesses                      ← every kind; current-GPS Nearby filters locally
-owner search → indexer: GET /v1/businesses?kind=vet&kind=groomer
-                                                            caller-owned kind policy, not a server default
-owner search → indexer: GET /v1/businesses?name=…&kind=vet&kind=groomer
-                                                            deliberately typed provider-name intent
-owner search → indexer: GET /v1/businesses?kind=vet&kind=groomer&searchCenterLat=…&searchCenterLng=…&searchRadiusKm=…
-                                                            only a place explicitly searched/picked
+owner Nearby: round current fix to 3 decimals ON DEVICE after disclosure
+mobile → indexer: POST /v1/businesses/nearest?kind=vet&kind=groomer&limit=25&offset=0
+                  body {"approximateLat":1.352,"approximateLng":103.820}
+owner name search → indexer: GET /v1/businesses?name=…&kind=vet&kind=groomer&limit=25&offset=0
+                                      caller-owned kind policy; no position needed for name-only search
 indexer → admin: GET /v1/businesses                       ← whole interim source; on-chain after S-10
-indexer → mobile: {"businesses":[{businessId,type,name,geo,contact,services,apiBaseUrl,
-                                  domain,documentStores,hmacKeyId}]}
-mobile (on device): current-position distance/sort over the returned `geo` - packages/ui/src/geo/
-mobile: render matching providers as a list or map
-mobile → OS maps app: tapped provider destination           ← directions handoff
+indexer → mobile: {"businesses":[{businessId,type,name,geo,contact,services,...,distanceKm}],
+                   "total":…,"limit":25,"offset":0,"hasMore":…}
+mobile: preserve server distance order and render the page as a list
 mobile → central: POST /v1/appointments {businessId, dogTagId, slot}
 central: create appt (rev=1, REQUESTED) → PUT to business apiBaseUrl
 business: store replica, notify staff
 ... business approves → POST appointment-events {CONFIRMED} → central → push to mobile
 ```
 
-**Current-position Nearby carries no position, and remains computed on the device.**
-The separate search-center query is a deliberately disclosed place the user typed, searched for, or
-picked on a map. The server cannot distinguish that coordinate from a live GPS fix, so caller separation
-and the exact bare-request tests are the enforcement boundary.
+**Current-position Nearby is now server-ranked and paged.** The captain explicitly reversed the
+full-fetch/local-scan choice because a directory in the hundreds of thousands would transfer megabytes
+and make the phone iterate every provider. The privacy debt is paid at the client and transport seam:
+the phone rounds first, discloses the transfer before permission, and sends the approximation in a POST
+body that this service neither logs nor stores.
 
 - The indexer's `GET /v1/businesses` is on the **public, unauthenticated** router. Bare GET returns the
-  whole set with every published provider kind and no unstated predicate. `name`, repeatable `kind`
-  (`type` is the same repeatable existing-client compatibility alias; never mix spellings), and the
-  all-or-none `searchCenterLat` + `searchCenterLng` + `searchRadiusKm` group are the only accepted
-  filters. Repeated kinds are ORed; the kind set, name, and chosen area compose with AND semantics.
+  first configured page across every published provider kind, not the whole set. `name`, repeatable
+  `kind` (`type` is the same repeatable existing-client compatibility alias; never mix spellings), and
+  `limit`/`offset` are accepted. Repeated kinds are ORed; the kind set and name compose with AND
+  semantics. Every response carries `total`, `limit`, `offset`, and `hasMore`.
 - Provider kind is first-class caller policy, not a service audience mode. Current kinds are `vet`,
   `groomer`, `admin`, and `government`, but the service treats kind strings opaquely rather than
   hardcoding an enum. The owner app admits only vet/groomer and a featureful owner search requests
   `kind=vet&kind=groomer`; whether another app exposes admin/government remains deliberately deferred.
-- A search center is deliberate intent, like a typed provider name. The live/current GPS fix is
-  involuntary and continuous. Native `ProviderDirectory.read()` therefore remains no-argument and the
-  current-location flow fetches the provider **set** and computes distance, radius and sort locally
-  with `packages/ui/src/geo/`.
-  A provider's pin is a business fact already on their door; the user's position is not.
-- Search results may be rendered as a **list or map**. Tapping one hands that provider's destination
-  to the platform maps app / Google Maps for directions. There is still no viewport, bounding-box,
-  region, or geohash query to the directory; those shapes have no product caller.
-- Location autocomplete/geocoding is an app concern, including any third-party provider it chooses.
-  The indexer receives only the resolved center after the user selects a candidate; it does not accept
-  a partial place query to forward.
-- The indexer rejects ambiguous aliases such as `near`, bare `lat`/`lng`, `radius`, current-GPS
-  spellings, bounding boxes, and geohashes. Never feed a live fix into `searchCenter*`; any future
-  server-side current-position feature must be separately designed, deliberate, and disclosed.
+- `POST /v1/businesses/nearest` accepts only
+  `{"approximateLat":number,"approximateLng":number}` in its JSON body. It rejects more than three
+  decimal places, invalid coordinates, unknown body fields, and every URL-position spelling. It scans
+  located name/kind matches, orders them by Haversine distance with source-order ties, pages only the
+  requested window, and adds `distanceKm`; `geo:null` rows cannot enter a nearest page.
+- **Coarsening happens before networking.** Android and iOS round the current fix to three decimal
+  places (roughly 100 m) before constructing the JSON. The grant surface says plainly:
+  “Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored.”
+  The service rejecting over-precise input is defense-in-depth, not a claim that server rounding could
+  undo receipt of a precise fix.
+- **No request-position logging or persistence.** The indexer currently installs no access/request
+  `TraceLayer`, request-id/audit middleware, metrics, or request store; Mongo contains only chain events
+  and the resume cursor. Its logs are startup, scanner/store errors, and directory-refresh results, none
+  of which carry an incoming URI/body/position. The unused `tower-http/trace` feature was removed
+  because its default HTTP span would record a full URI. Nearest responses are
+  `Cache-Control: private, no-store`. Dependency TRACE may expose peer IP and connection timing, but no
+  current level logs incoming URI/query/path/header/body; external ingress logging remains deployment
+  policy outside this repository.
+- There is no radius, chosen-location, map, directions, viewport, bounding box, geohash,
+  place-autocomplete, place-hint, or third-party geocoding surface. Provider discovery is a list.
 - The legacy central/admin route still accepts deprecated `near=<lat>,<lng>` and `radius=` for
   third-party compatibility, but nothing in this repo sends them. Do not add a caller there.
-- With gzip, the planning budget of ~100 bytes/provider reaches a 5 MB cold-fetch question at about
-  50,000 providers (`5,000,000 / 100`). Location-less providers remain in full/name/kind results and
-  are excluded only when a deliberate radius search needs a coordinate.
+- The prior full-fetch planning budget reached 5,000,000 bytes (4.77 MiB) at 50,000 providers using
+  ~100 compressed bytes/provider, and roughly 10 MB at 100,000. Paging removes that transfer and the
+  device-side O(n) scan. The in-memory admin snapshot is `Arc`-swapped so each request does not clone
+  hundreds of thousands of rows; nearest selection scans once and sorts only through the requested
+  page boundary.
+- Each page is ranked against one immutable `Arc` snapshot, but the API does not yet issue a snapshot
+  token across requests. Native clients reject detectable refresh races (changed page metadata,
+  duplicate ids, or a decreasing distance boundary) and require a refresh; do not claim stronger
+  cross-request snapshot consistency until continuations carry a server snapshot token.
 
 ---
 
@@ -808,8 +817,8 @@ and the exact bare-request tests are the enforcement boundary.
 
 ## 10. Mobile architecture (themes)
 
-- **Android:** Kotlin + Jetpack Compose, MVVM, Retrofit/Ktor, CameraX (QR), OS-maps URI handoff, EncryptedSharedPreferences/Keystore.
-- **iOS:** Swift + SwiftUI, MVVM, async/await URLSession, AVFoundation (QR), OS Maps URL handoff, Keychain.
+- **Android:** Kotlin + Jetpack Compose, MVVM, Retrofit/Ktor, CameraX (QR), EncryptedSharedPreferences/Keystore.
+- **iOS:** Swift + SwiftUI, MVVM, async/await URLSession, AVFoundation (QR), Keychain.
 - **Verification:** shared Rust crate `dogtag-standard-rs` exposed via **UniFFI** to both platforms (single source of truth for canonicalization + Merkle + verify), avoiding two re-implementations.
 - **Theming (mobile keeps its 7 themes — black/white/blue/red/pink/green/yellow, each with light+dark — unchanged):** a **semantic token layer** (`color.primary`, `color.secondary`, `color.surface`, `color.onPrimary`, …) with one palette per theme. Components reference **only semantic tokens**, never raw colors → switching theme swaps the palette, components unchanged. Android: `MaterialTheme` `ColorScheme` per theme + a `ThemeController`. iOS: an `@Environment` theme object + `Color` token extensions.
 - **Navigation** mirrors the reference: bottom tabs **Verify · Travel · Home · Documents · Profile**; Home = pet card + grouped Credentials (Health / Service / Travel); add-record wizards with type pickers.
