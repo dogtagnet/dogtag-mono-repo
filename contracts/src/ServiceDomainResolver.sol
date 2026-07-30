@@ -113,6 +113,21 @@ interface ICoreRecordPermission {
 /// Both are re-read on the read side too, by {isAuthoritativeFor} and {claimStanding}, because a stored
 /// record outlives the permission that wrote it.
 ///
+/// # A frozen service, and why standing is a FOURTH term rather than a fourth conjunct
+///
+/// Two core lifecycle states are terminal. A `RETIRED` service standing cannot be left, and a deprecated
+/// factory generation has no reactivation path. Either one makes the core's `canWriteService` false
+/// forever, so every write here reverts {NotAuthorized} permanently - for the owner, for every delegate,
+/// and for the registrar, which has no bypass by design. A `CLAIMED` record on such a service is frozen
+/// as history.
+///
+/// None of the three terms above notices: the router's generation list is append-only, fleet approval is
+/// unrelated, and the core never clears a stored selector. So {claimStanding} reports the core's own
+/// standing as a SEPARATE fourth term, sourced from `core.effectiveService` rather than re-derived here.
+/// It is deliberately NOT folded into {isAuthoritativeFor}, which answers whether THIS RESOLVER's record
+/// is the effective one for the service - and a retired service's record genuinely is still the last
+/// thing this resolver accepted from it. Two questions with different remedies must not share one bool.
+///
 /// # What this contract deliberately does not hold
 ///
 /// **No name, no legal identity.** A generation-2 clone's `name()` is permanently empty by construction,
@@ -167,6 +182,11 @@ contract ServiceDomainResolver {
 
     /// @notice Upper bound on {recordedServicePage}, mirroring the authority core's own page cap.
     uint256 public constant MAX_PAGE_SIZE = 100;
+
+    /// @dev Words `ProviderRegistry.effectiveService` answers with: two standings and three flags, each
+    /// ABI-padded to a word. Used only by the constructor probe, which asserts the width rather than the
+    /// values.
+    uint256 private constant EFFECTIVE_SERVICE_RETURN_WORDS = 5;
 
     /// @notice The S-6 authority core. Answers authorization, resolver selection and resolver approval.
     /// @dev Immutable. The core holds the standing, ownership and delegation facts a domain write depends
@@ -263,7 +283,8 @@ contract ServiceDomainResolver {
         );
         if (vouchesForNothing) revert RouterRecognizesEveryAddress(router_);
 
-        // The two core reads a write depends on must answer with the expected widths. `canWriteService`
+        // Every core read this contract depends on must answer with the expected width, so a core that
+        // cannot serve one is refused here rather than at the first call that needs it. `canWriteService`
         // with a zero permission is `false` by the core's own guard, so this probes the ABI without
         // asserting anything about a real service.
         _probeBool(
@@ -278,7 +299,18 @@ contract ServiceDomainResolver {
             abi.encodeCall(ProviderRegistry.canWriteService, (address(0), address(0), uint32(0))),
             ProviderRegistry.canWriteService.selector
         );
-        _probeService(core_);
+        _probeWords(
+            core_,
+            abi.encodeCall(ProviderRegistry.service, (address(0))),
+            ProviderRegistry.service.selector,
+            1
+        );
+        _probeWords(
+            core_,
+            abi.encodeCall(ProviderRegistry.effectiveService, (address(0))),
+            ProviderRegistry.effectiveService.selector,
+            EFFECTIVE_SERVICE_RETURN_WORDS
+        );
 
         core = ProviderRegistry(core_);
         router = CloneProvenanceRouter(router_);
@@ -352,16 +384,23 @@ contract ServiceDomainResolver {
 
     /// @notice True iff `who` may write `service`'s record right now — every term a write requires.
     ///
-    /// @dev Exposed so a console can render "can this key self-serve?" without simulating a write, and
-    /// composed from the SAME reads {_requireWritable} performs so the answer and the write cannot drift.
+    /// @dev Exposed so a console can render "can this key self-serve?" without simulating a write.
+    /// COMPOSED from {isAuthoritativeFor} rather than re-listing its three terms, so the standing half of
+    /// this answer has exactly one derivation and a term added there cannot leave this over-permissive.
+    /// The core's own standing is deliberately not AND-ed in beside it: `canWriteService` already folds
+    /// it, and counting it twice would state one fact as two terms.
     ///
     /// A `false` here means the write would be refused, which is accurate whichever term failed. Note the
     /// core's `canWriteService` itself fails closed on an unreadable dependency, so `false` from that term
     /// folds "not permitted" together with "a dependency could not be read" — for a permission gate those
-    /// have the same consequence. {claimStanding} is the surface that keeps the display-facing terms apart.
+    /// have the same consequence.
+    ///
+    /// {claimStanding} is the surface that keeps the display-facing terms apart, and it is what a console
+    /// renders beside this. Even so, `canWriteService` is ONE bool, so a bare refusal still cannot
+    /// distinguish "your key lacks authority" from "your provider is suspended" from "your service is
+    /// retired". {claimStanding}'s `serviceStandingEffective` is what separates the last of those out.
     function canWriteDomain(address service, address who) public view returns (bool) {
-        return _lineageRecognizes(service) && _resolverApproved() && _resolverSelected(service)
-            && core.canWriteService(service, who, recordPermission);
+        return isAuthoritativeFor(service) && core.canWriteService(service, who, recordPermission);
     }
 
     /// @dev Ordered so the diagnostics are useful: lineage first (the strongest and least recoverable
@@ -410,16 +449,27 @@ contract ServiceDomainResolver {
     /// three slightly different versions of it. It says nothing about the record's CONTENT: a `true` here
     /// beside a `NO_DOMAIN` disposition means "this resolver authoritatively reports no domain".
     ///
+    /// It also says nothing about whether the SERVICE is still standing. A retired service's record is
+    /// genuinely still the last thing this resolver accepted from it, so this stays `true` - see the
+    /// frozen-service section of the contract doc, and read `serviceStandingEffective` beside it.
+    ///
     /// Render {claimStanding}'s terms to a human, not this. Collapsing separate facts into one verdict is
     /// what makes a display unable to say which of them failed.
     function isAuthoritativeFor(address service) public view returns (bool) {
         return _lineageRecognizes(service) && _resolverApproved() && _resolverSelected(service);
     }
 
-    /// @notice The record plus the three standing terms behind {isAuthoritativeFor}, reported SEPARATELY.
+    /// @notice The record, the three standing terms behind {isAuthoritativeFor}, and the core's own
+    /// service standing - all reported SEPARATELY.
     ///
-    /// @dev Composed from the same helpers {isAuthoritativeFor} folds rather than re-derived here, so the
-    /// breakdown and the verdict cannot disagree.
+    /// @dev The first three are composed from the same helpers {isAuthoritativeFor} folds rather than
+    /// re-derived here, so the breakdown and the verdict cannot disagree.
+    ///
+    /// `serviceStandingEffective` is the FOURTH term and is deliberately outside that verdict. It comes
+    /// from `core.effectiveService` rather than being re-derived, and answers whether the core's write
+    /// predicate can still be satisfied for this service at all. A `false` is terminal whenever its cause
+    /// is a `RETIRED` standing or a deprecated factory generation, and a `CLAIMED` record beside it is
+    /// history rather than a live claim - so a consumer MUST read it before rendering a claim as current.
     ///
     /// Each term is a real observation or the call reverts — nothing here catches a failed read and
     /// returns `false` for it, because a swallowed failure rendered as a definite negative is exactly how
@@ -433,7 +483,8 @@ contract ServiceDomainResolver {
             string memory domain,
             bool lineageRecognizesService,
             bool registryApprovesThisResolver,
-            bool coreSelectsThisResolver
+            bool coreSelectsThisResolver,
+            bool serviceStandingEffective
         )
     {
         DomainRecord storage r = _records[service];
@@ -442,6 +493,7 @@ contract ServiceDomainResolver {
         lineageRecognizesService = _lineageRecognizes(service);
         registryApprovesThisResolver = _resolverApproved();
         coreSelectsThisResolver = _resolverSelected(service);
+        serviceStandingEffective = _serviceStandingIsEffective(service);
     }
 
     /// @notice How many services have ever had a record written here.
@@ -477,6 +529,23 @@ contract ServiceDomainResolver {
 
     function _resolverSelected(address service) internal view returns (bool) {
         return core.service(service).domainResolver == address(this);
+    }
+
+    /// @dev The core's own standing axis, read from `effectiveService` rather than re-derived from the
+    /// provider, service and generation records separately - a second derivation of a rule the core
+    /// already publishes is exactly what this contract composes `canWriteService` to avoid.
+    ///
+    /// The two remaining fields (`ownerConfirmed`, `hasActiveIssuer`) are deliberately discarded: this
+    /// term is about the SERVICE's standing, and folding in who currently owns it or whether it can still
+    /// issue would answer a different question under one name.
+    function _serviceStandingIsEffective(address service) internal view returns (bool) {
+        (
+            ProviderRegistry.Standing providerStanding,
+            ProviderRegistry.Standing serviceStanding,
+            bool factoryActive,,
+        ) = core.effectiveService(service);
+        return providerStanding == ProviderRegistry.Standing.ACTIVE
+            && serviceStanding == ProviderRegistry.Standing.ACTIVE && factoryActive;
     }
 
     /// @dev The one place a write's stamp is applied, so `revision`, `updatedAt` and `updatedAtBlock` can
@@ -544,15 +613,16 @@ contract ServiceDomainResolver {
         return uint32(word);
     }
 
-    /// @dev `service(address)` returns a struct rather than a word, so it is probed for a decodable
-    /// answer instead of a boolean one. An unattached address answers a zeroed struct, which is exactly
-    /// what {_resolverSelected} needs it to do.
-    function _probeService(address dependency) internal view {
-        (bool ok, bytes memory ret) =
-            dependency.staticcall(abi.encodeCall(ProviderRegistry.service, (address(0))));
-        if (!ok || ret.length < 32) {
-            revert DependencyDoesNotAnswer(dependency, ProviderRegistry.service.selector);
-        }
+    /// @dev The wider reads answer with several words rather than one, so they are probed for a decodable
+    /// answer of at least `minWords` instead of a boolean one. An unattached address answers a zeroed
+    /// struct and an all-zero standing tuple, which is exactly what {_resolverSelected} and
+    /// {_serviceStandingIsEffective} need them to do, so the probe asserts the WIDTH and never a value.
+    function _probeWords(address dependency, bytes memory data, bytes4 selector, uint256 minWords)
+        internal
+        view
+    {
+        (bool ok, bytes memory ret) = dependency.staticcall(data);
+        if (!ok || ret.length < minWords * 32) revert DependencyDoesNotAnswer(dependency, selector);
     }
 
     // ---------------------------------------------------------------------------------------------

@@ -161,6 +161,41 @@ So a consumer computing an effective resolver must require both halves, and so d
 Both are re-read on the **read** side too, because a stored record outlives the permission that wrote it.
 A record written before a deapproval stops being authoritative while its content stays exactly as the issuer left it: deapproval says the resolver is no longer authoritative, not that the issuer withdrew anything.
 
+### A frozen service, and the fourth standing term
+
+Two core lifecycle states are terminal.
+`setServiceStanding` refuses to leave `RETIRED`, and `deprecateFactoryGeneration` has no reactivation path.
+Either one makes `_serviceStandingIsEffective` false forever, so `canWriteService` is false forever, so **every write here reverts `NotAuthorized` permanently - for the owner, for every delegate, and for the registrar, which has no bypass by design.**
+A `CLAIMED` record on such a service is frozen as history.
+
+None of the three terms above notices.
+The router's generation list is append-only, fleet approval is unrelated, and the core never clears a stored selector - so all three stay `true` and `isAuthoritativeFor` stays `true` with them.
+That is correct rather than a bug: the record genuinely is the last thing this resolver accepted from that service.
+What it is not is a claim that the service can still maintain it.
+
+So `claimStanding` carries a **fourth** term, `serviceStandingEffective`, sourced from `core.effectiveService` rather than re-derived here.
+It is reported separately and deliberately **not** folded into `isAuthoritativeFor`, which answers a question about the RESOLVER's standing; conflating the two would make one bool answer two questions with different remedies, which is the collapse this contract exists to avoid.
+**A consumer MUST read it before rendering a claim as current.**
+
+`canWriteService` is still one bool, so a bare `NotAuthorized` cannot by itself distinguish "your key lacks authority" from "your provider is suspended" from "your service is retired".
+Reading `serviceStandingEffective` beside the refusal is what separates the standing causes out, and that is what it is for.
+
+`test_a_retired_service_freezes_its_claim_while_the_resolver_terms_stay_true` and `test_a_deprecated_factory_generation_freezes_its_claim_the_same_way` pin both halves, and they are two tests rather than one because the two causes reach the same frozen state through different fields of the core.
+
+### The missing per-record withdrawal is a reduction, and the core has already ruled on it
+
+`IssuerDomainRegistry`'s tier 1 let `WHITELIST_ADMIN` clear any binding per record.
+Nothing here replaces that, so a frozen `CLAIMED` record cannot be withdrawn at all.
+State it as the reduction it is.
+
+It is not an open question, though, and the ruling should be cited rather than re-litigated.
+`ProviderRegistry.deprecateFactoryGeneration`'s own documentation says a frozen service's stored selector "is history, not a live claim", that a registrar override there "would be an authority to rewrite a superseded generation's published claims", and that "withdrawing what such a selector still resolves is the typed resolver allowlist's job, not this write predicate's".
+
+So the sanctioned lever is `setResolverApproved(DOMAIN, resolver, false)`.
+The honest residual: that lever is **fleet-wide**, so withdrawing one frozen claim through it takes down every other service's claim on the same resolver.
+That is a stated limitation and never a passing property, in the same register as the mirror direction `docs/CLONE_PROVENANCE_ROUTER.md` deliberately does not close.
+Adding a per-record registrar withdrawal here would contradict the shipped ruling above, so it is out of scope for this slice and is the captain's call if it is ever revisited.
+
 ## The read surface, and the one getter that deliberately does not exist
 
 | Read | Answers |
@@ -168,17 +203,18 @@ A record written before a deapproval stops being authoritative while its content
 | `record(service)` | The whole `DomainRecord`. Never reverts; `UNSET` is a normal state, not an error. |
 | `dispositionOf(service)` | The cheap discriminator. |
 | `resolveDomain(service)` | `(Disposition, string)` — the disposition first. |
-| `isAuthoritativeFor(service)` | The single machine-facing AND of the three standing terms. |
-| `claimStanding(service)` | The record plus those three terms reported **separately**. |
+| `isAuthoritativeFor(service)` | The single machine-facing AND of the three **resolver** standing terms. |
+| `claimStanding(service)` | The record, those three terms, and the core's own `serviceStandingEffective` - all reported **separately**. |
+| `canWriteDomain(service, who)` | Whether a write by `who` would be accepted right now. Composed from `isAuthoritativeFor` plus the core's `canWriteService`. |
 | `recordedServiceCount()` / `recordedServicePage(cursor, limit)` | Bounded enumeration for the off-chain re-check job. |
 
 **There is deliberately no `domainOf(address) returns (string)`.**
 That getter is what made three facts into one, and re-adding it re-creates the defect.
 `resolveDomain` is a tuple so that a caller wanting only the string must write `(, string memory d) = resolveDomain(s)`, which discards the disposition visibly rather than by omission.
 
-`claimStanding` returns the three terms rather than one verdict because they have different remedies, and `isAuthoritativeFor` is the single derivation of the AND so consumers cannot drift into three slightly different versions of it.
-The two are composed from the same helpers, so the breakdown and the verdict cannot disagree — the same rule `ProviderRegistry.effectiveService` already follows.
-**Render the terms to a human, not the verdict.**
+`claimStanding` returns the terms rather than one verdict because they have different remedies, and `isAuthoritativeFor` is the single derivation of the AND so consumers cannot drift into three slightly different versions of it.
+The two are composed from the same helpers, so the breakdown and the verdict cannot disagree - the same rule `ProviderRegistry.effectiveService` already follows, and `canWriteDomain` composes `isAuthoritativeFor` rather than re-listing its terms for the same reason.
+**Render the terms to a human, not the verdict** - and render the fourth one, because the first three cannot tell a live claim from a frozen one.
 
 Nothing in either read catches a failed dependency call and returns `false` for it.
 A swallowed failure rendered as a definite negative is exactly how *could not check* becomes *not verified*; a consumer whose call reverts has learned that it could not check, which is the honest answer.
@@ -223,6 +259,11 @@ Enumerated by grep rather than from a list, so it is current as of this slice:
 
 Both mobile ports also derive a `domainOf(address)` selector; a migrated build derives the new read's selector instead, and both apps carry the registry address in a **compile-time bundle**, so a repoint needs an app rebuild and reinstall.
 
+**A consumer must read the core's standing before rendering a claim as current.**
+The disposition and `isAuthoritativeFor` together still cannot tell a live claim from a frozen one, because a `RETIRED` service standing and a deprecated factory generation are both terminal and neither touches any of this resolver's three terms.
+So a migrated consumer reads `claimStanding`'s `serviceStandingEffective` (or `core.effectiveService(service)` directly) beside the record, and renders a `CLAIMED` record whose standing is no longer effective as **history rather than a current claim**.
+See "A frozen service, and the fourth standing term" above for why the term is separate, and the section after it for why there is no per-record way to withdraw such a record.
+
 `docs/ISSUER_DOMAIN_BINDING.md` remains the normative home for the record convention and the six display states.
 Its "Who may write a binding" section describes the superseded three tiers and applies to `IssuerDomainRegistry` until the cutover; this document describes what replaces them.
 The six display states do not change, but `noDomainClaimed` becomes reachable from a real `NO_DOMAIN` disposition rather than from any empty string, and `UNSET`/`CLEARED` need their own copy rather than borrowing it.
@@ -266,3 +307,4 @@ The fourth row is worth keeping visible: the first draft of the suite did **not*
 The gap was found by running the mutation, not by reading the tests, and closing it is what `test_a_record_stops_being_authoritative_when_the_service_selects_another_resolver` exists for.
 
 The harness that applied these was not committed, so the table is historical evidence rather than a repeatable gate — the same standing as `docs/ISSUER_V2_OWNERSHIP.md` §9.
+It covers the slice as first written and deliberately does not claim to cover the fourth standing term, which was added in review; that term is pinned by the two named frozen-service tests and by `_assertVerdictExcludesServiceStanding`, which asserts it is OUTSIDE the verdict rather than merely absent from the fold.

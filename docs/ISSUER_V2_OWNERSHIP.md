@@ -131,10 +131,11 @@ It could not, and this is worth recording rather than quietly changing: on the c
 That mapping is written in exactly one place - `createIssuer` - so an address is in it if and only if this factory deployed it. No other path sets it.
 
 The predicate is published once, on the factory, as `authorizeClone(candidate, claimant) -> bytes32 recordType`, so that a consumer can call it instead of re-deriving it.
-Two contracts are meant to (S-6's service attachment and S-9's domain write), and two parallel implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in this codebase already.
+S-6's service attachment is meant to, and two parallel implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in this codebase already.
+S-9's domain write was the other intended consumer and has since shipped composing the core's `canWriteService` instead - a considered deviation, argued at §8 and in full in `docs/SERVICE_DOMAIN_RESOLVER.md`.
 
 **No consumer composes it yet, so this is not the only place the rule lives.**
-S-9 does not exist in this tree, and `ProviderRegistry` derives both halves itself: provenance through its own fail-soft `isClone` staticcall (`_factoryRecognizes`) and control through its own fail-soft `owner()` staticcall (`_readServiceOwner`).
+S-9 now exists (`contracts/src/ServiceDomainResolver.sol`) but deliberately does not call it, and `ProviderRegistry` derives both halves itself: provenance through its own fail-soft `isClone` staticcall (`_factoryRecognizes`) and control through its own fail-soft `owner()` staticcall (`_readServiceOwner`).
 On the core's own per-issuance predicates that shape is deliberate rather than an omission, for two specific reasons: those reads sit inside `canIssue`, which a generation-2 clone asks on every `issue`, so the reverting `authorizeClone` cannot serve that call site; and `_isOwnerConfirmed` compares the live `owner()` against the registrar's recorded `confirmedOwner`, so it needs the owner VALUE, which neither shape returns.
 Both derivations fail closed, so nothing is presently unguarded.
 The attachment path is the one this predicate is meant to serve, and §8 records reconciling it as S-6's obligation.
@@ -383,7 +384,12 @@ Wire the router itself, deployed over every earlier generation, and deploy it **
 Append the new factory before attempting issuance; `registerRoot` checks router membership and reports the missing append as `FactoryNotRegisteredInPriorIndex`, rather than letting the issuance appear successful.
 The two-query requirements on the slot and the authenticity/completeness residual are in §5 as well.
 
-**To S-9 (`ServiceDomainResolver`).** The captain's AND is now checkable: the capability half from the core, the owner half from `authorizeClone`.
+**To S-9 (`ServiceDomainResolver`) - SHIPPED, and it deliberately does NOT compose `authorizeClone`.**
+The instruction below was written before that slice existed and is kept because it still holds for the OTHER named consumer, S-6's attachment path.
+Do not act on it for S-9: `contracts/src/ServiceDomainResolver.sol` composes the core's `canWriteService(service, caller, SERVICE_PERMISSION_RECORD)` instead, for two reasons either of which is sufficient - `authorizeClone` requires `claimant == owner()` exactly, so it cannot admit an owner-appointed delegate and would leave `SERVICE_PERMISSION_RECORD` with no consumer at all; and it lives on a generation-specific factory.
+The full argument is in `docs/SERVICE_DOMAIN_RESOLVER.md` §"Why `authorizeClone` is deliberately not composed"; the anti-drift property this note protects is satisfied there, because that contract derives neither standing nor ownership itself.
+
+The original instruction, which remains correct for S-6: the captain's AND is now checkable - the capability half from the core, the owner half from `authorizeClone`.
 Call it rather than reimplementing `_isSpawningBusiness` - the salt-recomputation stand-in exists only because generation-1 clones have no owner, and generation-2 clones do.
 Note also that the identity a resolver publishes must come from the core's identity anchor, never from the clone's `name()`, which is empty by construction (§6).
 

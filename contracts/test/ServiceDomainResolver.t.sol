@@ -60,6 +60,14 @@ contract ZeroPermissionCoreStub {
         return s;
     }
 
+    function effectiveService(address)
+        external
+        pure
+        returns (ProviderRegistry.Standing, ProviderRegistry.Standing, bool, bool, bool)
+    {
+        return (ProviderRegistry.Standing.NONE, ProviderRegistry.Standing.NONE, false, false, false);
+    }
+
     function SERVICE_PERMISSION_RECORD() external pure returns (uint32) {
         return 0;
     }
@@ -619,31 +627,127 @@ contract ServiceDomainResolverTest is Test {
             string memory domain,
             bool lineage,
             bool approved,
-            bool selected
+            bool selected,
+            bool standing
         ) = resolver.claimStanding(service);
         assertEq(uint8(disposition), uint8(ServiceDomainResolver.Disposition.CLAIMED));
         assertEq(domain, DOMAIN);
         assertTrue(lineage);
         assertTrue(approved);
         assertTrue(selected);
+        assertTrue(standing);
 
-        // Deapproval fails exactly one term, and the other two still report what they observed.
+        // Deapproval fails exactly one term, and the other three still report what they observed.
         vm.prank(AUTHORITY);
         core.setResolverApproved(ProviderRegistry.ResolverKind.DOMAIN, address(resolver), false);
-        (,, lineage, approved, selected) = resolver.claimStanding(service);
+        (,, lineage, approved, selected, standing) = resolver.claimStanding(service);
         assertTrue(lineage);
         assertFalse(approved);
         assertTrue(selected);
+        assertTrue(standing);
 
         // Deselection fails a different one, so a consumer can tell which remedy applies.
         vm.prank(AUTHORITY);
         core.setResolverApproved(ProviderRegistry.ResolverKind.DOMAIN, address(resolver), true);
         vm.prank(CONTROLLER);
         core.setDomainResolver(service, address(0));
-        (,, lineage, approved, selected) = resolver.claimStanding(service);
+        (,, lineage, approved, selected, standing) = resolver.claimStanding(service);
         assertTrue(lineage);
         assertTrue(approved);
         assertFalse(selected);
+        assertTrue(standing);
+
+        // And the core's own standing axis fails on its own, leaving this resolver's three terms intact.
+        // Re-selection is the OWNER's structural decision, so the registrar cannot make it here.
+        vm.prank(CONTROLLER);
+        core.setDomainResolver(service, address(resolver));
+        vm.prank(AUTHORITY);
+        core.setProviderStanding(PROVIDER, ProviderRegistry.Standing.SUSPENDED);
+        (,, lineage, approved, selected, standing) = resolver.claimStanding(service);
+        assertTrue(lineage);
+        assertTrue(approved);
+        assertTrue(selected);
+        assertFalse(standing);
+    }
+
+    /// @dev A `RETIRED` service standing cannot be left, so this is terminal: the write is refused for the
+    /// owner, for a delegate and for the registrar alike, forever, and no per-record withdrawal exists.
+    ///
+    /// The honest reading of the record is BOTH halves. This resolver's own three terms are untouched -
+    /// the record really is the last thing it accepted from this service - so the claim still reads
+    /// `CLAIMED` and `isAuthoritativeFor` stays true. What says the claim is frozen history rather than a
+    /// current one is the separate standing term, which is why it exists and why it is not folded in.
+    function test_a_retired_service_freezes_its_claim_while_the_resolver_terms_stay_true() public {
+        _claim(CONTROLLER, service, DOMAIN);
+        _grantRecordDelegate();
+
+        vm.prank(AUTHORITY);
+        core.setServiceStanding(service, ProviderRegistry.Standing.RETIRED);
+
+        // This resolver's three terms all still hold and the verdict with them; the fourth is the only
+        // one that says the claim can no longer be maintained.
+        _assertVerdictExcludesServiceStanding(service);
+        (ServiceDomainResolver.Disposition disposition, string memory domain) =
+            resolver.resolveDomain(service);
+        assertEq(uint8(disposition), uint8(ServiceDomainResolver.Disposition.CLAIMED));
+        assertEq(domain, DOMAIN);
+
+        _assertEveryWriteIsFrozen();
+    }
+
+    /// @dev A deprecated factory generation has no reactivation path either, and reaches the same frozen
+    /// state by a DIFFERENT cause - the two are asserted separately rather than assumed to share a code
+    /// path, because the core reaches them through different fields.
+    function test_a_deprecated_factory_generation_freezes_its_claim_the_same_way() public {
+        _claim(CONTROLLER, service, DOMAIN);
+        _grantRecordDelegate();
+
+        vm.prank(AUTHORITY);
+        core.deprecateFactoryGeneration(GENERATION_2);
+
+        // The provider and the service are both still ACTIVE; only the generation moved.
+        assertEq(uint8(core.provider(PROVIDER).standing), uint8(ProviderRegistry.Standing.ACTIVE));
+        assertEq(uint8(core.service(service).standing), uint8(ProviderRegistry.Standing.ACTIVE));
+
+        _assertVerdictExcludesServiceStanding(service);
+        assertEq(resolver.record(service).domain, DOMAIN);
+
+        _assertEveryWriteIsFrozen();
+    }
+
+    /// @dev Granted BEFORE a freeze, because the core refuses to grant a content permission on a service
+    /// whose standing is no longer effective. Without it the delegate arm below would assert nothing.
+    function _grantRecordDelegate() internal {
+        vm.prank(CONTROLLER);
+        core.setServiceDelegate(service, DELEGATE, SERVICE_RECORD_PERMISSION, 0);
+        assertTrue(resolver.canWriteDomain(service, DELEGATE));
+    }
+
+    /// @dev No key reaches a frozen record: not the confirmed owner, not an owner-scoped delegate, and
+    /// deliberately not the registrar, which has no content-write bypass here by design.
+    function _assertEveryWriteIsFrozen() internal {
+        address[3] memory keys = [CONTROLLER, DELEGATE, AUTHORITY];
+        for (uint256 i; i < keys.length; i++) {
+            assertFalse(resolver.canWriteDomain(service, keys[i]));
+
+            vm.prank(keys[i]);
+            vm.expectRevert(
+                abi.encodeWithSelector(ServiceDomainResolver.NotAuthorized.selector, service, keys[i])
+            );
+            resolver.clearDomain(service);
+
+            vm.prank(keys[i]);
+            vm.expectRevert(
+                abi.encodeWithSelector(ServiceDomainResolver.NotAuthorized.selector, service, keys[i])
+            );
+            resolver.declareNoDomain(service);
+
+            vm.prank(keys[i]);
+            vm.expectRevert(
+                abi.encodeWithSelector(ServiceDomainResolver.NotAuthorized.selector, service, keys[i])
+            );
+            resolver.claimDomain(service, OTHER_DOMAIN);
+        }
     }
 
     /// @dev The read side needs all three terms too, and deselection is the one that is easy to leave out
@@ -687,9 +791,20 @@ contract ServiceDomainResolverTest is Test {
         _assertStandingAgrees(STRANGER);
     }
 
+    /// @dev The verdict is exactly the three RESOLVER terms. The fourth is asserted to be outside it, not
+    /// merely absent from the fold: it is the core's own standing axis and answers a different question,
+    /// so a future edit that AND-ed it in would be caught here rather than silently making a frozen
+    /// service's record read as though this resolver had stopped being the effective one.
     function _assertStandingAgrees(address target) internal view {
-        (,, bool lineage, bool approved, bool selected) = resolver.claimStanding(target);
+        (,, bool lineage, bool approved, bool selected,) = resolver.claimStanding(target);
         assertEq(resolver.isAuthoritativeFor(target), lineage && approved && selected);
+    }
+
+    function _assertVerdictExcludesServiceStanding(address target) internal view {
+        (,, bool lineage, bool approved, bool selected, bool standing) = resolver.claimStanding(target);
+        assertTrue(lineage && approved && selected);
+        assertFalse(standing);
+        assertTrue(resolver.isAuthoritativeFor(target));
     }
 
     // ---------------------------------------------------------------------------------------------

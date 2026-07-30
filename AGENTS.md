@@ -1498,12 +1498,35 @@ Four things are easy to get wrong here.
   lives on a generation-specific factory. The anti-drift property that note protects is satisfied by
   composing the core's `canWriteService` - this contract derives neither standing nor ownership itself.
 
+A fifth, added in review: **`isAuthoritativeFor` says NOTHING about whether the service is still
+standing, and a consumer that renders a claim without reading the fourth term will show a permanently
+frozen claim as current.** A `RETIRED` service standing and a deprecated factory generation are both
+TERMINAL in the core (`setServiceStanding` refuses to leave `RETIRED`; `deprecateFactoryGeneration` has no
+reactivation), so `canWriteService` is false forever and every write here reverts `NotAuthorized` for the
+owner, every delegate AND the registrar, which has no bypass by design. Meanwhile all three resolver terms
+stay true - the router list is append-only, fleet approval is unrelated, and the core never clears a stored
+selector - which is CORRECT, because the record really is the last thing this resolver accepted. So
+`claimStanding` carries a fourth term, `serviceStandingEffective`, sourced from `core.effectiveService` and
+reported separately; it is deliberately NOT folded into `isAuthoritativeFor` (that answers a question about
+the RESOLVER's standing, and one bool must not answer two questions with different remedies), and
+`_assertVerdictExcludesServiceStanding` pins it as OUTSIDE the verdict rather than merely absent.
+`test_a_retired_service_freezes_its_claim_while_the_resolver_terms_stay_true` and
+`test_a_deprecated_factory_generation_freezes_its_claim_the_same_way` are two tests, not one, because the
+two causes reach the same state through different core fields. **There is no per-record withdrawal for a
+frozen claim, which IS a reduction against `IssuerDomainRegistry`'s tier-1 `WHITELIST_ADMIN` clear** - the
+core has already ruled that out (`deprecateFactoryGeneration`'s own doc: a frozen selector "is history, not
+a live claim", and withdrawing what it resolves "is the typed resolver allowlist's job"), so the sanctioned
+lever is `setResolverApproved(DOMAIN, resolver, false)`, which is FLEET-WIDE and takes down every other
+service's claim on that resolver. Stated limitation, never a passing property; revisiting it is captain-gated.
+
 Two smaller notes. Writes AND reads both require that the core still selects this resolver and that its
 typed allowlist entry is still active, because the core never clears a stored selector; `claimStanding`
 reports those terms SEPARATELY for display while `isAuthoritativeFor` is the single machine-facing AND, so
-consumers cannot drift into three versions of it. And the resolver holds no name, no description and no
-DNS state - a generation-2 clone's `name()` is empty by construction, so registrar identity comes from the
-core's `publicIdentityAnchor` and the human-readable text stays the DNS record's own value.
+consumers cannot drift into three versions of it - and `canWriteDomain` COMPOSES `isAuthoritativeFor`
+rather than re-listing its terms, so the standing half of a write has exactly one derivation. And the
+resolver holds no name, no description and no DNS state - a generation-2 clone's `name()` is empty by
+construction, so registrar identity comes from the core's `publicIdentityAnchor` and the human-readable
+text stays the DNS record's own value.
 
 ## Governance authority (Phase-2 executed) - tooling signer
 
