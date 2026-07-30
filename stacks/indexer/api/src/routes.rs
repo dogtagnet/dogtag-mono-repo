@@ -15,14 +15,18 @@
 //! `GET /v1/businesses` is the separate, public discovery surface. Its business contacts and optional
 //! premises are deliberately published provider facts, not owner PII.
 
+use std::collections::HashSet;
+
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::header::CACHE_CONTROL;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::Query as MultiQuery;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
@@ -32,6 +36,17 @@ use crate::scope::Principal;
 use crate::store::{EventQuery, StoreError};
 
 type ApiError = (StatusCode, Json<Value>);
+
+const MAX_DIRECTORY_NAME_FILTER_CHARS: usize = 200;
+const MAX_DIRECTORY_KIND_FILTERS: usize = 16;
+const MAX_DIRECTORY_KIND_FILTER_CHARS: usize = 64;
+const MAX_CONCURRENT_NEAREST_RANKINGS: usize = 2;
+
+// Ranking a hundred-thousand-row snapshot is CPU work, not async I/O. A fixed permit keeps public
+// nearest requests from filling Tokio's blocking pool or starving the indexer's health/query paths.
+// Waiting for a permit is asynchronous; a durable spatial index can replace the scan without changing
+// this route contract.
+static NEAREST_RANKING_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_NEAREST_RANKINGS);
 
 fn err(code: StatusCode, msg: &str) -> ApiError {
     (code, Json(json!({ "error": msg })))
@@ -81,36 +96,51 @@ struct BusinessDirectoryParams {
     /// Compatibility spelling used by the existing admin directory/client contract.
     #[serde(rename = "type", default)]
     business_type: Vec<String>,
-    /// Center of a location the user explicitly searched for, typed, or picked on a map.
+    /// Page size. Uses the same configured default/maximum as the oversight feed.
     #[serde(default)]
-    search_center_lat: Vec<f64>,
-    /// See `search_center_lat`. This is never an implicit current-device coordinate.
+    limit: Vec<usize>,
+    /// Zero-based result offset.
     #[serde(default)]
-    search_center_lng: Vec<f64>,
-    /// Inclusive search radius around the explicitly selected search center, in kilometres.
-    #[serde(default)]
-    search_radius_km: Vec<f64>,
+    offset: Vec<usize>,
 }
 
-#[derive(Clone, Copy)]
-struct SearchArea {
-    lat: f64,
-    lng: f64,
-    radius_km: f64,
+/// The current-device fix after the caller has rounded it to roughly 100-metre precision.
+///
+/// It travels in a POST body, never in the URI that conventional access logs record.
+// Deliberately no `Debug` or `Serialize`: this value must not become loggable or echoable by
+// convenience while it is in memory.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApproximatePosition {
+    approximate_lat: f64,
+    approximate_lng: f64,
 }
 
-fn nonempty_filter(value: Option<String>, field: &str) -> Result<Option<String>, ApiError> {
+fn bounded_filter(
+    value: Option<String>,
+    field: &str,
+    max_chars: usize,
+) -> Result<Option<String>, ApiError> {
     match value {
         None => Ok(None),
         Some(value) if value.trim().is_empty() => Err(err(
             StatusCode::BAD_REQUEST,
             &format!("{field} must not be blank"),
         )),
-        Some(value) => Ok(Some(value.trim().to_string())),
+        Some(value) => {
+            let value = value.trim();
+            if value.chars().count() > max_chars {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{field} must be at most {max_chars} characters"),
+                ));
+            }
+            Ok(Some(value.to_string()))
+        }
     }
 }
 
-fn kind_filters(params: &BusinessDirectoryParams) -> Result<Vec<String>, ApiError> {
+fn kind_filters(params: &BusinessDirectoryParams) -> Result<HashSet<String>, ApiError> {
     if !params.kind.is_empty() && !params.business_type.is_empty() {
         return Err(err(
             StatusCode::BAD_REQUEST,
@@ -122,14 +152,18 @@ fn kind_filters(params: &BusinessDirectoryParams) -> Result<Vec<String>, ApiErro
     } else {
         (&params.kind, "kind")
     };
-    let mut kinds = Vec::with_capacity(values.len());
+    if values.len() > MAX_DIRECTORY_KIND_FILTERS {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            &format!("{field} must be provided at most {MAX_DIRECTORY_KIND_FILTERS} times"),
+        ));
+    }
+    let mut kinds = HashSet::with_capacity(values.len());
     for value in values {
-        let kind = nonempty_filter(Some(value.clone()), field)?
+        let kind = bounded_filter(Some(value.clone()), field, MAX_DIRECTORY_KIND_FILTER_CHARS)?
             .expect("a supplied nonblank kind has a value")
             .to_ascii_lowercase();
-        if !kinds.contains(&kind) {
-            kinds.push(kind);
-        }
+        kinds.insert(kind);
     }
     Ok(kinds)
 }
@@ -137,7 +171,7 @@ fn kind_filters(params: &BusinessDirectoryParams) -> Result<Vec<String>, ApiErro
 fn name_filter(params: &BusinessDirectoryParams) -> Result<Option<String>, ApiError> {
     match params.name.as_slice() {
         [] => Ok(None),
-        [name] => nonempty_filter(Some(name.clone()), "name"),
+        [name] => bounded_filter(Some(name.clone()), "name", MAX_DIRECTORY_NAME_FILTER_CHARS),
         _ => Err(err(
             StatusCode::BAD_REQUEST,
             "name must be provided at most once",
@@ -145,7 +179,7 @@ fn name_filter(params: &BusinessDirectoryParams) -> Result<Option<String>, ApiEr
     }
 }
 
-fn single_number(values: &[f64], field: &str) -> Result<Option<f64>, ApiError> {
+fn single_usize(values: &[usize], field: &str) -> Result<Option<usize>, ApiError> {
     match values {
         [] => Ok(None),
         [value] => Ok(Some(*value)),
@@ -156,32 +190,15 @@ fn single_number(values: &[f64], field: &str) -> Result<Option<f64>, ApiError> {
     }
 }
 
-fn search_area(params: &BusinessDirectoryParams) -> Result<Option<SearchArea>, ApiError> {
-    match (
-        single_number(&params.search_center_lat, "searchCenterLat")?,
-        single_number(&params.search_center_lng, "searchCenterLng")?,
-        single_number(&params.search_radius_km, "searchRadiusKm")?,
-    ) {
-        (None, None, None) => Ok(None),
-        (Some(lat), Some(lng), Some(radius_km))
-            if lat.is_finite()
-                && lng.is_finite()
-                && radius_km.is_finite()
-                && (-90.0..=90.0).contains(&lat)
-                && (-180.0..=180.0).contains(&lng)
-                && radius_km >= 0.0 =>
-        {
-            Ok(Some(SearchArea { lat, lng, radius_km }))
-        }
-        (Some(_), Some(_), Some(_)) => Err(err(
-            StatusCode::BAD_REQUEST,
-            "searchCenterLat/searchCenterLng must be valid coordinates and searchRadiusKm must be finite and non-negative",
-        )),
-        _ => Err(err(
-            StatusCode::BAD_REQUEST,
-            "searchCenterLat, searchCenterLng, and searchRadiusKm must be provided together",
-        )),
-    }
+fn directory_page(
+    st: &AppState,
+    params: &BusinessDirectoryParams,
+) -> Result<(usize, usize), ApiError> {
+    let limit = single_usize(&params.limit, "limit")?
+        .unwrap_or(st.cfg.default_page_limit)
+        .clamp(1, st.cfg.max_page_limit);
+    let offset = single_usize(&params.offset, "offset")?.unwrap_or(0);
+    Ok((limit, offset))
 }
 
 /// Locale-independent name-search fold, matching the native directory's NFD + combining-mark removal
@@ -195,8 +212,22 @@ fn search_fold(value: &str) -> String {
         .collect()
 }
 
-/// Total great-circle distance in kilometres. The `atan2` form stays defined at antipodes, unlike the
-/// deprecated admin route's `asin(sqrt(a))` implementation.
+fn matches_directory_filters(
+    business: &crate::directory::BusinessRow,
+    name: Option<&str>,
+    kinds: &HashSet<String>,
+) -> bool {
+    let business_kind = business.kind.trim();
+    name.map(|needle| search_fold(&business.name).contains(needle))
+        .unwrap_or(true)
+        && (kinds.is_empty()
+            || kinds.contains(business_kind)
+            || kinds
+                .iter()
+                .any(|expected| business_kind.eq_ignore_ascii_case(expected)))
+}
+
+/// Total great-circle distance in kilometres. The `atan2` form remains defined at antipodes.
 fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     const EARTH_RADIUS_KM: f64 = 6371.0;
     let phi1 = lat1.to_radians();
@@ -208,50 +239,123 @@ fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     2.0 * EARTH_RADIUS_KM * bounded.sqrt().atan2((1.0 - bounded).sqrt())
 }
 
+fn valid_approximate_position(position: ApproximatePosition) -> bool {
+    const SCALE: f64 = 1000.0;
+    const DECIMAL_TOLERANCE: f64 = 1e-9;
+    let is_three_decimal = |value: f64| {
+        let scaled = value * SCALE;
+        (scaled - scaled.round()).abs() <= DECIMAL_TOLERANCE
+    };
+    position.approximate_lat.is_finite()
+        && position.approximate_lng.is_finite()
+        && (-90.0..=90.0).contains(&position.approximate_lat)
+        && (-180.0..=180.0).contains(&position.approximate_lng)
+        && is_three_decimal(position.approximate_lat)
+        && is_three_decimal(position.approximate_lng)
+}
+
+fn render_business(business: &crate::directory::BusinessRow, distance_km: Option<f64>) -> Value {
+    let mut value =
+        serde_json::to_value(business).expect("validated directory rows are JSON-serializable");
+    if let (Value::Object(map), Some(distance_km)) = (&mut value, distance_km) {
+        map.insert("distanceKm".into(), json!(distance_km));
+    }
+    value
+}
+
+struct NearestPage {
+    businesses: Vec<Value>,
+    total: usize,
+    has_more: bool,
+}
+
+/// CPU-only nearest selection over one immutable directory snapshot.
+///
+/// The two nth-element partitions select the same globally ordered window as a full sort while only
+/// sorting the requested page. `source_index` is a total, deterministic tie-break inside this
+/// snapshot. An offset beyond `total` is deliberately a valid empty page which echoes the requested
+/// offset at the HTTP layer.
+fn rank_nearest_page(
+    businesses: &[crate::directory::BusinessRow],
+    name: Option<&str>,
+    kinds: &HashSet<String>,
+    position: ApproximatePosition,
+    limit: usize,
+    offset: usize,
+) -> NearestPage {
+    let mut ranked: Vec<(f64, usize)> = businesses
+        .iter()
+        .enumerate()
+        .filter(|(_, business)| matches_directory_filters(business, name, kinds))
+        .filter_map(|(source_index, business)| {
+            business.geo.filter(|geo| geo.is_valid()).map(|geo| {
+                (
+                    haversine_km(
+                        position.approximate_lat,
+                        position.approximate_lng,
+                        geo.lat,
+                        geo.lng,
+                    ),
+                    source_index,
+                )
+            })
+        })
+        .collect();
+    let total = ranked.len();
+    let start = offset.min(total);
+    let end = offset.saturating_add(limit).min(total);
+    let compare =
+        |a: &(f64, usize), b: &(f64, usize)| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1));
+    if start < end {
+        if start > 0 {
+            ranked.select_nth_unstable_by(start, compare);
+        }
+        if end < total {
+            ranked[start..].select_nth_unstable_by(end - start, compare);
+        }
+        ranked[start..end].sort_by(compare);
+    }
+
+    let page = ranked[start..end]
+        .iter()
+        .map(|(distance_km, source_index)| {
+            render_business(&businesses[*source_index], Some(*distance_km))
+        })
+        .collect();
+    NearestPage {
+        businesses: page,
+        total,
+        has_more: end < total,
+    }
+}
+
 /// `GET /v1/businesses` — public provider discovery over the admin directory snapshot.
 ///
-/// With no query this serves the WHOLE list, including contact-only providers with `geo: null`.
-/// Optional `name`, repeatable `kind` (or repeatable compatibility alias `type`, but never both
-/// spellings), and the all-or-none `searchCenterLat`/`searchCenterLng`/`searchRadiusKm` group narrow it
-/// with AND semantics; repeated kinds are ORed. The service has NO owner-app kind allowlist. Bare GET
-/// includes every published kind — including vet, groomer, admin, and government — and a featureful
-/// owner-app caller supplies its own `kind=vet&kind=groomer` restriction. Other callers choose their
-/// own set; unknown future kind strings are not rejected or reinterpreted. No omitted filter creates a
-/// hidden default. The route preserves source order and never fabricates a coordinate; a spatial search
-/// necessarily excludes a provider that published no premises.
+/// This non-location route accepts optional `name`, repeatable `kind` (or repeatable compatibility
+/// alias `type`, but never both spellings), plus `limit`/`offset`. Repeated kinds are ORed; name and
+/// kind compose with AND semantics. Results are paged in source order and include contact-only
+/// providers with `geo: null`. The service has NO owner-app kind allowlist: a pet-owner caller sends
+/// `kind=vet&kind=groomer`, while bare GET can page through every published kind, including admin and
+/// government. Unknown future kind strings are not rejected or reinterpreted.
 ///
-/// ## Privacy boundary: search center is deliberate; current GPS is not
+/// ## Nearest is a separate, body-only disclosure
 ///
-/// A search center is a location the user intentionally typed, searched for, or picked on a map. That
-/// chosen place is disclosed search intent, like a provider name. The phone's live/current GPS fix is
-/// involuntary and continuous and MUST NOT be put into these fields. "Near me" still performs the bare
-/// full fetch and computes distance/sort on the device. This indexer is centralized and not
-/// caller-swappable, so a filtered request is intentionally distinguishable beside the caller's IP and
-/// timing; that is acceptable only for the intent the user chose to disclose. The server sees only
-/// numbers and cannot prove their provenance, so the semantic names and the native clients' no-query
-/// request tests are load-bearing. If the product ever submits current position to a server, that must
-/// be a separate, deliberate, disclosed feature — never a quiet reuse of this chosen-search-location
-/// group.
+/// Caller position is accepted only by `POST /v1/businesses/nearest`, in a JSON body, after the device
+/// rounded it to at most three decimal places (about 100 metres). It is never a URL/query parameter,
+/// because conventional access logs record URLs. The indexer has no request/trace/metrics middleware
+/// and this handler must never log, persist, label, or echo the position. The nearest response is
+/// `Cache-Control: private, no-store`, ordered by server-computed `distanceKm`, and paged so a
+/// hundred-thousand-row directory never crosses the device or gets scanned there.
 ///
-/// Place autocomplete/geocoding is a caller concern. This route accepts the resolved selected center;
-/// it has no partial place-query parameter to proxy to a third party.
-///
-/// Ambiguous aliases (`near`, bare `lat`/`lng`, `radius`, bounding boxes, geohashes) are rejected by
-/// the strict multi-value extractor; they cannot silently become a loaded current-position path.
-///
-/// ## Full-fetch scale
-///
-/// At roughly 100 compressed bytes per provider, 50,000 rows are about 5,000,000 bytes (4.77 MiB):
-/// the point where a cold full fetch becomes a live cellular-budget question. The service negotiates
-/// gzip for large responses. Delta sync is the next full-set optimization; explicit search filters are
-/// already available for the featureful search flow.
+/// There is deliberately no radius, map viewport, bounding box, geohash, place text, autocomplete, or
+/// third-party geocoding parameter on either route. Unknown fields are rejected, not ignored.
 async fn businesses(
     State(st): State<AppState>,
     MultiQuery(params): MultiQuery<BusinessDirectoryParams>,
 ) -> Result<Json<Value>, ApiError> {
     let name = name_filter(&params)?.map(|name| search_fold(&name));
     let kinds = kind_filters(&params)?;
-    let area = search_area(&params)?;
+    let (limit, offset) = directory_page(&st, &params)?;
     let businesses = st.directory.businesses().ok_or_else(|| {
         err(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -259,32 +363,93 @@ async fn businesses(
         )
     })?;
 
-    let businesses: Vec<_> = businesses
-        .into_iter()
-        .filter(|business| {
-            name.as_ref()
-                .map(|needle| search_fold(&business.name).contains(needle))
-                .unwrap_or(true)
-        })
-        .filter(|business| {
-            kinds.is_empty()
-                || kinds
-                    .iter()
-                    .any(|expected| business.kind.trim().eq_ignore_ascii_case(expected))
-        })
-        .filter(|business| {
-            area.map(|area| {
-                business
-                    .geo
-                    .filter(|geo| geo.is_valid())
-                    .map(|geo| haversine_km(area.lat, area.lng, geo.lat, geo.lng) <= area.radius_km)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(true)
-        })
-        .collect();
+    let mut total = 0usize;
+    let mut page = Vec::with_capacity(limit);
+    for business in businesses
+        .iter()
+        .filter(|business| matches_directory_filters(business, name.as_deref(), &kinds))
+    {
+        if total >= offset && page.len() < limit {
+            page.push(render_business(business, None));
+        }
+        total = total.saturating_add(1);
+    }
+    let has_more = offset.saturating_add(page.len()) < total;
 
-    Ok(Json(json!({ "businesses": businesses })))
+    Ok(Json(json!({
+        "businesses": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "hasMore": has_more,
+    })))
+}
+
+/// `POST /v1/businesses/nearest` — paged server-side proximity over an explicitly approximate fix.
+///
+/// Position MUST remain body-only and ephemeral. Do not add request logging around this route and do
+/// not attach the body to a trace span, metric label, audit row, cache key, or error message.
+async fn nearest_businesses(
+    State(st): State<AppState>,
+    MultiQuery(params): MultiQuery<BusinessDirectoryParams>,
+    Json(position): Json<ApproximatePosition>,
+) -> Result<(HeaderMap, Json<Value>), ApiError> {
+    if !valid_approximate_position(position) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "approximateLat/approximateLng must be valid coordinates rounded to at most 3 decimal places",
+        ));
+    }
+    let name = name_filter(&params)?.map(|name| search_fold(&name));
+    let kinds = kind_filters(&params)?;
+    let (limit, offset) = directory_page(&st, &params)?;
+    let businesses = st.directory.businesses().ok_or_else(|| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider directory has no successful source snapshot yet",
+        )
+    })?;
+
+    let permit = NEAREST_RANKING_PERMITS.acquire().await.map_err(|_| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "nearest provider search is unavailable",
+        )
+    })?;
+    let nearest = tokio::task::spawn_blocking(move || {
+        // Keep the permit inside the blocking closure so it covers the whole CPU-heavy scan,
+        // selection, and page serialization. Dropping or cancelling the HTTP future cannot release it
+        // while its detached blocking work is still running.
+        let _permit = permit;
+        rank_nearest_page(
+            businesses.as_ref(),
+            name.as_deref(),
+            &kinds,
+            position,
+            limit,
+            offset,
+        )
+    })
+    .await
+    .map_err(|_| {
+        tracing::error!("nearest provider ranking worker failed");
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "nearest provider search could not complete",
+        )
+    })?;
+    let mut headers = HeaderMap::new();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    Ok((
+        headers,
+        Json(json!({
+            "businesses": nearest.businesses,
+            "total": nearest.total,
+            "limit": limit,
+            "offset": offset,
+            "hasMore": nearest.has_more,
+        })),
+    ))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -607,12 +772,17 @@ async fn issuers(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<
 }
 
 /// The router. `demo` toggles a permissive posture only via env in `main`; scoping is always enforced.
-/// Compression lives here so every embedding of the public whole-directory route negotiates gzip,
+/// Compression lives here so every embedding of the public directory routes negotiates gzip,
 /// including hermetic tests and deployments that do not use the standalone binary's assembly.
+///
+/// There is intentionally no HTTP trace/access-log middleware. In particular, never attach a
+/// request URI or the nearest-search body to tracing: the approximate caller position is ephemeral
+/// request data, not an event, metric dimension, or audit fact.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/businesses", get(businesses))
+        .route("/v1/businesses/nearest", post(nearest_businesses))
         .route("/v1/status", get(status))
         .route("/v1/events", get(events))
         .route("/v1/stats", get(stats))

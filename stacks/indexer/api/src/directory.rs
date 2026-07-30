@@ -21,7 +21,7 @@
 //!      hard-fails on enrichment.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ pub struct Directory {
     ///
     /// `None` means no successful admin read has happened and must surface as unavailable. `Some([])`
     /// means the source was read successfully and authoritatively contained no providers.
-    businesses: RwLock<Option<Vec<BusinessRow>>>,
+    businesses: RwLock<Option<Arc<Vec<BusinessRow>>>>,
     admin_base: Option<String>,
     admin_token: Option<String>,
     http: reqwest::Client,
@@ -151,12 +151,13 @@ impl Directory {
         self.admin_base.is_some()
     }
 
-    /// Clone the last complete provider snapshot.
+    /// Borrow the last complete provider snapshot through a cheap `Arc` clone.
     ///
     /// The clone makes the request independent of the refresh lock: a slow client can never block the
-    /// background source refresh. At today's directory size this is tiny; the route comment records
-    /// the scale at which a different transport strategy becomes a live question.
-    pub(crate) fn businesses(&self) -> Option<Vec<BusinessRow>> {
+    /// background source refresh. This must stay O(1): nearest queries scan a directory that may contain
+    /// hundreds of thousands of providers, so cloning every row per request would recreate the client
+    /// scalability problem inside the service.
+    pub(crate) fn businesses(&self) -> Option<Arc<Vec<BusinessRow>>> {
         self.businesses.read().unwrap().clone()
     }
 
@@ -207,7 +208,7 @@ impl Directory {
                         }
                         // Swap only after the WHOLE response decoded and validated. Empty is a real,
                         // successful snapshot and must replace a previously non-empty one.
-                        *self.businesses.write().unwrap() = Some(b.businesses);
+                        *self.businesses.write().unwrap() = Some(Arc::new(b.businesses));
                         Some((by_domain, by_entity))
                     }
                 }

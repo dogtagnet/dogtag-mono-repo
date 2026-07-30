@@ -211,7 +211,7 @@ async fn main() {
 
     // --- serve ---------------------------------------------------------------------------------
     let cors = build_cors();
-    // The library router owns response compression so every embedding gets the same whole-directory
+    // The library router owns response compression so every embedding gets the same directory-page
     // transport behavior; the binary adds only its deployment-specific CORS policy.
     let app = indexer_api::router(state).layer(cors);
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
