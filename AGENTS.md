@@ -3459,8 +3459,13 @@ and the phone does not rescan or remeasure the directory.
   nearby vets and groomers. It is not stored.” Do not restore any “never leaves this phone” copy, and do
   not reinsert “approximate” - the copy must describe what is actually sent. It is a test-pinned
   constant on both platforms (see the disclosure note in the indexer section above).
-- There is no chosen-coordinate/location-search UI, radius, map, Directions handoff, autocomplete,
+- There is no chosen-coordinate/location-search UI, radius, map, autocomplete,
   place hint, remote geocoder, viewport, bbox, region, or geohash surface. Results are a list.
+  **The Directions HANDOFF is NOT in that list - it exists, on nearby rows and on offline stored
+  rows.** It is a handoff to another app rather than a map, it carries the provider's public
+  destination and never the owner's origin, and the stored variant is labelled stored-not-current;
+  the live Provider contacts SEARCH scope still does not offer it. Full rules in "No map or
+  place-search surface" above - do not read this bullet as licence to remove the affordance again.
 - **The offline cache stores provider RECORDS, never the ranking** (captain's ruling 2026-07-30: "its
   purpose is only for UX, so that some cache results can be shown when the device is offline, keep the
   cache data to minimal, and minimal usage"). It is a fallback that stops the screen being blank, not a
@@ -3524,9 +3529,12 @@ Full decision record: `docs/MAP_RESEARCH.md`.
 An embedded map, a hosted place-search field and any paid location vendor were **declined** so that nothing
 has to be paid for, and this entry exists so the absence is not read as a gap to fill.
 What ships instead is what the sections here describe: on-device provider-name search, the `vet`/`groomer`
-kind filter, on-device distance, and a Directions handoff that leaves the app. iOS opens Apple Maps
-(`MKMapItem.openInMaps`); Android fires an `ACTION_VIEW` `geo:` chooser, so it reaches whichever installed
-app the owner picks, which need not be the OS's own maps app.
+kind filter, server-computed distance and ranking (the 2026-07-30 ruling moved both off the device), and a
+Directions handoff that leaves the app. iOS opens an `https://maps.apple.com/?daddr=` URL through
+SwiftUI's `openURL`; Android fires a bare `ACTION_VIEW` `geo:lat,lng?q=lat,lng` intent through the same
+`openExternal` helper every other contact channel uses, so it reaches the owner's default maps app - or a
+chooser when no default is set - and the `q=` term is what makes that app drop a marker rather than merely
+centre the map.
 Either way the map is another app's, it costs nothing, and it needs no key.
 
 Four things in that record are the reason not to re-run the survey.
@@ -3607,7 +3615,9 @@ currently an honest stub because the provider registry and packed paging ABI do 
 
 The following subsection records the prior implementation and its failure modes. It does **not** govern
 the current native path described above; specifically, the no-argument read, universal cache,
-chosen-coordinate UI, local distance/radius/sort, and Directions handoff have all been retired.
+chosen-coordinate UI, and local distance/radius/sort have all been retired. The Directions handoff was
+swept out with them and then RESTORED - it ships today on nearby and on offline stored rows, so read
+every Directions sentence below as history rather than as the current rule.
 
 The native holder apps consume the directory through a native mirror of the same no-argument
 `ProviderDirectory` contract. `@dogtag/ui` is TypeScript source-only and neither app embeds a JavaScript
