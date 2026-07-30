@@ -1502,7 +1502,32 @@ data class TrustedAnchor (
      * and stop every app WITHOUT moving a single trio address. See that field's note for why the two
      * must be populated separately.
      */
-    var `artifactSetActive`: kotlin.Boolean
+    var `artifactSetActive`: kotlin.Boolean, 
+    /**
+     * The provider-authority core (`ProviderRegistry`) this version's verification registry holds in its
+     * immutable `issuerRegistry` slot — and the root of the resolver layer, since a provider's directory
+     * resolver and a service's domain resolver are both selected THROUGH it.
+     *
+     * `None` is the honest shape of a GENERATION-1 record: `ProtocolRegistry.ContractSet` has no such
+     * member, so a caller resolving that record has nothing to report and must say so rather than invent
+     * an address. That is an ACCURATE OBSERVATION about the record's shape, and it is NOT a
+     * could-not-check: a read that FAILED must surface as a failed resolution and must never reach
+     * [`validate`] as a `None`. Generation 2's `ProtocolRegistryV2.DiscoverySet` always carries it (the
+     * registry refuses to publish a zero), so a caller reading that record must populate it.
+     */
+    var `providerRegistry`: kotlin.String?, 
+    /**
+     * Whatever this version's verification registry holds in its immutable `rootIndex` slot — the
+     * contract that answers `rootIssuer(bytes32)` and `isClone(address)`. In generation 2 that is the
+     * `CloneProvenanceRouter`, which resolves a root across factory generations.
+     *
+     * This is NOT the factory. Generation 1 could conflate them because its registry's root index WAS
+     * its factory; generation 2 cannot, and a consumer that reads a factory address here resolves only
+     * the roots anchored in that generation while silently missing every earlier one — the exact failure
+     * the router exists to prevent. `None` carries the same generation-1 meaning as
+     * [`Self::provider_registry`].
+     */
+    var `rootIndex`: kotlin.String?
 ) {
     
     companion object
@@ -1524,6 +1549,8 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
             FfiConverterString.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
@@ -1537,7 +1564,9 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
             FfiConverterString.allocationSize(value.`circuitId`) +
             FfiConverterString.allocationSize(value.`minAppVersion`) +
             FfiConverterBoolean.allocationSize(value.`contractSetActive`) +
-            FfiConverterBoolean.allocationSize(value.`artifactSetActive`)
+            FfiConverterBoolean.allocationSize(value.`artifactSetActive`) +
+            FfiConverterOptionalString.allocationSize(value.`providerRegistry`) +
+            FfiConverterOptionalString.allocationSize(value.`rootIndex`)
     )
 
     override fun write(value: TrustedAnchor, buf: ByteBuffer) {
@@ -1551,6 +1580,8 @@ public object FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer<TrustedAncho
             FfiConverterString.write(value.`minAppVersion`, buf)
             FfiConverterBoolean.write(value.`contractSetActive`, buf)
             FfiConverterBoolean.write(value.`artifactSetActive`, buf)
+            FfiConverterOptionalString.write(value.`providerRegistry`, buf)
+            FfiConverterOptionalString.write(value.`rootIndex`, buf)
     }
 }
 
@@ -1572,7 +1603,19 @@ data class ValidatedVersion (
      * fetch. Returned separately from `version` precisely because it moves separately: an artifact
      * rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
      */
-    var `artifactSet`: kotlin.String
+    var `artifactSet`: kotlin.String, 
+    /**
+     * The validated provider-authority core, or `None` when the resolved record does not carry one.
+     * Returned so a caller acts on the value this function checked rather than re-reading the anchor —
+     * the same reason `verification_registry` is returned.
+     */
+    var `providerRegistry`: kotlin.String?, 
+    /**
+     * The validated root index (generation 2's `CloneProvenanceRouter`), or `None` when the resolved
+     * record does not carry one. A caller reading `rootIssuer`/`isClone` MUST use this rather than a
+     * bundled factory address; see [`TrustedAnchor::root_index`].
+     */
+    var `rootIndex`: kotlin.String?
 ) {
     
     companion object
@@ -1589,6 +1632,8 @@ public object FfiConverterTypeValidatedVersion: FfiConverterRustBuffer<Validated
             FfiConverterULong.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
@@ -1597,7 +1642,9 @@ public object FfiConverterTypeValidatedVersion: FfiConverterRustBuffer<Validated
             FfiConverterString.allocationSize(value.`circuitId`) +
             FfiConverterULong.allocationSize(value.`chainId`) +
             FfiConverterString.allocationSize(value.`verificationRegistry`) +
-            FfiConverterString.allocationSize(value.`artifactSet`)
+            FfiConverterString.allocationSize(value.`artifactSet`) +
+            FfiConverterOptionalString.allocationSize(value.`providerRegistry`) +
+            FfiConverterOptionalString.allocationSize(value.`rootIndex`)
     )
 
     override fun write(value: ValidatedVersion, buf: ByteBuffer) {
@@ -1606,6 +1653,8 @@ public object FfiConverterTypeValidatedVersion: FfiConverterRustBuffer<Validated
             FfiConverterULong.write(value.`chainId`, buf)
             FfiConverterString.write(value.`verificationRegistry`, buf)
             FfiConverterString.write(value.`artifactSet`, buf)
+            FfiConverterOptionalString.write(value.`providerRegistry`, buf)
+            FfiConverterOptionalString.write(value.`rootIndex`, buf)
     }
 }
 
@@ -1669,6 +1718,38 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiException> {
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
 
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
+    override fun read(buf: ByteBuffer): kotlin.String? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterString.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.String?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterString.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.String?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterString.write(value, buf)
+        }
+    }
 }
 
 

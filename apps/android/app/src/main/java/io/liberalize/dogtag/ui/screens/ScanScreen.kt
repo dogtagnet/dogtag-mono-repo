@@ -730,6 +730,14 @@ private suspend fun runLevelBFlow(
         minAppVersion = arti.minAppVersion,
         contractSetActive = cs.active,
         artifactSetActive = arti.active,
+        // `null` because this build reads generation 1's `ProtocolRegistry`, whose `ContractSet` struct
+        // has no provider-authority or root-index member. That is an accurate statement about the
+        // record's shape, not a could-not-check: a FAILED read aborts before reaching here. When this
+        // call site is repointed at `ProtocolRegistryV2.getDiscoverySet`
+        // (`AnchorResolver.decodeDiscoverySet`) both must be populated from that record — and `rootIndex`
+        // from its OWN member, never from `factory`.
+        providerRegistry = null,
+        rootIndex = null,
     )
     val ffiClaims = ConvenienceClaims(
         protocolVersion = claims.protocolVersion,

@@ -37,6 +37,13 @@ pub fn anchor_from_manifest(m: &Manifest, contract_set_active: bool, artifact_se
         min_app_version: m.min_app_version.clone(),
         contract_set_active,
         artifact_set_active,
+        // The generation-2 members ride through as the manifest carries them: `Some` for a version
+        // published to `ProtocolRegistryV2`, `None` for one published to generation 1's registry, whose
+        // record has no such member. Never substitute `factory` for `root_index` here — they are the same
+        // contract only in generation 1, and the substitution would make a generation-2 anchor claim a
+        // root index that resolves none of the historical roots.
+        provider_registry: m.provider_registry.clone(),
+        root_index: m.root_index.clone(),
     }
 }
 

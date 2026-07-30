@@ -28,10 +28,38 @@ object AnchorResolver {
     const val ARTIFACT_SET = "dogtag-levelb-artifacts/1"
     const val CIRCUIT_ID = "consent.circom/DogTagConsent(6)"
 
+    /** The GENERATION-2 discovery key, published to `ProtocolRegistryV2` (`ProtocolVersionsV2.sol`).
+     *
+     * The artifact key and the circuit id are NOT versioned alongside it: generation 2 rotates the
+     * factory, the verification registry, the authority core and the root index, and rotates no proving
+     * artifact — the circuit, the ceremony and all four pins are unchanged. Bumping [ARTIFACT_SET] would
+     * also make an old build fail with a stitched-anchor coherence error instead of the `minAppVersion`
+     * refusal that actually tells the holder to update. */
+    const val PROTOCOL_VERSION_V2 = "dogtag-levelb/2"
+
     /** The fields of `ProtocolRegistry.ContractSet` an app-side anchor needs. */
     data class ContractSetRecord(
         val contractSetId: String, // 0x-hex bytes32
         val verificationRegistry: String, // 0x-hex address (lowercased)
+        val circuitId: String, // 0x-hex bytes32
+        val active: Boolean,
+    )
+
+    /** The fields of `ProtocolRegistryV2.DiscoverySet` an app-side anchor needs — the generation-1 set
+     * plus the two members generation 2 adds.
+     *
+     * A separate type from [ContractSetRecord] on purpose, decoded by a separate function: the two
+     * on-chain records have different arities and different member positions, so one record type
+     * carrying nullable extras would let a generation-1 return populate a generation-2 record with
+     * whatever happened to sit at those indices. */
+    data class DiscoverySetRecord(
+        val discoverySetId: String, // 0x-hex bytes32
+        val verificationRegistry: String, // 0x-hex address (lowercased)
+        /** The `ProviderRegistry` authority core — also the root of the resolver layer. */
+        val providerRegistry: String, // 0x-hex address (lowercased)
+        /** The `CloneProvenanceRouter`. NOT the factory: reading `rootIssuer`/`isClone` from the
+         * factory resolves only that generation's roots and silently misses every earlier one. */
+        val rootIndex: String, // 0x-hex address (lowercased)
         val circuitId: String, // 0x-hex bytes32
         val active: Boolean,
     )
@@ -65,15 +93,43 @@ object AnchorResolver {
      * Decode `ProtocolRegistry.getContractSet` — a STATIC tuple, so the return is 8 inline words:
      * `[contractSetId, factory, verificationRegistry, sbt, verifier, circuitId, publishedAt, active]`.
      * Only `contractSetId`(0), `verificationRegistry`(2), `circuitId`(5), `active`(7) are kept.
+     *
+     * The arity is required EXACTLY, not as a lower bound. A static tuple's encoding is one word per
+     * member, so 8 is the only width this record can have — and a `>= 8` check would happily decode the
+     * 10-word generation-2 record at generation-1 indices, reading `providerRegistry` as `circuitId` and
+     * `publishedAt` as `active`, which yields a plausible-looking live record for the wrong generation.
+     * Refusing a width this record cannot have is a cheap structural guard against exactly that.
      */
     fun decodeContractSet(hex: String): ContractSetRecord? {
         val w = words(hex) ?: return null
-        if (w.size < 8) return null
+        if (w.size != 8) return null
         return ContractSetRecord(
             contractSetId = b32(w[0]),
             verificationRegistry = addr(w[2]),
             circuitId = b32(w[5]),
             active = boolOf(w[7]),
+        )
+    }
+
+    /**
+     * Decode `ProtocolRegistryV2.getDiscoverySet` — also a STATIC tuple, 10 inline words:
+     * `[discoverySetId, factory, verificationRegistry, sbt, verifier, providerRegistry, rootIndex,
+     * circuitId, publishedAt, active]`. Kept: `discoverySetId`(0), `verificationRegistry`(2),
+     * `providerRegistry`(5), `rootIndex`(6), `circuitId`(7), `active`(9).
+     *
+     * The arity is required exactly, for the mirror of the reason above: a generation-1 return decoded
+     * here would read `publishedAt` as `circuitId` and run off the end for `active`.
+     */
+    fun decodeDiscoverySet(hex: String): DiscoverySetRecord? {
+        val w = words(hex) ?: return null
+        if (w.size != 10) return null
+        return DiscoverySetRecord(
+            discoverySetId = b32(w[0]),
+            verificationRegistry = addr(w[2]),
+            providerRegistry = addr(w[5]),
+            rootIndex = addr(w[6]),
+            circuitId = b32(w[7]),
+            active = boolOf(w[9]),
         )
     }
 

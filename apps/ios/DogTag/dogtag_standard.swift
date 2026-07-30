@@ -1043,6 +1043,31 @@ public struct TrustedAnchor {
      * must be populated separately.
      */
     public var artifactSetActive: Bool
+    /**
+     * The provider-authority core (`ProviderRegistry`) this version's verification registry holds in its
+     * immutable `issuerRegistry` slot — and the root of the resolver layer, since a provider's directory
+     * resolver and a service's domain resolver are both selected THROUGH it.
+     *
+     * `None` is the honest shape of a GENERATION-1 record: `ProtocolRegistry.ContractSet` has no such
+     * member, so a caller resolving that record has nothing to report and must say so rather than invent
+     * an address. That is an ACCURATE OBSERVATION about the record's shape, and it is NOT a
+     * could-not-check: a read that FAILED must surface as a failed resolution and must never reach
+     * [`validate`] as a `None`. Generation 2's `ProtocolRegistryV2.DiscoverySet` always carries it (the
+     * registry refuses to publish a zero), so a caller reading that record must populate it.
+     */
+    public var providerRegistry: String?
+    /**
+     * Whatever this version's verification registry holds in its immutable `rootIndex` slot — the
+     * contract that answers `rootIssuer(bytes32)` and `isClone(address)`. In generation 2 that is the
+     * `CloneProvenanceRouter`, which resolves a root across factory generations.
+     *
+     * This is NOT the factory. Generation 1 could conflate them because its registry's root index WAS
+     * its factory; generation 2 cannot, and a consumer that reads a factory address here resolves only
+     * the roots anchored in that generation while silently missing every earlier one — the exact failure
+     * the router exists to prevent. `None` carries the same generation-1 meaning as
+     * [`Self::provider_registry`].
+     */
+    public var rootIndex: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1103,7 +1128,30 @@ public struct TrustedAnchor {
          * to pass. This is the bit that lets dogtag retire a compromised proving-artifact set (a bad zkey)
          * and stop every app WITHOUT moving a single trio address. See that field's note for why the two
          * must be populated separately.
-         */artifactSetActive: Bool) {
+         */artifactSetActive: Bool, 
+        /**
+         * The provider-authority core (`ProviderRegistry`) this version's verification registry holds in its
+         * immutable `issuerRegistry` slot — and the root of the resolver layer, since a provider's directory
+         * resolver and a service's domain resolver are both selected THROUGH it.
+         *
+         * `None` is the honest shape of a GENERATION-1 record: `ProtocolRegistry.ContractSet` has no such
+         * member, so a caller resolving that record has nothing to report and must say so rather than invent
+         * an address. That is an ACCURATE OBSERVATION about the record's shape, and it is NOT a
+         * could-not-check: a read that FAILED must surface as a failed resolution and must never reach
+         * [`validate`] as a `None`. Generation 2's `ProtocolRegistryV2.DiscoverySet` always carries it (the
+         * registry refuses to publish a zero), so a caller reading that record must populate it.
+         */providerRegistry: String?, 
+        /**
+         * Whatever this version's verification registry holds in its immutable `rootIndex` slot — the
+         * contract that answers `rootIssuer(bytes32)` and `isClone(address)`. In generation 2 that is the
+         * `CloneProvenanceRouter`, which resolves a root across factory generations.
+         *
+         * This is NOT the factory. Generation 1 could conflate them because its registry's root index WAS
+         * its factory; generation 2 cannot, and a consumer that reads a factory address here resolves only
+         * the roots anchored in that generation while silently missing every earlier one — the exact failure
+         * the router exists to prevent. `None` carries the same generation-1 meaning as
+         * [`Self::provider_registry`].
+         */rootIndex: String?) {
         self.version = version
         self.versionId = versionId
         self.artifactSet = artifactSet
@@ -1114,6 +1162,8 @@ public struct TrustedAnchor {
         self.minAppVersion = minAppVersion
         self.contractSetActive = contractSetActive
         self.artifactSetActive = artifactSetActive
+        self.providerRegistry = providerRegistry
+        self.rootIndex = rootIndex
     }
 }
 
@@ -1151,6 +1201,12 @@ extension TrustedAnchor: Equatable, Hashable {
         if lhs.artifactSetActive != rhs.artifactSetActive {
             return false
         }
+        if lhs.providerRegistry != rhs.providerRegistry {
+            return false
+        }
+        if lhs.rootIndex != rhs.rootIndex {
+            return false
+        }
         return true
     }
 
@@ -1165,6 +1221,8 @@ extension TrustedAnchor: Equatable, Hashable {
         hasher.combine(minAppVersion)
         hasher.combine(contractSetActive)
         hasher.combine(artifactSetActive)
+        hasher.combine(providerRegistry)
+        hasher.combine(rootIndex)
     }
 }
 
@@ -1185,7 +1243,9 @@ public struct FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer {
                 circuitId: FfiConverterString.read(from: &buf), 
                 minAppVersion: FfiConverterString.read(from: &buf), 
                 contractSetActive: FfiConverterBool.read(from: &buf), 
-                artifactSetActive: FfiConverterBool.read(from: &buf)
+                artifactSetActive: FfiConverterBool.read(from: &buf), 
+                providerRegistry: FfiConverterOptionString.read(from: &buf), 
+                rootIndex: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1200,6 +1260,8 @@ public struct FfiConverterTypeTrustedAnchor: FfiConverterRustBuffer {
         FfiConverterString.write(value.minAppVersion, into: &buf)
         FfiConverterBool.write(value.contractSetActive, into: &buf)
         FfiConverterBool.write(value.artifactSetActive, into: &buf)
+        FfiConverterOptionString.write(value.providerRegistry, into: &buf)
+        FfiConverterOptionString.write(value.rootIndex, into: &buf)
     }
 }
 
@@ -1236,6 +1298,18 @@ public struct ValidatedVersion {
      * rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
      */
     public var artifactSet: String
+    /**
+     * The validated provider-authority core, or `None` when the resolved record does not carry one.
+     * Returned so a caller acts on the value this function checked rather than re-reading the anchor —
+     * the same reason `verification_registry` is returned.
+     */
+    public var providerRegistry: String?
+    /**
+     * The validated root index (generation 2's `CloneProvenanceRouter`), or `None` when the resolved
+     * record does not carry one. A caller reading `rootIssuer`/`isClone` MUST use this rather than a
+     * bundled factory address; see [`TrustedAnchor::root_index`].
+     */
+    public var rootIndex: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1244,12 +1318,24 @@ public struct ValidatedVersion {
          * The validated ARTIFACT-AXIS identity (R-5) — which proving-artifact set the caller may now
          * fetch. Returned separately from `version` precisely because it moves separately: an artifact
          * rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
-         */artifactSet: String) {
+         */artifactSet: String, 
+        /**
+         * The validated provider-authority core, or `None` when the resolved record does not carry one.
+         * Returned so a caller acts on the value this function checked rather than re-reading the anchor —
+         * the same reason `verification_registry` is returned.
+         */providerRegistry: String?, 
+        /**
+         * The validated root index (generation 2's `CloneProvenanceRouter`), or `None` when the resolved
+         * record does not carry one. A caller reading `rootIssuer`/`isClone` MUST use this rather than a
+         * bundled factory address; see [`TrustedAnchor::root_index`].
+         */rootIndex: String?) {
         self.version = version
         self.circuitId = circuitId
         self.chainId = chainId
         self.verificationRegistry = verificationRegistry
         self.artifactSet = artifactSet
+        self.providerRegistry = providerRegistry
+        self.rootIndex = rootIndex
     }
 }
 
@@ -1272,6 +1358,12 @@ extension ValidatedVersion: Equatable, Hashable {
         if lhs.artifactSet != rhs.artifactSet {
             return false
         }
+        if lhs.providerRegistry != rhs.providerRegistry {
+            return false
+        }
+        if lhs.rootIndex != rhs.rootIndex {
+            return false
+        }
         return true
     }
 
@@ -1281,6 +1373,8 @@ extension ValidatedVersion: Equatable, Hashable {
         hasher.combine(chainId)
         hasher.combine(verificationRegistry)
         hasher.combine(artifactSet)
+        hasher.combine(providerRegistry)
+        hasher.combine(rootIndex)
     }
 }
 
@@ -1296,7 +1390,9 @@ public struct FfiConverterTypeValidatedVersion: FfiConverterRustBuffer {
                 circuitId: FfiConverterString.read(from: &buf), 
                 chainId: FfiConverterUInt64.read(from: &buf), 
                 verificationRegistry: FfiConverterString.read(from: &buf), 
-                artifactSet: FfiConverterString.read(from: &buf)
+                artifactSet: FfiConverterString.read(from: &buf), 
+                providerRegistry: FfiConverterOptionString.read(from: &buf), 
+                rootIndex: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1306,6 +1402,8 @@ public struct FfiConverterTypeValidatedVersion: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.chainId, into: &buf)
         FfiConverterString.write(value.verificationRegistry, into: &buf)
         FfiConverterString.write(value.artifactSet, into: &buf)
+        FfiConverterOptionString.write(value.providerRegistry, into: &buf)
+        FfiConverterOptionString.write(value.rootIndex, into: &buf)
     }
 }
 
@@ -1379,6 +1477,30 @@ extension FfiError: Equatable, Hashable {}
 extension FfiError: Foundation.LocalizedError {
     public var errorDescription: String? {
         String(reflecting: self)
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
     }
 }
 

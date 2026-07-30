@@ -126,6 +126,27 @@ pub struct TrustedAnchor {
     /// and stop every app WITHOUT moving a single trio address. See that field's note for why the two
     /// must be populated separately.
     pub artifact_set_active: bool,
+    /// The provider-authority core (`ProviderRegistry`) this version's verification registry holds in its
+    /// immutable `issuerRegistry` slot — and the root of the resolver layer, since a provider's directory
+    /// resolver and a service's domain resolver are both selected THROUGH it.
+    ///
+    /// `None` is the honest shape of a GENERATION-1 record: `ProtocolRegistry.ContractSet` has no such
+    /// member, so a caller resolving that record has nothing to report and must say so rather than invent
+    /// an address. That is an ACCURATE OBSERVATION about the record's shape, and it is NOT a
+    /// could-not-check: a read that FAILED must surface as a failed resolution and must never reach
+    /// [`validate`] as a `None`. Generation 2's `ProtocolRegistryV2.DiscoverySet` always carries it (the
+    /// registry refuses to publish a zero), so a caller reading that record must populate it.
+    pub provider_registry: Option<String>,
+    /// Whatever this version's verification registry holds in its immutable `rootIndex` slot — the
+    /// contract that answers `rootIssuer(bytes32)` and `isClone(address)`. In generation 2 that is the
+    /// `CloneProvenanceRouter`, which resolves a root across factory generations.
+    ///
+    /// This is NOT the factory. Generation 1 could conflate them because its registry's root index WAS
+    /// its factory; generation 2 cannot, and a consumer that reads a factory address here resolves only
+    /// the roots anchored in that generation while silently missing every earlier one — the exact failure
+    /// the router exists to prevent. `None` carries the same generation-1 meaning as
+    /// [`Self::provider_registry`].
+    pub root_index: Option<String>,
 }
 
 /// Client-side context the validation needs beyond the anchor: this build's version and the app's
@@ -205,6 +226,16 @@ pub enum DiscoveryError {
     /// never read as "new enough".
     #[error("{which} {value:?} is not a valid dotted-numeric semver")]
     BadSemver { which: &'static str, value: String },
+    /// An anchor address the caller DID report is not a usable address (empty, not `0x` + 40 hex, or the
+    /// zero address). A CALLER-INTEGRITY guard, and the only check available for these two members: unlike
+    /// `verification_registry` — which is compared against the platform's claim, so a garbled value fails
+    /// that comparison — nothing claims a provider registry or a root index, so shape is all there is.
+    ///
+    /// Absence is NOT an error (a generation-1 record has no such member, see [`TrustedAnchor`]); a
+    /// present-but-unusable value is, because the caller would go on to `eth_call` it and read an empty
+    /// answer that is neither a definite yes nor a definite no.
+    #[error("anchor {which} {value:?} is not a usable address")]
+    MalformedAnchorAddress { which: &'static str, value: String },
 }
 
 /// The result of a PASSING validation (§5.3): the version + its artifact-selection key + the
@@ -221,6 +252,14 @@ pub struct ValidatedVersion {
     /// fetch. Returned separately from `version` precisely because it moves separately: an artifact
     /// rotation changes this while `version`/`circuit_id`/`verification_registry` are unchanged.
     pub artifact_set: String,
+    /// The validated provider-authority core, or `None` when the resolved record does not carry one.
+    /// Returned so a caller acts on the value this function checked rather than re-reading the anchor —
+    /// the same reason `verification_registry` is returned.
+    pub provider_registry: Option<String>,
+    /// The validated root index (generation 2's `CloneProvenanceRouter`), or `None` when the resolved
+    /// record does not carry one. A caller reading `rootIssuer`/`isClone` MUST use this rather than a
+    /// bundled factory address; see [`TrustedAnchor::root_index`].
+    pub root_index: Option<String>,
 }
 
 /// Validate a platform's [`ConvenienceClaims`] against the dogtag-owned [`TrustedAnchor`] and enforce
@@ -236,7 +275,9 @@ pub struct ValidatedVersion {
 /// 4. verificationRegistry == anchor (case-insensitive — checksum vs lowercase is not a real mismatch),
 /// 5. purpose == the app's out-of-band expected purpose (case-SENSITIVE — a purpose is a semantic
 ///    namespace, not hex),
-/// 6. build >= minAppVersion (numeric semver).
+/// 6. build >= minAppVersion (numeric semver),
+/// 7. any generation-2 member the record carries (`provider_registry`, `root_index`) is a usable
+///    address. Absence is not an error — see [`TrustedAnchor::provider_registry`].
 pub fn validate(
     claims: &ConvenienceClaims,
     anchor: &TrustedAnchor,
@@ -344,6 +385,14 @@ pub fn validate(
         });
     }
 
+    // (7) The generation-2 members, when the resolved record carries them. There is nothing to compare
+    // them against — no platform claims a provider registry or a root index, and the artifact axis has no
+    // opinion on either — so the only available check is that a value the caller DID report is usable.
+    // Absence passes untouched: a generation-1 record has no such member, and refusing that would refuse
+    // every currently-published version.
+    require_usable_address("providerRegistry", anchor.provider_registry.as_deref())?;
+    require_usable_address("rootIndex", anchor.root_index.as_deref())?;
+
     // PASS — the caller selects the artifact by circuitId (§5.3 step 6) and proceeds.
     Ok(ValidatedVersion {
         version: anchor.version.clone(),
@@ -351,7 +400,37 @@ pub fn validate(
         chain_id: anchor.chain_id,
         verification_registry: anchor.verification_registry.clone(),
         artifact_set: anchor.artifact_set.clone(),
+        provider_registry: anchor.provider_registry.clone(),
+        root_index: anchor.root_index.clone(),
     })
+}
+
+/// A reported anchor address must be a usable one: `0x` + 40 hex digits, and not the zero address.
+///
+/// `None` is fine — it means the resolved record has no such member (see [`TrustedAnchor`]). What is
+/// refused is a value the caller reported and cannot be acted on, because the caller's next move is to
+/// `eth_call` it: the zero address answers empty returndata, which is neither a definite yes nor a
+/// definite no, and a truncated or non-hex string is a different address entirely or none at all.
+///
+/// Case is not normalised — a checksummed and a lowercase address are both accepted, matching the
+/// case-insensitive treatment `verification_registry` already gets.
+fn require_usable_address(which: &'static str, value: Option<&str>) -> Result<(), DiscoveryError> {
+    let Some(addr) = value else { return Ok(()) };
+    let bad = || DiscoveryError::MalformedAnchorAddress {
+        which,
+        value: addr.to_string(),
+    };
+    let hex = addr
+        .strip_prefix("0x")
+        .or_else(|| addr.strip_prefix("0X"))
+        .ok_or_else(bad)?;
+    if hex.len() != 40 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    if hex.bytes().all(|b| b == b'0') {
+        return Err(bad());
+    }
+    Ok(())
 }
 
 /// Compare two dotted-numeric semver strings COMPONENT-WISE (numeric, not lexical — so `"1.10.0"` is
@@ -439,7 +518,14 @@ mod tests {
     const CIRCUIT: &str = "consent.circom/DogTagConsent(6)";
     const PURPOSE: &str = "GROOMING_INTAKE";
     const ARTIFACTS: &str = "dogtag-levelb-artifacts/1";
+    // Generation 2's two additional members, for the anchors that carry them.
+    const VERSION_V2: &str = "dogtag-levelb/2";
+    const PROVIDER_REGISTRY: &str = "0x9309aB1c2D3e4F5061728394a5B6c7D8e9F00112";
+    const ROOT_INDEX: &str = "0x120127E4a5B6c7D8E9f001122334455667788990";
 
+    /// A GENERATION-1 anchor: the on-chain record it was resolved from has no provider-authority or
+    /// root-index member, so both are `None`. This stays the default fixture because it is what every
+    /// currently-published version looks like.
     fn anchor() -> TrustedAnchor {
         TrustedAnchor {
             version: VERSION.to_string(),
@@ -452,6 +538,27 @@ mod tests {
             min_app_version: "1.4.0".to_string(),
             contract_set_active: true,
             artifact_set_active: true,
+            provider_registry: None,
+            root_index: None,
+        }
+    }
+
+    /// A GENERATION-2 anchor: resolved from a `ProtocolRegistryV2.DiscoverySet`, which always carries
+    /// both members because the registry refuses to publish a zero for either.
+    fn anchor_v2() -> TrustedAnchor {
+        TrustedAnchor {
+            version: VERSION_V2.to_string(),
+            version_id: version_id(VERSION_V2),
+            provider_registry: Some(PROVIDER_REGISTRY.to_string()),
+            root_index: Some(ROOT_INDEX.to_string()),
+            ..anchor()
+        }
+    }
+
+    fn claims_v2() -> ConvenienceClaims {
+        ConvenienceClaims {
+            protocol_version: VERSION_V2.to_string(),
+            ..claims()
         }
     }
 
@@ -484,6 +591,110 @@ mod tests {
         assert_eq!(
             v.artifact_set, ARTIFACTS,
             "the validated artifact axis is surfaced to the caller"
+        );
+        // A generation-1 record carries neither generation-2 member, and the validator reports that
+        // absence rather than inventing an address.
+        assert_eq!(v.provider_registry, None);
+        assert_eq!(v.root_index, None);
+    }
+
+    /// A GENERATION-2 anchor validates and surfaces both new members to the caller, so a caller reads
+    /// `rootIssuer`/`isClone` from the validated root index rather than from a bundled factory address.
+    #[test]
+    fn a_generation_two_anchor_surfaces_its_authority_core_and_root_index() {
+        let v = validate(&claims_v2(), &anchor_v2(), &ctx()).expect("generation 2 validates");
+        assert_eq!(v.version, VERSION_V2);
+        assert_eq!(v.provider_registry.as_deref(), Some(PROVIDER_REGISTRY));
+        assert_eq!(v.root_index.as_deref(), Some(ROOT_INDEX));
+        // The frozen artifact axis is unchanged across the generation boundary — the circuit, the
+        // ceremony and every pin are generation 1's, so the identity is too. A bumped artifact key here
+        // would refuse every already-shipped build with a stitched-anchor error instead of the
+        // actionable `AppTooOld`.
+        assert_eq!(v.artifact_set, ARTIFACTS);
+        assert_eq!(v.circuit_id, CIRCUIT);
+    }
+
+    /// A reported member that cannot be acted on FAILS CLOSED. Nothing claims either address, so shape is
+    /// the only check available — and the caller's next move is to `eth_call` the value, where the zero
+    /// address answers empty returndata: neither a definite yes nor a definite no.
+    #[test]
+    fn an_unusable_reported_address_fails_closed() {
+        for bad in [
+            "",
+            "0x",
+            "0x0000000000000000000000000000000000000000", // the zero address
+            "0x9309aB1c2D3e4F5061728394a5B6c7D8e9F0011",  // 39 hex digits
+            "0x9309aB1c2D3e4F5061728394a5B6c7D8e9F001122", // 41
+            "9309aB1c2D3e4F5061728394a5B6c7D8e9F00112",   // no 0x
+            "0x9309aB1c2D3e4F5061728394a5B6c7D8e9F0011z", // not hex
+        ] {
+            let mut a = anchor_v2();
+            a.provider_registry = Some(bad.to_string());
+            assert!(
+                matches!(
+                    validate(&claims_v2(), &a, &ctx()),
+                    Err(DiscoveryError::MalformedAnchorAddress {
+                        which: "providerRegistry",
+                        ..
+                    })
+                ),
+                "providerRegistry {bad:?} must fail closed"
+            );
+
+            let mut b = anchor_v2();
+            b.root_index = Some(bad.to_string());
+            assert!(
+                matches!(
+                    validate(&claims_v2(), &b, &ctx()),
+                    Err(DiscoveryError::MalformedAnchorAddress {
+                        which: "rootIndex",
+                        ..
+                    })
+                ),
+                "rootIndex {bad:?} must fail closed"
+            );
+        }
+
+        // ABSENCE is not an error: it is what a generation-1 record honestly reports, and refusing it
+        // would refuse every currently-published version.
+        assert!(validate(&claims(), &anchor(), &ctx()).is_ok());
+
+        // ...and a checksummed or lowercase address both pass, matching how the registry address is
+        // compared. A case-sensitive shape check would reject half of all real callers.
+        let mut lower = anchor_v2();
+        lower.provider_registry = Some(PROVIDER_REGISTRY.to_lowercase());
+        lower.root_index = Some(ROOT_INDEX.to_uppercase().replace("0X", "0x"));
+        assert!(validate(&claims_v2(), &lower, &ctx()).is_ok());
+    }
+
+    /// The two members are independent: one being unusable must not be masked by the other being fine,
+    /// and the error names which one so an implementer knows what they wired wrong.
+    #[test]
+    fn the_malformed_address_error_names_the_member() {
+        let mut a = anchor_v2();
+        a.root_index = Some("0x0".to_string());
+        let msg = validate(&claims_v2(), &a, &ctx()).unwrap_err().to_string();
+        assert!(msg.contains("rootIndex"), "must name the member: {msg}");
+        assert!(
+            !msg.contains("providerRegistry"),
+            "must not blame the healthy member: {msg}"
+        );
+    }
+
+    /// Refusals that are about the anchor's OWN shape must not preempt the checks that are about the
+    /// platform's claims: a lying platform is reported as lying, not as a caller-integrity problem.
+    #[test]
+    fn a_platform_lie_still_outranks_the_shape_check() {
+        let mut a = anchor_v2();
+        a.root_index = Some("0x0".to_string()); // also malformed
+        let mut c = claims_v2();
+        c.verification_registry = "0x000000000000000000000000000000000000dEaD".to_string();
+        assert!(
+            matches!(
+                validate(&c, &a, &ctx()),
+                Err(DiscoveryError::RegistryMismatch { .. })
+            ),
+            "the anti-redirect trip is the diagnosis the operator needs first"
         );
     }
 
