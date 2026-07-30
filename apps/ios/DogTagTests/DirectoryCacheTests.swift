@@ -423,10 +423,42 @@ final class DirectoryCacheTests: XCTestCase {
     // MARK: - the stored document
 
     /// Everything a row carries survives a round trip, absence included.
+    ///
+    /// This is the case AGENTS.md names as where a new contact channel's round trip is asserted, so it
+    /// has to be able to catch a dropped one. That needs BOTH halves: every channel populated on one
+    /// row - a channel nobody wrote is a channel the codec is free to forget - and whole-row equality
+    /// rather than a spot check, which only ever covers the fields someone remembered to name. The
+    /// second row carries the opposite of every optional (no location, no domain, no services, no
+    /// standing claim, one channel), so an encoder that writes absence as a value fails here too.
+    ///
+    /// The first row's non-nil `active` is deliberate and is not a claim about central, which never
+    /// populates it: the codec carries the slot regardless, and with both rows nil a dropped `active`
+    /// line would round-trip clean.
     func test_theStoredDocumentRoundTripsEveryFieldIncludingAbsentLocation() {
+        let everyChannel = DirectoryProvider(
+            providerId: "located",
+            kind: "vet",
+            name: "Harbour Vet",
+            geo: NearbyPoint(lat: 1.3039, lng: 103.8318),
+            services: ["vaccination"],
+            domain: "harbour.test",
+            active: true,
+            contact: ProviderContact(
+                phone: "+65 6123 4567",
+                whatsapp: "+65 8123 4567",
+                telegram: "@harbourvet",
+                email: "care@harbour.test",
+                website: "https://harbour.test"
+            ),
+            bindingState: .unavailable
+        )
         let entry = ProviderDirectoryCacheEntry(
             namespace: namespace,
-            snapshot: snapshot(providers: [located, contactOnly], readAt: 1_000, expiresAt: 5_000),
+            snapshot: snapshot(
+                providers: [everyChannel, contactOnly],
+                readAt: 1_000,
+                expiresAt: 5_000
+            ),
             readAt: date(1_000),
             expiresAt: date(5_000)
         )
@@ -437,16 +469,14 @@ final class DirectoryCacheTests: XCTestCase {
         XCTAssertEqual(decoded.namespace, namespace)
         XCTAssertEqual(decoded.readAt, date(1_000))
         XCTAssertEqual(decoded.expiresAt, date(5_000))
-        XCTAssertEqual(decoded.snapshot.providers.count, 2)
-
-        let first = decoded.snapshot.providers[0]
-        XCTAssertEqual(first.geo, NearbyPoint(lat: 1.3039, lng: 103.8318))
-        XCTAssertEqual(first.contact.phone, "+65 6123 4567")
-        XCTAssertNil(first.active)
+        XCTAssertEqual(
+            decoded.snapshot.providers,
+            [everyChannel, contactOnly],
+            "every field of every row survives, so dropping one from the codec fails here"
+        )
 
         let second = decoded.snapshot.providers[1]
         XCTAssertNil(second.geo, "a contact-only provider stays location-less")
-        XCTAssertEqual(second.contact.website, "https://call-only.test")
         XCTAssertTrue(second.contact.hasAny)
         XCTAssertEqual(second.bindingState, .noDomainListed)
     }

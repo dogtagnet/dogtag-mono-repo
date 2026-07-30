@@ -447,12 +447,40 @@ class DirectoryCacheTest {
 
     // ---- the stored document -------------------------------------------------------------------
 
-    /** Everything a row carries survives a round trip, absence included. */
+    /**
+     * Everything a row carries survives a round trip, absence included.
+     *
+     * This is the case AGENTS.md names as where a new contact channel's round trip is asserted, so it
+     * has to be able to catch a dropped one. That needs BOTH halves: every channel populated on one
+     * row - a channel nobody wrote is a channel the codec is free to forget - and whole-row equality
+     * rather than a spot check, which only ever covers the fields someone remembered to name. The
+     * second row carries the opposite of every optional (no location, no domain, no services, no
+     * standing claim, one channel), so an encoder that writes absence as a value fails here too.
+     *
+     * The first row's non-null `active` is deliberate and is not a claim about central, which never
+     * populates it: the codec carries the slot regardless, and with both rows null a dropped `active`
+     * line would round-trip clean.
+     */
     @Test
     fun theStoredDocumentRoundTripsEveryFieldIncludingAbsentLocation() {
+        val everyChannel = located.copy(
+            active = true,
+            contact = ProviderContact(
+                phone = "+65 6123 4567",
+                whatsapp = "+65 8123 4567",
+                telegram = "@harbourvet",
+                email = "care@harbour.test",
+                website = "https://harbour.test",
+            ),
+        )
         val entry = ProviderDirectoryCacheEntry(
             namespace = "central:https://central.test/v1/businesses",
-            snapshot = found(1_000, 5_000),
+            snapshot = ProviderDirectoryResult.Found(
+                providers = listOf(everyChannel, contactOnly),
+                observation = DirectoryObservation.Live,
+                readAt = 1_000,
+                expiresAt = 5_000,
+            ),
             readAt = 1_000,
             expiresAt = 5_000,
         )
@@ -462,16 +490,16 @@ class DirectoryCacheTest {
         assertNotNull(decoded)
         val snapshot = decoded!!.snapshot as ProviderDirectoryResult.Found
         assertEquals(entry.namespace, decoded.namespace)
-        assertEquals(2, snapshot.providers.size)
-
-        val first = snapshot.providers.first()
-        assertEquals(GeoPoint(1.3039, 103.8318), first.geo)
-        assertEquals("+65 6123 4567", first.contact.phone)
-        assertEquals(null, first.active)
+        assertEquals(1_000L, decoded.readAt)
+        assertEquals(5_000L, decoded.expiresAt)
+        assertEquals(
+            "every field of every row survives, so dropping one from the codec fails here",
+            listOf(everyChannel, contactOnly),
+            snapshot.providers,
+        )
 
         val second = snapshot.providers.last()
         assertNull("a contact-only provider stays location-less", second.geo)
-        assertEquals("https://call-only.test", second.contact.website)
         assertTrue(second.contact.hasAny)
         assertTrue(second.bindingState === IssuerBindingState.NoDomainListed)
     }

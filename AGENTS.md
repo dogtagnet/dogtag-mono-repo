@@ -3084,8 +3084,8 @@ it, not independent designs. Change one, change all three.
   `stored` result is passed through, never re-stored) but the second layer should simply not exist.
 - **The on-chain directory will not need its own cache implementation, but it does NOT inherit this one
   for free.** What holds today is the decorator SHAPE: it wraps the seam rather than a concrete adapter,
-  so a second source is wrapped, not re-implemented. Three things must be fixed first, none of them
-  reachable while there is exactly one directory implementation, all three silent when they land:
+  so a second source is wrapped, not re-implemented. Four things must be fixed first, none of them
+  reachable while there is exactly one directory implementation, all four silent when they land:
   (1) iOS `ProviderDirectoryCacheCodec.encode` returns `nil` unless the snapshot source is `.central`,
   so an on-chain snapshot would simply never be stored - the wrapper's write is skipped with no error;
   (2) both platforms hard-code a single cache filename with no namespace in the PATH
@@ -3093,7 +3093,14 @@ it, not independent designs. Change one, change all three.
   dir would mutually evict - each success overwrites the other's document and each offline read clears
   on namespace mismatch, so neither would ever serve a replay; (3) Android's result model carries no
   `source` at all, so its codec would write an on-chain snapshot under central's stored shape, the
-  inverse asymmetry to iOS.
+  inverse asymmetry to iOS; and (4) iOS's stored shape carries no BLOCK ANCHOR - `StoredEntry` has no
+  `blockNumber` member and `decode` reconstructs the snapshot with `blockNumber: nil` - so an on-chain
+  snapshot's anchor would be dropped on every replay, while the reference requires a cache fallback to
+  preserve the original read time AND block anchor. Item (4) is inert today for two independent reasons,
+  which is exactly why it is easy to trust the list as complete: item (1)'s central-source gate means no
+  on-chain snapshot is written at all, and central legitimately has no anchor to carry (its
+  `{ businesses }` response publishes no chain height), so no iOS consumer reads
+  `ProviderDirectorySnapshot.blockNumber` yet.
 - **The TTL bounds ONLY the offline window, and it is SEVEN DAYS.** Read the constant's own comment
   (`CachedProviderDirectory.DEFAULT_TTL_MS` / `.defaultTtl`) before changing it - the reasoning is
   written there because this class first inherited fifteen minutes across a change of role, from an
@@ -3116,6 +3123,16 @@ it, not independent designs. Change one, change all three.
   only and leave `refreshKey` alone, because whether returning to the app should re-attempt the live
   read is a separate product call. Neither is a ticker, and neither suite can reach a lifecycle
   callback, so this half is documented rather than pinned.
+- **A non-positive TTL is a DISCLOSED asymmetry between the two ports, and both arms are safe.** Android
+  refuses it at construction (`require(ttlMs > 0)` in `DirectoryCache.kt`, pinned by
+  `aNonPositiveTtlIsRefusedRatherThanSilentlyDisablingTheCopy`); iOS instead disables the copy - it
+  clears the store and returns the live answer, pinned by
+  `test_aNonPositiveTtlDisablesTheCopyRatherThanStoringAnUnevaluableDeadline`. So the two suites really
+  do assert opposite rules, and neither is a defect: neither arm is reachable from production wiring,
+  since both screens construct the wrapper on the positive default. Recorded because "change one, change
+  all three" otherwise reads as a promise that these two agree. Note the iOS guard runs BEFORE the replay
+  branch, so a misconfigured lifetime there destroys a stored copy Android would never have accepted in
+  the first place - align them only deliberately, and if you do, move both suites' cases with them.
 - **`expiresAt` is nullable ON PURPOSE.** `null` means "no wrapper set a deadline", and it is the only
   thing that distinguishes a fresh source read from an inner replay. A non-null default would make
   those two indistinguishable and the never-expires bug unrepresentable in a test.
@@ -3255,6 +3272,20 @@ It is strictly harder to catch than the original, since anyone testing a new cha
 ever sees the live path, which is unaffected.
 The `theStoredDocumentRoundTripsEveryFieldIncludingAbsentLocation` case in each cache suite is where a
 new channel's round trip is asserted.
+It can only carry that claim because of HOW it asserts, and both halves are load-bearing: it populates
+every channel on one row, and it compares the decoded rows to the fixture rows WHOLE rather than
+naming fields one at a time.
+Pinned by mutation, one platform at a time: dropping the `telegram` line from Kotlin `encodeProvider`
+reddens it (`AssertionError` on the row comparison), and dropping `telegram` from the
+`StoredContact(...)` construction in Swift `encode` reddens its iOS twin - `StoredContact`'s members
+are optional `var`s, so that deletion COMPILES, which is precisely the silent drop being guarded.
+It first shipped as a per-field spot check over two rows that between them set only `phone` and
+`website` and named no other field, so neither mutation could have reddened anything: a channel
+nobody wrote is a channel the codec is free to forget.
+So when a sixth channel arrives, adding it to the fully-populated fixture is the whole of the test
+change; do not replace the equality with per-field assertions.
+The same fixture carries a non-null `active`, which central never populates - the codec has that slot
+either way, and with both rows null a dropped `active` line would round-trip clean.
 
 **`website` is the first channel whose SCHEME comes from the directory string.** `tel:`, `https://wa.me/`,
 `https://t.me/` and `mailto:` are all constructed by the renderer, so the value can only fill a slot;
