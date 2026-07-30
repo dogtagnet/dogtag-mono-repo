@@ -337,6 +337,20 @@ class NearbyDecisionTest {
         )
     }
 
+    /**
+     * The captain allowed Directions on offline stored rows on condition that the stored-not-current
+     * labelling stayed on them, so this sentence is part of that ruling rather than decoration: a
+     * bare Directions button on a remembered row would read as a destination just confirmed with the
+     * service. Pinned byte-for-byte against iOS for the same reason the disclosure above is.
+     */
+    @Test
+    fun theStoredDirectionsOfferSaysTheAddressMayBeOutOfDate() {
+        assertEquals(
+            "Saved on this phone - this address may be out of date.",
+            NearbyDecision.STORED_DIRECTIONS_NOTE,
+        )
+    }
+
     @Test
     fun zeroZeroRemainsARealCoordinateAndCanBeCoarsened() {
         val point = GeoPoint(0.0, 0.0)

@@ -168,6 +168,18 @@ final class NearbyDecisionTests: XCTestCase {
         )
     }
 
+    /// The captain allowed Directions on offline stored rows on condition that the
+    /// stored-not-current labelling stayed on them, so this sentence is part of that ruling rather
+    /// than decoration: a bare Directions button on a remembered row would read as a destination
+    /// just confirmed with the service. Pinned byte-for-byte against Android for the same reason the
+    /// disclosure above is.
+    func test_theStoredDirectionsOfferSaysTheAddressMayBeOutOfDate() {
+        XCTAssertEqual(
+            "Saved on this phone - this address may be out of date.",
+            NearbyDecision.storedDirectionsNote
+        )
+    }
+
     func test_nearestParserRequiresFiniteNonnegativeDistanceAndPreservesServerOrder() throws {
         let object: [String: Any] = [
             "businesses": [

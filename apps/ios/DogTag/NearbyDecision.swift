@@ -887,6 +887,16 @@ enum NearbyDecision {
         )
     }
 
+    /// What a Directions offer on an OFFLINE STORED row must say beside itself.
+    ///
+    /// The captain's 2026-07-30 ruling allowed the handoff on stored rows *and* required that the
+    /// stored-not-current labelling stay on them, so the offer is honest. This sentence is that
+    /// labelling at the point of the offer: the list-level stored banner scrolls away, and a bare
+    /// Directions button on a remembered row would otherwise read as a destination just confirmed
+    /// with the service. Pinned by a unit test on each platform and byte-identical to Android's
+    /// `NearbyDecision.STORED_DIRECTIONS_NOTE`, for the same reason `locationDisclosure` is.
+    static let storedDirectionsNote = "Saved on this phone - this address may be out of date."
+
     /// The maps-app handoff for one provider: its PUBLISHED destination, and nothing else.
     ///
     /// This is a handoff, not a map. The owner leaves the app; the map belongs to whichever app the OS
