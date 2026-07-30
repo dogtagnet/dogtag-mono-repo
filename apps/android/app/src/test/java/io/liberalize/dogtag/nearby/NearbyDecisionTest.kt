@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 class NearbyDecisionTest {
     private val origin = NearbyOriginState.Available(
@@ -697,16 +698,34 @@ class NearbyDecisionTest {
      * Fixed-point, locale-independent, and signed. `Double.toString()` would emit `1.0E-5` just off
      * the meridian - which no maps app parses - and a default-locale formatter would emit `1,35` in a
      * comma-decimal locale, silently splitting the pair into two coordinates.
+     *
+     * The default locale is moved to a COMMA-DECIMAL one for the duration, and that is what makes the
+     * locale half of this case bite rather than restate the machine it ran on: with an en-US default,
+     * dropping [java.util.Locale.ROOT] for `Locale.getDefault()` passes every assertion below, so the
+     * property would be pinned only on a developer who happened to be in a comma-decimal locale - the
+     * check-that-cannot-fail shape this repo treats as a defect. Restored in `finally`, since a leaked
+     * default locale would silently reach every later test in the JVM.
+     *
+     * iOS needs no counterpart: `String(format:locale:)` there is passed an explicit `nil` locale, so
+     * a locale can only enter by someone writing one in, and the exact-string assertions in
+     * `test_directionsCoordinatesAreFixedPointAndSurviveBothSigns` already reject the comma it would
+     * produce.
      */
     @Test
     fun directionsCoordinatesAreFixedPointAndSurviveBothSigns() {
-        assertEquals(
-            "geo:-33.865510,-151.209900?q=-33.865510,-151.209900",
-            NearbyDecision.directionsUri(provider("s", geo = GeoPoint(-33.86551, -151.2099))),
-        )
-        assertEquals(
-            "geo:0.000010,0.000000?q=0.000010,0.000000",
-            NearbyDecision.directionsUri(provider("meridian", geo = GeoPoint(0.00001, 0.0))),
-        )
+        val default = Locale.getDefault()
+        Locale.setDefault(Locale.GERMANY)
+        try {
+            assertEquals(
+                "geo:-33.865510,-151.209900?q=-33.865510,-151.209900",
+                NearbyDecision.directionsUri(provider("s", geo = GeoPoint(-33.86551, -151.2099))),
+            )
+            assertEquals(
+                "geo:0.000010,0.000000?q=0.000010,0.000000",
+                NearbyDecision.directionsUri(provider("meridian", geo = GeoPoint(0.00001, 0.0))),
+            )
+        } finally {
+            Locale.setDefault(default)
+        }
     }
 }
