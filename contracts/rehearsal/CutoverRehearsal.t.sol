@@ -423,11 +423,11 @@ contract CutoverRehearsalTest is Test {
         DogTagIssuer(gen1Clone).revoke(fixtureRoot);
 
         // A later, unguarded generation entirely under an attacker's control.
-        (address hostileClone,) = _deployUnguardedLaterGeneration();
+        (address hostileClone, address hostileFactory) = _deployUnguardedLaterGeneration();
 
         // It really does anchor the revoked root — the duplicate exists.
         assertEq(
-            IFactoryV1(_lastAppendedFactory()).rootIssuer(fixtureRoot),
+            IFactoryV1(hostileFactory).rootIssuer(fixtureRoot),
             hostileClone,
             "the later generation did not actually anchor the root"
         );
@@ -441,12 +441,6 @@ contract CutoverRehearsalTest is Test {
         vm.prank(fixtureRelayer);
         vm.expectRevert("cred !valid");
         d.registryV2.recordVerificationZK(pA, pB, pC, pub);
-    }
-
-    address internal _hostileFactory;
-
-    function _lastAppendedFactory() internal view returns (address) {
-        return _hostileFactory;
     }
 
     function _deployUnguardedLaterGeneration() internal returns (address clone, address factory) {
@@ -465,8 +459,76 @@ contract CutoverRehearsalTest is Test {
         vm.prank(gen1.governance);
         d.router.appendGeneration(address(fac));
 
-        _hostileFactory = address(fac);
         factory = address(fac);
+    }
+
+    // =============================================================================================
+    // ASSERTION 7 (C-12) — the generation-1 freeze stops new issuance and breaks NO credential
+    // =============================================================================================
+
+    /// Silent failure it guards: C-12 exists because dual-generation resolution leaves the OLD
+    /// registry's `WHITELIST_ADMIN` a live trust surface for the NEW verifier — a compromised old
+    /// admin could whitelist a signer, issue through an old clone, and have that root resolve through
+    /// the router. Freezing collapses that surface. The plan asserts the freeze is safe "because
+    /// `isValid` never consults the registry", and that is the claim under test here: if it were
+    /// wrong, the freeze would silently invalidate all 19 historical credentials, which is the exact
+    /// outcome the router was built to prevent.
+    ///
+    /// Both halves are needed. A test that only showed issuance stopping would pass while the freeze
+    /// destroyed every existing credential; a test that only showed verification surviving would pass
+    /// while the freeze failed to close the surface it exists to close.
+    function test_7_the_generation_1_freeze_stops_new_issuance_and_preserves_verification() public {
+        address gen1Clone = _anchorInGeneration1();
+        bytes32 cloneRecordType = DogTagIssuer(gen1Clone).recordType();
+
+        // Precondition, or "issuance is refused" would be vacuous: the signer CAN issue right now.
+        assertTrue(
+            IIssuerRegistryV1(gen1.issuerRegistry).isWhitelistedFor(
+                cloneRecordType, REHEARSAL_GEN1_SIGNER
+            ),
+            "precondition: the generation-1 signer must be whitelisted before the freeze"
+        );
+
+        // C-12 itself. This is the only call site of `delistFor`, and the freeze is one transaction
+        // per (recordType, signer) — the set being exactly the KYC reconciliation, which is why the
+        // transaction list does not enumerate it.
+        vm.prank(gen1.governance);
+        IIssuerRegistryV1(gen1.issuerRegistry).delistFor(cloneRecordType, REHEARSAL_GEN1_SIGNER);
+        assertFalse(
+            IIssuerRegistryV1(gen1.issuerRegistry).isWhitelistedFor(
+                cloneRecordType, REHEARSAL_GEN1_SIGNER
+            ),
+            "the freeze did not take effect"
+        );
+
+        // (1) New generation-1 issuance is refused. A DIFFERENT root, so the refusal cannot be
+        //     `BadRoot` from the already-anchored one — `onlyWhitelisted` is checked first, but a
+        //     reused root would make the assertion pass under either rule.
+        bytes32 freshRoot = keccak256("a root never anchored anywhere");
+        assertEq(DogTagIssuer(gen1Clone).issuedAt(freshRoot), 0, "precondition: fresh root");
+        vm.prank(REHEARSAL_GEN1_SIGNER);
+        vm.expectRevert(abi.encodeWithSignature("NotWhitelisted()"));
+        DogTagIssuer(gen1Clone).issue(freshRoot);
+
+        // (2) Every historical root still resolves to its original clone. Delisting is forward-only.
+        string memory f = vm.readFile("rehearsal/fixtures/historical-roots.json");
+        bytes32[] memory roots = vm.parseJsonBytes32Array(f, ".roots");
+        for (uint256 i; i < roots.length; i++) {
+            address expected = IFactoryV1(gen1.factory).rootIssuer(roots[i]);
+            assertTrue(expected != address(0), "historical root vanished from the generation-1 index");
+            assertEq(d.router.rootIssuer(roots[i]), expected, "the freeze moved a historical root");
+        }
+
+        // (3) And a credential anchored by the NOW-DELISTED signer still verifies end to end on the
+        //     generation-2 registry. This is the half that makes the freeze safe rather than merely
+        //     effective, and only a real verification establishes it.
+        _migrateRelayer();
+        vm.prank(fixtureRelayer);
+        d.registryV2.recordVerificationZK(pA, pB, pC, pub);
+        assertTrue(
+            d.registryV2.consumed(bytes32(pub[3])),
+            "the freeze broke verification of a credential its own signer had already anchored"
+        );
     }
 
     // =============================================================================================
@@ -528,11 +590,11 @@ contract CutoverRehearsalTest is Test {
         vm.prank(REHEARSAL_GEN1_SIGNER);
         DogTagIssuer(gen1Clone).revoke(fixtureRoot);
 
-        (address hostileClone,) = _deployUnguardedLaterGeneration();
+        (address hostileClone, address hostileFactory) = _deployUnguardedLaterGeneration();
 
         // The plan's array, literally: the later generation at index 0.
         address[] memory planOrder = new address[](2);
-        planOrder[0] = _hostileFactory; // "factoryV2"
+        planOrder[0] = hostileFactory; // "factoryV2"
         planOrder[1] = gen1.factory; // "factoryV1"
         CloneProvenanceRouter wrongWayRound = new CloneProvenanceRouter(planOrder, gen1.governance);
 

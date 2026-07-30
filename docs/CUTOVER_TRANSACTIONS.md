@@ -28,6 +28,7 @@ This list is the on-chain sequence the rehearsal could execute end to end. It is
 | **C-6** | One tx per `(purpose, relayer)`; which relayer serves which purpose is plan §4 item 5. Roughly 7 of the 33 live grants sit on this axis. **Assertion 5 is this step being applied and withheld on one credential**, so the mechanics are proven. |
 | **C-7** | `ServiceDomainResolver` and `ProviderDirectory` have slack and gate nothing else. |
 | **C-9, C-10** | Client repointing and an app release - no transactions. |
-| **C-10b, C-11, C-12** | One tx per signer, from the same reconciliation. Exercised on the fork; not enumerated here. |
+| **C-10b, C-11** | One tx per signer, from the same reconciliation. Mechanics exercised on the fork - C-10b is the SBT `grantRole` in the fork test's `setUp`, C-11 is `setIssuanceCapability` in the generation-2 anchoring helper. Not enumerated here. |
+| **C-12** | One tx per `(recordType, signer)`. **Assertion 7 performs a real `delistFor`** and shows new generation-1 issuance refused while all historical roots still verify - the property that makes the freeze safe. Not enumerated here. |
 
 Regenerate with `make rehearse-cutover`, which runs this renderer as its last step.

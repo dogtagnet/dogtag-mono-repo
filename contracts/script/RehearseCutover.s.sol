@@ -39,9 +39,12 @@ import {CutoverSequence} from "./CutoverSequence.sol";
 ///
 /// Every one of those is a per-signer or per-relayer list whose membership is the KYC work, so
 /// publishing it with invented addresses would be worse than publishing none: it would read as
-/// ready. The rehearsal EXERCISES C-6, C-10b, C-11 and C-12 against the fork — assertion 5 is
-/// exactly C-6 being applied and withheld on one credential — so the mechanics are proven; it just
-/// does not pretend to know whose addresses go in them.
+/// ready. Each one's MECHANICS are nonetheless exercised against the fork, so absence from the list
+/// is not absence of evidence — C-6 is assertion 5 (applied and withheld on one credential), C-10b
+/// is the SBT `grantRole` in the fork test's `setUp`, C-11 is `setIssuanceCapability` in the
+/// generation-2 anchoring helper, and C-12 is assertion 7 (a real `delistFor`, then new issuance
+/// refused while every historical root still verifies). What is not claimed is knowledge of whose
+/// addresses go in them.
 ///
 /// `scripts/render-cutover-txlist.py` prints this exclusion list beside the transactions, so the
 /// rendered list cannot be read as the whole cutover.
@@ -59,9 +62,32 @@ contract RehearseCutover is Script {
     }
 
     function run() external {
-        // Refuse to run against anything but a local fork. The sequence is irreversible from C-4b
-        // onward and this contract has no business touching a real endpoint.
-        require(block.chainid == 135, "rehearsal expects the ROAX chain id (135) on a LOCAL fork");
+        // WHAT THESE TWO GUARDS ACTUALLY ENFORCE — read them together, because the first one alone
+        // does NOT keep this script off a live endpoint and must never be described as if it did.
+        //
+        // `block.chainid == 135` excludes OTHER CHAINS only. 135 is live ROAX's own chain id, so a
+        // chain-id check can never distinguish a fork of ROAX from ROAX itself: it passes on exactly
+        // the endpoint it would need to refuse. On its own it is worse than no guard, because it
+        // reads as protective in front of an operation that cannot be undone —
+        // `CutoverSequence.c4b_appendGeneration` is irreversible, the router has no removal path,
+        // and `c2_recordFactoryGeneration` can only ever be deprecated, never repointed.
+        //
+        // `block.number == pinnedBlock` is the guard that carries the safety. A live chain's head is
+        // already far past the pinned block and only ever advances, so live can never satisfy it,
+        // while a fork pinned at that block always does. The pinned block is READ FROM THE FIXTURE
+        // rather than restated here, so there is one source and it cannot drift from the block the
+        // assertions and the historical-root inventory were derived at.
+        //
+        // `scripts/rehearse-cutover.sh` additionally only ever passes a local fork URL, but that is
+        // defence in depth: a script invoked by hand must protect itself.
+        require(block.chainid == 135, "rehearsal expects the ROAX chain id (135)");
+
+        uint256 pinnedBlock =
+            vm.parseJsonUint(vm.readFile("rehearsal/fixtures/historical-roots.json"), ".pinnedBlock");
+        require(
+            block.number == pinnedBlock,
+            "REFUSING: not a fork pinned at the rehearsal block - this looks like a LIVE endpoint"
+        );
 
         CutoverSequence.Generation1 memory gen1 = _generation1();
 

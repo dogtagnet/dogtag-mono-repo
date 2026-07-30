@@ -101,8 +101,6 @@ def main() -> int:
                 "name": name,
                 "fn": fn or "(constructor)",
                 "signer": signer,
-                "from": t["transaction"].get("from"),
-                "to": t["transaction"].get("to") or t.get("contractAddress"),
                 "status": r["status"],
                 "what": what,
             }
@@ -184,8 +182,14 @@ def main() -> int:
     out.append("| **C-7** | `ServiceDomainResolver` and `ProviderDirectory` have slack and gate nothing else. |")
     out.append("| **C-9, C-10** | Client repointing and an app release - no transactions. |")
     out.append(
-        "| **C-10b, C-11, C-12** | One tx per signer, from the same reconciliation. Exercised on the "
-        "fork; not enumerated here. |"
+        "| **C-10b, C-11** | One tx per signer, from the same reconciliation. Mechanics exercised on "
+        "the fork - C-10b is the SBT `grantRole` in the fork test's `setUp`, C-11 is "
+        "`setIssuanceCapability` in the generation-2 anchoring helper. Not enumerated here. |"
+    )
+    out.append(
+        "| **C-12** | One tx per `(recordType, signer)`. **Assertion 7 performs a real `delistFor`** "
+        "and shows new generation-1 issuance refused while all historical roots still verify - the "
+        "property that makes the freeze safe. Not enumerated here. |"
     )
     out.append("")
 

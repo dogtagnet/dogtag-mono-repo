@@ -11,22 +11,27 @@
 # Preconditions are checked HERE, in the shell, where a failure is a real non-zero exit — the same
 # reason `make test-consent-parity` exists rather than a bare cargo invocation. Nothing self-skips.
 #
-#   ANVIL IS KILLED BY THE PID THIS SCRIPT RECORDED, AND BY NOTHING ELSE.
+#   ANVIL IS KILLED ONLY AFTER ITS RECORDED IDENTITY IS RE-VERIFIED, AND NEVER BY NAME OR PATTERN.
 #   Never `pkill -f anvil` here: many checkouts of this monorepo run their own, and killing by
-#   pattern has taken down a live service in this fleet three times.
+#   pattern has taken down a live service in this fleet three times. A bare pid file has the same
+#   failure mode once the pid is recycled, so the record carries pid + port + process start time and
+#   every field is re-checked before anything is signalled - see the identity-record note below.
 #
 # Usage: scripts/rehearse-cutover.sh [--port N] [--block N] [--rpc URL]
+#        scripts/rehearse-cutover.sh --stop        # verify-then-kill a stranded fork
 set -euo pipefail
 
 PORT=8929
 BLOCK=304000
 UPSTREAM_RPC="https://devrpc.roax.net"
 
+STOP_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --port)  PORT="$2"; shift 2 ;;
     --block) BLOCK="$2"; shift 2 ;;
     --rpc)   UPSTREAM_RPC="$2"; shift 2 ;;
+    --stop)  STOP_ONLY=1; shift ;;
     *) echo "unknown argument: $1"; exit 2 ;;
   esac
 done
@@ -35,6 +40,77 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR/contracts"
 
 fail() { echo "REHEARSAL PRECONDITION FAILED: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------------------------
+# The anvil identity record, and why it is a RECORD rather than a pid
+#
+# A file holding a bare pid GOES STALE the moment that process exits, and the OS reuses pids. An
+# operator who then follows the file's own instructions kills whichever unrelated process inherited
+# that number - the wrong-process-kill hazard AGENTS.md records as having taken down live services in
+# this fleet three times, arriving through a stale record instead of a pattern match.
+#
+# So the file records IDENTITY, not a number: pid, port, and the kernel's start time for that pid.
+# `stop_recorded_anvil` re-verifies EVERY field against the live process before it signals anything,
+# and refuses loudly on any disagreement. The file is also removed on exit - but the removal is the
+# convenience and the re-verification is the actual fix, because removal cannot happen on an
+# abnormal exit, which is precisely the case the file exists for.
+#
+# Nothing here ever matches on a binary name or path.
+# ---------------------------------------------------------------------------------------------
+IDENTITY_FILE="$ROOT_DIR/.anvil-rehearsal.pid"
+
+process_start_time() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//'; }
+
+record_anvil_identity() {
+  local pid="$1" port="$2"
+  printf 'pid=%s\nport=%s\nstarted=%s\n' "$pid" "$port" "$(process_start_time "$pid")" \
+    > "$IDENTITY_FILE"
+}
+
+# Verify the recorded identity still describes a live anvil, then kill it. Refuses rather than
+# guesses. Returns non-zero without signalling anything when the record cannot be trusted.
+stop_recorded_anvil() {
+  [ -f "$IDENTITY_FILE" ] || { echo "no anvil identity record at $IDENTITY_FILE"; return 1; }
+
+  local pid port started
+  pid=$(sed -n 's/^pid=//p'     "$IDENTITY_FILE")
+  port=$(sed -n 's/^port=//p'    "$IDENTITY_FILE")
+  started=$(sed -n 's/^started=//p' "$IDENTITY_FILE")
+
+  if [ -z "$pid" ] || [ -z "$port" ] || [ -z "$started" ]; then
+    echo "REFUSING to kill: identity record is incomplete - not signalling anything"; return 1
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "recorded pid $pid is not running (already stopped); removing the stale record"
+    rm -f "$IDENTITY_FILE"; return 0
+  fi
+
+  # The decisive check: a recycled pid has a different start time, so this is what makes the record
+  # unable to mislead. Never skip it.
+  local now_started
+  now_started=$(process_start_time "$pid")
+  if [ "$now_started" != "$started" ]; then
+    echo "REFUSING to kill pid $pid: start time is '$now_started' but the record says '$started'."
+    echo "That pid has been REUSED by a different process. Not signalling anything."
+    return 1
+  fi
+  # And it must still be the listener we started, on the port we started it on.
+  if ! lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | grep -qx "$pid"; then
+    echo "REFUSING to kill pid $pid: it is not the process listening on port $port."
+    return 1
+  fi
+
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$IDENTITY_FILE"
+  echo "stopped the verified anvil this script started (pid $pid, port $port)"
+}
+
+if [ "$STOP_ONLY" -eq 1 ]; then
+  stop_recorded_anvil
+  exit $?
+fi
 
 for bin in anvil forge cast; do
   command -v "$bin" >/dev/null 2>&1 || fail "$bin is not on PATH (install Foundry)"
@@ -57,13 +133,12 @@ fi
 LOG="$(mktemp)"
 ANVIL_PID=""
 cleanup() {
-  # Kill the RECORDED pid, nothing else. No pattern matching, ever.
-  if [ -n "$ANVIL_PID" ] && kill -0 "$ANVIL_PID" 2>/dev/null; then
-    kill "$ANVIL_PID" 2>/dev/null || true
-    wait "$ANVIL_PID" 2>/dev/null || true
-    echo "stopped the anvil this script started (pid $ANVIL_PID)"
+  # Goes through the SAME identity-verified path an operator would use, so the normal exit cannot
+  # take a shortcut the recovery path does not have. No pattern matching, ever.
+  if [ -n "$ANVIL_PID" ]; then
+    stop_recorded_anvil || echo "left pid $ANVIL_PID alone - its identity record could not be trusted"
   fi
-  rm -f "$LOG"
+  rm -f "$LOG" "$IDENTITY_FILE"
 }
 trap cleanup EXIT INT TERM
 
@@ -73,7 +148,7 @@ echo "forking $UPSTREAM_RPC at block $BLOCK onto 127.0.0.1:$PORT"
 anvil --fork-url "$UPSTREAM_RPC" --fork-block-number "$BLOCK" --port "$PORT" \
       --auto-impersonate --silent >"$LOG" 2>&1 &
 ANVIL_PID=$!
-echo "$ANVIL_PID" > "$ROOT_DIR/.anvil-rehearsal.pid"
+record_anvil_identity "$ANVIL_PID" "$PORT"
 
 FORK_RPC="http://127.0.0.1:$PORT"
 for _ in $(seq 1 40); do
@@ -173,3 +248,4 @@ echo "all $(python3 -c "import json;print(json.load(open('$FIXTURE'))['rootCount
 echo
 echo "transaction list: contracts/broadcast/RehearseCutover.s.sol/135/run-latest.json"
 echo "render it with:   scripts/render-cutover-txlist.py"
+echo "if a fork is ever stranded, stop it with: scripts/rehearse-cutover.sh --stop"

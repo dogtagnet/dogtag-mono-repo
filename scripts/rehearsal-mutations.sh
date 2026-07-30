@@ -24,8 +24,10 @@ FACTORY2="src/DogTagIssuerFactoryV2.sol"
 VREG="src/VerificationRegistryConsent.sol"
 CORE="src/ProviderRegistry.sol"
 SUITE="rehearsal/CutoverRehearsal.t.sol"
+ISSUER1="src/DogTagIssuer.sol"
 # EVERY file any mutation touches must be here, or `restore` silently leaves the tree mutated.
-TARGETS=("$SEQ" "$ROUTER" "$FACTORY2" "$VREG" "$CORE" "$SUITE")
+# This list has already been the source of one such gap; add to it in the SAME change as a mutation.
+TARGETS=("$SEQ" "$ROUTER" "$FACTORY2" "$VREG" "$CORE" "$SUITE" "$ISSUER1")
 
 BACKUP="$(mktemp -d)"
 restore() {
@@ -136,7 +138,7 @@ run_mutation \
 run_mutation \
   "relayer restriction defaults off, so C-6 gates nothing" \
   "test_5_an_unmigrated_relayer_fails_verify_wl_and_a_migrated_one_passes" \
-  "src/VerificationRegistryConsent.sol" \
+  "$VREG" \
   "s = s.replace('bool public restrictToWhitelistedRelayers = true;', 'bool public restrictToWhitelistedRelayers = false;')"
 
 # ---------------------------------------------------------------------------------------------
@@ -193,6 +195,20 @@ s = s.replace('''        if (!metadataOk || recordType == bytes32(0) || liveOwne
         }
         if (liveOwner == address(0)) liveOwner = expectedOwner;
         if (liveOwner != expectedOwner) revert UnexpectedServiceOwner();''')"
+
+# ---------------------------------------------------------------------------------------------
+# Assertion 7 (C-12) - the generation-1 freeze stops new issuance and breaks NO credential
+#
+# Break: make `isValid` consult the issuer registry, which is exactly the thing the plan asserts it
+# does NOT do. The freeze would then invalidate all 19 historical credentials - the outcome the
+# router exists to prevent - and it is why the assertion checks verification SURVIVING rather than
+# only issuance stopping.
+# ---------------------------------------------------------------------------------------------
+run_mutation \
+  "isValid made to consult the issuer registry, so the freeze invalidates history" \
+  "test_7_the_generation_1_freeze_stops_new_issuance_and_preserves_verification" \
+  "$ISSUER1" \
+  "s = s.replace('        return issuedAt[r] != 0 && revokedAt[r] == 0;', '        return issuedAt[r] != 0 && revokedAt[r] == 0 && registry.isWhitelistedFor(recordType, issuedBy[r]);')"
 
 printf '\n============================================================\n'
 printf 'mutations that correctly reddened their assertion: %d\n' "$PASSED"

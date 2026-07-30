@@ -31,8 +31,13 @@ test-consent-parity: ## consent prove<->VK parity - LOUD gate, fails if artifact
 vendor-mobile-artifacts: ## copy the consent zkey+graph from circuits/build into both app bundles
 	scripts/vendor-mobile-artifacts.sh
 
-contracts: ## compile Foundry contracts
+contracts: ## compile Foundry contracts (incl. the S-12 rehearsal suite - no network needed)
 	cd contracts && forge build
+	# The rehearsal suite is outside the default profile's source dirs, so nothing else compiles it.
+	# Compile-only: this needs NO endpoint and runs no fork test, but it means API drift in
+	# ProviderRegistry/DogTagIssuerFactoryV2/CloneProvenanceRouter breaks the build instead of
+	# surfacing at the moment someone actually needs the rehearsal.
+	cd contracts && FOUNDRY_PROFILE=rehearsal forge build
 
 test-contracts: ## Foundry tests
 	cd contracts && forge test -vvv
