@@ -37,6 +37,13 @@ contracts: ## compile Foundry contracts
 test-contracts: ## Foundry tests
 	cd contracts && forge test -vvv
 
+rehearse-cutover: ## S-12 registry cutover rehearsal on a ROAX FORK - deploys nothing live (NOT in `test`)
+	scripts/rehearse-cutover.sh
+	scripts/render-cutover-txlist.py
+
+rehearse-cutover-mutations: ## prove every cutover assertion can fail (NOT in `test`)
+	ROAX_FORK_RPC=$${ROAX_FORK_RPC:-https://devrpc.roax.net} scripts/rehearsal-mutations.sh
+
 deploy-contracts: ## deploy to ROAX (requires liveness precheck — see script/Deploy.s.sol)
 	cd contracts && forge script script/Deploy.s.sol --rpc-url $${ROAX_RPC:-https://devrpc.roax.net} --broadcast
 

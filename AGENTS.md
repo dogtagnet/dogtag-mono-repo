@@ -1311,6 +1311,70 @@ blocker recorded in `docs/ISSUER_V2_OWNERSHIP.md` §8, not something this slice 
 `providerRegistry` on the validated anchor is what gives those five consumers an attested address to
 migrate TO.
 
+## The cutover order is NOT the registry plan's order (S-12 rehearsal)
+
+`docs/CUTOVER_REHEARSAL.md` is the step-by-step approval record and `docs/CUTOVER_TRANSACTIONS.md` is the
+generated transaction list. Reproduce with `make rehearse-cutover`; prove the assertions can fail with
+`make rehearse-cutover-mutations`. **Nothing is deployed live by either.**
+
+**Do not follow `dogtag-regplan-p3` §2's C-3-before-C-4 ordering, and do not deploy the router over
+`[factoryV2, factoryV1]`.** Both are wrong against the contracts as merged, and they fail in opposite
+ways. The corrected on-chain order is core -> impl -> **router over `[factoryV1]` alone** -> factoryV2 ->
+**`appendGeneration(factoryV2)`** -> `addFactoryGeneration` -> registry V2 -> discovery V2.
+
+- `DogTagIssuerFactoryV2.priorIndex` is immutable, mandatory and behaviour-probed in the constructor, so
+  at C-3 time there is nothing to bind to: it reverts `ZeroAddress`, and a placeholder EOA reverts
+  `NotAContract` (a staticcall to an EOA SUCCEEDS with empty returndata - the silent shape the probe
+  rejects). The router genuinely cannot come second.
+- `CloneProvenanceRouter`'s constructor stores the array as given and `rootIssuer` iterates from index 0,
+  so `[factoryV2, factoryV1]` resolves NEWEST first - the revocation bypass S-8 exists to prevent, and it
+  fails silently.
+- **`appendGeneration` is a step the plan does not contain at all.** Until it runs,
+  `registerRoot` reverts `FactoryNotRegisteredInPriorIndex` and every clone the factory makes is inert.
+
+**C-2's "attach the existing clones" is not executable and never was.** `ProviderRegistry.attachService`
+reads `owner()` off the service and refuses a failed or zero answer; a generation-1 `DogTagIssuer` has no
+owner at all, so all five live clones revert `InvalidServiceMetadata`. That matches the plan's own §4
+item 9 (retire and re-issue), which §2 was never updated against. Generation-1 clones stay unattached and
+keep issuing through the generation-1 `IssuerRegistry`. Separately, `registerProvider` refuses a zero
+identity digest/schema/hashAlgorithm (`BadIdentityAnchor`), so a provider cannot be registered at all
+without the §4 item 6 identity statement - a second blocker invisible from the plan text.
+
+### Three traps in rehearsing a cutover on a fork
+
+- **Assert BEFORE you broadcast, and fork UPSTREAM for the assertions - never the anvil you broadcast
+  into.** The broadcast deploys the issuer implementation onto exactly the address a fork test's own
+  `new DogTagIssuerV2()` takes, so asserting against the mutated node asks whether the cutover works on a
+  chain where it already happened. It surfaces as `ImplementationCodeMismatch`, which reads like a
+  compiler or profile problem and is neither.
+- **`forge script --broadcast --unlocked` needs `--skip-simulation`, and that is not ignoring a failure.**
+  Observed on Foundry 1.5.1: forge runs the script twice. The simulation attributes every CREATE to
+  `--sender` (its addresses are exactly `governance@nonce`, confirmed with `cast compute-address`), but
+  the second on-chain re-execution produces DIFFERENT CREATE addresses and hands the factory the
+  simulation's implementation address, which holds no code there - so it reverts
+  `ImplementationCodeMismatch` while the transactions are perfectly valid. The attribution rule for that
+  second phase was not established; state it as the divergence that was measured rather than as a
+  mechanism. Skip the redundant re-execution and verify the RECEIPTS and resulting state instead - never
+  the "ONCHAIN EXECUTION COMPLETE & SUCCESSFUL" banner.
+- **`!verify-wl` fires BEFORE root resolution** (`VerificationRegistryConsent.sol:153` vs `:187`), so any
+  test asserting "a generation-2 credential does not verify on the generation-1 registry" must whitelist
+  the relayer there FIRST and assert the exact string `"unknown root"`. A bare `vm.expectRevert()` goes
+  green on the relayer gate while proving nothing about root resolution.
+
+The rehearsal lives in `contracts/rehearsal/` under a separate `[profile.rehearsal]` (`test = "rehearsal"`),
+so it is NOT in the hermetic `forge test` gate, which stays at 363 tests and needs no endpoint. It does
+not self-skip: `setUp` reads `ROAX_FORK_RPC` with no default, because a rehearsal reporting green in
+exactly the case it did not run is worthless. `scripts/derive-cutover-inventory.sh` re-derives the
+historical-root inventory from `RootRegistered` logs at a pinned block (19 roots at block 304000,
+re-derived rather than carried forward from the plan), and the fork test refuses to run if that fixture's
+pinned block disagrees with the fork's.
+
+`scripts/rehearsal-mutations.sh` is a REPEATABLE mutation gate rather than a one-off log: it applies one
+break at a time, requires the named test to redden, and reports a mutation that stayed green as its own
+failure. It caught an inert one-line mutation on its first run - `_readServiceMetadata` folds the failed
+`owner()` read into a single `metadataOk`, so relaxing only the downstream `liveOwner == address(0)` guard
+changed nothing observable. Check the scrutinee, not just the diff.
+
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
 `contracts/src/CloneProvenanceRouter.sol`. Full rationale: `docs/CLONE_PROVENANCE_ROUTER.md`.

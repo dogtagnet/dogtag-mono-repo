@@ -36,3 +36,7 @@ circuits/*.dev.sol
 
 # agent memory symlink (AGENTS.md is the committed standard)
 CLAUDE.md
+
+# S-12 cutover rehearsal: the PID of the anvil scripts/rehearse-cutover.sh started, so a
+# stranded fork can be killed BY PID rather than by name. Runtime state, never source.
+.anvil-rehearsal.pid
