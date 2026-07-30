@@ -29,7 +29,10 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_NSCameraUsageDescription: "DogTag scans verifier QR codes to sign verification consents."
         INFOPLIST_KEY_NSFaceIDUsageDescription: "DogTag uses Face ID to protect your embedded wallet and authorize consent signing."
-        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Your approximate location is sent to DogTag to find nearby vets and groomers. It is rounded on this phone first and is not stored."
+        # Must stay byte-identical to NearbyDecision.locationDisclosure. This is the sentence the owner
+        # reads at the moment they decide to hand over their location, so it may not claim a rounding
+        # or an approximation the app does not perform: the exact fix is sent (captain, 2026-07-30).
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Your location is sent to DogTag to find nearby vets and groomers. It is not stored."
         MARKETING_VERSION: "1.4.0"
         CURRENT_PROJECT_VERSION: "4"
         SWIFT_VERSION: "5.0"

@@ -119,6 +119,60 @@ class NearbyDecisionTest {
         }
     }
 
+    /**
+     * Mirrors iOS `test_aTransientPageFailureKeepsTheLoadedPagesButAnInvalidatingOneDoesNot`.
+     *
+     * The two arms must not collapse into each other. A network blip on page 5 loses the owner's place
+     * and nothing else, so throwing away four good pages would report a could-not-reach as an emptied
+     * list; a response proving the set moved really does make those pages untrustworthy.
+     */
+    @Test
+    fun aTransientPageFailureKeepsTheLoadedPagesButAnInvalidatingOneDoesNot() {
+        val current = found(listOf(provider("first")), linkedMapOf("first" to 1.0))
+            .copy(total = 2, limit = 1, hasMore = true)
+
+        val transient = appendDirectoryPage(
+            current,
+            ProviderDirectoryResult.Unavailable(
+                reason = DirectoryUnavailableReason.SourceUnavailable,
+                detail = "The provider directory could not be reached",
+                attemptedAt = 2_000,
+            ),
+        ) as ProviderDirectoryResult.Found
+        assertEquals(listOf("first"), transient.providers.map { it.providerId })
+        // `hasMore` survives, so the retry affordance the owner needs is still on screen.
+        assertTrue(transient.hasMore)
+        assertEquals("The provider directory could not be reached", transient.pageLoadFailure)
+
+        // A retried page that succeeds clears the marker; otherwise the screen would go on announcing
+        // a failure that is over.
+        val retried = appendDirectoryPage(
+            transient,
+            found(listOf(provider("second")), linkedMapOf("second" to 2.0))
+                .copy(total = 2, limit = 1, offset = 1, hasMore = false),
+        ) as ProviderDirectoryResult.Found
+        assertEquals(listOf("first", "second"), retried.providers.map { it.providerId })
+        assertNull(retried.pageLoadFailure)
+
+        for (invalidating in listOf(
+            DirectoryUnavailableReason.MalformedResponse,
+            DirectoryUnavailableReason.InvalidSnapshot,
+        )) {
+            val discarded = appendDirectoryPage(
+                current,
+                ProviderDirectoryResult.Unavailable(
+                    reason = invalidating,
+                    detail = "changed underneath",
+                    attemptedAt = 2_000,
+                ),
+            )
+            assertEquals(
+                invalidating,
+                (discarded as ProviderDirectoryResult.Unavailable).reason,
+            )
+        }
+    }
+
     @Test
     fun contactPaginationPreservesServerOrderWithoutInventingDistances() {
         val first = provider("first", geo = null)

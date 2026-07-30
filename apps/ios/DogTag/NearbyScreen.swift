@@ -263,10 +263,14 @@ struct NearbyScreen: View {
 
     private var privacyCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Approximate location only", systemImage: "hand.raised.fill")
+            Label("How your location is used", systemImage: "hand.raised.fill")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(c.onBackground)
-            Text("DogTag rounds your current location on this phone before sending it to rank nearby providers. The provider service does not store it.")
+            // The one pinned sentence, not a sibling literal. Commit 0f643ff put the copy in the pure
+            // layer so a test could hold it byte-for-byte, but this card kept its own wording and went
+            // on claiming the fix was rounded here long after that stopped being true. Reading the
+            // constant is what makes a future softening impossible without failing that test.
+            Text(NearbyDecision.locationDisclosure)
                 .font(.system(size: 13))
                 .foregroundColor(c.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -393,12 +397,12 @@ struct NearbyScreen: View {
     private var currentLocationCaption: some View {
         switch location.state {
         case .notRequested:
-            Text("When-in-use permission is requested only when you tap. The fix is rounded to three decimal places on this phone before it is sent.")
+            Text("When-in-use permission is requested only when you tap. Your location is used to rank nearby providers and for nothing else.")
                 .foregroundColor(c.muted)
         case .locating:
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Finding and rounding your current location…")
+                Text("Finding your current location…")
             }
             .foregroundColor(c.muted)
         case .ready(let fix):
@@ -517,7 +521,7 @@ struct NearbyScreen: View {
             NearbyMessageCard(
                 icon: "location.circle",
                 title: "Finding your location…",
-                message: "This phone will round the fix before the service receives it.",
+                message: "The provider service will use it only to rank nearby providers, and does not store it.",
                 tone: c.muted,
                 showsProgress: true
             )
@@ -763,30 +767,42 @@ struct NearbyScreen: View {
     private func loadMoreButton(for requestedScope: Scope) -> some View {
         let result = requestedScope == .nearby ? nearbyResult : contactResult
         let loading = requestedScope == .nearby ? isLoadingNearby : isLoadingContacts
+        let failure = loading ? nil : snapshot(result)?.pageLoadFailure
         if hasMore(result) {
-            Button {
-                Task {
-                    if requestedScope == .nearby {
-                        await loadNearest(reset: false)
-                    } else {
-                        await loadContacts(reset: false)
-                    }
+            VStack(alignment: .leading, spacing: 6) {
+                // The failed page is named beside its own retry. Keeping the loaded pages without
+                // saying why the next one is missing would leave "Load more" looking as if it did
+                // nothing.
+                if let failure {
+                    Text("The next page could not be loaded. \(failure). The providers already listed are unaffected.")
+                        .font(.system(size: 12))
+                        .foregroundColor(c.warning)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            } label: {
-                HStack(spacing: 8) {
-                    if loading {
-                        ProgressView()
+                Button {
+                    Task {
+                        if requestedScope == .nearby {
+                            await loadNearest(reset: false)
+                        } else {
+                            await loadContacts(reset: false)
+                        }
                     }
-                    Text("Load more")
-                        .font(.system(size: 14, weight: .semibold))
+                } label: {
+                    HStack(spacing: 8) {
+                        if loading {
+                            ProgressView()
+                        }
+                        Text(failure == nil ? "Load more" : "Try loading more again")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .foregroundColor(c.accent)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-                .foregroundColor(c.accent)
-                .background(RoundedRectangle(cornerRadius: 12).fill(c.surface))
+                .buttonStyle(.plain)
+                .disabled(loading)
             }
-            .buttonStyle(.plain)
-            .disabled(loading)
         }
     }
 
@@ -831,7 +847,12 @@ struct NearbyScreen: View {
 
     @MainActor
     private func loadNearest(reset: Bool) async {
-        guard !isLoadingNearby,
+        // A reset must never be dropped. The in-flight guard exists to stop a second load-MORE
+        // appending the same page twice; applying it to a reset silently discarded the owner's newest
+        // search while `nearbyName` had already moved, so the list rendered rows matched against a
+        // different needle than the one just submitted, with nothing left to re-trigger. Supersession
+        // is `requestID`'s job below, and the superseded call returns before touching the flag.
+        guard reset || !isLoadingNearby,
               case .ready(let origin) = location.state else {
             return
         }
@@ -877,7 +898,8 @@ struct NearbyScreen: View {
 
     @MainActor
     private func loadContacts(reset: Bool) async {
-        guard !isLoadingContacts else { return }
+        // Same rule as `loadNearest`: a reset supersedes, it is never dropped.
+        guard reset || !isLoadingContacts else { return }
         if reset, contactName == nil {
             let searched = query.trimmingCharacters(in: .whitespacesAndNewlines)
             contactName = searched.isEmpty ? nil : searched

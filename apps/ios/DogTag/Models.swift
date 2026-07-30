@@ -499,6 +499,6 @@ struct RoaxConfig {
 enum AppConfig {
     static let roaxRpc = "https://devrpc.roax.net"
     /// Central provider search. The owner app sends only vet/groomer filters, an optional provider
-    /// name, paging, and — after explicit disclosure — a three-decimal current-location approximation.
+    /// name, paging, and — after explicit disclosure — the device's current fix, exactly as reported.
     static let centralApi = "https://api.dogtag.io"
 }

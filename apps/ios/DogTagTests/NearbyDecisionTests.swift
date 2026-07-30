@@ -351,6 +351,86 @@ final class NearbyDecisionTests: XCTestCase {
         }
     }
 
+    /// Mirrors Android `aTransientPageFailureKeepsTheLoadedPagesButAnInvalidatingOneDoesNot`.
+    ///
+    /// The two arms must not collapse into each other. A network blip on page 5 loses the owner's
+    /// place and nothing else, so throwing away four good pages would report a could-not-reach as an
+    /// emptied list; a response proving the set moved really does make those pages untrustworthy.
+    func test_aTransientPageFailureKeepsTheLoadedPagesButAnInvalidatingOneDoesNot() {
+        let current = pageResult(
+            [provider(id: "first", name: "First", distanceKm: 1)],
+            total: 2,
+            limit: 1,
+            offset: 0,
+            hasMore: true
+        )
+        let transient = ProviderDirectoryPaging.merge(
+            current: current,
+            incoming: .unavailable(ProviderDirectoryUnavailable(
+                source: .central,
+                reason: .sourceUnavailable,
+                detail: "The provider directory could not be reached",
+                attemptedAt: now
+            )),
+            reset: false,
+            requiresDistance: true,
+            attemptedAt: now
+        )
+        guard case .found(let kept) = transient else {
+            return XCTFail("a transient page failure must not discard the loaded pages")
+        }
+        XCTAssertEqual(kept.providers.map(\.providerId), ["first"])
+        // `hasMore` survives, so the retry affordance the owner needs is still on screen.
+        XCTAssertEqual(kept.page?.hasMore, true)
+        XCTAssertEqual(kept.pageLoadFailure, "The provider directory could not be reached")
+
+        // A retried page that succeeds clears the marker; otherwise the screen would go on announcing
+        // a failure that is over.
+        let retried = ProviderDirectoryPaging.merge(
+            current: transient,
+            incoming: pageResult(
+                [provider(id: "second", name: "Second", distanceKm: 2)],
+                total: 2,
+                limit: 1,
+                offset: 1,
+                hasMore: false
+            ),
+            reset: false,
+            requiresDistance: true,
+            attemptedAt: now
+        )
+        guard case .found(let complete) = retried else {
+            return XCTFail("expected the retried page to merge")
+        }
+        XCTAssertEqual(complete.providers.map(\.providerId), ["first", "second"])
+        XCTAssertNil(complete.pageLoadFailure)
+
+        for invalidating in [
+            ProviderDirectoryUnavailableReason.malformedResponse,
+            .inconsistentSource,
+            .invalidSnapshot,
+            .providerRegistryUnavailable,
+        ] {
+            let discarded = ProviderDirectoryPaging.merge(
+                current: current,
+                incoming: .unavailable(ProviderDirectoryUnavailable(
+                    source: .central,
+                    reason: invalidating,
+                    detail: "changed underneath",
+                    attemptedAt: now
+                )),
+                reset: false,
+                requiresDistance: true,
+                attemptedAt: now
+            )
+            guard case .unavailable(let failure) = discarded else {
+                XCTFail("expected \(invalidating) to discard the accumulated pages")
+                continue
+            }
+            XCTAssertEqual(failure.reason, invalidating)
+        }
+    }
+
     func test_contactParserPreservesNullLocationContactsAndNoDistance() throws {
         let parsed = try XCTUnwrap(CentralProviderDirectory.parsePage([
             "businesses": [

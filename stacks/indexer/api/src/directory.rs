@@ -59,10 +59,20 @@ pub(crate) struct BusinessRow {
     pub(crate) geo: Option<BusinessGeo>,
     #[serde(default)]
     pub(crate) contact: BusinessContact,
+    // A missing one of the four below defaults rather than failing the whole response, and they must
+    // still SERIALIZE (`[]`/`""`) because clients require the keys. Decoding is all-or-nothing for the
+    // fields a consumer actually reads - identity, kind, location, contacts - but this same response
+    // also feeds the pre-existing signer->business naming join, and these four are read by neither the
+    // join nor the directory routes. Requiring them would let an admin build that stopped emitting one
+    // silently stop refreshing event naming across every oversight portal.
+    #[serde(default)]
     pub(crate) services: Vec<String>,
+    #[serde(default)]
     pub(crate) api_base_url: String,
     pub(crate) domain: String,
+    #[serde(default)]
     pub(crate) document_stores: Vec<String>,
+    #[serde(default)]
     pub(crate) hmac_key_id: String,
 }
 

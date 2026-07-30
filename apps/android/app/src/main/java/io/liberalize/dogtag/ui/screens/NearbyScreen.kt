@@ -172,8 +172,8 @@ fun NearbyScreen(onBack: () -> Unit) {
                         NearbyOriginState.Available(
                             point,
                             // The fix's own horizontal uncertainty, carried so no row can render a
-                            // distance finer than either this grant or the request's ~100 m
-                            // coordinate rounding supports. Absent is not zero.
+                            // distance finer than this grant supports. It is the only such bound now:
+                            // the request sends the exact fix. Absent is not zero.
                             accuracyMetres = location.takeIf { it.hasAccuracy() }
                                 ?.accuracy
                                 ?.toDouble(),
@@ -203,8 +203,9 @@ fun NearbyScreen(onBack: () -> Unit) {
         }
     }
 
-    // Coarse only, deliberately. The service needs only enough precision to rank providers, and the
-    // request is independently rounded to three decimals before networking.
+    // Coarse only, deliberately: the service needs no more precision than this to rank providers, and
+    // the one feature whose own copy promises privacy must not ask for precise GPS. Whatever this
+    // grant yields is what the request sends, unmodified - see NearbyDecision.LOCATION_DISCLOSURE.
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -358,6 +359,8 @@ fun NearbyScreen(onBack: () -> Unit) {
             NearbyResults(
                 presentation = nearbyPresentation,
                 hasMore = (directoryResult as? ProviderDirectoryResult.Found)?.hasMore == true,
+                pageLoadFailure =
+                    (directoryResult as? ProviderDirectoryResult.Found)?.pageLoadFailure,
                 loadingMore = loadingMore,
                 onLoadMore = ::loadMore,
                 onOpen = { uri, dial ->
@@ -373,6 +376,8 @@ fun NearbyScreen(onBack: () -> Unit) {
             ContactResults(
                 presentation = contactPresentation,
                 hasMore = (directoryResult as? ProviderDirectoryResult.Found)?.hasMore == true,
+                pageLoadFailure =
+                    (directoryResult as? ProviderDirectoryResult.Found)?.pageLoadFailure,
                 loadingMore = loadingMore,
                 onLoadMore = ::loadMore,
                 onOpen = { uri, dial ->
@@ -471,6 +476,7 @@ private fun OriginPicker(
 private fun NearbyResults(
     presentation: NearbyPresentation,
     hasMore: Boolean,
+    pageLoadFailure: String?,
     loadingMore: Boolean,
     onLoadMore: () -> Unit,
     onOpen: (Uri, Boolean) -> Unit,
@@ -563,7 +569,11 @@ private fun NearbyResults(
                 }
                 if (hasMore) {
                     item {
-                        PageButton(loading = loadingMore, onLoadMore = onLoadMore)
+                        PageButton(
+                            loading = loadingMore,
+                            pageLoadFailure = pageLoadFailure,
+                            onLoadMore = onLoadMore,
+                        )
                     }
                 }
                 item { Spacer(Modifier.height(16.dp)) }
@@ -576,6 +586,7 @@ private fun NearbyResults(
 private fun ContactResults(
     presentation: ContactDirectoryPresentation,
     hasMore: Boolean,
+    pageLoadFailure: String?,
     loadingMore: Boolean,
     onLoadMore: () -> Unit,
     onOpen: (Uri, Boolean) -> Unit,
@@ -627,7 +638,11 @@ private fun ContactResults(
                 }
                 if (hasMore) {
                     item {
-                        PageButton(loading = loadingMore, onLoadMore = onLoadMore)
+                        PageButton(
+                            loading = loadingMore,
+                            pageLoadFailure = pageLoadFailure,
+                            onLoadMore = onLoadMore,
+                        )
                     }
                 }
                 item { Spacer(Modifier.height(16.dp)) }
@@ -835,21 +850,42 @@ private fun ContactAction(
 }
 
 @Composable
-private fun PageButton(loading: Boolean, onLoadMore: () -> Unit) {
-    Button(
-        onClick = onLoadMore,
-        enabled = !loading,
-        modifier = Modifier.fillMaxWidth(),
+private fun PageButton(loading: Boolean, pageLoadFailure: String?, onLoadMore: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (loading) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(16.dp),
-                color = DogTagTheme.colors.onAccent,
-                strokeWidth = 2.dp,
+        // The failed page is named beside its own retry. Keeping the loaded pages without saying why
+        // the next one is missing would leave "Load more" looking as though it did nothing.
+        if (pageLoadFailure != null && !loading) {
+            Text(
+                "The next page could not be loaded. $pageLoadFailure. " +
+                    "The providers already listed are unaffected.",
+                fontSize = 12.sp,
+                color = DogTagTheme.colors.warning,
             )
-            Spacer(Modifier.size(8.dp))
         }
-        Text(if (loading) "Loading more…" else "Load more")
+        Button(
+            onClick = onLoadMore,
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = DogTagTheme.colors.onAccent,
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.size(8.dp))
+            }
+            Text(
+                when {
+                    loading -> "Loading more…"
+                    pageLoadFailure != null -> "Try loading more again"
+                    else -> "Load more"
+                }
+            )
+        }
     }
 }
 

@@ -1073,8 +1073,8 @@ enum DnsVerify {
 
 /// Native adapter for the shared ProviderDirectory contract.
 ///
-/// Nearest is an explicit POST whose JSON body contains only the three-decimal current-location
-/// approximation created on the device. Name/contact search is a GET with no position. Neither path
+/// Nearest is an explicit POST whose JSON body contains only the device's current fix, sent exactly as
+/// reported (captain's ruling, 2026-07-30). Name/contact search is a GET with no position. Neither path
 /// has a chosen-place, radius, map, autocomplete, or geocoder parameter, and position-keyed results are
 /// never cached or persisted by this adapter.
 struct CentralProviderDirectory: ProviderDirectoryReading {

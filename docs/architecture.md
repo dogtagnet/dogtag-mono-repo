@@ -724,7 +724,7 @@ The user owns the appointment in the mobile app (central backend); the business 
 ### 8.4 Discovery → booking flow
 
 ```
-owner Nearby: round current fix to 3 decimals ON DEVICE after disclosure
+owner Nearby: send the current fix EXACTLY, after disclosure at the grant action
 mobile → indexer: POST /v1/businesses/nearest?kind=vet&kind=groomer&limit=25&offset=0
                   body {"lat":1.3521098,"lng":103.8203214}
 owner name search → indexer: GET /v1/businesses?name=…&kind=vet&kind=groomer&limit=25&offset=0
@@ -741,9 +741,10 @@ business: store replica, notify staff
 
 **Current-position Nearby is now server-ranked and paged.** The captain explicitly reversed the
 full-fetch/local-scan choice because a directory in the hundreds of thousands would transfer megabytes
-and make the phone iterate every provider. The privacy debt is paid at the client and transport seam:
-the phone rounds first, discloses the transfer before permission, and sends the approximation in a POST
-body that this service neither logs nor stores.
+and make the phone iterate every provider.
+The privacy debt is paid at the transport seam rather than by imprecision: the phone discloses the
+transfer before permission and sends the exact fix in a POST body that this service neither logs nor
+stores.
 
 - The indexer's `GET /v1/businesses` is on the **public, unauthenticated** router. Bare GET returns the
   first configured page across every published provider kind, not the whole set. `name`, repeatable

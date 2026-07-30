@@ -11,12 +11,19 @@ appId: io.liberalize.dogtag
     clearState: true
 - tapOn: "Nearby"
 - extendedWaitUntil:
-    visible: "Approximate location only"
+    visible: "How your location is used"
     timeout: 20000
 
 # The disclosure is visible at the action that triggers the OS grant, before it can be tapped.
 - assertVisible:
     text: "Your location is sent to DogTag to find nearby vets and groomers. It is not stored."
+
+# No surface may claim an approximation or an on-device rounding the app does not perform.
+- assertNotVisible: "Approximate location only"
+- assertNotVisible:
+    text: ".*rounded on this phone.*"
+- assertNotVisible:
+    text: ".*three decimal places.*"
 - assertVisible: "Use my current location"
 - assertNotVisible: "Chosen location"
 - assertNotVisible: "Latitude"

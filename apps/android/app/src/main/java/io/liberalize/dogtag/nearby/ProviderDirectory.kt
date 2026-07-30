@@ -3,6 +3,7 @@ package io.liberalize.dogtag.nearby
 import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.net.Http
 import io.liberalize.dogtag.net.IssuerBindingState
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -141,6 +142,12 @@ class CentralProviderDirectory(
             } else {
                 decode(response.body, attemptedAt, requireDistance)
             }
+        } catch (cancelled: CancellationException) {
+            // A CancellationException is a RuntimeException on the JVM, so the bare catch below would
+            // swallow it. `fetch` suspends onto Dispatchers.IO, so a caller that navigated away really
+            // does throw here, and reporting that as "the directory could not be reached" would be a
+            // fabricated claim about the network attached to a request nobody is waiting for.
+            throw cancelled
         } catch (error: Exception) {
             ProviderDirectoryResult.Unavailable(
                 reason = DirectoryUnavailableReason.SourceUnavailable,

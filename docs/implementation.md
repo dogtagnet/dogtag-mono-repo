@@ -1200,8 +1200,8 @@ GET  indexer /v1/businesses?name=&kind=&kind=&limit=&offset=
 POST indexer /v1/businesses/nearest?name=&kind=&kind=&limit=&offset=
     body {"lat":1.3521098,"lng":103.8203214}
     -> nearest-first located page; every row includes server-computed distanceKm
-    // approximate position is rounded to 3 decimals ON DEVICE, body-only, no-store, and is neither
-    // logged nor persisted by indexer-api. There is no radius/map/place/autocomplete/geocoder query.
+    // the position is sent EXACTLY, body-only, no-store, and is neither logged nor persisted by
+    // indexer-api. There is no radius/map/place/autocomplete/geocoder query.
 ```
 
 ### 4.3 Issuer whitelisting (admin)

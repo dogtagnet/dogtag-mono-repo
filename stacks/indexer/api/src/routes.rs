@@ -40,13 +40,16 @@ type ApiError = (StatusCode, Json<Value>);
 const MAX_DIRECTORY_NAME_FILTER_CHARS: usize = 200;
 const MAX_DIRECTORY_KIND_FILTERS: usize = 16;
 const MAX_DIRECTORY_KIND_FILTER_CHARS: usize = 64;
-const MAX_CONCURRENT_NEAREST_RANKINGS: usize = 2;
+const MAX_CONCURRENT_DIRECTORY_SCANS: usize = 2;
 
-// Ranking a hundred-thousand-row snapshot is CPU work, not async I/O. A fixed permit keeps public
-// nearest requests from filling Tokio's blocking pool or starving the indexer's health/query paths.
-// Waiting for a permit is asynchronous; a durable spatial index can replace the scan without changing
-// this route contract.
-static NEAREST_RANKING_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_NEAREST_RANKINGS);
+// Scanning a hundred-thousand-row snapshot is CPU work, not async I/O, on BOTH public directory
+// routes: a `name` filter folds every row through NFD normalization whether or not a distance is also
+// computed, and the loop must visit every match anyway to count `total`, so the page size bounds
+// neither. One fixed permit is therefore the honest ceiling on total directory-scan CPU, and keeps
+// these unauthenticated routes from filling Tokio's blocking pool or starving the indexer's
+// health/query paths. Waiting for a permit is asynchronous; a durable spatial index can replace the
+// scan without changing either route contract.
+static DIRECTORY_SCAN_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_DIRECTORY_SCANS);
 
 fn err(code: StatusCode, msg: &str) -> ApiError {
     (code, Json(json!({ "error": msg })))
@@ -269,10 +272,67 @@ fn render_business(business: &crate::directory::BusinessRow, distance_km: Option
     value
 }
 
-struct NearestPage {
+struct DirectoryPage {
     businesses: Vec<Value>,
     total: usize,
     has_more: bool,
+}
+
+/// Run one directory scan on a blocking thread, under a scan permit held for its whole duration.
+///
+/// Both public directory routes go through here. Keeping the permit inside the blocking closure means
+/// dropping or cancelling the HTTP future cannot release it while its detached work is still running.
+async fn scan_directory<F>(scan: F) -> Result<DirectoryPage, ApiError>
+where
+    F: FnOnce() -> DirectoryPage + Send + 'static,
+{
+    let permit = DIRECTORY_SCAN_PERMITS.acquire().await.map_err(|_| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider directory search is unavailable",
+        )
+    })?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        scan()
+    })
+    .await
+    .map_err(|_| {
+        tracing::error!("provider directory scan worker failed");
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider directory search could not complete",
+        )
+    })
+}
+
+/// CPU-only source-order selection over one immutable directory snapshot.
+///
+/// Every matching row is visited so `total` is exact; only the requested window is serialized.
+fn source_order_page(
+    businesses: &[crate::directory::BusinessRow],
+    name: Option<&str>,
+    kinds: &HashSet<String>,
+    limit: usize,
+    offset: usize,
+) -> DirectoryPage {
+    let mut total = 0usize;
+    let mut page = Vec::with_capacity(limit);
+    for business in businesses
+        .iter()
+        .filter(|business| matches_directory_filters(business, name, kinds))
+    {
+        if total >= offset && page.len() < limit {
+            page.push(render_business(business, None));
+        }
+        total = total.saturating_add(1);
+    }
+    let has_more = offset.saturating_add(page.len()) < total;
+    DirectoryPage {
+        businesses: page,
+        total,
+        has_more,
+    }
 }
 
 /// CPU-only nearest selection over one immutable directory snapshot.
@@ -288,7 +348,7 @@ fn rank_nearest_page(
     position: CallerPosition,
     limit: usize,
     offset: usize,
-) -> NearestPage {
+) -> DirectoryPage {
     let mut ranked: Vec<(f64, usize)> = businesses
         .iter()
         .enumerate()
@@ -328,7 +388,7 @@ fn rank_nearest_page(
             render_business(&businesses[*source_index], Some(*distance_km))
         })
         .collect();
-    NearestPage {
+    DirectoryPage {
         businesses: page,
         total,
         has_more: end < total,
@@ -346,12 +406,13 @@ fn rank_nearest_page(
 ///
 /// ## Nearest is a separate, body-only disclosure
 ///
-/// Caller position is accepted only by `POST /v1/businesses/nearest`, in a JSON body, after the device
-/// rounded it to at most three decimal places (about 100 metres). It is never a URL/query parameter,
-/// because conventional access logs record URLs. The indexer has no request/trace/metrics middleware
-/// and this handler must never log, persist, label, or echo the position. The nearest response is
-/// `Cache-Control: private, no-store`, ordered by server-computed `distanceKm`, and paged so a
-/// hundred-thousand-row directory never crosses the device or gets scanned there.
+/// Caller position is accepted only by `POST /v1/businesses/nearest`, in a JSON body, at whatever
+/// precision the device reported - the captain ruled on 2026-07-30 that the exact fix is sent and is
+/// not rounded, so nothing here may describe it as an approximation. It is never a URL/query
+/// parameter, because conventional access logs record URLs. The indexer has no request/trace/metrics
+/// middleware and this handler must never log, persist, label, or echo the position. The nearest
+/// response is `Cache-Control: private, no-store`, ordered by server-computed `distanceKm`, and paged
+/// so a hundred-thousand-row directory never crosses the device or gets scanned there.
 ///
 /// There is deliberately no radius, map viewport, bounding box, geohash, place text, autocomplete, or
 /// third-party geocoding parameter on either route. Unknown fields are rejected, not ignored.
@@ -369,25 +430,17 @@ async fn businesses(
         )
     })?;
 
-    let mut total = 0usize;
-    let mut page = Vec::with_capacity(limit);
-    for business in businesses
-        .iter()
-        .filter(|business| matches_directory_filters(business, name.as_deref(), &kinds))
-    {
-        if total >= offset && page.len() < limit {
-            page.push(render_business(business, None));
-        }
-        total = total.saturating_add(1);
-    }
-    let has_more = offset.saturating_add(page.len()) < total;
+    let page = scan_directory(move || {
+        source_order_page(businesses.as_ref(), name.as_deref(), &kinds, limit, offset)
+    })
+    .await?;
 
     Ok(Json(json!({
-        "businesses": page,
-        "total": total,
+        "businesses": page.businesses,
+        "total": page.total,
         "limit": limit,
         "offset": offset,
-        "hasMore": has_more,
+        "hasMore": page.has_more,
     })))
 }
 
@@ -416,17 +469,7 @@ async fn nearest_businesses(
         )
     })?;
 
-    let permit = NEAREST_RANKING_PERMITS.acquire().await.map_err(|_| {
-        err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "nearest provider search is unavailable",
-        )
-    })?;
-    let nearest = tokio::task::spawn_blocking(move || {
-        // Keep the permit inside the blocking closure so it covers the whole CPU-heavy scan,
-        // selection, and page serialization. Dropping or cancelling the HTTP future cannot release it
-        // while its detached blocking work is still running.
-        let _permit = permit;
+    let nearest = scan_directory(move || {
         rank_nearest_page(
             businesses.as_ref(),
             name.as_deref(),
@@ -436,14 +479,7 @@ async fn nearest_businesses(
             offset,
         )
     })
-    .await
-    .map_err(|_| {
-        tracing::error!("nearest provider ranking worker failed");
-        err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "nearest provider search could not complete",
-        )
-    })?;
+    .await?;
     let mut headers = HeaderMap::new();
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     Ok((

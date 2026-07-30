@@ -105,6 +105,16 @@ struct ProviderDirectorySnapshot: Equatable {
     let readAt: Date
     let expiresAt: Date?
     let page: ProviderDirectoryPage?
+    /// Why the LAST load-more attempt did not answer, when the pages already loaded remain valid.
+    ///
+    /// Only a transient source failure lands here: "the network dropped on page 5" is a lost place in
+    /// the list, not evidence that the earlier pages moved, so discarding them would report a
+    /// could-not-reach as an emptied result. A response proving the underlying set changed still
+    /// invalidates the whole accumulation and arrives as `.unavailable`.
+    ///
+    /// Cleared by the next successful append, so a retried-and-succeeded page never keeps announcing a
+    /// failure that is over. It is a transient UI marker and is never persisted.
+    let pageLoadFailure: String?
 
     init(
         source: ProviderDirectorySource,
@@ -113,7 +123,8 @@ struct ProviderDirectorySnapshot: Equatable {
         blockNumber: UInt64?,
         readAt: Date,
         expiresAt: Date?,
-        page: ProviderDirectoryPage? = nil
+        page: ProviderDirectoryPage? = nil,
+        pageLoadFailure: String? = nil
     ) {
         self.source = source
         self.providers = providers
@@ -122,6 +133,7 @@ struct ProviderDirectorySnapshot: Equatable {
         self.readAt = readAt
         self.expiresAt = expiresAt
         self.page = page
+        self.pageLoadFailure = pageLoadFailure
     }
 }
 
@@ -160,6 +172,13 @@ enum ProviderDirectoryResult: Equatable {
 /// The next page must describe the same result set and begin exactly after the rows already loaded.
 /// Without all three checks, a changing or malformed server response could silently skip, repeat, or
 /// splice providers while the UI still labels the result as one coherent list.
+///
+/// A failure that did not answer at all is told apart from one that proves the result set moved.
+/// `.sourceUnavailable` is the transient case: the loaded pages are still the pages the service sent,
+/// so they are kept, `hasMore` is left alone so the retry affordance survives, and the reason is
+/// carried as `ProviderDirectorySnapshot.pageLoadFailure`. Every other reason says the response itself
+/// cannot be trusted to continue this list, so the accumulation is discarded. Collapsing the two would
+/// be the same could-not-tell-them-apart defect this layer exists to prevent.
 enum ProviderDirectoryPaging {
     static func merge(
         current: ProviderDirectoryResult?,
@@ -169,7 +188,12 @@ enum ProviderDirectoryPaging {
         attemptedAt: Date
     ) -> ProviderDirectoryResult {
         guard !reset, let existing = successfulSnapshot(current) else { return incoming }
-        guard let next = successfulSnapshot(incoming) else { return incoming }
+        guard let next = successfulSnapshot(incoming) else {
+            if case .unavailable(let failure) = incoming, failure.reason == .sourceUnavailable {
+                return marking(existing, pageLoadFailure: failure.detail)
+            }
+            return incoming
+        }
         guard let existingPage = existing.page, let nextPage = next.page else {
             return malformed(
                 source: next.source,
@@ -243,9 +267,29 @@ enum ProviderDirectoryPaging {
                 limit: nextPage.limit,
                 offset: 0,
                 hasMore: nextPage.hasMore
-            )
+            ),
+            pageLoadFailure: nil
         )
         return providers.isEmpty ? .empty(merged) : .found(merged)
+    }
+
+    /// Re-wrap the already-loaded pages with the reason the next page did not arrive, changing nothing
+    /// else — the rows, the order and `hasMore` are all still what the service last said.
+    private static func marking(
+        _ snapshot: ProviderDirectorySnapshot,
+        pageLoadFailure: String
+    ) -> ProviderDirectoryResult {
+        let marked = ProviderDirectorySnapshot(
+            source: snapshot.source,
+            providers: snapshot.providers,
+            observation: snapshot.observation,
+            blockNumber: snapshot.blockNumber,
+            readAt: snapshot.readAt,
+            expiresAt: snapshot.expiresAt,
+            page: snapshot.page,
+            pageLoadFailure: pageLoadFailure
+        )
+        return marked.providers.isEmpty ? .empty(marked) : .found(marked)
     }
 
     private static func successfulSnapshot(
@@ -933,11 +977,11 @@ enum NearbyDecision {
 
     /// What this origin's precision permits the row to say about one measured distance.
     ///
-    /// A device fix is rounded to a step no finer than its effective horizontal accuracy. Nearby
-    /// supplies the coarser of the device-reported accuracy and the network coordinate's roughly
-    /// hundred-metre granularity. A fix whose accuracy is missing, nonsensical, or coarser than any
-    /// usable step yields no number at all. The non-device branch remains for generic formatting
-    /// tests and non-location callers; Nearby always uses the device branch.
+    /// A device fix is rounded to a step no finer than the device-reported horizontal accuracy, which
+    /// is now the only such bound: the request sends the exact fix and so contributes no coarseness of
+    /// its own. A fix whose accuracy is missing, nonsensical, or coarser than any usable step yields no
+    /// number at all. The non-device branch remains for generic formatting tests and non-location
+    /// callers; Nearby always uses the device branch.
     ///
     /// Anything nearer than the coarser of the accuracy and half that rounding step is stated as a
     /// BOUND. Half the step is the load-bearing half of that pair: below it the rounding collapses to

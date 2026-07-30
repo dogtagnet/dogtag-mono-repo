@@ -73,6 +73,18 @@ sealed interface ProviderDirectoryResult {
         val limit: Int = providers.size.coerceAtLeast(1),
         val offset: Int = 0,
         val hasMore: Boolean = false,
+        /**
+         * Why the LAST load-more attempt did not answer, when the pages already loaded remain valid.
+         *
+         * Only a transient source failure lands here: "the network dropped on page 5" is a lost place
+         * in the list, not evidence that the earlier pages moved, so discarding them would report a
+         * could-not-reach as an emptied result. A response proving the underlying set changed still
+         * invalidates the whole accumulation and arrives as [Unavailable].
+         *
+         * It is cleared by the next successful append, so a retried-and-succeeded page never keeps
+         * announcing a failure that is over. It is a transient UI marker and is never persisted.
+         */
+        val pageLoadFailure: String? = null,
     ) : ProviderDirectoryResult
 
     data class Empty(
@@ -196,17 +208,29 @@ sealed interface ContactDirectoryPresentation {
  * Metadata must continue exactly. Nearest pages are identified by a complete distance map; their
  * boundary must also be nondecreasing so pagination cannot turn a malformed response into a list
  * that only appears nearest-first. Contact pages carry no distances and preserve source order.
+ *
+ * A failure that did not answer at all is told apart from one that proves the result set moved.
+ * [DirectoryUnavailableReason.SourceUnavailable] is the transient case: the loaded pages are still the
+ * pages the service sent, so they are kept, `hasMore` is left alone so the retry affordance survives,
+ * and the reason is carried as [ProviderDirectoryResult.Found.pageLoadFailure]. Every other reason
+ * says the response itself cannot be trusted to continue this list, so the accumulation is discarded.
+ * Collapsing the two would be the same could-not-tell-them-apart defect this layer exists to prevent.
  */
 internal fun appendDirectoryPage(
     current: ProviderDirectoryResult.Found,
     next: ProviderDirectoryResult,
 ): ProviderDirectoryResult = when (next) {
-    is ProviderDirectoryResult.Unavailable -> next
+    is ProviderDirectoryResult.Unavailable ->
+        if (next.reason == DirectoryUnavailableReason.SourceUnavailable) {
+            current.copy(pageLoadFailure = next.detail)
+        } else {
+            next
+        }
     is ProviderDirectoryResult.Empty -> {
         if (!pageContinues(current, next.offset, next.limit, next.total)) {
             invalidContinuation(next.readAt)
         } else {
-            current.copy(hasMore = false, expiresAt = next.expiresAt)
+            current.copy(hasMore = false, expiresAt = next.expiresAt, pageLoadFailure = null)
         }
     }
     is ProviderDirectoryResult.Found -> {
@@ -235,6 +259,7 @@ internal fun appendDirectoryPage(
                         distancesKm = distances,
                         hasMore = next.hasMore,
                         expiresAt = next.expiresAt,
+                        pageLoadFailure = null,
                     )
                 }
             }
@@ -544,9 +569,10 @@ object NearbyDecision {
     /**
      * What this origin's precision permits the row to say about one measured distance.
      *
-     * A current-position result is rounded to a step no finer than the larger of the device-reported
-     * horizontal accuracy and the network coordinate's roughly 100-metre granularity. A fix whose
-     * accuracy is missing, nonsensical, or coarser than any usable step yields no number at all.
+     * A current-position result is rounded to a step no finer than the device-reported horizontal
+     * accuracy, which is now the only bound: the request sends the exact fix and so contributes no
+     * coarseness of its own. A fix whose accuracy is missing, nonsensical, or coarser than any usable
+     * step yields no number at all.
      *
      * Anything nearer than the coarser of the accuracy and half that rounding step is stated as a
      * BOUND. Half the step is the load-bearing half of that pair: below it the rounding collapses to
