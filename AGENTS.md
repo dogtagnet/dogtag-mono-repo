@@ -108,8 +108,10 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
   issuance, and the registrar-only provider-binding correction; `IssuerV2.t.sol` covers the
   built-but-undeployed generation-2 issuer pair (see "The generation-2 issuer pair is BUILT, NOT
-  DEPLOYED"); and `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the REAL provider core,
-  pinning that the four functions the pair asks of it are the core's own on both axes a signature has.
+  DEPLOYED"); and `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the generation-2 pair's
+  locally-declared oracle interface to the REAL provider core (`ProviderRegistry.t.sol` binds that core
+  too, for its own behaviour), pinning that the four functions the pair asks of it are the core's own on
+  both axes a signature has.
   Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
@@ -1148,12 +1150,14 @@ vet-api `verify_credential`, `crates/dogtag-standard-rs/src/verify.rs`, and the 
 and C-12's delisting freeze makes the generation-1 answer worse, not transitional. Still ONE owner-hidden
 pillar; none of those files is touched by this branch. Full statement: `docs/ISSUER_V2_OWNERSHIP.md` §8.
 
-The doc's §9 table is true historical evidence from a one-off temporary mutation harness: thirty-three
-source mutations were actually applied/run/reverted and mapped to named red tests, while two no-behaviour
-changes were deliberately excluded. The harness was NOT committed, so the checked-in tree makes the
-source/test mappings reviewable but does not itself reproduce those mutations as a repeatable gate. The
-suite's authority is a stand-in (`MockProviderAuthority`), so its three rungs are DERIVED from one set of
-registrar facts and never independently settable; keep it that way or the coverage becomes self-agreement.
+The doc's §9 "Historical mutation evidence" table (the thirty-three-row one, NOT the separate five-row
+table under §9's `IssuerV2ProviderAuthorityInterfaceTest` subsection) is true historical evidence from a
+one-off temporary mutation harness: thirty-three source mutations were actually applied/run/reverted and
+mapped to named red tests, while two no-behaviour changes were deliberately excluded. The harness was NOT
+committed, so the checked-in tree makes the source/test mappings reviewable but does not itself reproduce
+those mutations as a repeatable gate. `IssuerV2.t.sol`'s authority is a stand-in
+(`MockProviderAuthority`), so its three rungs are DERIVED from one set of registrar facts and never
+independently settable; keep it that way or the coverage becomes self-agreement.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
