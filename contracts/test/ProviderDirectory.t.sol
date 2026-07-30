@@ -304,6 +304,26 @@ contract ProviderDirectoryTest is Test {
         assertEq(reason, abi.encodeWithSelector(ProviderDirectory.UnknownProvenance.selector, uint8(3)));
     }
 
+    /// The public decoders are the documented consumer surface, and a consumer may reach them with a
+    /// word this contract never produced — one read back from an untrusted mirror. Such a word must be
+    /// refused by name, not by the enum cast's opaque panic, which says nothing about which field of
+    /// the word was wrong.
+    function test_a_decoder_refuses_a_word_no_page_could_have_produced_by_name() public view {
+        // Only the flags byte matters here: provenance bits 1-2 set to 3, which is not a value.
+        (bool ok, bytes memory reason) = address(directory).staticcall(
+            abi.encodeCall(ProviderDirectory.pinProvenance, (bytes32(uint256(0x06))))
+        );
+        assertFalse(ok, "provenance 3 decoded as a value");
+        assertEq(reason, abi.encodeWithSelector(ProviderDirectory.UnknownProvenance.selector, uint8(3)));
+
+        // Standing sits at byte [30] of word 0; 5 is one past RETIRED, the core's last member.
+        (ok, reason) = address(directory).staticcall(
+            abi.encodeCall(ProviderDirectory.unpackListing, (bytes32(uint256(5) << 8), bytes32(0)))
+        );
+        assertFalse(ok, "a standing the core does not define decoded as a value");
+        assertEq(reason, abi.encodeWithSelector(ProviderDirectory.UnknownStanding.selector, uint8(5)));
+    }
+
     /// Kind is an opaque caller-selected code with no on-chain allowlist, mirroring the directory
     /// service's stated kind policy. Zero means NOT STATED and is never inferred into a real kind.
     function test_kind_is_opaque_and_zero_means_not_stated() public {

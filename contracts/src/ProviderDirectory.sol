@@ -155,10 +155,10 @@ contract ProviderDirectory {
         uint32 schema;
         uint16 codec;
         uint8 hashAlgorithm;
-        bytes contenthash;
         uint64 revision;
         uint64 updatedAtBlock;
         address setBy;
+        bytes contenthash;
     }
 
     ProviderRegistry public immutable core;
@@ -235,6 +235,7 @@ contract ProviderDirectory {
     error LongitudeOutOfRange(int32 lng);
     error ReservedFlagBitsSet(uint8 flags);
     error UnknownProvenance(uint8 provenance);
+    error UnknownStanding(uint8 standing);
     error LocationNumbersExhausted();
     error UnexpectedCoordinates(int32 lat, int32 lng);
     error BadProfileAnchor();
@@ -659,7 +660,9 @@ contract ProviderDirectory {
         providerId = bytes20(uint160((raw >> 96) & MASK_160));
         anchorRevision = uint64((raw >> 32) & MASK_64);
         pinCount_ = uint16((raw >> 16) & MASK_16);
-        standing = ProviderRegistry.Standing(uint8((raw >> 8) & MASK_8));
+        uint8 standingByte = uint8((raw >> 8) & MASK_8);
+        if (standingByte > uint8(type(ProviderRegistry.Standing).max)) revert UnknownStanding(standingByte);
+        standing = ProviderRegistry.Standing(standingByte);
         uint8 flags = uint8(raw & MASK_8);
         anchorPresent = flags & LISTING_FLAG_PROFILE_ANCHOR != 0;
         resolverSelected = flags & LISTING_FLAG_RESOLVER_SELECTED != 0;
@@ -690,8 +693,12 @@ contract ProviderDirectory {
         if (p.directoryResolver != address(this)) revert ResolverNotSelected();
     }
 
+    /// @dev Range-checked before the enum cast, so a hand-built word reaching `pinProvenance` from an
+    /// untrusted mirror is refused by this contract's own named error rather than an opaque panic.
     function _provenanceOf(uint8 flags) internal pure returns (AddressProvenance) {
-        return AddressProvenance((flags & PIN_PROVENANCE_MASK) >> PIN_PROVENANCE_SHIFT);
+        uint8 provenance = (flags & PIN_PROVENANCE_MASK) >> PIN_PROVENANCE_SHIFT;
+        if (provenance > uint8(AddressProvenance.POSTAL_CONFIRMED)) revert UnknownProvenance(provenance);
+        return AddressProvenance(provenance);
     }
 
     /// @dev Split out so the exhaustion arm is reachable by a test without exposing the counter,
