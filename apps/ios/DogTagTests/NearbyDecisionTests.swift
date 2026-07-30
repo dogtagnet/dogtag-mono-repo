@@ -674,4 +674,158 @@ final class NearbyDecisionTests: XCTestCase {
         }
         return row
     }
+
+    // ---- The offline stored fallback (captain's cache ruling, 2026-07-30) ----
+    //
+    // These four close a gap AGENTS.md recorded openly: `storedFallback` / `storedProvidersOnly` /
+    // `formatStoredAge` all shipped on this platform with no test referencing any of them, so the
+    // iOS half of the offline decision rested on an it-mirrors-Android argument alone. Android's
+    // `theStoredAgeIsCoarseAndNeverUnderstatesStaleness` even carries a comment claiming it mirrors
+    // an iOS test of that name - which did not exist until now. Same shape as the pre-`VerdictDisplay`
+    // gap: a property asserted on one platform only.
+
+    /// The remembered set is UNRANKED and carries no distance, so it must not be routed through
+    /// `presentation`: that drops every provider it has no server distance for and then reports
+    /// `noNearbyProviders`, stating an absence about providers the phone is holding. This is the case
+    /// that pins the separate presentation. Mirrors Android
+    /// `theStoredFallbackPresentsRememberedProvidersWithoutDistanceOrRanking`.
+    func test_theStoredFallbackPresentsRememberedProvidersWithoutDistanceOrRanking() {
+        let records = StoredProviderRecords(
+            providers: [
+                provider(id: "a", name: "Alpha Vet"),
+                provider(id: "b", name: "Beta Groomer", kind: "groomer"),
+            ],
+            storedAt: now
+        )
+
+        guard case .storedProvidersOnly(let shown, let storedAge) =
+            NearbyDecision.storedFallback(records: records, query: "", now: now.addingTimeInterval(120))
+        else { return XCTFail("remembered records must present as their own state") }
+        XCTAssertEqual(shown.map(\.name), ["Alpha Vet", "Beta Groomer"])
+        XCTAssertEqual(storedAge, "2 minutes ago")
+        XCTAssertTrue(shown.allSatisfy { $0.distanceKm == nil }, "a stored row can claim no distance")
+
+        // Routed through the live presentation instead, the same records would claim there are none.
+        let throughNearby = NearbyDecision.presentation(
+            directory: found(records.providers),
+            location: .ready(NearbyOrigin(point: NearbyPoint(lat: 1.35, lng: 103.82), accuracyMetres: 50)),
+            query: "",
+            unitSystem: .metric
+        )
+        guard case .noNearbyProviders = throughNearby else {
+            return XCTFail("the live path drops distance-less rows; that is why this state exists")
+        }
+    }
+
+    /// Nothing remembered, or nothing matching, keeps the live could-not-check rather than answering.
+    /// A fallback that quietly returned an empty list would turn "could not check" into an established
+    /// absence. Mirrors Android `theStoredFallbackDeclinesRatherThanAnsweringAnEmptyList`.
+    func test_theStoredFallbackDeclinesRatherThanAnsweringAnEmptyList() {
+        XCTAssertNil(NearbyDecision.storedFallback(records: nil, query: "", now: now))
+        let records = StoredProviderRecords(providers: [provider(id: "a", name: "Alpha Vet")], storedAt: now)
+        XCTAssertNil(NearbyDecision.storedFallback(records: records, query: "no such provider", now: now))
+    }
+
+    /// A delisted provider stays hidden offline too, and an owner-foreign kind never appears; an
+    /// unknown listing state remains eligible rather than being read as delisted. Mirrors Android
+    /// `theStoredFallbackStillHidesDelistedProvidersAndOwnerForeignKinds`.
+    func test_theStoredFallbackStillHidesDelistedProvidersAndOwnerForeignKinds() {
+        let records = StoredProviderRecords(
+            providers: [
+                provider(id: "off", name: "Closed Vet", active: false),
+                provider(id: "gov", name: "Ministry", kind: "government"),
+                provider(id: "ok", name: "Open Vet", active: nil),
+            ],
+            storedAt: now
+        )
+
+        guard case .storedProvidersOnly(let shown, _) =
+            NearbyDecision.storedFallback(records: records, query: "", now: now)
+        else { return XCTFail("one eligible provider was remembered") }
+        XCTAssertEqual(shown.map(\.name), ["Open Vet"])
+    }
+
+    /// The age rounds OUTWARD so a replay never reads fresher than it is, and a stored time in the
+    /// future is a backwards clock jump rather than a fresh copy, so it says nothing at all. This is
+    /// the test Android's own comment already claimed to mirror. Mirrors Android
+    /// `theStoredAgeIsCoarseAndNeverUnderstatesStaleness`.
+    func test_theStoredAgeIsCoarseAndNeverUnderstatesStaleness() {
+        func age(_ elapsed: TimeInterval) -> String? {
+            NearbyDecision.formatStoredAge(storedAt: now, now: now.addingTimeInterval(elapsed))
+        }
+
+        XCTAssertEqual(age(0), "less than a minute ago")
+        XCTAssertEqual(age(59), "less than a minute ago")
+        XCTAssertEqual(age(60), "1 minute ago")
+        // 61 seconds is stated as two minutes, never as one.
+        XCTAssertEqual(age(61), "2 minutes ago")
+        XCTAssertEqual(age(3_599), "1 hour ago")
+        XCTAssertEqual(age(3_600), "1 hour ago")
+        XCTAssertEqual(age(3_601), "2 hours ago")
+        XCTAssertEqual(age(86_399), "1 day ago")
+        XCTAssertEqual(age(86_400), "1 day ago")
+        XCTAssertEqual(age(6 * 86_400), "6 days ago")
+
+        XCTAssertNil(age(-1))
+    }
+
+    // ---- The Directions handoff ----
+
+    /// THE property of this affordance: the URL carries the provider's published destination and no
+    /// trace of where the owner is. Apple Maps accepts a source address as `saddr` beside the
+    /// destination `daddr`, so its absence is an active requirement rather than an omission - a URL
+    /// handed to another application must never disclose the owner's own position, which is the same
+    /// confinement the body-only nearest request exists to provide.
+    ///
+    /// Mirrors Android `theDirectionsHandoffCarriesTheDestinationAndNeverTheOrigin`.
+    func test_theDirectionsHandoffCarriesTheDestinationAndNeverTheOrigin() {
+        let url = NearbyDecision.directionsURL(
+            for: provider(id: "a", name: "Alpha Vet", geo: NearbyPoint(lat: 1.35249, lng: 103.81951))
+        )
+
+        XCTAssertEqual(url?.absoluteString, "https://maps.apple.com/?daddr=1.352490,103.819510")
+        let text = url?.absoluteString ?? ""
+        XCTAssertFalse(text.contains("saddr"), "the owner's origin must never reach the maps handoff")
+        // A nearby owner's own fix is close to, but not equal to, the destination.
+        XCTAssertFalse(text.contains("1.3521"), "the owner's origin must never reach the maps handoff")
+        XCTAssertFalse(text.contains("103.8198"), "the owner's origin must never reach the maps handoff")
+    }
+
+    /// A provider that published no location offers no Directions. Absence is `geo == nil` and only
+    /// that: `(0, 0)` is a real coordinate off the coast of Ghana, so it routes like anywhere else.
+    /// Reading it as absence is the bug this repo already fixed once in the admin directory.
+    func test_onlyAnAbsentLocationWithholdsDirectionsAndZeroZeroIsARealDestination() {
+        XCTAssertNil(NearbyDecision.directionsURL(for: provider(id: "c", name: "Contact Only", geo: nil)))
+        XCTAssertEqual(
+            NearbyDecision.directionsURL(
+                for: provider(id: "g", name: "Gulf of Guinea", geo: NearbyPoint(lat: 0, lng: 0))
+            )?.absoluteString,
+            "https://maps.apple.com/?daddr=0.000000,0.000000"
+        )
+        // An unusable coordinate is not a destination either.
+        XCTAssertNil(NearbyDecision.directionsURL(
+            for: provider(id: "b", name: "Broken", geo: NearbyPoint(lat: 91, lng: 0))
+        ))
+        XCTAssertNil(NearbyDecision.directionsURL(
+            for: provider(id: "n", name: "NaN", geo: NearbyPoint(lat: .nan, lng: 0))
+        ))
+    }
+
+    /// Fixed-point, locale-independent, and signed. `"\(Double)"` would emit `1e-05` just off the
+    /// meridian - which no maps app parses - and a locale-aware formatter would emit `1,35` in a
+    /// comma-decimal locale, silently splitting the pair into two coordinates.
+    func test_directionsCoordinatesAreFixedPointAndSurviveBothSigns() {
+        XCTAssertEqual(
+            NearbyDecision.directionsURL(
+                for: provider(id: "s", name: "South", geo: NearbyPoint(lat: -33.86551, lng: -151.2099))
+            )?.absoluteString,
+            "https://maps.apple.com/?daddr=-33.865510,-151.209900"
+        )
+        XCTAssertEqual(
+            NearbyDecision.directionsURL(
+                for: provider(id: "m", name: "Meridian", geo: NearbyPoint(lat: 0.00001, lng: 0))
+            )?.absoluteString,
+            "https://maps.apple.com/?daddr=0.000010,0.000000"
+        )
+    }
 }

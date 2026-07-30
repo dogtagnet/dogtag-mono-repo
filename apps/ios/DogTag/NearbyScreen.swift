@@ -616,6 +616,7 @@ struct NearbyScreen: View {
                 state: row.provider.bindingState,
                 domain: row.provider.domain ?? ""
             ))
+            providerDirectionsAction(row.provider)
             providerContactActions(row.provider)
         }
         .padding(16)
@@ -635,6 +636,40 @@ struct NearbyScreen: View {
         }
         .padding(16)
         .background(RoundedRectangle(cornerRadius: 16).fill(c.surface))
+    }
+
+    /// Hands this provider's published destination to the OS maps app.
+    ///
+    /// **Nearby rows only** - deliberately not on `providerContactRow`. That row serves the Provider
+    /// contacts scope, whose own copy promises "This list sends no position and shows no map", and it
+    /// also renders the offline stored fallback, whose whole framing is that the service could not be
+    /// reached. Keeping the handoff on the proximity surface leaves both of those promises intact and
+    /// keeps `maestro/nearby_scope_separation.yaml`'s contacts-scope absence assertion meaningful.
+    ///
+    /// Deliberately its own view rather than a sixth entry in `providerContactActions`: a published
+    /// location is not a contact channel, and folding it in there would make it count toward the
+    /// `contact.hasAny` gate, so a location-only provider would stop rendering "No contact details
+    /// published." while still having published none.
+    ///
+    /// Absent when the provider published no usable location - never a dead button, and never a
+    /// fabricated destination. `NearbyDecision.directionsURL` owns that rule and carries the
+    /// origin-free guarantee; this view only renders what it returns.
+    @ViewBuilder
+    private func providerDirectionsAction(_ provider: DirectoryProvider) -> some View {
+        if let url = NearbyDecision.directionsURL(for: provider) {
+            Button {
+                openURL(url)
+            } label: {
+                Label("Directions", systemImage: "arrow.triangle.turn.up.right.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .foregroundColor(c.accent)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(c.surfaceVariant))
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue("Open in your maps app")
+        }
     }
 
     private func providerHeader(_ provider: DirectoryProvider) -> some View {

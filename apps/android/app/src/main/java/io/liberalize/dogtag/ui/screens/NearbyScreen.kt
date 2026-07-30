@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
@@ -677,6 +678,7 @@ private fun NearbyProviderRow(
             )
         }
         ProviderBindingChip(row.provider)
+        ProviderDirectionsAction(row.provider, onOpen)
         ProviderContactActions(row.provider, onOpen)
     }
 }
@@ -701,6 +703,34 @@ private fun ContactProviderRow(
         }
         ProviderBindingChip(provider)
         ProviderContactActions(provider, onOpen)
+    }
+}
+
+/**
+ * Hands this provider's published destination to whichever maps app the chooser offers.
+ *
+ * **Nearby rows only** - deliberately not on [ContactProviderRow]. That row serves the Provider
+ * contacts scope, whose own copy promises the list sends no position and shows no map, and it also
+ * renders the offline stored fallback, whose whole framing is that the service could not be reached.
+ * Keeping the handoff on the proximity surface leaves both promises intact, and mirrors iOS.
+ *
+ * Deliberately its own composable rather than a sixth entry in [ProviderContactActions]: a published
+ * location is not a contact channel, and folding it in there would make it count toward the
+ * `contact.hasAny` gate, so a location-only provider would stop rendering "No contact details
+ * published." while still having published none.
+ *
+ * Absent when the provider published no usable location - never a dead button, and never a
+ * fabricated destination. [NearbyDecision.directionsUri] owns that rule and carries the origin-free
+ * guarantee; this composable only renders what it returns.
+ */
+@Composable
+private fun ProviderDirectionsAction(
+    provider: DirectoryProvider,
+    onOpen: (Uri, Boolean) -> Unit,
+) {
+    val uri = NearbyDecision.directionsUri(provider) ?: return
+    ContactAction(Icons.Filled.Directions, "Directions", "Open in your maps app") {
+        onOpen(Uri.parse(uri), false)
     }
 }
 

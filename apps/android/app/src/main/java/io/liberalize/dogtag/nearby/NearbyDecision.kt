@@ -477,6 +477,43 @@ object NearbyDecision {
     }
 
     /**
+     * The maps-app handoff for one provider: its PUBLISHED destination, and nothing else.
+     *
+     * This is a handoff, not a map. The owner leaves the app and the map belongs to whichever app the
+     * chooser opens, so it costs nothing and needs no key - the 2026-07-29 captain decision that
+     * declined an embedded map and a hosted place search kept this affordance as the thing that ships
+     * instead.
+     *
+     * **The origin is never included, and that is the whole privacy property.** The `geo:` scheme has
+     * no source parameter and none is synthesised here: the owner's own position must never reach a URI
+     * handed to another application, which is precisely the disclosure the body-only nearest request
+     * exists to avoid. The destination is public directory data the phone already holds, so handing it
+     * over discloses nothing about the owner - which is why this survives the server-nearest pivot
+     * untouched: that ruling changed WHO RANKS, not whether a row can open a map. A stored (offline)
+     * row may use this too, for the same reason.
+     *
+     * Returns `null` when the provider published no location. Absence is `geo == null` and ONLY that:
+     * `(0, 0)` is a real coordinate off the coast of Ghana, so it is a destination like any other.
+     * Mirrors iOS `NearbyDecision.directionsURL`; keep the two in step by hand.
+     */
+    fun directionsUri(provider: DirectoryProvider): String? {
+        val geo = provider.geo?.takeIf { it.isUsable } ?: return null
+        // Coordinates only - deliberately no `?q=lat,lng(Name)` label. A provider name is
+        // operator-entered free text, so the label form needs a percent-encoder for `&`, `#` and
+        // spaces, and that encoder is a correctness surface with nothing to gain: the pin is in the
+        // same place either way. It also keeps this URI trivially auditable as "the destination and
+        // nothing else", which is the property that actually matters here.
+        return "geo:${coordinate(geo.lat)},${coordinate(geo.lng)}"
+    }
+
+    /**
+     * Fixed-point and locale-independent. `Double.toString()` would emit `1.0E-5` near the meridian,
+     * which no maps app parses, and the default locale would emit `1,35` in a comma-decimal locale,
+     * silently splitting the coordinate pair in two.
+     */
+    private fun coordinate(value: Double): String = String.format(Locale.ROOT, "%.6f", value)
+
+    /**
      * How old a remembered record set is, in words.
      *
      * Rounds OUTWARD so a replay never reads fresher than it is, and promotes at the ceiling rather
