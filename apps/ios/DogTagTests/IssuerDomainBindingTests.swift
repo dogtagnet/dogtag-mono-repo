@@ -268,6 +268,43 @@ final class IssuerDomainBindingTests: XCTestCase {
         XCTAssertFalse(line.contains("just now"), line)
     }
 
+    /// An endpoint switch is an observation-boundary switch. Reusing the old key would return that
+    /// peer's cached rootIssuer/name/domain answer without invoking the new endpoint or chain guard.
+    func test_cache_key_separates_rpc_endpoint_observations() {
+        func key(_ rpc: String, chainId: Int = 135) -> String {
+            IssuerBindingResolver.cacheKey(
+                rpcUrl: rpc,
+                expectedChainId: chainId,
+                documentStore: clone,
+                root: "0x1234",
+                domainRegistry: "0xregistry",
+                factory: "0xfactory"
+            )
+        }
+
+        XCTAssertNotEqual(key("https://rpc-a.example/roax"), key("https://rpc-b.example/roax"))
+        XCTAssertEqual(
+            key("  https://rpc-a.example/roax  "),
+            key("https://rpc-a.example/roax"),
+            "cache URL identity trims surrounding input whitespace"
+        )
+        XCTAssertNotEqual(
+            key("https://rpc-a.example/ROAX?token=same"),
+            key("https://rpc-a.example/roax?token=same"),
+            "case-sensitive paths must not replay another endpoint's observation"
+        )
+        XCTAssertNotEqual(
+            key("https://rpc-a.example/roax?token=ABC"),
+            key("https://rpc-a.example/roax?token=abc"),
+            "case-sensitive query tokens must not replay another endpoint's observation"
+        )
+        XCTAssertNotEqual(
+            key("https://rpc-a.example/roax", chainId: 135),
+            key("https://rpc-a.example/roax", chainId: 1),
+            "a future bundled deployment must not inherit this chain's observation"
+        )
+    }
+
     /// A DNS-bearing state with no timestamp cannot say WHEN, so it says nothing about DNS at all.
     func test_a_dns_state_without_a_timestamp_makes_no_dns_claim() {
         let line = bound(.notListed, checkedAt: nil).provenanceLine()!

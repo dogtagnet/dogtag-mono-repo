@@ -18,6 +18,8 @@ export interface IssuanceStatusPanelProps {
    */
   issuerAddr?: string;
   rpcUrl?: string;
+  /** Bundled endpoint to use, after its own chain guard, if the preferred endpoint cannot be used. */
+  defaultRpcUrl?: string;
   pollIntervalMs?: number;
 }
 
@@ -34,17 +36,18 @@ export function IssuanceStatusPanel({
   txHash,
   issuerAddr,
   rpcUrl,
+  defaultRpcUrl,
   pollIntervalMs = 4000,
 }: IssuanceStatusPanelProps) {
   const canPoll = Boolean(issuerAddr);
   // If we already have a confirmed tx and cannot poll, treat as verified.
   const [phase, setPhase] = useState<Phase>(txHash && !canPoll ? "verified" : "anchoring");
   const [onChainConfirmed, setOnChainConfirmed] = useState(false);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stop = useCallback(() => {
     if (timer.current) {
-      clearInterval(timer.current);
+      clearTimeout(timer.current);
       timer.current = null;
     }
   }, []);
@@ -52,25 +55,30 @@ export function IssuanceStatusPanel({
   useEffect(() => {
     if (!canPoll || !issuerAddr) return;
     let cancelled = false;
+    // The next poll is scheduled from the previous one's completion, never on a fixed interval: a
+    // guarded read chains a chain probe, the read, and a possible guarded fallback, so a slow or
+    // hanging peer would otherwise stack unbounded concurrent request chains for as long as this
+    // panel stays mounted.
     const tick = async () => {
       try {
-        const valid = await isRootValid({ issuerAddr, root, rpcUrl });
+        const valid = await isRootValid({ issuerAddr, root, rpcUrl, defaultRpcUrl });
         if (!cancelled && valid) {
           setOnChainConfirmed(true);
           setPhase("verified");
-          stop();
+          return;
         }
       } catch {
         /* transient RPC error — keep polling */
       }
+      if (cancelled) return;
+      timer.current = setTimeout(() => void tick(), pollIntervalMs);
     };
     void tick();
-    timer.current = setInterval(() => void tick(), pollIntervalMs);
     return () => {
       cancelled = true;
       stop();
     };
-  }, [canPoll, issuerAddr, root, rpcUrl, pollIntervalMs, stop]);
+  }, [canPoll, issuerAddr, root, rpcUrl, defaultRpcUrl, pollIntervalMs, stop]);
 
   const verified = phase === "verified";
 

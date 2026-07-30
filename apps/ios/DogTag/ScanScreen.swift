@@ -281,7 +281,8 @@ struct ScanScreen: View {
                     var delayNanos: UInt64 = 2_000_000_000
                     for _ in 0..<40 {
                         if let chainRoot = await RoaxRpc.profileRoot(
-                            rpcUrl: AppConfig.roaxRpc, dogTagSbt: roax.dogTagSbt, dogTagId: onchainId),
+                            rpcUrl: RpcEndpointSettings.rpcUrl(),
+                            dogTagSbt: roax.dogTagSbt, dogTagId: onchainId),
                            chainRoot.dropFirst(2).contains(where: { $0 != "0" }) {
                             guard chainRoot.caseInsensitiveCompare(root) == .orderedSame else {
                                 throw issueFailure(
@@ -566,11 +567,26 @@ struct ScanScreen: View {
             return
         }
         // Resolve both on-chain axes. Missing configuration/publication fails closed.
+        //
+        // These TWO reads deliberately name the BUNDLED endpoint rather than the holder's transport
+        // choice, and they are the only chain reads that bypass that choice. The contract set they return
+        // IS the trust anchor `validateDiscovery` compares the platform's claimed
+        // `verificationRegistry`/version against - the anti-redirect trip. A peer that answers
+        // `eth_chainId` with 135 (trivial for a hostile peer) could otherwise supply BOTH sides of
+        // that comparison, so a hostile portal plus a holder-chosen peer would satisfy a check whose
+        // whole point is independence from the portal. Endpoint choice is transport liveness for
+        // reads whose answers the anchor then constrains; it must never answer the anchor itself.
+        // Still routed through `guardedPostJSON`, so the bundled peer is probed for `eth_chainId`
+        // immediately before each read and an unavailable/wrong-chain bundled peer yields nil here
+        // (fail closed) rather than falling back to the custom peer - `endpointRoute` takes its
+        // `requested == bundled` branch, which has no custom candidate to fall back to.
         let version = AnchorResolver.protocolVersion
         async let csTask = RoaxRpc.getContractSet(
-            rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
+            rpcUrl: AppConfig.roaxRpc,
+            protocolRegistry: roax.protocolRegistry, version: version)
         async let asTask = RoaxRpc.getActiveArtifactSet(
-            rpcUrl: AppConfig.roaxRpc, protocolRegistry: roax.protocolRegistry, version: version)
+            rpcUrl: AppConfig.roaxRpc,
+            protocolRegistry: roax.protocolRegistry, version: version)
         guard let cs = await csTask, let arti = await asTask else {
             working = false
             status = "Owner-hidden verification is not available yet (discovery anchor unpublished)."
@@ -610,7 +626,7 @@ struct ScanScreen: View {
             status = "Checking groomer authorization…"
             let verifyKey = verifyWhitelistKeyHex(purposeLabel: sess.purpose)
             let wl = await RoaxRpc.isWhitelistedFor(
-                rpcUrl: AppConfig.roaxRpc, issuerRegistry: roax.issuerRegistry,
+                rpcUrl: RpcEndpointSettings.rpcUrl(), issuerRegistry: roax.issuerRegistry,
                 key: verifyKey, signer: sess.relayer)
             guard case .valid = wl else {
                 working = false
@@ -706,7 +722,7 @@ struct ScanScreen: View {
             let nullifier = proof.pubSignals[nfIdx]
             let verificationRegistry = cs.verificationRegistry
             if await RoaxRpc.consumed(
-                rpcUrl: AppConfig.roaxRpc, verificationRegistry: verificationRegistry,
+                rpcUrl: RpcEndpointSettings.rpcUrl(), verificationRegistry: verificationRegistry,
                 nullifier: nullifier) {
                 working = false
                 status = "This verification was already recorded."
@@ -762,7 +778,7 @@ struct ScanScreen: View {
             var failedMsg: String? = nil
             for _ in 0..<40 {
                 if await RoaxRpc.consumed(
-                    rpcUrl: AppConfig.roaxRpc, verificationRegistry: verificationRegistry,
+                    rpcUrl: RpcEndpointSettings.rpcUrl(), verificationRegistry: verificationRegistry,
                     nullifier: nullifier) {
                     done = true
                     break

@@ -16,7 +16,7 @@ enum RecordImporter {
         let credential: Credential?
     }
 
-    static func `import`(_ req: QrPayload, rpcUrl: String = AppConfig.roaxRpc) async -> ImportResult {
+    static func `import`(_ req: QrPayload, rpcUrl: String = RpcEndpointSettings.rpcUrl()) async -> ImportResult {
         // Resolve the fetch URL + a fallback local id from the QR shape:
         //   - SHORT token: GET <host>/r/<token> (no Bearer) — server consumes the one-time token.
         //   - legacy JWT:  GET <host>/records/{recordId} with the Bearer record-JWT (back-compat).
@@ -195,7 +195,7 @@ enum IssuerWhitelist {
 /// is the whole point.
 enum CredentialRefresher {
     static func refreshed(
-        _ cred: Credential, roax: RoaxConfig, rpcUrl: String = AppConfig.roaxRpc
+        _ cred: Credential, roax: RoaxConfig, rpcUrl: String = RpcEndpointSettings.rpcUrl()
     ) async -> Credential {
         keepingEstablishedNegative(previous: cred, fresh: await derived(cred, roax: roax, rpcUrl: rpcUrl))
     }
@@ -225,7 +225,7 @@ enum CredentialRefresher {
     }
 
     private static func derived(
-        _ cred: Credential, roax: RoaxConfig, rpcUrl: String = AppConfig.roaxRpc
+        _ cred: Credential, roax: RoaxConfig, rpcUrl: String = RpcEndpointSettings.rpcUrl()
     ) async -> Credential {
         var out = cred
         out.lastCheckedAt = Stamp.now()

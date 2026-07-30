@@ -47,11 +47,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.CredentialGroup
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.RoaxConfig
+import io.liberalize.dogtag.data.SettingsStore
 import io.liberalize.dogtag.data.VerdictDisplay
 import io.liberalize.dogtag.data.WrappedDoc
 import io.liberalize.dogtag.net.BindingTone
@@ -102,8 +102,11 @@ fun CredentialDetailScreen(opened: Credential, onBack: () -> Unit) {
         val root = (doc?.merkleRoot ?: "").ifBlank { cred.credentialRoot }
         if (claimed.isBlank() && root.isBlank()) return@LaunchedEffect
         val roax = RoaxConfig.load(context)
+        val rpcUrl = SettingsStore(context.applicationContext)
+            .selectedRpcUrl()
         binding = IssuerBindingResolver.resolve(
-            rpcUrl = AppConfig.ROAX_RPC,
+            rpcUrl = rpcUrl,
+            expectedChainId = roax.chainId,
             factory = roax.issuerFactory,
             domainRegistry = roax.issuerDomainRegistry,
             documentStore = claimed,

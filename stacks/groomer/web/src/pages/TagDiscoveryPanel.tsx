@@ -14,6 +14,7 @@ import {
   discoverTag,
   resolveDogTagId,
   txExplorerHref,
+  useRoaxRpcPreference,
   useToast,
   type DiscoveredEvent,
   type DiscoveryProgress,
@@ -66,6 +67,7 @@ export function TagDiscoveryPanel({
   const { api, signerAddress } = useApp();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const rpc = useRoaxRpcPreference(env.roaxRpc);
 
   const [result, setResult] = useState<TagDiscoveryResult | null>(null);
   const [progress, setProgress] = useState<DiscoveryProgress | null>(null);
@@ -130,7 +132,8 @@ export function TagDiscoveryPanel({
     try {
       const r = await discoverTag({
         dogTagId: resolved.onchain,
-        rpcUrl: env.roaxRpc,
+        rpcUrl: rpc.rpcUrl,
+        defaultRpcUrl: rpc.defaultRpcUrl,
         signal: ctrl.signal,
         onProgress: setProgress,
       });
@@ -147,7 +150,7 @@ export function TagDiscoveryPanel({
     } finally {
       setScanning(false);
     }
-  }, [resolved, toast]);
+  }, [resolved, rpc.rpcUrl, rpc.defaultRpcUrl, toast]);
 
   const verifications = (result?.events ?? []).filter(
     (e): e is Extract<DiscoveredEvent, { kind: "verification" }> => e.kind === "verification",
@@ -166,8 +169,10 @@ export function TagDiscoveryPanel({
         </CardTitle>
         <CardDescription>
           Read the chain for everything recorded against this pet's DogTag — including records this
-          shop never created. Nothing here is written; every row is a log read from{" "}
-          <span className="font-mono text-[11px]">{env.roaxRpc}</span>.
+          shop never created. Nothing here is written; every row is a log read through the
+          chain-guarded endpoint selection (preferred{" "}
+          <span className="font-mono text-[11px]">{rpc.rpcUrl}</span>, with the bundled endpoint as
+          a guarded fallback).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

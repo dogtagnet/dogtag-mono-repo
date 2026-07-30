@@ -2,18 +2,15 @@
 // whole design keeps the holder gasless). DogTagIssuer.isValid(root) supplies the on-chain
 // "issuance" pillar for a held credential; VerificationRegistryConsent's owner-blind `Verified`
 // logs supply the owner's own consent history.
-import { createPublicClient, decodeFunctionData, defineChain, http } from "viem";
+import { decodeFunctionData } from "viem";
 import { toHex32 } from "@dogtag/standard";
-import { ROAX_CHAIN_ID, ROAX_RPC_URL, VERIFICATION_REGISTRY_CONSENT_ADDR } from "./config";
+import { getRoaxRpcPreference, roaxPublicClient } from "@dogtag/ui/rpc";
+import { ROAX_RPC_URL, VERIFICATION_REGISTRY_CONSENT_ADDR } from "./config";
 
-export const roax = defineChain({
-  id: ROAX_CHAIN_ID,
-  name: "ROAX",
-  nativeCurrency: { name: "Plasma", symbol: "PLASMA", decimals: 18 },
-  rpcUrls: { default: { http: [ROAX_RPC_URL] } },
-});
-
-const publicClient = createPublicClient({ chain: roax, transport: http(ROAX_RPC_URL) });
+function publicClient() {
+  const rpc = getRoaxRpcPreference(ROAX_RPC_URL);
+  return roaxPublicClient(rpc.rpcUrl, rpc.defaultRpcUrl);
+}
 
 const ISSUER_ABI = [
   {
@@ -27,7 +24,7 @@ const ISSUER_ABI = [
 
 /** DogTagIssuer clone (== issuer.documentStore) isValid(root) — true once the root is anchored. */
 export async function isRootAnchored(documentStore: string, merkleRoot: string): Promise<boolean> {
-  return publicClient.readContract({
+  return publicClient().readContract({
     address: documentStore as `0x${string}`,
     abi: ISSUER_ABI,
     functionName: "isValid",
@@ -92,7 +89,7 @@ export interface VerifiedLog {
  */
 export async function fetchVerifiedLogs(dogTagIds: bigint[]): Promise<VerifiedLog[]> {
   if (dogTagIds.length === 0) return [];
-  const logs = await publicClient.getLogs({
+  const logs = await publicClient().getLogs({
     address: VERIFICATION_REGISTRY_CONSENT_ADDR,
     event: VERIFIED_EVENT,
     args: { dogTagId: dogTagIds },
@@ -121,7 +118,7 @@ export async function fetchVerifiedLogs(dogTagIds: bigint[]): Promise<VerifiedLo
  */
 export async function fetchConsentRecordType(txHash: `0x${string}`): Promise<string | null> {
   try {
-    const tx = await publicClient.getTransaction({ hash: txHash });
+    const tx = await publicClient().getTransaction({ hash: txHash });
     const { args } = decodeFunctionData({ abi: RECORD_VERIFICATION_ZK_ABI, data: tx.input });
     return toHex32(args[3][PUB_RECORD_TYPE]);
   } catch {

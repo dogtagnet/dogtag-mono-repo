@@ -72,16 +72,33 @@ export interface IssuerChainReader {
  * A caller that could not read the head MUST omit it and report its answer as unanchored. Passing a
  * head number that these reads were not actually pinned to would claim a snapshot that never happened.
  */
-export function roaxIssuerChainReader(rpcUrl?: string, blockNumber?: bigint): IssuerChainReader {
+export function roaxIssuerChainReader(
+  rpcUrl?: string,
+  blockNumber?: bigint,
+  defaultRpcUrl?: string,
+): IssuerChainReader {
   return {
-    rootIssuer: (factoryAddr, root) => rootIssuerOf({ factoryAddr, root, rpcUrl, blockNumber }),
-    recordType: (issuerAddr) => recordTypeOf({ issuerAddr, rpcUrl, blockNumber }),
-    issuedAt: (issuerAddr, root) => issuedAtOf({ issuerAddr, root, rpcUrl, blockNumber }),
-    isValid: (issuerAddr, root) => isRootValid({ issuerAddr, root, rpcUrl, blockNumber }),
-    isRevoked: (issuerAddr, root) => isRootRevoked({ issuerAddr, root, rpcUrl, blockNumber }),
-    issuedBy: (issuerAddr, root) => issuedByOf({ issuerAddr, root, rpcUrl, blockNumber }),
+    rootIssuer: (factoryAddr, root) =>
+      rootIssuerOf({ factoryAddr, root, rpcUrl, defaultRpcUrl, blockNumber }),
+    recordType: (issuerAddr) =>
+      recordTypeOf({ issuerAddr, rpcUrl, defaultRpcUrl, blockNumber }),
+    issuedAt: (issuerAddr, root) =>
+      issuedAtOf({ issuerAddr, root, rpcUrl, defaultRpcUrl, blockNumber }),
+    isValid: (issuerAddr, root) =>
+      isRootValid({ issuerAddr, root, rpcUrl, defaultRpcUrl, blockNumber }),
+    isRevoked: (issuerAddr, root) =>
+      isRootRevoked({ issuerAddr, root, rpcUrl, defaultRpcUrl, blockNumber }),
+    issuedBy: (issuerAddr, root) =>
+      issuedByOf({ issuerAddr, root, rpcUrl, defaultRpcUrl, blockNumber }),
     isWhitelistedFor: (registryAddr, key, address) =>
-      isWhitelistedFor({ registryAddr, recordTypeKey: key, address, rpcUrl, blockNumber }),
+      isWhitelistedFor({
+        registryAddr,
+        recordTypeKey: key,
+        address,
+        rpcUrl,
+        defaultRpcUrl,
+        blockNumber,
+      }),
   };
 }
 
@@ -115,6 +132,8 @@ export interface VerifyCredentialOnchainArgs {
   factoryAddr?: string;
   /** Public RPC URL override; defaults to the ROAX devrpc configured in the chain definition. */
   rpcUrl?: string;
+  /** App-bundled endpoint used only after its own chain guard when the preferred endpoint fails. */
+  defaultRpcUrl?: string;
   /** Injected chain reader (tests); defaults to {@link roaxIssuerChainReader}. */
   reader?: IssuerChainReader;
   /** `checkedAt` unix-seconds override (tests); defaults to now. */
@@ -165,7 +184,8 @@ export async function verifyCredentialOnchain(
     recomputedRoot = toHex32(0n);
   }
 
-  const reader = args.reader ?? roaxIssuerChainReader(args.rpcUrl);
+  const reader =
+    args.reader ?? roaxIssuerChainReader(args.rpcUrl, undefined, args.defaultRpcUrl);
   // The registry and the factory ALWAYS come from this client's own configuration, never from the
   // document. If the document named either, an attacker would supply both sides of the question and
   // the pillar would be theatre.

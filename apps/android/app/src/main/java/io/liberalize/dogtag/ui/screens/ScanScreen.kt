@@ -44,12 +44,12 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.fragment.app.FragmentActivity
-import io.liberalize.dogtag.data.AppConfig
 import io.liberalize.dogtag.data.Credential
 import io.liberalize.dogtag.data.LocalStore
 import io.liberalize.dogtag.data.Pet
 import io.liberalize.dogtag.data.RecordImporter
 import io.liberalize.dogtag.data.RoaxConfig
+import io.liberalize.dogtag.data.SettingsStore
 import io.liberalize.dogtag.data.ZkeyAsset
 import io.liberalize.dogtag.BuildConfig
 import io.liberalize.dogtag.net.AnchorResolver
@@ -99,8 +99,8 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
     // issuer-whitelist pillar. Both must come from our own config, never from the scanned document:
     // a forged issuer block would otherwise nominate the factory that resolves it AND the registry
     // that vouches for it, and answer its own question twice.
-    val roaxIssuerRegistry = remember { RoaxConfig.load(context).issuerRegistry }
-    val roaxIssuerFactory = remember { RoaxConfig.load(context).issuerFactory }
+    val roax = remember { RoaxConfig.load(context) }
+    val rpcSettings = remember { SettingsStore(context.applicationContext) }
 
     val walletExists = remember { Wallet.exists(context) }
 
@@ -162,7 +162,10 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 onImport = {
                     working = true; status = "Fetching + verifying record…"
                     scope.launch {
-                        val r = RecordImporter.import(p, roaxIssuerRegistry, roaxIssuerFactory)
+                        val rpcUrl = rpcSettings.selectedRpcUrl()
+                        val r = RecordImporter.import(
+                            p, roax.issuerRegistry, roax.issuerFactory, roax.chainId, rpcUrl,
+                        )
                         working = false
                         if (r.credential != null) {
                             store.addCredential(r.credential)
@@ -179,7 +182,10 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
                 onImport = {
                     working = true; status = "Fetching + verifying record…"
                     scope.launch {
-                        val r = RecordImporter.import(p, roaxIssuerRegistry, roaxIssuerFactory)
+                        val rpcUrl = rpcSettings.selectedRpcUrl()
+                        val r = RecordImporter.import(
+                            p, roax.issuerRegistry, roax.issuerFactory, roax.chainId, rpcUrl,
+                        )
                         working = false
                         if (r.credential != null) {
                             store.addCredential(r.credential)
@@ -192,7 +198,7 @@ fun ScanScreen(activity: FragmentActivity, onDone: () -> Unit) {
             )
 
             is QrPayload.DogTagIssueSession -> IssuePanel(
-                qr = p, activity = activity, store = store,
+                qr = p, activity = activity, store = store, roax = roax, rpcSettings = rpcSettings,
             )
 
             is QrPayload.ExportSession -> ExportPanel(
@@ -271,6 +277,8 @@ private fun IssuePanel(
     qr: QrPayload.DogTagIssueSession,
     activity: FragmentActivity,
     store: LocalStore,
+    roax: RoaxConfig,
+    rpcSettings: SettingsStore,
 ) {
     val c = DogTagTheme.colors
     val context = LocalContext.current
@@ -405,13 +413,15 @@ private fun IssuePanel(
                                     // keyed by the CANONICAL field-hashed id (never the raw handle).
                                     // Poll the already-persisted root; never generate a second set of salts.
                                     status = "Issuing owner-hidden root on-chain…"
-                                    val roax = RoaxConfig.load(context)
+                                    val rpcUrl = rpcSettings.selectedRpcUrl()
                                     val onchainId = dogTagIdFieldHex(resolved.dogTagId)
                                     var anchored = false
                                     var delayMs = 2_000L
                                     for (attempt in 0 until 40) {
                                         val chainRoot = withContext(Dispatchers.IO) {
-                                            RoaxRpc.profileRoot(AppConfig.ROAX_RPC, roax.dogTagSbt, onchainId)
+                                            RoaxRpc.profileRoot(
+                                                rpcUrl, roax.chainId, roax.dogTagSbt, onchainId,
+                                            )
                                         }
                                         when (RoaxRpc.classifyProfileRoot(chainRoot, root)) {
                                             RoaxRpc.ProfileRootObservation.Pending -> Unit
@@ -678,14 +688,30 @@ private suspend fun runLevelBFlow(
         return
     }
     val roax = RoaxConfig.load(context)
+    val rpcUrl = SettingsStore(context.applicationContext)
+        .selectedRpcUrl()
     val version = AnchorResolver.PROTOCOL_VERSION
     // Resolve BOTH on-chain axes. Either null — registry unconfigured/undeployed, version unpublished,
     // or no artifact binding — fails closed.
+    //
+    // These TWO reads deliberately name the BUNDLED endpoint rather than `rpcUrl`, and they are the
+    // only chain reads that bypass the holder's choice. The contract set they return IS the trust anchor
+    // `validateDiscovery` compares the platform's claimed `verificationRegistry`/version against -
+    // the anti-redirect trip. A peer that answers `eth_chainId` with 135 (trivial for a hostile peer)
+    // could otherwise supply BOTH sides of that comparison, so a hostile portal plus a holder-chosen
+    // peer would satisfy a check whose whole point is independence from the portal. Endpoint choice is
+    // transport liveness for reads whose answers the anchor then constrains; it must never answer the
+    // anchor itself. Still routed through `guardedPostJson`, so the bundled peer is probed for
+    // `eth_chainId` immediately before each read and an unavailable/wrong-chain bundled peer yields
+    // null here (fail closed) rather than falling back to the custom peer - `endpointRoute` takes its
+    // `candidate == DEFAULT_RPC` branch, which has no custom candidate to fall back to.
     val cs = withContext(Dispatchers.IO) {
-        RoaxRpc.getContractSet(AppConfig.ROAX_RPC, roax.protocolRegistry, version)
+        RoaxRpc.getContractSet(RoaxRpc.DEFAULT_RPC, roax.chainId, roax.protocolRegistry, version)
     }
     val arti = withContext(Dispatchers.IO) {
-        RoaxRpc.getActiveArtifactSet(AppConfig.ROAX_RPC, roax.protocolRegistry, version)
+        RoaxRpc.getActiveArtifactSet(
+            RoaxRpc.DEFAULT_RPC, roax.chainId, roax.protocolRegistry, version,
+        )
     }
     if (cs == null || arti == null) {
         onDone("Owner-hidden verification is not available yet (discovery anchor unpublished).")
@@ -728,7 +754,7 @@ private suspend fun runLevelBFlow(
         val verifyKey = verifyWhitelistKeyHex(sess.purpose)
         val wl = withContext(Dispatchers.IO) {
             RoaxRpc.isWhitelistedFor(
-                AppConfig.ROAX_RPC, roax.issuerRegistry, verifyKey, sess.relayer,
+                rpcUrl, roax.chainId, roax.issuerRegistry, verifyKey, sess.relayer,
             )
         }
         if (wl !is RoaxRpc.Result.Valid) {
@@ -822,7 +848,7 @@ private suspend fun runLevelBFlow(
         }
         val verificationRegistry = cs.verificationRegistry
         val alreadyRecorded = withContext(Dispatchers.IO) {
-            RoaxRpc.consumed(AppConfig.ROAX_RPC, verificationRegistry, nullifier)
+            RoaxRpc.consumed(rpcUrl, roax.chainId, verificationRegistry, nullifier)
         }
         if (alreadyRecorded) {
             onDone("This verification was already recorded.")
@@ -872,7 +898,7 @@ private suspend fun runLevelBFlow(
         var failedMsg: String? = null
         for (attempt in 0 until 40) {
             val recorded = withContext(Dispatchers.IO) {
-                RoaxRpc.consumed(AppConfig.ROAX_RPC, verificationRegistry, nullifier)
+                RoaxRpc.consumed(rpcUrl, roax.chainId, verificationRegistry, nullifier)
             }
             if (recorded) {
                 done = true

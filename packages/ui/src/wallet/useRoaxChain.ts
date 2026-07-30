@@ -1,6 +1,11 @@
 import { useCallback, useState } from "react";
 import { useAccount } from "wagmi";
-import { ROAX_ADD_CHAIN_PARAMS, ROAX_CHAIN_ID, ROAX_CHAIN_ID_HEX } from "./chain";
+import {
+  ROAX_CHAIN_ID,
+  ROAX_CHAIN_ID_HEX,
+  roax,
+  roaxAddChainParams,
+} from "./chain";
 
 type Eip1193Provider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -23,8 +28,16 @@ export interface UseRoaxChainResult {
 /**
  * Switch/add the ROAX chain in the connected wallet (impl §3.8 chain-add calldata).
  * Falls back to wallet_addEthereumChain on error code 4902 (unrecognized chain).
+ *
+ * The add metadata always names the app's BUNDLED endpoint, never the browser's DogTag endpoint
+ * choice. That choice is scoped to DogTag's own direct reads, where the chain guard re-runs before
+ * every request; writing it into the wallet's persistent chain configuration would hand a
+ * user-typed peer the wallet's own traffic — transaction broadcast included — under a guard that
+ * could only ever have run once, at add time. Repointing a wallet is a separate, explicit action.
+ * Nothing here may read the endpoint preference: this module deliberately does not import it, so
+ * the bundled endpoint is the only URL in scope to hand to the wallet.
  */
-export function useRoaxChain(): UseRoaxChainResult {
+export function useRoaxChain(defaultRpcUrl: string = roax.rpcUrls.default.http[0]): UseRoaxChainResult {
   const { chainId } = useAccount();
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +63,7 @@ export function useRoaxChain(): UseRoaxChainResult {
         try {
           await provider.request({
             method: "wallet_addEthereumChain",
-            params: [ROAX_ADD_CHAIN_PARAMS],
+            params: [roaxAddChainParams(defaultRpcUrl)],
           });
           return true;
         } catch (addErr) {
@@ -63,7 +76,7 @@ export function useRoaxChain(): UseRoaxChainResult {
     } finally {
       setSwitching(false);
     }
-  }, []);
+  }, [defaultRpcUrl]);
 
   return {
     isOnRoax: chainId === ROAX_CHAIN_ID,

@@ -300,6 +300,9 @@ importers:
       '@dogtag/standard':
         specifier: workspace:*
         version: link:../../../packages/dogtag-standard-ts
+      '@dogtag/ui':
+        specifier: workspace:*
+        version: link:../../../packages/ui
       '@noble/hashes':
         specifier: 1.5.0
         version: 1.5.0

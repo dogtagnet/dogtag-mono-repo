@@ -73,7 +73,8 @@ see the note at the top.
   session. Both surfaces point at Setup only when the instance has no seal at all (needs genesis,
   not unlock).
 - **Settings** (`/settings`) — signing-mode toggle (`PUT /settings/signing-mode`), status panel
-  (`GET /issuer/signers`), theme toggle.
+  (`GET /issuer/signers`), browser-local ROAX endpoint choice with a chain-id guard, theme toggle.
+  The central API/indexer endpoints stay deployment-configured.
 
 ## Wired vs placeholder
 

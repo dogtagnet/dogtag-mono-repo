@@ -395,8 +395,11 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
 const ZERO_HASH32 = `0x${"0".repeat(64)}` as Hex;
 
 /** Default reader: viem `eth_call`/`eth_getLogs` against the public ROAX RPC. No signer, no auth. */
-export function roaxTagDiscoveryReader(rpcUrl?: string): TagDiscoveryReader {
-  const client = () => roaxPublicClient(rpcUrl);
+export function roaxTagDiscoveryReader(
+  rpcUrl?: string,
+  defaultRpcUrl?: string,
+): TagDiscoveryReader {
+  const client = () => roaxPublicClient(rpcUrl, defaultRpcUrl);
   return {
     latestBlock: () => client().getBlockNumber(),
     profileRoot: (sbt, dogTagId) =>
@@ -555,6 +558,8 @@ export interface DiscoverTagArgs {
   dogTagId: bigint;
   addresses?: DiscoveryAddresses;
   rpcUrl?: string;
+  /** App-bundled endpoint used only after its own chain guard when the preferred endpoint fails. */
+  defaultRpcUrl?: string;
   reader?: TagDiscoveryReader;
   /**
    * How far back to scan, in blocks, from the chain head. Bounded by construction: an unbounded
@@ -591,7 +596,7 @@ export const DEFAULT_CHUNK_BLOCKS = 20_000n;
  */
 export async function discoverTag(args: DiscoverTagArgs): Promise<TagDiscoveryResult> {
   const addresses = args.addresses ?? DISCOVERY_ADDRESSES;
-  const reader = args.reader ?? roaxTagDiscoveryReader(args.rpcUrl);
+  const reader = args.reader ?? roaxTagDiscoveryReader(args.rpcUrl, args.defaultRpcUrl);
   const lookback = args.lookbackBlocks ?? DEFAULT_LOOKBACK_BLOCKS;
   const chunk = args.chunkBlocks ?? DEFAULT_CHUNK_BLOCKS;
   if (chunk <= 0n) throw new Error("chunkBlocks must be positive");

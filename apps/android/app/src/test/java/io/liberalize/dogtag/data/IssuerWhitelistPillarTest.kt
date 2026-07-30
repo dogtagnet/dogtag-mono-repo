@@ -115,6 +115,7 @@ class IssuerWhitelistPillarTest {
     fun anUnresolvedReadSaysTheReadFailedRatherThanAssertingAChainFact() = runBlocking {
         val pillar = RoaxRpc.issuerWhitelistPillar(
             rpcUrl = "http://127.0.0.1:1",
+            expectedChainId = 135,
             issuerRegistry = "0xreg",
             issuerFactory = "0xfactory",
             documentStore = "0xabc",
@@ -138,6 +139,7 @@ class IssuerWhitelistPillarTest {
     fun aDocumentNamingNoIssuerContractIsIndeterminateNotAMismatch() = runBlocking {
         val pillar = RoaxRpc.issuerWhitelistPillar(
             rpcUrl = "http://127.0.0.1:1",
+            expectedChainId = 135,
             issuerRegistry = "0xreg",
             issuerFactory = "0xfactory",
             documentStore = "   ",
