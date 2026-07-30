@@ -2997,6 +2997,47 @@ reach for it got built.
   acquire I/O or turn a position into a query parameter, path, network cache key, or log line.
   `sortByDistance` is fine; a `fetchNearby` would defeat the module.
 
+### There is deliberately no map and no location autocomplete (captain decision 2026-07-29)
+
+Full decision record: `docs/MAP_RESEARCH.md`.
+An embedded map, a hosted place-search field and any paid location vendor were **declined** so that nothing
+has to be paid for, and this entry exists so the absence is not read as a gap to fill.
+What ships instead is what the sections here describe: on-device provider-name search, the `vet`/`groomer`
+kind filter, on-device distance, and a Directions handoff that leaves the app. iOS opens Apple Maps
+(`MKMapItem.openInMaps`); Android fires an `ACTION_VIEW` `geo:` chooser, so it reaches whichever installed
+app the owner picks, which need not be the OS's own maps app.
+Either way the map is another app's, it costs nothing, and it needs no key.
+
+Four things in that record are the reason not to re-run the survey.
+Every figure was priced from the vendors' own pages on **2026-07-29** and carries that date, so re-check
+before committing money rather than re-researching.
+If it is revisited the answer is **one vendor, Stadia Maps**, roughly $20-80/month, and **not Google** -
+**cost is the whole reason, and it is the only one.** Google's cheapest *compliant* shape (Places UI Kit,
+one autocomplete session plus one UI Kit query per search) is $2,750/mo at 300k searches and $7,810 at 1m
+against Stadia's map-inclusive $80 and $250, so roughly **34x and 31x**. Its older programmatic
+search-and-coordinates patterns are roughly **100x to 165x** Stadia, but that multiple is scoped to those
+patterns with map traffic excluded on both sides - do not quote it as Google's cheapest option.
+The revisit trigger is Nearby actually reaching ~10,000 searches/day.
+
+**Google's terms do NOT forbid the cheap hybrid, and this entry used to say they did.** §3.2.3(e)
+*No Use With Non-Google Maps* binds the raw **Places API** (restated at Service Specific Terms §14.2), but
+**§15.1 expressly permits Places UI Kit "with or without any map, including a non-Google Map" and states it
+"will prevail over the No Use with Non-Google Maps clause"**. Basic Place Autocomplete plus a UI Kit Details
+query yields coordinates on web, Android and iOS. So a Google dropdown beside a free MapLibre map is
+allowed; it is merely expensive. §15.4 (attribution may not be altered or obscured) and §15.3 (third-party
+combination at your own risk) are the real constraints on that path.
+
+**If a hosted search field ever ships it needs its OWN disclosure, in the same commit** - it sends what the
+owner types to whoever answers it. Same rule as verdict badges: a surface may not state something the code
+no longer does. But do NOT rewrite the existing manual-entry copy reflexively:
+`NearbyScreen.swift:361` and `NearbyScreen.kt:460` promise that *manually typed coordinates* are parsed
+locally and never geocoded or sent anywhere, and that stays true beside a separate search field - claiming
+otherwise would itself be false. Those two strings change only if the manual-entry flow is the thing routed
+through a geocoder.
+The integration belongs in a NEW sibling module (`placesearch/`), never inside `geo/` or `directory/`; a
+sibling keeps `geo/` pure and `ProviderDirectory.read()` queryless, because place search resolves an origin
+rather than filtering the directory.
+
 ### Provider directory reads are explicit `found | empty | unavailable` (`packages/ui/src/directory/`)
 
 Nearby consumers read through `ProviderDirectory.read()`, which deliberately takes **no query**:
