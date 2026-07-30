@@ -166,8 +166,8 @@ contract DogTagIssuerV2 is Initializable, Ownable2Step {
     /// @dev The implementation is locked at construction; clones initialize. `Ownable` rejects a zero
     /// initial owner, so the implementation is owned by its deployer — a value that never matters,
     /// because `_disableInitializers()` makes the implementation permanently uninitializable and it
-    /// holds no roots. The factory nonetheless probes `owner()` on it at construction; see
-    /// `DogTagIssuerFactoryV2`'s dependency checks.
+    /// holds no roots. The factory nonetheless requires its exact runtime-code identity at construction;
+    /// see `DogTagIssuerFactoryV2`'s dependency checks.
     constructor() Ownable(msg.sender) {
         _disableInitializers(); // C-1: lock the implementation (clones initialize)
     }

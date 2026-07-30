@@ -4,17 +4,18 @@ pragma solidity 0.8.28;
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {DogTagIssuerV2, IProviderAuthority} from "./DogTagIssuerV2.sol";
 
-/// @dev A prior generation's cross-generation root query. The intended occupant is the S-8
-/// `CloneProvenanceRouter`, which publishes `isRootAnchored` for exactly this purpose: it answers "does
-/// ANY earlier generation already hold this root", spanning every generation the router carries rather
-/// than one factory's own mapping.
+/// @dev The two reads this generation requires from the S-8 `CloneProvenanceRouter`.
+/// `isRootAnchored` answers "does ANY generation already hold this root", spanning every generation the
+/// router carries rather than one factory's own mapping. `isGeneration` is the membership assertion the
+/// router publishes; this factory requires a true answer for itself before it may accept an anchor.
 ///
-/// **Three requirements on whatever occupies this slot, and all three are permanent because the
-/// reference is immutable.** It MUST answer this selector, it MUST NOT revert, and it MUST answer
-/// `false` for a root nothing has anchored. The factory gates every `registerRoot` on it, so an occupant
-/// that reverts — or one that answers `true` indiscriminately — bricks issuance for the whole generation
-/// with no way to repoint. The constructor probes all three before storing the reference; see
-/// {DogTagIssuerFactoryV2-constructor}.
+/// **The requirements on whatever occupies this slot are permanent because the reference is
+/// immutable.** It MUST answer both selectors without reverting; it MUST answer `false` for a root
+/// nothing has anchored; and it MUST report this factory as a generation before `registerRoot` accepts
+/// anything. The constructor probes both selectors before storing the reference, while this factory
+/// cannot yet have been appended because it has no runtime code. `registerRoot` enforces the membership
+/// transition afterwards. An occupant that reverts, claims every root, or never records this factory
+/// therefore fails loudly instead of producing anchors the protocol router cannot resolve.
 ///
 /// This is deliberately NOT `rootIssuer(bytes32)`. That selector is the generation-LOCAL index — a
 /// generation-1 factory answers only for roots its own clones anchored — so wiring it here would leave
@@ -22,15 +23,15 @@ import {DogTagIssuerV2, IProviderAuthority} from "./DogTagIssuerV2.sol";
 /// `isRootAnchored` is the query that spans them, which is why S-8 published it.
 interface IPriorRootAnchors {
     function isRootAnchored(bytes32 root) external view returns (bool);
+    function isGeneration(address factory) external view returns (bool);
 }
 
-/// @dev The owner-bearing getter surface every clone of this generation answers. Authorization reads
-/// `owner()` and `recordType()` only, and never on an address that failed `isClone` — see
-/// {DogTagIssuerFactoryV2-_authorization}. `pendingOwner()` is not part of authorization; it is probed
-/// once, against the implementation, as a conformance signal at construction.
+/// @dev The owner-bearing getter surface authorization reads from every clone of this generation.
+/// Neither getter is called on an address that failed `isClone` — see
+/// {DogTagIssuerFactoryV2-_authorization}. The implementation's complete identity is established by
+/// exact runtime-code hash at construction, not by probing this partial read surface.
 interface IOwnedIssuer {
     function owner() external view returns (address);
-    function pendingOwner() external view returns (address);
     function recordType() external view returns (bytes32);
 }
 
@@ -208,9 +209,12 @@ contract DogTagIssuerFactoryV2 {
     error ZeroAddress();
     /// @dev A constructor dependency has no code at all.
     error NotAContract(address dependency);
-    error ImplementationDoesNotAnswer(address impl);
+    /// @dev `impl` is code, but not the exact `DogTagIssuerV2` runtime this factory was compiled for.
+    error ImplementationCodeMismatch(address impl);
     error AuthorityDoesNotAnswer(address authority);
     error PriorIndexDoesNotAnswer(address priorIndex);
+    /// @dev This factory has not yet been appended to its immutable provenance router.
+    error FactoryNotRegisteredInPriorIndex(address factory);
 
     /// @param impl the `DogTagIssuerV2` implementation clones delegate to.
     /// @param registry_ the authority core — see [`IProviderAuthority`].
@@ -218,41 +222,43 @@ contract DogTagIssuerFactoryV2 {
     ///
     /// @dev Every dependency is `immutable` and this contract has no admin, so a wrong one is remedied
     /// only by deploying a new factory — and for `priorIndex` that means a new verification registry too,
-    /// since its `rootIndex` is immutable as well. Each is therefore checked for code AND for ABI
-    /// behaviour before it is stored, so the three ways a wrong address stays silent are closed here
-    /// rather than discovered in production: an EOA (a staticcall to one SUCCEEDS, with empty
-    /// returndata), a contract that does not answer the selector, and one that answers the wrong width.
+    /// since its `rootIndex` is immutable as well. Each is therefore checked for code and then either
+    /// exact identity (the implementation) or required ABI behaviour (the authority and prior index)
+    /// before it is stored, so the ways a wrong address stays silent are closed here rather than
+    /// discovered in production: an EOA (a staticcall to one SUCCEEDS, with empty returndata), a contract
+    /// that does not answer a required selector, one that answers the wrong width, and an
+    /// implementation-shaped impostor.
     ///
-    /// **Read the implementation check for exactly what it establishes.** It proves the three getters are
-    /// present and non-reverting in the code every clone delegates to. It does NOT prove `impl` is
-    /// `DogTagIssuerV2` — nothing on chain can — and it cannot rule out a getter that reverts on some
-    /// later storage state. What it does rule out is the two shapes that would otherwise let
-    /// `createIssuer` report success while producing an unusable clone: an EOA implementation, and code
-    /// whose `owner()` or `recordType()` does not answer. That is also the exact extent of the no-revert
-    /// guarantee [`resolveActiveIssuer`] rests on.
+    /// The implementation check is exact: `impl.codehash` must equal the hash of
+    /// `type(DogTagIssuerV2).runtimeCode` compiled into this factory. Getter-shaped code, including a
+    /// fallback that returns one word for every selector, is not sufficient. This pins every clone to
+    /// the precise implementation whose owner and record-type reads the factory relies on.
     ///
-    /// The core and the prior index are each additionally required to answer `false` to a
-    /// zero-everything query. For the core that refuses one which authorizes indiscriminately; for the
-    /// prior index it refuses one which claims every root, and an occupant claiming every root would make
-    /// every `registerRoot` revert — bricking issuance for the whole generation, permanently.
+    /// The core and the prior index are additionally required to answer `false` to zero-everything
+    /// queries. For the core that refuses one which authorizes indiscriminately. For the prior index it
+    /// refuses one which claims every root, and also proves that `isGeneration` has the expected ABI
+    /// before this not-yet-deployed factory can be appended. `registerRoot` later requires that answer
+    /// to have become true, enforcing router-first -> factory -> append when the intended router occupies
+    /// the slot.
     constructor(address impl, address registry_, address priorIndex_) {
         if (impl == address(0) || registry_ == address(0) || priorIndex_ == address(0)) {
             revert ZeroAddress();
         }
 
         _requireCode(impl);
-        if (
-            !_answersWord(impl, abi.encodeCall(IOwnedIssuer.owner, ()))
-                || !_answersWord(impl, abi.encodeCall(IOwnedIssuer.pendingOwner, ()))
-                || !_answersWord(impl, abi.encodeCall(IOwnedIssuer.recordType, ()))
-        ) {
-            revert ImplementationDoesNotAnswer(impl);
+        if (impl.codehash != keccak256(type(DogTagIssuerV2).runtimeCode)) {
+            revert ImplementationCodeMismatch(impl);
         }
 
         _requireAuthorityAnswers(registry_);
 
         _requireCode(priorIndex_);
-        if (!_answersFalse(priorIndex_, abi.encodeCall(IPriorRootAnchors.isRootAnchored, (bytes32(0))))) {
+        if (
+            !_answersFalse(priorIndex_, abi.encodeCall(IPriorRootAnchors.isRootAnchored, (bytes32(0))))
+                || !_answersFalse(
+                    priorIndex_, abi.encodeCall(IPriorRootAnchors.isGeneration, (address(this)))
+                )
+        ) {
             revert PriorIndexDoesNotAnswer(priorIndex_);
         }
 
@@ -280,12 +286,6 @@ contract DogTagIssuerFactoryV2 {
         ) {
             revert AuthorityDoesNotAnswer(authority_);
         }
-    }
-
-    /// @dev True when the target answers with exactly one ABI word and does not revert.
-    function _answersWord(address target, bytes memory call_) private view returns (bool) {
-        (bool ok, bytes memory ret) = target.staticcall(call_);
-        return ok && ret.length == 32;
     }
 
     /// @dev True when the target answers one word and that word is zero. Decoded as `uint256` rather
@@ -409,14 +409,14 @@ contract DogTagIssuerFactoryV2 {
     ///
     /// The only address reachable here is one already in `isClone`, which `createIssuer` only ever fills
     /// with `Clones.cloneDeterministic(implementation, ...)` — and `implementation` is `immutable` AND
-    /// was probed at construction for a non-reverting `owner()`/`recordType()`. So every callee runs code
-    /// already shown to answer both getters. That is the exact extent of the guarantee: it rests on the
-    /// construction probe, not on an assumption about who deployed the implementation.
+    /// was required at construction to be byte-for-byte the `DogTagIssuerV2` runtime compiled into this
+    /// factory. So every callee delegates to the exact code whose `owner()` and `recordType()` getters
+    /// this read uses.
     ///
     /// Deliberately NOT wrapped in `try/catch`. Given the above a catch arm would stand in for a case the
-    /// construction check already refuses, and this codebase treats an unexercised guard as worse than
-    /// none. A future implementation that gives those getters a state-dependent revert path moves this
-    /// guarantee with it, and the choice has to be made again on the evidence.
+    /// exact-code construction check already refuses, and this codebase treats an unexercised guard as
+    /// worse than none. A future implementation is a different runtime hash and therefore requires a new
+    /// factory whose behaviour is reviewed as a new generation.
     function resolveActiveIssuer(address provider, bytes32 recordType) external view returns (address) {
         address clone = activeIssuer[provider][recordType];
         if (clone == address(0)) return address(0);
@@ -444,7 +444,21 @@ contract DogTagIssuerFactoryV2 {
     /// side, so the duplicate never comes into existence at all. Both, deliberately: the router's
     /// ordering must remain correct on its own, because it is what holds against a LATER generation that
     /// does not call this. This does NOT loosen either write-once guard — it only ever refuses more.
+    ///
+    /// The membership check is a separate load-bearing precondition. The router must be deployed first
+    /// so its address can be immutable here; this factory must then be deployed; and the router can only
+    /// append it after its runtime code exists. Until that append, anchoring would create a root in this
+    /// factory that the protocol-wide resolver does not yet carry. Refusing it with a named error turns
+    /// the required router -> factory -> append sequence into contract behaviour rather than an operator
+    /// promise when the intended router occupies `priorIndex`.
+    ///
+    /// Exact extent: this establishes membership as REPORTED by the immutable `priorIndex`; it cannot
+    /// authenticate that occupant or prove its generation list is complete. Wiring the real router over
+    /// every earlier generation remains a cutover precondition.
     function registerRoot(bytes32 root) external {
+        if (!priorIndex.isGeneration(address(this))) {
+            revert FactoryNotRegisteredInPriorIndex(address(this));
+        }
         require(isClone[msg.sender], "!clone");
         require(rootIssuer[root] == address(0), "root taken"); // strictly write-once
         require(!priorIndex.isRootAnchored(root), "root taken upstream");

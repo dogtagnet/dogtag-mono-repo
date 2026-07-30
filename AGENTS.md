@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 198 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 201 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -981,7 +981,7 @@ An already-installed app keeps proving against its **baked** key until you do, s
 ### The generation-2 issuer pair is BUILT, NOT DEPLOYED (registry-plan S-7)
 
 `DogTagIssuerV2` + `DogTagIssuerFactoryV2` exist in `contracts/src/` and are covered by
-`test/IssuerV2.t.sol` (59 tests). **This repo records no deployment of either** - no address in
+`test/IssuerV2.t.sol` (62 tests). **This repo records no deployment of either** - no address in
 `deployments/roax.json`, no `.env.example` key, no client config, and nothing in the tree points at one.
 Say it that way rather than "deployed nowhere": the ledger is what this repo can speak for. Deploying is
 part of the cutover (S-13/S-14) and separately captain-authorized. The generation-1 `DogTagIssuer.sol` /
@@ -1003,12 +1003,16 @@ The six things worth knowing before touching either file:
   The legacy `isWhitelistedFor` cannot serve any of them: it cannot tell an issue call from a revoke call,
   and on the core it branches on `msg.sender`, answering the orthogonal VERIFY-key capability for a caller
   that is not itself an attached service. Sharing one core across generations also breaks the router's
-  C-12 freeze - see the `CloneProvenanceRouter` section below.
+  C-12 freeze - see the `CloneProvenanceRouter` section below. This S-6 capability ladder supersedes every
+  older S-7 sentence saying generation 2 is gated solely by an issuer whitelist; that wording describes
+  generation 1, not this pair.
 - **`canIssue` and `canRevoke` are a nested ladder and must NOT be substituted for each other.** `issue`
-  asks the narrow rung, the ordinary `revoke` arm the wide one. They differ only for a superseded clone,
-  and both swaps are real defects there: one reopens a retired clone for new issuance, the other strands
-  its roots as unrevocable. `test_a_superseded_clone_refuses_new_issuance_but_still_revokes` is the only
-  test that distinguishes them.
+  asks the narrow rung, the ordinary `revoke` arm the wide one. They differ whenever a live-lifecycle
+  term unique to `canIssue` drops; a superseded clone and a suspended provider are both exercised examples.
+  Both swaps are real defects there: one reopens issuance, the other strands existing roots as unrevocable.
+  `test_a_superseded_clone_refuses_new_issuance_but_still_revokes` is the direct mutation catcher;
+  `test_a_suspended_provider_anchors_nothing_but_can_still_revoke` and
+  `test_the_authority_ladder_is_nested_not_three_independent_switches` also distinguish the rungs.
 - **Ownership is CONTROL and confers no capability - but MOVING it suspends everything.** Merging control
   into issuance would silently disarm the grant-withdrawal lever (plan §3.3). The converse surprises
   people: the core folds the CONFIRMED owner into both rungs, so a completed two-step handover pauses
@@ -1023,28 +1027,35 @@ The six things worth knowing before touching either file:
   identity UNAVAILABLE and must not fall back to the document's claim; registrar-controlled identity comes
   from the core's publication-safe identity anchor via its directory resolver. The existing readers that
   still label the on-chain name authoritative (`stacks/government/api/src/routes.rs`,
-  `packages/ui/src/domain/issuerDomainBinding.ts`) are a LATER slice and are untouched.
+  `packages/ui/src/domain/issuerDomainBinding.ts`, and the event-detail path
+  `packages/ui/src/chain/provenance.ts`) are a LATER slice and are untouched.
 - **`priorIndex` is immutable, MANDATORY non-zero, and queried via the router's `isRootAnchored`** - not
   via `rootIssuer`, which is generation-LOCAL and would leave every generation before the immediately
-  preceding one unguarded. Its occupant must answer the selector, must not revert, and must answer `false`
-  for an unanchored root; all three are probed at construction, because a reverting or always-true occupant
-  bricks issuance for the whole generation with no way to repoint. **The topology is router FIRST, then the
-  factory, then `appendGeneration` - it is NOT circular**, and the append-only design exists precisely to
-  permit that ordering. A generation-1 factory is now refused in the slot outright. Residual the code cannot
-  close: a conforming always-`false` stub is indistinguishable at construction, so wiring a router over
-  every earlier generation is a cutover precondition.
+  preceding one unguarded. Its occupant must answer both `isRootAnchored` and `isGeneration`, must not
+  revert, must answer `false` for an unanchored root, and must report this factory absent during
+  construction. **The topology is router FIRST, then the factory, then `appendGeneration`, then issuance -
+  it is NOT circular.** `registerRoot` checks `isGeneration(address(this))` first and loudly reverts
+  `FactoryNotRegisteredInPriorIndex(factory)` until append, before writing the factory's `rootIssuer`;
+  the transaction revert unwinds the clone's earlier `issuedAt` assignment. A
+  generation-1 factory is refused in the slot outright. A conforming always-`false` stub can still pass
+  construction, but now blocks every issuance rather than reinstating the bypass. Residual the code cannot
+  close: a lying/stateful occupant may later claim membership while omitting old roots, and even a real
+  router may omit an earlier generation, so the complete real router remains a cutover precondition.
 
-Two more constructor facts, since the factory has no admin and every dependency is permanent: all three
-are checked for code AND ABI behaviour before being stored (an EOA staticcall SUCCEEDS with empty
-returndata - that is the shape that stays silent), and the implementation probe proves only that
-`owner()`/`pendingOwner()`/`recordType()` answer, never that `impl` is `DogTagIssuerV2`.
+Two more constructor facts, since the factory has no admin and every dependency is permanent. All three
+must be non-zero contracts. The implementation is identified exactly:
+`impl.codehash == keccak256(type(DogTagIssuerV2).runtimeCode)`, so even an ABI-shaped impostor answering
+`owner()` / `pendingOwner()` / `recordType()` is refused with `ImplementationCodeMismatch`; this is pinned
+by `test_an_abi_shaped_impostor_implementation_is_refused`. The authority and prior index are
+behaviour-probed for their exact required reads (an EOA staticcall SUCCEEDS with empty returndata - the
+silent shape those probes must reject).
 
-Verify any change here by mutation, not by reading: the doc's §9 table lists thirty-three source mutations, each
-actually applied/run/reverted, and the named test that catches each - plus two that change no behaviour
-and are deliberately excluded rather than given vacuous rows. A guard added without one is a guard nothing
-holds. The suite's authority is a stand-in (`MockProviderAuthority`), so its three rungs are DERIVED from
-one set of registrar facts and never independently settable; keep it that way or the coverage becomes
-self-agreement.
+The doc's §9 table is true historical evidence from a one-off temporary mutation harness: thirty-three
+source mutations were actually applied/run/reverted and mapped to named red tests, while two no-behaviour
+changes were deliberately excluded. The harness was NOT committed, so the checked-in tree makes the
+source/test mappings reviewable but does not itself reproduce those mutations as a repeatable gate. The
+suite's authority is a stand-in (`MockProviderAuthority`), so its three rungs are DERIVED from one set of
+registrar facts and never independently settable; keep it that way or the coverage becomes self-agreement.
 
 ## CloneProvenanceRouter - resolution order is OLDEST FIRST, and reversing it is a revocation bypass
 
@@ -1109,8 +1120,10 @@ Three things that look like improvements and are not:
   that monotonicity is the entire safety argument for allowing the list to change at all. Removal is
   the same DoS aimed at a whole generation. `test_no_mutation_other_than_append_exists` scans the
   bytecode for those selectors.
-- **Do NOT treat the write-side guard as the protection.** `isRootAnchored` is the hook a later
-  factory's `registerRoot` should call so the duplicate never exists, but it is DEFENCE IN DEPTH.
+- **Do NOT treat the write-side guard as the protection.** `DogTagIssuerFactoryV2.registerRoot` now
+  checks that the router recognizes this factory and then calls `isRootAnchored`, so a missing append
+  fails loudly before issuance and a prior-generation duplicate never exists. That remains DEFENCE IN
+  DEPTH.
   Oldest-first is what holds against an unguarded, buggy or hostile later generation - which is why
   the revocation-bypass tests use a second REAL `DogTagIssuerFactory` as generation 2 rather than the
   guarded double. A guarded factory there would make the attack setup revert and the test would pass

@@ -199,17 +199,44 @@ contract HostileIssuer {
     }
 }
 
-/// @dev Answers the prior-index selector and nothing else, always `false`. Indistinguishable from a real
-/// router at construction — see `test_a_conforming_stub_prior_index_is_accepted_and_that_is_a_residual`.
+/// @dev Answers both prior-index selectors and lets a caller toggle generation membership, but sees no
+/// roots. Indistinguishable from a real router through this interface alone — see
+/// `test_a_conforming_stub_prior_index_is_accepted_and_that_is_a_residual`.
 contract StubAnchors is IPriorRootAnchors {
+    mapping(address => bool) private _isGeneration;
+
     function isRootAnchored(bytes32) external pure override returns (bool) {
         return false;
+    }
+
+    function isGeneration(address factory) external view override returns (bool) {
+        return _isGeneration[factory];
+    }
+
+    function appendGeneration(address factory) external {
+        _isGeneration[factory] = true;
     }
 }
 
 /// @dev Claims every root, which would make every `registerRoot` revert. Refused at construction.
 contract AllAnchored is IPriorRootAnchors {
     function isRootAnchored(bytes32) external pure override returns (bool) {
+        return true;
+    }
+
+    function isGeneration(address) external pure override returns (bool) {
+        return false;
+    }
+}
+
+/// @dev Answers the root query correctly but falsely claims that every address is already a generation.
+/// This reaches the membership-specific constructor probe instead of failing the earlier root probe.
+contract PrematureGenerationAnchors is IPriorRootAnchors {
+    function isRootAnchored(bytes32) external pure override returns (bool) {
+        return false;
+    }
+
+    function isGeneration(address) external pure override returns (bool) {
         return true;
     }
 }
@@ -239,6 +266,26 @@ contract RevertingImplementation {
 
     function recordType() external pure returns (bytes32) {
         revert GetterReverted();
+    }
+}
+
+/// @dev A wrong implementation deliberately shaped to defeat selector probes: all three expected
+/// getters answer one ABI word, and the fallback does the same for any additional selector. Exact
+/// runtime-code identity, rather than a growing list of ABI probes, is what must refuse it.
+contract AbiShapedImplementationImpostor {
+    address public owner;
+    address public pendingOwner;
+    bytes32 public recordType;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    fallback() external {
+        assembly {
+            mstore(0, 0)
+            return(0, 32)
+        }
     }
 }
 
@@ -1144,7 +1191,7 @@ contract IssuerV2Test is Test {
     }
 
     // =============================================================================================
-    // Construction: every immutable dependency is checked for code AND for ABI behaviour
+    // Construction: every immutable dependency is checked for code, then exact identity or ABI behaviour
     // =============================================================================================
 
     function test_a_zero_dependency_is_refused() public {
@@ -1168,24 +1215,43 @@ contract IssuerV2Test is Test {
         new DogTagIssuerFactoryV2(address(impl), address(authority), stranger);
     }
 
-    /// @notice An implementation whose `owner()`/`recordType()` revert would make `createIssuer` report
-    /// success while producing a permanently unusable clone, and would falsify the no-revert guarantee
-    /// `resolveActiveIssuer` rests on.
-    function test_an_implementation_whose_getters_revert_is_refused() public {
+    /// @notice An implementation whose getters revert is not the exact clone runtime and is refused
+    /// before `createIssuer` can produce a permanently unusable clone.
+    function test_a_wrong_implementation_whose_getters_revert_is_refused() public {
         address bad = address(new RevertingImplementation());
         vm.expectRevert(
-            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationDoesNotAnswer.selector, bad)
+            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationCodeMismatch.selector, bad)
         );
         new DogTagIssuerFactoryV2(bad, address(authority), address(router));
     }
 
-    /// @notice Code alone is not enough: a contract answering no selector is refused too.
+    /// @notice Code alone is not enough: any runtime other than the frozen issuer implementation is
+    /// refused, including a contract answering no selector.
     function test_an_implementation_that_answers_nothing_is_refused() public {
         address bad = address(new AnswersNothing());
         vm.expectRevert(
-            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationDoesNotAnswer.selector, bad)
+            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationCodeMismatch.selector, bad)
         );
         new DogTagIssuerFactoryV2(bad, address(authority), address(router));
+    }
+
+    /// @notice ABI-shaped replies are not implementation identity. This impostor passes every old
+    /// one-word getter probe and answers any extra selector with another word, but its runtime bytecode
+    /// is not `DogTagIssuerV2` and the constructor refuses it precisely.
+    function test_an_abi_shaped_impostor_implementation_is_refused() public {
+        AbiShapedImplementationImpostor bad = new AbiShapedImplementationImpostor();
+        assertEq(bad.owner(), impl.owner(), "the owner reply differs");
+        assertEq(bad.pendingOwner(), impl.pendingOwner(), "the pending-owner reply differs");
+        assertEq(bad.recordType(), impl.recordType(), "the record-type reply differs");
+
+        (bool answered, bytes memory ret) = address(bad).staticcall(hex"ffffffff");
+        assertTrue(answered, "the fallback did not answer");
+        assertEq(ret.length, 32, "the fallback did not return one ABI word");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(DogTagIssuerFactoryV2.ImplementationCodeMismatch.selector, address(bad))
+        );
+        new DogTagIssuerFactoryV2(address(bad), address(authority), address(router));
     }
 
     /// @notice A core that authorizes indiscriminately — including the zero-everything query — would make
@@ -1247,14 +1313,23 @@ contract IssuerV2Test is Test {
         new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
     }
 
-    /// @notice The residual, pinned as a limitation rather than as a passing property: a contract that
-    /// merely ANSWERS the query conformingly is accepted, and a stub that always says `false` is
-    /// indistinguishable from a real router at construction. Nothing on chain can tell them apart, so
-    /// wiring a real router over every earlier generation is a cutover precondition, not something this
-    /// constructor can enforce.
+    /// @notice The membership probe is load-bearing independently of the root probe: an index that
+    /// correctly sees no zero root but prematurely claims this not-yet-deployed factory is refused.
+    function test_a_prior_index_that_prematurely_claims_this_generation_is_refused() public {
+        address bad = address(new PrematureGenerationAnchors());
+        vm.expectRevert(abi.encodeWithSelector(DogTagIssuerFactoryV2.PriorIndexDoesNotAnswer.selector, bad));
+        new DogTagIssuerFactoryV2(address(impl), address(authority), bad);
+    }
+
+    /// @notice The residual, pinned as a limitation rather than as a passing property: a stateful stub
+    /// can report the factory absent during construction, later report it present, yet omit every earlier
+    /// root. Required ABI behaviour cannot authenticate the occupant or prove its history complete, so
+    /// wiring the real router over every earlier generation remains a cutover precondition.
     function test_a_conforming_stub_prior_index_is_accepted_and_that_is_a_residual() public {
+        StubAnchors stub = new StubAnchors();
         DogTagIssuerFactoryV2 stubbed =
-            new DogTagIssuerFactoryV2(address(impl), address(authority), address(new StubAnchors()));
+            new DogTagIssuerFactoryV2(address(impl), address(authority), address(stub));
+        stub.appendGeneration(address(stubbed));
 
         vm.prank(admin);
         authority.addFactoryGeneration(address(stubbed));
@@ -1273,6 +1348,42 @@ contract IssuerV2Test is Test {
     // =============================================================================================
     // The property that must not regress: write-once, per contract, honest
     // =============================================================================================
+
+    /// @notice Deployment order is router -> factory -> append. The middle state is real and must not
+    /// permit a root write that the protocol-wide router cannot resolve. The failed issue rolls all
+    /// clone and factory state back; once the factory is appended, the same issue succeeds and resolves.
+    function test_issuance_reverts_until_this_factory_is_appended_to_the_router() public {
+        DogTagIssuerFactoryV2 pending =
+            new DogTagIssuerFactoryV2(address(impl), address(authority), address(router));
+        assertFalse(router.isGeneration(address(pending)), "the factory was already in the router");
+
+        vm.prank(admin);
+        authority.addFactoryGeneration(address(pending));
+        vm.prank(providerA);
+        DogTagIssuerV2 clone = DogTagIssuerV2(pending.createIssuer(PROVIDER_A, VACCINATION, uint96(77)));
+        _commission(clone, PROVIDER_A, providerA);
+
+        vm.prank(providerA);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                DogTagIssuerFactoryV2.FactoryNotRegisteredInPriorIndex.selector, address(pending)
+            )
+        );
+        clone.issue(ROOT_1);
+
+        assertEq(clone.issuedAt(ROOT_1), 0, "the reverted issue left clone state behind");
+        assertEq(pending.rootIssuer(ROOT_1), address(0), "the unregistered factory recorded the root");
+        assertEq(router.rootIssuer(ROOT_1), address(0), "the router resolved a failed issue");
+
+        vm.prank(admin);
+        router.appendGeneration(address(pending));
+        vm.prank(providerA);
+        clone.issue(ROOT_1);
+
+        assertGt(clone.issuedAt(ROOT_1), 0, "the appended factory still could not issue");
+        assertEq(pending.rootIssuer(ROOT_1), address(clone));
+        assertEq(router.rootIssuer(ROOT_1), address(clone), "the issued root is not protocol-resolvable");
+    }
 
     function test_register_root_stays_clone_only_and_write_once() public {
         DogTagIssuerV2 clone = _live(PROVIDER_A, providerA, VACCINATION, 0);
