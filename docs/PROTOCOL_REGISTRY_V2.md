@@ -59,6 +59,13 @@ The core is the resolution root, so `providerRegistry` is how a consumer reaches
 
 A consumer computing an effective resolver must additionally re-check `isResolverApproved(kind, resolver)`, because the core keeps a deapproved selection as history.
 
+**Precondition to confirm before C-8, because this omission is an inference and not a reading.**
+The argument above is drawn from the MERGED S-6 `ProviderRegistry` source.
+S-9 (service-domain-resolver) and S-10 (provider-directory) were still in flight when this slice was written, so their source could not be read from here, and the omission assumes neither introduces a single canonical protocol-wide resolver address intended for publication in the discovery record.
+Whoever merges those two slices must confirm that assumption against their source before the cutover.
+It matters because adding a member afterwards is not free: it is a swap-republish that restamps `publishedAt` and re-emits `DiscoverySetPublished` for a change that moves no address, the exact trap AGENTS.md records for the generation-1 script.
+If either slice does publish one canonical address, the member belongs in the record and the decision above must be revisited rather than worked around.
+
 ## The timelock, which is the whole reason this deployment is the only chance
 
 The live generation-1 registry carries `PUBLISH_TIMELOCK == 0` and the value is `immutable`.
@@ -133,6 +140,12 @@ forge script contracts/script/PublishProtocolVersionsV2.s.sol:PublishProtocolVer
 
 Every input is a mandatory environment variable under the `GEN2_` namespace, with no stale-network fallbacks: `GEN2_PROTOCOL_REGISTRY`, `GEN2_FACTORY`, `GEN2_VERIFICATION_REGISTRY`, `GEN2_SBT`, `GEN2_VERIFIER`, `GEN2_PROVIDER_REGISTRY`, `GEN2_ROOT_INDEX`, `GEN2_ZKEY_SHA256`, `GEN2_WITNESS_MOBILE_SHA256`, `GEN2_R1CS_SHA256`, `GEN2_WASM_SHA256`, `GEN2_ARTIFACTS_URL`, `GEN2_MIN_APP_VERSION`.
 The deploy script takes `GEN2_ADMIN` (mandatory, no default), `GEN2_PUBLISHER`, `GEN2_PUBLISH_TIMELOCK_SECS` and `GEN2_TESTNET_DEPLOY`.
+
+**Phase 2 needs the SAME environment phase 1 had, not just the registry address.**
+It used to read only `GEN2_PROTOCOL_REGISTRY`.
+It now reads every publish variable in that list: the six addresses feed the re-preflight, and all thirteen feed the two staged-versus-environment checks that confirm the bytes about to be activated are still the bytes this environment describes.
+On mainnet phase 2 runs two days after phase 1, plausibly in a different shell or a different operator's session, so load the same `.env` rather than exporting the registry address alone.
+A missing variable reverts inside `vm.envAddress` / `vm.envBytes32` / `vm.envString` before anything is broadcast, so it fails safe, but the message names only the variable and says nothing about the two-phase procedure.
 
 `PUBLISHER_ROLE` is `keccak256("PUBLISHER")`, not `keccak256("PUBLISHER_ROLE")`.
 Read it off the deployed contract rather than recomputing it from the variable name.
@@ -228,12 +241,34 @@ Deferred, deliberately:
 ## Tests
 
 - `contracts/test/ProtocolRegistryV2.t.sol` (22): the constructor floor as a boundary rather than a `!= 0` check, the delay actually gating every write, the selector rename and the exact 10-word arity, `factory != rootIndex`, per-member zero refusals, R-5 independence in both directions, deprecate-cancels-a-stale-proposal, binding lifecycle, fail-closed reads, role gating, and the golden encoding the two mobile suites are pinned against.
-- `contracts/test/DeployProtocolRegistryV2.t.sol` (9): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), each of the preflight's five relations broken in turn, a real mid-window verifier swap driven through the verification registry's own 2-day timelock so the execute phase's re-preflight refuses it, and a record re-staged after the environment was read so the staged-versus-environment check refuses it.
+- `contracts/test/DeployProtocolRegistryV2.t.sol` (10): the mainnet guard, the testnet opt-in that cannot reach zero, the contract floor holding without the script, the real scripts end to end against a REAL stack (real router over real factories, real SBT, real verifier, real verification registry), each of the preflight's five relations broken in turn plus the accept case and an unmutated positive control, a real mid-window verifier swap driven through the verification registry's own 2-day timelock so the execute phase's re-preflight refuses it, and one re-staging test per axis so neither staged-versus-environment check is vacuous.
 
-Note that this suite is currently flaky at forge's default thread count, for a reason that predates the execute-phase work: `vm.setEnv` writes the PROCESS environment while forge 1.5.1 runs a suite's test functions concurrently, so any test writing a non-canonical `GEN2_*` value races the tests reading it.
-The `GEN2_` namespace closed the cross-suite collision but not this within-suite one.
-`forge test --threads 1` is deterministically green.
-The two tests added for the execute-phase re-check deliberately write no divergent value - one moves the verifier on-chain and the other re-stages the record on the registry - so they do not widen the window.
+### No test in that file writes a NON-CANONICAL environment value, and that is what makes it deterministic
+
+`vm.setEnv` writes the PROCESS environment while forge 1.5.1 runs a suite's test functions CONCURRENTLY, so a test writing a non-canonical `GEN2_*` value is visible to every other test in the file for as long as it holds it.
+Two tests used to do that to reach the preflight's negative cases, and the suite was nondeterministic as a result.
+
+Those cases are now asked of `preflight` directly: it is `public view` and takes the `DiscoverySet` by value, so a mis-transcribed record is built in memory and passed as an argument with no environment involved.
+That is a gain rather than a concession - the five cases were never about env plumbing, they are about which relations the preflight enforces, and asserting them through the function is more direct as well as deterministic.
+
+The precise invariant to preserve is DIVERGENCE, not abstinence.
+Four tests still call `_setPublishEnv`/`_deployRegistry`, because they drive the real scripts and the scripts read the environment.
+That is safe because forge runs `setUp` once and snapshots, so every test function sees identical fixture addresses and those four writes are byte-identical to each other; concurrent identical writes cannot be observed as a change.
+A new test may therefore run the scripts freely, but must not write a value that differs from the canonical set - to vary a record, mutate the struct and call `preflight` directly, or re-stage on the registry as the two execute-phase tests do.
+
+Measured on a 10-core machine, forge 1.5.1:
+
+| configuration | before | after |
+|---|---|---|
+| `--match-path test/DeployProtocolRegistryV2.t.sol`, default threads | 0/8 runs green | 10/10 runs green |
+| whole `forge test`, default threads | not a reliable signal (see below) | 10/10 runs green |
+
+The "before" column is the isolated-file measurement, which is the one that matters: running the file alone gives its concurrent test functions maximum interleaving. An earlier reading of 21 consecutive clean WHOLE-SUITE runs was a false clean - with 14 suites competing for the thread pool the three env-writing tests were often scheduled sequentially, so the whole-suite configuration hid the race rather than disproving it.
+
+Separate observation, measured rather than assumed: the two other files that call `vm.setEnv` are NOT flaky by this mechanism.
+`contracts/test/PinConsentWitnessGraph.t.sol` ran 8/8 green and `contracts/test/DeployProtocolRegistry.t.sol` 8/8 green, each isolated by `--match-path` at default threads.
+Generation 1's file has a single env-touching test writing only canonical values (its other tests pass explicit arguments to `validatePublishTimelock`), so it has no within-suite divergence to race on.
+Nothing outside this branch needed fixing.
 - `crates/dogtag-standard-rs` `discovery::tests`: the generation-2 anchor validating and surfacing both members, every unusable-address form failing closed, absence passing, the error naming the member, and a platform lie still outranking the shape check.
 - `crates/dogtag-prover-rs` `manifest::tests`: the additive-serialization property, a generation-2 manifest signing over both members, the generation mismatch as a conflict in both directions, and on-chain precedence on the new members.
 - `stacks/vet/api/tests/discovery_validation.rs`: both members travelling manifest to reconcile to anchor to validated version, and a stale manifest unable to steer the root index.

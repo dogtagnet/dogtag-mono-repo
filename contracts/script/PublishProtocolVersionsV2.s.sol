@@ -151,6 +151,53 @@ abstract contract PublishV2Base is Script {
             "staged discovery set differs from this environment"
         );
     }
+
+    /// @notice The ARTIFACT-axis counterpart. Reverts naming the disagreeing member.
+    ///
+    /// The soundness argument that motivates the discovery-axis check does NOT apply here: pins are
+    /// byte-integrity and the verifier is a VK identity, so there is no artifact preflight that could be
+    /// misled into printing a green about a record it did not describe. What applies instead is the
+    /// operator's reading of the ONE combined verdict this phase prints. Without this check an operator
+    /// who edited `GEN2_ZKEY_SHA256` between the phases would read "staged bytes match" over a
+    /// publication of the OLD staged pins, and only `minAppVersion` would be visible in the closing log.
+    /// Checking both axes is cheaper than printing two verdicts and leaves nothing to interpret.
+    ///
+    /// Members are named individually because a pin disagreement is otherwise indistinguishable from a
+    /// URL or floor disagreement, and the remedies differ. The whole-struct check after them is the
+    /// catch-all: `publishedAt`/`active` are stamped at execute rather than taken from the environment,
+    /// so they cannot differ today, but a member added later is covered without being remembered.
+    function requireStagedArtifactsMatchEnv(ProtocolRegistryV2 reg, ProtocolRegistryV2.ArtifactSet memory a)
+        public
+        view
+    {
+        ProtocolRegistryV2.ArtifactSet memory staged = reg.getPendingArtifactSet(a.artifactSetId);
+        require(staged.artifactSetId == a.artifactSetId, "staged artifactSetId differs from this environment");
+        require(staged.zkeySha256 == a.zkeySha256, "staged zkeySha256 differs from this environment");
+        require(
+            staged.witnessMobileSha256 == a.witnessMobileSha256,
+            "staged witnessMobileSha256 differs from this environment"
+        );
+        require(
+            staged.witnessServerR1csSha256 == a.witnessServerR1csSha256,
+            "staged witnessServerR1csSha256 differs from this environment"
+        );
+        require(
+            staged.witnessServerWasmSha256 == a.witnessServerWasmSha256,
+            "staged witnessServerWasmSha256 differs from this environment"
+        );
+        require(
+            keccak256(bytes(staged.artifactBaseUrl)) == keccak256(bytes(a.artifactBaseUrl)),
+            "staged artifactBaseUrl differs from this environment"
+        );
+        require(
+            keccak256(bytes(staged.minAppVersion)) == keccak256(bytes(a.minAppVersion)),
+            "staged minAppVersion differs from this environment"
+        );
+        require(
+            keccak256(abi.encode(staged)) == keccak256(abi.encode(a)),
+            "staged artifact set differs from this environment"
+        );
+    }
 }
 
 /// @notice Phase 1 — preflight, then propose the version on both axes plus its binding.
@@ -224,6 +271,14 @@ contract PublishProtocolVersionsV2Propose is PublishV2Base {
 /// record this phase is about to activate).
 ///
 /// It runs BEFORE `vm.startBroadcast()` so a refusal spends no gas and leaves no half-open broadcast.
+///
+/// # This phase needs the SAME environment phase 1 had
+///
+/// Phase 2 used to read only `GEN2_PROTOCOL_REGISTRY`. The re-preflight and the two staged-versus-env
+/// checks mean it now reads every publish variable: the six `GEN2_*` addresses, the four pins, and
+/// `GEN2_ARTIFACTS_URL` / `GEN2_MIN_APP_VERSION`. On mainnet that is two days after phase 1, plausibly in
+/// a different shell, so load the same `.env` rather than only the registry address. A missing variable
+/// reverts inside `vm.envAddress`/`vm.envBytes32` before anything is broadcast.
 contract PublishProtocolVersionsV2Execute is PublishV2Base {
     function run() external {
         ProtocolRegistryV2 reg = _registry();
@@ -231,9 +286,12 @@ contract PublishProtocolVersionsV2Execute is PublishV2Base {
         console2.log("ProtocolRegistryV2", address(reg));
 
         ProtocolRegistryV2.DiscoverySet memory discoverySet = _discoverySet();
+        ProtocolRegistryV2.ArtifactSet memory artifactSet = _artifactSet();
         requireStagedMatchesEnv(reg, discoverySet);
+        requireStagedArtifactsMatchEnv(reg, artifactSet);
         preflight(discoverySet);
         console2.log("Re-preflight OK: the staged record still describes the live deployment");
+        console2.log("Staged bytes on BOTH axes still match this environment");
 
         vm.startBroadcast();
         reg.executeDiscoverySet(ProtocolVersionsV2.levelBV2Id());

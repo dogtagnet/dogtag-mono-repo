@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 362 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 363 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -120,8 +120,16 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   and `ProtocolRegistryV2.t.sol` + `DeployProtocolRegistryV2.t.sol` cover the built-but-undeployed
   generation-2 discovery registry, including the constructor timelock floor, the golden ABI encoding
   both mobile anchor decoders are pinned against, and the publish script's execute-phase re-preflight
-  refusing a `zkVerifier` swapped inside the publish window (see "ProtocolRegistryV2 is BUILT, NOT
-  DEPLOYED").
+  refusing a `zkVerifier` swapped inside the publish window plus its staged-versus-environment check on
+  BOTH axes (see "ProtocolRegistryV2 is BUILT, NOT DEPLOYED"). **The preflight's negative cases are
+  asserted by calling `preflight` directly with a mutated struct, never by writing `GEN2_*` and running
+  the script**: `vm.setEnv` writes the PROCESS environment while forge runs a suite's test functions
+  concurrently, so the env-driven form made that file fail 8 runs out of 8 at default threads under
+  `--match-path` isolation. The invariant is DIVERGENCE, not abstinence: four tests still write the
+  environment because they drive the real scripts, but all four write byte-identical canonical values
+  (the `setUp` snapshot gives every test function the same fixture addresses), so the writes cannot be
+  observed as a change. To vary a record, mutate the struct and call `preflight`, or re-stage on the
+  registry - never write a divergent `GEN2_*`.
   Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a

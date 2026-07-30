@@ -27,6 +27,9 @@ import {Groth16VerifierConsent} from "../src/Groth16VerifierConsent.sol";
 contract DeployProtocolRegistryV2Test is Test {
     DeployProtocolRegistryV2 internal deployer;
 
+    /// A publish script instance used ONLY for its `public view` preflight, which needs no environment.
+    PublishProtocolVersionsV2Propose internal preflightHarness;
+
     IssuerRegistry internal providerCore; // stands in the immutable `issuerRegistry` slot
     DogTagIssuer internal impl;
     DogTagIssuerFactory internal factoryV1;
@@ -41,6 +44,7 @@ contract DeployProtocolRegistryV2Test is Test {
 
     function setUp() public {
         deployer = new DeployProtocolRegistryV2();
+        preflightHarness = new PublishProtocolVersionsV2Propose();
 
         // A real generation-1 + generation-2 factory pair behind a real router, oldest first.
         //
@@ -192,47 +196,73 @@ contract DeployProtocolRegistryV2Test is Test {
         assertTrue(a.active);
     }
 
+    /// @notice The canonical record, built straight from the fixture. Every negative case below mutates
+    /// exactly one member of this and asks `preflight` about it.
+    function _canonicalDiscoverySet() internal view returns (ProtocolRegistryV2.DiscoverySet memory) {
+        return ProtocolVersionsV2.levelBV2Discovery(
+            address(factoryV2),
+            address(verificationRegistry),
+            address(sbt),
+            address(verifier),
+            address(providerCore),
+            address(router)
+        );
+    }
+
     /// @notice The preflight is the point of the propose phase, so each of its five relations is broken in
     /// turn and must refuse. Without these the preflight could be deleted and the happy path above would
     /// still pass.
+    ///
+    /// Asserted through `preflight` DIRECTLY rather than by mutating `GEN2_*` and running the script.
+    /// These five cases are about which relations the preflight enforces, not about env plumbing, and
+    /// `preflight` is `public view` and takes the record by value precisely so they can be asked that way.
+    /// Driving them through the environment was also unsound as a test: `vm.setEnv` writes the
+    /// PROCESS-global environment while forge runs a suite's test functions concurrently, so a
+    /// non-canonical value was visible to every other test in this file and the suite failed 8 runs out of
+    /// 8 at default threads. Do not restore the env-driven form; the happy-path test above is where env
+    /// plumbing belongs, and it covers all thirteen variables end to end.
+    ///
+    /// The invariant is DIVERGENCE, not abstinence. Tests that run the real scripts still write the
+    /// environment, and that is safe because `setUp` is snapshotted, so every test function sees the same
+    /// fixture addresses and every `_setPublishEnv` writes byte-identical values. A new test may run the
+    /// scripts; it must not write a `GEN2_*` value that differs from the canonical set.
     function test_the_preflight_refuses_every_mis_transcribed_address() public {
-        ProtocolRegistryV2 registry = _deployRegistry();
-        _setPublishEnv(registry);
-        PublishProtocolVersionsV2Propose propose = new PublishProtocolVersionsV2Propose();
+        PublishProtocolVersionsV2Propose propose = preflightHarness;
+        ProtocolRegistryV2.DiscoverySet memory d;
 
         // The most consequential slip: the factory published where the root index belongs. It is exactly
         // the generation-1 invariant (`factory == rootIndex`) applied to a generation where it is false,
         // and a consumer following it resolves generation-2 roots only and loses all 19 historical ones.
-        vm.setEnv("GEN2_ROOT_INDEX", vm.toString(address(factoryV2)));
+        d = _canonicalDiscoverySet();
+        d.rootIndex = address(factoryV2);
         vm.expectRevert(bytes("rootIndex != verificationRegistry.rootIndex()"));
-        propose.run();
-        vm.setEnv("GEN2_ROOT_INDEX", vm.toString(address(router)));
+        propose.preflight(d);
 
-        vm.setEnv("GEN2_PROVIDER_REGISTRY", vm.toString(address(sbt)));
+        d = _canonicalDiscoverySet();
+        d.providerRegistry = address(sbt);
         vm.expectRevert(bytes("providerRegistry != verificationRegistry.issuerRegistry()"));
-        propose.run();
-        vm.setEnv("GEN2_PROVIDER_REGISTRY", vm.toString(address(providerCore)));
+        propose.preflight(d);
 
-        vm.setEnv("GEN2_SBT", vm.toString(address(providerCore)));
+        d = _canonicalDiscoverySet();
+        d.sbt = address(providerCore);
         vm.expectRevert(bytes("sbt != verificationRegistry.sbt()"));
-        propose.run();
-        vm.setEnv("GEN2_SBT", vm.toString(address(sbt)));
+        propose.preflight(d);
 
-        vm.setEnv("GEN2_VERIFIER", vm.toString(address(sbt)));
+        d = _canonicalDiscoverySet();
+        d.verifier = address(sbt);
         vm.expectRevert(bytes("verifier != verificationRegistry.zkVerifier()"));
-        propose.run();
-        vm.setEnv("GEN2_VERIFIER", vm.toString(address(verifier)));
+        propose.preflight(d);
 
         // A factory the router has never been told about: its clones' roots would resolve nowhere.
         DogTagIssuerFactory stranger = new DogTagIssuerFactory(address(impl), address(providerCore), GOV);
-        vm.setEnv("GEN2_FACTORY", vm.toString(address(stranger)));
+        d = _canonicalDiscoverySet();
+        d.factory = address(stranger);
         vm.expectRevert(bytes("factory is not a generation of rootIndex"));
-        propose.run();
-        vm.setEnv("GEN2_FACTORY", vm.toString(address(factoryV2)));
+        propose.preflight(d);
 
-        // With everything restored the same call succeeds, so none of the above passed for a stray reason.
-        propose.run();
-        assertGt(registry.discoverySetEta(ProtocolVersionsV2.levelBV2Id()), 0);
+        // The positive control: unmutated, the same call passes, so none of the above refused for a stray
+        // reason such as an unrelated relation already being broken in the fixture.
+        propose.preflight(_canonicalDiscoverySet());
     }
 
     /// @notice The one relation that can drift INSIDE the publish window, driven for real rather than
@@ -325,13 +355,52 @@ contract DeployProtocolRegistryV2Test is Test {
         execute.run();
     }
 
-    /// @notice The preflight accepts generation 1's factory too, because the router holds both generations
-    /// and either is a legitimate `factory` member — the check is membership, not recency.
-    function test_the_preflight_accepts_any_generation_the_router_holds() public {
+    /// @notice The ARTIFACT-axis twin of the test above, so neither staged-versus-env check is vacuous.
+    ///
+    /// This axis has no preflight to be misled - pins are byte-integrity and cannot be checked on-chain -
+    /// so what the check protects is the ONE combined verdict phase 2 prints. Without it an operator who
+    /// edited a pin between the phases would read that verdict over a publication of the OLD staged pins,
+    /// and only `minAppVersion` would have been visible in the closing log.
+    ///
+    /// The zkey pin is the member driven here because it is the one a swap would make unrecoverable: a
+    /// zkey proving against a different VK is exactly what the pin exists to refuse.
+    function test_the_execute_phase_refuses_artifact_pins_re_staged_since_the_environment_was_read() public {
         ProtocolRegistryV2 registry = _deployRegistry();
         _setPublishEnv(registry);
-        vm.setEnv("GEN2_FACTORY", vm.toString(address(factoryV1)));
+        PublishProtocolVersionsV2Execute execute = new PublishProtocolVersionsV2Execute();
         new PublishProtocolVersionsV2Propose().run();
-        assertEq(registry.getPendingDiscoverySet(ProtocolVersionsV2.levelBV2Id()).factory, address(factoryV1));
+
+        // Same artifactSetId, one different pin - so this REPLACES what `executeArtifactSet` would write.
+        ProtocolRegistryV2.ArtifactSet memory reStaged = ProtocolVersionsV2.levelBArtifacts(
+            bytes32(uint256(0xDEADBEEF)),
+            bytes32(uint256(0xB0B)),
+            bytes32(uint256(0xCAFE)),
+            bytes32(uint256(0xD06)),
+            "https://artifacts.dogtag.test/consent",
+            "1.6.0"
+        );
+        vm.prank(DEFAULT_SENDER);
+        registry.proposeArtifactSet(reStaged);
+        assertEq(
+            registry.getPendingArtifactSet(ProtocolVersionsV2.levelBArtifactsId()).zkeySha256,
+            reStaged.zkeySha256,
+            "the staged artifact set really was replaced"
+        );
+
+        vm.warp(block.timestamp + registry.PUBLISH_TIMELOCK());
+        vm.expectRevert(bytes("staged zkeySha256 differs from this environment"));
+        execute.run();
+    }
+
+    /// @notice The preflight accepts generation 1's factory too, because the router holds both generations
+    /// and either is a legitimate `factory` member - the check is membership, not recency.
+    ///
+    /// Asked of `preflight` directly, for the reason given on the mis-transcription test above: the claim
+    /// is about which factories the relation admits, and driving it through `GEN2_FACTORY` made this file
+    /// nondeterministic.
+    function test_the_preflight_accepts_any_generation_the_router_holds() public view {
+        ProtocolRegistryV2.DiscoverySet memory d = _canonicalDiscoverySet();
+        d.factory = address(factoryV1);
+        preflightHarness.preflight(d);
     }
 }
