@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 285 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 330 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -108,11 +108,15 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
   issuance, and the registrar-only provider-binding correction; `IssuerV2.t.sol` covers the
   built-but-undeployed generation-2 issuer pair (see "The generation-2 issuer pair is BUILT, NOT
-  DEPLOYED"); and `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the generation-2 pair's
+  DEPLOYED"); `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the generation-2 pair's
   locally-declared oracle interface to the REAL provider core (`ProviderRegistry.t.sol` binds that core
   too, for its own behaviour), pinning that the four functions the pair asks of it are the core's own on
-  both axes a signature has; and `ProviderDirectory.t.sol` covers the build-only typed DIRECTORY
-  resolver against the REAL core rather than a mock (see "ProviderDirectory" below).
+  both axes a signature has; `ProviderDirectory.t.sol` covers the build-only typed DIRECTORY
+  resolver against the REAL core rather than a mock (see "ProviderDirectory" below); and
+  `ServiceDomainResolver.t.sol` is the one suite whose fixture binds the real core, the real router AND
+  real generation-2 clones from the real self-service factory at once, so it is where "these contracts
+  compose" is actually exercised rather than mocked (see "ServiceDomainResolver - three absences, and
+  the router term that is NOT redundant").
   Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
@@ -257,6 +261,9 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   contacts and profile anchors, keyed by `providerId`) and is likewise **built and tested only, NOT
   deployed** - no address, no deploy script, no `.env.example` entry, and the indexer's provider
   directory still reads the admin business source. See "ProviderDirectory" below.
+  `ServiceDomainResolver` is the S-9 successor to `IssuerDomainRegistry` and is likewise **built and
+  tested only, NOT deployed**; the deployed `IssuerDomainRegistry` remains the wired one until the
+  cutover, so no consumer address moved with it. See "ServiceDomainResolver" below.
   `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it is source-only,
   has no deploy script, ledger entry, or environment address, and is **not deployed**. It admits only
   owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
@@ -1445,6 +1452,58 @@ the REAL core rather than a mock.
 
 Nineteen source mutations were applied, run and reverted against a temporary harness (not committed);
 each mapped to a named red test, including all of the claims called out above.
+## ServiceDomainResolver - three absences, and the router term that is NOT redundant
+
+`contracts/src/ServiceDomainResolver.sol`. Full rationale: `docs/SERVICE_DOMAIN_RESOLVER.md`.
+**BUILT AND TESTED ONLY - NOT DEPLOYED.** No address in `contracts/deployments/roax.json`, no deploy
+script, no `.env.example` entry, no consumer points at it (registry plan slice S-9). It SUPERSEDES
+`IssuerDomainRegistry`, which stays deployed and stays the wired one until the cutover - so nothing
+moved and no `.env.example`/bundle/doc address changed in that slice. Abandoning the deployed one is
+free and that was RE-VERIFIED rather than inherited from the plan: `boundCloneCount() == 0` **and zero
+logs of any kind** at head 303690 on 2026-07-30. Read the log count, not just the counter - the counter
+ignores `setDomainAdmin`, which appoints a self-service key without writing a binding, so only "no logs"
+establishes that nothing at all is stranded.
+
+Four things are easy to get wrong here.
+
+- **`Disposition { UNSET, NO_DOMAIN, CLAIMED, CLEARED }` exists because an empty string was three facts.**
+  Both mobile ports currently render an empty `domainOf` as "This issuer has published no domain
+  on-chain" (`IssuerDomainBinding.swift:265`, `IssuerDomainBinding.kt:410`) - a publication decision the
+  issuer may never have made. Two invariants keep the string honest and both are mutation-pinned:
+  `domain != "" <=> CLAIMED`, and `UNSET <=> revision == 0 <=> updatedAt == 0`. A withdrawn domain is
+  deliberately NOT retained in state (it rides in `DomainClaimWithdrawn`), because a `priorDomain` field
+  reads as a live claim to exactly the careless reader the type protects. `clearDomain` refuses unless the
+  disposition really is `CLAIMED`, so `CLEARED` can never record a withdrawal that did not happen.
+  **There is deliberately no `domainOf(address) returns (string)`** - re-adding it re-creates the defect;
+  `resolveDomain` is a tuple so a caller must discard the disposition visibly.
+- **`router.isClone(service)` is NOT redundant with the core's own provenance check, and this is the
+  claim most likely to be "simplified" away.** `canWriteService` proves clone-hood against the factory
+  pinned to the generation the service was ATTACHED under; the router carries the lineage
+  `VerificationRegistryConsent`'s immutable `rootIndex` actually resolves roots through. Those lists are
+  two separate `onlyOwner` calls on two separate contracts (`ProviderRegistry.addFactoryGeneration` and
+  `CloneProvenanceRouter.appendGeneration`) and can genuinely disagree, so without this term a service
+  attached under an unrouted generation could publish a verified-looking domain while every one of its
+  credentials answers `unknown root`. Pinned by
+  `test_a_service_the_verification_lineage_does_not_vouch_for_cannot_claim_a_domain`, which asserts the
+  core says yes and the router says no in the same test.
+- **The write bit is `SERVICE_PERMISSION_RECORD`, never `SERVICE_PERMISSION_DOMAIN_RESOLVER`**, and the
+  mask is READ FROM THE CORE at construction rather than restated locally (a duplicated bit drifts, and a
+  drifted mask refuses every legitimate write while looking like an authorization fault; a definite zero
+  is refused with its own error, since `canWriteService` returns false for a zero permission). Publishing
+  content and choosing which resolver holds it are different powers.
+- **`authorizeClone` is deliberately NOT composed**, against the handoff note in
+  `docs/ISSUER_V2_OWNERSHIP.md` §8 that names S-9 as an intended consumer. It requires
+  `claimant == owner()` exactly, so composing it as the control term would make every owner-appointed
+  delegate unable to publish and leave the core's `SERVICE_PERMISSION_RECORD` bit with no consumer; and it
+  lives on a generation-specific factory. The anti-drift property that note protects is satisfied by
+  composing the core's `canWriteService` - this contract derives neither standing nor ownership itself.
+
+Two smaller notes. Writes AND reads both require that the core still selects this resolver and that its
+typed allowlist entry is still active, because the core never clears a stored selector; `claimStanding`
+reports those terms SEPARATELY for display while `isAuthoritativeFor` is the single machine-facing AND, so
+consumers cannot drift into three versions of it. And the resolver holds no name, no description and no
+DNS state - a generation-2 clone's `name()` is empty by construction, so registrar identity comes from the
+core's `publicIdentityAnchor` and the human-readable text stays the DNS record's own value.
 
 ## Governance authority (Phase-2 executed) - tooling signer
 
