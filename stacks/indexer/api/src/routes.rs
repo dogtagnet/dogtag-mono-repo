@@ -1,4 +1,4 @@
-//! The scoped query API.
+//! The scoped oversight query API + public provider directory.
 //!
 //! One feed, two doctrines, enforced **server-side** by the caller's bearer token:
 //!   - the **unscoped** government/oversight token sees every event across all issuers;
@@ -11,14 +11,24 @@
 //! Every event is joined to the admin business directory to NAME its signer/clone where possible, and
 //! carries a ready-to-click `txUrl`. Nothing personal is served — the index holds only non-PII chain
 //! data.
+//!
+//! `GET /v1/businesses` is the separate, public discovery surface. Its business contacts and optional
+//! premises are deliberately published provider facts, not owner PII.
+
+use std::collections::HashSet;
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::header::CACHE_CONTROL;
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_extra::extract::Query as MultiQuery;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::Semaphore;
+use tower_http::compression::CompressionLayer;
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 use crate::app::{keccak_key, AppState};
 use crate::events::{EventType, Finality, IndexedEvent};
@@ -26,6 +36,20 @@ use crate::scope::Principal;
 use crate::store::{EventQuery, StoreError};
 
 type ApiError = (StatusCode, Json<Value>);
+
+const MAX_DIRECTORY_NAME_FILTER_CHARS: usize = 200;
+const MAX_DIRECTORY_KIND_FILTERS: usize = 16;
+const MAX_DIRECTORY_KIND_FILTER_CHARS: usize = 64;
+const MAX_CONCURRENT_DIRECTORY_SCANS: usize = 2;
+
+// Scanning a hundred-thousand-row snapshot is CPU work, not async I/O, on BOTH public directory
+// routes: a `name` filter folds every row through NFD normalization whether or not a distance is also
+// computed, and the loop must visit every match anyway to count `total`, so the page size bounds
+// neither. One fixed permit is therefore the honest ceiling on total directory-scan CPU, and keeps
+// these unauthenticated routes from filling Tokio's blocking pool or starving the indexer's
+// health/query paths. Waiting for a permit is asynchronous; a durable spatial index can replace the
+// scan without changing either route contract.
+static DIRECTORY_SCAN_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_DIRECTORY_SCANS);
 
 fn err(code: StatusCode, msg: &str) -> ApiError {
     (code, Json(json!({ "error": msg })))
@@ -61,6 +85,413 @@ fn authenticate<'a>(st: &'a AppState, headers: &HeaderMap) -> Result<&'a Princip
     st.scopes
         .resolve(&token)
         .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unknown or unauthorized token"))
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BusinessDirectoryParams {
+    /// Case- and diacritic-insensitive substring of the provider's published name.
+    #[serde(default)]
+    name: Vec<String>,
+    /// Caller-selected set of case-insensitive exact matches against the business row's `type`.
+    #[serde(default)]
+    kind: Vec<String>,
+    /// Compatibility spelling used by the existing admin directory/client contract.
+    #[serde(rename = "type", default)]
+    business_type: Vec<String>,
+    /// Page size. Uses the same configured default/maximum as the oversight feed.
+    #[serde(default)]
+    limit: Vec<usize>,
+    /// Zero-based result offset.
+    #[serde(default)]
+    offset: Vec<usize>,
+}
+
+/// The caller's current position, at whatever precision the device reported.
+///
+/// Captain's ruling, 2026-07-30: the position is sent EXACTLY and is not rounded. An earlier revision
+/// took a three-decimal approximation and rejected anything finer; that is gone, and the fields are
+/// named `lat`/`lng` rather than `approximateLat`/`approximateLng` because a field named "approximate"
+/// carrying a metre-precise fix would overstate the privacy the wire format actually provides - the
+/// same class of false claim this service refuses everywhere else.
+///
+/// What did NOT change is where it may travel: a POST body, never the URI that conventional access
+/// logs record, and never a log line, trace span, metric label, cache key, or stored row.
+// Deliberately no `Debug` or `Serialize`: this value must not become loggable or echoable by
+// convenience while it is in memory.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CallerPosition {
+    lat: f64,
+    lng: f64,
+}
+
+fn bounded_filter(
+    value: Option<String>,
+    field: &str,
+    max_chars: usize,
+) -> Result<Option<String>, ApiError> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.trim().is_empty() => Err(err(
+            StatusCode::BAD_REQUEST,
+            &format!("{field} must not be blank"),
+        )),
+        Some(value) => {
+            let value = value.trim();
+            if value.chars().count() > max_chars {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    &format!("{field} must be at most {max_chars} characters"),
+                ));
+            }
+            Ok(Some(value.to_string()))
+        }
+    }
+}
+
+fn kind_filters(params: &BusinessDirectoryParams) -> Result<HashSet<String>, ApiError> {
+    if !params.kind.is_empty() && !params.business_type.is_empty() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "kind and type are aliases; use only one spelling",
+        ));
+    }
+    let (values, field) = if params.kind.is_empty() {
+        (&params.business_type, "type")
+    } else {
+        (&params.kind, "kind")
+    };
+    if values.len() > MAX_DIRECTORY_KIND_FILTERS {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            &format!("{field} must be provided at most {MAX_DIRECTORY_KIND_FILTERS} times"),
+        ));
+    }
+    let mut kinds = HashSet::with_capacity(values.len());
+    for value in values {
+        let kind = bounded_filter(Some(value.clone()), field, MAX_DIRECTORY_KIND_FILTER_CHARS)?
+            .expect("a supplied nonblank kind has a value")
+            .to_ascii_lowercase();
+        kinds.insert(kind);
+    }
+    Ok(kinds)
+}
+
+fn name_filter(params: &BusinessDirectoryParams) -> Result<Option<String>, ApiError> {
+    match params.name.as_slice() {
+        [] => Ok(None),
+        [name] => bounded_filter(Some(name.clone()), "name", MAX_DIRECTORY_NAME_FILTER_CHARS),
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            "name must be provided at most once",
+        )),
+    }
+}
+
+fn single_usize(values: &[usize], field: &str) -> Result<Option<usize>, ApiError> {
+    match values {
+        [] => Ok(None),
+        [value] => Ok(Some(*value)),
+        _ => Err(err(
+            StatusCode::BAD_REQUEST,
+            &format!("{field} must be provided at most once"),
+        )),
+    }
+}
+
+fn directory_page(
+    st: &AppState,
+    params: &BusinessDirectoryParams,
+) -> Result<(usize, usize), ApiError> {
+    let limit = single_usize(&params.limit, "limit")?
+        .unwrap_or(st.cfg.default_page_limit)
+        .clamp(1, st.cfg.max_page_limit);
+    let offset = single_usize(&params.offset, "offset")?.unwrap_or(0);
+    Ok((limit, offset))
+}
+
+/// Locale-independent name-search fold, matching the native directory's NFD + combining-mark removal
+/// rather than making `avila` fail to find a provider named `Ávila`.
+fn search_fold(value: &str) -> String {
+    value
+        .trim()
+        .nfd()
+        .filter(|ch| !is_combining_mark(*ch))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn matches_directory_filters(
+    business: &crate::directory::BusinessRow,
+    name: Option<&str>,
+    kinds: &HashSet<String>,
+) -> bool {
+    let business_kind = business.kind.trim();
+    name.map(|needle| search_fold(&business.name).contains(needle))
+        .unwrap_or(true)
+        && (kinds.is_empty()
+            || kinds.contains(business_kind)
+            || kinds
+                .iter()
+                .any(|expected| business_kind.eq_ignore_ascii_case(expected)))
+}
+
+/// Total great-circle distance in kilometres. The `atan2` form remains defined at antipodes.
+fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
+    const EARTH_RADIUS_KM: f64 = 6371.0;
+    let phi1 = lat1.to_radians();
+    let phi2 = lat2.to_radians();
+    let dphi = (lat2 - lat1).to_radians();
+    let dlambda = (lng2 - lng1).to_radians();
+    let a = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dlambda / 2.0).sin().powi(2);
+    let bounded = a.clamp(0.0, 1.0);
+    2.0 * EARTH_RADIUS_KM * bounded.sqrt().atan2((1.0 - bounded).sqrt())
+}
+
+/// Well-formedness only: finite, and on the globe.
+///
+/// There is deliberately NO precision test. An earlier revision refused anything finer than three
+/// decimals as defense-in-depth behind client-side rounding; the captain has since ruled that the
+/// device sends its exact fix, so such a check would now reject every real request. Do not reinstate
+/// one without the rounding it was defending - a precision gate with nothing rounding in front of it
+/// only rejects honest callers.
+fn valid_caller_position(position: CallerPosition) -> bool {
+    position.lat.is_finite()
+        && position.lng.is_finite()
+        && (-90.0..=90.0).contains(&position.lat)
+        && (-180.0..=180.0).contains(&position.lng)
+}
+
+fn render_business(business: &crate::directory::BusinessRow, distance_km: Option<f64>) -> Value {
+    let mut value =
+        serde_json::to_value(business).expect("validated directory rows are JSON-serializable");
+    if let (Value::Object(map), Some(distance_km)) = (&mut value, distance_km) {
+        map.insert("distanceKm".into(), json!(distance_km));
+    }
+    value
+}
+
+struct DirectoryPage {
+    businesses: Vec<Value>,
+    total: usize,
+    has_more: bool,
+}
+
+/// Run one directory scan on a blocking thread, under a scan permit held for its whole duration.
+///
+/// Both public directory routes go through here. Keeping the permit inside the blocking closure means
+/// dropping or cancelling the HTTP future cannot release it while its detached work is still running.
+async fn scan_directory<F>(scan: F) -> Result<DirectoryPage, ApiError>
+where
+    F: FnOnce() -> DirectoryPage + Send + 'static,
+{
+    let permit = DIRECTORY_SCAN_PERMITS.acquire().await.map_err(|_| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider directory search is unavailable",
+        )
+    })?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        scan()
+    })
+    .await
+    .map_err(|_| {
+        tracing::error!("provider directory scan worker failed");
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "provider directory search could not complete",
+        )
+    })
+}
+
+/// CPU-only source-order selection over one immutable directory snapshot.
+///
+/// Every matching row is visited so `total` is exact; only the requested window is serialized.
+fn source_order_page(
+    businesses: &[crate::directory::BusinessRow],
+    name: Option<&str>,
+    kinds: &HashSet<String>,
+    limit: usize,
+    offset: usize,
+) -> DirectoryPage {
+    let mut total = 0usize;
+    let mut page = Vec::with_capacity(limit);
+    for business in businesses
+        .iter()
+        .filter(|business| matches_directory_filters(business, name, kinds))
+    {
+        if total >= offset && page.len() < limit {
+            page.push(render_business(business, None));
+        }
+        total = total.saturating_add(1);
+    }
+    let has_more = offset.saturating_add(page.len()) < total;
+    DirectoryPage {
+        businesses: page,
+        total,
+        has_more,
+    }
+}
+
+/// CPU-only nearest selection over one immutable directory snapshot.
+///
+/// The two nth-element partitions select the same globally ordered window as a full sort while only
+/// sorting the requested page. `source_index` is a total, deterministic tie-break inside this
+/// snapshot. An offset beyond `total` is deliberately a valid empty page which echoes the requested
+/// offset at the HTTP layer.
+fn rank_nearest_page(
+    businesses: &[crate::directory::BusinessRow],
+    name: Option<&str>,
+    kinds: &HashSet<String>,
+    position: CallerPosition,
+    limit: usize,
+    offset: usize,
+) -> DirectoryPage {
+    let mut ranked: Vec<(f64, usize)> = businesses
+        .iter()
+        .enumerate()
+        .filter(|(_, business)| matches_directory_filters(business, name, kinds))
+        .filter_map(|(source_index, business)| {
+            business.geo.filter(|geo| geo.is_valid()).map(|geo| {
+                (
+                    haversine_km(
+                        position.lat,
+                        position.lng,
+                        geo.lat,
+                        geo.lng,
+                    ),
+                    source_index,
+                )
+            })
+        })
+        .collect();
+    let total = ranked.len();
+    let start = offset.min(total);
+    let end = offset.saturating_add(limit).min(total);
+    let compare =
+        |a: &(f64, usize), b: &(f64, usize)| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1));
+    if start < end {
+        if start > 0 {
+            ranked.select_nth_unstable_by(start, compare);
+        }
+        if end < total {
+            ranked[start..].select_nth_unstable_by(end - start, compare);
+        }
+        ranked[start..end].sort_by(compare);
+    }
+
+    let page = ranked[start..end]
+        .iter()
+        .map(|(distance_km, source_index)| {
+            render_business(&businesses[*source_index], Some(*distance_km))
+        })
+        .collect();
+    DirectoryPage {
+        businesses: page,
+        total,
+        has_more: end < total,
+    }
+}
+
+/// `GET /v1/businesses` — public provider discovery over the admin directory snapshot.
+///
+/// This non-location route accepts optional `name`, repeatable `kind` (or repeatable compatibility
+/// alias `type`, but never both spellings), plus `limit`/`offset`. Repeated kinds are ORed; name and
+/// kind compose with AND semantics. Results are paged in source order and include contact-only
+/// providers with `geo: null`. The service has NO owner-app kind allowlist: a pet-owner caller sends
+/// `kind=vet&kind=groomer`, while bare GET can page through every published kind, including admin and
+/// government. Unknown future kind strings are not rejected or reinterpreted.
+///
+/// ## Nearest is a separate, body-only disclosure
+///
+/// Caller position is accepted only by `POST /v1/businesses/nearest`, in a JSON body, at whatever
+/// precision the device reported - the captain ruled on 2026-07-30 that the exact fix is sent and is
+/// not rounded, so nothing here may describe it as an approximation. It is never a URL/query
+/// parameter, because conventional access logs record URLs. The indexer has no request/trace/metrics
+/// middleware and this handler must never log, persist, label, or echo the position. The nearest
+/// response is `Cache-Control: private, no-store`, ordered by server-computed `distanceKm`, and paged
+/// so a hundred-thousand-row directory never crosses the device or gets scanned there.
+///
+/// There is deliberately no radius, map viewport, bounding box, geohash, place text, autocomplete, or
+/// third-party geocoding parameter on either route. Unknown fields are rejected, not ignored.
+async fn businesses(
+    State(st): State<AppState>,
+    MultiQuery(params): MultiQuery<BusinessDirectoryParams>,
+) -> Result<Json<Value>, ApiError> {
+    let name = name_filter(&params)?.map(|name| search_fold(&name));
+    let kinds = kind_filters(&params)?;
+    let (limit, offset) = directory_page(&st, &params)?;
+    let businesses = st.directory.businesses().ok_or_else(|| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider directory has no successful source snapshot yet",
+        )
+    })?;
+
+    let page = scan_directory(move || {
+        source_order_page(businesses.as_ref(), name.as_deref(), &kinds, limit, offset)
+    })
+    .await?;
+
+    Ok(Json(json!({
+        "businesses": page.businesses,
+        "total": page.total,
+        "limit": limit,
+        "offset": offset,
+        "hasMore": page.has_more,
+    })))
+}
+
+/// `POST /v1/businesses/nearest` — paged server-side proximity over the caller's exact fix.
+///
+/// Position MUST remain body-only and ephemeral. Do not add request logging around this route and do
+/// not attach the body to a trace span, metric label, audit row, cache key, or error message.
+async fn nearest_businesses(
+    State(st): State<AppState>,
+    MultiQuery(params): MultiQuery<BusinessDirectoryParams>,
+    Json(position): Json<CallerPosition>,
+) -> Result<(HeaderMap, Json<Value>), ApiError> {
+    if !valid_caller_position(position) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "lat/lng must be finite coordinates within range",
+        ));
+    }
+    let name = name_filter(&params)?.map(|name| search_fold(&name));
+    let kinds = kind_filters(&params)?;
+    let (limit, offset) = directory_page(&st, &params)?;
+    let businesses = st.directory.businesses().ok_or_else(|| {
+        err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider directory has no successful source snapshot yet",
+        )
+    })?;
+
+    let nearest = scan_directory(move || {
+        rank_nearest_page(
+            businesses.as_ref(),
+            name.as_deref(),
+            &kinds,
+            position,
+            limit,
+            offset,
+        )
+    })
+    .await?;
+    let mut headers = HeaderMap::new();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    Ok((
+        headers,
+        Json(json!({
+            "businesses": nearest.businesses,
+            "total": nearest.total,
+            "limit": limit,
+            "offset": offset,
+            "hasMore": nearest.has_more,
+        })),
+    ))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -383,12 +814,21 @@ async fn issuers(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<
 }
 
 /// The router. `demo` toggles a permissive posture only via env in `main`; scoping is always enforced.
+/// Compression lives here so every embedding of the public directory routes negotiates gzip,
+/// including hermetic tests and deployments that do not use the standalone binary's assembly.
+///
+/// There is intentionally no HTTP trace/access-log middleware. In particular, never attach a
+/// request URI or the nearest-search body to tracing: the caller position is ephemeral
+/// request data, not an event, metric dimension, or audit fact.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/v1/businesses", get(businesses))
+        .route("/v1/businesses/nearest", post(nearest_businesses))
         .route("/v1/status", get(status))
         .route("/v1/events", get(events))
         .route("/v1/stats", get(stats))
         .route("/v1/issuers", get(issuers))
         .with_state(state)
+        .layer(CompressionLayer::new())
 }

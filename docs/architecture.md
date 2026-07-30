@@ -724,32 +724,70 @@ The user owns the appointment in the mobile app (central backend); the business 
 ### 8.4 Discovery → booking flow
 
 ```
-mobile → central: GET /v1/businesses                       ← full set. NO position. Never a position.
-central → mobile: [{businessId, name, geo, services, apiBaseUrl, hmacKeyId}]
-mobile (on device): kind/distance/sort/filter over the returned `geo` - packages/ui/src/geo/
-mobile → OS maps app: selected provider destination         ← per-row handoff; no embedded map
+owner Nearby: send the current fix EXACTLY, after disclosure at the grant action
+mobile → indexer: POST /v1/businesses/nearest?kind=vet&kind=groomer&limit=25&offset=0
+                  body {"lat":1.3521098,"lng":103.8203214}
+owner name search → indexer: GET /v1/businesses?name=…&kind=vet&kind=groomer&limit=25&offset=0
+                                      caller-owned kind policy; no position needed for name-only search
+indexer → admin: GET /v1/businesses                       ← whole interim source; on-chain after S-10
+indexer → mobile: {"businesses":[{businessId,type,name,geo,contact,services,...,distanceKm}],
+                   "total":…,"limit":25,"offset":0,"hasMore":…}
+mobile: preserve server distance order and render the page as a list
 mobile → central: POST /v1/appointments {businessId, dogTagId, slot}
 central: create appt (rev=1, REQUESTED) → PUT to business apiBaseUrl
 business: store replica, notify staff
 ... business approves → POST appointment-events {CONFIRMED} → central → push to mobile
 ```
 
-**The discovery call carries no position, and "nearby" is computed on the device.**
-This is a protocol rule, not an optimisation, and the shape above is what a Nearby screen must be built on.
+**Current-position Nearby is now server-ranked and paged.** The captain explicitly reversed the
+full-fetch/local-scan choice because a directory in the hundreds of thousands would transfer megabytes
+and make the phone iterate every provider.
+The privacy debt is paid at the transport seam rather than by imprecision: the phone discloses the
+transfer before permission and sends the exact fix in a POST body that this service neither logs nor
+stores.
 
-- `GET /v1/businesses` is on the **public, unauthenticated** router.
-  A position sent there arrives beside the caller's IP with no account attached and no gate.
-  dogtag is built on the owner never revealing where they are, so an endpoint whose purpose is to be told where the user is contradicts the premise at its most basic.
-- The client fetches the provider **set** - a request that is byte-identical whoever makes it, so it discloses nothing - and computes distance, radius and sort locally with `packages/ui/src/geo/`.
-  A provider's pin is a business fact already on their door; the user's position is not.
-- Nearby is a **list**, not an in-app map. A selected row may open the destination in the platform
-  maps app / Google Maps. There is no viewport, bounding-box, region, or geohash query to the
-  directory; those shapes have no product caller and would only disclose location.
-- The server still accepts `near=<lat>,<lng>` and `radius=` for back-compat with any third-party caller, and both are **DEPRECATED**.
-  Nothing in this repo sends them: `BusinessesQuery` (`packages/ui/src/api/types.ts`) no longer carries the fields and `central.ts`'s `qs()` no longer emits them.
-  **Do not add a caller.**
-  The on-device path admits exactly the same providers for every radius below the half-circumference, pinned from both ends by a fixture the server's own filter generated.
-- The rule is written down beside the code it governs: the `BusinessesQuery` type note in `stacks/admin/api/src/routes.rs`, and the module header of `packages/ui/src/geo/index.ts`.
+- The indexer's `GET /v1/businesses` is on the **public, unauthenticated** router. Bare GET returns the
+  first configured page across every published provider kind, not the whole set. `name`, repeatable
+  `kind` (`type` is the same repeatable existing-client compatibility alias; never mix spellings), and
+  `limit`/`offset` are accepted. Repeated kinds are ORed; the kind set and name compose with AND
+  semantics. Every response carries `total`, `limit`, `offset`, and `hasMore`.
+- Provider kind is first-class caller policy, not a service audience mode. Current kinds are `vet`,
+  `groomer`, `admin`, and `government`, but the service treats kind strings opaquely rather than
+  hardcoding an enum. The owner app admits only vet/groomer and a featureful owner search requests
+  `kind=vet&kind=groomer`; whether another app exposes admin/government remains deliberately deferred.
+- `POST /v1/businesses/nearest` accepts only `{"lat":number,"lng":number}` in its JSON body. It
+  validates finiteness and range, and rejects unknown body fields and every URL-position spelling. It
+  scans located name/kind matches, orders them by Haversine distance with source-order ties, pages only
+  the requested window, and adds `distanceKm`; `geo:null` rows cannot enter a nearest page.
+- **The position is sent EXACTLY** (captain's ruling 2026-07-30). An earlier revision rounded the fix to
+  three decimals on-device and had the service reject anything finer; both halves are gone, and a
+  precision gate must not be reinstated alone - with no client rounding in front of it, it would reject
+  every honest caller. The field names carry no "approximate" because a field so named holding a
+  metre-precise value would overstate the privacy the format provides. The grant surface says plainly:
+  “Your location is sent to DogTag to find nearby vets and groomers. It is not stored.”
+  **What protects the position is confinement, not imprecision**: body-only, never in a URL, log, trace
+  span, metric label, cache key or stored row, and `Cache-Control: private, no-store` on the response.
+- **No request-position logging or persistence.** The indexer currently installs no access/request
+  `TraceLayer`, request-id/audit middleware, metrics, or request store; Mongo contains only chain events
+  and the resume cursor. Its logs are startup, scanner/store errors, and directory-refresh results, none
+  of which carry an incoming URI/body/position. The unused `tower-http/trace` feature was removed
+  because its default HTTP span would record a full URI. Nearest responses are
+  `Cache-Control: private, no-store`. Dependency TRACE may expose peer IP and connection timing, but no
+  current level logs incoming URI/query/path/header/body; external ingress logging remains deployment
+  policy outside this repository.
+- There is no radius, chosen-location, map, directions, viewport, bounding box, geohash,
+  place-autocomplete, place-hint, or third-party geocoding surface. Provider discovery is a list.
+- The legacy central/admin route still accepts deprecated `near=<lat>,<lng>` and `radius=` for
+  third-party compatibility, but nothing in this repo sends them. Do not add a caller there.
+- The prior full-fetch planning budget reached 5,000,000 bytes (4.77 MiB) at 50,000 providers using
+  ~100 compressed bytes/provider, and roughly 10 MB at 100,000. Paging removes that transfer and the
+  device-side O(n) scan. The in-memory admin snapshot is `Arc`-swapped so each request does not clone
+  hundreds of thousands of rows; nearest selection scans once and sorts only through the requested
+  page boundary.
+- Each page is ranked against one immutable `Arc` snapshot, but the API does not yet issue a snapshot
+  token across requests. Native clients reject detectable refresh races (changed page metadata,
+  duplicate ids, or a decreasing distance boundary) and require a refresh; do not claim stronger
+  cross-request snapshot consistency until continuations carry a server snapshot token.
 
 ---
 
@@ -761,7 +799,7 @@ This is a protocol rule, not an optimisation, and the shape above is what a Near
 - `pets` — pet profile; `dogTagId` (SBT) once minted; `microchip{code,standard,implantDate,bodyLocation}` (code unique); `ownershipHistory[]{ownerId, from, to}`; cached profile root.
 - `credentials` — references to credentials the user has imported (wrapped docs + verify cache, incl. `ownership` fragment).
 - `consents` / `consent_receipts` — **`Consent`/`ConsentReceipt`** per-purpose records `{purpose, lawfulBasis, grantedAt, withdrawnAt, receiptId}`; drive retention + the erasure flow (§11).
-- `businesses` — registry: `{businessId, type, name, geo, services, apiBaseUrl, domain, documentStores{recordType→addr}, hmacKeyId}`. **Non-personal discovery data.** It carries neither signer addresses nor any listing state, and both have a home elsewhere: signers on `issuer_applications.addresses[]`, the application lifecycle on `issuer_applications.status`, and current issuing authority only on-chain (`IssuerRegistry.isWhitelistedFor`, which the whitelist console reads live). A central directory read therefore has no source for "currently active" and must not synthesise one — `DirectoryProvider.active` is `null` there rather than a fabricated `true`.
+- `businesses` — registry: `{businessId, type, name, geo, contact{phone,whatsapp,telegram,email,website}, services, apiBaseUrl, domain, documentStores{recordType→addr}, hmacKeyId}`. **Non-personal discovery data.** `geo` and every contact channel are optional; absence stays absent rather than being fabricated from another field. It carries neither signer addresses nor any listing state, and both have a home elsewhere: signers on `issuer_applications.addresses[]`, the application lifecycle on `issuer_applications.status`, and current issuing authority only on-chain (`IssuerRegistry.isWhitelistedFor`, which the whitelist console reads live). A central directory read therefore has no source for "currently active" and must not synthesise one — `DirectoryProvider.active` is `null` there rather than a fabricated `true`.
 - `issuer_applications` — pending whitelist requests `{issuerEntityId, address, mode, recordTypes[], USDA#, license#, status}`.
 - `appointments` — **source of truth** `{appointmentId, rev, userId, petId, businessId, state, slot, history[]}`.
 - `verification_records` - proof-of-verification ledger `{dogTagId, relayer, purpose, recordType, nullifier, txHash, deadline, ts}` - a mirror of the on-chain `Verified` events (read from the chain; central is not in the verify loop and never sees a consent), which are **owner-blind** (no subject field exists to store). Owner-side consent receipts, where kept, are off-chain and deletable (crypto-shred erasure scope - §11/§13.7).
@@ -782,8 +820,8 @@ This is a protocol rule, not an optimisation, and the shape above is what a Near
 
 ## 10. Mobile architecture (themes)
 
-- **Android:** Kotlin + Jetpack Compose, MVVM, Retrofit/Ktor, CameraX (QR), OS-maps URI handoff, EncryptedSharedPreferences/Keystore.
-- **iOS:** Swift + SwiftUI, MVVM, async/await URLSession, AVFoundation (QR), OS Maps URL handoff, Keychain.
+- **Android:** Kotlin + Jetpack Compose, MVVM, Retrofit/Ktor, CameraX (QR), EncryptedSharedPreferences/Keystore.
+- **iOS:** Swift + SwiftUI, MVVM, async/await URLSession, AVFoundation (QR), Keychain.
 - **Verification:** shared Rust crate `dogtag-standard-rs` exposed via **UniFFI** to both platforms (single source of truth for canonicalization + Merkle + verify), avoiding two re-implementations.
 - **Theming (mobile keeps its 7 themes — black/white/blue/red/pink/green/yellow, each with light+dark — unchanged):** a **semantic token layer** (`color.primary`, `color.secondary`, `color.surface`, `color.onPrimary`, …) with one palette per theme. Components reference **only semantic tokens**, never raw colors → switching theme swaps the palette, components unchanged. Android: `MaterialTheme` `ColorScheme` per theme + a `ThemeController`. iOS: an `@Environment` theme object + `Color` token extensions.
 - **Navigation** mirrors the reference: bottom tabs **Verify · Travel · Home · Documents · Profile**; Home = pet card + grouped Credentials (Health / Service / Travel); add-record wizards with type pickers.

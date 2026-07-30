@@ -1187,19 +1187,21 @@ GET  /share/{ref}  Bearer<jwt>            // business pulls shared doc
 ### 4.2 Business registry & discovery
 ```
 GET  /v1/businesses?type=
-    -> [{businessId,type,name,geo,services,apiBaseUrl,domain,documentStores,hmacKeyId}]  // non-personal
+    -> {"businesses":[{businessId,type,name,geo,contact,services,apiBaseUrl,domain,
+                       documentStores,hmacKeyId}]}  // non-personal
     // near=<lat>,<lng> & radius=<km> are still ACCEPTED and still filter server-side, and both are
-    // DEPRECATED. Do not add a caller. This route is on the PUBLIC UNAUTHENTICATED router, so a
-    // position sent here arrives beside the caller's IP with no account attached and no gate - which
-    // contradicts the premise that the owner never reveals where they are. The replacement is
-    // on-device: the client fetches the provider SET (a request byte-identical whoever makes it, so
-    // it discloses nothing) and computes distance/radius/sort locally with packages/ui/src/geo/.
-    // Nothing in this repo sends them - BusinessesQuery (packages/ui/src/api/types.ts) no longer
-    // carries the fields and central.ts's qs() no longer emits them - and the two admit exactly the
-    // same providers for every radius below the half-circumference, pinned from both ends against a
-    // fixture this very filter generated. Rule + rationale: the BusinessesQuery type note in
-    // stacks/admin/api/src/routes.rs, and the module header of packages/ui/src/geo/index.ts.
+    // DEPRECATED. Do not add a caller. Current-position discovery uses the indexer's separate
+    // body-only POST /v1/businesses/nearest contract below, sending the exact fix with an explicit
+    // disclosure. Nothing in this repo sends a position through this legacy URL query.
 POST /v1/businesses (admin)               // register a deployment + issue HMAC key
+
+GET  indexer /v1/businesses?name=&kind=&kind=&limit=&offset=
+    -> source-order page + {total,limit,offset,hasMore}; no caller position
+POST indexer /v1/businesses/nearest?name=&kind=&kind=&limit=&offset=
+    body {"lat":1.3521098,"lng":103.8203214}
+    -> nearest-first located page; every row includes server-computed distanceKm
+    // the position is sent EXACTLY, body-only, no-store, and is neither logged nor persisted by
+    // indexer-api. There is no radius/map/place/autocomplete/geocoder query.
 ```
 
 ### 4.3 Issuer whitelisting (admin)
@@ -1361,9 +1363,15 @@ A grooming business's working application, not a bare verification tool. **A gro
 - Add health/travel record wizards with type pickers (Vaccine/Checkup/Surgery/Lab/Prescription/Dental; CDC/DOT/Other travel).
 - **Scan QR** (Verify tab): parse `https://<host>/r?t=&i=` → fetch wrapped doc → `verify()` → import under pet, show 3-pillar verdict.
 - **Share** (user→business): show QR (one-time JWT against central).
-- **Find vet/groomer**: list from the full provider directory → filter/sort on-device → hand a
-  selected destination to the platform maps app / Google Maps → book appointment. There is no
-  embedded map and no viewport/region query.
+- **Find vet/groomer**: after the owner taps the current-location action, the app plainly says their
+  location is sent to DogTag to find nearby vets/groomers and is not stored. It requests coarse
+  location and POSTs the fix EXACTLY - not rounded (captain's ruling 2026-07-30) - to the indexer's
+  body-only nearest endpoint with `kind=vet&kind=groomer`, `limit`, and `offset`.
+  The service computes distance/order once and returns paged rows carrying `distanceKm`; the device
+  preserves that order rather than scanning the whole directory. Provider-name search is a server
+  filter using the same owner kind set. The service itself does not hardcode those kinds and can serve
+  admin/government to later callers. Results are a list only: no map, Directions handoff, chosen-place
+  input, location autocomplete, place hints, or third-party geocoding.
 
 ### 6.3 Theming (7 themes)
 ```

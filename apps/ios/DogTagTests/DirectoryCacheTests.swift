@@ -1,649 +1,300 @@
 import XCTest
 
-/// The on-device local copy, case by case.
+/// The offline provider-record fallback, case by case.
 ///
-/// Mirrors the Android `DirectoryCacheTest` and `packages/ui/test/providerDirectory.test.ts`'s cache
-/// cases. The rule they all serve: `unavailable` and `empty` are different statements, and no cache
-/// state may turn the first into the second.
+/// REPLACES slice S-3's `CachedProviderDirectory` cases. Those pinned a decorator around a
+/// no-argument `read()` of the whole provider set - live-read-first, replay-as-empty, nested stored
+/// results, wrapper deadline renewal - and that seam no longer exists: a nearest read is personalized
+/// and paged, so there is no single "the directory" response to substitute for. Everything that was
+/// really about the CODEC or the store's failure tolerance carried over. What is new is the pair the
+/// captain's ruling turns on: a distance is never persisted, and the stored order can never carry the
+/// ranking.
+///
+/// Mirrors Android `DirectoryCacheTest` case for case; keep the two in step by hand.
 final class DirectoryCacheTests: XCTestCase {
-    private let namespace = "central:https://central.test/v1/businesses"
+    private let namespace = "central:https://api.dogtag.io"
+    private let storedAt = Date(timeIntervalSince1970: 1_785_312_000)
 
-    private let located = DirectoryProvider(
-        providerId: "located",
-        kind: "vet",
-        name: "Harbour Vet",
-        geo: NearbyPoint(lat: 1.3039, lng: 103.8318),
-        services: ["vaccination"],
-        domain: "harbour.test",
-        active: nil,
-        contact: ProviderContact(phone: "+65 6123 4567"),
-        bindingState: .unavailable
-    )
-
-    private let contactOnly = DirectoryProvider(
-        providerId: "contact-only",
-        kind: "groomer",
-        name: "Call-only Grooming",
-        geo: nil,
-        services: [],
-        domain: nil,
-        active: nil,
-        contact: ProviderContact(website: "https://call-only.test"),
-        bindingState: .noDomainListed
-    )
-
-    private final class FakeDirectory: ProviderDirectoryReading {
-        let source: ProviderDirectorySource = .central
-        let cacheNamespace: String
-        var next: () -> ProviderDirectoryResult
-        private(set) var reads = 0
-
-        init(
-            cacheNamespace: String = "central:https://central.test/v1/businesses",
-            next: @escaping () -> ProviderDirectoryResult
-        ) {
-            self.cacheNamespace = cacheNamespace
-            self.next = next
-        }
-
-        func read() async -> ProviderDirectoryResult {
-            reads += 1
-            return next()
-        }
-    }
-
-    private func snapshot(
-        providers: [DirectoryProvider],
-        readAt: TimeInterval,
-        expiresAt: TimeInterval? = nil,
-        observation: ProviderDirectoryObservation = .live,
-        source: ProviderDirectorySource = .central
-    ) -> ProviderDirectorySnapshot {
-        ProviderDirectorySnapshot(
-            source: source,
-            providers: providers,
-            observation: observation,
-            blockNumber: nil,
-            readAt: Date(timeIntervalSince1970: readAt),
-            expiresAt: expiresAt.map { Date(timeIntervalSince1970: $0) }
-        )
-    }
-
-    private func found(_ readAt: TimeInterval, expiresAt: TimeInterval? = nil) -> ProviderDirectoryResult {
-        .found(snapshot(providers: [located, contactOnly], readAt: readAt, expiresAt: expiresAt))
-    }
-
-    private func unavailable(_ at: TimeInterval) -> ProviderDirectoryResult {
-        .unavailable(ProviderDirectoryUnavailable(
-            source: .central,
-            reason: .sourceUnavailable,
-            detail: "offline",
-            attemptedAt: Date(timeIntervalSince1970: at)
-        ))
-    }
-
-    private func date(_ seconds: TimeInterval) -> Date { Date(timeIntervalSince1970: seconds) }
-
-    // MARK: - the statement each state is entitled to make
-
-    /// The headline property. An unreachable directory must not read as an empty one: telling an
-    /// owner there is no help nearby when the truth is "we could not ask" sends them away.
-    func test_anUnreachableDirectoryWithNothingStoredStaysUnavailableAndNeverBecomesEmpty() async {
-        let directory = CachedProviderDirectory(
-            delegate: FakeDirectory { self.unavailable(5_000) },
-            store: MemoryProviderDirectoryCacheStore(),
-            now: { self.date(5_000) }
-        )
-        guard case .unavailable(let result) = await directory.read() else {
-            return XCTFail("an unreachable directory must never resolve found or empty")
-        }
-        XCTAssertEqual(result.reason, .sourceUnavailable)
-    }
-
-    /// A source that really did answer "none" keeps saying so, stored or live.
-    func test_aStoredEmptyReplaysAsEmptyRatherThanUnavailable() async {
-        var time: TimeInterval = 1_000
-        let delegate = FakeDirectory { .empty(self.snapshot(providers: [], readAt: 1_000)) }
-        let directory = CachedProviderDirectory(
-            delegate: delegate,
-            store: MemoryProviderDirectoryCacheStore(),
-            ttl: 10_000,
-            now: { self.date(time) }
-        )
-        guard case .empty = await directory.read() else { return XCTFail("expected a live empty") }
-
-        time = 2_000
-        delegate.next = { self.unavailable(2_000) }
-        guard case .empty(let replayed) = await directory.read() else {
-            return XCTFail("a stored empty must stay empty, not degrade to unavailable")
-        }
-        XCTAssertEqual(replayed.observation, .stored)
-    }
-
-    /// A `found` carrying zero providers renders as "nothing found" and is the exact false absence
-    /// this module exists to prevent. TypeScript makes it unrepresentable; a Swift array cannot, so
-    /// the guard must run on the way IN and on the way back OUT of storage.
-    func test_aFoundCarryingNoProvidersIsRefusedOnWriteAndOnReplay() async {
-        let empty = ProviderDirectoryResult.found(snapshot(providers: [], readAt: 1_000))
-        XCTAssertFalse(providerDirectorySnapshotIsWellFormed(empty))
-
-        let store = MemoryProviderDirectoryCacheStore()
-        let directory = CachedProviderDirectory(
-            delegate: FakeDirectory { empty },
-            store: store,
-            now: { self.date(1_000) }
-        )
-        guard case .unavailable(let result) = await directory.read() else {
-            return XCTFail("a found with no providers must not reach the list")
-        }
-        XCTAssertEqual(result.reason, .invalidSnapshot)
-        XCTAssertNil(store.read(), "a corrupt snapshot is never stored")
-
-        // And the same document arriving from disk cannot be replayed either.
-        var forged = try! JSONSerialization.jsonObject(
-            with: ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-                namespace: namespace,
-                snapshot: snapshot(providers: [located], readAt: 1_000, expiresAt: 5_000),
-                readAt: date(1_000),
-                expiresAt: date(5_000)
-            ))!
-        ) as! [String: Any]
-        forged["providers"] = []
-        store.write(try! JSONSerialization.data(withJSONObject: forged))
-
-        let replayed = await CachedProviderDirectory(
-            delegate: FakeDirectory { self.unavailable(2_000) },
-            store: store,
-            ttl: 10_000,
-            now: { self.date(2_000) }
-        ).read()
-        guard case .unavailable = replayed else {
-            return XCTFail("a stored found-with-zero-providers must not reach the list")
-        }
-    }
-
-    // MARK: - the two review findings
-
-    /// Review finding 1, satisfied STRUCTURALLY rather than by a catch.
-    ///
-    /// `ProviderDirectoryReading.read()` is a non-throwing `async` function, so an unexpected error
-    /// cannot escape a delegate at all - the compiler enforces here what the Kotlin twin has to
-    /// enforce with a rethrowing catch. This pins that the seam stays non-throwing: if someone makes
-    /// it `async throws`, this stops compiling and the catch-before-replay becomes mandatory.
-    func test_theReadSeamIsNonThrowingSoAnUnexpectedErrorCannotSkipTheReplay() async {
-        let seam: ProviderDirectoryReading = FakeDirectory { self.unavailable(1_000) }
-        // No `try`. A throwing seam would fail to compile on this line.
-        let result: ProviderDirectoryResult = await seam.read()
-        guard case .unavailable = result else { return XCTFail("expected the fake's own result") }
-    }
-
-    /// The behavioural half: a delegate that fails for ANY reason still reaches the stored copy.
-    func test_aFailedRefreshForAnyReasonStillConsultsTheStoredCopy() async {
-        var time: TimeInterval = 1_000
-        let delegate = FakeDirectory { self.found(1_000) }
-        let directory = CachedProviderDirectory(
-            delegate: delegate,
-            store: MemoryProviderDirectoryCacheStore(),
-            ttl: 10_000,
-            now: { self.date(time) }
-        )
-        guard case .found = await directory.read() else { return XCTFail("expected a live found") }
-
-        time = 2_000
-        for reason: ProviderDirectoryUnavailableReason in [.sourceUnavailable, .malformedResponse] {
-            delegate.next = {
-                .unavailable(ProviderDirectoryUnavailable(
-                    source: .central,
-                    reason: reason,
-                    detail: "failed",
-                    attemptedAt: self.date(2_000)
-                ))
-            }
-            guard case .found(let replayed) = await directory.read() else {
-                return XCTFail("a \(reason) refresh must replay the stored copy")
-            }
-            XCTAssertEqual(replayed.observation, .stored)
-        }
-    }
-
-    /// Review finding 2. The namespace must actually distinguish deployments, or one backend's
-    /// providers are replayed as another's. It is derived from the configured endpoint.
-    func test_aStoredCopyIsNeverReplayedForADifferentlyConfiguredDeployment() async {
-        let store = MemoryProviderDirectoryCacheStore()
-        var time: TimeInterval = 1_000
-        _ = await CachedProviderDirectory(
-            delegate: FakeDirectory(cacheNamespace: "central:https://a.test/v1/businesses") {
-                self.found(1_000)
-            },
-            store: store,
-            ttl: 10_000,
-            now: { self.date(time) }
-        ).read()
-        XCTAssertNotNil(store.read())
-
-        time = 2_000
-        let other = await CachedProviderDirectory(
-            delegate: FakeDirectory(cacheNamespace: "central:https://b.test/v1/businesses") {
-                self.unavailable(2_000)
-            },
-            store: store,
-            ttl: 10_000,
-            now: { self.date(time) }
-        ).read()
-        guard case .unavailable = other else {
-            return XCTFail("a foreign deployment's copy is not a cache hit")
-        }
-        XCTAssertNil(store.read(), "and the mismatched entry is dropped")
-    }
-
-    /// Two real central endpoints really do produce two namespaces.
-    func test_theCentralNamespaceFollowsTheConfiguredEndpoint() {
-        XCTAssertEqual(
-            CentralProviderDirectory(baseURL: "https://a.test").cacheNamespace,
-            "central:https://a.test/v1/businesses"
-        )
-        XCTAssertNotEqual(
-            CentralProviderDirectory(baseURL: "https://a.test").cacheNamespace,
-            CentralProviderDirectory(baseURL: "https://b.test").cacheNamespace
-        )
-    }
-
-    // MARK: - TTL semantics
-
-    /// Re-check first: a reachable source is always asked, and its answer always wins.
-    func test_aLiveReadIsAlwaysAttemptedAndAlwaysReplacesTheStoredCopy() async {
-        var time: TimeInterval = 1_000
-        let delegate = FakeDirectory { self.found(time) }
-        let directory = CachedProviderDirectory(
-            delegate: delegate,
-            store: MemoryProviderDirectoryCacheStore(),
-            ttl: 10_000,
-            now: { self.date(time) }
-        )
-        _ = await directory.read()
-        time = 2_000
-        guard case .found(let second) = await directory.read() else { return XCTFail("expected found") }
-        XCTAssertEqual(delegate.reads, 2)
-        XCTAssertEqual(second.observation, .live)
-        XCTAssertEqual(second.readAt, date(2_000))
-        XCTAssertEqual(second.expiresAt, date(12_000))
-    }
-
-    /// Expiry is at the exact boundary: usable strictly before it, expired the instant it arrives.
-    func test_anEntryExpiresAtItsExactDeadlineNotAfterIt() async {
-        var time: TimeInterval = 1_000
-        let delegate = FakeDirectory { self.found(1_000) }
-        let store = MemoryProviderDirectoryCacheStore()
-        let directory = CachedProviderDirectory(
-            delegate: delegate, store: store, ttl: 1_000, now: { self.date(time) }
-        )
-        _ = await directory.read()
-        delegate.next = { self.unavailable(time) }
-
-        time = 1_999
-        guard case .found = await directory.read() else {
-            return XCTFail("strictly before the deadline the copy is usable")
-        }
-
-        time = 2_000
-        guard case .unavailable = await directory.read() else {
-            return XCTFail("at the deadline itself the entry is expired")
-        }
-        XCTAssertNil(store.read())
-    }
-
-    /// A cache that renewed its deadline on every replay would never expire, so an offline phone
-    /// would keep showing a stale directory forever while calling it merely "stored".
-    func test_aStoredReplayNeverRenewsTheHardDeadline() async {
-        var time: TimeInterval = 1_000
-        let delegate = FakeDirectory { self.found(1_000) }
-        let directory = CachedProviderDirectory(
-            delegate: delegate,
-            store: MemoryProviderDirectoryCacheStore(),
-            ttl: 1_000,
-            now: { self.date(time) }
-        )
-        _ = await directory.read()
-        delegate.next = { self.unavailable(time) }
-
-        for instant: TimeInterval in [1_200, 1_500, 1_900] {
-            time = instant
-            guard case .found(let replay) = await directory.read() else {
-                return XCTFail("expected a replay at \(instant)")
-            }
-            XCTAssertEqual(replay.expiresAt, date(2_000), "the deadline is fixed at the original read")
-            XCTAssertEqual(replay.readAt, date(1_000))
-        }
-
-        time = 2_000
-        guard case .unavailable = await directory.read() else {
-            return XCTFail("a replayed copy must still reach its original deadline")
-        }
-    }
-
-    /// A backwards clock jump must not extend the window. The stored deadline is absolute, so a
-    /// snapshot "read" in the future would otherwise stay usable for however far the clock moved.
-    func test_aSnapshotReadInTheFutureIsDroppedRatherThanTrusted() async {
-        let store = MemoryProviderDirectoryCacheStore()
-        store.write(ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(providers: [located], readAt: 9_000, expiresAt: 19_000),
-            readAt: date(9_000),
-            expiresAt: date(19_000)
-        ))!)
-        let result = await CachedProviderDirectory(
-            delegate: FakeDirectory { self.unavailable(1_000) },
-            store: store,
-            ttl: 10_000,
-            now: { self.date(1_000) }
-        ).read()
-        guard case .unavailable = result else {
-            return XCTFail("a future-dated snapshot must not be replayed")
-        }
-        XCTAssertNil(store.read())
-    }
-
-    /// Shortening the TTL in a later build discards previously-stored entries rather than clamping
-    /// them. That is fail-closed, and it is what keeps "a replay never renews" true across upgrades.
-    func test_aStoredDeadlineLongerThanTheCurrentTtlIsRefused() async {
-        let store = MemoryProviderDirectoryCacheStore()
-        store.write(ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(providers: [located], readAt: 1_000, expiresAt: 100_000),
-            readAt: date(1_000),
-            expiresAt: date(100_000)
-        ))!)
-        let result = await CachedProviderDirectory(
-            delegate: FakeDirectory { self.unavailable(2_000) },
-            store: store,
-            ttl: 1_000,
-            now: { self.date(2_000) }
-        ).read()
-        guard case .unavailable = result else {
-            return XCTFail("an over-long stored deadline must not be honoured")
-        }
-    }
-
-    /// An inner wrapper's replay is not a successful refresh. Storing it would let stacked wrappers
-    /// renew stale data indefinitely, which is the same never-expires defect by another route.
-    func test_aNestedStoredResultIsPassedThroughAndNotRestored() async {
-        let store = MemoryProviderDirectoryCacheStore()
-        let nested = ProviderDirectoryResult.found(snapshot(
-            providers: [located], readAt: 1_000, expiresAt: 2_000, observation: .stored
-        ))
-        let passed = await CachedProviderDirectory(
-            delegate: FakeDirectory { nested },
-            store: store,
-            ttl: 10_000,
-            now: { self.date(1_500) }
-        ).read()
-        XCTAssertEqual(passed, nested)
-        XCTAssertNil(store.read(), "a replay must not be written back as a fresh copy")
-    }
-
-    /// A stored result whose own deadline has already passed is not a usable answer.
-    func test_aNestedStoredResultPastItsDeadlineIsRefused() async {
-        let nested = ProviderDirectoryResult.found(snapshot(
-            providers: [located], readAt: 1_000, expiresAt: 2_000, observation: .stored
-        ))
-        let result = await CachedProviderDirectory(
-            delegate: FakeDirectory { nested },
-            store: MemoryProviderDirectoryCacheStore(),
-            ttl: 10_000,
-            now: { self.date(2_000) }
-        ).read()
-        guard case .unavailable(let unavailable) = result else {
-            return XCTFail("an expired nested replay is not an answer")
-        }
-        XCTAssertEqual(unavailable.reason, .invalidSnapshot)
-    }
-
-    /// A source claiming to be something other than the configured one is a trust-boundary change.
-    func test_aSourceThatIdentifiesItselfDifferentlyIsRefusedAndClearsTheCopy() async {
-        let store = MemoryProviderDirectoryCacheStore()
-        var time: TimeInterval = 1_000
-        let delegate = FakeDirectory { self.found(1_000) }
-        let directory = CachedProviderDirectory(
-            delegate: delegate, store: store, ttl: 10_000, now: { self.date(time) }
-        )
-        _ = await directory.read()
-        XCTAssertNotNil(store.read())
-
-        time = 2_000
-        delegate.next = {
-            .found(self.snapshot(providers: [self.located], readAt: 2_000, source: .onchain))
-        }
-        guard case .unavailable(let result) = await directory.read() else {
-            return XCTFail("a source swap is not a successful read")
-        }
-        XCTAssertEqual(result.reason, .inconsistentSource)
-        XCTAssertNil(store.read())
-    }
-
-    // MARK: - the stored document
-
-    /// Everything a row carries survives a round trip, absence included.
-    ///
-    /// This is the case AGENTS.md names as where a new contact channel's round trip is asserted, so it
-    /// has to be able to catch a dropped one. That needs BOTH halves: every channel populated on one
-    /// row - a channel nobody wrote is a channel the codec is free to forget - and whole-row equality
-    /// rather than a spot check, which only ever covers the fields someone remembered to name. The
-    /// second row carries the opposite of every optional (no location, no domain, no services, no
-    /// standing claim, one channel), so an encoder that writes absence as a value fails here too.
-    ///
-    /// The first row's non-nil `active` is deliberate and is not a claim about central, which never
-    /// populates it: the codec carries the slot regardless, and with both rows nil a dropped `active`
-    /// line would round-trip clean.
-    func test_theStoredDocumentRoundTripsEveryFieldIncludingAbsentLocation() {
-        let everyChannel = DirectoryProvider(
-            providerId: "located",
-            kind: "vet",
-            name: "Harbour Vet",
-            geo: NearbyPoint(lat: 1.3039, lng: 103.8318),
+    private func provider(
+        _ id: String,
+        _ name: String,
+        kind: String = "vet",
+        geo: NearbyPoint? = NearbyPoint(lat: 1.3039, lng: 103.8318),
+        contact: ProviderContact = ProviderContact(phone: "+65 6123 4567"),
+        active: Bool? = nil,
+        bindingState: IssuerBindingState = .unavailable,
+        distanceKm: Double? = nil
+    ) -> DirectoryProvider {
+        DirectoryProvider(
+            providerId: id,
+            kind: kind,
+            name: name,
+            geo: geo,
             services: ["vaccination"],
-            domain: "harbour.test",
-            active: true,
-            contact: ProviderContact(
-                phone: "+65 6123 4567",
-                whatsapp: "+65 8123 4567",
-                telegram: "@harbourvet",
-                email: "care@harbour.test",
-                website: "https://harbour.test"
-            ),
-            bindingState: .unavailable
+            domain: nil,
+            active: active,
+            contact: contact,
+            bindingState: bindingState,
+            distanceKm: distanceKm
         )
-        let entry = ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(
-                providers: [everyChannel, contactOnly],
-                readAt: 1_000,
-                expiresAt: 5_000
-            ),
-            readAt: date(1_000),
-            expiresAt: date(5_000)
+    }
+
+    private func cache(
+        _ store: ProviderDirectoryCacheStore,
+        namespace: String? = nil
+    ) -> ProviderRecordCache {
+        ProviderRecordCache(store: store, namespace: namespace ?? self.namespace)
+    }
+
+    // MARK: - The two properties the ruling turns on
+
+    /// A distance is computed from the owner's position, so persisting one would put a position
+    /// derivative on disk AND let a later offline read state a distance measured from somewhere the
+    /// owner no longer is. Asserted against the raw document, because `DirectoryProvider` DOES carry
+    /// `distanceKm` on this platform - dropping it is an active decision on every write.
+    func test_aDistanceIsNeverWrittenToDisk() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember(
+            [provider("a", "Alpha Vet", distanceKm: 1.4), provider("b", "Beta Vet", distanceKm: 9.2)],
+            now: storedAt
         )
-        guard let document = ProviderDirectoryCacheCodec.encode(entry),
-              let decoded = ProviderDirectoryCacheCodec.decode(document) else {
-            return XCTFail("a well-formed entry must round trip")
-        }
-        XCTAssertEqual(decoded.namespace, namespace)
-        XCTAssertEqual(decoded.readAt, date(1_000))
-        XCTAssertEqual(decoded.expiresAt, date(5_000))
+
+        let document = try? XCTUnwrap(store.read())
+        let text = String(data: document ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertFalse(text.isEmpty)
+        XCTAssertFalse(text.contains("distance"), "no distance may reach the document")
+        XCTAssertFalse(text.contains("approximate"))
+        // And it does not survive the round trip either.
+        XCTAssertNil(cache(store).recall(now: storedAt.addingTimeInterval(1))?.providers.first?.distanceKm)
+    }
+
+    /// The array order of a nearest page IS the ranking, so replaying it verbatim would present a
+    /// stale ordering as current - invisibly, because a sorted list simply looks sorted.
+    func test_theStoredOrderIsNameOrderNotTheServerRanking() {
+        let store = MemoryProviderDirectoryCacheStore()
+        // As a nearest page arrives: closest first, which here is alphabetically backwards.
+        cache(store).remember(
+            [provider("z", "Zulu Vet"), provider("m", "Mike Vet"), provider("a", "Alpha Vet")],
+            now: storedAt
+        )
+
         XCTAssertEqual(
-            decoded.snapshot.providers,
-            [everyChannel, contactOnly],
-            "every field of every row survives, so dropping one from the codec fails here"
+            ["Alpha Vet", "Mike Vet", "Zulu Vet"],
+            cache(store).recall(now: storedAt.addingTimeInterval(1))?.providers.map(\.name)
+        )
+    }
+
+    /// Re-sorting on READ is what makes that hold for a document this build did not write.
+    func test_aReorderedDocumentIsStillReadBackInNameOrder() throws {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("a", "Alpha Vet"), provider("z", "Zulu Vet")], now: storedAt)
+
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(store.read())) as? [String: Any]
+        )
+        let rows = try XCTUnwrap(root["providers"] as? [[String: Any]])
+        root["providers"] = Array(rows.reversed())
+        store.write(try JSONSerialization.data(withJSONObject: root))
+
+        XCTAssertEqual(
+            ["Alpha Vet", "Zulu Vet"],
+            cache(store).recall(now: storedAt.addingTimeInterval(1))?.providers.map(\.name)
+        )
+    }
+
+    /// "Minimal" was the instruction twice over: the stored set cannot grow with the directory.
+    func test_theStoredSetIsCappedAtOnePage() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember(
+            (1...80).map { provider("p\($0)", String(format: "Vet %02d", $0)) },
+            now: storedAt
         )
 
-        let second = decoded.snapshot.providers[1]
-        XCTAssertNil(second.geo, "a contact-only provider stays location-less")
-        XCTAssertTrue(second.contact.hasAny)
-        XCTAssertEqual(second.bindingState, .noDomainListed)
+        XCTAssertEqual(ProviderRecordCache.maxRecords, OwnerProviderDirectoryRequest.pageSize)
+        XCTAssertEqual(
+            ProviderRecordCache.maxRecords,
+            cache(store).recall(now: storedAt.addingTimeInterval(1))?.providers.count
+        )
     }
 
-    /// `0,0` is a legal coordinate off the coast of Ghana and was, before S-1, what a blank location
-    /// became. Writing absence as `0,0` here would resurrect that pin from the phone's own storage.
-    func test_anAbsentLocationIsStoredAsAbsentNeverAsTheRealCoordinateZeroZero() {
-        let document = ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(providers: [contactOnly], readAt: 1_000, expiresAt: 5_000),
-            readAt: date(1_000),
-            expiresAt: date(5_000)
-        ))!
-        let object = try! JSONSerialization.jsonObject(with: document) as! [String: Any]
-        let row = (object["providers"] as! [[String: Any]])[0]
-        XCTAssertNil(row["geo"], "absence is written as absence")
+    // MARK: - Could-not-answer never becomes an established absence
+
+    func test_nothingStoredIsNilRatherThanAnEmptyRecordSet() {
+        XCTAssertNil(cache(MemoryProviderDirectoryCacheStore()).recall(now: storedAt))
     }
 
-    /// A replay is a replay however the document is edited: observation is never persisted.
-    func test_aStoredDocumentCannotDeclareItselfLive() {
-        let document = ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(providers: [located], readAt: 1_000, expiresAt: 5_000),
-            readAt: date(1_000),
-            expiresAt: date(5_000)
-        ))!
-        var object = try! JSONSerialization.jsonObject(with: document) as! [String: Any]
-        XCTAssertNil(object["observation"], "observation is not part of the stored shape")
-        object["observation"] = "live"
-        let edited = try! JSONSerialization.data(withJSONObject: object)
-        XCTAssertEqual(ProviderDirectoryCacheCodec.decode(edited)?.snapshot.observation, .stored)
-    }
-
-    /// A directory source performs no DNS or chain check, so a stored `verified` would be a claim
-    /// about work nobody did. It cannot be written and cannot be read back.
-    func test_aStoredBindingStateCanNeverClaimVerified() {
-        let document = ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(providers: [located], readAt: 1_000, expiresAt: 5_000),
-            readAt: date(1_000),
-            expiresAt: date(5_000)
-        ))!
-        var object = try! JSONSerialization.jsonObject(with: document) as! [String: Any]
-        var rows = object["providers"] as! [[String: Any]]
-        rows[0]["bindingState"] = "verified"
-        object["providers"] = rows
-        let edited = try! JSONSerialization.data(withJSONObject: object)
-        let provider = ProviderDirectoryCacheCodec.decode(edited)!.snapshot.providers[0]
-        XCTAssertEqual(provider.bindingState, .unavailable)
-        XCTAssertNotEqual(provider.bindingState, .verified(description: "anything"))
-    }
-
-    /// A document from an older stored shape is dropped, not migrated. Pre-S-1 rows encode a blank
-    /// location as `0,0`, which AGENTS.md records as unreinterpretable by code.
-    func test_aDocumentFromAnEarlierStoredShapeIsDroppedRatherThanMigrated() async {
-        let document = ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(providers: [located], readAt: 1_000, expiresAt: 5_000),
-            readAt: date(1_000),
-            expiresAt: date(5_000)
-        ))!
-        var object = try! JSONSerialization.jsonObject(with: document) as! [String: Any]
-        object["version"] = ProviderDirectoryCacheCodec.version - 1
-        let stale = try! JSONSerialization.data(withJSONObject: object)
-        XCTAssertNil(ProviderDirectoryCacheCodec.decode(stale))
-
+    func test_anUndecodableDocumentIsNothingStored() {
         let store = MemoryProviderDirectoryCacheStore()
-        store.write(stale)
-        let result = await CachedProviderDirectory(
-            delegate: FakeDirectory { self.unavailable(2_000) },
-            store: store,
-            ttl: 10_000,
-            now: { self.date(2_000) }
-        ).read()
-        guard case .unavailable = result else {
-            return XCTFail("a stale-shape document must not be replayed")
-        }
+        store.write(Data("{ not json".utf8))
+
+        XCTAssertNil(cache(store).recall(now: storedAt))
     }
 
-    /// Garbage on disk is "nothing stored", never a guess at what it might have meant.
-    func test_anUnreadableDocumentIsNothingStored() {
-        XCTAssertNil(ProviderDirectoryCacheCodec.decode(Data("not json at all".utf8)))
-        XCTAssertNil(ProviderDirectoryCacheCodec.decode(Data("{}".utf8)))
-    }
+    func test_aStoredSetIsNeverReplayedForADifferentlyConfiguredDeployment() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
 
-    /// A stored `empty` may not smuggle providers in beside it, nor a `found` arrive with none.
-    func test_aStoredStateMustAgreeWithItsProviderList() {
-        let document = ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: snapshot(providers: [located], readAt: 1_000, expiresAt: 5_000),
-            readAt: date(1_000),
-            expiresAt: date(5_000)
-        ))!
-        var object = try! JSONSerialization.jsonObject(with: document) as! [String: Any]
-        object["state"] = "empty"
         XCTAssertNil(
-            ProviderDirectoryCacheCodec.decode(try! JSONSerialization.data(withJSONObject: object))
+            cache(store, namespace: "central:https://other.example")
+                .recall(now: storedAt.addingTimeInterval(1))
         )
     }
 
-    /// `unavailable` is not a snapshot: it is never stored, so it can never be replayed as one.
-    func test_unavailableIsNeverAWellFormedSnapshot() {
-        XCTAssertFalse(providerDirectorySnapshotIsWellFormed(unavailable(1_000)))
-    }
-
-    /// A misconfigured lifetime disables the copy rather than storing an unevaluable deadline.
-    func test_aNonPositiveTtlDisablesTheCopyRatherThanStoringAnUnevaluableDeadline() async {
+    /// At the exact deadline it is expired, matching Android and the web.
+    func test_anEntryExpiresAtItsExactDeadlineNotAfterIt() {
         let store = MemoryProviderDirectoryCacheStore()
-        for ttl: TimeInterval in [0, -1] {
-            let result = await CachedProviderDirectory(
-                delegate: FakeDirectory { self.found(1_000) },
-                store: store,
-                ttl: ttl,
-                now: { self.date(1_000) }
-            ).read()
-            guard case .found = result else { return XCTFail("the live answer still stands") }
-            XCTAssertNil(store.read())
-        }
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
+        let deadline = storedAt.addingTimeInterval(ProviderRecordCache.defaultTtl)
+
+        XCTAssertNotNil(cache(store).recall(now: deadline.addingTimeInterval(-1)))
+        XCTAssertNil(cache(store).recall(now: deadline))
     }
 
-    // MARK: - keeping the copy's own failures off the live answer
+    /// A stored time in the future is a backwards clock jump, not a fresh copy.
+    func test_aSetStoredInTheFutureIsDroppedRatherThanTrusted() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
 
-    /// A failure of the COPY may only ever cost a replay, never the live answer an owner is waiting on.
-    ///
-    /// Android needs written-out guards for this; here the compiler supplies them - `encode` is
-    /// `try? JSONEncoder().encode(...)` behind an `if let document`, so a snapshot the codec cannot
-    /// express is simply not written. Pinned because that is a property of this seam's SHAPE, which a
-    /// later refactor could quietly take away. The failing-store half of the Android pair has no
-    /// counterpart at all: `write`/`clear` are non-throwing protocol requirements, so a conforming
-    /// store cannot throw and there is nothing to test.
-    func test_aSnapshotThisCodecCannotExpressCostsTheStoredCopyNotTheLiveAnswer() async {
-        let unencodable = snapshot(
-            providers: [DirectoryProvider(
-                providerId: "unencodable",
-                kind: "vet",
-                name: "Not-a-number Vet",
-                geo: NearbyPoint(lat: .nan, lng: .nan),
-                services: [],
-                domain: nil,
-                active: nil,
-                contact: ProviderContact(phone: "+65 6123 4567"),
-                bindingState: .noDomainListed
-            )],
-            readAt: 1_000
+        XCTAssertNil(cache(store).recall(now: storedAt.addingTimeInterval(-1)))
+    }
+
+    /// Version 1 was S-3's full-set snapshot, whose `providers` array was in server order - the
+    /// ranking. Dropping rather than migrating is what stops it being reinterpreted as a record set.
+    func test_aDocumentFromTheEarlierSnapshotShapeIsDroppedRatherThanMigrated() throws {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
+
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(store.read())) as? [String: Any]
         )
-        // Pinned as a PRECONDITION so this case cannot pass for the wrong reason: nothing on the
-        // wrapper path rejects a non-finite coordinate, and if `JSONEncoder` ever stopped refusing one
-        // the assertions below would hold whether or not the write stayed conditional.
-        XCTAssertTrue(providerDirectorySnapshotIsWellFormed(.found(unencodable)))
-        XCTAssertNil(ProviderDirectoryCacheCodec.encode(ProviderDirectoryCacheEntry(
-            namespace: namespace,
-            snapshot: unencodable,
-            readAt: date(1_000),
-            expiresAt: date(11_000)
-        )))
+        root["version"] = 1
+        store.write(try JSONSerialization.data(withJSONObject: root))
 
+        XCTAssertNil(cache(store).recall(now: storedAt.addingTimeInterval(1)))
+    }
+
+    func test_aStoredSetCarryingNoProvidersIsMalformedRatherThanAnEmptyAnswer() throws {
         let store = MemoryProviderDirectoryCacheStore()
-        let result = await CachedProviderDirectory(
-            delegate: FakeDirectory { .found(unencodable) },
-            store: store,
-            ttl: 10_000,
-            now: { self.date(1_000) }
-        ).read()
-        guard case .found(let live) = result else {
-            return XCTFail("an unstorable snapshot is still a live answer")
-        }
-        XCTAssertEqual(live.observation, .live)
-        XCTAssertNil(store.read(), "a refused encode must leave no partial document behind")
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
+
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(store.read())) as? [String: Any]
+        )
+        root["providers"] = [[String: Any]]()
+        store.write(try JSONSerialization.data(withJSONObject: root))
+
+        XCTAssertNil(cache(store).recall(now: storedAt.addingTimeInterval(1)))
+    }
+
+    /// A nameless row renders as a list entry the owner cannot act on.
+    func test_aBlankNameOrIdIsRefusedOnWriteAndOnReplay() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("", "No Id"), provider("b", "   ")], now: storedAt)
+
+        XCTAssertNil(store.read(), "nothing well-formed was offered, so nothing is stored")
+        XCTAssertFalse(providerRecordIsWellFormed(provider("", "No Id")))
+        XCTAssertFalse(providerRecordIsWellFormed(provider("b", " ")))
+        XCTAssertTrue(providerRecordIsWellFormed(provider("b", "Beta Vet")))
+    }
+
+    /// An empty live page means this query matched nothing, which is not evidence that the previously
+    /// remembered providers ceased to exist - so it neither writes nor clears.
+    func test_anEmptyLivePageLeavesThePreviouslyRememberedSetAlone() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
+        cache(store).remember([], now: storedAt.addingTimeInterval(1))
+
+        XCTAssertEqual(
+            ["Alpha Vet"],
+            cache(store).recall(now: storedAt.addingTimeInterval(2))?.providers.map(\.name)
+        )
+    }
+
+    /// Replace, not accumulate: offline shows the last providers seen, deliberately not a history.
+    func test_rememberReplacesRatherThanAccumulating() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
+        cache(store).remember([provider("b", "Beta Vet")], now: storedAt.addingTimeInterval(1))
+
+        XCTAssertEqual(
+            ["Beta Vet"],
+            cache(store).recall(now: storedAt.addingTimeInterval(2))?.providers.map(\.name)
+        )
+    }
+
+    // MARK: - Codec fidelity (carried over from S-3)
+
+    func test_theStoredDocumentRoundTripsEveryFieldIncludingAbsentLocation() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember(
+            [
+                provider(
+                    "contact-only",
+                    "Contact Only Vet",
+                    geo: nil,
+                    contact: ProviderContact(
+                        phone: "+65 1",
+                        whatsapp: "+65 2",
+                        telegram: "@three",
+                        email: "four@example.test",
+                        website: "https://five.example.test"
+                    ),
+                    active: true,
+                    bindingState: .noDomainListed
+                ),
+                provider("placed", "Placed Groomer", kind: "groomer", geo: NearbyPoint(lat: 0, lng: 0)),
+            ],
+            now: storedAt
+        )
+
+        let recalled = cache(store).recall(now: storedAt.addingTimeInterval(1))?.providers
+        XCTAssertEqual(recalled?.count, 2)
+        let contactOnly = recalled?.first { $0.providerId == "contact-only" }
+        XCTAssertNil(contactOnly?.geo)
+        XCTAssertEqual(contactOnly?.bindingState, .noDomainListed)
+        XCTAssertEqual(contactOnly?.contact.phone, "+65 1")
+        XCTAssertEqual(contactOnly?.contact.website, "https://five.example.test")
+        XCTAssertEqual(contactOnly?.active, true)
+        // `0,0` is a real coordinate and survives as one.
+        let placed = recalled?.first { $0.providerId == "placed" }
+        XCTAssertEqual(placed?.geo, NearbyPoint(lat: 0, lng: 0))
+        XCTAssertEqual(placed?.kind, "groomer")
+        XCTAssertNil(placed?.active)
+    }
+
+    func test_anAbsentLocationIsStoredAsAbsentNeverAsTheRealCoordinateZeroZero() throws {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("c", "Contact Only", geo: nil)], now: storedAt)
+
+        let root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(store.read())) as? [String: Any]
+        )
+        let row = try XCTUnwrap((root["providers"] as? [[String: Any]])?.first)
+        XCTAssertNil(row["geo"], "absence must be absence, not a pin off the coast of Ghana")
+    }
+
+    /// A stored `verified` would claim a DNS check nobody performed.
+    func test_aStoredBindingStateCanNeverClaimVerified() {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember(
+            [provider("v", "Verified Vet", bindingState: .verified(description: "listed"))],
+            now: storedAt
+        )
+
+        XCTAssertEqual(
+            cache(store).recall(now: storedAt.addingTimeInterval(1))?.providers.first?.bindingState,
+            .unavailable
+        )
+    }
+
+    /// The document records WHEN it was stored, never that it was live: a replay is a replay.
+    func test_aStoredDocumentCannotDeclareItselfLive() throws {
+        let store = MemoryProviderDirectoryCacheStore()
+        cache(store).remember([provider("a", "Alpha Vet")], now: storedAt)
+
+        let text = String(data: try XCTUnwrap(store.read()), encoding: .utf8) ?? ""
+        XCTAssertFalse(text.contains("observation"))
+        XCTAssertFalse(text.contains("\"live\""))
+        XCTAssertEqual(cache(store).recall(now: storedAt.addingTimeInterval(1))?.storedAt, storedAt)
     }
 }
