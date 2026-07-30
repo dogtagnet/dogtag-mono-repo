@@ -1370,8 +1370,11 @@ A grooming business's working application, not a bare verification tool. **A gro
   The service computes distance/order once and returns paged rows carrying `distanceKm`; the device
   preserves that order rather than scanning the whole directory. Provider-name search is a server
   filter using the same owner kind set. The service itself does not hardcode those kinds and can serve
-  admin/government to later callers. Results are a list only: no map, Directions handoff, chosen-place
-  input, location autocomplete, place hints, or third-party geocoding.
+  admin/government to later callers. Results are a list only: no map, chosen-place
+  input, location autocomplete, place hints, or third-party geocoding. A nearby row does carry a
+  **Directions handoff**, which is not a map: it hands the provider's PUBLIC destination to whatever
+  maps app the OS opens, never the owner's origin, and it is absent when the provider published no
+  location (`NearbyDecision.directionsURL` / `directionsUri`).
 
 ### 6.3 Theming (7 themes)
 ```
