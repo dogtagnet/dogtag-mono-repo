@@ -177,6 +177,12 @@ So `claimStanding` carries a **fourth** term, `serviceStandingEffective`, source
 It is reported separately and deliberately **not** folded into `isAuthoritativeFor`, which answers a question about the RESOLVER's standing; conflating the two would make one bool answer two questions with different remedies, which is the collapse this contract exists to avoid.
 **A consumer MUST read it before rendering a claim as current.**
 
+Read what it claims precisely, because a `false` and a `true` are not symmetric.
+A `false` is definitive: the service's lifecycle no longer permits writes here, and when the cause is one of the two terminal states above it never will again.
+A `true` says only that the service is **not frozen**, and never that a write would succeed - `canWriteService` additionally requires a confirmed live owner, which this term deliberately discards, so a service quarantined by a completed-but-unconfirmed clone-owner handover reads `true` here while every key is refused.
+That distinction is the point rather than a rough edge: a quarantine is cleared by `confirmServiceOwner` and a freeze is cleared by nothing, so rendering the two the same way would be the same collapse from the opposite side.
+`canWriteDomain` is the surface that answers whether a write would succeed, and `test_a_quarantined_service_is_not_a_frozen_one` is the case that keeps the two apart.
+
 `canWriteService` is still one bool, so a bare `NotAuthorized` cannot by itself distinguish "your key lacks authority" from "your provider is suspended" from "your service is retired".
 Reading `serviceStandingEffective` beside the refusal is what separates the standing causes out, and that is what it is for.
 
@@ -216,9 +222,17 @@ That getter is what made three facts into one, and re-adding it re-creates the d
 The two are composed from the same helpers, so the breakdown and the verdict cannot disagree - the same rule `ProviderRegistry.effectiveService` already follows, and `canWriteDomain` composes `isAuthoritativeFor` rather than re-listing its terms for the same reason.
 **Render the terms to a human, not the verdict** - and render the fourth one, because the first three cannot tell a live claim from a frozen one.
 
-Nothing in either read catches a failed dependency call and returns `false` for it.
+None of the three resolver terms catches a failed dependency call and returns `false` for it.
 A swallowed failure rendered as a definite negative is exactly how *could not check* becomes *not verified*; a consumer whose call reverts has learned that it could not check, which is the honest answer.
-(`canWriteDomain` is the deliberate exception in shape only: it is a permission gate, and the core's own `canWriteService` already fails closed internally, so a `false` there means the write would be refused — accurate whichever term failed.)
+
+There are two deliberate exceptions, and both are named rather than left for a reader to discover.
+
+`canWriteDomain` is an exception in shape only: it is a permission gate, and the core's own `canWriteService` already fails closed internally, so a `false` there means the write would be refused - accurate whichever term failed.
+
+`serviceStandingEffective` is a real one, and it is INHERITED rather than chosen.
+`core.effectiveService`'s `factoryActive` folds `_factoryRecognizes`, a staticcall that returns `false` when the factory cannot be read at all (`ProviderRegistry.sol:1104-1113`), so an unreadable factory reaches this term as a definite "not standing" and it cannot honour the propagate-a-revert rule the other three follow.
+That is acceptable in this direction only: this term's `false` is a do-not-render-this-as-current signal, so failing closed errs toward not over-claiming rather than toward a claim nothing checked.
+Read it as a floor and never as a ceiling, and never invert it into evidence that a service IS frozen.
 
 ## What this contract deliberately does not hold
 
@@ -285,7 +299,7 @@ The wiring order in `setUp` is the one the cutover has, and it is not circular: 
 
 ### Mutation evidence
 
-Twelve source mutations were applied, run and reverted while writing this slice.
+Thirteen source mutations were applied, run and reverted: twelve while writing this slice, and one more for the fourth standing term added in review.
 Each was caught by a named test:
 
 | Mutation | Red |
@@ -298,7 +312,8 @@ Each was caught by a named test:
 | `clearDomain` reachable from any disposition | `test_a_withdrawal_that_never_happened_cannot_be_recorded` |
 | Withdrawn domain retained in state | `test_a_withdrawn_claim_cannot_be_read_back_as_a_live_domain`, `test_the_domain_string_is_non_empty_exactly_when_the_disposition_is_claimed` |
 | `declareNoDomain` leaves the prior domain behind | `test_a_claim_can_be_replaced_by_a_deliberate_no_domain_declaration` |
-| `claimStanding` AND-collapses its three terms | `test_claim_standing_reports_the_three_terms_separately_rather_than_one_verdict` |
+| `claimStanding` AND-collapses its four terms | `test_claim_standing_reports_the_three_terms_separately_rather_than_one_verdict` |
+| `_serviceStandingIsEffective` folds the core's `ownerConfirmed` | `test_a_quarantined_service_is_not_a_frozen_one` |
 | Constructor drops the recognizes-everything guard | `test_construction_refuses_a_router_that_recognizes_every_address` |
 | Constructor drops the zero-permission guard | `test_construction_refuses_a_core_whose_content_permission_is_zero` |
 | Grammar accepts uppercase | `test_the_canonical_domain_grammar_rejects_anything_a_resolver_could_not_query` |
@@ -306,5 +321,9 @@ Each was caught by a named test:
 The fourth row is worth keeping visible: the first draft of the suite did **not** catch it, because every case that reached `isAuthoritativeFor` ran in a state where the service had selected this resolver.
 The gap was found by running the mutation, not by reading the tests, and closing it is what `test_a_record_stops_being_authoritative_when_the_service_selects_another_resolver` exists for.
 
-The harness that applied these was not committed, so the table is historical evidence rather than a repeatable gate — the same standing as `docs/ISSUER_V2_OWNERSHIP.md` §9.
-It covers the slice as first written and deliberately does not claim to cover the fourth standing term, which was added in review; that term is pinned by the two named frozen-service tests and by `_assertVerdictExcludesServiceStanding`, which asserts it is OUTSIDE the verdict rather than merely absent from the fold.
+The last row has the same shape and is worth the same visibility.
+Every other case that reads the fourth term asserts it `false`, and it is `false` under either semantics, so folding `ownerConfirmed` back in would have reddened nothing at all.
+Only the quarantine case can tell the two apart, and it was added because running that mutation showed the term was pinned by its name and its comment rather than by the suite.
+Beside it, `_assertVerdictExcludesServiceStanding` pins the term as OUTSIDE the verdict rather than merely absent from the fold.
+
+The harness that applied these was not committed, so the table is historical evidence rather than a repeatable gate - the same standing as `docs/ISSUER_V2_OWNERSHIP.md` §9.

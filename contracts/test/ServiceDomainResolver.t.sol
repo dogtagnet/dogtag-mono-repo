@@ -494,6 +494,34 @@ contract ServiceDomainResolverTest is Test {
         assertFalse(resolver.canWriteDomain(service, NEXT_OWNER));
     }
 
+    /// @dev THE discriminating case for the fourth standing term, and the only one that distinguishes
+    /// what it means from what `canWriteDomain` means. Every other case that reads it has it `false`, so
+    /// each of those passes under either semantics; this one is `true` while no key can write.
+    ///
+    /// A quarantine is not a freeze. The registrar clears an unconfirmed handover with
+    /// `confirmServiceOwner`, so the claim is still live and still maintainable, and rendering it as
+    /// frozen history would be as wrong as rendering a retired service's claim as current - the same
+    /// collapse from the opposite side. Folding the core's `ownerConfirmed` into
+    /// `_serviceStandingIsEffective` reddens this test and nothing else.
+    function test_a_quarantined_service_is_not_a_frozen_one() public {
+        _claim(CONTROLLER, service, DOMAIN);
+
+        vm.prank(CONTROLLER);
+        DogTagIssuerV2(service).transferOwnership(NEXT_OWNER);
+        vm.prank(NEXT_OWNER);
+        DogTagIssuerV2(service).acceptOwnership();
+
+        (,,,,, bool standing) = resolver.claimStanding(service);
+        assertTrue(standing);
+        assertFalse(resolver.canWriteDomain(service, CONTROLLER));
+        assertFalse(resolver.canWriteDomain(service, NEXT_OWNER));
+
+        // And confirming the handover restores the write, which a frozen service can never do.
+        vm.prank(AUTHORITY);
+        core.confirmServiceOwner(service, NEXT_OWNER, 1);
+        assertTrue(resolver.canWriteDomain(service, NEXT_OWNER));
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Provenance against the router
     // ---------------------------------------------------------------------------------------------

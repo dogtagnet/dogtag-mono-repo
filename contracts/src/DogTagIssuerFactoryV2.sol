@@ -105,14 +105,20 @@ interface IOwnedIssuer {
 /// # 3. `authorizeClone` — the resolving predicate, published once
 ///
 /// The forgery-proof repoint predicate is published HERE as a function rather than inlined, so that a
-/// consumer can call it instead of re-deriving it. Two contracts are meant to (`ProviderRegistry`'s
-/// service attachment, S-6; and `ServiceDomainResolver`'s domain write, S-9), and two parallel
-/// implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in
-/// this codebase already. Both public shapes below are thin wrappers over one internal `_authorization`,
+/// consumer can call it instead of re-deriving it. `ProviderRegistry`'s service attachment (S-6) is meant
+/// to, and two parallel implementations of one authorization rule is how the vet and mobile verdict paths
+/// came to disagree in this codebase already. `ServiceDomainResolver`'s domain write (S-9) was the other
+/// intended consumer and has since shipped composing the core's `canWriteService` instead: this predicate
+/// requires `claimant == owner()` exactly, so it cannot admit an owner-appointed delegate and would leave
+/// the core's `SERVICE_PERMISSION_RECORD` bit with no consumer, and it lives on a generation-specific
+/// factory. That is a considered deviation, argued in full in `docs/SERVICE_DOMAIN_RESOLVER.md`
+/// §"Why `authorizeClone` is deliberately not composed" - do not treat it as an oversight to wire in.
+/// Both public shapes below are thin wrappers over one internal `_authorization`,
 /// so the rule cannot be half-changed and a candidate that failed provenance cannot be reached by either.
 ///
-/// **No consumer composes it yet, so this is not the only place the rule lives.** S-9 does not exist in
-/// this tree, and `ProviderRegistry` derives both halves itself: provenance through its own fail-soft
+/// **No consumer composes it yet, so this is not the only place the rule lives.** S-9 now exists
+/// (`contracts/src/ServiceDomainResolver.sol`) but deliberately does not call it, and
+/// `ProviderRegistry` derives both halves itself: provenance through its own fail-soft
 /// `isClone` staticcall (`_factoryRecognizes`) and control through its own fail-soft `owner()` staticcall
 /// (`_readServiceOwner`). On the core's own per-issuance predicates that shape is deliberate rather than
 /// an omission, for two specific reasons: those reads sit inside `canIssue`, which a generation-2 clone

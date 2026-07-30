@@ -276,12 +276,12 @@ contract ServiceDomainResolver {
 
         // A router that vouches for the zero address vouches for anything, which would make the
         // provenance term above pass for a hand-rolled contract.
-        bool vouchesForNothing = _probeBool(
+        bool vouchesForTheZeroAddress = _probeBool(
             router_,
             abi.encodeCall(CloneProvenanceRouter.isClone, (address(0))),
             CloneProvenanceRouter.isClone.selector
         );
-        if (vouchesForNothing) revert RouterRecognizesEveryAddress(router_);
+        if (vouchesForTheZeroAddress) revert RouterRecognizesEveryAddress(router_);
 
         // Every core read this contract depends on must answer with the expected width, so a core that
         // cannot serve one is refused here rather than at the first call that needs it. `canWriteService`
@@ -345,8 +345,10 @@ contract ServiceDomainResolver {
     /// @dev This is a positive assertion, not an absence, which is why it is a write and not simply
     /// leaving the record `UNSET`. Reachable from `CLAIMED` directly: an issuer that has dropped its
     /// domain entirely is making the stronger statement, and `NO_DOMAIN` says more than `CLEARED` does.
-    /// The withdrawn value is still emitted by {DomainClaimWithdrawn}'s sibling {DomainClaimed} history,
-    /// so nothing is lost to an indexer.
+    /// Replacing a claim this way emits no withdrawal event: {DomainClaimWithdrawn} belongs to
+    /// {clearDomain}, and what happened here is a declaration rather than a withdrawal. The replaced
+    /// domain's value is not lost to an indexer either way, because it survives in the {DomainClaimed}
+    /// event that published it, and {NoDomainDeclared} carries the `previous` disposition it replaced.
     function declareNoDomain(address service) external {
         _requireWritable(service);
 
@@ -466,15 +468,25 @@ contract ServiceDomainResolver {
     /// re-derived here, so the breakdown and the verdict cannot disagree.
     ///
     /// `serviceStandingEffective` is the FOURTH term and is deliberately outside that verdict. It comes
-    /// from `core.effectiveService` rather than being re-derived, and answers whether the core's write
-    /// predicate can still be satisfied for this service at all. A `false` is terminal whenever its cause
-    /// is a `RETIRED` standing or a deprecated factory generation, and a `CLAIMED` record beside it is
-    /// history rather than a live claim - so a consumer MUST read it before rendering a claim as current.
+    /// from `core.effectiveService` rather than being re-derived, and answers ONLY whether the service's
+    /// lifecycle still permits writes at all: `false` means frozen, `true` means not frozen. It does NOT
+    /// mean a write would succeed - `canWriteService` additionally requires a confirmed live owner, which
+    /// this term deliberately discards, so a service quarantined by an unconfirmed clone-owner handover
+    /// reads `true` here while every write is refused. {canWriteDomain} is the surface that answers the
+    /// would-this-write-succeed question. A `false` is terminal whenever its cause is a `RETIRED`
+    /// standing or a deprecated factory generation, and a `CLAIMED` record beside it is history rather
+    /// than a live claim - so a consumer MUST read it before rendering a claim as current.
     ///
-    /// Each term is a real observation or the call reverts — nothing here catches a failed read and
-    /// returns `false` for it, because a swallowed failure rendered as a definite negative is exactly how
-    /// "could not check" turns into "not verified". A consumer whose call reverts has learned that it
-    /// could not check, which is the honest answer.
+    /// The first three terms are a real observation or the call reverts - nothing here catches a failed
+    /// read and returns `false` for it, because a swallowed failure rendered as a definite negative is
+    /// exactly how "could not check" turns into "not verified". A consumer whose call reverts has learned
+    /// that it could not check, which is the honest answer.
+    ///
+    /// `serviceStandingEffective` is the one deliberate exception, and it is inherited rather than
+    /// chosen: the core's `factoryActive` folds a fail-soft `isClone` staticcall, so an unreadable
+    /// factory arrives here as a definite `false`. That is acceptable in this direction only - this
+    /// term's `false` is a do-not-render-this-as-current signal, so failing closed errs toward not
+    /// over-claiming rather than toward a claim nothing checked.
     function claimStanding(address service)
         external
         view

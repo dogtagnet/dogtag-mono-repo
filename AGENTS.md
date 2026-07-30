@@ -1519,6 +1519,19 @@ a live claim", and withdrawing what it resolves "is the typed resolver allowlist
 lever is `setResolverApproved(DOMAIN, resolver, false)`, which is FLEET-WIDE and takes down every other
 service's claim on that resolver. Stated limitation, never a passing property; revisiting it is captain-gated.
 
+**That fourth term is ASYMMETRIC in two ways, and both are load-bearing.** A `false` is definitive; a
+`true` says only NOT FROZEN and never that a write would succeed, because `canWriteService` additionally
+requires a confirmed live owner which the term deliberately discards - so a service quarantined by a
+completed-but-unconfirmed clone-owner handover reads `true` while every key is refused. That is the point:
+a quarantine is cleared by `confirmServiceOwner` and a freeze is cleared by nothing.
+`test_a_quarantined_service_is_not_a_frozen_one` is the ONLY case that can tell the two apart - every other
+case that reads the term asserts it `false`, which holds under either semantics, so folding `ownerConfirmed`
+back in reddens that test and nothing else. Second asymmetry: unlike the three resolver terms, this one
+CANNOT propagate a failed read, because the core's `factoryActive` folds a fail-soft `isClone` staticcall,
+so an unreadable factory arrives as a definite `false`. Acceptable in this direction only - the term's
+`false` is a do-not-render-this-as-current signal, so failing closed errs toward not over-claiming. Never
+invert it into evidence that a service IS frozen.
+
 Two smaller notes. Writes AND reads both require that the core still selects this resolver and that its
 typed allowlist entry is still active, because the core never clears a stored selector; `claimStanding`
 reports those terms SEPARATELY for display while `isAuthoritativeFor` is the single machine-facing AND, so
