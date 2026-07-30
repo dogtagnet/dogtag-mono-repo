@@ -5,6 +5,23 @@
 # simulator location set immediately before the run:
 #   xcrun simctl location <udid> set 1.2931,103.8520
 #   maestro test apps/ios/maestro/nearby_scope_separation.yaml
+#
+# ONLY THE FIRST HALF OF THIS FLOW RUNS ON A DEV MACHINE. Read a local failure accordingly rather
+# than as a product regression, and never as a silent pass:
+#
+#   Runs locally (needs no directory read): everything up to and including the "Directions" absence -
+#   the "How your location is used" card, the disclosure sentence, the approximation/rounding
+#   absences, and the retired chosen-location surfaces.
+#
+#   Requires a reachable deployment at `AppConfig.centralApi` (`https://api.dogtag.io`): everything
+#   below the divider. The app's directory host is a fixed production constant with no debug
+#   override - deliberately, since it is the one service the owner cannot swap - so a dev machine
+#   cannot reach a live directory, every read fails closed, and no result row is ever rendered. Those
+#   assertions are still the specification; count them as deployment/manual-QA coverage, and never as
+#   coverage a local run delivered.
+#   Note the three trailing absence assertions are VACUOUS without a deployment too: an absence
+#   passes just as happily when the contacts list rendered nothing at all, and its disclaimer line is
+#   emitted only in the `.providersFound` case (`NearbyScreen.swift`).
 appId: io.liberalize.dogtag
 ---
 - launchApp:
@@ -30,6 +47,7 @@ appId: io.liberalize.dogtag
 - assertNotVisible: "Longitude"
 - assertNotVisible: "Directions"
 
+# ---- everything below here needs a reachable directory at AppConfig.centralApi (see the header) ----
 - tapOn: "Use my current location"
 - extendedWaitUntil:
     visible:

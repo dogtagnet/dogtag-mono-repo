@@ -135,6 +135,29 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   scheme are guarded by LOCAL runs only - including the QR-trap regression they were written for. Run
   them by hand before shipping mobile changes. (Dispatch-only CI is a standing decision, not an
   oversight; broadening it is captain-gated.)
+- **Known gap: the provider-search RESULT ROWS cannot be verified on a dev machine, and that is a
+  deliberate trade rather than a defect to close.**
+  What IS verified locally: the indexer's own end-to-end HTTP behaviour (`cargo test -p indexer-api`,
+  plus a real `indexer-api` binary driven over both public routes); the pure decision layers on both
+  platforms, including Android's three `NearbyDecision.storedFallback` cases and the
+  `ProviderRecordCache` cases in `DirectoryCacheTest.kt` / `DirectoryCacheTests.swift`; and, via
+  `apps/ios/maestro/nearby_scope_separation.yaml`, the iOS Nearby disclosure copy plus the absence of
+  the retired chosen-location/map surfaces.
+  What is NOT verified locally: the RENDERED result rows - the distance labels on nearby rows, the
+  list ordering as rendered, and the `StoredProvidersOnly` offline presentation.
+  The reason is that the directory host is the fixed production constant `AppConfig.centralApi` /
+  `AppConfig.CENTRAL_API` (`https://api.dogtag.io`) with no debug override, so a dev machine cannot
+  reach a live directory and every read fails closed to the honest "could not be reached" state.
+  Those rows need a real deployment; treat them as deployment/manual-QA coverage, not as covered.
+  **The constant stays fixed.** The Android constant's own comment says this is the one service the
+  owner cannot swap, so its non-configurability is a stated product property; a build-time or debug
+  host override added so a Maestro flow could reach a local instance would weaken that property for
+  test convenience, and an override that can ship enabled on the one centralized endpoint is a worse
+  risk than an unverified render assertion.
+  Second, narrower half of the same gap: no test in `DogTagTests` references `storedFallback` or
+  `storedProvidersOnly`, so the iOS half of that decision is currently defended by the
+  it-mirrors-Android argument only - the same shape as the pre-`VerdictDisplay` gap recorded under
+  "iOS unit tests", and the thing extraction-plus-tests is the remedy for if it is ever closed.
 
 ### Sharp edges learned
 - **The parity gate is `circuits/scripts/gen-vectors.mjs`.** It is the source of truth: it computes the circom witness (reference-of-record) and cross-checks `poseidon-lite` (TS) and `circomlibjs`, then writes `circuits/poseidon-vectors.json` which Rust (`sdk_parity.rs`/`poseidon_parity.rs`) asserts. The parity gate is now the union of `make parity` + `test-rs` (the Solidity `PoseidonParity.t.sol` leg was retired with the owner-revealing layer; the owner-hidden `VerificationRegistryConsent` computes no on-chain Poseidon). (`circuits/scripts/check-ts.mjs` was referenced by `package.json` but never existed; it was removed — `gen-vectors.mjs` already covers TS↔circom.)
