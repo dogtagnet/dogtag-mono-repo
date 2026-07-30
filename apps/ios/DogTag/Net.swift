@@ -52,6 +52,158 @@ enum Http {
 enum RoaxRpc {
     enum Result { case valid, invalid, unknown(String) }
 
+    /// Why a requested endpoint could not be used. A wrong-chain answer is kept separate so the
+    /// settings screen can say exactly what happened; neither it nor a transport/malformed-response
+    /// failure is allowed to reach an address-bound chain read.
+    enum EndpointFailure: Equatable {
+        case invalidURL
+        case unavailable
+        case invalidChainIdResponse
+        case wrongChain(reported: UInt64)
+    }
+
+    /// The route chosen after probing `eth_chainId`. `unavailable` means even the bundled endpoint
+    /// failed the guard, so no contract read may be sent or trusted.
+    enum EndpointRoute: Equatable {
+        case bundled
+        case custom(String)
+        case bundledFallback(EndpointFailure)
+        case unavailable(custom: EndpointFailure?, bundled: EndpointFailure)
+
+        var rpcUrl: String? {
+            switch self {
+            case .bundled, .bundledFallback: return AppConfig.roaxRpc
+            case .custom(let url): return url
+            case .unavailable: return nil
+            }
+        }
+    }
+
+    /// Check the requested peer immediately before a read. A custom peer that is unavailable,
+    /// malformed, or reports a chain other than the one whose contract addresses are bundled falls
+    /// back to the bundled peer. The bundled peer is guarded too: if it cannot establish the bundled
+    /// chain id, the caller gets UNKNOWN rather than an answer from an unestablished chain.
+    static func endpointRoute(rpcUrl: String) async -> EndpointRoute {
+        await endpointRoute(
+            rpcUrl: rpcUrl,
+            expectedChainId: RoaxConfig.load().chainId,
+            probe: { url, body in await Http.postJSON(url, body: body) }
+        )
+    }
+
+    /// Injectable seam for the host-safe endpoint-selection tests. The probe receives the complete
+    /// JSON-RPC body so tests can also pin that the guard asks `eth_chainId`, not `net_version` or a
+    /// contract whose address is already chain-specific.
+    static func endpointRoute(
+        rpcUrl: String,
+        expectedChainId: Int,
+        probe: (String, String) async -> Http.Response
+    ) async -> EndpointRoute {
+        let bundled = AppConfig.roaxRpc
+        let requested = RpcEndpointSettings.normalizedURL(rpcUrl)
+
+        if requested == bundled {
+            if let failure = await chainFailure(
+                url: bundled, expectedChainId: expectedChainId, probe: probe) {
+                return .unavailable(custom: nil, bundled: failure)
+            }
+            return .bundled
+        }
+
+        let customFailure: EndpointFailure
+        if let requested {
+            if let failure = await chainFailure(
+                url: requested, expectedChainId: expectedChainId, probe: probe) {
+                customFailure = failure
+            } else {
+                return .custom(requested)
+            }
+        } else {
+            customFailure = .invalidURL
+        }
+
+        if let bundledFailure = await chainFailure(
+            url: bundled, expectedChainId: expectedChainId, probe: probe) {
+            return .unavailable(custom: customFailure, bundled: bundledFailure)
+        }
+        return .bundledFallback(customFailure)
+    }
+
+    private static func chainFailure(
+        url: String,
+        expectedChainId: Int,
+        probe: (String, String) async -> Http.Response
+    ) async -> EndpointFailure? {
+        let payload: [String: Any] = [
+            "jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": [],
+        ]
+        guard let raw = try? JSONSerialization.data(withJSONObject: payload),
+              let body = String(data: raw, encoding: .utf8) else {
+            return .invalidChainIdResponse
+        }
+        let response = await probe(url, body)
+        guard response.ok else { return .unavailable }
+        guard let data = response.body.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["error"] == nil,
+              let result = object["result"] as? String,
+              result.hasPrefix("0x"),
+              result.count > 2,
+              let reported = UInt64(result.dropFirst(2), radix: 16) else {
+            return .invalidChainIdResponse
+        }
+        guard reported == UInt64(expectedChainId) else { return .wrongChain(reported: reported) }
+        return nil
+    }
+
+    /// The single transport seam for all blockchain JSON-RPC reads below. A custom peer that passes
+    /// the chain guard but disappears before the actual read gets one guarded retry on the bundled
+    /// endpoint. Nothing here applies to central/provider or QR-discovered role APIs.
+    private static func guardedPostJSON(rpcUrl: String, body: String) async -> Http.Response {
+        await guardedPostJSON(
+            rpcUrl: rpcUrl,
+            body: body,
+            expectedChainId: RoaxConfig.load().chainId,
+            probe: { url, probeBody in await Http.postJSON(url, body: probeBody) },
+            request: { url, requestBody in await Http.postJSON(url, body: requestBody) }
+        )
+    }
+
+    /// Injectable form of the production transport seam. Keeping chain probes and address-bound
+    /// requests as separate closures lets tests prove that a rejected peer receives no contract call
+    /// and that a retry cannot bypass a fresh guard on the bundled peer.
+    static func guardedPostJSON(
+        rpcUrl: String,
+        body: String,
+        expectedChainId: Int,
+        probe: (String, String) async -> Http.Response,
+        request: (String, String) async -> Http.Response
+    ) async -> Http.Response {
+        let route = await endpointRoute(
+            rpcUrl: rpcUrl,
+            expectedChainId: expectedChainId,
+            probe: probe
+        )
+        guard let selected = route.rpcUrl else {
+            return Http.Response(code: -1, body: "chain guard could not establish the bundled chain")
+        }
+
+        let response = await request(selected, body)
+        guard case .custom = route, !response.ok else { return response }
+
+        // The custom peer passed `eth_chainId` but then became unavailable. Validate the fallback
+        // endpoint immediately too; never turn a transport retry into an unguarded read.
+        let fallback = await endpointRoute(
+            rpcUrl: AppConfig.roaxRpc,
+            expectedChainId: expectedChainId,
+            probe: probe
+        )
+        guard let bundled = fallback.rpcUrl else {
+            return Http.Response(code: -1, body: "chain guard could not establish the bundled chain")
+        }
+        return await request(bundled, body)
+    }
+
     /// The outcome of a read whose on-chain answer is an address or a word.
     ///
     /// Three outcomes, never two: `unset` is the chain ANSWERING with its zero value (nobody ever
@@ -89,7 +241,7 @@ enum RoaxRpc {
         ]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
               let bodyStr = String(data: raw, encoding: .utf8) else { return .unknown("encode") }
-        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
         guard resp.ok else { return .unknown("rpc \(resp.code)") }
         guard let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
@@ -186,7 +338,7 @@ enum RoaxRpc {
         let payload: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
               let bodyStr = String(data: raw, encoding: .utf8) else { return nil }
-        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
         guard resp.ok, let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
               let hex = o["result"] as? String else { return nil }
@@ -496,7 +648,7 @@ enum RoaxRpc {
         ]
         guard let raw = try? JSONSerialization.data(withJSONObject: payload),
               let bodyStr = String(data: raw, encoding: .utf8) else { return .failure("encode") }
-        let resp = await Http.postJSON(rpcUrl, body: bodyStr)
+        let resp = await guardedPostJSON(rpcUrl: rpcUrl, body: bodyStr)
         guard resp.ok else { return .failure("rpc \(resp.code)") }
         guard let d = resp.body.data(using: .utf8),
               let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
@@ -919,71 +1071,72 @@ enum DnsVerify {
 
 // MARK: - Provider directory
 
-/// Native adapter for the shared ProviderDirectory contract.
+/// Native adapter for the shared ProviderDirectory contract. It is a SOURCE only: it holds no cache.
 ///
 /// The screen receives this seam and never performs HTTP itself. `read()` accepts no query, and the
 /// endpoint builder rejects a configured base that already contains one, so neither a current nor a
-/// chosen position has a request-shaped place to go. A failed live read may replay the same universal,
-/// full-set snapshot while its hard TTL remains open; that replay is labelled `.stored`.
+/// chosen position has a request-shaped place to go.
+///
+/// The local copy lives in `CachedProviderDirectory`, one decorator around this seam, so the future
+/// on-chain directory inherits the same offline behaviour without reimplementing it - and so there is
+/// only one place that can get "a replay never renews its deadline" wrong.
 struct CentralProviderDirectory: ProviderDirectoryReading {
     let source: ProviderDirectorySource = .central
-    static let defaultTtl: TimeInterval = 15 * 60
 
     private let baseURL: String
-    private let ttl: TimeInterval
     private let now: () -> Date
 
     init(
         baseURL: String = AppConfig.centralApi,
-        ttl: TimeInterval = Self.defaultTtl,
         now: @escaping () -> Date = Date.init
     ) {
         self.baseURL = baseURL
-        self.ttl = ttl
         self.now = now
     }
 
     func read() async -> ProviderDirectoryResult {
         let attemptedAt = now()
-        guard ttl.isFinite, ttl > 0,
-              let endpoint = Self.endpoint(baseURL: baseURL) else {
-            return fallbackOrUnavailable(
+        guard let endpoint = Self.endpoint(baseURL: baseURL) else {
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: .central,
                 reason: .sourceUnavailable,
                 detail: "The provider directory is not configured with a valid query-free URL",
                 attemptedAt: attemptedAt
-            )
+            ))
         }
 
         let response = await Http.getJSON(endpoint)
         guard response.ok else {
-            return fallbackOrUnavailable(
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: .central,
                 reason: .sourceUnavailable,
                 detail: response.code < 0
                     ? "The provider directory could not be reached"
                     : "The provider directory returned HTTP \(response.code)",
                 attemptedAt: attemptedAt
-            )
+            ))
         }
         guard let data = response.body.data(using: .utf8),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let providers = Self.parseProviders(object) else {
-            return fallbackOrUnavailable(
+            return .unavailable(ProviderDirectoryUnavailable(
+                source: .central,
                 reason: .malformedResponse,
                 detail: "The provider directory returned an invalid response; it was not treated as empty",
                 attemptedAt: attemptedAt
-            )
+            ))
         }
 
-        let readAt = now()
         let snapshot = ProviderDirectorySnapshot(
             source: .central,
             providers: providers,
             observation: .live,
             blockNumber: nil,
-            readAt: readAt,
-            expiresAt: readAt.addingTimeInterval(ttl)
+            readAt: now(),
+            // No TTL of this source's own. The wrapper sets the hard deadline from THIS observation
+            // time, so a slow read can never lengthen the maximum age.
+            expiresAt: nil
         )
-        ProviderDirectoryMemoryCache.write(snapshot, namespace: cacheNamespace)
         return providers.isEmpty ? .empty(snapshot) : .found(snapshot)
     }
 
@@ -1005,25 +1158,13 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
         return components.url?.absoluteString
     }
 
-    private var cacheNamespace: String {
+    /// Scopes a stored copy to this exact configured endpoint.
+    ///
+    /// Repointing `centralApi` changes it, so one deployment's persisted snapshot can never be
+    /// replayed as another's. A future on-chain directory must carry its own chain/registry identity
+    /// here for the same reason.
+    var cacheNamespace: String {
         "central:\(Self.endpoint(baseURL: baseURL) ?? "unresolved-base")"
-    }
-
-    private func fallbackOrUnavailable(
-        reason: ProviderDirectoryUnavailableReason,
-        detail: String,
-        attemptedAt: Date
-    ) -> ProviderDirectoryResult {
-        if var cached = ProviderDirectoryMemoryCache.read(namespace: cacheNamespace, now: attemptedAt) {
-            cached.observation = .stored
-            return cached.providers.isEmpty ? .empty(cached) : .found(cached)
-        }
-        return .unavailable(ProviderDirectoryUnavailable(
-            source: .central,
-            reason: reason,
-            detail: detail,
-            attemptedAt: attemptedAt
-        ))
     }
 
     /// All-or-nothing validation, except that a genuinely absent/null `geo` is the valid contact-only
@@ -1115,28 +1256,59 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
     }
 }
 
-/// One process-local full-set snapshot per configured directory. The value is never keyed by a
-/// position, name search, radius, geohash, or viewport.
-private enum ProviderDirectoryMemoryCache {
-    private static let lock = NSLock()
-    private static var entries: [String: ProviderDirectorySnapshot] = [:]
+/// One JSON file holding the stored directory copy. Every failure is swallowed into "nothing
+/// stored", which can only ever cost a replay.
+///
+/// Writes stage to a sibling and are replaced in, so a kill mid-write leaves the previous copy rather
+/// than a truncated document. There is deliberately no `.completeFileProtection` and no
+/// backup-exclusion here, unlike the owner-secret store: this holds one public endpoint's response,
+/// carries no owner position and nothing the phone could not fetch again, so borrowing those flags
+/// would misstate its sensitivity. It lives in Caches, so the OS may evict it at any time - and an
+/// evicted file simply reads as nothing stored, which degrades to `unavailable`, never to `empty`.
+struct FileProviderDirectoryCacheStore: ProviderDirectoryCacheStore {
+    static let fileName = "dogtag-provider-directory.json"
 
-    static func write(_ snapshot: ProviderDirectorySnapshot, namespace: String) {
-        lock.lock()
-        entries[namespace] = snapshot
-        lock.unlock()
+    private let url: URL
+
+    init(url: URL? = nil) {
+        if let url {
+            self.url = url
+        } else {
+            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
+            self.url = (caches.first ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+                .appendingPathComponent(Self.fileName)
+        }
     }
 
-    static func read(namespace: String, now: Date) -> ProviderDirectorySnapshot? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let snapshot = entries[namespace],
-              let expiresAt = snapshot.expiresAt,
-              snapshot.readAt <= now,
-              now < expiresAt else {
-            entries.removeValue(forKey: namespace)
-            return nil
-        }
-        return snapshot
+    func read() -> Data? {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        return data
+    }
+
+    /// `.atomic` already writes an auxiliary file beside the destination and renames it in, so a kill
+    /// mid-write leaves the previous copy rather than a truncated document.
+    ///
+    /// Deliberately NOT a hand-rolled staging file plus `replaceItemAt`: that is what `.atomic` does,
+    /// and `replaceItemAt` is modelled on replacing an item that already exists, so on a fresh install
+    /// - where the destination has never been created - it would be the one call standing between the
+    /// owner and a local copy, on a path no test here exercises. A failure that only ever happens on
+    /// first run is a permanently inert cache in exactly the offline case it exists for.
+    func write(_ document: Data) {
+        // A copy that could not be stored simply is not stored. The live result still stands.
+        try? document.write(to: url, options: .atomic)
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+/// The configured directory, wrapped in the on-device local copy.
+enum ProviderDirectories {
+    static func central() -> ProviderDirectoryReading {
+        CachedProviderDirectory(
+            delegate: CentralProviderDirectory(),
+            store: FileProviderDirectoryCacheStore()
+        )
     }
 }

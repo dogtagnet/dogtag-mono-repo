@@ -29,6 +29,8 @@ export interface CredentialVerifyPanelProps {
   factoryAddr?: string;
   /** Public RPC URL override; defaults to the ROAX devrpc from the chain definition. */
   rpcUrl?: string;
+  /** Bundled endpoint to use, after its own chain guard, if the preferred endpoint cannot be used. */
+  defaultRpcUrl?: string;
   /** Injected chain reader (tests/storybook); defaults to a viem reader over the public ROAX RPC. */
   reader?: IssuerChainReader;
 }
@@ -53,6 +55,7 @@ export function CredentialVerifyPanel({
   registryAddr,
   factoryAddr,
   rpcUrl,
+  defaultRpcUrl,
   reader,
 }: CredentialVerifyPanelProps = {}) {
   const { toast } = useToast();
@@ -78,6 +81,7 @@ export function CredentialVerifyPanel({
         registryAddr,
         factoryAddr,
         rpcUrl,
+        defaultRpcUrl,
         reader,
       });
       setResult(resp);
@@ -102,8 +106,9 @@ export function CredentialVerifyPanel({
         </CardTitle>
         <CardDescription>
           Recompute integrity and read the DogTag issuer clone directly on ROAX for current validity
-          and revocation. Permissionless - verified in-browser over the public RPC, no operator
-          session required.
+          and revocation. Permissionless - checked in-browser through your chain-guarded endpoint
+          selection, with the bundled endpoint as a guarded fallback and no operator session
+          required.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

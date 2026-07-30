@@ -11,6 +11,7 @@ import {
   Label,
   docFromShareResponse,
   runVerificationBench,
+  useRoaxRpcPreference,
   useToast,
   type BenchCheck,
   type BenchMutation,
@@ -202,6 +203,7 @@ function MutationCard({
 
 export function VerificationBench() {
   const { toast } = useToast();
+  const rpc = useRoaxRpcPreference(env.roaxRpc);
   const fileRef = useRef<HTMLInputElement>(null);
   const [raw, setRaw] = useState("");
   const [shareUrl, setShareUrl] = useState("");
@@ -224,13 +226,17 @@ export function VerificationBench() {
       let blockNumber: bigint | undefined;
       try {
         const { roaxPublicClient } = await import("@dogtag/ui");
-        blockNumber = await roaxPublicClient(env.roaxRpc).getBlockNumber();
+        blockNumber = await roaxPublicClient(
+          rpc.rpcUrl,
+          rpc.defaultRpcUrl,
+        ).getBlockNumber();
       } catch {
         blockNumber = undefined;
       }
       const next = await runVerificationBench({
         wrappedDoc: parsed,
-        rpcUrl: env.roaxRpc,
+        rpcUrl: rpc.rpcUrl,
+        defaultRpcUrl: rpc.defaultRpcUrl,
         registryAddr: env.issuerRegistryAddr || undefined,
         factoryAddr: env.factoryAddr || undefined,
         domainRegistryAddr: env.issuerDomainRegistryAddr || undefined,

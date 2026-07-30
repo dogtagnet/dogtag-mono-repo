@@ -4,6 +4,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
+  RpcEndpointSettingsCard,
   SigningModeToggle,
   StatusPanel,
   ThemeToggle,
@@ -13,6 +14,7 @@ import {
 } from "@dogtag/ui";
 import { useEffect, useState } from "react";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 
 export function Settings() {
   const { api, signingMode, setSigningMode, custodyState } = useApp();
@@ -74,6 +76,8 @@ export function Settings() {
         }
         backendSignerAddress={signingMode === "backend" ? backendSigner : undefined}
       />
+
+      <RpcEndpointSettingsCard defaultRpcUrl={env.roaxRpc} />
 
       <Card>
         <CardHeader>

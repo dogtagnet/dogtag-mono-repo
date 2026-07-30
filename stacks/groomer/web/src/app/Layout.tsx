@@ -182,7 +182,7 @@ export function Layout({
         <>
           <h1 className="text-lg font-semibold text-onSurface">{title}</h1>
           <div className="flex items-center gap-3">
-            <WalletButton />
+            <WalletButton defaultRpcUrl={env.roaxRpc} />
             <ThemeToggle />
           </div>
         </>

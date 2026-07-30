@@ -11,6 +11,7 @@ import {
   Spinner,
   addressExplorerHref,
   resolveDogTagId,
+  useRoaxRpcPreference,
   verifyCredentialOnchain,
   type CrmPet,
   type VerifyCredentialResp,
@@ -43,6 +44,7 @@ import { env } from "../lib/env";
  */
 export function PetTagCredentials({ pet }: { pet: CrmPet }) {
   const { api } = useApp();
+  const rpc = useRoaxRpcPreference(env.roaxRpc);
   const [docs, setDocs] = useState<Record<string, unknown>[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -127,7 +129,12 @@ export function PetTagCredentials({ pet }: { pet: CrmPet }) {
           </p>
         ) : (
           docs?.map((doc, i) => (
-            <CredentialRow key={credentialKey(doc, i)} doc={doc} />
+            <CredentialRow
+              key={credentialKey(doc, i)}
+              doc={doc}
+              rpcUrl={rpc.rpcUrl}
+              defaultRpcUrl={rpc.defaultRpcUrl}
+            />
           ))
         )}
       </CardContent>
@@ -147,7 +154,15 @@ type CheckState =
   | { phase: "checked"; result: VerifyCredentialResp }
   | { phase: "unavailable"; message: string };
 
-function CredentialRow({ doc }: { doc: Record<string, unknown> }) {
+function CredentialRow({
+  doc,
+  rpcUrl,
+  defaultRpcUrl,
+}: {
+  doc: Record<string, unknown>;
+  rpcUrl: string;
+  defaultRpcUrl: string;
+}) {
   const [state, setState] = useState<CheckState>({ phase: "checking" });
 
   const issuer = (doc.issuer ?? {}) as { name?: string; recordType?: string; documentStore?: string };
@@ -158,7 +173,8 @@ function CredentialRow({ doc }: { doc: Record<string, unknown> }) {
     try {
       const result = await verifyCredentialOnchain({
         wrappedDoc: doc,
-        rpcUrl: env.roaxRpc,
+        rpcUrl,
+        defaultRpcUrl,
         registryAddr: env.issuerRegistryAddr || undefined,
       });
       setState({ phase: "checked", result });
@@ -167,7 +183,7 @@ function CredentialRow({ doc }: { doc: Record<string, unknown> }) {
       // valid, or invalid — would assert a fact that was never established.
       setState({ phase: "unavailable", message: (e as Error).message });
     }
-  }, [doc]);
+  }, [doc, rpcUrl, defaultRpcUrl]);
 
   useEffect(() => {
     void check();

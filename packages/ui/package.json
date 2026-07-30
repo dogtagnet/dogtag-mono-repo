@@ -19,7 +19,12 @@
       "default": "./src/tailwind-preset.ts"
     },
     "./styles.css": "./src/styles.css",
-    "./tokens.css": "./src/tokens.css"
+    "./tokens.css": "./src/tokens.css",
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts",
+      "default": "./src/rpc.ts"
+    }
   },
   "files": ["src"],
   "scripts": {

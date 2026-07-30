@@ -1,11 +1,13 @@
 package io.liberalize.dogtag.net
 
 import io.liberalize.dogtag.wallet.Keccak256
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URI
 
 /**
- * Read-only JSON-RPC client for the ROAX chain (chainId 135, RPC https://devrpc.roax.net).
+ * Read-only JSON-RPC client for the ROAX chain (chainId 135 by default).
  *
  * Used to re-check the issuance pillar: `DogTagIssuer.isValid(bytes32 root)` over the wrapped doc's
  * `issuer.documentStore`. This is a pure `eth_call` (no signing, no gas). The RPC may be unreachable
@@ -13,6 +15,175 @@ import org.json.JSONObject
  */
 object RoaxRpc {
     const val DEFAULT_RPC = "https://devrpc.roax.net"
+
+    /** Why an endpoint could not establish the chain whose contract addresses are bundled. */
+    sealed class EndpointFailure {
+        data object InvalidUrl : EndpointFailure()
+        data object Unavailable : EndpointFailure()
+        data object InvalidChainIdResponse : EndpointFailure()
+        data class WrongChain(val actualChainId: Long) : EndpointFailure()
+    }
+
+    /**
+     * Route chosen after probing `eth_chainId`. [Unavailable] means even the bundled endpoint failed
+     * the guard, so no address-bound read may be sent or trusted.
+     */
+    sealed class EndpointRoute {
+        data object Bundled : EndpointRoute()
+        data class Custom(val url: String) : EndpointRoute()
+        data class BundledFallback(val customFailure: EndpointFailure) : EndpointRoute()
+        data class Unavailable(
+            val customFailure: EndpointFailure?,
+            val bundledFailure: EndpointFailure,
+        ) : EndpointRoute()
+
+        val rpcUrl: String?
+            get() = when (this) {
+                Bundled, is BundledFallback -> DEFAULT_RPC
+                is Custom -> url
+                is Unavailable -> null
+            }
+    }
+
+    /**
+     * Check the requested peer immediately before a blockchain read.
+     *
+     * An invalid, unreachable, malformed, or different-chain custom peer falls back to the bundled
+     * peer. The bundled peer is guarded too; if it cannot establish [expectedChainId], callers return
+     * their existing unknown/null/false result and no contract request is sent.
+     *
+     * This prevents accidental cross-chain address use, not dishonest replies: a malicious peer can
+     * fabricate `eth_chainId` and every later chain result. The Profile settings copy says so.
+     */
+    suspend fun endpointRoute(requestedRpcUrl: String, expectedChainId: Long): EndpointRoute =
+        endpointRoute(requestedRpcUrl, expectedChainId) { url, body -> Http.postJson(url, body) }
+
+    /** Injectable seam for focused endpoint-routing tests. */
+    internal suspend fun endpointRoute(
+        requestedRpcUrl: String,
+        expectedChainId: Long,
+        probe: suspend (String, String) -> Http.Response,
+    ): EndpointRoute {
+        val candidate = requestedRpcUrl.trim()
+        val custom = normalizeRpcUrl(candidate)
+        if (candidate.isBlank() || candidate == DEFAULT_RPC) {
+            val bundledFailure = chainFailure(DEFAULT_RPC, expectedChainId, probe)
+            return if (bundledFailure == null) {
+                EndpointRoute.Bundled
+            } else {
+                EndpointRoute.Unavailable(null, bundledFailure)
+            }
+        }
+
+        val customFailure = if (custom == null) {
+            EndpointFailure.InvalidUrl
+        } else {
+            chainFailure(custom, expectedChainId, probe)
+                ?: return EndpointRoute.Custom(custom)
+        }
+        val bundledFailure = chainFailure(DEFAULT_RPC, expectedChainId, probe)
+        return if (bundledFailure == null) {
+            EndpointRoute.BundledFallback(customFailure)
+        } else {
+            EndpointRoute.Unavailable(customFailure, bundledFailure)
+        }
+    }
+
+    /** Only HTTP(S) JSON-RPC URLs with an authority are usable by [Http]. */
+    internal fun normalizeRpcUrl(value: String): String? = runCatching {
+        val trimmed = value.trim()
+        val uri = URI(trimmed)
+        val scheme = uri.scheme?.lowercase()
+        if ((scheme != "http" && scheme != "https") || uri.host.isNullOrBlank() || uri.fragment != null) {
+            null
+        } else {
+            trimmed
+        }
+    }.getOrNull()
+
+    /** Probe `eth_chainId`; only this method may contact a peer before the chain guard passes. */
+    private suspend fun chainFailure(
+        rpcUrl: String,
+        expectedChainId: Long,
+        probe: suspend (String, String) -> Http.Response,
+    ): EndpointFailure? {
+        val payload = JSONObject().apply {
+            put("jsonrpc", "2.0")
+            put("id", 1)
+            put("method", "eth_chainId")
+            put("params", JSONArray())
+        }.toString()
+        return try {
+            val resp = probe(rpcUrl, payload)
+            if (!resp.ok) return EndpointFailure.Unavailable
+            val body = JSONObject(resp.body)
+            if (body.has("error")) return EndpointFailure.InvalidChainIdResponse
+            val actual = parseChainId(body.optString("result", ""))
+                ?: return EndpointFailure.InvalidChainIdResponse
+            if (actual == expectedChainId) null else EndpointFailure.WrongChain(actual)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            EndpointFailure.Unavailable
+        }
+    }
+
+    internal fun parseChainId(value: String): Long? = runCatching {
+        if (!value.startsWith("0x", ignoreCase = true)) return@runCatching null
+        val hex = value.removePrefix("0x").removePrefix("0X")
+        if (hex.isBlank() || hex.any { it !in '0'..'9' && it.lowercaseChar() !in 'a'..'f' }) {
+            return@runCatching null
+        }
+        java.math.BigInteger(hex, 16).takeIf { it.signum() >= 0 && it.bitLength() <= 63 }?.toLong()
+    }.getOrNull()
+
+    /**
+     * The single raw transport seam for ALL blockchain JSON-RPC reads below.
+     *
+     * A custom peer that passes `eth_chainId` but disappears before the actual read gets one guarded
+     * retry on the bundled endpoint. Central/provider/indexer and QR-discovered role APIs never enter
+     * this function and remain deliberately unaffected by the user's chain setting.
+     */
+    private suspend fun guardedPostJson(
+        requestedRpcUrl: String,
+        expectedChainId: Long,
+        body: String,
+    ): Http.Response = guardedPostJson(requestedRpcUrl, expectedChainId, body) { url, payload ->
+        Http.postJson(url, payload)
+    }
+
+    /** Test seam that proves wrong-chain peers receive no contract call. */
+    internal suspend fun guardedPostJson(
+        requestedRpcUrl: String,
+        expectedChainId: Long,
+        body: String,
+        post: suspend (String, String) -> Http.Response,
+    ): Http.Response {
+        val route = endpointRoute(requestedRpcUrl, expectedChainId, post)
+        val selected = route.rpcUrl
+            ?: return Http.Response(-1, "chain guard could not establish the bundled chain")
+        val response = postOrFailure(selected, body, post)
+        if (route !is EndpointRoute.Custom || response.ok) return response
+
+        // The custom peer passed its guard but failed the actual request. Probe the bundled peer
+        // immediately before retrying; never turn transport fallback into an unguarded contract read.
+        val fallback = endpointRoute(DEFAULT_RPC, expectedChainId, post).rpcUrl
+            ?: return Http.Response(-1, "chain guard could not establish the bundled chain")
+        return postOrFailure(fallback, body, post)
+    }
+
+    /** Normalize transport exceptions into the response failure path without swallowing cancellation. */
+    private suspend fun postOrFailure(
+        url: String,
+        body: String,
+        post: suspend (String, String) -> Http.Response,
+    ): Http.Response = try {
+        post(url, body)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        Http.Response(-1, "rpc transport failed")
+    }
 
     internal enum class ProfileRootObservation { Pending, Matched, Mismatch }
 
@@ -71,7 +242,12 @@ object RoaxRpc {
      * Call `isValid(root)` on the issuer clone. `documentStore` is the issuer contract address from the
      * wrapped doc; `root` is the 0x.. 32-byte merkleRoot.
      */
-    suspend fun isValid(rpcUrl: String, documentStore: String, root: String): Result {
+    suspend fun isValid(
+        rpcUrl: String,
+        expectedChainId: Long,
+        documentStore: String,
+        root: String,
+    ): Result {
         if (documentStore.isBlank() || root.isBlank()) return Result.Unknown("missing addr/root")
         val data = IS_VALID_SELECTOR + pad32(root)
         val params = JSONArray().apply {
@@ -89,7 +265,7 @@ object RoaxRpc {
         }.toString()
 
         return try {
-            val resp = Http.postJson(rpcUrl, payload)
+            val resp = guardedPostJson(rpcUrl, expectedChainId, payload)
             if (!resp.ok) return Result.Unknown("rpc ${resp.code}")
             val o = JSONObject(resp.body)
             if (o.has("error")) return Result.Unknown(o.getJSONObject("error").optString("message", "rpc error"))
@@ -109,10 +285,15 @@ object RoaxRpc {
      * failure. `dogTagId` is the decimal tokenId. This is the SBT anchor used to verify an issued
      * DOG_PROFILE (NOT the DogTagIssuer-clone isValid).
      */
-    suspend fun profileRoot(rpcUrl: String, dogTagSbt: String, dogTagId: String): String? {
+    suspend fun profileRoot(
+        rpcUrl: String,
+        expectedChainId: Long,
+        dogTagSbt: String,
+        dogTagId: String,
+    ): String? {
         if (dogTagSbt.isBlank() || dogTagId.isBlank()) return null
         val data = PROFILE_ROOT_SELECTOR + padUint(dogTagId)
-        return when (val r = ethCall(rpcUrl, dogTagSbt, data)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, dogTagSbt, data)) {
             is CallResult.Ok -> normalizeBytes32(r.hex)
             is CallResult.Err -> null
         }
@@ -145,6 +326,7 @@ object RoaxRpc {
      */
     suspend fun isWhitelistedFor(
         rpcUrl: String,
+        expectedChainId: Long,
         issuerRegistry: String,
         key: String,
         signer: String,
@@ -153,7 +335,7 @@ object RoaxRpc {
             return Result.Unknown("missing addr/key/signer")
         }
         val data = IS_WHITELISTED_FOR_SELECTOR + pad32(key) + padAddr(signer)
-        return when (val r = ethCall(rpcUrl, issuerRegistry, data)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, issuerRegistry, data)) {
             is CallResult.Ok ->
                 if (r.hex.length < 64) Result.Unknown("the registry returned no answer")
                 else if (r.hex.trimStart('0').isNotEmpty()) Result.Valid
@@ -167,10 +349,15 @@ object RoaxRpc {
      * clone. [HexRead.Unset] when the clone never issued it (the on-chain zero address),
      * [HexRead.Unresolved] when the read did not answer.
      */
-    suspend fun issuedBy(rpcUrl: String, documentStore: String, root: String): HexRead {
+    suspend fun issuedBy(
+        rpcUrl: String,
+        expectedChainId: Long,
+        documentStore: String,
+        root: String,
+    ): HexRead {
         if (documentStore.isBlank() || root.isBlank()) return HexRead.Unresolved("missing addr/root")
         val data = ISSUED_BY_SELECTOR + pad32(root)
-        return when (val r = ethCall(rpcUrl, documentStore, data)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, documentStore, data)) {
             // address is right-aligned in a 32-byte word; all-zero == never issued here.
             is CallResult.Ok ->
                 if (r.hex.length < 40) HexRead.Unresolved("the issuer clone returned no address")
@@ -186,9 +373,13 @@ object RoaxRpc {
      * the contract reports the zero word (uninitialized / not a clone), [HexRead.Unresolved] when the
      * read did not answer.
      */
-    suspend fun recordTypeOf(rpcUrl: String, issuerClone: String): HexRead {
+    suspend fun recordTypeOf(
+        rpcUrl: String,
+        expectedChainId: Long,
+        issuerClone: String,
+    ): HexRead {
         if (issuerClone.isBlank()) return HexRead.Unresolved("missing issuer clone")
-        return when (val r = ethCall(rpcUrl, issuerClone, RECORD_TYPE_SELECTOR)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, issuerClone, RECORD_TYPE_SELECTOR)) {
             is CallResult.Ok -> {
                 val word = normalizeBytes32(r.hex)
                 when {
@@ -234,6 +425,7 @@ object RoaxRpc {
      */
     suspend fun issuerWhitelistPillar(
         rpcUrl: String,
+        expectedChainId: Long,
         issuerRegistry: String,
         issuerFactory: String,
         documentStore: String,
@@ -248,7 +440,7 @@ object RoaxRpc {
         // Uses the SAME factory read the issuer-domain binding uses, so both features agree on which
         // contract issued a root. `NoRecord` (the factory answered, and has none) and `Failure` (we
         // could not ask) are kept distinct: neither is a pass, but only one is evidence.
-        val clone = when (val r = rootIssuer(rpcUrl, issuerFactory, root, null)) {
+        val clone = when (val r = rootIssuer(rpcUrl, expectedChainId, issuerFactory, root, null)) {
             is AddressRead.Value -> r.address
             is AddressRead.NoRecord -> return Result.Unknown("no factory clone ever issued this root")
             is AddressRead.Failure ->
@@ -257,20 +449,20 @@ object RoaxRpc {
         // The envelope points somewhere other than the contract that actually issued the root: a
         // definite misrepresentation, refused before the registry is consulted.
         if (!clone.equals(claimedStore, ignoreCase = true)) return Result.Invalid
-        val chainRecordType = when (val r = recordTypeOf(rpcUrl, clone)) {
+        val chainRecordType = when (val r = recordTypeOf(rpcUrl, expectedChainId, clone)) {
             is HexRead.Found -> r.hex
             is HexRead.Unset -> return Result.Unknown("issuer clone reports no recordType")
             is HexRead.Unresolved ->
                 return Result.Unknown("could not read the issuer clone's record type (${r.reason})")
         }
         if (!chainRecordType.equals(recordTypeKey(recordType), ignoreCase = true)) return Result.Invalid
-        val signer = when (val r = issuedBy(rpcUrl, clone, root)) {
+        val signer = when (val r = issuedBy(rpcUrl, expectedChainId, clone, root)) {
             is HexRead.Found -> r.hex
             is HexRead.Unset -> return Result.Unknown("issuer clone reports no issuer for this root")
             is HexRead.Unresolved ->
                 return Result.Unknown("could not read who issued this root (${r.reason})")
         }
-        return isWhitelistedFor(rpcUrl, issuerRegistry, chainRecordType, signer)
+        return isWhitelistedFor(rpcUrl, expectedChainId, issuerRegistry, chainRecordType, signer)
     }
 
     /**
@@ -281,10 +473,15 @@ object RoaxRpc {
      * element or 0x.. hex, encoded here as a 32-byte word. Returns false on any RPC failure so
      * the caller simply keeps polling (and ultimately times out) rather than treating it as success.
      */
-    suspend fun consumed(rpcUrl: String, verificationRegistry: String, nullifier: String): Boolean {
+    suspend fun consumed(
+        rpcUrl: String,
+        expectedChainId: Long,
+        verificationRegistry: String,
+        nullifier: String,
+    ): Boolean {
         if (verificationRegistry.isBlank() || nullifier.isBlank()) return false
         val data = CONSUMED_SELECTOR + padUint(nullifier)
-        return when (val r = ethCall(rpcUrl, verificationRegistry, data)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, verificationRegistry, data)) {
             is CallResult.Ok -> r.hex.trimStart('0').isNotEmpty()
             is CallResult.Err -> false
         }
@@ -303,10 +500,15 @@ object RoaxRpc {
      * Null when the registry is unconfigured/unreachable OR the version is unpublished (the getter
      * reverts "unknown contract set"), so verification fails closed. A blank address is null.
      */
-    suspend fun getContractSet(rpcUrl: String, protocolRegistry: String, version: String): AnchorResolver.ContractSetRecord? {
+    suspend fun getContractSet(
+        rpcUrl: String,
+        expectedChainId: Long,
+        protocolRegistry: String,
+        version: String,
+    ): AnchorResolver.ContractSetRecord? {
         if (protocolRegistry.isBlank()) return null
         val data = GET_CONTRACT_SET_SELECTOR + versionId(version)
-        return when (val r = ethCall(rpcUrl, protocolRegistry, data)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, protocolRegistry, data)) {
             is CallResult.Ok -> AnchorResolver.decodeContractSet(r.hex)
             is CallResult.Err -> null
         }
@@ -318,10 +520,15 @@ object RoaxRpc {
      * here (unconfigured registry, unpublished version, or no binding) fails verification
      * closed. Decodes only `artifactSetId`/`minAppVersion`/`active` — see `AnchorResolver`.
      */
-    suspend fun getActiveArtifactSet(rpcUrl: String, protocolRegistry: String, version: String): AnchorResolver.ArtifactSetRecord? {
+    suspend fun getActiveArtifactSet(
+        rpcUrl: String,
+        expectedChainId: Long,
+        protocolRegistry: String,
+        version: String,
+    ): AnchorResolver.ArtifactSetRecord? {
         if (protocolRegistry.isBlank()) return null
         val data = GET_ACTIVE_ARTIFACT_SET_SELECTOR + versionId(version)
-        return when (val r = ethCall(rpcUrl, protocolRegistry, data)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, protocolRegistry, data)) {
             is CallResult.Ok -> AnchorResolver.decodeArtifactSet(r.hex)
             is CallResult.Err -> null
         }
@@ -366,10 +573,16 @@ object RoaxRpc {
      * sharper form of the relabelling attack: link 1 (`isClone`) passes because the target really is a
      * factory clone, so without this read the phone renders that other authority's on-chain identity.
      */
-    suspend fun rootIssuer(rpcUrl: String, factory: String, root: String, atBlock: Long?): AddressRead {
+    suspend fun rootIssuer(
+        rpcUrl: String,
+        expectedChainId: Long,
+        factory: String,
+        root: String,
+        atBlock: Long?,
+    ): AddressRead {
         if (factory.isBlank() || root.isBlank()) return AddressRead.Failure("missing factory/root")
         val data = ROOT_ISSUER_SELECTOR + pad32(root)
-        return when (val r = ethCall(rpcUrl, factory, data, atBlock)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, factory, data, atBlock)) {
             is CallResult.Err -> AddressRead.Failure(r.reason)
             is CallResult.Ok -> {
                 val addr = decodeAbiAddress(r.hex) ?: return AddressRead.Failure("not an address word")
@@ -401,12 +614,12 @@ object RoaxRpc {
      * The current chain head, so every read in one verification pins to ONE block. Against a world where
      * DNS changes and clones are superseded, an unanchored answer is not auditable.
      */
-    suspend fun blockNumber(rpcUrl: String): Long? {
+    suspend fun blockNumber(rpcUrl: String, expectedChainId: Long): Long? {
         val payload = JSONObject().apply {
             put("jsonrpc", "2.0"); put("id", 1); put("method", "eth_blockNumber"); put("params", JSONArray())
         }.toString()
         return try {
-            val resp = Http.postJson(rpcUrl, payload)
+            val resp = guardedPostJson(rpcUrl, expectedChainId, payload)
             if (!resp.ok) return null
             val hex = JSONObject(resp.body).optString("result", "").removePrefix("0x")
             if (hex.isEmpty()) null else hex.toLong(16)
@@ -420,10 +633,16 @@ object RoaxRpc {
      * came from the DogTag factory, i.e. passed through KYC-gated `createIssuer`. Without it a domain
      * binding shows only that whoever deployed some contract also controls a domain.
      */
-    suspend fun isClone(rpcUrl: String, factory: String, candidate: String, atBlock: Long?): Result {
+    suspend fun isClone(
+        rpcUrl: String,
+        expectedChainId: Long,
+        factory: String,
+        candidate: String,
+        atBlock: Long?,
+    ): Result {
         if (factory.isBlank() || candidate.isBlank()) return Result.Unknown("missing factory/candidate")
         val data = IS_CLONE_SELECTOR + padAddr(candidate)
-        return when (val r = ethCall(rpcUrl, factory, data, atBlock)) {
+        return when (val r = ethCall(rpcUrl, expectedChainId, factory, data, atBlock)) {
             is CallResult.Err -> Result.Unknown(r.reason)
             is CallResult.Ok ->
                 // A call to a non-contract returns empty. That is not `false` — it is "no answer".
@@ -439,12 +658,15 @@ object RoaxRpc {
      */
     suspend fun issuerClaimedDomain(
         rpcUrl: String,
+        expectedChainId: Long,
         domainRegistry: String,
         clone: String,
         atBlock: Long?,
     ): StringRead {
         if (domainRegistry.isBlank() || clone.isBlank()) return StringRead.Failure("missing registry/clone")
-        return ethCallString(rpcUrl, domainRegistry, DOMAIN_OF_SELECTOR + padAddr(clone), atBlock)
+        return ethCallString(
+            rpcUrl, expectedChainId, domainRegistry, DOMAIN_OF_SELECTOR + padAddr(clone), atBlock,
+        )
     }
 
     /**
@@ -453,17 +675,23 @@ object RoaxRpc {
      * the Merkle root, so relabelling it alone passes integrity AND the `data.issuer` DID check (the DID
      * carries a domain, not a name).
      */
-    suspend fun issuerOnchainName(rpcUrl: String, clone: String, atBlock: Long?): StringRead {
+    suspend fun issuerOnchainName(
+        rpcUrl: String,
+        expectedChainId: Long,
+        clone: String,
+        atBlock: Long?,
+    ): StringRead {
         if (clone.isBlank()) return StringRead.Failure("missing clone")
-        return ethCallString(rpcUrl, clone, ISSUER_NAME_SELECTOR, atBlock)
+        return ethCallString(rpcUrl, expectedChainId, clone, ISSUER_NAME_SELECTOR, atBlock)
     }
 
     private suspend fun ethCallString(
         rpcUrl: String,
+        expectedChainId: Long,
         to: String,
         data: String,
         atBlock: Long?,
-    ): StringRead = when (val r = ethCall(rpcUrl, to, data, atBlock)) {
+    ): StringRead = when (val r = ethCall(rpcUrl, expectedChainId, to, data, atBlock)) {
         is CallResult.Err -> StringRead.Failure(r.reason)
         is CallResult.Ok ->
             if (r.hex.isEmpty()) StringRead.NoContract
@@ -521,6 +749,7 @@ object RoaxRpc {
 
     private suspend fun ethCall(
         rpcUrl: String,
+        expectedChainId: Long,
         to: String,
         data: String,
         atBlock: Long? = null,
@@ -536,7 +765,7 @@ object RoaxRpc {
             put("jsonrpc", "2.0"); put("id", 1); put("method", "eth_call"); put("params", params)
         }.toString()
         return try {
-            val resp = Http.postJson(rpcUrl, payload)
+            val resp = guardedPostJson(rpcUrl, expectedChainId, payload)
             if (!resp.ok) return CallResult.Err("rpc ${resp.code}")
             val o = JSONObject(resp.body)
             if (o.has("error")) return CallResult.Err(o.getJSONObject("error").optString("message", "rpc error"))

@@ -51,7 +51,7 @@ PRODUCTION is a **delta over REMOTE**, not a separate stack: do REMOTE first, th
   │ (central)   │ HMAC │ (vet stack)  │      │ (= vet-api +     │                        │  phone apps       │
   │ :39742      │      │ :41874       │      │  BUSINESS_TYPE)  │                        │  bundle roax.json,│
   │ admin signer│      │              │      │  :43618          │                        │  zkey, graph; RPC │
-  └─────┬───────┘      └──────┬───────┘      └────────┬─────────┘                        │  baked            │
+  └─────┬───────┘      └──────┬───────┘      └────────┬─────────┘                        │  guarded choice   │
         │                     │                       │                                  └───┬──────┬────────┘
   ┌─────┴───────┐      ┌──────┴───────┐      ┌────────┴─────────┐                            │      │
   │ admin portal│      │ vet portal   │      │ groomer portal   │                  scan QR    │      │ 32-bit
@@ -75,10 +75,17 @@ PRODUCTION is a **delta over REMOTE**, not a separate stack: do REMOTE first, th
 | **Backends** | `admin-api` (central) + `vet-api` (vet) + `vet-api`+`BUSINESS_TYPE=groomer` (groomer) | LOCAL: inline env in `scripts/demo-up.sh`. REMOTE/PROD: `stacks/{admin,vet,groomer}/.env` (see [REMOTE](./REMOTE_DEPLOYMENT.md)) |
 | **Portals** | 3 Vite web apps (admin/vet/groomer) | LOCAL: `VITE_DEMO_MODE=1` inline. REMOTE/PROD: `stacks/<x>/web/.env` (`VITE_*`) |
 | **Chain** | ROAX testnet contract set | `contracts/deployments/roax.json` (source of truth); backend `*_ADDR` + portal `VITE_*_ADDR` reference it |
-| **Apps** (holder) | iOS + Android phone apps **+ the browser holder wallet** (`stacks/owner/web`, :45931, no backend, state in localStorage) | Phone apps: bundled `roax.json` + baked RPC constant + UniFFI lib, rebuilt to change (see [MOBILE](./MOBILE_BUILD.md)). Web wallet: no endpoint env - it holds/displays credentials, renders receipts, and shares redacted copies, reading validity from the fixed ROAX RPC in `src/lib/config.ts` (it runs no prover) |
+| **Apps** (holder) | iOS + Android phone apps **+ the browser holder wallet** (`stacks/owner/web`, :45931, no backend, state in localStorage) | Phone apps: bundled `roax.json` + guarded default RPC + UniFFI lib; users can persist a same-chain custom RPC in Profile (see [MOBILE](./MOBILE_BUILD.md)). Web wallet: Settings persists a browser-local custom RPC over its guarded default in `src/lib/config.ts`; it runs no prover |
 | **Tunnels** | 3 public HTTPS tunnels for phones | `VET_PUBLIC_URL` / `GROOMER_PUBLIC_URL` / `PROVER_PUBLIC_URL` on `demo-up.sh` (see [TUNNELING](./TUNNELING.md)) |
 | **Custody** | The sealed signer keystore | LOCAL: `.demo/*-custody.json` via `CUSTODY_SEAL_PATH`. REMOTE/PROD: `CustodyBlob` in Mongo |
 | **Prover** | `vet-api --features prover`, `POST /prove-consent` (the owner-trusted server-prove fallback) | LOCAL: auto on :41875. REMOTE: run it yourself. PROD: owner-trusted. Needs `CIRCUITS_BUILD_DIR` |
+
+The direct-chain admin, vet, groomer, and owner web clients expose the same browser-local RPC
+choice. Each custom endpoint must report the contract bundle's chain id via `eth_chainId`; otherwise
+only the independently guarded bundled default is used. This is a liveness/censorship remedy, not a
+light client or trust upgrade—a JSON-RPC peer can fabricate contract reads. Central app APIs,
+provider-directory/indexer endpoints, and QR-discovered service hosts are not user-configurable.
+Transactions initiated through an injected or WalletConnect wallet still use that wallet's provider.
 
 ---
 

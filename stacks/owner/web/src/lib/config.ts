@@ -1,4 +1,4 @@
-// Live ROAX (chainId 135) network the owner wallet reads for credential validity.
+// Bundled fallback for the guarded ROAX (chainId 135) reads; Settings may choose a same-chain peer.
 export const ROAX_CHAIN_ID = 135;
 export const ROAX_RPC_URL = "https://devrpc.roax.net";
 export const ROAX_EXPLORER_URL = "https://explorer.roax.net";

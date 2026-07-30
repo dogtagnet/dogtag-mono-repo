@@ -1,8 +1,10 @@
 package io.liberalize.dogtag.data
 
-/** Fixed public infrastructure; credential-service hosts still come from scanned QR origins. */
+/** Fixed centralized infrastructure; chain peers are a persisted user setting. */
 object AppConfig {
-    const val ROAX_RPC = "https://devrpc.roax.net"
-    /** Full provider-set directory. Nearby never adds an origin or search query to this URL. */
+    /**
+     * Full provider-set directory. This centralized/indexer endpoint is deliberately not
+     * user-configurable, and Nearby never adds an origin or search query to it.
+     */
     const val CENTRAL_API = "https://api.dogtag.io"
 }

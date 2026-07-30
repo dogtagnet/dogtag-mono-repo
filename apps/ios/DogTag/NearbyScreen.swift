@@ -139,10 +139,13 @@ struct NearbyScreen: View {
 
     @Environment(\.dogTagColors) private var c
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var location = NearbyLocationController()
 
     let onDone: () -> Void
-    private let directory: CentralProviderDirectory
+    /// The seam, not the concrete adapter: what the screen gets is the source wrapped in the stored
+    /// local copy, so an offline refresh replays instead of blanking the list.
+    private let directory: ProviderDirectoryReading
 
     @State private var directoryResult: ProviderDirectoryResult?
     @State private var isRefreshing = false
@@ -155,7 +158,7 @@ struct NearbyScreen: View {
 
     init(
         onDone: @escaping () -> Void,
-        directory: CentralProviderDirectory = CentralProviderDirectory()
+        directory: ProviderDirectoryReading = ProviderDirectories.central()
     ) {
         self.onDone = onDone
         self.directory = directory
@@ -305,7 +308,7 @@ struct NearbyScreen: View {
                 Image(systemName: observation == .live ? "bolt.fill" : "clock.arrow.circlepath")
                 Text(observation == .live
                      ? "Live provider directory"
-                     : "Stored provider directory · live refresh unavailable")
+                     : "Stored provider directory\(storedAgeClause) · live refresh unavailable")
             }
             .font(.system(size: 11, weight: .semibold))
             .foregroundColor(observation == .live ? c.success : c.warning)
@@ -323,6 +326,35 @@ struct NearbyScreen: View {
             return snapshot.observation
         case .unavailable, .none:
             return nil
+        }
+    }
+
+    /// The offline window is days long, so how old the copy is is a materially different statement
+    /// from the bare fact that it is stored. An age that could not be derived adds nothing rather
+    /// than inventing a number.
+    ///
+    /// Reading `scenePhase` is what keeps that age honest rather than decorative. An age is a claim
+    /// about NOW, and SwiftUI guarantees no body re-evaluation on scene resume, so without this
+    /// dependency an owner returning after a day would read the label they left behind - understating
+    /// staleness in exactly the direction the outward rounding exists to prevent. Reading it here
+    /// registers the dependency on `NearbyScreen` itself, since this property is inlined into `body`,
+    /// so coming back re-evaluates and `Date()` is sampled afresh.
+    ///
+    /// The gate is `!= .background` rather than `== .active` deliberately. Only the READ has to happen
+    /// for the dependency to register, and a scene that is merely `.inactive` - an app-switcher
+    /// snapshot, a pulled-down Control Center, a view pushed before `.active` has landed - is one the
+    /// owner is still looking at, so suppressing the age there would blank the label on exactly the
+    /// fresh entry it was added to serve. A backgrounded scene is nobody's view, so it suppresses
+    /// nothing anyone can read.
+    private var storedAgeClause: String {
+        guard scenePhase != .background else { return "" }
+        switch directoryResult {
+        case .found(let snapshot), .empty(let snapshot):
+            guard let age = NearbyDecision.formatStoredAge(readAt: snapshot.readAt, now: Date())
+            else { return "" }
+            return " · remembered \(age)"
+        case .unavailable, .none:
+            return ""
         }
     }
 

@@ -6,10 +6,12 @@ import {
   CardTitle,
   CredentialVerifyPanel,
   VerifyFlow,
+  useRoaxRpcPreference,
 } from "@dogtag/ui";
 import { ShieldCheck } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useApp } from "../app/AppContext";
+import { env } from "../lib/env";
 import { VERIFY_PURPOSES } from "./verifyPurposes";
 
 /**
@@ -25,6 +27,7 @@ import { VERIFY_PURPOSES } from "./verifyPurposes";
  */
 export function Verify() {
   const { api } = useApp();
+  const rpc = useRoaxRpcPreference(env.roaxRpc);
   return (
     <div className="space-y-4">
       <Card>
@@ -49,7 +52,7 @@ export function Verify() {
         </CardContent>
       </Card>
       {/* Permissionless, direct-to-RPC check of a credential the owner simply pasted in. */}
-      <CredentialVerifyPanel />
+      <CredentialVerifyPanel rpcUrl={rpc.rpcUrl} defaultRpcUrl={rpc.defaultRpcUrl} />
       <VerifyFlow
         client={api}
         purposes={VERIFY_PURPOSES}

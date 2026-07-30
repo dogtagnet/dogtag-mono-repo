@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@dogtag/standard": "workspace:*",
+    "@dogtag/ui": "workspace:*",
     "@noble/hashes": "1.5.0",
     "buffer": "6.0.3",
     "qrcode.react": "4.2.0",
