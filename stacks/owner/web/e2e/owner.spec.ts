@@ -431,4 +431,23 @@ test("endpoint settings: every save reports its verdict, and a rejection clears 
   expect(calls.filter((c) => c.url.startsWith(BUNDLED_RPC))).toEqual([
     { url: BUNDLED_RPC, method: "eth_chainId" },
   ]);
+
+  // 3. Restore default is the third preference-changing operation, and it reports its own verdict.
+  // A reset changes the very preference the hook subscribes to, so it is exposed to the same
+  // re-sync race as a save: silence here would leave the holder unable to tell a cleared override
+  // from a click that did nothing.
+  await field.fill(GOOD_RPC);
+  await save.click();
+  await expect(page.getByRole("status")).toContainText(
+    "Custom endpoint saved and confirmed on ROAX chain 135.",
+  );
+  await page.getByRole("button", { name: "Restore default" }).click();
+  await expect(page.getByRole("status")).toContainText(
+    "Custom endpoint removed. Blockchain reads use the bundled default.",
+  );
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(field).toHaveValue(BUNDLED_RPC);
+  expect(await page.evaluate((k) => localStorage.getItem(k), RPC_STORAGE_KEY)).toBeNull();
+  // And the override really is gone rather than merely reported gone: there is nothing left to restore.
+  await expect(page.getByRole("button", { name: "Restore default" })).toBeDisabled();
 });
