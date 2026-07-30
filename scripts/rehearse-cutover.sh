@@ -4,7 +4,7 @@
 # transaction list the live cutover will replay.
 #
 # Deploys NOTHING live. It forks ROAX into a local anvil, broadcasts the cutover sequence into that
-# fork, and runs the six assertions. A fork is used rather than a testnet deploy because it answers
+# fork, and runs the seven assertions. A fork is used rather than a testnet deploy because it answers
 # what the DEPLOYED BYTECODE PERMITS rather than what the source suggests, and because
 # `broadcast/**/run-latest.json` then IS the transaction list.
 #
@@ -135,8 +135,23 @@ ANVIL_PID=""
 cleanup() {
   # Goes through the SAME identity-verified path an operator would use, so the normal exit cannot
   # take a shortcut the recovery path does not have. No pattern matching, ever.
+  #
+  # THE RECORD IS KEPT WHEN THE STOP REFUSED, and that asymmetry is the point. A refusal means a
+  # process we may have started is possibly still alive - which is exactly the case `--stop` exists
+  # for - so deleting the record here would destroy the only thing that can identify it, leaving a
+  # fork holding the port with no supported way to stop it. `stop_recorded_anvil` already removes
+  # the record itself on the two outcomes where it is safe to (killed, or confirmed already gone).
+  #
+  # The concrete path in: the readiness loop below times out on a slow upstream fork while anvil is
+  # alive but not yet listening, so the port check inside `stop_recorded_anvil` correctly refuses.
   if [ -n "$ANVIL_PID" ]; then
-    stop_recorded_anvil || echo "left pid $ANVIL_PID alone - its identity record could not be trusted"
+    if ! stop_recorded_anvil; then
+      echo "left pid $ANVIL_PID alone - its identity record could not be verified." >&2
+      echo "KEEPING $IDENTITY_FILE so the fork can still be stopped once it settles:" >&2
+      echo "  scripts/rehearse-cutover.sh --stop" >&2
+      rm -f "$LOG"
+      return
+    fi
   fi
   rm -f "$LOG" "$IDENTITY_FILE"
 }
@@ -151,11 +166,17 @@ ANVIL_PID=$!
 record_anvil_identity "$ANVIL_PID" "$PORT"
 
 FORK_RPC="http://127.0.0.1:$PORT"
-for _ in $(seq 1 40); do
+# 120 x 0.5s = 60s. Deliberately generous: forking a slow upstream can take far longer than the 20s
+# this used to allow, and a premature timeout leaves a live anvil the script then has to decline to
+# kill (see `cleanup`) - a real inconvenience manufactured by an impatient loop.
+for _ in $(seq 1 120); do
   if cast chain-id --rpc-url "$FORK_RPC" >/dev/null 2>&1; then break; fi
   sleep 0.5
 done
-cast chain-id --rpc-url "$FORK_RPC" >/dev/null 2>&1 || { cat "$LOG"; fail "anvil never came up on $FORK_RPC"; }
+cast chain-id --rpc-url "$FORK_RPC" >/dev/null 2>&1 || {
+  cat "$LOG"
+  fail "anvil never came up on $FORK_RPC within 60s - it may still be forking; stop it with: scripts/rehearse-cutover.sh --stop"
+}
 [ "$(cast chain-id --rpc-url "$FORK_RPC")" = "135" ] || fail "fork is not chain 135"
 
 GOV=$(python3 -c "import json;print(json.load(open('deployments/roax.json'))['admin'])")
@@ -174,8 +195,25 @@ echo "=== the assertions, against a fork of the UNMODIFIED chain at block $BLOCK
 # CREATE-collision `ImplementationCodeMismatch` rather than as anything about the cutover.
 #
 # So: assertions first, against pristine state; the broadcast afterwards, purely to capture the list.
-ROAX_FORK_RPC="$UPSTREAM_RPC" FOUNDRY_PROFILE=rehearsal forge test --match-path 'rehearsal/*' \
-  || fail "a cutover assertion failed"
+#
+# A NON-ZERO EXIT IS NOT THE ONLY WAY THIS CAN FAIL TO MEAN ANYTHING.
+#
+# Measured on this Foundry (1.5.1): a `--match-path` that matches nothing prints "No tests found in
+# project!" and exits **0**. So a renamed or relocated `rehearsal/` suite would make this step report
+# the assertions green having executed none of them - the check-that-did-not-run counted as a check
+# that passed, which is the defect class this whole slice exists to end. The count of tests actually
+# executed is therefore read out of the output and required to be non-zero.
+#
+# `scripts/rehearsal-mutations.sh` needs the same distinction and states it at more length there;
+# this one only needs the did-anything-run half, so it is checked here rather than shared.
+ASSERT_OUT=$(ROAX_FORK_RPC="$UPSTREAM_RPC" FOUNDRY_PROFILE=rehearsal \
+  forge test --match-path 'rehearsal/*' 2>&1) || { printf '%s\n' "$ASSERT_OUT"; fail "a cutover assertion failed"; }
+printf '%s\n' "$ASSERT_OUT"
+ASSERT_RAN=$(printf '%s\n' "$ASSERT_OUT" \
+  | sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} for .*/\1/p' | awk '{n += $1} END {print n + 0}')
+[ "${ASSERT_RAN:-0}" -ge 1 ] \
+  || fail "the rehearsal suite ran NO tests (forge exited 0 with nothing to run) - 'rehearsal/*' matched no test file, so nothing was asserted"
+echo "$ASSERT_RAN cutover assertions executed and passed"
 
 echo
 echo "=== broadcasting the cutover sequence (produces the transaction list) ==="
@@ -195,8 +233,8 @@ echo "=== broadcasting the cutover sequence (produces the transaction list) ==="
 # correctly-attributed list.
 #
 # Because that removes a check, the receipts and the resulting state are verified below instead —
-# every status, the immutable rootIndex binding, and all historical roots. The success banner is not
-# taken as evidence of anything.
+# every status, the immutable rootIndex binding, C-4b's effect and its oldest-first ordering, and all
+# historical roots. The success banner is not taken as evidence of anything.
 FOUNDRY_PROFILE=default forge script script/RehearseCutover.s.sol:RehearseCutover \
   --rpc-url "$FORK_RPC" --broadcast --unlocked --sender "$GOV" --legacy --skip-simulation \
   || fail "the cutover sequence did not broadcast cleanly"
@@ -226,10 +264,45 @@ import json;d=json.load(open('$LIST'))
 print(next(t['contractAddress'] for t in d['transactions'] if t.get('contractName')=='VerificationRegistryConsent'))")
 FACTORY1=$(python3 -c "import json;print(json.load(open('deployments/roax.json'))['DogTagIssuerFactory'])")
 
+FACTORY2=$(python3 -c "
+import json;d=json.load(open('$LIST'))
+print(next(t['contractAddress'] for t in d['transactions'] if t.get('contractName')=='DogTagIssuerFactoryV2'))")
+
+lc() { echo "$1" | tr 'A-Z' 'a-z'; }
+
 BOUND=$(cast call "$VREG" 'rootIndex()(address)' --rpc-url "$FORK_RPC")
-[ "$(echo "$BOUND" | tr 'A-Z' 'a-z')" = "$(echo "$ROUTER" | tr 'A-Z' 'a-z')" ] \
+[ "$(lc "$BOUND")" = "$(lc "$ROUTER")" ] \
   || fail "the broadcast registry's immutable rootIndex is $BOUND, not the router $ROUTER"
 echo "registry rootIndex is the router: $BOUND"
+
+# ---------------------------------------------------------------------------------------------
+# C-4b's EFFECT, not merely its receipt.
+#
+# C-4b (`appendGeneration`) is the step the plan does not contain at all, and the one whose omission
+# this rehearsal proves is fatal: without it `registerRoot` reverts `FactoryNotRegisteredInPriorIndex`
+# and every generation-2 clone is inert. A successful receipt says the transaction landed, not that
+# the router now recognises the factory - so with `--skip-simulation` having already removed a check,
+# leaving the one step the slice exists to add unverified would be the strangest possible gap.
+#
+# The ORDER is checked too, because it is the safety property rather than a detail: `rootIssuer`
+# iterates from index 0, so generation 1 MUST sit there. The reverse resolves newest-first, which is
+# the silent revocation bypass S-8 exists to prevent.
+# `cast` renders a uint as `2 [2e0]`, hence the field trim.
+[ "$(cast call "$ROUTER" 'isGeneration(address)(bool)' "$FACTORY2" --rpc-url "$FORK_RPC")" = "true" ] \
+  || fail "C-4b did not take effect: the router does not recognise the generation-2 factory $FACTORY2"
+
+GEN_COUNT=$(cast call "$ROUTER" 'generationCount()(uint256)' --rpc-url "$FORK_RPC" | awk '{print $1}')
+[ "$GEN_COUNT" = "2" ] \
+  || fail "the broadcast router holds $GEN_COUNT generation(s), not the expected 2 (generation 1, then generation 2)"
+
+GEN_AT_0=$(cast call "$ROUTER" 'generationAt(uint256)(address)' 0 --rpc-url "$FORK_RPC")
+[ "$(lc "$GEN_AT_0")" = "$(lc "$FACTORY1")" ] \
+  || fail "router resolution is NOT oldest-first: index 0 is $GEN_AT_0, not the generation-1 factory $FACTORY1 - this is the revocation bypass"
+
+GEN_AT_1=$(cast call "$ROUTER" 'generationAt(uint256)(address)' 1 --rpc-url "$FORK_RPC")
+[ "$(lc "$GEN_AT_1")" = "$(lc "$FACTORY2")" ] \
+  || fail "generation 2 is not at the router's tail: index 1 is $GEN_AT_1, not $FACTORY2"
+echo "C-4b took effect: router generations are [0]=$GEN_AT_0 (generation 1), [1]=$GEN_AT_1 (generation 2), oldest first"
 
 # The property the whole cutover exists to preserve, checked against the ACTUALLY BROADCAST router.
 MISMATCH=0

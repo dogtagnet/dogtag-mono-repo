@@ -72,7 +72,7 @@ A provider cannot be registered at all without the registrar-controlled public i
 
 ---
 
-## 3. The six assertions
+## 3. The seven assertions
 
 Each corresponds to a distinct way the cutover fails **silently**. All executed against the fork; all pass. Assertion 7 was added at review: C-12 had been *described* as exercised in three places while `delistFor` was declared and never called, and a claim broader than the code is the defect this project removes everywhere.
 
@@ -91,6 +91,8 @@ Three things about how they are asserted are load-bearing:
 **Assertion 1 compares against the chain, not against a transcribed list.**
 Each root is checked as `router.rootIssuer(r) == factoryV1.rootIssuer(r)`, so the expected clone is read from the generation-1 factory itself.
 The root list is derived, not typed: `scripts/derive-cutover-inventory.sh` regenerates it from `RootRegistered` logs at the pinned block, and the test refuses to run if the fixture's pinned block disagrees with the fork's.
+That derivation walks the block range in bounded chunks and cross-checks the result against one full-range query, because an endpoint that caps a log range and **truncates instead of erroring** would otherwise be undetectable: `rootCount` is computed from the same short list, so the test's own count assertion is self-consistent by construction and the rehearsal reports green over fewer roots than the chain holds.
+A disagreement between the two scans is a refusal to write the fixture; an endpoint that cannot answer the full range at all says so rather than passing in silence.
 The count was **re-derived as 19**, matching the plan's figure independently rather than carrying it forward.
 
 **Assertion 4 needs a precondition or it passes for the wrong reason.**
@@ -106,7 +108,21 @@ The test therefore whitelists the relayer on generation 1 first, asserts that pr
 ### Every assertion was proved able to fail
 
 `make rehearse-cutover-mutations` applies one deliberate break at a time and **requires the corresponding test to go red**; a mutation whose test stays green is reported as a failure of the harness.
-It refuses to start on a dirty tree and restores every mutated file through a trap, including on interrupt.
+It refuses to start on a dirty tree and restores every mutated file through a trap, including on interrupt - and it verifies that restore against the committed tree afterwards, because an unchecked copy-back would leave a weakened contract source with `git status` as the only detection.
+
+**RED means a test actually ran and failed, never merely that `forge` exited non-zero**, and that distinction is the difference between this table being evidence and being decoration.
+`forge test` exits non-zero for reasons that have nothing to do with an assertion catching anything - a compile error above all, which is the likely outcome of a mutation that only partly applied.
+Crediting that as red would record a mutation that **never ran** as proof its assertion pins something: the exact inverse of what the harness is for, and it would hollow out all ten rows at once while the summary still printed `10 of 10`.
+The three cases were measured on Foundry 1.5.1 rather than assumed, because the classifier had to be tightened correctly rather than merely made harder to satisfy:
+
+| what happened | exit | `Ran N test … for` | `[FAIL` line | verdict |
+|---|---|---|---|---|
+| `setUp()` aborted | 1 | present | present, naming `setUp()` | **RED** - it compiled, ran and failed |
+| `--match-test` matched nothing | **0** | absent | absent | setup failure |
+| the mutated source did not compile | 1 | absent | absent | setup failure |
+
+So a run that executed no test is a setup failure *whatever its exit code*, and every replacement inside a mutation must apply or the mutation aborts before writing a source that would not compile.
+The same did-anything-actually-run check guards the rehearsal's own assertion step in `scripts/rehearse-cutover.sh`, where a `--match-path` matching nothing would otherwise report seven assertions green having executed none.
 
 | mutation | assertion that must redden | observed |
 |---|---|---|
@@ -121,7 +137,11 @@ It refuses to start on a dirty tree and restores every mutated file through a tr
 | the C-12 delisting is not performed | 7 (issuance half) | `next call did not revert as expected` |
 | the freeze also revokes the anchored root | 7 (history half) | `cred !valid` |
 
-10 of 10 redden. The harness earned its keep **twice**, both times catching an inert mutation of mine rather than being believed:
+10 of 10 redden.
+**Those ten observations were made under the PREVIOUS, looser criterion**, which credited any non-zero `forge` exit; re-running `make rehearse-cutover-mutations` is what confirms them under the stricter one above.
+Every recorded message is an ordinary revert reason rather than a compile error, so all ten are expected to stand - but expected is not measured, and this document does not get to claim the difference.
+
+The harness earned its keep **twice**, both times catching an inert mutation of mine rather than being believed:
 
 - The legacy-adapter mutation was first written as a one-line change and **stayed green**, because `_readServiceMetadata` folds the failed-owner read into a single `metadataOk` and the downstream guard it relaxed was already unreachable.
 - Assertion 7 was first paired with a mutation of `src/DogTagIssuer.sol`'s `isValid`, which also **stayed green** - and for a reason worth keeping in mind for any fork rehearsal: **that assertion verifies through the REAL DEPLOYED clone and registry, so no edit to this tree can reach that bytecode.** On a fork the only mutable surface is what the rehearsal itself deploys or does. Both replacements therefore target the freeze the test performs, one per claim.
@@ -223,4 +243,5 @@ It refuses to start if the port is already in use rather than assuming a listene
 Two ordering details inside it that are not arbitrary:
 
 - **The assertions fork upstream, not the local anvil, and run *before* the broadcast.** The broadcast mutates that anvil - the issuer implementation lands on exactly the address the test's own `new DogTagIssuerV2()` would take - so asserting against it afterwards asks whether the cutover works on a chain where the cutover already happened, and fails as a confusing `ImplementationCodeMismatch` rather than as anything about the cutover.
-- **`--skip-simulation` is required, and is not a way of ignoring a failure.** Observed on Foundry 1.5.1: forge runs the script twice. The simulation attributes every CREATE to `--sender` - its addresses are exactly `governance@nonce`, confirmed with `cast compute-address` - while the second, on-chain re-execution produces different CREATE addresses and hands the factory the simulation's implementation address, which holds no code there, so it reverts `ImplementationCodeMismatch` although the transactions themselves are valid. The attribution rule for that second phase was **not** established (the divergent address is neither a governance-nonce address nor the script contract's first few), so this is the divergence that was measured rather than a mechanism. Skipping the redundant re-execution broadcasts the correctly-attributed list. Because that removes a check, the wrapper verifies the receipts and the resulting state instead - every status is `0x1`, `rootIndex` really is the router, and all 19 roots really do resolve through the broadcast router. The success banner is not taken as evidence of anything.
+- **`--skip-simulation` is required, and is not a way of ignoring a failure.** Observed on Foundry 1.5.1: forge runs the script twice. The simulation attributes every CREATE to `--sender` - its addresses are exactly `governance@nonce`, confirmed with `cast compute-address` - while the second, on-chain re-execution produces different CREATE addresses and hands the factory the simulation's implementation address, which holds no code there, so it reverts `ImplementationCodeMismatch` although the transactions themselves are valid. The attribution rule for that second phase was **not** established (the divergent address is neither a governance-nonce address nor the script contract's first few), so this is the divergence that was measured rather than a mechanism. Skipping the redundant re-execution broadcasts the correctly-attributed list. Because that removes a check, the wrapper verifies the receipts and the resulting state instead - every status is `0x1`, `rootIndex` really is the router, **C-4b really took effect** (the router recognises the generation-2 factory, holds exactly two generations, and has generation 1 at index 0 with generation 2 at the tail), and all 19 roots really do resolve through the broadcast router. C-4b is checked by EFFECT rather than by receipt because it is the step the plan omits entirely and the one whose omission is fatal and silent; leaving it on a receipt alone would be the strangest gap to keep once `--skip-simulation` has already removed a check. The success banner is not taken as evidence of anything.
+- **The rendered transaction list refuses to exist when it would be false.** `scripts/render-cutover-txlist.py` opens by asserting every transaction succeeded, so it will not write the file at all if any receipt is not `0x1` - previously it wrote that claim and appended a contradicting failure line beneath it. It also refuses a broadcast that is missing any step `STEPS` knows about, not just one carrying a step it does not. A stale-but-true committed list beats a fresh-but-false one, and this document exists for the captain to approve a live cutover from.

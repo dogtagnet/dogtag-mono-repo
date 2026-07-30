@@ -11,8 +11,12 @@ optimizer_runs = 200
 fs_permissions = [
     { access = "read", path = "test/consent-fixture.json" },
     { access = "read", path = "test/device-profile-root.json" },
-    # S-12 cutover rehearsal: the live address ledger and the derived historical-root inventory.
-    { access = "read", path = "deployments/roax.json" },
+    # S-12 cutover rehearsal: the derived historical-root inventory. The live address ledger needs
+    # NO entry here - the directory-level `deployments` grant below already covers reading it, and a
+    # narrower `deployments/roax.json` entry ABOVE that one would win under first-match resolution
+    # and silently downgrade the ledger to read-only, breaking every script that WRITES it
+    # (Deploy.s.sol, DeployCustodialIssuance.s.sol, DeployIssuerDomainRegistry.s.sol). No test drives
+    # those writes, so that regression would be invisible until a real deploy.
     { access = "read", path = "rehearsal/fixtures" },
     { access = "read", path = "src" },
     { access = "read", path = "out" },

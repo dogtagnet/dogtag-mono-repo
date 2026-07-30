@@ -34,7 +34,7 @@ interface IFactoryV1 {
 ///
 /// @notice REHEARSAL ONLY, and it deploys nothing live. It runs the exact sequence in
 /// `script/CutoverSequence.sol` — the same code the transaction list is captured from — against
-/// `anvil --fork-url` or a direct fork of ROAX, and then asserts the six properties each of which
+/// `anvil --fork-url` or a direct fork of ROAX, and then asserts the seven properties each of which
 /// corresponds to a way the cutover fails SILENTLY.
 ///
 /// A fork rather than a testnet deploy because a fork answers what the DEPLOYED BYTECODE PERMITS,

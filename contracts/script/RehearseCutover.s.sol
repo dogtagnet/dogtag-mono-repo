@@ -78,6 +78,13 @@ contract RehearseCutover is Script {
         // rather than restated here, so there is one source and it cannot drift from the block the
         // assertions and the historical-root inventory were derived at.
         //
+        // The equality is STRICT deliberately, so it also fires on a local fork that has had a block
+        // mined on it since it was created. That is a second, entirely benign cause, so the refusal
+        // NAMES BOTH rather than asserting the alarming one: telling an operator on their own anvil
+        // that they pointed an irreversible broadcast at live ROAX is a wrong verdict inside the one
+        // guard whose whole value is being trustworthy. Relaxing it to a range would weaken the
+        // safety property to buy a better message, which is the wrong trade.
+        //
         // `scripts/rehearse-cutover.sh` additionally only ever passes a local fork URL, but that is
         // defence in depth: a script invoked by hand must protect itself.
         require(block.chainid == 135, "rehearsal expects the ROAX chain id (135)");
@@ -86,7 +93,9 @@ contract RehearseCutover is Script {
             vm.parseJsonUint(vm.readFile("rehearsal/fixtures/historical-roots.json"), ".pinnedBlock");
         require(
             block.number == pinnedBlock,
-            "REFUSING: not a fork pinned at the rehearsal block - this looks like a LIVE endpoint"
+            "REFUSING: head is not the pinned rehearsal block. Either this is a LIVE endpoint, or a "
+            "block has been mined on your fork since it was created - re-fork at the pinned block "
+            "(scripts/rehearse-cutover.sh does that for you)."
         );
 
         CutoverSequence.Generation1 memory gen1 = _generation1();

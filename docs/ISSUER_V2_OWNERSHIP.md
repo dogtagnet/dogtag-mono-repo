@@ -429,7 +429,10 @@ cd contracts && forge test --match-contract IssuerV2
 63 tests in `IssuerV2Test`, 3 more in `IssuerV2ProviderAuthorityInterfaceTest`; 231 in the whole `contracts` suite.
 That total moved from 202 when S-6's `ProviderRegistryTest` landed in the same tree, so a `202` anywhere is stale rather than a different way of counting.
 `--match-contract IssuerV2` (not `IssuerV2Test`) is what runs both of this slice's suites.
-Use `forge test`, never a bare `forge build`: a full build tries to compile the vendored OZ submodule's `certora/harnesses/*`, which import generated `../patched/*` files that are not present, and fails with "File not found" - a submodule artifact, not a project error.
+Prefer `forge test` over a bare `forge build`: it compiles only the real dependency closure.
+The blanket "never a bare `forge build`" rule recorded here described a real failure - a full build compiled the vendored OpenZeppelin submodule's `certora/harnesses/*`, which import generated files that are not present, and failed with "File not found" (a submodule artifact, not a project error).
+That **no longer reproduces**: re-measured 2026-07-30 on Foundry 1.5.1-stable with the submodules at their pinned revisions (`openzeppelin-contracts` `v4.8.0-743-g69c8def5`, `forge-std` `v1.9.4`), a bare `forge build` from a removed `out/` exits 0.
+The mechanism of the change was not established, so read that as a measurement on that toolchain rather than a guarantee.
 
 A fresh worktree has no `contracts/lib` contents; run `git submodule update --init --recursive contracts/lib/forge-std contracts/lib/openzeppelin-contracts` first.
 

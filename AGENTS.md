@@ -130,11 +130,16 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   (the `setUp` snapshot gives every test function the same fixture addresses), so the writes cannot be
   observed as a change. To vary a record, mutate the struct and call `preflight`, or re-stage on the
   registry - never write a divergent `GEN2_*`.
-  Use `forge test`, **not** bare
-  `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
-  import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
-  vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency
-  closure and is green.
+  Prefer `forge test` over a bare `forge build`, because it compiles only the real dependency
+  closure. **The reason that used to be a hard rule no longer reproduces**: a bare full build once
+  failed with "File not found" because it tried to compile the OZ submodule's `certora/harnesses/*`,
+  which import generated `../patched/*` files that were not present - a vendored-submodule artifact,
+  never a project error. Re-measured 2026-07-30 on Foundry **1.5.1-stable** with the submodules at
+  their pinned revisions (`openzeppelin-contracts` `v4.8.0-743-g69c8def5`, `forge-std` `v1.9.4`):
+  from a removed `out/`, both `forge build` and `FOUNDRY_PROFILE=rehearsal forge build` exit **0**.
+  The mechanism of the change was not established, so treat this as a measurement on that toolchain
+  rather than a guarantee; if the old failure reappears, `forge test` is still the way through.
+  `make contracts` depends on the build working, since it compiles both profiles.
 - `cd circuits && pnpm test-consent` — generates real `DogTagConsent` Groth16 proofs across multiple
   tree sizes, asserts the frozen seven-signal order and SDK root parity, and runs the negative tests.
   Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`.
