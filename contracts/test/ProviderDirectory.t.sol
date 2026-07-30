@@ -849,6 +849,183 @@ contract ProviderDirectoryTest is Test {
         assertFalse(covers, "newly published address text was covered by an earlier confirmation");
     }
 
+    /// A confirmation is the PAIR (provenance, stamped revision), so re-affirming a stale-but-still-
+    /// correct confirmation changes the stamp and must land in ONE transaction. Evaluating `NoChange` on
+    /// the provenance value alone refused exactly this write, leaving only the round trip through
+    /// SELF_DECLARED — which transiently erases a check the registrar still stands behind, permanently
+    /// if the second transaction never lands.
+    function test_a_stale_confirmation_can_be_reaffirmed_in_one_transaction() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        bytes32 rewritten = keccak256("rewrote the street address");
+        _publishAnchor(PINNED, PINNED_CONTROLLER, rewritten);
+
+        (, uint64 confirmedAt,, bool covers) = directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(confirmedAt, 1);
+        assertFalse(covers, "the confirmation should have gone stale before it is re-affirmed");
+
+        // The registrar re-reads the new text, still postal-confirms it, and says so in ONE call. No
+        // round trip through SELF_DECLARED.
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED, locationNo, SG_LAT, SG_LNG, rewritten, ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        ProviderDirectory.AddressProvenance provenance;
+        uint64 current;
+        (provenance, confirmedAt, current, covers) = directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(uint8(provenance), uint8(ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED));
+        assertEq(confirmedAt, 2, "the re-affirmation did not advance the stamp");
+        assertEq(current, 2);
+        assertTrue(covers, "a re-affirmed confirmation must cover the text it was just made against");
+    }
+
+    /// The other half of the pair rule: a write that would change NEITHER term is still a no-op and must
+    /// still be refused, so the fix above cannot have been "stop refusing anything".
+    function test_a_confirmation_that_is_already_current_is_refused() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+
+        vm.startPrank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        vm.expectRevert(ProviderDirectory.NoChange.selector);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+        vm.stopPrank();
+    }
+
+    /// Retraction is the corrective direction, so no act of the party being retracted may strand it. The
+    /// digest guard is a RAISE guard: a retraction asserts nothing about the address text, and gating it
+    /// would let an ACTIVE provider block its own retraction by re-anchoring between the registrar's read
+    /// and its transaction, repeatedly, while the pin still read POSTAL_CONFIRMED throughout.
+    ///
+    /// `test_a_confirmation_cannot_land_on_address_text_the_registrar_did_not_read` is the other half:
+    /// a RAISE against a digest the registrar did not name still reverts.
+    function test_a_retraction_is_not_blocked_by_address_text_the_registrar_never_read() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        // The provider re-anchors between the registrar's read and its retraction.
+        _publishAnchor(PINNED, PINNED_CONTROLLER, keccak256("front-run the retraction"));
+
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.SELF_DECLARED
+        );
+
+        (ProviderDirectory.AddressProvenance provenance, uint64 confirmedAt,, bool covers) =
+            directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(
+            uint8(provenance),
+            uint8(ProviderDirectory.AddressProvenance.SELF_DECLARED),
+            "a provider blocked the retraction of a confirmation about itself"
+        );
+        assertEq(confirmedAt, 0, "the stamped revision outlived the confirmation it belonged to");
+        assertFalse(covers);
+    }
+
+    /// The event is what an indexer rebuilds `confirmedAtAnchorRevision` from, so its two anchor fields
+    /// have to agree with the stamp this call stores - which makes them the bound text on a raise and
+    /// ZERO on a retraction. Naming the provider's current blob on a retraction would attribute a reading
+    /// the registrar never made, in the one direction that deliberately binds no text at all.
+    function test_the_provenance_event_reports_the_bound_text_and_binds_none_on_a_retraction() public {
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(PINNED_CONTROLLER);
+        uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+
+        vm.expectEmit(true, true, false, true, address(directory));
+        emit ProviderDirectory.PinAddressProvenanceSet(
+            PINNED,
+            locationNo,
+            ProviderDirectory.AddressProvenance.SELF_DECLARED,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED,
+            ANCHOR_DIGEST,
+            1,
+            REGISTRAR,
+            uint64(block.number)
+        );
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED
+        );
+
+        vm.expectEmit(true, true, false, true, address(directory));
+        emit ProviderDirectory.PinAddressProvenanceSet(
+            PINNED,
+            locationNo,
+            ProviderDirectory.AddressProvenance.POSTAL_CONFIRMED,
+            ProviderDirectory.AddressProvenance.SELF_DECLARED,
+            bytes32(0),
+            0,
+            REGISTRAR,
+            uint64(block.number)
+        );
+        vm.prank(REGISTRAR);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.SELF_DECLARED
+        );
+
+        // And the state the event claimed to mirror.
+        (, uint64 confirmedAt,,) = directory.pinAddressProvenance(PINNED, locationNo);
+        assertEq(confirmedAt, 0, "the event and the stored stamp disagree after a retraction");
+    }
+
+    /// Both revision states, for the reason the covering flag needs both: on an anchorless provider an
+    /// absent stamp (0) and an absent revision (0) COINCIDE, so asserting only there would leave the
+    /// retraction arm of the no-op rule free to compare against the current revision instead of zero and
+    /// admit a no-op write on every provider that has published text.
     function test_a_provenance_that_changes_nothing_is_refused() public {
         vm.prank(PINNED_CONTROLLER);
         uint16 locationNo = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
@@ -856,6 +1033,19 @@ contract ProviderDirectoryTest is Test {
         vm.expectRevert(ProviderDirectory.NoChange.selector);
         directory.setPinAddressProvenance(
             PINNED, locationNo, SG_LAT, SG_LNG, bytes32(0), ProviderDirectory.AddressProvenance.SELF_DECLARED
+        );
+
+        // And with text published, where the stamp (0) and the anchor revision (1) differ.
+        _publishAnchor(PINNED, PINNED_CONTROLLER, ANCHOR_DIGEST);
+        vm.prank(REGISTRAR);
+        vm.expectRevert(ProviderDirectory.NoChange.selector);
+        directory.setPinAddressProvenance(
+            PINNED,
+            locationNo,
+            SG_LAT,
+            SG_LNG,
+            ANCHOR_DIGEST,
+            ProviderDirectory.AddressProvenance.SELF_DECLARED
         );
     }
 
