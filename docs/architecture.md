@@ -775,8 +775,11 @@ stores.
   `Cache-Control: private, no-store`. Dependency TRACE may expose peer IP and connection timing, but no
   current level logs incoming URI/query/path/header/body; external ingress logging remains deployment
   policy outside this repository.
-- There is no radius, chosen-location, map, directions, viewport, bounding box, geohash,
+- There is no radius, chosen-location, map, viewport, bounding box, geohash,
   place-autocomplete, place-hint, or third-party geocoding surface. Provider discovery is a list.
+  A nearby row does offer a **Directions handoff**, which is not a map surface and discloses nothing:
+  it carries the provider's PUBLIC destination to another app and never the owner's origin, and it is
+  absent for a provider that published no location.
 - The legacy central/admin route still accepts deprecated `near=<lat>,<lng>` and `radius=` for
   third-party compatibility, but nothing in this repo sends them. Do not add a caller there.
 - The prior full-fetch planning budget reached 5,000,000 bytes (4.77 MiB) at 50,000 providers using
