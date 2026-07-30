@@ -104,12 +104,23 @@ interface IOwnedIssuer {
 ///
 /// # 3. `authorizeClone` — the resolving predicate, published once
 ///
-/// The forgery-proof repoint predicate is defined HERE and nowhere else, so consumers call it rather
-/// than re-deriving it. Two contracts need it (`ProviderRegistry`'s service attachment, S-6; and
-/// `ServiceDomainResolver`'s domain write, S-9), and two parallel implementations of one authorization
-/// rule is how the vet and mobile verdict paths came to disagree in this codebase already. Both public
-/// shapes below are thin wrappers over one internal `_authorization`, so the rule cannot be half-changed
-/// and a candidate that failed provenance cannot be reached by either.
+/// The forgery-proof repoint predicate is published HERE as a function rather than inlined, so that a
+/// consumer can call it instead of re-deriving it. Two contracts are meant to (`ProviderRegistry`'s
+/// service attachment, S-6; and `ServiceDomainResolver`'s domain write, S-9), and two parallel
+/// implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in
+/// this codebase already. Both public shapes below are thin wrappers over one internal `_authorization`,
+/// so the rule cannot be half-changed and a candidate that failed provenance cannot be reached by either.
+///
+/// **No consumer composes it yet, so this is not the only place the rule lives.** S-9 does not exist in
+/// this tree, and `ProviderRegistry` derives both halves itself: provenance through its own fail-soft
+/// `isClone` staticcall (`_factoryRecognizes`) and control through its own fail-soft `owner()` staticcall
+/// (`_readServiceOwner`). On the core's own per-issuance predicates that shape is deliberate rather than
+/// an omission, for two specific reasons: those reads sit inside `canIssue`, which a generation-2 clone
+/// asks on every `issue`, so the reverting `authorizeClone` cannot serve that call site; and
+/// `_isOwnerConfirmed` compares the live `owner()` against the registrar's recorded `confirmedOwner`, so
+/// it needs the owner VALUE, which neither shape returns. Both derivations fail closed, so nothing is
+/// presently unguarded; the attachment path is the one this predicate is meant to serve, and reconciling
+/// it is the S-6 obligation recorded in `docs/ISSUER_V2_OWNERSHIP.md` §8.
 ///
 /// The rule, and why each half is load-bearing (plan §3.1):
 ///

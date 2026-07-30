@@ -130,8 +130,14 @@ It could not, and this is worth recording rather than quietly changing: on the c
 **`isClone[candidate]`, read from the factory's own storage.**
 That mapping is written in exactly one place - `createIssuer` - so an address is in it if and only if this factory deployed it. No other path sets it.
 
-The predicate is published once, on the factory, as `authorizeClone(candidate, claimant) -> bytes32 recordType`, so consumers call it rather than re-deriving it.
-Two contracts need it (S-6's service attachment and S-9's domain write), and two parallel implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in this codebase already.
+The predicate is published once, on the factory, as `authorizeClone(candidate, claimant) -> bytes32 recordType`, so that a consumer can call it instead of re-deriving it.
+Two contracts are meant to (S-6's service attachment and S-9's domain write), and two parallel implementations of one authorization rule is how the vet and mobile verdict paths came to disagree in this codebase already.
+
+**No consumer composes it yet, so this is not the only place the rule lives.**
+S-9 does not exist in this tree, and `ProviderRegistry` derives both halves itself: provenance through its own fail-soft `isClone` staticcall (`_factoryRecognizes`) and control through its own fail-soft `owner()` staticcall (`_readServiceOwner`).
+On the core's own per-issuance predicates that shape is deliberate rather than an omission, for two specific reasons: those reads sit inside `canIssue`, which a generation-2 clone asks on every `issue`, so the reverting `authorizeClone` cannot serve that call site; and `_isOwnerConfirmed` compares the live `owner()` against the registrar's recorded `confirmedOwner`, so it needs the owner VALUE, which neither shape returns.
+Both derivations fail closed, so nothing is presently unguarded.
+The attachment path is the one this predicate is meant to serve, and §8 records reconciling it as S-6's obligation.
 
 That applies inside the factory too: `authorizeClone` and the non-reverting `cloneAuthorization` are thin wrappers over ONE private `_authorization`, so the rule cannot be half-changed and the two shapes cannot end up applying its parts in different orders.
 Both public forms keep their own failure vocabulary (`NotAClone` versus `NotCloneOwner`), because a provider whose clone is genuine must not be told its address is a forgery.
@@ -338,7 +344,7 @@ Those files are not part of S-7 and are deliberately untouched; what this slice 
 A generation-3 issuer implementation would inherit, unchanged:
 
 * **The ownership model.** Two-step, non-renounceable, non-zeroable, control-not-capability. Nothing about it is generation-specific.
-* **The authorization predicate's shape.** `authorizeClone(candidate, claimant) -> recordType` is a pure function of `isClone` plus the clone's own getters, so a generation-3 factory implements the same signature over its own storage. S-6 and S-9 consume the shape, not a particular factory.
+* **The authorization predicate's shape.** `authorizeClone(candidate, claimant) -> recordType` is a pure function of `isClone` plus the clone's own getters, so a generation-3 factory implements the same signature over its own storage. A consumer binds to the shape, not to a particular factory.
 * **The `priorIndex` contract.** Its two-query root and membership requirements and its mandatory non-zero-ness are unchanged; generation 3 points it at a router carrying generations 1 and 2, then must be appended before issuance.
 * **Dependency identity and probes.** A generation-3 factory has the same immutability, so it has the same obligation to pin the exact intended issuer runtime and behaviour-check the authority and prior index before construction completes.
 
