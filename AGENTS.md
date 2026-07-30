@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 139 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
+- `cd contracts && forge test` - 165 tests over the owner-hidden contract set. `CustodialIssuance.t.sol`
   and `ConsentRegistry.t.sol` verify real owner-hidden issuance/proofs; `DeployProtocolRegistry.t.sol`
   exercises the real env-driven deploy→propose→execute path for the single `dogtag-levelb/1`
   protocol version (an internal version key, not a product label) on both registry axes;
@@ -98,10 +98,15 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   move; `OwnerHiddenSurface.t.sol` rejects a recipient-bearing `mint` or a
   subject-bearing `Verified` ABI; `CloneProvenanceRouter.t.sol` performs the real cross-generation
   resurrection attack against the router's oldest-first resolution and pins the mirror direction it
-  deliberately does not close. Use `forge test`, **not** bare `forge build`: a bare full build tries
-  to compile the OZ submodule's `certora/harnesses/*` which import generated `../patched/*` files that
-  aren't present, so it fails with "File not found" - a vendored-submodule artifact, NOT a project
-  error. `forge test` only compiles the real dependency closure and is green.
+  deliberately does not close; and `ProviderRegistry.t.sol` proves the build-only provider-authority
+  core's KYC-standing AND owner/delegate predicate, genuine-factory attachment/repoint, service-scoped
+  capabilities, real controller/owner/admin key rotations, the widest-first
+  `isRecognizedIssuer` ⊇ `canRevoke` ⊇ `canIssue` ladder against every lifecycle event that stops new
+  issuance, and the registrar-only provider-binding correction. Use `forge test`, **not** bare
+  `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
+  import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
+  vendored-submodule artifact, NOT a project error. `forge test` only compiles the real dependency
+  closure and is green.
 - `cd circuits && pnpm test-consent` — generates real `DogTagConsent` Groth16 proofs across multiple
   tree sizes, asserts the frozen seven-signal order and SDK root parity, and runs the negative tests.
   Needs the TS SDK built first (`pnpm --filter @dogtag/standard build`) and `pnpm install`.
@@ -156,6 +161,41 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   publishes one contract set plus one independently rotatable artifact set and their binding.
   `CloneProvenanceRouter` is also in that live source but is **built and tested only, NOT deployed** -
   no address, no `.env.example` entry, no consumer points at it. See "CloneProvenanceRouter" below.
+  `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it is source-only,
+  has no deploy script, ledger entry, or environment address, and is **not deployed**. It admits only
+  owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
+  clones; C-2 therefore still needs that KYC/captain migration choice, because S-6 contains no legacy
+  controller adapter. Its legacy `isWhitelistedFor(bytes32,address)` issuance answer is deliberately
+  caller-scoped to an attached clone, so a direct reader (which cannot identify a service through that
+  two-argument selector) must migrate to a service-scoped read — but **which** one is the whole
+  question, because the three issuance-axis reads are a deliberate ladder, `isRecognizedIssuer` ⊇
+  `canRevoke` ⊇ `canIssue`, and each rung answers something different. The migration therefore splits
+  BY QUESTION, not by caller convenience: a direct client asking *may this signer issue now* migrates
+  to `canIssue(service, signer)`, and a verifier asking *was this credential genuinely issued*
+  migrates to `isRecognizedIssuer(service, signer)`. **The mandatory issuer-whitelist verification
+  pillar is the second kind, so it migrates to `isRecognizedIssuer(service, signer)` and NEVER to
+  `canIssue(service, signer)`**, which is the pre-issue eligibility gate only: `canIssue` additionally
+  folds the provider's current pointer, provider/service standing and a live factory generation, while
+  the pillar asks the historical issuer-status question and treats a definite `false` as "resolved but
+  not authorized" — an authenticity failure that REFUSES the credential (`verify.rs` `credential_valid`,
+  `packages/ui/src/wallet/verifyCredential.ts`, the vet/government verify routes, both mobile
+  importers). Wiring the pillar to a current-state predicate therefore turns an ordinary repoint, KYC
+  suspension, service retirement, generation deprecation or pending clone-owner handover into a
+  fleet-wide forgery verdict against genuine credentials. `isRecognizedIssuer` folds only registrar
+  attachment plus the forward-only issuance grant — exactly the `whitelistFor`/`delistFor` semantics
+  the pillar was built on — so only an explicit registrar revocation flips it. S-7 must use the middle
+  rung, `canRevoke(service, signer)` (recognized issuer + confirmed live owner, the one term the
+  registrar can clear at any time), so a repoint, retirement, standing change or irreversible
+  generation deprecation disables new issuance without ever stranding a root as unrevocable by the
+  originator that anchored it; `DogTagIssuer.adminRevoke` remains the registrar backstop. `providerId`
+  is the single attachment fact chain provenance cannot verify, so
+  `reassignServiceProvider(service, expectedProviderId, newProviderId)` is its registrar-gated
+  correction path: it moves the binding and its enumeration and clears the mistaken provider's current
+  pointer, but deliberately does NOT publish under the corrected provider — repointing stays the clone
+  owner's decision, so a correction can never become a publication-authority bypass. Resolver
+  deapproval preserves the raw selected pointer for history, so S-9/S-10 resolver
+  operations must check BOTH that they remain the selected resolver and that their typed allowlist
+  entry is still active, in addition to the core's provider/service writer predicate.
 - `stacks/vet` + `stacks/groomer` — same `vet-api` binary (`BUSINESS_TYPE` switch) + SPA + Mongo. `stacks/admin` — central registry/admin-api.
 - `stacks/government` — **net-new, separately-deployable** role stack running its **own** `government-api` crate (NOT vet-api): a government credential authority that issues authority-endorsed `TRAVEL_CLEARANCE`/`EU_HEALTH_CERT` (anchors root via `DogTagIssuer.issue`) and does government-grade verify (integrity + `isValid` + `isWhitelistedFor`, all gasless reads). Own Mongo (`governmentdata`), ports 44831/44832, `make up-government`. **CHAIN and STORE are separate axes, deliberately:** `GOV_CHAIN_BACKEND` picks the chain - `live` (DEFAULT, `AlloyChain` on ROAX; `GOV_SIGNER_KEY` to anchor) or `mem` (explicit opt-in `MemChain`, used by `tests/flow_memchain.rs` and `e2e-roles.sh`) - while `GOV_DEMO_MODE=1` only picks the ephemeral `MemStore` + demo API token. They used to be one flag, which silently ran demo stacks' verify/records on a simulated chain while `/health` still echoed `CHAIN_ID` as `chainId:135, canSign:true`. `/health` now reports `backend`/`simulated`, `chainId:null` when simulated, `canSign` only for real broadcast, and `simulatedSigner` for a stand-in; the portal badge shows LIVE vs SIMULATED CHAIN. Provision real on-chain issuance with `scripts/demo-provision-government.sh` (funded signer + `TRAVEL_CLEARANCE` whitelist + `DogTagIssuer` clone; idempotent, never prints the key). It reuses the shared `dogtag-standard-rs` SDK for credential build/wrap but has its own trimmed `chain.rs`. Design: `docs/ROLE_APPS.md`.
 - **Three-role showcase**: `scripts/demo-up.sh` boots all role stacks as separate services (admin/vet/groomer/government + portals). `scripts/e2e-roles.sh` (default = hermetic government ISSUE→VERIFY on `GOV_CHAIN_BACKEND=mem`, no deps; `--live` = vet ISSUES → government VERIFIES → government ISSUES across the running stacks over ROAX, needs `contracts/.env`). `government-api tests/cross_role.rs` codifies "vet ISSUES → government VERIFIES" deterministically over MemChain. See `docs/ROLE_APPS.md` §8.
