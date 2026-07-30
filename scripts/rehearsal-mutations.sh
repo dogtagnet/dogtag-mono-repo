@@ -24,10 +24,9 @@ FACTORY2="src/DogTagIssuerFactoryV2.sol"
 VREG="src/VerificationRegistryConsent.sol"
 CORE="src/ProviderRegistry.sol"
 SUITE="rehearsal/CutoverRehearsal.t.sol"
-ISSUER1="src/DogTagIssuer.sol"
 # EVERY file any mutation touches must be here, or `restore` silently leaves the tree mutated.
 # This list has already been the source of one such gap; add to it in the SAME change as a mutation.
-TARGETS=("$SEQ" "$ROUTER" "$FACTORY2" "$VREG" "$CORE" "$SUITE" "$ISSUER1")
+TARGETS=("$SEQ" "$ROUTER" "$FACTORY2" "$VREG" "$CORE" "$SUITE")
 
 BACKUP="$(mktemp -d)"
 restore() {
@@ -57,6 +56,16 @@ import os, sys
 p = os.environ['MUT_FILE']
 s = open(p).read()
 before = s
+# Shared anchors for the assertion-7 mutations, defined once so the two agree by construction.
+DELIST_CALL = (
+    '        vm.prank(gen1.governance);\n'
+    '        IIssuerRegistryV1(gen1.issuerRegistry).delistFor(cloneRecordType, REHEARSAL_GEN1_SIGNER);'
+)
+REVOKE_THEN_DELIST = (
+    '        vm.prank(REHEARSAL_GEN1_SIGNER);\n'
+    '        DogTagIssuer(gen1Clone).revoke(fixtureRoot);\n'
+    + DELIST_CALL
+)
 $mutation
 if s == before:
     sys.exit('mutation did not change the file - the anchor text has drifted')
@@ -197,18 +206,29 @@ s = s.replace('''        if (!metadataOk || recordType == bytes32(0) || liveOwne
         if (liveOwner != expectedOwner) revert UnexpectedServiceOwner();''')"
 
 # ---------------------------------------------------------------------------------------------
-# Assertion 7 (C-12) - the generation-1 freeze stops new issuance and breaks NO credential
+# Assertion 7 (C-12) - TWO mutations, one per half, because the assertion makes two claims.
 #
-# Break: make `isValid` consult the issuer registry, which is exactly the thing the plan asserts it
-# does NOT do. The freeze would then invalidate all 19 historical credentials - the outcome the
-# router exists to prevent - and it is why the assertion checks verification SURVIVING rather than
-# only issuance stopping.
+# Note what CANNOT be mutated here: part (3) verifies through the REAL DEPLOYED generation-1 clone
+# and the REAL deployed registry, so no edit to src/DogTagIssuer.sol can reach it - that bytecode
+# comes from the chain, not from this tree. An earlier attempt at exactly that mutation stayed GREEN
+# and this harness caught it. Both mutations below therefore target the freeze the test PERFORMS.
 # ---------------------------------------------------------------------------------------------
+
+# Half 1 - the freeze is actually performed. This maps directly to the original review finding:
+# without the delisting the test would DESCRIBE C-12 rather than exercise it.
 run_mutation \
-  "isValid made to consult the issuer registry, so the freeze invalidates history" \
+  "the C-12 delisting is not performed (the assertion must not merely describe the freeze)" \
   "test_7_the_generation_1_freeze_stops_new_issuance_and_preserves_verification" \
-  "$ISSUER1" \
-  "s = s.replace('        return issuedAt[r] != 0 && revokedAt[r] == 0;', '        return issuedAt[r] != 0 && revokedAt[r] == 0 && registry.isWhitelistedFor(recordType, issuedBy[r]);')"
+  "$SUITE" \
+  "s = s.replace(DELIST_CALL, '        // delistFor omitted by mutation')"
+
+# Half 2 - the freeze must not break existing credentials. Models a runbook that revokes while it
+# freezes; part (3) of the assertion is the only thing that catches it.
+run_mutation \
+  "the freeze also revokes the anchored root (history must NOT survive that)" \
+  "test_7_the_generation_1_freeze_stops_new_issuance_and_preserves_verification" \
+  "$SUITE" \
+  "s = s.replace(DELIST_CALL, REVOKE_THEN_DELIST)"
 
 printf '\n============================================================\n'
 printf 'mutations that correctly reddened their assertion: %d\n' "$PASSED"
