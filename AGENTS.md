@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 281 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 285 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -253,6 +253,10 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   publishes one contract set plus one independently rotatable artifact set and their binding.
   `CloneProvenanceRouter` is also in that live source but is **built and tested only, NOT deployed** -
   no address, no `.env.example` entry, no consumer points at it. See "CloneProvenanceRouter" below.
+  `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
+  contacts and profile anchors, keyed by `providerId`) and is likewise **built and tested only, NOT
+  deployed** - no address, no deploy script, no `.env.example` entry, and the indexer's provider
+  directory still reads the admin business source. See "ProviderDirectory" below.
   `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it is source-only,
   has no deploy script, ledger entry, or environment address, and is **not deployed**. It admits only
   owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
@@ -1339,6 +1343,20 @@ byte-identical to hand-packed `bytes` - the 3.3x ABI-padding penalty an `(addres
 struct array would pay is avoided by construction, so do not hand-roll a `bytes` blob for it. The
 listing record is two words (`providerId | anchorRevision uint64 | pinCount uint16 | standing uint8 |
 flags uint8`, then the digest) and is tight for the same reason.
+
+**The page caps are MEASURED, and `ProviderDirectoryPageCostTest` is where.** Cold: **~2,690 gas per
+pin record** (~2.69M for a full 1,000-record page) and **~21,700 per listing record** (~2.17M for a
+full 100-record page). So a listing record is about eight times a pin record - one core staticcall
+each - which is what makes the smaller listing cap a decision rather than an oversight, and a full
+page of either sits well inside a node's ~50M `eth_call` cap. Extrapolated, the pin figure allows
+~18,600 records in one call, which corroborates `dogtag-nearby-n5` §5's "realistically ~15,000-20,000"
+rather than its 2,300/record estimate.
+**That suite has its own contract for one reason: the seeding must happen in `setUp`, a separate
+transaction from the measured read.** Publishing and reading in one test body leaves every slot WARM
+and reports ~680k for the same page - understating a real `eth_call` roughly threefold. The whole cap
+argument is about the COLD `SLOAD` per record, so the warm number is measuring the wrong thing and
+quoting it would be worse than quoting nothing. `forge-std` here has no `vm.cool`, which is why the
+transaction boundary is the mechanism.
 Negative coordinates are the classic packing bug - a two's-complement `int32` read back at the wrong
 width becomes a plausible coordinate on the other side of the planet rather than an error - so the
 extremes are pinned in both signs.
@@ -1374,6 +1392,12 @@ provider as having no location.
 `_pinScan` is compacted by swap-and-pop, so **page every pin at ONE pinned block**; `atBlock` is
 returned so a consumer can show it did. The moved word carries its own `(providerId, locationNo)`, so
 its index is repaired from the word itself rather than from a second bookkeeping structure.
+That hazard is pinned as a REAL limitation rather than left as prose - the same treatment
+`CloneProvenanceRouter.t.sol` gives its deliberately-unclosed mirror direction, so nobody later reads
+the doc as a solved problem: `test_paging_across_a_removal_can_skip_a_record` walks page 0, removes the
+record at index 0, walks page 1, and shows the record swapped into the hole is never returned by either
+page although it exists and was never removed. The same test then reads the whole scan at one block and
+sees it, which is the remedy.
 
 **`(providerId, locationNo)` is stable: a number is issued from a monotone per-provider counter and is
 never reissued**, so a withdrawn location's number can never come to mean a different place. `uint16`
@@ -1407,6 +1431,12 @@ identity, this one is provider-written content carrying no registrar attestation
 anchor still advances the revision, so "withdrawn" stays distinguishable from "never published".
 `kind` is an OPAQUE caller-selected code with no on-chain allowlist, mirroring the directory service's
 stated kind policy; `0` means NOT STATED and is never inferred into a real kind.
+**Open, and worth settling before a second consumer exists: the `uint8` code to label mapping is
+unowned.** The chain carries the code and the indexer's kind filter carries strings (`kind=vet`), so
+whoever wires the two picks the correspondence - and two consumers inventing different tables renders a
+vet as a groomer with nothing anywhere reporting a disagreement. A `bytes32` keccak-of-label kind would
+have been self-describing and does not fit the slot, so the mapping has to be written down somewhere
+rather than derived.
 
 The contract imports `ProviderRegistry` directly rather than declaring a local interface, unlike the
 generation-2 issuer pair. That is deliberate: this is a resolver OF that exact core, selected by it, so

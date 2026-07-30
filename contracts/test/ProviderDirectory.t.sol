@@ -847,6 +847,43 @@ contract ProviderDirectoryTest is Test {
         assertEq(seen, 5, "paging did not walk every record");
     }
 
+    /// A pin removed BETWEEN two unpinned pages can move a record past a cursor that has already gone
+    /// by, so a consumer paging across blocks silently misses it. Pinned as a deliberate limitation
+    /// rather than a solved problem: the remedy is to page at one block, which is what `atBlock` exists
+    /// to let a consumer show it did.
+    function test_paging_across_a_removal_can_skip_a_record() public {
+        vm.startPrank(PINNED_CONTROLLER);
+        uint16 a = directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
+        uint16 b = directory.publishPin(PINNED, SG_LAT + 1, SG_LNG, KIND_VET, true);
+        uint16 c = directory.publishPin(PINNED, SG_LAT + 2, SG_LNG, KIND_VET, true);
+        uint16 d = directory.publishPin(PINNED, SG_LAT + 3, SG_LNG, KIND_VET, true);
+        vm.stopPrank();
+
+        (bytes32[] memory page0, uint256 next,,,) = directory.pinPage(0, 2);
+        assertEq(directory.unpackPin(page0[0]).locationNo, a);
+        assertEq(directory.unpackPin(page0[1]).locationNo, b);
+
+        // Removing the record at index 0 swaps the tail into its place.
+        vm.prank(PINNED_CONTROLLER);
+        directory.removePin(PINNED, a);
+
+        (bytes32[] memory page1,,,,) = directory.pinPage(next, 2);
+        assertEq(page1.length, 1, "the tail did not shrink as expected");
+        assertEq(directory.unpackPin(page1[0]).locationNo, c);
+
+        // `d` was never returned by either page, though it exists and was never removed.
+        assertTrue(directory.hasPin(PINNED, d), "the skipped pin should still exist");
+        assertEq(directory.unpackPin(directory.pinWord(PINNED, d)).locationNo, d);
+        // And it is reachable again the moment the whole scan is read at one block.
+        (bytes32[] memory whole,, uint256 total,,) = directory.pinPage(0, 10);
+        assertEq(total, 3);
+        bool sawD;
+        for (uint256 i = 0; i < whole.length; i++) {
+            if (directory.unpackPin(whole[i]).locationNo == d) sawD = true;
+        }
+        assertTrue(sawD, "a single-block read must see every record");
+    }
+
     function test_a_cursor_at_the_end_returns_an_empty_page_rather_than_reverting() public {
         vm.prank(PINNED_CONTROLLER);
         directory.publishPin(PINNED, SG_LAT, SG_LNG, KIND_VET, true);
@@ -997,5 +1034,119 @@ contract ProviderDirectoryTest is Test {
             uint32(type(int32).max) > uint32(directory.LONGITUDE_LIMIT()) * 11 / 10,
             "the longitude limit is within 10% of the int32 ceiling"
         );
+    }
+}
+
+/// @dev The page-cost measurements live in their OWN contract because the seeding has to happen in
+/// `setUp`, a separate transaction from the measured read. Publishing and reading in one test body
+/// leaves every storage slot WARM, which understates a real `eth_call` by roughly a factor of three —
+/// the design's whole cap argument is about the COLD `SLOAD` per record, so measuring the warm number
+/// would be measuring the wrong thing and quoting it would be worse than quoting nothing.
+contract ProviderDirectoryPageCostTest is Test {
+    ProviderRegistry internal core;
+    ProviderDirectory internal directory;
+
+    address internal constant REGISTRAR = address(0xA11CE);
+    address internal constant CONTROLLER = address(0xB0B);
+    bytes20 internal constant PINNED = bytes20(uint160(0x1111));
+
+    int32 internal constant SG_LAT = 1_352_100;
+    int32 internal constant SG_LNG = 103_819_800;
+    uint8 internal constant KIND_VET = 1;
+
+    uint256 internal pinCap;
+    uint256 internal listingCap;
+
+    function setUp() public {
+        core = new ProviderRegistry(REGISTRAR);
+        directory = new ProviderDirectory(core);
+        pinCap = directory.MAX_PIN_PAGE_SIZE();
+        listingCap = directory.MAX_LISTING_PAGE_SIZE();
+
+        vm.prank(REGISTRAR);
+        core.setResolverApproved(ProviderRegistry.ResolverKind.DIRECTORY, address(directory), true);
+
+        // One provider carrying a full pin page.
+        _register(PINNED, CONTROLLER);
+        vm.startPrank(CONTROLLER);
+        for (uint256 i = 0; i < pinCap; i++) {
+            directory.publishPin(PINNED, SG_LAT + int32(uint32(i)), SG_LNG, KIND_VET, true);
+        }
+        vm.stopPrank();
+
+        // Enough distinct providers to fill a listing page, each with one pin so it is listed.
+        for (uint256 i = 0; i < listingCap; i++) {
+            bytes20 providerId = bytes20(uint160(0x100000 + i));
+            address controller = address(uint160(0x200000 + i));
+            _register(providerId, controller);
+            vm.prank(controller);
+            directory.publishPin(providerId, SG_LAT, SG_LNG, KIND_VET, true);
+        }
+    }
+
+    function _register(bytes20 providerId, address controller) internal {
+        vm.startPrank(REGISTRAR);
+        core.registerProvider(providerId, controller, keccak256(abi.encode(providerId)), 1, 1, 1, "");
+        core.setProviderStanding(providerId, ProviderRegistry.Standing.ACTIVE);
+        vm.stopPrank();
+        vm.prank(controller);
+        core.setDirectoryResolver(providerId, address(directory));
+    }
+
+    /// The documented cap must be a measured fact, not an estimate carried over from a design note.
+    function test_a_full_pin_page_at_the_documented_cap_is_readable() public {
+        uint256 before = gasleft();
+        (bytes32[] memory words, uint256 next, uint256 total,,) = directory.pinPage(0, pinCap);
+        uint256 used = before - gasleft();
+
+        assertEq(words.length, pinCap, "the page did not return a full cap of records");
+        assertEq(next, pinCap);
+        assertGe(total, pinCap);
+        // Decode both ends, so a page returning the right LENGTH of garbage fails too.
+        assertEq(directory.unpackPin(words[0]).locationNo, 0);
+        assertEq(directory.unpackPin(words[0]).lat, SG_LAT);
+        assertEq(directory.unpackPin(words[pinCap - 1]).locationNo, uint16(pinCap - 1));
+        assertEq(directory.unpackPin(words[pinCap - 1]).lat, SG_LAT + int32(uint32(pinCap - 1)));
+
+        emit log_named_uint("gas: full pin page at MAX_PIN_PAGE_SIZE (cold)", used);
+        // A node's `eth_call` gas cap is ~50M (Geth's documented default). The bound is deliberately
+        // well inside it so the cap keeps its headroom for ABI encoding and memory expansion.
+        assertLt(used, 10_000_000, "a full pin page outgrew a node's call gas budget");
+    }
+
+    /// The listing cap is the expensive read — one staticcall into the core per record — which is what
+    /// justifies its cap being the smaller of the two rather than an oversight.
+    function test_a_full_listing_page_at_the_documented_cap_is_readable() public {
+        uint256 before = gasleft();
+        (bytes32[] memory words,, uint256 total,,) = directory.listingPage(0, listingCap);
+        uint256 used = before - gasleft();
+
+        assertGe(total, listingCap, "the listing did not hold a full cap of records");
+        assertEq(words.length, listingCap * directory.LISTING_RECORD_WORDS());
+        (,,, ProviderRegistry.Standing standing,, bool selected,) =
+            directory.unpackListing(words[0], words[1]);
+        assertEq(uint8(standing), uint8(ProviderRegistry.Standing.ACTIVE));
+        assertTrue(selected);
+
+        emit log_named_uint("gas: full listing page at MAX_LISTING_PAGE_SIZE (cold)", used);
+        assertLt(used, 10_000_000, "a full listing page outgrew a node's call gas budget");
+    }
+
+    /// Per-record cost is what actually decides the caps, so state it as a measured ratio rather than
+    /// leaving two absolute numbers whose relationship a reader has to infer.
+    function test_a_listing_record_costs_more_than_a_pin_record() public {
+        uint256 before = gasleft();
+        directory.pinPage(0, pinCap);
+        uint256 pinPageGas = before - gasleft();
+
+        before = gasleft();
+        directory.listingPage(0, listingCap);
+        uint256 listingPageGas = before - gasleft();
+
+        uint256 perPin = pinPageGas / pinCap;
+        uint256 perListing = listingPageGas / listingCap;
+        emit log_named_uint("gas per pin record", perPin);
+        emit log_named_uint("gas per listing record", perListing);
+        assertGt(perListing, perPin, "a listing record is supposed to be the costlier read");
     }
 }

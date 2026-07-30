@@ -26,9 +26,10 @@ import {ProviderRegistry} from "./ProviderRegistry.sol";
 /// ## A pin is one storage slot, and a scan is one SLOAD per record
 ///
 /// The packed pin word is exactly 32 bytes with no spare bits, so a pin costs one slot to store and
-/// one cold `SLOAD` (~2,100 gas) to scan. `pinPage` returns `bytes32[]`, which for a one-word record
-/// is byte-identical to hand-packed `bytes` — the 3.3x ABI-padding penalty a `(address, int32,
-/// int32)` struct array would pay is avoided by construction rather than by hand-packing.
+/// one cold `SLOAD` to scan — measured at ~2,690 gas per record all-in, against the 2,100 the cold
+/// `SLOAD` alone costs. `pinPage` returns `bytes32[]`, which for a one-word record is byte-identical
+/// to hand-packed `bytes` — the 3.3x ABI-padding penalty a `(address, int32, int32)` struct array
+/// would pay is avoided by construction rather than by hand-packing.
 ///
 /// Widening `providerId` past 20 bytes, or adding a field that does not fit the spare bits, spills
 /// the record into a second slot and halves the records a single `eth_call` can return. Neither is a
@@ -74,9 +75,13 @@ contract ProviderDirectory {
     int32 public constant LONGITUDE_LIMIT = 180 * COORDINATE_SCALE;
 
     /// @notice One core `provider()` staticcall per record, so this mirrors the core's own page cap.
+    /// MEASURED cold: ~21,700 gas per record, ~2.17M for a full page — about eight times a pin record,
+    /// which is why this cap is the smaller of the two rather than by oversight.
     uint256 public constant MAX_LISTING_PAGE_SIZE = 100;
-    /// @notice Pure storage reads at ~2,100 gas each: 1,000 records is ~2.1M gas, far under a node's
-    /// call gas cap, and is deliberately larger than the listing cap because the work is not alike.
+    /// @notice Bare storage reads. MEASURED cold: ~2,690 gas per record, ~2.69M for a full page, well
+    /// inside a node's ~50M `eth_call` cap. Both figures come from
+    /// `ProviderDirectoryPageCostTest`, which seeds in `setUp` so the read pays COLD storage; the same
+    /// loop measured in one transaction reports ~680k and is measuring warmth, not the real read.
     uint256 public constant MAX_PIN_PAGE_SIZE = 1000;
 
     uint256 public constant MAX_CONTENTHASH_LENGTH = 256;
