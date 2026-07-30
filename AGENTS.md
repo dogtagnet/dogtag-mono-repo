@@ -177,6 +177,38 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   unavailable or wrong-chain bundled peer makes them fail closed. Never route them through the
   preference "for consistency", and never add a third read to the exception without the same
   argument.
+  **A save must RENDER its verdict, on both paths, and the web hook shipped once where it rendered
+  neither.**
+  `useRoaxRpcSettings` (`packages/ui/src/chain/useRoaxRpcSettings.ts`) re-syncs the field from the
+  stored choice in a `useEffect` keyed on `preference.rpcUrl`, and that effect used to bump the
+  operation generation as a cancel.
+  A save's own persist - and a rejection's own `resetRoaxRpcPreference` - change that preference, so
+  the hook cancelled itself and `isCurrent()` was already false by the time it went to report:
+  every save that actually CHANGED the endpoint fell out silently, while a no-op save reported fine,
+  which is exactly why it survived review.
+  The worst case is the rejection, which clears a working custom peer and then says nothing about
+  having done so.
+  A settings screen that saves and stays silent is indistinguishable from one that silently failed
+  to save, so this is the repo's standing could-not-tell-what-happened defect wearing a different
+  hat, not a missing nicety.
+  The cross-tab protection is NOT the effect: it is the revision check inside
+  `validateAndSaveRoaxRpcPreference`, which runs immediately before persistence rather than merely
+  after the probe resolves, so removing the cancel loses nothing.
+  **The pin is `packages/ui/test/rpcSettingsVerdict.test.ts`, and it must never be rewritten with
+  `act()`.**
+  `act()` drains React's work into its own queue, which reorders the save's promise continuation
+  against the passive effect that was cancelling it - and that reordering HIDES this defect
+  outright: an `act()` version of these same three cases passes with the regression reintroduced,
+  so it would read as a pin while pinning nothing.
+  Passive effects are posted through the Scheduler as a MessageChannel macrotask, so the test awaits
+  real macrotask turns instead, and deliberately does not set `IS_REACT_ACT_ENVIRONMENT`.
+  This is the one hook in `packages/ui` mounted in a real DOM, which is why that package now carries
+  a `jsdom` devDependency and the file opens with a `@vitest-environment jsdom` docblock rather than
+  a package-wide config change that would move all 19 other suites off the node environment.
+  All three cases are verified by mutation and each fails for its own reason: reinstating
+  `operation.current += 1` reddens the success and rejection cases with `message: undefined`, while
+  dropping `expectedRevision` from the hook's call reddens only the third, which is what keeps that
+  case from being a vacuous restatement of the fix.
 
 ## Architecture quick map
 - `crates/dogtag-standard-rs` — trust core: canonicalization, field/type-tag encoding, circom-compatible Poseidon (`light-poseidon`), salted Merkle, verify, EdDSA-BabyJubjub signer, BLAKE-512 (circomlibjs parity), UniFFI → mobile.
