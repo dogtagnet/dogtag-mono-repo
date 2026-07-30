@@ -70,7 +70,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
 import io.liberalize.dogtag.nearby.ContactDirectoryPresentation
-import io.liberalize.dogtag.nearby.ApproximateCallerPosition
+import io.liberalize.dogtag.nearby.CallerPosition
 import io.liberalize.dogtag.nearby.DEFAULT_PROVIDER_PAGE_SIZE
 import io.liberalize.dogtag.nearby.DirectoryObservation
 import io.liberalize.dogtag.nearby.DirectoryProvider
@@ -221,20 +221,20 @@ fun NearbyScreen(onBack: () -> Unit) {
         }
     }
 
-    val approximatePosition = remember(origin) {
+    val callerPosition = remember(origin) {
         (origin as? NearbyOriginState.Available)
             ?.point
-            ?.let(ApproximateCallerPosition::from)
+            ?.let(CallerPosition::from)
     }
     val trimmedQuery = query.trim()
 
-    LaunchedEffect(scope, trimmedQuery, approximatePosition?.lat, approximatePosition?.lng, refreshKey) {
+    LaunchedEffect(scope, trimmedQuery, callerPosition?.lat, callerPosition?.lng, refreshKey) {
         requestGeneration += 1
         val generation = requestGeneration
         loadingMore = false
         directoryResult = null
         actionError = null
-        if (scope == DirectoryScope.Nearby && approximatePosition == null) {
+        if (scope == DirectoryScope.Nearby && callerPosition == null) {
             return@LaunchedEffect
         }
         if (trimmedQuery.isNotEmpty()) delay(300)
@@ -242,7 +242,7 @@ fun NearbyScreen(onBack: () -> Unit) {
             directory = directory,
             scope = scope,
             name = trimmedQuery,
-            position = approximatePosition,
+            position = callerPosition,
             offset = 0,
         )
         if (generation == requestGeneration) {
@@ -270,7 +270,7 @@ fun NearbyScreen(onBack: () -> Unit) {
                 directory = directory,
                 scope = scope,
                 name = trimmedQuery,
-                position = approximatePosition,
+                position = callerPosition,
                 offset = nextOffset,
             )
             if (generation == requestGeneration) {
@@ -449,7 +449,7 @@ private fun OriginPicker(
         ) {
             Icon(Icons.Filled.MyLocation, null, modifier = Modifier.size(17.dp))
             Spacer(Modifier.size(6.dp))
-            Text("Use my approximate location", fontSize = 12.sp)
+            Text("Use my current location", fontSize = 12.sp)
         }
         when (origin) {
             NearbyOriginState.Locating ->
@@ -457,8 +457,8 @@ private fun OriginPicker(
             is NearbyOriginState.Available ->
                 Text(
                     fixAccuracyNote?.let {
-                        "Using an approximate current location (device accuracy $it)."
-                    } ?: "Using an approximate current location.",
+                        "Using your current location (device accuracy $it)."
+                    } ?: "Using your current location.",
                     fontSize = 12.sp,
                     color = c.success,
                 )
@@ -501,15 +501,15 @@ private fun NearbyResults(
             }
             NearbyPresentation.AwaitingOrigin -> item {
                 StateCard(
-                    "Use your approximate location",
-                    "DogTag sends an approximately 100-metre location to find the nearest listed vets and groomers.",
+                    "Use your current location",
+                    "DogTag sends your current location to the provider service to find the nearest listed vets and groomers. It is not stored.",
                 )
             }
             NearbyPresentation.Locating -> item { LoadingCard("Getting your current position…") }
             NearbyPresentation.PermissionRefused -> item {
                 StateCard(
                     "Location permission refused",
-                    "DogTag cannot find nearest providers without an approximate current location. " +
+                    "DogTag cannot find nearest providers without your current location. " +
                         "You can still search Provider contacts by name.",
                     danger = true,
                 )
@@ -909,7 +909,7 @@ private suspend fun loadDirectoryPage(
     directory: ProviderDirectory,
     scope: DirectoryScope,
     name: String,
-    position: ApproximateCallerPosition?,
+    position: CallerPosition?,
     offset: Int,
 ): ProviderDirectoryResult {
     val query = ProviderDirectoryQuery(
@@ -923,7 +923,7 @@ private suspend fun loadDirectoryPage(
             if (position == null) {
                 ProviderDirectoryResult.Unavailable(
                     reason = io.liberalize.dogtag.nearby.DirectoryUnavailableReason.InvalidSnapshot,
-                    detail = "An approximate current location is required for Nearby",
+                    detail = "A current location is required for Nearby",
                     attemptedAt = System.currentTimeMillis(),
                 )
             } else {

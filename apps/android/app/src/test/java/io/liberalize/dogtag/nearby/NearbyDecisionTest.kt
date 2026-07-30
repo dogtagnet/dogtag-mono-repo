@@ -159,17 +159,33 @@ class NearbyDecisionTest {
     }
 
     @Test
-    fun networkCoarseningCreatesAOneHundredMetreDisplayFloor() {
+    fun theOnlyDisplayFloorIsTheFixesOwnAccuracy() {
         val clinic = provider("clinic")
-        val state = NearbyDecision.nearby(
+
+        // Captain's ruling, 2026-07-30: the exact fix is sent, so the request introduces no coarseness
+        // of its own. The former 100-metre floor came from the three-decimal approximation and would
+        // now overstate uncertainty; an 8-metre fix may state a 40-metre distance.
+        val precise = NearbyDecision.nearby(
             directory = found(listOf(clinic), mapOf("clinic" to 0.04)),
             origin = origin.copy(accuracyMetres = 8.0),
             query = "",
         ) as NearbyPresentation.ProvidersFound
-
         assertEquals(
-            DistanceClaim.Measured("< 100 m", approximate = true),
-            state.rows.single().distance,
+            DistanceClaim.Measured("40 m", approximate = true),
+            precise.rows.single().distance,
+        )
+
+        // A coarse fix still floors the label at its own accuracy: a 250-metre fix may not print 40 m.
+        // The bound itself rounds OUTWARD onto the display ladder, so 250 m is stated as "< 500 m" -
+        // a bound may never read tighter than the accuracy that produced it.
+        val coarse = NearbyDecision.nearby(
+            directory = found(listOf(clinic), mapOf("clinic" to 0.04)),
+            origin = origin.copy(accuracyMetres = 250.0),
+            query = "",
+        ) as NearbyPresentation.ProvidersFound
+        assertEquals(
+            DistanceClaim.Measured("< 500 m", approximate = true),
+            coarse.rows.single().distance,
         )
     }
 
@@ -262,8 +278,7 @@ class NearbyDecisionTest {
     @Test
     fun disclosurePlainlyStatesSendPurposeAndRetentionAtTheGrantAction() {
         assertEquals(
-            "Your approximate location is sent to DogTag to find nearby vets and groomers. " +
-                "It is not stored.",
+            "Your location is sent to DogTag to find nearby vets and groomers. It is not stored.",
             NearbyDecision.LOCATION_DISCLOSURE,
         )
     }
@@ -272,7 +287,7 @@ class NearbyDecisionTest {
     fun zeroZeroRemainsARealCoordinateAndCanBeCoarsened() {
         val point = GeoPoint(0.0, 0.0)
         assertTrue(point.isUsable)
-        val approximate = ApproximateCallerPosition.from(point)
+        val approximate = CallerPosition.from(point)
         assertEquals(0.0, approximate?.lat ?: Double.NaN, 0.0)
         assertEquals(0.0, approximate?.lng ?: Double.NaN, 0.0)
     }

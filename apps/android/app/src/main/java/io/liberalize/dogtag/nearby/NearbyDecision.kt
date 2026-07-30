@@ -99,8 +99,9 @@ sealed interface NearbyOriginState {
     data object LocationUnavailable : NearbyOriginState
 
     /**
-     * [accuracyMetres] is the horizontal uncertainty the device reported for its current fix. The
-     * network request separately enforces a roughly 100-metre floor by rounding to three decimals.
+     * [accuracyMetres] is the horizontal uncertainty the device reported for its current fix, and is
+     * now the ONLY bound on how finely a distance may be stated: the request sends the exact fix, so
+     * it introduces no coarseness of its own to floor against.
      */
     data class Available(
         val point: GeoPoint,
@@ -116,7 +117,7 @@ sealed interface NearbyOriginState {
  * arbitrary confident figure.
  */
 sealed interface DistanceClaim {
-    /** [approximate] is true for every coarsened device fix, so the row marks the number as such. */
+    /** [approximate] is true for a device fix, whose own accuracy makes the number inexact. */
     data class Measured(val label: String, val approximate: Boolean) : DistanceClaim {
         /**
          * What the row actually prints. Composed here, not at each call site, so the two apps cannot
@@ -132,7 +133,7 @@ sealed interface DistanceClaim {
 
 data class NearbyRow(
     val provider: DirectoryProvider,
-    /** Server-computed distance. The device preserves server order and only coarsens display text. */
+    /** Server-computed distance. The device preserves server order and only formats the text. */
     val distanceKm: Double,
     val distance: DistanceClaim,
 )
@@ -287,8 +288,7 @@ private fun invalidContinuation(attemptedAt: Long) = ProviderDirectoryResult.Una
  */
 object NearbyDecision {
     const val LOCATION_DISCLOSURE =
-        "Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored."
-    const val NETWORK_POSITION_GRANULARITY_METRES = 100.0
+        "Your location is sent to DogTag to find nearby vets and groomers. It is not stored."
     private const val KM_PER_MILE = 1.609344
     private const val FEET_PER_KM = 1000 / 0.3048
     private const val DISTANCE_UNAVAILABLE = "This provider's distance could not be measured."
@@ -350,9 +350,14 @@ object NearbyDecision {
 
         val found = directory
         val needle = query.trim()
+        // Only the fix's OWN uncertainty bounds the label now. The former 100-metre floor existed
+        // because the service received a three-decimal coordinate, so no distance computed from it
+        // could be finer than that; the captain's exact-position ruling removed that coarsening, and
+        // keeping the floor would overstate uncertainty the request no longer introduces. A fix with
+        // no usable accuracy still yields `null`, which the claim layer renders as uncertain rather
+        // than as a confident number.
         val effectiveAccuracy = available.accuracyMetres
             ?.takeIf { it.isFinite() && it >= 0 }
-            ?.coerceAtLeast(NETWORK_POSITION_GRANULARITY_METRES)
         val visible = found.providers.mapNotNull { provider ->
             if (!eligible(provider)) return@mapNotNull null
             val serverDistance = found.distancesKm[provider.providerId] ?: return@mapNotNull null

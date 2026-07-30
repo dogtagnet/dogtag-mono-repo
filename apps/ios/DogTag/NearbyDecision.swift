@@ -11,21 +11,15 @@ struct NearbyPoint: Equatable {
             (-180.0...180.0).contains(lng)
     }
 
-    /// The only coordinate shape the owner app may send to provider discovery.
+    /// The coordinate shape the owner app may send to provider discovery.
     ///
-    /// This runs on the device, before an HTTP body exists. Three decimal places are roughly
-    /// hundred-metre resolution; the centralized service must never receive the raw Core Location fix.
-    func coarsenedForProviderSearch() -> NearbyPoint? {
-        guard isValid else { return nil }
-        let scale = 1_000.0
-        let roundedLat = (lat * scale).rounded() / scale
-        let roundedLng = (lng * scale).rounded() / scale
-        let point = NearbyPoint(
-            lat: roundedLat == 0 ? 0 : roundedLat,
-            lng: roundedLng == 0 ? 0 : roundedLng
-        )
-        return point.isValid ? point : nil
-    }
+    /// Captain's ruling, 2026-07-30: the EXACT fix is sent and is NOT rounded. This previously rounded
+    /// to three decimals; nothing may reintroduce that silently, and nothing may name a full-precision
+    /// value "approximate", which would overstate the privacy the request provides. What guards the
+    /// position now is confinement - body-only, never logged, never stored - not imprecision.
+    ///
+    /// The check that remains is validity, so an unusable fix cannot reach the wire.
+    func validatedForProviderSearch() -> NearbyPoint? { isValid ? self : nil }
 }
 
 /// Public contact channels a provider chose to publish.
@@ -283,7 +277,7 @@ enum ProviderDirectoryPaging {
 /// geocoder, viewport, or autocomplete member.
 struct OwnerProviderDirectoryRequest: Equatable {
     enum Mode: Equatable {
-        case nearest(approximateLocation: NearbyPoint, accuracyMetres: Double?)
+        case nearest(location: NearbyPoint, accuracyMetres: Double?)
         case contacts
     }
 
@@ -305,10 +299,10 @@ struct OwnerProviderDirectoryRequest: Equatable {
         name: String?,
         offset: Int
     ) -> OwnerProviderDirectoryRequest? {
-        guard let approximate = location.coarsenedForProviderSearch(), offset >= 0 else { return nil }
+        guard let validated = location.validatedForProviderSearch(), offset >= 0 else { return nil }
         return OwnerProviderDirectoryRequest(
             mode: .nearest(
-                approximateLocation: approximate,
+                location: validated,
                 accuracyMetres: accuracyMetres
             ),
             name: normalizedName(name),
@@ -630,7 +624,7 @@ enum NearbyLocationState: Equatable {
 /// supports, and when nothing numeric is supportable the surface shows `uncertain` rather than an
 /// arbitrary confident figure.
 enum DistanceClaim: Equatable {
-    /// `approximate` is true for every device fix, so the row can mark the number as such.
+    /// `approximate` is true for a device fix, whose own accuracy makes the number inexact.
     case measured(label: String, approximate: Bool)
     /// No distance may be stated at all; `reason` is shown in place of a number.
     case uncertain(reason: String)
@@ -679,12 +673,7 @@ enum NearbyDecision {
     /// `NearbyDecision.LOCATION_DISCLOSURE` or be softened back toward a "never leaves this phone"
     /// claim that the server-side nearest search made untrue.
     static let locationDisclosure =
-        "Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored."
-
-    /// Three-decimal coordinates are only about hundred-metre resolution, even when Core Location's
-    /// raw fix was more precise. Server distances must never be displayed more finely than the
-    /// coordinate the server actually received supports.
-    private static let networkPositionGranularityMetres = 100.0
+        "Your location is sent to DogTag to find nearby vets and groomers. It is not stored."
 
     struct Row: Equatable {
         let provider: DirectoryProvider
@@ -758,8 +747,12 @@ enum NearbyDecision {
                 : .noNameMatch(query: searchedName, observation: snapshot.observation)
         case .found(let snapshot):
             let effectiveAccuracy: Double?
+            // Only the fix's OWN uncertainty bounds the label now. The former 100-metre floor existed
+            // because the service received a three-decimal coordinate, so no distance computed from it
+            // could be finer than that; the exact-position ruling removed that coarsening, and keeping
+            // the floor would overstate uncertainty the request no longer introduces.
             if let reported = origin.accuracyMetres, reported.isFinite, reported >= 0 {
-                effectiveAccuracy = max(reported, networkPositionGranularityMetres)
+                effectiveAccuracy = reported
             } else {
                 effectiveAccuracy = nil
             }

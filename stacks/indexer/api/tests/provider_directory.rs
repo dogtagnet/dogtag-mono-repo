@@ -492,7 +492,7 @@ async fn name_and_kind_filters_compose_with_and_semantics() {
 #[tokio::test]
 async fn nearest_is_body_only_server_ordered_paged_and_distance_bearing() {
     let (state, _directory, stub) = loaded_state(provider_fixture()).await;
-    let position = json!({ "approximateLat": 0.0, "approximateLng": 0.0 });
+    let position = json!({ "lat": 0.0, "lng": 0.0 });
 
     let (status, headers, body) = post_nearest(
         &state,
@@ -552,7 +552,7 @@ async fn nearest_is_body_only_server_ordered_paged_and_distance_bearing() {
     let (status, _, named) = post_nearest(
         &state,
         "/v1/businesses/nearest?name=avila&kind=vet&kind=groomer&limit=25&offset=0",
-        json!({ "approximateLat": 1.352, "approximateLng": 103.820 }),
+        json!({ "lat": 1.352, "lng": 103.820 }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -577,7 +577,7 @@ async fn nearest_is_body_only_server_ordered_paged_and_distance_bearing() {
 #[tokio::test]
 async fn nearest_deep_offsets_match_the_global_order_and_out_of_range_is_empty() {
     let (state, _directory, stub) = loaded_state(deep_ranked_fixture()).await;
-    let position = json!({ "approximateLat": 0.0, "approximateLng": 0.0 });
+    let position = json!({ "lat": 0.0, "lng": 0.0 });
 
     let (status, _, deep) = post_nearest(
         &state,
@@ -636,7 +636,7 @@ async fn nearest_ties_keep_source_order_and_distance_is_total_at_world_boundarie
     let (status, _, body) = post_nearest(
         &state,
         "/v1/businesses/nearest?kind=vet&limit=3&offset=0",
-        json!({ "approximateLat": 0.0, "approximateLng": 180.0 }),
+        json!({ "lat": 0.0, "lng": 180.0 }),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -669,26 +669,33 @@ async fn nearest_ties_keep_source_order_and_distance_is_total_at_world_boundarie
 }
 
 #[tokio::test]
-async fn nearest_rejects_precise_positions_location_queries_and_ambiguous_paging() {
+async fn nearest_accepts_an_exact_position_but_rejects_location_queries_and_ambiguous_paging() {
     let (state, _directory, stub) = loaded_state(provider_fixture()).await;
 
-    let (status, _, _) = post_nearest(
+    // Captain's ruling, 2026-07-30: the device sends its EXACT fix and does not round it, so a
+    // full-precision coordinate is the normal case. A precision gate here would have nothing rounding
+    // in front of it and so would only reject honest callers.
+    let (status, _, body) = post_nearest(
         &state,
         "/v1/businesses/nearest?kind=vet",
-        json!({ "approximateLat": 1.3521, "approximateLng": 103.820 }),
+        json!({ "lat": 1.3521098765, "lng": 103.8203214567 }),
     )
     .await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
-        "the server rejects a client that failed to coarsen before sending"
+        StatusCode::OK,
+        "an exact position is the contract, not a client mistake"
+    );
+    assert!(
+        body["businesses"].as_array().is_some_and(|rows| !rows.is_empty()),
+        "an exact position still ranks providers"
     );
 
     for body in [
-        json!({ "approximateLat": 91.0, "approximateLng": 0.0 }),
-        json!({ "approximateLat": 0.0, "approximateLng": 181.0 }),
-        json!({ "approximateLat": 0.0 }),
-        json!({ "approximateLat": 0.0, "approximateLng": 0.0, "radiusKm": 5.0 }),
+        json!({ "lat": 91.0, "lng": 0.0 }),
+        json!({ "lat": 0.0, "lng": 181.0 }),
+        json!({ "lat": 0.0 }),
+        json!({ "lat": 0.0, "lng": 0.0, "radiusKm": 5.0 }),
     ] {
         let (status, _, _) =
             post_nearest(&state, "/v1/businesses/nearest?kind=vet", body).await;
@@ -699,7 +706,7 @@ async fn nearest_rejects_precise_positions_location_queries_and_ambiguous_paging
     }
 
     for query in [
-        "approximateLat=1.352&approximateLng=103.820",
+        "lat=1.352&lng=103.820",
         "searchCenterLat=1&searchCenterLng=2&searchRadiusKm=3",
         "near=1,2",
         "radius=5",
@@ -715,7 +722,7 @@ async fn nearest_rejects_precise_positions_location_queries_and_ambiguous_paging
         let (nearest_status, _, _) = post_nearest(
             &state,
             &format!("/v1/businesses/nearest?{query}"),
-            json!({ "approximateLat": 1.352, "approximateLng": 103.820 }),
+            json!({ "lat": 1.352, "lng": 103.820 }),
         )
         .await;
         assert_eq!(
@@ -803,7 +810,7 @@ async fn public_filter_work_is_bounded_before_scanning_the_directory() {
     let (status, _, _) = post_nearest(
         &state,
         &format!("/v1/businesses/nearest?{seventeen_kinds}"),
-        json!({ "approximateLat": 1.352, "approximateLng": 103.820 }),
+        json!({ "lat": 1.352, "lng": 103.820 }),
     )
     .await;
     assert_eq!(

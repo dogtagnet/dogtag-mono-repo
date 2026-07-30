@@ -11,25 +11,25 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 /**
- * A current-position value safe for the provider-directory request.
+ * A current-position value accepted by the provider-directory request.
  *
- * The private constructor is the boundary: networking cannot accept a raw [GeoPoint]. The device
- * rounds both axes to three decimal places (roughly 100 metres) before this value, and therefore the
- * request body, can exist. Server-side rounding would be too late because the precise fix would
- * already have crossed the privacy boundary.
+ * Captain's ruling, 2026-07-30: the position is sent EXACTLY and is NOT rounded. An earlier revision
+ * coarsened both axes to three decimal places here; that is gone, and nothing may reintroduce it
+ * silently - a value named "approximate" that is really metre-precise would overstate the privacy the
+ * request provides, which is the class of false claim this app refuses everywhere else.
+ *
+ * The private constructor still earns its keep: it is the one place a raw [GeoPoint] is admitted, so
+ * an unusable fix cannot reach the wire. What protects the position now is confinement, not
+ * imprecision - body-only, never logged, never stored (see the service's own guarantees).
  */
-class ApproximateCallerPosition private constructor(
+class CallerPosition private constructor(
     val lat: Double,
     val lng: Double,
 ) {
     companion object {
-        fun from(point: GeoPoint): ApproximateCallerPosition? {
+        fun from(point: GeoPoint): CallerPosition? {
             if (!point.isUsable) return null
-            fun coarsen(value: Double): Double {
-                val rounded = Math.round(value * 1_000.0) / 1_000.0
-                return if (rounded == 0.0) 0.0 else rounded
-            }
-            return ApproximateCallerPosition(coarsen(point.lat), coarsen(point.lng))
+            return CallerPosition(point.lat, point.lng)
         }
     }
 }
@@ -65,11 +65,11 @@ const val DEFAULT_PROVIDER_PAGE_SIZE = 25
 /** Native adapter for the central provider-directory search contract. */
 interface ProviderDirectory {
     /**
-     * Sends only an already-coarsened current position. The result is server-ranked and carries
-     * server distances; callers must preserve that order and must not recompute distance.
+     * Sends the current position in a POST body. The result is server-ranked and carries server
+     * distances; callers must preserve that order and must not recompute distance.
      */
     suspend fun nearest(
-        position: ApproximateCallerPosition,
+        position: CallerPosition,
         query: ProviderDirectoryQuery,
     ): ProviderDirectoryResult
 
@@ -81,8 +81,8 @@ interface ProviderDirectory {
  * Central directory adapter.
  *
  * Personalized nearest responses are deliberately not cached here or persisted anywhere. Each
- * explicit request is sent live, and only the calling screen retains the response while rendering
- * it. The body is used for position so ordinary URL/access logs do not receive a coordinate.
+ * explicit request is sent live, and only the calling screen retains the response while rendering it.
+ * The body carries the position so ordinary URL/access logs never receive a coordinate.
  */
 class CentralProviderDirectory(
     baseUrl: String,
@@ -106,14 +106,14 @@ class CentralProviderDirectory(
     }
 
     override suspend fun nearest(
-        position: ApproximateCallerPosition,
+        position: CallerPosition,
         query: ProviderDirectoryQuery,
     ): ProviderDirectoryResult {
         val url = "$configuredBase/v1/businesses/nearest?${query.encodedQuery()}"
         val body = buildString {
-            append("{\"approximateLat\":")
+            append("{\"lat\":")
             append(position.lat)
-            append(",\"approximateLng\":")
+            append(",\"lng\":")
             append(position.lng)
             append('}')
         }

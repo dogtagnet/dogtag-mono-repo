@@ -70,18 +70,17 @@ final class NearbyLocationController: NSObject, ObservableObject, @preconcurrenc
             lat: location.coordinate.latitude,
             lng: location.coordinate.longitude
         )
-        // A negative `horizontalAccuracy` means Core Location considers the coordinate invalid, so
-        // it is not a ready origin at all. Otherwise the reported uncertainty is carried into the
-        // pure policy, which is what stops a hundred-metre-class fix rendering a metre-level number.
-        guard let approximate = rawPoint.coarsenedForProviderSearch(),
+        // A negative `horizontalAccuracy` means Core Location considers the coordinate invalid, so it
+        // is not a ready origin at all. Otherwise the reported uncertainty is carried into the pure
+        // policy, where it is now the ONLY bound on how finely a distance may be stated - the request
+        // sends the exact fix, so it introduces no coarseness of its own to floor against.
+        guard let validated = rawPoint.validatedForProviderSearch(),
               location.horizontalAccuracy >= 0 else {
             state = .unavailable
             return
         }
         state = .ready(NearbyOrigin(
-            // The precise fix never enters observable app state. Every later request sees only this
-            // roughly hundred-metre coordinate.
-            point: approximate,
+            point: validated,
             accuracyMetres: location.horizontalAccuracy
         ))
     }
@@ -178,6 +177,15 @@ struct NearbyScreen: View {
         // a real answer, and when nothing relevant is remembered the live "could not check" stands - a
         // fallback that answered an empty list would turn could-not-check into an established absence.
         if case .directoryUnavailable = live {
+            // Read `scenePhase` for its DEPENDENCY only, carried over from the helper this replaced.
+            // This property is inlined into `body`, so registering the dependency is what makes a
+            // foreground return re-evaluate and re-sample `Date()`; without it the owner could come back
+            // to an age computed from an older sample, understating staleness in exactly the direction
+            // the outward rounding exists to prevent. The value is deliberately not branched on: only
+            // the read matters, and an `.inactive` scene - app-switcher snapshot, pulled-down Control
+            // Centre, a view pushed before `.active` lands - is still one the owner is looking at, so
+            // suppressing the label there would blank it on exactly the fresh entry it serves.
+            _ = scenePhase
             return NearbyDecision.storedFallback(
                 records: storedRecords,
                 query: nearbyName ?? "",
@@ -308,22 +316,26 @@ struct NearbyScreen: View {
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(c.outline))
     }
 
+    /// The live badge only.
+    ///
+    /// A successful result is now always a live read: the offline copy no longer produces a
+    /// `ProviderDirectoryResult` at all - it produces the `storedProvidersOnly` presentation, which
+    /// carries its own age and its own plainly-stored card. So the former "Stored provider
+    /// directory · remembered <age>" arm here became unreachable, and with it the `storedAgeClause`
+    /// helper that computed an age from a snapshot's `readAt`. Rendering it from a live snapshot would
+    /// have labelled a fresh answer as remembered.
     @ViewBuilder
     private var directoryObservation: some View {
-        if let observation = successfulObservation {
+        if let observation = successfulObservation, observation == .live {
             HStack(spacing: 6) {
-                Image(systemName: observation == .live ? "bolt.fill" : "clock.arrow.circlepath")
-                Text(observation == .live
-                     ? "Live provider directory"
-                     : "Stored provider directory\(storedAgeClause) · live refresh unavailable")
+                Image(systemName: "bolt.fill")
+                Text("Live provider directory")
             }
             .font(.system(size: 11, weight: .semibold))
-            .foregroundColor(observation == .live ? c.success : c.warning)
+            .foregroundColor(c.success)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(
-                Capsule().fill((observation == .live ? c.success : c.warning).opacity(0.12))
-            )
+            .background(Capsule().fill(c.success.opacity(0.12)))
         }
     }
 
@@ -333,35 +345,6 @@ struct NearbyScreen: View {
             return snapshot.observation
         case .unavailable, .none:
             return nil
-        }
-    }
-
-    /// The offline window is days long, so how old the copy is is a materially different statement
-    /// from the bare fact that it is stored. An age that could not be derived adds nothing rather
-    /// than inventing a number.
-    ///
-    /// Reading `scenePhase` is what keeps that age honest rather than decorative. An age is a claim
-    /// about NOW, and SwiftUI guarantees no body re-evaluation on scene resume, so without this
-    /// dependency an owner returning after a day would read the label they left behind - understating
-    /// staleness in exactly the direction the outward rounding exists to prevent. Reading it here
-    /// registers the dependency on `NearbyScreen` itself, since this property is inlined into `body`,
-    /// so coming back re-evaluates and `Date()` is sampled afresh.
-    ///
-    /// The gate is `!= .background` rather than `== .active` deliberately. Only the READ has to happen
-    /// for the dependency to register, and a scene that is merely `.inactive` - an app-switcher
-    /// snapshot, a pulled-down Control Center, a view pushed before `.active` has landed - is one the
-    /// owner is still looking at, so suppressing the age there would blank the label on exactly the
-    /// fresh entry it was added to serve. A backgrounded scene is nobody's view, so it suppresses
-    /// nothing anyone can read.
-    private var storedAgeClause: String {
-        guard scenePhase != .background else { return "" }
-        switch directoryResult {
-        case .found(let snapshot), .empty(let snapshot):
-            guard let age = NearbyDecision.formatStoredAge(readAt: snapshot.readAt, now: Date())
-            else { return "" }
-            return " · remembered \(age)"
-        case .unavailable, .none:
-            return ""
         }
     }
 
@@ -422,8 +405,8 @@ struct NearbyScreen: View {
             // State the fix's own uncertainty rather than implying a precise position was obtained.
             Label(
                 NearbyDecision.accuracyNote(fix.accuracyMetres, unitSystem: unitSystem)
-                    .map { "Using an approximate location; the phone reported accuracy of \($0)" }
-                    ?? "Using an approximate location",
+                    .map { "Using your current location; the phone reported accuracy of \($0)" }
+                    ?? "Using your current location",
                 systemImage: "checkmark.circle.fill"
             )
             .foregroundColor(c.success)
@@ -443,7 +426,7 @@ struct NearbyScreen: View {
             NearbyMessageCard(
                 icon: "arrow.down.circle",
                 title: "Finding nearby providers…",
-                message: "The service is ranking a page from the approximate location sent by this phone.",
+                message: "The service is ranking a page from the location sent by this phone.",
                 tone: c.muted,
                 showsProgress: true
             )
@@ -509,7 +492,7 @@ struct NearbyScreen: View {
             NearbyMessageCard(
                 icon: "location.slash.fill",
                 title: "Location permission refused",
-                message: "DogTag cannot request server-ranked nearby providers without an approximate current location. Allow when-in-use access in Settings, or search Provider contacts by name.",
+                message: "DogTag cannot request server-ranked nearby providers without your current location. Allow when-in-use access in Settings, or search Provider contacts by name.",
                 tone: c.danger,
                 actionTitle: "Open Settings",
                 action: openSettings
@@ -526,7 +509,7 @@ struct NearbyScreen: View {
         case .awaitingOrigin:
             NearbyMessageCard(
                 icon: "location.circle",
-                title: "Use your approximate location",
+                title: "Use your current location",
                 message: "Tap above to let the provider service return the nearest vets and groomers, or search by provider name under Provider contacts.",
                 tone: c.muted
             )
@@ -863,7 +846,7 @@ struct NearbyScreen: View {
             name: nearbyName,
             offset: offset
         ) else {
-            nearbyResult = malformedPagingResult("The approximate location request was invalid")
+            nearbyResult = malformedPagingResult("The location request was invalid")
             return
         }
 

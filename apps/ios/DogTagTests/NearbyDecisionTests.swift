@@ -80,24 +80,22 @@ final class NearbyDecisionTests: XCTestCase {
         return rows
     }
 
-    func test_currentPositionIsCoarsenedToThreeDecimalsOnDevice() {
-        XCTAssertEqual(
-            NearbyPoint(lat: 1.29349, lng: 103.85251).coarsenedForProviderSearch(),
-            NearbyPoint(lat: 1.293, lng: 103.853)
-        )
-        XCTAssertEqual(
-            NearbyPoint(lat: -33.86551, lng: -0.0001).coarsenedForProviderSearch(),
-            NearbyPoint(lat: -33.866, lng: 0)
-        )
-        XCTAssertEqual(
-            NearbyPoint(lat: 89.9996, lng: 179.9996).coarsenedForProviderSearch(),
-            NearbyPoint(lat: 90, lng: 180)
-        )
-        XCTAssertNil(NearbyPoint(lat: 91, lng: 0).coarsenedForProviderSearch())
-        XCTAssertNil(NearbyPoint(lat: .nan, lng: 0).coarsenedForProviderSearch())
+    /// Captain's ruling, 2026-07-30: the EXACT fix is sent and is NOT rounded. The device-side gate is
+    /// now validity only, so an unusable coordinate still cannot reach the wire while a precise one
+    /// passes through untouched. Mirrors Android `CallerPosition.from`.
+    func test_theExactPositionSurvivesTheDeviceGateAndAnUnusableOneDoesNot() {
+        let precise = NearbyPoint(lat: 1.29349, lng: 103.85251)
+        XCTAssertEqual(precise.validatedForProviderSearch(), precise)
+
+        let negative = NearbyPoint(lat: -33.86551, lng: -0.0001)
+        XCTAssertEqual(negative.validatedForProviderSearch(), negative)
+
+        XCTAssertNil(NearbyPoint(lat: 91, lng: 0).validatedForProviderSearch())
+        XCTAssertNil(NearbyPoint(lat: .nan, lng: 0).validatedForProviderSearch())
+        XCTAssertNil(NearbyPoint(lat: 0, lng: .infinity).validatedForProviderSearch())
     }
 
-    func test_nearestRequestHasExactOwnerKindsPagingNameAndApproximateBody() throws {
+    func test_nearestRequestHasExactOwnerKindsPagingNameAndExactPositionBody() throws {
         let request = try XCTUnwrap(OwnerProviderDirectoryRequest.nearest(
             location: NearbyPoint(lat: 1.29349, lng: 103.85251),
             accuracyMetres: 73,
@@ -117,10 +115,12 @@ final class NearbyDecisionTests: XCTestCase {
         let body = try XCTUnwrap(
             JSONSerialization.jsonObject(with: bodyData) as? [String: NSNumber]
         )
-        XCTAssertEqual(body["approximateLat"]?.doubleValue, 1.293)
-        XCTAssertEqual(body["approximateLng"]?.doubleValue, 103.853)
-        XCTAssertFalse(try XCTUnwrap(wire.body).contains("1.29349"))
-        XCTAssertFalse(try XCTUnwrap(wire.body).contains("103.85251"))
+        // Full precision reaches the BODY, and the URL still carries no coordinate at all - which is
+        // what keeps the position out of ordinary access logs now that it is not coarsened.
+        XCTAssertEqual(body["lat"]?.doubleValue, 1.29349)
+        XCTAssertEqual(body["lng"]?.doubleValue, 103.85251)
+        XCTAssertFalse(wire.url.contains("1.29"))
+        XCTAssertFalse(wire.url.contains("103.85"))
     }
 
     func test_contactNameRequestHasNoPositionBodyAndStillRestrictsOwnerKinds() throws {
@@ -163,8 +163,7 @@ final class NearbyDecisionTests: XCTestCase {
     /// two platforms telling the owner different things about the same transfer is the failure mode.
     func test_disclosurePlainlyStatesSendPurposeAndRetentionAtTheGrantAction() {
         XCTAssertEqual(
-            "Your approximate location is sent to DogTag to find nearby vets and groomers. "
-                + "It is not stored.",
+            "Your location is sent to DogTag to find nearby vets and groomers. It is not stored.",
             NearbyDecision.locationDisclosure
         )
     }
@@ -488,25 +487,44 @@ final class NearbyDecisionTests: XCTestCase {
         XCTAssertEqual(rows(presentation)[0].distance.display, "~3 km")
     }
 
-    func test_distanceDisplayIsNeverFinerThanTheCoordinateSentToTheServer() {
-        let presentation = NearbyDecision.presentation(
+    /// The only display floor is the fix's OWN accuracy.
+    ///
+    /// The former 100-metre floor existed because the service received a three-decimal coordinate, so
+    /// no distance computed from it could be finer than that. The captain's exact-position ruling
+    /// removed that coarsening, so keeping the floor would overstate uncertainty the request no longer
+    /// introduces: a 5-metre fix may state 820 m. Mirrors Android
+    /// `theOnlyDisplayFloorIsTheFixesOwnAccuracy`.
+    func test_theOnlyDisplayFloorIsTheFixesOwnAccuracy() {
+        let precise = NearbyDecision.presentation(
             directory: found([
                 provider(id: "one", name: "One", distanceKm: 0.823),
             ]),
             location: .ready(NearbyOrigin(
-                point: NearbyPoint(lat: 1.293, lng: 103.852),
+                point: NearbyPoint(lat: 1.29349, lng: 103.85251),
                 accuracyMetres: 5
             )),
             query: "",
             unitSystem: .metric
         )
 
-        XCTAssertEqual(rows(presentation)[0].distanceKm, 0.823)
-        XCTAssertEqual(
-            rows(presentation)[0].distance,
-            .measured(label: "0.8 km", approximate: true)
+        XCTAssertEqual(rows(precise)[0].distanceKm, 0.823)
+        XCTAssertEqual(rows(precise)[0].distance, .measured(label: "820 m", approximate: true))
+        XCTAssertEqual(rows(precise)[0].distance.display, "~820 m")
+
+        // A coarse fix still floors the label at its own accuracy, and the bound rounds OUTWARD onto
+        // the display ladder so it can never read tighter than the accuracy that produced it.
+        let coarse = NearbyDecision.presentation(
+            directory: found([
+                provider(id: "one", name: "One", distanceKm: 0.823),
+            ]),
+            location: .ready(NearbyOrigin(
+                point: NearbyPoint(lat: 1.29349, lng: 103.85251),
+                accuracyMetres: 900
+            )),
+            query: "",
+            unitSystem: .metric
         )
-        XCTAssertEqual(rows(presentation)[0].distance.display, "~0.8 km")
+        XCTAssertEqual(rows(coarse)[0].distance, .measured(label: "< 900 m", approximate: true))
     }
 
     func test_distanceFormattingRetainsMetricAndImperialBands() {

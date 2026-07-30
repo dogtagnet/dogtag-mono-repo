@@ -1185,12 +1185,14 @@ struct CentralProviderDirectory: ProviderDirectoryReading {
         case .contacts:
             return WireRequest(url: url, body: nil)
         case .nearest(let point, _):
-            // Re-coarsen at the serialization boundary so a future caller cannot construct a request
-            // around the factory and quietly put a raw Core Location fix on the wire.
-            guard let approximate = point.coarsenedForProviderSearch(),
+            // Re-validate at the serialization boundary so a future caller cannot construct a request
+            // around the factory and put an unusable coordinate on the wire. The fix is sent EXACTLY
+            // (captain's ruling, 2026-07-30) and the keys are `lat`/`lng`, because naming a
+            // full-precision value "approximate" would overstate the privacy this request provides.
+            guard let validated = point.validatedForProviderSearch(),
                   let data = try? JSONSerialization.data(withJSONObject: [
-                      "approximateLat": approximate.lat,
-                      "approximateLng": approximate.lng,
+                      "lat": validated.lat,
+                      "lng": validated.lng,
                   ]),
                   let body = String(data: data, encoding: .utf8) else {
                 return nil

@@ -67,7 +67,7 @@ class ProviderDirectoryTest {
     """.trimIndent()
 
     @Test
-    fun nearestRoundsBeforeBuildingTheExactBodyAndPreservesServerDistanceOrder() = runBlocking {
+    fun nearestSendsTheExactPositionInTheBodyAndPreservesServerDistanceOrder() = runBlocking {
         val posts = mutableListOf<Pair<String, String>>()
         var getCalls = 0
         val directory = CentralProviderDirectory(
@@ -83,7 +83,7 @@ class ProviderDirectoryTest {
             },
         )
         val position = requireNotNull(
-            ApproximateCallerPosition.from(GeoPoint(1.35249, 103.81951)),
+            CallerPosition.from(GeoPoint(1.35249, 103.81951)),
         )
         val query = ProviderDirectoryQuery(
             kinds = listOf("vet", "groomer"),
@@ -100,9 +100,16 @@ class ProviderDirectoryTest {
                 "?kind=vet&kind=groomer&limit=25&offset=50&name=Cl%C3%ADnica%20%26%20Spa",
             posts.single().first,
         )
+        // Captain's ruling, 2026-07-30: the exact fix is sent, NOT a three-decimal approximation.
+        // Both coordinates survive to full precision, and they travel in the BODY - never the URL,
+        // which is what ordinary access logs record.
         assertEquals(
-            """{"approximateLat":1.352,"approximateLng":103.82}""",
+            """{"lat":1.35249,"lng":103.81951}""",
             posts.single().second,
+        )
+        assertFalse(
+            "the position must not appear in the request URL",
+            posts.single().first.contains("1.35") || posts.single().first.contains("103.8"),
         )
         assertEquals(listOf("groomer", "vet"), result.providers.map { it.providerId })
         assertEquals(listOf(0.8, 4.2), result.providers.map { result.distancesKm[it.providerId] })
@@ -166,7 +173,7 @@ class ProviderDirectoryTest {
                 if (calls == 1) Http.Response(200, nearestPage) else Http.Response(503, "")
             },
         )
-        val position = requireNotNull(ApproximateCallerPosition.from(GeoPoint(1.35, 103.82)))
+        val position = requireNotNull(CallerPosition.from(GeoPoint(1.35, 103.82)))
         val query = ProviderDirectoryQuery(listOf("vet", "groomer"), offset = 50)
 
         assertTrue(directory.nearest(position, query) is ProviderDirectoryResult.Found)

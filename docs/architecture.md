@@ -726,7 +726,7 @@ The user owns the appointment in the mobile app (central backend); the business 
 ```
 owner Nearby: round current fix to 3 decimals ON DEVICE after disclosure
 mobile → indexer: POST /v1/businesses/nearest?kind=vet&kind=groomer&limit=25&offset=0
-                  body {"approximateLat":1.352,"approximateLng":103.820}
+                  body {"lat":1.3521098,"lng":103.8203214}
 owner name search → indexer: GET /v1/businesses?name=…&kind=vet&kind=groomer&limit=25&offset=0
                                       caller-owned kind policy; no position needed for name-only search
 indexer → admin: GET /v1/businesses                       ← whole interim source; on-chain after S-10
@@ -754,16 +754,18 @@ body that this service neither logs nor stores.
   `groomer`, `admin`, and `government`, but the service treats kind strings opaquely rather than
   hardcoding an enum. The owner app admits only vet/groomer and a featureful owner search requests
   `kind=vet&kind=groomer`; whether another app exposes admin/government remains deliberately deferred.
-- `POST /v1/businesses/nearest` accepts only
-  `{"approximateLat":number,"approximateLng":number}` in its JSON body. It rejects more than three
-  decimal places, invalid coordinates, unknown body fields, and every URL-position spelling. It scans
-  located name/kind matches, orders them by Haversine distance with source-order ties, pages only the
-  requested window, and adds `distanceKm`; `geo:null` rows cannot enter a nearest page.
-- **Coarsening happens before networking.** Android and iOS round the current fix to three decimal
-  places (roughly 100 m) before constructing the JSON. The grant surface says plainly:
-  “Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored.”
-  The service rejecting over-precise input is defense-in-depth, not a claim that server rounding could
-  undo receipt of a precise fix.
+- `POST /v1/businesses/nearest` accepts only `{"lat":number,"lng":number}` in its JSON body. It
+  validates finiteness and range, and rejects unknown body fields and every URL-position spelling. It
+  scans located name/kind matches, orders them by Haversine distance with source-order ties, pages only
+  the requested window, and adds `distanceKm`; `geo:null` rows cannot enter a nearest page.
+- **The position is sent EXACTLY** (captain's ruling 2026-07-30). An earlier revision rounded the fix to
+  three decimals on-device and had the service reject anything finer; both halves are gone, and a
+  precision gate must not be reinstated alone - with no client rounding in front of it, it would reject
+  every honest caller. The field names carry no "approximate" because a field so named holding a
+  metre-precise value would overstate the privacy the format provides. The grant surface says plainly:
+  “Your location is sent to DogTag to find nearby vets and groomers. It is not stored.”
+  **What protects the position is confinement, not imprecision**: body-only, never in a URL, log, trace
+  span, metric label, cache key or stored row, and `Cache-Control: private, no-store` on the response.
 - **No request-position logging or persistence.** The indexer currently installs no access/request
   `TraceLayer`, request-id/audit middleware, metrics, or request store; Mongo contains only chain events
   and the resume cursor. Its logs are startup, scanner/store errors, and directory-refresh results, none

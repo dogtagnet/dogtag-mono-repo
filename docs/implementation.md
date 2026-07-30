@@ -1191,14 +1191,14 @@ GET  /v1/businesses?type=
                        documentStores,hmacKeyId}]}  // non-personal
     // near=<lat>,<lng> & radius=<km> are still ACCEPTED and still filter server-side, and both are
     // DEPRECATED. Do not add a caller. Current-position discovery uses the indexer's separate
-    // body-only POST /v1/businesses/nearest contract below, after device-side coarsening and explicit
+    // body-only POST /v1/businesses/nearest contract below, sending the exact fix with an explicit
     // disclosure. Nothing in this repo sends a position through this legacy URL query.
 POST /v1/businesses (admin)               // register a deployment + issue HMAC key
 
 GET  indexer /v1/businesses?name=&kind=&kind=&limit=&offset=
     -> source-order page + {total,limit,offset,hasMore}; no caller position
 POST indexer /v1/businesses/nearest?name=&kind=&kind=&limit=&offset=
-    body {"approximateLat":1.352,"approximateLng":103.820}
+    body {"lat":1.3521098,"lng":103.8203214}
     -> nearest-first located page; every row includes server-computed distanceKm
     // approximate position is rounded to 3 decimals ON DEVICE, body-only, no-store, and is neither
     // logged nor persisted by indexer-api. There is no radius/map/place/autocomplete/geocoder query.
@@ -1364,9 +1364,9 @@ A grooming business's working application, not a bare verification tool. **A gro
 - **Scan QR** (Verify tab): parse `https://<host>/r?t=&i=` → fetch wrapped doc → `verify()` → import under pet, show 3-pillar verdict.
 - **Share** (user→business): show QR (one-time JWT against central).
 - **Find vet/groomer**: after the owner taps the current-location action, the app plainly says their
-  approximate location is sent to DogTag to find nearby vets/groomers and is not stored. It requests
-  coarse location, rounds latitude/longitude to three decimals on-device, then POSTs that approximation
-  to the indexer's body-only nearest endpoint with `kind=vet&kind=groomer`, `limit`, and `offset`.
+  location is sent to DogTag to find nearby vets/groomers and is not stored. It requests coarse
+  location and POSTs the fix EXACTLY - not rounded (captain's ruling 2026-07-30) - to the indexer's
+  body-only nearest endpoint with `kind=vet&kind=groomer`, `limit`, and `offset`.
   The service computes distance/order once and returns paged rows carrying `distanceKm`; the device
   preserves that order rather than scanning the whole directory. Provider-name search is a server
   filter using the same owner kind set. The service itself does not hardcode those kinds and can serve

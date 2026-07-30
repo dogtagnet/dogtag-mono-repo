@@ -104,16 +104,23 @@ struct BusinessDirectoryParams {
     offset: Vec<usize>,
 }
 
-/// The current-device fix after the caller has rounded it to roughly 100-metre precision.
+/// The caller's current position, at whatever precision the device reported.
 ///
-/// It travels in a POST body, never in the URI that conventional access logs record.
+/// Captain's ruling, 2026-07-30: the position is sent EXACTLY and is not rounded. An earlier revision
+/// took a three-decimal approximation and rejected anything finer; that is gone, and the fields are
+/// named `lat`/`lng` rather than `approximateLat`/`approximateLng` because a field named "approximate"
+/// carrying a metre-precise fix would overstate the privacy the wire format actually provides - the
+/// same class of false claim this service refuses everywhere else.
+///
+/// What did NOT change is where it may travel: a POST body, never the URI that conventional access
+/// logs record, and never a log line, trace span, metric label, cache key, or stored row.
 // Deliberately no `Debug` or `Serialize`: this value must not become loggable or echoable by
 // convenience while it is in memory.
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ApproximatePosition {
-    approximate_lat: f64,
-    approximate_lng: f64,
+struct CallerPosition {
+    lat: f64,
+    lng: f64,
 }
 
 fn bounded_filter(
@@ -239,19 +246,18 @@ fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     2.0 * EARTH_RADIUS_KM * bounded.sqrt().atan2((1.0 - bounded).sqrt())
 }
 
-fn valid_approximate_position(position: ApproximatePosition) -> bool {
-    const SCALE: f64 = 1000.0;
-    const DECIMAL_TOLERANCE: f64 = 1e-9;
-    let is_three_decimal = |value: f64| {
-        let scaled = value * SCALE;
-        (scaled - scaled.round()).abs() <= DECIMAL_TOLERANCE
-    };
-    position.approximate_lat.is_finite()
-        && position.approximate_lng.is_finite()
-        && (-90.0..=90.0).contains(&position.approximate_lat)
-        && (-180.0..=180.0).contains(&position.approximate_lng)
-        && is_three_decimal(position.approximate_lat)
-        && is_three_decimal(position.approximate_lng)
+/// Well-formedness only: finite, and on the globe.
+///
+/// There is deliberately NO precision test. An earlier revision refused anything finer than three
+/// decimals as defense-in-depth behind client-side rounding; the captain has since ruled that the
+/// device sends its exact fix, so such a check would now reject every real request. Do not reinstate
+/// one without the rounding it was defending - a precision gate with nothing rounding in front of it
+/// only rejects honest callers.
+fn valid_caller_position(position: CallerPosition) -> bool {
+    position.lat.is_finite()
+        && position.lng.is_finite()
+        && (-90.0..=90.0).contains(&position.lat)
+        && (-180.0..=180.0).contains(&position.lng)
 }
 
 fn render_business(business: &crate::directory::BusinessRow, distance_km: Option<f64>) -> Value {
@@ -279,7 +285,7 @@ fn rank_nearest_page(
     businesses: &[crate::directory::BusinessRow],
     name: Option<&str>,
     kinds: &HashSet<String>,
-    position: ApproximatePosition,
+    position: CallerPosition,
     limit: usize,
     offset: usize,
 ) -> NearestPage {
@@ -291,8 +297,8 @@ fn rank_nearest_page(
             business.geo.filter(|geo| geo.is_valid()).map(|geo| {
                 (
                     haversine_km(
-                        position.approximate_lat,
-                        position.approximate_lng,
+                        position.lat,
+                        position.lng,
                         geo.lat,
                         geo.lng,
                     ),
@@ -385,19 +391,19 @@ async fn businesses(
     })))
 }
 
-/// `POST /v1/businesses/nearest` — paged server-side proximity over an explicitly approximate fix.
+/// `POST /v1/businesses/nearest` — paged server-side proximity over the caller's exact fix.
 ///
 /// Position MUST remain body-only and ephemeral. Do not add request logging around this route and do
 /// not attach the body to a trace span, metric label, audit row, cache key, or error message.
 async fn nearest_businesses(
     State(st): State<AppState>,
     MultiQuery(params): MultiQuery<BusinessDirectoryParams>,
-    Json(position): Json<ApproximatePosition>,
+    Json(position): Json<CallerPosition>,
 ) -> Result<(HeaderMap, Json<Value>), ApiError> {
-    if !valid_approximate_position(position) {
+    if !valid_caller_position(position) {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "approximateLat/approximateLng must be valid coordinates rounded to at most 3 decimal places",
+            "lat/lng must be finite coordinates within range",
         ));
     }
     let name = name_filter(&params)?.map(|name| search_fold(&name));
@@ -776,7 +782,7 @@ async fn issuers(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<
 /// including hermetic tests and deployments that do not use the standalone binary's assembly.
 ///
 /// There is intentionally no HTTP trace/access-log middleware. In particular, never attach a
-/// request URI or the nearest-search body to tracing: the approximate caller position is ephemeral
+/// request URI or the nearest-search body to tracing: the caller position is ephemeral
 /// request data, not an event, metric dimension, or audit fact.
 pub fn router(state: AppState) -> Router {
     Router::new()

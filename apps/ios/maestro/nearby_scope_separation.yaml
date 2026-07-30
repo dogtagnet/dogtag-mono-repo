@@ -1,4 +1,4 @@
-# DogTag iOS — Nearby discloses its coarse server request before permission and never exposes the
+# DogTag iOS — Nearby discloses its server request before permission and never exposes the
 # retired chosen-location/map flow.
 #
 # Prerequisites: DEBUG app installed, a reachable indexer with the paged provider endpoints, and a
@@ -16,7 +16,7 @@ appId: io.liberalize.dogtag
 
 # The disclosure is visible at the action that triggers the OS grant, before it can be tapped.
 - assertVisible:
-    text: "Your approximate location is sent to DogTag to find nearby vets and groomers. It is not stored."
+    text: "Your location is sent to DogTag to find nearby vets and groomers. It is not stored."
 - assertVisible: "Use my current location"
 - assertNotVisible: "Chosen location"
 - assertNotVisible: "Latitude"
