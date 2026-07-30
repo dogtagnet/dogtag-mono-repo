@@ -89,7 +89,7 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   runs `cargo test` today, so this gate is operator-invoked; a captain-gated Rust CI job is a separate
   follow-up.
 - `cargo test -p vet-api -p admin-api` — backends. (One vet-api suite, `gate_dual_signing_parity`, is slow — ~5 min — it runs the real prover/signing; this is expected, not a hang.)
-- `cd contracts && forge test` - 231 tests over the owner-hidden contract set. **A fresh worktree has
+- `cd contracts && forge test` - 285 tests over the owner-hidden contract set. **A fresh worktree has
   EMPTY `contracts/lib/*` directories** (the foundry deps are git submodules, and a treehouse/pipeline
   worktree is created without them), so the first `forge test` fails on the remappings rather than on
   anything in the branch; run `git submodule update --init --recursive contracts/lib/forge-std
@@ -111,7 +111,8 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   DEPLOYED"); and `IssuerV2ProviderAuthority.t.sol` is the one suite that binds the generation-2 pair's
   locally-declared oracle interface to the REAL provider core (`ProviderRegistry.t.sol` binds that core
   too, for its own behaviour), pinning that the four functions the pair asks of it are the core's own on
-  both axes a signature has.
+  both axes a signature has; and `ProviderDirectory.t.sol` covers the build-only typed DIRECTORY
+  resolver against the REAL core rather than a mock (see "ProviderDirectory" below).
   Use `forge test`, **not** bare
   `forge build`: a bare full build tries to compile the OZ submodule's `certora/harnesses/*` which
   import generated `../patched/*` files that aren't present, so it fails with "File not found" - a
@@ -252,6 +253,10 @@ Never "fix" a prerequisite failure by deleting the check it guards.
   publishes one contract set plus one independently rotatable artifact set and their binding.
   `CloneProvenanceRouter` is also in that live source but is **built and tested only, NOT deployed** -
   no address, no `.env.example` entry, no consumer points at it. See "CloneProvenanceRouter" below.
+  `ProviderDirectory` is the S-10 typed DIRECTORY resolver selected through the S-6 core (pins,
+  contacts and profile anchors, keyed by `providerId`) and is likewise **built and tested only, NOT
+  deployed** - no address, no deploy script, no `.env.example` entry, and the indexer's provider
+  directory still reads the admin business source. See "ProviderDirectory" below.
   `ProviderRegistry` is the separately tested S-6 provider identity/authority core: it is source-only,
   has no deploy script, ledger entry, or environment address, and is **not deployed**. It admits only
   owner-bearing clones, matching the plan's retire/re-issue recommendation for the five ownerless V1
@@ -1302,6 +1307,144 @@ revert as expected` - the real registry emitting `Verified` for a revoked creden
 `renounceOwnership` is overridden to revert. `Ownable2Step` (chosen to match `DogTagIssuerFactory`)
 makes the HANDOVER two-step, but the inherited renounce is a one-transaction drop to `address(0)` with
 no acceptance and no way back - exactly the permanent stranding two-step exists to prevent.
+
+## ProviderDirectory - enumeration is NOT the pin scan, and that is the whole slice
+
+`contracts/src/ProviderDirectory.sol`, the typed DIRECTORY resolver selected through the S-6
+`ProviderRegistry` (registry plan `dogtag-regplan-p3` slice S-10).
+**BUILT AND TESTED ONLY - NOT DEPLOYED.** No address in `contracts/deployments/roax.json`, no deploy
+script, no `.env.example` entry, and no consumer points at it; the indexer's provider directory still
+reads the admin business source (`stacks/indexer/api/src/directory.rs`). Deploying it and switching
+that source are separate captain-authorized steps.
+
+**The trap, and it is the reason the slice exists.** Both source reports (`dogtag-nearby-n5`,
+`dogtag-rdns-r7`) build the provider listing out of the location pins. A provider may publish contacts
+and no location at all - S-1 (#109) already made that first class on the shipping path - so a
+pin-derived listing renders such a provider INVISIBLE, which silently downgrades "the provider is
+listed" into the much weaker "we will not put a fake pin on the map". So there are two independent,
+independently paged sequences: `_listings` (every provider that has published anything here) and
+`_pinScan` (one word per pin, the only thing distance is computed from). A contact-only provider is in
+the first and absent from the second - pinned by
+`test_a_contact_only_provider_is_enumerated_and_contributes_nothing_to_the_pin_scan`, and reddened by
+deleting the `_list(providerId)` call from `setProfileAnchor`.
+`_listings` is APPEND-ONLY: withdrawing every pin and clearing the anchor leaves the provider
+enumerated with `pinCount == 0` and `anchorPresent == false`, because unlisting would invalidate a
+cursor a consumer is part way through, and the record can tell the truth without vanishing.
+
+**The pin word is exactly 32 bytes with no spare bits**, so a pin is one slot and a scan is one cold
+`SLOAD` per record: `providerId bytes20 | lat int32 | lng int32 | locationNo uint16 | kind uint8 |
+flags uint8`. Three of those widths are load-bearing rather than defaults.
+`providerId` is 20 bytes (the core's own type) because a `bytes32` key spills the record to two slots
+and halves what one `eth_call` can return.
+Coordinates are scaled by **1e6, not 1e7** - 11.13 cm at 91.6% `int32` headroom versus 1.11 cm at
+16.2%; a clinic pin does not need centimetres.
+And because the record is one word, `pinPage` returns `bytes32[]`, which for a one-word record is
+byte-identical to hand-packed `bytes` - the 3.3x ABI-padding penalty an `(address, int32, int32)`
+struct array would pay is avoided by construction, so do not hand-roll a `bytes` blob for it. The
+listing record is two words (`providerId | anchorRevision uint64 | pinCount uint16 | standing uint8 |
+flags uint8`, then the digest) and is tight for the same reason.
+
+**The page caps are MEASURED, and `ProviderDirectoryPageCostTest` is where.** Cold: **~2,690 gas per
+pin record** (~2.69M for a full 1,000-record page) and **~21,700 per listing record** (~2.17M for a
+full 100-record page). So a listing record is about eight times a pin record - one core staticcall
+each - which is what makes the smaller listing cap a decision rather than an oversight, and a full
+page of either sits well inside a node's ~50M `eth_call` cap. Extrapolated, the pin figure allows
+~18,600 records in one call, which corroborates `dogtag-nearby-n5` §5's "realistically ~15,000-20,000"
+rather than its 2,300/record estimate.
+**That suite has its own contract for one reason: the seeding must happen in `setUp`, a separate
+transaction from the measured read.** Publishing and reading in one test body leaves every slot WARM
+and reports ~680k for the same page - understating a real `eth_call` roughly threefold. The whole cap
+argument is about the COLD `SLOAD` per record, so the warm number is measuring the wrong thing and
+quoting it would be worse than quoting nothing. `forge-std` here has no `vm.cool`, which is why the
+transaction boundary is the mechanism.
+Negative coordinates are the classic packing bug - a two's-complement `int32` read back at the wrong
+width becomes a plausible coordinate on the other side of the planet rather than an error - so the
+extremes are pinned in both signs.
+
+**`0,0` is a REAL coordinate and stays publishable.** Absence of a location is the absence of a pin,
+never a zero pair. That distinction is exactly what was missing when a blank admin location rendered
+as a pin in the Gulf of Guinea.
+
+**Every provider write requires THREE checks and none substitutes for another**: this resolver is still
+fleet-approved (`isResolverApproved(DIRECTORY, this)`), it is still this provider's selection
+(`provider(id).directoryResolver == this`), and the caller may write this provider's records
+(`canWriteProvider(id, caller, PROVIDER_PERMISSION_RECORD)`). The approval half is the one that looks
+redundant and is not: the core NEVER clears a stored selector when a resolver is deapproved, so reading
+the selector alone would defeat the registry authority's fleet-wide `setResolverApproved(..., false)`
+lever. The permission bit is `PROVIDER_PERMISSION_RECORD` and is snapshotted from the core's own
+constant at construction rather than restated as a literal; note it is a DIFFERENT bit from
+`PROVIDER_PERMISSION_DIRECTORY_RESOLVER`, which only chooses the resolver - a delegate trusted with one
+must not thereby hold the other.
+
+**The selection and the approval are reported to consumers SEPARATELY, never pre-and-ed** - same rule
+as the discovery anchor's two `active` bits (see "Discovery API + app anchor-validation"). A record is
+a live claim only if the listing's `selected` bit AND the page's `approved` both hold; combining them
+inside the contract would leave a consumer unable to tell "the provider moved to another resolver" from
+"the authority pulled this resolver". `isLiveFor` is the one place the conjunction is made.
+
+**A pin scan makes no claim about whether a pin should be SHOWN.** Provider standing is the core's
+fact, and folding it into the scan would cost a staticcall per pin (destroying the one-SLOAD economics)
+or a mirrored copy that drifts - so `pinPage` returns every published pin, including inactive ones and
+including pins whose provider is suspended, and `listingPage` carries standing read LIVE from the core
+so the join is affordable one page at a time. Both the inactive-pin case and the suspended-provider
+case are pinned, so a later "helpfully exclude it" change goes red rather than quietly reporting a
+provider as having no location.
+`_pinScan` is compacted by swap-and-pop, so **page every pin at ONE pinned block**; `atBlock` is
+returned so a consumer can show it did. The moved word carries its own `(providerId, locationNo)`, so
+its index is repaired from the word itself rather than from a second bookkeeping structure.
+That hazard is pinned as a REAL limitation rather than left as prose - the same treatment
+`CloneProvenanceRouter.t.sol` gives its deliberately-unclosed mirror direction, so nobody later reads
+the doc as a solved problem: `test_paging_across_a_removal_can_skip_a_record` walks page 0, removes the
+record at index 0, walks page 1, and shows the record swapped into the hole is never returned by either
+page although it exists and was never removed. The same test then reads the whole scan at one block and
+sees it, which is the remedy.
+
+**`(providerId, locationNo)` is stable: a number is issued from a monotone per-provider counter and is
+never reissued**, so a withdrawn location's number can never come to mean a different place. `uint16`
+bounds a provider to 65,535 of them (0 through 65,534) and exhaustion reverts rather than wrapping.
+
+**Address provenance is a tri-value record of WHO asserted the address, never a verified/unverified
+binary, and there is no "verified location" checkmark anywhere.** Nothing in this system establishes
+that a provider occupies a coordinate. A provider may only ever publish `SELF_DECLARED`; raising to
+`MATCHED_LICENSING_REGISTER` or `POSTAL_CONFIRMED` is the registrar's assertion ABOUT a provider, so it
+is `core.owner()`-only and bound to the exact coordinates checked via an expected-lat/lng transaction
+guard. **Moving a pin RESETS provenance to `SELF_DECLARED`** - the registrar checked one address, and
+carrying its confirmation to another attributes a check that was never made - while changing only
+`kind` or `active` PRESERVES it, since neither restates the address. Both directions are pinned; the
+second matters because always-resetting would silently drop a postal confirmation every time a provider
+fixed a typo. That one registrar write deliberately does NOT require ACTIVE standing, so a confirmation
+stays RETRACTABLE after a suspension.
+
+**Losing ACTIVE standing FREEZES a provider's content rather than deleting it, and there is deliberately
+no registrar override**, mirroring the core's own refusal to let a registrar rewrite a frozen service's
+published claims. The cost is that such pins keep their scan slot; the alternative is an authority that
+can silently rewrite a provider's own signed claims, which is worse.
+
+**Contacts are in the anchored blob, not on chain.** `ProfileAnchor` publishes only the integrity
+anchor (digest + schema/codec/hashAlgorithm + contenthash + revision + block + setBy) for the blob
+carrying contacts, address text, hours, services and logo - the split `dogtag-nearby-n5` §4 verified.
+So **a contact-only provider is LISTED but not yet CONTACTABLE from chain data alone until the S-17
+content mirror lands**; state that as the honest current gap rather than as contacts being unsupported.
+`name` is deliberately absent - `DogTagIssuer.name()` is already authoritative and a second copy would
+be free to drift. This anchor is NOT the core's `PublicIdentityAnchor`: that one is registrar-written
+identity, this one is provider-written content carrying no registrar attestation at all. A cleared
+anchor still advances the revision, so "withdrawn" stays distinguishable from "never published".
+`kind` is an OPAQUE caller-selected code with no on-chain allowlist, mirroring the directory service's
+stated kind policy; `0` means NOT STATED and is never inferred into a real kind.
+**Open, and worth settling before a second consumer exists: the `uint8` code to label mapping is
+unowned.** The chain carries the code and the indexer's kind filter carries strings (`kind=vet`), so
+whoever wires the two picks the correspondence - and two consumers inventing different tables renders a
+vet as a groomer with nothing anywhere reporting a disagreement. A `bytes32` keccak-of-label kind would
+have been self-describing and does not fit the slot, so the mapping has to be written down somewhere
+rather than derived.
+
+The contract imports `ProviderRegistry` directly rather than declaring a local interface, unlike the
+generation-2 issuer pair. That is deliberate: this is a resolver OF that exact core, selected by it, so
+a redeclared struct would be a drift risk with nothing to gain - and the test suite consequently binds
+the REAL core rather than a mock.
+
+Nineteen source mutations were applied, run and reverted against a temporary harness (not committed);
+each mapped to a named red test, including all of the claims called out above.
 
 ## Governance authority (Phase-2 executed) - tooling signer
 
