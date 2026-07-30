@@ -138,8 +138,9 @@ The same did-anything-actually-run check guards the rehearsal's own assertion st
 | the freeze also revokes the anchored root | 7 (history half) | `cred !valid` |
 
 10 of 10 redden.
-**Those ten observations were made under the PREVIOUS, looser criterion**, which credited any non-zero `forge` exit; re-running `make rehearse-cutover-mutations` is what confirms them under the stricter one above.
-Every recorded message is an ordinary revert reason rather than a compile error, so all ten are expected to stand - but expected is not measured, and this document does not get to claim the difference.
+Those ten results were **re-measured under the stricter criterion** shown above - the one that requires a test to have actually RUN and a real `[FAIL` line, so a compile error or a zero-match filter is classified as a setup failure instead of being credited as red.
+All ten still redden. That distinction matters: under the previous criterion any non-zero `forge` exit counted, so the figure was not established at all, and the earlier revision of this document correctly declined to claim it until someone measured.
+It is measured now, at `fc17251`, against a live fork.
 
 The harness earned its keep **twice**, both times catching an inert mutation of mine rather than being believed:
 
